@@ -213,6 +213,21 @@ class TriggerTests(TeamTurnMacs, unittest.TestCase):
         self.run_turns()
         self.assertEqual((self.triggers(), gateway.turns), ([], []))
 
+    def test_a_trigger_that_the_admin_erases_before_its_turn_goes(self):
+        self.join(self.second, self.invite({'room': self.room})['link'], 'Grace')
+        self.second.team_sync_pass()
+        self.only.team_sync_pass()
+        named = self.send('@Reporter please', service=self.second, mentions=[self.mention])
+        self.sync()
+        self.assertEqual(self.triggers(), [(named['id'], 0)])
+        # Ada is the admin. Her `erase` entry takes the trigger away on the team-only Mac.
+        self.call('DELETE', f'/v1/team/rooms/{self.room}/messages/{named["id"]}', service=self.first)
+        self.sync()
+        self.assertEqual(self.triggers(), [])
+        gateway = self.serve(reply('never'))
+        self.run_turns()
+        self.assertEqual(gateway.turns, [])
+
     def test_a_full_service_queues_nothing(self):
         # Grace's Mac is a full Mac. A page of its bot Helper is shared with the team, so Helper has a `bot` entry and a
         # row in team_shares, and its record even has `chat`.
@@ -655,11 +670,11 @@ class FailureTests(TeamTurnMacs, unittest.TestCase):
         self.assertLessEqual(len(gateway.turns), 1)
 
     def test_a_removed_request_or_a_sender_who_left_stops_the_turn_and_gets_nothing(self):
-        for case in ('removed', 'left'):
+        for case in ('removed', 'erased', 'left'):
             with self.subTest(case=case):
-                sender = self.first
-                if case == 'left':
-                    sender = self.second
+                sender = self.first if case == 'removed' else self.second
+                if case == 'erased':
+                    # Grace joins once, for this case and the next one.
                     self.join(self.second, self.invite({'room': self.room})['link'], 'Grace')
                     self.second.team_sync_pass()
                     self.only.team_sync_pass()
@@ -669,7 +684,8 @@ class FailureTests(TeamTurnMacs, unittest.TestCase):
                 self.serve(lambda turn: (released.wait(5), reply('Late answer.')(turn))[1])
                 runner = self.runner()
                 self.wait_for_turn()
-                if case == 'removed':
+                if case != 'left':
+                    # Ada deletes her own message, or as the admin she erases the message of Grace.
                     self.call('DELETE', f'/v1/team/rooms/{self.room}/messages/{named["id"]}', service=self.first)
                 else:
                     self.leave(self.second, {'room': self.room})

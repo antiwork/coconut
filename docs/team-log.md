@@ -9,7 +9,7 @@ A team has two kinds of Mac:
 - **A person's Mac** (a full install): its bots are the person's, and nobody else can ask them. The person shares a page of a bot with a team by one act on the page, and stops when they want. The bot of the page is then the author of the page in the team, and nothing more.
 - **A Mac for a team only** (see [Team-only mode](#team-only-mode)): its bots are the team's. Each page that such a bot saves with the audience "team" goes to the teams of the bot.
 
-Status: the relay has the room (`relay/src/room.js`). The Mac backend makes, joins, leaves and copies a room for the tools on the Mac, and it learns of a new entry at once through the socket of the room (see [Mac](#mac)). It shares the pages that a person shares, and the Library of the phone lists the team pages of the other Macs (see [Bots and pages](#bots-and-pages)). It keeps the Team chat and serves it to the phone, and the app lists the team bots that a person can name with `@` (see [Team chat](#team-chat)). A bot of a Mac for a team only answers in the Team chat (see [A bot answers](#a-bot-answers)). A message of another member reaches this Mac through the socket in about one second, and a person's Mac notifies its phones (see [Notifications](#notifications)). The Mac keeps the direct messages between two people and serves them to the phone, and the app shows them (see [Direct messages](#direct-messages)). The admin removes a member (see [Removal](#removal)), and the room then gets a new room key (see [Key change](#key-change)). This part is not built yet:
+Status: the relay has the room (`relay/src/room.js`). The Mac backend makes, joins, leaves and copies a room for the tools on the Mac, and it learns of a new entry at once through the socket of the room (see [Mac](#mac)). It shares the pages that a person shares, and the Library of the phone lists the team pages of the other Macs (see [Bots and pages](#bots-and-pages)). It keeps the Team chat and serves it to the phone, and the app lists the team bots that a person can name with `@` (see [Team chat](#team-chat)). A bot of a Mac for a team only answers in the Team chat (see [A bot answers](#a-bot-answers)). A message of another member reaches this Mac through the socket in about one second, and a person's Mac notifies its phones (see [Notifications](#notifications)). The Mac keeps the direct messages between two people and serves them to the phone, and the app shows them (see [Direct messages](#direct-messages)). The admin removes a member (see [Removal](#removal)), and the room then gets a new room key (see [Key change](#key-change)). The admin deletes a message of another member (see [The admin deletes a message](#the-admin-deletes-a-message)). This part is not built yet:
 
 - A call of `GET .../members` that finds a member that left without a `delete` entry.
 
@@ -87,8 +87,9 @@ Each payload has these fields:
 | `direct` | `false` | A person's Mac | `box`: the text of a direct message to one other member, sealed a second time with the pair key of the two members. See [Direct messages](#direct-messages). |
 | `remove` | `true` | The admin, one entry for each removed member | `member` (the member ID of the removed member), `name` (the last name that the admin's Mac showed for it, or absent). See [Removal](#removal). |
 | `key` | `true` | The admin, one entry for each new epoch | `epoch` (the new epoch), `agreement` (the public agreement key of the admin), `boxes` (for each member ID, the room key of the new epoch in a box for that member). See [Key change](#key-change). |
+| `erase` | `false` | The admin, one entry for each deleted message | `entry` (the entry ID of a `message` entry of another member). See [The admin deletes a message](#the-admin-deletes-a-message). |
 
-The kinds `member`, `delete`, `bot`, `page`, `message`, `direct`, `remove` and `key` are complete. See [Bots and pages](#bots-and-pages) for the rules of `bot` and `page`, [Team chat](#team-chat) for `message`, and [Direct messages](#direct-messages) for `direct`. Each other kind gets its fields in the pull request that builds it. A new kind needs no change of the relay and no change of the body.
+The kinds `member`, `delete`, `bot`, `page`, `message`, `direct`, `remove`, `key` and `erase` are complete. See [Bots and pages](#bots-and-pages) for the rules of `bot` and `page`, [Team chat](#team-chat) for `message`, and [Direct messages](#direct-messages) for `direct`. Each other kind gets its fields in the pull request that builds it. A new kind needs no change of the relay and no change of the body.
 
 A key in a payload is unpadded base64url, as in a pairing setup.
 
@@ -105,7 +106,7 @@ A Mac writes the `name` of its own `member` entry by a stricter rule: 1 to 80 co
    - If the Mac has no room key for the epoch, and the epoch is before the first epoch that the Mac has a key for, skip the entry. A member that joins later never gets the keys of earlier epochs.
    - If the epoch is later, keep the bytes until the key comes in a `key` entry. Then open them again.
 3. If the Mac already has this entry ID, accept the entry only from the same member and only with a higher `rev`.
-4. Accept `remove` and `key` only from the admin. The admin is the member ID that the welcome names.
+4. Accept `remove`, `key` and `erase` only from the admin. The admin is the member ID that the welcome names.
 5. If the kind is unknown, keep the payload and show nothing.
 
 ## Relay routes
@@ -394,6 +395,7 @@ Everything else is in `coconut.sqlite3`:
 | `team_marks` | The lasting marks of this Mac, for all its rooms. `direct`: an app of the person asked for direct messages. A leave does not remove it. |
 | `team_removed` | The members that a `remove` entry of the admin took out of the room, each with the entry ID of that entry. See [Removal](#removal). |
 | `team_invites` | On the admin's Mac: the hash of the ticket and the end of each invite that this Mac made. See [Invite and join](#invite-and-join). |
+| `team_erased` | The entry IDs of the messages that an `erase` entry of the admin took out of the chat. See [The admin deletes a message](#the-admin-deletes-a-message). |
 
 A room is `joining` (the relay did not answer the join yet), `active`, `removed` (the relay answered 401) or `gone` (the relay answered 404). The copy of a `removed` or `gone` room stays until the person leaves the room on the Mac. The Library does not show the bots and the pages of such a room.
 
@@ -487,6 +489,7 @@ A room in an answer has what the Team screen shows, so the app needs no other re
 | --- | --- |
 | `room`, `name`, `state`, `created_at` | The room ID, the name of the team, `joining`, `active`, `removed` or `gone`, and the time that this Mac made or joined the room. |
 | `is_admin`, `can_invite` | True when this Mac is the admin. `can_invite` is true only for the admin of an `active` room. |
+| `can_delete_messages` | True on the admin's Mac of an `active` room: the person can delete a message of another member or of a bot. The app shows the action only with this field, so an older service shows no action. |
 | `members` | In the order of their first `member` entry: `member` (the member ID), `name`, `avatar`, `color`, `admin`, `this_mac`, `bot_only`, and `can_remove`: true on the admin's Mac of an `active` room for each other member. The app shows the action of a removal only for a member with `can_remove`, so an older service shows no action. |
 | `bots` | Each bot of the team, while the room is `active` and the member of the bot is in `members`. `id`, `name`, `avatar`, `color`, `member` (the ID of the Mac that runs the bot), `member_name`, `this_mac` and `open`. A bot of a person's Mac is only the author of the pages that the person shares, and its `open` is false. The app lists and counts only the bots with `open` true: the bots that a teammate can ask. A bot of this Mac also has `bot_id`, its ID on this Mac, and its profile comes from that bot. An archived or deleted bot of this Mac is not in the list. The bots follow the order of the members, then their names. |
 | `sync` | `synced_at`, and `error`: one sentence for a person, or null. Also `seq`, `entries`, `waiting`, `refused`: the writes that the relay refused (see [Bots and pages](#bots-and-pages)), and `socket`: true while the socket of the room is open. The app does not show `socket`. |
@@ -595,7 +598,7 @@ The payload of a `message` entry:
 | `mentions` | A list of at most 16 entry IDs of `member` or `bot` entries that the message names, or absent. |
 | `bot` | The entry ID of a `bot` entry of the same member when a bot of that Mac wrote the message, or absent for a message of the person. |
 
-- An edit is a new write of the same entry ID with the next `rev`. A removal is a `delete` entry over it. Only the member of a message can do either (rule 3).
+- An edit is a new write of the same entry ID with the next `rev`. A removal is a `delete` entry over it. Only the member of a message can do either (rule 3). The admin can also take a message out of the chat with an `erase` entry (see [The admin deletes a message](#the-admin-deletes-a-message)).
 - Only a team-only Mac writes `bot`: one entry for each complete message of a bot that answers in the chat. See [A bot answers](#a-bot-answers). It never edits such a message, so `edited_at` of a message of a bot means an edit of another version.
 
 Rules for a Mac that reads a `message` entry:
@@ -624,7 +627,7 @@ The routes have the authorization of the other team routes, and a write with an 
 | `GET /v1/team/rooms/<room>/messages?before=<first>&limit=<n>` | One page, newest first: `{room, messages, before}`. `limit` is 1 to 100, and 50 without it. `before` of the answer is the `first` to ask for the next page, or null when no older message exists. Also a room that is not `active` has its history. |
 | `POST /v1/team/rooms/<room>/messages`, body `{text, reply_to?, mentions?}` | Writes a message of the person and answers `{room, message}`. `reply_to` is the `id` of a message that the chat shows. `mentions` is a list of member IDs of `members` and `id` values of `bots` of `GET /v1/team/rooms`. The Mac writes the entry IDs of the contract. With an `Idempotency-Key`, the entry ID of the message comes from the room, the device and the key. So a repeat after a write without an answer finds that write and sends no second message. |
 | `PATCH /v1/team/rooms/<room>/messages/<id>`, body `{text}` | Changes the text of a message of this Mac's person, and answers `{room, message}`. The other fields stay. The same text writes nothing. A message of another member or of a bot answers 403. |
-| `DELETE /v1/team/rooms/<room>/messages/<id>` | Removes a message of this Mac's person with a `delete` entry, and answers `{room, id, deleted: true}`. When the entry is already a `delete` entry of this Mac, for example after a delete without an answer, the Mac gives the same answer and writes nothing. An ID that the store does not have answers 404, and an entry of another member 403. |
+| `DELETE /v1/team/rooms/<room>/messages/<id>` | Removes a message of this Mac's person with a `delete` entry, and answers `{room, id, deleted: true}`. When the entry is already a `delete` entry of this Mac, for example after a delete without an answer, the Mac gives the same answer and writes nothing. An ID that the store does not have answers 404. On the admin's Mac, a message of another member or of a bot gets an `erase` entry (see [The admin deletes a message](#the-admin-deletes-a-message)). On another Mac, an entry of another member answers 403. |
 | `POST /v1/team/rooms/<room>/read`, body `{first}` | Moves the read position, and answers `{room, read, unread}`. |
 | `PUT /v1/team/rooms/<room>/notifications`, body `{enabled}` | Turns the notifications of the room on or off for the phones of this Mac, and answers `{room, notifications}`. See [Notifications](#notifications). |
 
@@ -643,6 +646,32 @@ A message in an answer:
 When the chat of a room changes on this Mac, the Mac adds one `team_messages.updated` event with `{"team": <room ID>}` in the same transaction: a new message, an edit, a removal, a new time from the relay, a new or changed name in `team_names` of a room with messages (for example a rename, or a `bot` entry that makes a message of its bot show), or a new read position, for example from another device of the person. The same name written again adds no event. `GET /v1/updates` then has `team_messages_changed`: the IDs of these rooms. A pass that changes nothing adds no event. The event type is in the `known` set of `GET /v1/updates` and changes no Work row, so an app of today does not read its whole state again.
 
 No log line has the text of a message. A log line names a message by its entry ID and its `seq`, as for each other entry.
+
+#### The admin deletes a message
+
+The admin of a team takes a wrong or harmful message of another person or of a bot out of the chat. The relay lets only the member of an entry replace it, so the admin cannot write a `delete` entry over that message. The admin's Mac writes an `erase` entry instead. The relay cannot read the kind of an entry, so the relay needs no change.
+
+The payload: `{"kind": "erase", "entry": "<entry ID of the message>"}`. The entry is not kept. Its entry ID is the first 16 bytes of HMAC-SHA256 with the member token of the admin as the key, over `"coconut room erase" | room ID (32 bytes) | entry ID of the message (16 bytes)`. So a repeat writes the same entry, and another member cannot take the ID first.
+
+On the admin's Mac, `DELETE /v1/team/rooms/<room>/messages/<id>` for a message that this Mac's person did not write:
+
+1. The Mac reads back an earlier write without an answer, as for each write of the chat.
+2. When the store has the message in `team_erased`, or the author deleted it already, the Mac writes nothing.
+3. Else the Mac writes the `erase` entry, and the message goes from the chat of this Mac at once.
+4. The answer is `{room, id, deleted: true}`, as for an own message.
+
+Rules for a Mac that reads an `erase` entry:
+
+1. Rule 4 of a reader accepts the entry only from the admin. An `erase` entry of another member changes nothing, and the Mac writes one log line with the entry ID and the start of the member ID, as for each refused entry.
+2. An `entry` that is not an entry ID changes nothing.
+3. When the store has the named entry and its kind is not `message` or `delete`, the entry changes nothing. So the admin cannot remove a `direct`, `page`, `member`, `bot`, `key` or `remove` entry. These kinds have their own rules, and the admin cannot read a direct message.
+4. Else the Mac keeps the entry ID in `team_erased`, and removes the message as a `delete` over it does: from the chat, from the unread count, and from the notifications that wait (each plan and each send checks that the message still shows). On a team-only Mac, the triggers of the message that did not start go, and a running turn of it stops (see [A bot answers](#a-bot-answers)).
+5. The removal holds. A later write of the message by its author, for example an edit with a newer `seq`, shows nothing. An `erase` entry that comes before its message counts when the message comes. A later write over the `erase` entry does not bring the message back. The author's Mac refuses an edit of an erased message with 404.
+6. A message of a bot and a message of a removed member can be erased.
+
+`team_erased` has one row of two IDs for each message that the admin deleted, and only the admin writes `erase` entries. The rows go when the room leaves this Mac.
+
+A Mac with an older Coconut does not know the kind. It keeps the entry by rule 5 of a reader and still shows the message. The app shows the action "Delete" on a message of another member only when the room has `can_delete_messages`.
 
 #### Notifications
 
