@@ -26,6 +26,8 @@ for a person, because the app shows them.
 - `DELETE /v1/team/rooms/<room>/bots/<bot_id>`: stop sharing the bot with the room, with the same rule.
 - The routes of the Team chat under `/v1/team/rooms/<room>/messages` and `/v1/team/rooms/<room>/read`
   (team_messages.py).
+- `POST /v1/team/rooms/<room>/typing`: the person types in the Team chat (team_typing.py). Only a paired device calls
+  it, and the Mac writes at most one `typing` entry in 4 seconds for a room.
 - `PUT /v1/team/rooms/<room>/notifications` with `{enabled}`: the person turns the notifications of the room on or off
   for the phones of this Mac. Only a person's Mac has phones, so a Mac for a team only answers 409.
 - The routes of the direct messages under `/v1/team/rooms/<room>/directs/<member>` (team_directs.py). A `GET
@@ -64,6 +66,7 @@ from .team_relay import HEX64, TeamRelay, TeamRelayError, relay_origin
 from .team_socket import TeamSocket
 from .team_store import ACTIVE, JOINING, MAX_TICKET_SECONDS, MEMBER_LIMITS, SCHEMA, TeamStore, unicode_text
 from .team_sync import INACTIVE, ROOM_ERRORS, TEAM_EVENT, TeamSync, room_error, utc_now
+from .team_typing import TeamTyping
 
 __all__ = ['SCHEMA', 'Team']
 
@@ -196,7 +199,7 @@ def team_errors():
         raise ServiceError(status, room_error(error)) from None
 
 
-class Team(TeamSync, TeamSocket, TeamPages, TeamMessages, TeamDirects, TeamEpochs):
+class Team(TeamSync, TeamSocket, TeamPages, TeamMessages, TeamDirects, TeamEpochs, TeamTyping):
     """The team rooms of this Mac: the routes of the tools, and the thread that copies each log."""
 
     def _init_team(self):
@@ -215,6 +218,7 @@ class Team(TeamSync, TeamSocket, TeamPages, TeamMessages, TeamDirects, TeamEpoch
         self._init_team_socket()
         self._init_team_pages()
         self._init_team_epochs()
+        self._init_team_typing()
 
     def _start_team(self):
         self._start_team_sync()
@@ -234,10 +238,11 @@ class Team(TeamSync, TeamSocket, TeamPages, TeamMessages, TeamDirects, TeamEpoch
         this team" after a join that worked. So the first successful answer for a key of a device stays in memory for
         REPLY_SECONDS, and a repeat gets it and does nothing else. A repeat that comes while the first request runs
         waits for it. A failure keeps no answer, because the person tries again. A request without a key, for example
-        of a tool on this Mac, runs as before. `POST /v1/team/sync` and the reads need no key.
+        of a tool on this Mac, runs as before. `POST /v1/team/sync` and the reads need no key. The route of typing needs
+        none too: a repeat writes nothing new, and its many calls would push the other answers out of the memory.
         """
         from .service_base import ServiceError
-        if not key or method == 'GET' or path.rstrip('/') == '/v1/team/sync':
+        if not key or method == 'GET' or path.rstrip('/') == '/v1/team/sync' or path.rstrip('/').endswith('/typing'):
             return self._team_route(method, path, data, device=device, direct=direct)
         try:
             UUID(key)
@@ -336,6 +341,8 @@ class Team(TeamSync, TeamSocket, TeamPages, TeamMessages, TeamDirects, TeamEpoch
             return self.team_unsend(parts[1], parts[3])
         if len(parts) == 3 and parts[0] == 'rooms' and parts[2] == 'read' and method == 'POST':
             return self.team_mark_read(parts[1], data)
+        if len(parts) == 3 and parts[0] == 'rooms' and parts[2] == 'typing' and method == 'POST':
+            return self.team_typing(parts[1], device)
         if len(parts) == 3 and parts[0] == 'rooms' and parts[2] == 'notifications' and method == 'PUT':
             return self.team_notifications(parts[1], data)
         raise ServiceError(404, 'This route was not found.')
@@ -375,7 +382,7 @@ class Team(TeamSync, TeamSocket, TeamPages, TeamMessages, TeamDirects, TeamEpoch
                 'member': room['member'], 'admin': room['admin'], 'is_admin': is_admin,
                 'can_invite': is_admin and room['state'] == ACTIVE, 'epoch': room['epoch'],
                 'created_at': room['created_at'], 'members': members, 'bots': self._team_bots(room, members),
-                **self._team_chat_summary(room),
+                **self._team_chat_summary(room), 'typing': self._team_typing_view(room, members),
                 'sync': {'seq': room['seq'], 'entries': entries, 'waiting': waiting,
                          'synced_at': status.get('synced_at'), 'error': status.get('error'), 'refused': refused,
                          'socket': self.team_socket_open(room['room'])}}

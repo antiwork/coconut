@@ -86,9 +86,12 @@ Each payload has these fields:
 | `message` | `false` | Any member | `text` (1 to 16,000 characters), `reply_to` (an entry ID, or absent), `mentions` (at most 16 entry IDs, or absent), `bot` (the entry ID of a `bot` entry of the same member, or absent). See [Team chat](#team-chat). |
 | `direct` | `false` | A person's Mac | `box`: the text of a direct message to one other member, sealed a second time with the pair key of the two members. See [Direct messages](#direct-messages). |
 | `remove` | `true` | The admin, one entry for each removed member | `member` (the member ID of the removed member), `name` (the last name that the admin's Mac showed for it, or absent). See [Removal](#removal). |
+| `typing` | `false` | Any member, one entry for its person and one for each of its bots in each room | `on` (`true` or `false`), `bot` (the entry ID of a `bot` entry of the same member, or absent for the person of the Mac). See [Typing](#typing). |
 | `key` | `true` | The admin, one entry for each new epoch | `epoch` (the new epoch), `agreement` (the public agreement key of the admin), `boxes` (for each member ID, the room key of the new epoch in a box for that member). See [Key change](#key-change). |
 
 The kinds `member`, `delete`, `bot`, `page`, `message`, `direct`, `remove` and `key` are complete. See [Bots and pages](#bots-and-pages) for the rules of `bot` and `page`, [Team chat](#team-chat) for `message`, and [Direct messages](#direct-messages) for `direct`. Each other kind gets its fields in the pull request that builds it. A new kind needs no change of the relay and no change of the body.
+
+The kind `typing` is complete too. See [Typing](#typing).
 
 A key in a payload is unpadded base64url, as in a pairing setup.
 
@@ -491,6 +494,7 @@ A room in an answer has what the Team screen shows, so the app needs no other re
 | `bots` | Each bot of the team, while the room is `active` and the member of the bot is in `members`. `id`, `name`, `avatar`, `color`, `member` (the ID of the Mac that runs the bot), `member_name`, `this_mac` and `open`. A bot of a person's Mac is only the author of the pages that the person shares, and its `open` is false. The app lists and counts only the bots with `open` true: the bots that a teammate can ask. A bot of this Mac also has `bot_id`, its ID on this Mac, and its profile comes from that bot. An archived or deleted bot of this Mac is not in the list. The bots follow the order of the members, then their names. |
 | `sync` | `synced_at`, and `error`: one sentence for a person, or null. Also `seq`, `entries`, `waiting`, `refused`: the writes that the relay refused (see [Bots and pages](#bots-and-pages)), and `socket`: true while the socket of the room is open. The app does not show `socket`. |
 | `unread`, `last_message` | The unread count of the Team chat, from 0 to 99, and the newest message that the chat shows: `first`, `member`, `member_name`, `this_mac`, `bot`, `bot_name`, `text` (its first 200 characters) and `created_at`, or null. `member`, `this_mac` and `bot` have the values of a message in a page, so the Chats list of the app can show "You" for a message of this Mac's person: `this_mac` is true and `bot` is null. An older service sends none of the three. See [Team chat](#team-chat). |
+| `typing` | Who types in the Team chat now, the earliest start first: `member`, `name`, `bot`, `bot_name` and `seconds` for each other subject. See [Typing](#typing). An older service sends none. |
 | `relay`, `member`, `admin`, `epoch` | For the tools. |
 | `directs` | Only for a request with `X-Coconut-Team: direct` from a paired device. Then each member also has `direct`. See [Direct messages](#direct-messages). |
 
@@ -626,6 +630,7 @@ The routes have the authorization of the other team routes, and a write with an 
 | `PATCH /v1/team/rooms/<room>/messages/<id>`, body `{text}` | Changes the text of a message of this Mac's person, and answers `{room, message}`. The other fields stay. The same text writes nothing. A message of another member or of a bot answers 403. |
 | `DELETE /v1/team/rooms/<room>/messages/<id>` | Removes a message of this Mac's person with a `delete` entry, and answers `{room, id, deleted: true}`. When the entry is already a `delete` entry of this Mac, for example after a delete without an answer, the Mac gives the same answer and writes nothing. An ID that the store does not have answers 404, and an entry of another member 403. |
 | `POST /v1/team/rooms/<room>/read`, body `{first}` | Moves the read position, and answers `{room, read, unread}`. |
+| `POST /v1/team/rooms/<room>/typing` | The person types in the Team chat, and answers `{room}`. See [Typing](#typing). |
 | `PUT /v1/team/rooms/<room>/notifications`, body `{enabled}` | Turns the notifications of the room on or off for the phones of this Mac, and answers `{room, notifications}`. See [Notifications](#notifications). |
 
 A message in an answer:
@@ -678,7 +683,7 @@ The turn goes to the Hermes gateway of the bot through the gateway bridge (`team
 
 Rules of a reply:
 
-1. Each complete segment of the reply and each commentary of Hermes is one `message` entry of this Mac with `bot`: the entry ID of the `bot` entry of the bot. No message shows before it is complete, and the chat shows no typing state.
+1. Each complete segment of the reply and each commentary of Hermes is one `message` entry of this Mac with `bot`: the entry ID of the `bot` entry of the bot. No message shows before it is complete. While the turn runs, the team sees the bot as typing (see [Typing](#typing)).
 2. The first message of a turn has `reply_to`: the trigger. A text over 16,000 code points goes into more than one message.
 3. The entry ID comes from the room, the trigger, the bot and the number of the message in the turn. So a write that runs again adds no message.
 4. An approval of a command is denied, with a reason that the bot can repeat: nobody can approve in the team chat. A clarify question goes into the chat as a message of the bot, with its choices as a list, and Hermes gets the answer to end the turn. The reply of a person starts the next turn.
@@ -694,6 +699,46 @@ What the chat shows when a turn fails:
 | The service stops in a turn. Hermes ends the turn too: a clean stop stops each running turn while the listener still answers, and waits up to 10 seconds until the adapters collected the stops. After a crash, the adapter of the team mode stops a turn when a new service does not know it (`unknown` in the answer of a poll), or when it cannot reach the service for 30 seconds. An update drains the service first, so no turn runs while it restarts. A late reply of a stopped turn, and the answer of Hermes to its `/stop`, stay in the log of Hermes | The same message at the next start. The trigger does not run again. |
 | The chat of the bot goes off, the bot leaves the team, this Mac leaves, the member leaves, or the message is removed | Nothing. The turn stops or does not start. |
 | The relay refuses the write of a reply | Nothing. The relay client tries three times, then the service writes a log line. |
+
+#### Typing
+
+The Team chat shows who types: a person while that person changes the draft, and a bot while its turn runs. Typing is a small entry of the log that its writer replaces. So the relay and the helper need no change, and each replacement reaches each other Mac through the socket in about one second. `backend/coconut/team_typing.py` holds these rules.
+
+The payload of a `typing` entry: `{"kind": "typing", "rev": n, "at": "...", "on": true, "bot": "<entry ID>"}`. The entry is not kept.
+
+- A Mac keeps one `typing` entry for its person in each room, and one for each of its bots in each room, and replaces it with the next `rev`. So the relay holds one small entry for each subject, not one for each key press. The entry ID is the first 16 bytes of HMAC-SHA256 with the member token of the Mac as the key, over `"coconut room typing" | room ID (32 bytes)`, and for a bot also the 16 bytes of the entry ID of its `bot` entry. So the ID stays the same after a restart, and no other member can take it first.
+- `on` is true or false. `bot` is the entry ID of a `bot` entry of the same member, or absent for the person of the Mac. A reader takes null as an absent field. An entry that does not fit shows nothing.
+
+Rules for a Mac that reads a `typing` entry:
+
+1. Only an entry of another member counts. The own person and the own bots of a Mac never show on that Mac.
+2. `on` true with an `at` of the relay under 60 seconds from the clock of the Mac shows the subject as typing from the time of the read: a person for 10 seconds, a bot for 30 seconds. A later entry with `on` true starts the time again. An older entry changes nothing, so a first read of the log, or a read after a long stop, shows nothing.
+3. `on` false ends it. A `message` entry of the same person ends the typing of that person. A message of a bot does not end the typing of the bot: a bot sends more than one message in a turn, and its Mac writes `on` false at the end of the turn.
+4. A subject shows only while its member is in the member list, and a bot only while its `bot` entry is valid.
+5. The state lives in memory only. A restart of the service forgets it.
+6. A Mac with an older Coconut does not know the kind and shows nothing (rule 5 of a reader).
+
+A person's Mac writes the entry of its person:
+
+- `POST /v1/team/rooms/<room>/typing` writes or replaces the entry with `on` true, and answers `{room}`. Only a paired device calls it: `tool_route` refuses the token of the bridge file, and a Mac for a team only answers 409.
+- The Mac writes at most one such entry in 4 seconds for a room. A call inside that time answers at once and writes nothing. A write that fails holds back no later call.
+- A failed write answers as a failed send of a message does, and the app ignores it.
+- The route keeps no answer for its `Idempotency-Key`, because a repeat writes nothing new and its many calls would push the other answers of [Repeat a write](#repeat-a-write) out of the memory.
+- The app calls the route while the person changes the draft of the Team chat and the draft is not empty, at most one time in 5 seconds. It sends no call for an edit of a sent message, and none in a direct chat.
+
+A Mac for a team only writes the entry of a bot while a turn of the bot runs (see [A bot answers](#a-bot-answers)):
+
+- When the adapter of the gateway shows the turn, the Mac writes the entry with `on` true. While the turn runs, it writes it again every 20 seconds. At each end of the turn (an answer, a notice, a stop, a fault), it writes `on` false.
+- The writes run on a thread of their own, so a failed write never fails or delays the turn. A failed write gives one log line.
+- A turn that gets a notice at once (no adapter, an old Hermes) writes no entry.
+
+What the phone gets:
+
+- The room view of `GET /v1/team/rooms` has `typing`: a list, empty when nobody types, of `{member, name, bot, bot_name, seconds}` for each other subject that types now, the earliest start first. `bot` has the form of the bot ID of a message (`t-<room ID>-<entry ID>`), and null for a person. `seconds` is the time that is left, as a whole number. A room that is not `active` has an empty list.
+- Each change of the list (a subject starts, types on, or ends by an entry or by a message) adds one `team_typing.updated` event with `{"team": <room ID>}`. `GET /v1/updates` then has `team_typing_changed`: the IDs of these rooms. The end by time needs no event, because the app has `seconds`. The type is in the `known` set, so an app of today does not read its whole state again.
+- The app shows one row under the newest message, above the composer: the small face of each subject, the text, and three dots. The texts are "Grace is typing", "Grace and Lin are typing", and for three or more "3 people are typing". A bot counts as one subject with its name. The row of the team in the Chats list and in the Mac sidebar shows the same text in place of the newest message.
+
+No log line has a name. Typing in a direct chat is not built yet: a `typing` entry is sealed only with the room key, so it would tell each member that two people talk.
 
 ### Direct messages
 
