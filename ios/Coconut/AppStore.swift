@@ -1510,9 +1510,10 @@ final class AppStore {
         return result?.ok == true
     }
 
-    /// Loads the Library list. True when the list is fresh from the Mac.
+    /// Loads the Library list. True when the list is fresh from the Mac. A quiet load shows no notice when it fails:
+    /// the person did not ask for it.
     @discardableResult
-    func loadDocuments() async -> Bool {
+    func loadDocuments(quiet: Bool = false) async -> Bool {
         if isDemo {
             // The demo keeps its pins and deletes. A new load must not bring the first documents back.
             if documents == nil { documents = BotDocument.previews(bots: bots) }
@@ -1522,7 +1523,7 @@ final class AppStore {
         documentRequests += 1
         let request = documentRequests
         // The store runs on the main actor, so the task starts only after `latestDocumentLoad` names it.
-        let load = Task { await fetchDocuments(client, request: request) }
+        let load = Task { await fetchDocuments(client, request: request, quiet: quiet) }
         latestDocumentLoad = load
         return await load.value
     }
@@ -1530,21 +1531,21 @@ final class AppStore {
     /// One list request. A later request asks for a newer list, so the answer of an earlier request does not replace
     /// the list. Its caller gets the result of the latest load. That load is always a later request, so no load waits
     /// for itself, and a failed load gives false to each caller that waits for it.
-    private func fetchDocuments(_ client: APIClient, request: Int) async -> Bool {
+    private func fetchDocuments(_ client: APIClient, request: Int, quiet: Bool) async -> Bool {
         let changes = documentChanges
         let response: DocumentList
         do { response = try await client.request("documents") } catch {
             // An error of a request of an earlier pairing has no message for the state of this pairing.
             guard self.client === client else { return false }
             if request != documentRequests { return await latestDocumentLoad?.value ?? false }
-            report(error)
+            if !quiet { report(error) }
             return false
         }
         // A list of the Mac of an earlier pairing is not the list of this pairing.
         guard self.client === client else { return false }
         if request != documentRequests { return await latestDocumentLoad?.value ?? false }
         // The Mac confirmed a pin or a delete during this request, so this list can be older. Ask again.
-        guard changes == documentChanges else { return await loadDocuments() }
+        guard changes == documentChanges else { return await loadDocuments(quiet: quiet) }
         teamBots = response.teamBots ?? []
         documents = response.documents
         return true
