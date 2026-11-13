@@ -2798,6 +2798,13 @@ final class AppStore {
         }
     }
 
+    /// The place that a tapped notification shows at once, before the Mac confirms it: the chat of a team, the card,
+    /// or the conversation.
+    func notificationPreview(_ target: NotificationTarget) -> NotificationDestination {
+        target.chat.map(teamNotificationPlace)
+            ?? target.decisionId.map(NotificationDestination.inbox) ?? .conversation(target.conversationRoute)
+    }
+
     /// The chat of the team of a notification, or the Chats list when the app no longer has the team, for example
     /// after a leave. The app reads the list of the teams first when the list does not have the chat. Nil when the
     /// pairing changed during that read, as for a card.
@@ -2806,15 +2813,13 @@ final class AppStore {
         // The list can lack the team, or a named chat that the admin made while the app was in the background.
         if team?.has(chat) != true { await loadTeam() }
         guard acceptsNotification(target) else { return nil }
-        return teamNotificationPlace(chat.room, member: chat.member, chat: chat.chat, bot: chat.bot)
+        return teamNotificationPlace(chat)
     }
 
-    /// The place of a team notification with the list that the app has now: the Team chat, or the direct chat with
-    /// `member` or with `bot`. A list that the app has not loaded, or cannot read, keeps each chat (`teamListHas`), so
-    /// a tap in a terminated app opens the chat at once.
-    func teamNotificationPlace(_ room: String, member: String? = nil, chat named: String? = nil,
-                               bot: String? = nil) -> NotificationDestination {
-        let chat = TeamChatKey(room: room, member: member, chat: named, bot: bot)
+    /// The place of a team notification with the list that the app has now: the chat of the key. It takes the whole
+    /// key, so no caller can drop a part of it. A list that the app has not loaded, or cannot read, keeps each chat
+    /// (`teamListHas`), so a tap in a terminated app opens the chat at once.
+    func teamNotificationPlace(_ chat: TeamChatKey) -> NotificationDestination {
         return teamListHas(chat) ? NotificationDestination(chat: chat) : .chatList
     }
 

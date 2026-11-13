@@ -10,6 +10,18 @@ import SwiftUI
 /// with an agent") is the same chat with the bot as the other side, and it shows while the bot types. It is also each
 /// named chat of the team ("Chats of a team"): its title is the name of the chat, with the name of the team under it
 /// (TeamRoom.inChat).
+/// The page of a chat of a team on the stack of the Chats tab. A chat can take the place of another chat at the same
+/// depth (the name above a message, a tapped notification). The identity of the chat makes it a new page: it loads its
+/// own messages, and the draft, the reply quote and the edit of the first chat stay behind. The Mac window does the
+/// same with `.id(chat)`.
+struct TeamChatDestination: View {
+    let route: TeamChatRoute
+
+    var body: some View {
+        TeamChatView(chatKey: route.chat).id(route.chat)
+    }
+}
+
 struct TeamChatView: View {
     @Environment(AppStore.self) private var store
     @Environment(\.scenePhase) private var scenePhase

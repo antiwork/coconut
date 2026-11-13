@@ -224,12 +224,13 @@ extension TeamRoom {
     var directList: [TeamDirect] { directs ?? [] }
     var botDirectList: [TeamBotDirect] { botDirects ?? [] }
 
-    /// The bot that this person can send a direct message to now: a bot of another Mac whose `direct` is true. The
-    /// service sets `direct` only for a bot that can get one, in an active team. Nil for each other bot, for an older
-    /// service, and for a bot that is not in the list. This is the one place of that rule: the arrow of the Team
-    /// screen, the name above a message and the composer of a direct chat with a bot read it.
+    /// The bot that this person can send a direct message to now: a bot of another Mac that answers in the team
+    /// (`open`) and whose `direct` is true. The service sets `direct` only for a bot that can get one, in an active
+    /// team. Nil for each other bot, also a bot of pages only, for an older service, and for a bot that is not in the
+    /// list. This is the one place of that rule: the arrow of the Team screen, the name above a message and the
+    /// composer of a direct chat with a bot read it.
     func directBot(_ id: String?) -> TeamRoomBot? {
-        botList.first { $0.id == id && $0.direct == true && $0.thisMac != true }
+        botList.first { $0.id == id && $0.isOpen && $0.direct == true && $0.thisMac != true }
     }
 
     /// The bot of a direct chat. The name comes from the list of the bots, else from the list of the direct chats with

@@ -706,7 +706,7 @@ final class TeamScreenTests: XCTestCase {
         try await withPairedStore(address: address) { store in
             server.showOtherRoom(json(chats: ""))
             _ = await store.loadTeam()
-            XCTAssertEqual(store.teamNotificationPlace(room, chat: launch), .chatList,
+            XCTAssertEqual(store.teamNotificationPlace(TeamChatKey(room: room, chat: launch)), .chatList,
                            "The list of the app does not have the chat yet.")
             server.showOtherRoom(json(chats: #"{"id": "\#(launch)", "name": "Launch", "unread": 1}"#))
             let destination = await store.notificationDestination(target)
