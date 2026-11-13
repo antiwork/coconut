@@ -55,12 +55,18 @@ PAUSED: set[str] = set()
 # The turns that recorded a wait (coconut_wait) or the result of a card check (coconut_refresh_decision). Such a result
 # ends its turn, so the hook blocks each further tool call.
 WAITED: set[str] = set()
-# The reply that ends a turn of PAUSED or WAITED when the model writes no text (hooks.end_turn_text). The chat does not
-# show it (ends_quietly).
+# The reply that ends a turn when the model chose to write no text (hooks.end_turn_text): after a card, a wait or a
+# check, after the reminder of Hermes, or in a run that Hermes started. The chat does not show it (ends_quietly).
 END_TEXT = 'This turn is complete.'
 # The turns whose empty reply got END_TEXT from the plugin. A model that writes the same words itself is not in this set,
-# and the chat shows its reply.
+# and the chat shows its reply. The adapter reports the end of such a turn as quiet, and the chat shows no message for it.
 CLOSED: set[str] = set()
+# The turns whose model wrote no text after a tool result once. Hermes then reminds the model, and the next empty reply
+# of the turn gets END_TEXT (hooks.end_turn_text).
+NUDGED: set[str] = set()
+# The turns of the runs that Hermes started by itself, for example for a finished background process. No person waits
+# for the reply of such a run.
+HERMES_RUNS: set[str] = set()
 MODES: dict[str, str] = {}
 # The context of each running Coconut turn: the whole turn text, which the model calls of the turn get, while Hermes
 # saves only the turn's own text (hooks.add_turn_context). Set when the hooks registered the middleware.
@@ -118,8 +124,17 @@ def turn_for_chat(chat_id):
 
 def ends_quietly(turn, text) -> bool:
     """Whether a send is the END_TEXT that the plugin gave an empty reply of the turn (CLOSED). The chat does not show
-    it: after a card, the card is the message, and after a wait or a check, the turn has nothing new to say."""
+    it: after a card, the card is the message, and otherwise the model chose to say nothing new."""
     return turn in CLOSED and str(text or '').strip() == END_TEXT
+
+
+def forget_turn(turn) -> bool:
+    """Forget the state of a turn that ended. Return whether the plugin ended it with END_TEXT (CLOSED): the end of such
+    a turn is quiet, and the chat shows no message for it (gateway_bridge.TurnEvents)."""
+    quiet = turn in CLOSED
+    for turns in (PAUSED, WAITED, CLOSED, NUDGED, HERMES_RUNS):
+        turns.discard(turn)
+    return quiet
 
 
 
@@ -376,17 +391,16 @@ class CoconutAdapter(BasePlatformAdapter):
         if turn and chat_id not in self._turns:
             self._hermes_runs[str(event.message_id)] = str(turn)
             self._turns[chat_id] = str(turn)
+            HERMES_RUNS.add(str(turn))
 
     async def _close_hermes_run(self, event: MessageEvent, outcome) -> None:
         turn = self._hermes_runs.pop(str(event.message_id))
         if self._turns.get(event.source.chat_id) == turn:
             del self._turns[event.source.chat_id]
-        PAUSED.discard(turn)
-        WAITED.discard(turn)
-        CLOSED.discard(turn)
+        quiet = forget_turn(turn)
         self._typing.discard(turn)
         for delay in (*RETRY_SECONDS, None):
-            if await self._report(turn, 'done', outcome=getattr(outcome, 'value', str(outcome))):
+            if await self._report(turn, 'done', outcome=getattr(outcome, 'value', str(outcome)), quiet=quiet):
                 break
             if delay is not None:
                 await asyncio.sleep(delay)
@@ -410,9 +424,7 @@ class CoconutAdapter(BasePlatformAdapter):
         if self._turns.get(event.source.chat_id) == event.message_id:
             del self._turns[event.source.chat_id]
         self._typing.discard(event.message_id)
-        PAUSED.discard(event.message_id)
-        WAITED.discard(event.message_id)
-        CLOSED.discard(event.message_id)
+        quiet = forget_turn(event.message_id)
         MODES.pop(event.message_id, None)
         CONTEXTS.pop(event.message_id, None)
         FOLDERS.pop(event.message_id, None)
@@ -429,7 +441,8 @@ class CoconutAdapter(BasePlatformAdapter):
             # The session saved the turn's text with its new records.
             commit_records(event.message_id)
         for delay in (*RETRY_SECONDS, None):
-            if await self._report(event.message_id, 'done', outcome=getattr(outcome, 'value', str(outcome))):
+            if await self._report(event.message_id, 'done', outcome=getattr(outcome, 'value', str(outcome)),
+                                  quiet=quiet):
                 break
             if delay is not None:
                 await asyncio.sleep(delay)
@@ -457,7 +470,7 @@ class CoconutAdapter(BasePlatformAdapter):
         if turn is None:
             return await self._send_outside(str(chat_id), str(content), metadata or {})
         if ends_quietly(turn, content):
-            LOG.info('Coconut: turn %s ended after its card, wait or check. Its closing text stays in the log.', turn)
+            LOG.info('Coconut: turn %s ended without text from the model. Its closing text stays in the log.', turn)
             return SendResult(success=True)
         self._count += 1
         message_id = f'{turn}:{self._count}'

@@ -18,7 +18,7 @@ import logging
 import os
 import threading
 
-from .adapter import CLOSED, DEFAULT_BRIDGE, PAUSED, REQUEST_SECONDS, WAITED, Bridge, ends_quietly
+from .adapter import DEFAULT_BRIDGE, REQUEST_SECONDS, Bridge, ends_quietly, forget_turn
 
 LOG = logging.getLogger(__name__)
 _RUNS: dict[str, 'CronRun'] = {}
@@ -103,8 +103,9 @@ def finish(outcome):
     """Report the end of the cron run of this context, and forget the run."""
     run = current()
     if run is not None:
+        quiet = forget_turn(run.turn)
         for delay in (1, 2, 5, None):
-            if run.report('done', outcome=outcome):
+            if run.report('done', outcome=outcome, quiet=quiet):
                 break
             if delay is not None:
                 import time
@@ -116,8 +117,4 @@ def finish(outcome):
         return
     if execution is not None:
         with _LOCK:
-            run = _RUNS.pop(execution.execution_id, None)
-        if run is not None:
-            PAUSED.discard(run.turn)
-            WAITED.discard(run.turn)
-            CLOSED.discard(run.turn)
+            _RUNS.pop(execution.execution_id, None)
