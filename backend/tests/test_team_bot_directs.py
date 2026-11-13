@@ -398,6 +398,10 @@ class TheListOfTheTeams(BotDirectMacs, unittest.TestCase):
         # A tool on this Mac gets neither field.
         tool = self.first.team_request('GET', '/v1/team/rooms', {}, '', '', True)['rooms'][0]
         self.assertNotIn('bot_directs', tool)
+        # After a message of Ada, the item still names the Mac of the bot, not the writer of the newest message.
+        self.send(self.first, self.bot_id, 'Thanks')
+        (chat,) = self.ask(self.first)['bot_directs']
+        self.assertEqual((chat['member'], chat['member_name'], chat['last_message']['this_mac']), (self.lin, 'Lin', True))
 
     def test_the_newest_chat_comes_first_and_the_text_has_200_code_points(self):
         other = self.write_bot('Planner', direct=True)
