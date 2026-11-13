@@ -1397,6 +1397,86 @@ final class LibraryDocumentTests: XCTestCase {
         XCTAssertEqual(result, "0 | true | true")
     }
 
+    /// Hostile chart specs never hang the page: each one draws its marks, its zero line or its reason within a bound
+    /// of time. Each case has its own web view, and each answer of the web view has a deadline, so a hang fails the case
+    /// and does not hang the test run.
+    @MainActor
+    func testAHostileChartNeverHangsThePage() async throws {
+        let many = (1...10_000).map { #"{"x": \#($0), "y": \#($0 % 97)}"# }.joined(separator: ", ")
+        let cases: [(String, String)] = [
+            ("values as text", #"{"type": "line", "x": "d", "y": "n", "data": [{"d": "2026-10-13", "n": "1,200"}, {"d": "2026-10-20", "n": "2,450"}]}"#),
+            ("a wrong y name", #"{"type": "line", "x": "d", "y": "nope", "data": [{"d": "2026-10-13", "n": 1}, {"d": "2026-10-20", "n": 2}]}"#),
+            ("a wrong y name, dots", #"{"type": "dot", "x": "d", "y": "nope", "data": [{"d": "2026-10-13", "n": 1}, {"d": "2026-10-20", "n": 2}]}"#),
+            ("a wrong x name", #"{"type": "line", "x": "nope", "y": "n", "data": [{"d": "2026-10-13", "n": 1}, {"d": "2026-10-20", "n": 2}]}"#),
+            ("null values", #"{"type": "bar", "x": "d", "y": "n", "data": [{"d": "2026-10-13", "n": null}, {"d": "2026-10-20", "n": null}]}"#),
+            ("NaN", #"{"type": "line", "x": "d", "y": "n", "data": [{"d": 1, "n": NaN}]}"#),
+            ("Infinity as text", #"{"type": "line", "x": "d", "y": "n", "data": [{"d": "2026-10-13", "n": "Infinity"}, {"d": "2026-10-14", "n": 2}]}"#),
+            ("empty data", #"{"type": "line", "x": "d", "y": "n", "data": []}"#),
+            ("data that is no list", #"{"type": "bar", "x": "d", "y": "n", "data": 5}"#),
+            ("one row", #"{"type": "line", "x": "d", "y": "n", "data": [{"d": "2026-10-13", "n": 3}]}"#),
+            ("10,000 rows", #"{"type": "line", "x": "x", "y": "y", "data": [\#(many)]}"#),
+            ("10,000 bars", #"{"type": "bar", "x": "x", "y": "y", "data": [\#(many)]}"#),
+        ]
+        for (name, spec) in cases {
+            let configuration = WKWebViewConfiguration()
+            DocumentPage.scripts(diagrams: false).forEach(configuration.userContentController.addUserScript)
+            let view = WKWebView(frame: CGRect(x: 0, y: 0, width: 390, height: 800), configuration: configuration)
+            #if os(iOS)
+            let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
+            let window = UIWindow(windowScene: scene)
+            window.addSubview(view)
+            window.makeKeyAndVisible()
+            #else
+            let window = NSWindow(contentRect: CGRect(x: -20000, y: 0, width: 1200, height: 800), styleMask: [.borderless],
+                                  backing: .buffered, defer: false)
+            window.contentView?.addSubview(view)
+            #endif
+            view.loadHTMLString(DocumentPage.html(title: "T", meta: "M", content: "Lead.\n\n```chart\n\(spec)\n```",
+                                                  markdown: true), baseURL: nil)
+            let deadline = ContinuousClock.now + .seconds(8)
+            var shown: String?
+            while shown == nil && ContinuousClock.now < deadline {
+                shown = await Self.evaluate(view, """
+                    (() => {
+                      const figure = document.querySelector("figure.chart");
+                      if (document.readyState !== "complete" || !figure) return null;
+                      if (figure.classList.contains("broken")) return "reason";
+                      return figure.querySelector("svg [aria-label=y-grid] line") ? "chart" : null;
+                    })()
+                    """, within: .seconds(2))
+                if shown == nil { try await Task.sleep(for: .milliseconds(100)) }
+            }
+            XCTAssertNotNil(shown, "The chart with \(name) did not draw in 8 seconds.")
+            #if os(iOS)
+            window.isHidden = true
+            #else
+            window.orderOut(nil)
+            #endif
+            view.removeFromSuperview()
+        }
+    }
+
+    /// The answer of a script as text, or nil when the web view does not answer within the time.
+    @MainActor
+    private static func evaluate(_ view: WKWebView, _ script: String, within time: Duration) async -> String? {
+        let once = Once()
+        return await withCheckedContinuation { (continuation: CheckedContinuation<String?, Never>) in
+            view.evaluateJavaScript(script) { value, _ in
+                guard !once.done else { return }
+                once.done = true
+                continuation.resume(returning: value as? String)
+            }
+            let seconds = Double(time.components.seconds) + Double(time.components.attoseconds) / 1e18
+            DispatchQueue.main.asyncAfter(deadline: .now() + seconds) {
+                MainActor.assumeIsolated {
+                    guard !once.done else { return }
+                    once.done = true
+                    continuation.resume(returning: nil)
+                }
+            }
+        }
+    }
+
     /// The answer of a script of statements after the probes.
     @MainActor
     private func probe(_ view: WKWebView, _ body: String) async throws -> String? {
@@ -1694,4 +1774,10 @@ private final class LibraryServer: @unchecked Sendable {
 private extension String {
     /// A script of statements as one expression for `evaluateJavaScript`.
     var wrappedInFunction: String { "(() => {\n" + self + "\n})()" }
+}
+
+/// A flag that one of two callbacks sets first.
+@MainActor
+private final class Once {
+    var done = false
 }
