@@ -2012,11 +2012,10 @@ final class AppStore {
     private func deliverTeamMessage(_ chat: TeamChatKey, id: String) async {
         guard let pending = teamChats[chat]?.pending.first(where: { $0.id == id }) else { return }
         if isDemo {
-            teamChats[chat]?.pending.removeAll { $0.id == id }
             let first = (teamChats[chat]?.newestFirst ?? 0) + 1
-            teamChats[chat]?.put(TeamMessage(id: id, first: first, thisMac: true, text: pending.text, replyTo: pending.replyTo,
-                                             reply: pending.reply, mentions: pending.mentions,
-                                             createdAt: pending.createdAt))
+            teamChats[chat]?.confirm(id, as: TeamMessage(id: id, first: first, thisMac: true, text: pending.text,
+                                                         replyTo: pending.replyTo, reply: pending.reply,
+                                                         mentions: pending.mentions, createdAt: pending.createdAt))
             return
         }
         let change = startMessageChange(chat, id)
@@ -2034,8 +2033,7 @@ final class AppStore {
             return
         }
         teamChatChanges[chat, default: 0] += 1
-        teamChats[chat]?.pending.remove(at: index)
-        teamChats[chat]?.put(answer.message)
+        teamChats[chat]?.confirm(id, as: answer.message)
         try? saveOutgoing()
     }
 

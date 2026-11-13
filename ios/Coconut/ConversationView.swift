@@ -954,6 +954,10 @@ struct ConversationComposer: View {
 
     private var canSend: Bool { connected && !uploading && !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
 
+    private func clearDraft() {
+        text = ""; mentions = []; selection = nil; attachments = []; scheduling = false; replyTo = nil; workContext = nil
+    }
+
     private func send() {
         guard canSend else { return }
         let submittedText = text
@@ -966,8 +970,15 @@ struct ConversationComposer: View {
         let submittedRecipients = recipients.map(\.id)
         let submittedMentions = mentions
         onSend()
-        text = ""; mentions = []; selection = nil; attachments = []; scheduling = false; replyTo = nil; workContext = nil
+        #if !os(macOS)
+        clearDraft()
+        #endif
         Task {
+            #if os(macOS)
+            // On a Mac the draft clears in the same update as the row of the message comes. When the composer got short
+            // first, a chat at its newest row went down by the height that the composer lost, and then up to the row.
+            clearDraft()
+            #endif
             let success = await store.send(bot: bot, text: submittedText,
                                            attachments: submittedAttachments,
                                            scheduledAt: submittedScheduling ? ISO8601DateFormatter().string(from: submittedDate) : nil,

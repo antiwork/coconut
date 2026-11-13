@@ -280,6 +280,27 @@ final class TeamChatTests: XCTestCase {
         XCTAssertEqual(TeamChatRow.rows(chat, calendar: Self.utc).map(\.id).contains("4"), false)
     }
 
+    func testASentMessageKeepsItsRowWhenTheMacAnswers() {
+        var chat = TeamChat()
+        chat.merge(page([message("1", 1, at: "2026-11-10T09:00:00Z")], before: nil), requested: nil)
+        chat.pending = [TeamPendingMessage(id: "p", text: "On its way", replyTo: nil, reply: nil,
+                                           createdAt: "2026-11-10T09:07:00Z")]
+        let before = TeamChatRow.rows(chat, calendar: Self.utc)
+        XCTAssertEqual(before.map(\.id), ["1", "pending-p"])
+        XCTAssertEqual(before.map(\.listID), ["1", "pending-p"])
+        // The Mac answers with a message of its own ID. The row of the message keeps the identity of the row on the
+        // way in the list of a Mac. Its ID, which a quote and a scroll use, is the ID of the message.
+        chat.confirm("p", as: message("srv", 2, own: true, at: "2026-11-10T09:07:01Z"))
+        let after = TeamChatRow.rows(chat, calendar: Self.utc)
+        XCTAssertEqual(after.map(\.id), ["1", "srv"])
+        XCTAssertEqual(after.map(\.listID), ["1", "pending-p"])
+        XCTAssertTrue(chat.pending.isEmpty)
+        // A page of the Mac keeps the row of the sent message.
+        chat.merge(page([message("1", 1, at: "2026-11-10T09:00:00Z"), message("srv", 2, own: true, at: "2026-11-10T09:07:01Z")],
+                        before: nil), requested: nil)
+        XCTAssertEqual(TeamChatRow.rows(chat, calendar: Self.utc).map(\.listID), ["1", "pending-p"])
+    }
+
     func testTheAuthorOfAQuote() {
         let grace = TeamMessageQuote(id: "e1", member: "m-grace", memberName: "Grace", text: "Hi")
         XCTAssertEqual(TeamNames.author(of: grace, ownMember: "m-ada"), "Grace")

@@ -116,7 +116,7 @@ struct TeamChatView: View {
                     if shown.lowerBound > 0 || chat.before != nil {
                         Button {
                             follows = false
-                            let anchor = allRows[shown].first?.id
+                            let anchor = allRows[shown].first?[keyPath: Self.rowIdentity]
                             Task { await loadEarlier(anchor: anchor, proxy: proxy) }
                         } label: {
                             if chat.loadingEarlier || growingAbove { ProgressView() }
@@ -126,7 +126,7 @@ struct TeamChatView: View {
                         .disabled(chat.loadingEarlier || growingAbove)
                         .accessibilityIdentifier("load-earlier-messages")
                     }
-                    ForEach(allRows[shown]) { row in
+                    ForEach(allRows[shown], id: Self.rowIdentity) { row in
                         let date = row.createdAt.apiDate
                         VStack(spacing: 0) {
                             if row.startsDay, let date {
@@ -139,7 +139,7 @@ struct TeamChatView: View {
                         .pinnedDayRow(pinnedDay, id: row.id, date: date, startsDay: row.startsDay)
                         // Keep full text height when the list resizes or scrolls to a new message.
                         .fixedSize(horizontal: false, vertical: true)
-                        .id(row.id)
+                        .id(row[keyPath: Self.rowIdentity])
                     }
                     // The last row: who types, under the newest message and above the composer, then the anchor of
                     // the bottom. The row is always there, so the list never adds or removes a row for typing while it
@@ -198,12 +198,6 @@ struct TeamChatView: View {
             .modifier(SentMessageMove(scroll: $sentScroll, follows: { follows }) {
                 proxy.scrollTo(Self.bottom, anchor: .bottom)
             })
-            .onChange(of: ids) { _, _ in
-                // The Mac answers a sent message with a row of its own ID, in place of the row of the message on its
-                // way. The list takes the old row away first, so the chat moved up by the height of that row and the
-                // wheel rule above took the move for the reader's. A chat that follows stays at its newest row.
-                if follows && !userScrolling && !sentWaits { proxy.scrollTo(Self.bottom, anchor: .bottom) }
-            }
             #endif
             .onScrollPhaseChange { _, phase in
                 #if !os(macOS)
@@ -331,6 +325,13 @@ struct TeamChatView: View {
     }
 
     private static let bottom = "team-chat-bottom"
+    #if os(macOS)
+    /// A Mac list and its scrolls know a sent message by its row on the way (TeamChatRow.listID). When the list took that
+    /// row away and added a row for the answer of the Mac, the chat went down by the height of the row (47 points).
+    private static let rowIdentity = \TeamChatRow.listID
+    #else
+    private static let rowIdentity = \TeamChatRow.id
+    #endif
 
     /// The first row of the chat: what the chat cannot show yet, or where a message goes. It is always a row, also an
     /// empty one, as the header of the bot chat (ConversationView.conversationHeader) is. So the first day pill has the
@@ -459,13 +460,13 @@ struct TeamChatView: View {
 
     /// Shows a message that a quote names, when the chat has it.
     private func show(_ id: String, proxy: ScrollViewProxy) {
-        let ids = currentRows().map(\.id)
-        guard ids.contains(id) else { return }
+        let rows = currentRows()
+        guard let row = rows.first(where: { $0.id == id }) else { return }
         follows = false
-        window.include(id, in: ids)
+        window.include(id, in: rows.map(\.id))
         Task {
             await Task.yield()
-            proxy.scrollTo(id, anchor: .top)
+            proxy.scrollTo(row[keyPath: Self.rowIdentity], anchor: .top)
         }
     }
 

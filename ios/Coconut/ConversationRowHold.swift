@@ -43,7 +43,7 @@ struct ConversationRowHold {
 /// still tall, and the scroll waits. A Mac does not always report the new inset, so the wait ends after `limit`. Until
 /// the scroll, the other scroll rules of the chat do not scroll.
 struct SentMessageScroll: Equatable {
-    static let limit: TimeInterval = 0.15
+    static let limit: TimeInterval = 0.1
 
     /// The moment of the send whose scroll waits. Nil when no scroll waits.
     private(set) var sentAt: Date?
