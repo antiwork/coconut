@@ -125,8 +125,56 @@ def check_new_decision_sources(service, task_id, payload):
                 + '. Read its current state and latest comments before deciding whether human input is still needed. '
                 'Continue within existing permission if the choice is already settled. Otherwise retry with the updated source_revisions.')
         if github_source(url)[0] == 'issues':
-            facts[url] = current
+            facts[url] = issue_facts(current)
     return facts, {url: revisions[url] for url in links}
+
+
+def issue_facts(current):
+    """The issue facts that a card keeps. The time of the close only decides a close (source_change), so a card does
+    not keep it: a new fact would make the assessment of each card with an issue stale once."""
+    return {key: value for key, value in current.items() if key != 'closed_at'}
+
+
+def _instant(value):
+    from datetime import datetime, timezone
+    try:
+        instant = datetime.fromisoformat(value.replace('Z', '+00:00'))
+    except (AttributeError, TypeError, ValueError):
+        return None
+    return instant if instant.tzinfo else instant.replace(tzinfo=timezone.utc)
+
+
+# The time of a revision of a card comes from this Mac's clock, and the time of an end from GitHub's clock. A close needs
+# the end to be this many seconds after the revision.
+CLOCK_MARGIN_SECONDS = 120
+
+
+def source_change(decision, url, *, state, ended_at=None):
+    """Return the outcome of a card whose GitHub source ended after the card was made, or None.
+
+    A closed issue, and a merged or closed PR, count only when GitHub's time of the end is later than the time of the
+    card. That time is the later of two: the source revision that the bot read before Coconut made the card
+    (`_source_seen`, a GitHub time), and the newest revision of the card (`_revised_at`, else `created_at`, a time of
+    this Mac, with CLOCK_MARGIN_SECONDS). Each doubt keeps the card: a card that stays is answerable, and a card that
+    closes wrongly is lost. The caller gives only facts that GitHub returned.
+    """
+    from datetime import timedelta
+    number = url.rstrip('/').rsplit('/', 1)[1]
+    if state == 'merged' and (decision.get('merge_pr_url') or '').lower() == url.lower():
+        # _resolve_merged_pr_decisions closes this card with "Already merged.".
+        return None
+    if state not in ('closed', 'merged'):
+        return None
+    end = _instant(ended_at)
+    revised = _instant(decision.get('_revised_at') or decision.get('created_at'))
+    seen = decision.get('_source_seen', {}).get(url)
+    if end is None or revised is None or end <= revised + timedelta(seconds=CLOCK_MARGIN_SECONDS):
+        return None
+    if seen is not None and (_instant(seen) is None or end <= _instant(seen)):
+        return None
+    if github_source(url)[0] == 'issues':
+        return f'Issue #{number} closed on GitHub.'
+    return f'Pull request #{number} {state} on GitHub.'
 
 
 def _github_time(value):

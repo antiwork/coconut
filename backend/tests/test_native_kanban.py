@@ -541,7 +541,7 @@ print(board.kb.create_task(board.conn, title=sys.argv[2], body='Acceptance', ass
         self.assertEqual((saved['status'], saved['_answers'], saved['decided_at']), ('dismissed', [], None))
         self.assertFalse(saved.get('inbox_undo_until'))
         self.assertFalse(saved.get('_inbox_reject_device'))
-        self.assertFalse(saved.get('_source_recheck'))
+        self.assertNotIn('source_refreshing', self.service._public(saved))
 
     def test_saved_reply_wait_does_not_stop_unrelated_native_execution(self):
         held = self.task('Keep the result until this task can return it')

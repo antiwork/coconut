@@ -105,6 +105,10 @@ def message_content(message):
 
 def decision_context(request, decision):
     context = dict(decision)
+    if request['task'].get('_closed_cards'):
+        # Other cards of this task that Coconut closed because their GitHub source ended (decision_freshness._closed_cards).
+        # Their titles are data of this record, never lines of the turn text.
+        context['closed_cards'] = request['task']['_closed_cards']
     source = next((message for message in visible_history(request.get('history', []))
                    if message['id'] == decision.get('request_message_id')), None)
     if source:
@@ -388,10 +392,19 @@ def context_prompt(request, rows=None):
     return prompt
 
 
+# What the bot learns when Coconut closes a card because its GitHub source changed (decision_freshness). The outcome
+# of the card comes first, for example "Issue #12 closed on GitHub.". Each such turn pays for these words.
+SOURCE_CHANGED_TEXT = ('Coconut closed this card. The person chose nothing. Read the source again. '
+                       'Make a new card with the current facts only if the person must still decide something. '
+                       'Do not repeat the old question unchanged. A closed card is no approval and no rejection.\n')
+
+
 def resume_prompt(request):
     """The text of a turn that continues after an answered card (operation `resume`), for the worker and the gateway."""
     decision = request['decision']
-    if decision.get('status') == 'replied':
+    if decision.get('status') == 'resolved' and decision.get('resolution') == 'source_changed':
+        prompt = decision['outcome'] + ' ' + SOURCE_CHANGED_TEXT
+    elif decision.get('status') == 'replied':
         prompt = ('The person replied with text. Coconut closed the old card. '
                   'Use the reply and original proposal to continue the task in the normal conversation. '
                   'Answer questions and apply requested changes. Create a new card only if a human choice is still needed. '
@@ -427,7 +440,8 @@ def resume_prompt(request):
     if decision.get('status') in ('approved', 'replied') and request['task'].get('_source_answer_steps'):
         # The resumed session can lack the audit prompt, so repeat what to do with the answer.
         prompt += 'This card asks about a source that waits for the person. ' + request['task']['_source_answer_steps'] + '\n'
-    if request.get('instructions_changed'):
+    if request.get('instructions_changed') and decision.get('resolution') != 'source_changed':
+        # A card that Coconut closed for its source has no answer. An older answer record does not count.
         prompt += INSTRUCTIONS_CHANGED
     prompt += json.dumps(decision_context(request, decision))
     return prompt
