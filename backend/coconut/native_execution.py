@@ -201,9 +201,8 @@ class NativeExecution:
         choice = option['answer'] if option else data.get('choice')
         if choice not in ('approve', 'reject', 'modify', 'reply') or (choice == 'approve' and not option):
             raise ServiceError(400, 'Choose one of the current options.')
-        # Hermes owns exact command approvals; profile checks apply to model questions and drafts.
-        if choice == 'approve' and decision['action_type'] in ('question', 'draft_message'):
-            self._require_current_decision_profile(decision)
+        # A change of the bot instructions does not block an answer. The person answers the card that the app shows,
+        # the choice keeps its own scope, and the next turn reads the current instructions.
         if decision.get('previews') and choice == 'approve' and data.get('previews_hash') != decision.get('previews_hash'):
             raise ServiceError(409, 'Review the images in the latest app before choosing this option.')
         if decision.get('draft') is not None and choice == 'approve' and data.get('draft_hash') != decision.get('draft_hash'):
