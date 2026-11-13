@@ -37,7 +37,7 @@ struct DecisionInboxView: View {
     @State private var transitionId = UUID()
     @FocusState private var replyFocused: Bool
     @ScaledMetric(relativeTo: .subheadline) private var undoWidth = 54
-    @ScaledMetric(relativeTo: .title2) private var swipeLabelWidth = 145
+    @ScaledMetric(relativeTo: .title3) private var swipeLabelWidth = 145
     private var pending: [Decision] { store.decisions.filter { $0.isPending && !store.answeringDecisionIds.contains($0.id) } }
     private var current: Decision? {
         if let confirmingChoice { return confirmingChoice.decision }
@@ -250,9 +250,9 @@ struct DecisionInboxView: View {
                         selectedId = decision.id
                         overviewOpen = false
                     } label: {
-                        VStack(alignment: .leading, spacing: 6) {
+                        VStack(alignment: .leading, spacing: BoardStyle.Space.xs) {
                             Text(store.bots.first { $0.id == decision.botId }?.name ?? "Bot")
-                                .font(.caption).foregroundStyle(.secondary)
+                                .font(.footnote).foregroundStyle(.secondary)
                             Text(decision.title).font(.body).foregroundStyle(.primary)
                         }.padding(.vertical, 4)
                     }
@@ -277,7 +277,7 @@ struct DecisionInboxView: View {
                     Image(systemName: action == .dismiss ? "xmark.circle" : "clock")
                         .font(.largeTitle)
                     Text(action == .dismiss ? "Dismiss" : "Later")
-                        .font(.title2.weight(.bold)).fixedSize(horizontal: false, vertical: true)
+                        .font(.title3.weight(.semibold)).fixedSize(horizontal: false, vertical: true)
                 }
                 .frame(maxWidth: swipeLabelWidth, alignment: offset < 0 ? .trailing : .leading)
                 .foregroundStyle(action == .dismiss ? Color.white : BoardStyle.controlLabel).padding(24).opacity(min(abs(offset) / 60, 1))

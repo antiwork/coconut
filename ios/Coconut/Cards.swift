@@ -92,7 +92,7 @@ struct DecisionCard: View {
                         }
                     }
                 }
-                .font(.caption).foregroundStyle(.secondary).buttonStyle(.plain)
+                .font(.footnote).foregroundStyle(.secondary).buttonStyle(.plain)
                 .frame(minHeight: 44, alignment: .leading)
                 .accessibilityIdentifier("previous-decision-\(decision.id)")
             }
@@ -125,10 +125,10 @@ struct DecisionCard: View {
                 if decision.draft != nil { draftActions }
                 else if !decision.cardOptions.isEmpty { choices }
                 if !canRespond {
-                    Text("Pair with your Mac to respond.").font(.caption).foregroundStyle(.secondary)
+                    Text("Pair with your Mac to respond.").font(.footnote).foregroundStyle(.secondary)
                 }
                 if let responseError {
-                    Text(responseError).font(.caption).foregroundStyle(BoardStyle.attention)
+                    Text(responseError).font(.footnote).foregroundStyle(BoardStyle.attention)
                         .textSelection(.enabled)
                 }
             } else if decision.isRefreshing {
@@ -196,14 +196,14 @@ struct DecisionCard: View {
     }
 
     private var decisionReceipt: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: BoardStyle.Space.m) {
             HStack(alignment: .firstTextBaseline, spacing: 12) {
                 Text(selectionLabel).font(.subheadline)
                     .fixedSize(horizontal: false, vertical: true)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .accessibilityIdentifier("decision-selection-\(decision.id)")
                 Image(systemName: isDismissed ? "xmark" : decision.status == "failed" ? "exclamationmark.circle" : decision.isPending ? "arrow.up" : "checkmark")
-                    .font(.subheadline.weight(.medium))
+                    .font(.subheadline.weight(.semibold))
                     .foregroundStyle(isDismissed ? .secondary : decision.status == "failed" ? BoardStyle.attention :
                                         decision.isPending ? .secondary : BoardStyle.positive)
                     .accessibilityLabel(isDismissed ? "Dismissed" : decision.isPending ? "Sending choice" :
@@ -214,12 +214,12 @@ struct DecisionCard: View {
             .background(BoardStyle.paper, in: RoundedRectangle(cornerRadius: BoardStyle.Radius.small))
             .overlay(RoundedRectangle(cornerRadius: BoardStyle.Radius.small).stroke(BoardStyle.line))
             if decision.status == "failed", let outcome = decision.outcome, !outcome.isEmpty {
-                Text(outcome).font(.caption).foregroundStyle(BoardStyle.attention)
+                Text(outcome).font(.footnote).foregroundStyle(BoardStyle.attention)
             }
             if let replacement = decision.replacedByDecisionId {
                 NavigationLink(value: ConversationRoute(botId: store.conversationBotId(for: decision), decisionId: replacement)) {
                     Label("View revised proposal", systemImage: "arrow.turn.down.right")
-                        .font(.caption.weight(.medium)).frame(minHeight: 44)
+                        .font(.footnote.weight(.semibold)).frame(minHeight: 44)
                 }
             }
         }
@@ -335,7 +335,7 @@ struct DecisionSources: View {
     let sources: [DecisionSource]
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: BoardStyle.Space.xs) {
             ForEach(sources, id: \.self) { source in
                 Text(reference(source))
                     .fixedSize(horizontal: false, vertical: true)
@@ -440,13 +440,13 @@ struct ArtifactCard: View {
                 }
                 if artifact.kind == "pr", let error = artifact.refreshError, !error.isEmpty {
                     Label("Status could not refresh", systemImage: "exclamationmark.circle")
-                        .font(.caption2).foregroundStyle(.secondary)
+                        .font(.footnote).foregroundStyle(.secondary)
                 }
                 HStack {
                     if let externalURL {
                         Link(destination: externalURL) {
                             Label(artifact.kind == "pr" ? "Open pull request" : "Open result", systemImage: "arrow.up.right")
-                                .font(.subheadline.weight(.medium)).frame(minHeight: 44)
+                                .font(.subheadline.weight(.semibold)).frame(minHeight: 44)
                         }
                         Spacer()
                         ShareLink(item: externalURL) { Image(systemName: "square.and.arrow.up").frame(minWidth: 44, minHeight: 44) }
