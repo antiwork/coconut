@@ -6,8 +6,9 @@ adapter, and nothing else: no tool, no hook, no skill and no change of cron. See
 service side.
 
 The service gives a turn for each message of the team chat that names the bot. The adapter gives it to the gateway
-as a message of a group chat: the chat is the bot in one team (`<bot>:team:<room>`), the sender is the member of the
-team, and the earlier messages of the chat are `channel_context`. Each reply goes back to the service.
+as a message of a group chat: the chat is the bot in one chat of a team (`<bot>:team:<room>` for the Team chat, and
+`<bot>:team:<room>:<chat>` for a named chat), the sender is the member of the team, and the earlier messages of the
+chat are `channel_context`. The adapter does not read the chat ID: it gives it back to the service with each send. Each reply goes back to the service.
 
 A production agent runs in this gateway. Each entry point of the adapter catches its own faults, so a fault of Coconut
 never stops the gateway or its other channels. A Hermes without the fields that the adapter needs gets one log line

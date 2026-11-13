@@ -685,6 +685,36 @@ final class TeamScreenTests: XCTestCase {
         #endif
     }
 
+    /// A notification of a named chat that the list of the app does not have yet reads the list first: the admin made
+    /// the chat while the app was in the background. The chat then opens.
+    @MainActor
+    func testANotificationOfANewNamedChatReadsTheListFirst() async throws {
+        #if !(DEBUG && targetEnvironment(simulator))
+        throw XCTSkip("This HTTP fixture requires a debug simulator build.")
+        #else
+        let state = try PreviewStateFixture.load()
+        let server = try TeamServer(state: APIJSON.encoder().encode(state))
+        let address = try await server.start()
+        defer { server.stop() }
+        let room = String(repeating: "cd", count: 32)
+        let launch = String(repeating: "e", count: 32)
+        func json(chats: String) -> String {
+            #"{"room": "\#(room)", "name": "Example Team", "state": "active", "unread": 0, "chats": [\#(chats)]}"#
+        }
+        let target = try XCTUnwrap(NotificationTarget(userInfo: ["coconut": [
+            "version": 1, "device_id": TeamServer.device, "kind": "team", "team": room, "chat": launch]]))
+        try await withPairedStore(address: address) { store in
+            server.showOtherRoom(json(chats: ""))
+            _ = await store.loadTeam()
+            XCTAssertEqual(store.teamNotificationPlace(room, chat: launch), .chatList,
+                           "The list of the app does not have the chat yet.")
+            server.showOtherRoom(json(chats: #"{"id": "\#(launch)", "name": "Launch", "unread": 1}"#))
+            let destination = await store.notificationDestination(target)
+            XCTAssertEqual(destination, .chat(TeamChatKey(room: room, chat: launch)))
+        }
+        #endif
+    }
+
     /// An older Mac answers 404 to the team routes. The screen says what to do, with no banner of its own.
     @MainActor
     func testAnOlderMacShowsTheUpdateText() async throws {
@@ -1313,6 +1343,10 @@ private final class TeamServer: @unchecked Sendable {
     }
     func failLists(_ fail: Bool) { lock.withLock { failing = fail } }
 
+    /// A second team in the list, as the JSON of its room, or nil for none.
+    private var otherRoom: String?
+    func showOtherRoom(_ room: String?) { lock.withLock { otherRoom = room } }
+
     /// Adds a message of Grace, as her Mac does. With `announce`, the next updates answer names the chat.
     func addMessage(_ text: String, announce: Bool = true) {
         lock.withLock {
@@ -1482,7 +1516,8 @@ private final class TeamServer: @unchecked Sendable {
                     body = lock.withLock {
                         lists += 1
                         if failing { status = "500 Internal Server Error" }
-                        return #"{"rooms": [\#(left ? "" : room())], "helper": true}"#
+                        let rooms = [left ? nil : room(), otherRoom].compactMap { $0 }
+                        return #"{"rooms": [\#(rooms.joined(separator: ", "))], "helper": true}"#
                     }
                 case "GET /v1/documents":
                     body = lock.withLock { #"{"documents": [\#(page())], "team_bots": []}"# }

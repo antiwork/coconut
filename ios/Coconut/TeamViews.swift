@@ -162,6 +162,10 @@ struct TeamRoomView: View {
     @State private var notificationChoice: Bool?
     /// The member that the confirmation of a removal asks about.
     @State private var removing: TeamRemoval?
+    /// The sheet of a new chat (nil inside) or of a new name for a chat.
+    @State private var naming: TeamChatNaming?
+    /// The chat that the confirmation of a delete asks about.
+    @State private var deletingChat: TeamNamedChat?
 
     private var room: TeamRoom? { store.team?.rooms.first { $0.room == roomId } }
 
@@ -185,6 +189,18 @@ struct TeamRoomView: View {
                     } message: { removal in
                         Text(removal.message)
                     }
+                    .alert(TeamChatManagement.deleteTitle, isPresented: Binding(
+                        get: { deletingChat != nil }, set: { if !$0 { deletingChat = nil } }),
+                           presenting: deletingChat) { chat in
+                        Button(TeamChatManagement.deleteConfirm, role: .destructive) {
+                            run { await store.deleteTeamChat(room, chat: chat.id) }
+                        }
+                        .accessibilityIdentifier("team-chat-delete-confirm")
+                        Button("Cancel", role: .cancel) {}
+                    } message: { _ in
+                        Text(TeamChatManagement.deleteMessage)
+                    }
+                    .sheet(item: $naming) { naming in TeamChatNameView(room: room, chat: naming.chat) }
             }
         }
         .modifier(PushedTeamPage(pushed: pushed, title: room?.name ?? "Team"))
@@ -212,6 +228,9 @@ struct TeamRoomView: View {
         case .active:
             if let error = room.sync?.error {
                 Section { InlineError(error) }
+            }
+            if TeamChatManagement.showsSection(room) {
+                chatsSection(room)
             }
             Section("Members") {
                 ForEach(room.people) { member in memberRow(member, in: room) }
@@ -265,6 +284,40 @@ struct TeamRoomView: View {
             }
             leaveSection(room)
         }
+    }
+
+    /// The named chats of the team, each a row that opens the chat. The admin also has "New chat", and Rename and Delete
+    /// on each row: the swipe actions on an iPhone and the menu of the row on both (TeamChatManagement).
+    private func chatsSection(_ room: TeamRoom) -> some View {
+        let manages = TeamChatManagement.allows(room)
+        return Section("Chats") {
+            ForEach(room.namedChats) { chat in
+                chatRow(chat, in: room)
+                    .modifier(TeamChatActions(enabled: manages, rename: { naming = TeamChatNaming(chat: chat) },
+                                              delete: { deletingChat = chat }))
+            }
+            if manages {
+                Button(TeamChatManagement.newChat) { naming = TeamChatNaming(chat: nil) }
+                    .teamRowButton()
+                    .accessibilityIdentifier("team-new-chat")
+            }
+        }
+    }
+
+    /// The name of a chat with the arrow of a row that opens something, as the row of a person with a direct chat.
+    private func chatRow(_ chat: TeamNamedChat, in room: TeamRoom) -> some View {
+        Button { showTeamChat?(TeamChatKey(room: room.room, chat: chat.id)) } label: {
+            HStack(spacing: 8) {
+                Text(chat.name).frame(maxWidth: .infinity, alignment: .leading)
+                Image(systemName: "chevron.right")
+                    .font(.footnote.weight(.semibold)).foregroundStyle(.tertiary)
+                    .accessibilityHidden(true)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityHint("Opens the chat")
+        .accessibilityIdentifier("team-chat-row-\(chat.id)")
     }
 
     @ViewBuilder private func leaveSection(_ room: TeamRoom) -> some View {
@@ -400,6 +453,43 @@ private struct TeamRemovalActions: ViewModifier {
                         remove(removal)
                     }
                     .accessibilityIdentifier("team-remove-menu")
+                }
+        } else {
+            content
+        }
+    }
+}
+
+/// The sheet of the Team screen for a chat: a new chat, or a new name for `chat`.
+private struct TeamChatNaming: Identifiable {
+    let id = UUID()
+    let chat: TeamNamedChat?
+}
+
+/// Rename and Delete on the row of a named chat, for the admin: the swipe actions of an iPhone and the menu of the row.
+/// Delete asks first (TeamRoomView). Each other person sees the plain row.
+private struct TeamChatActions: ViewModifier {
+    let enabled: Bool
+    let rename: () -> Void
+    let delete: () -> Void
+
+    func body(content: Content) -> some View {
+        if enabled {
+            content
+                #if os(iOS)
+                .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                    // No destructive role: that role takes the row away at once, before the confirmation.
+                    Button("Delete", action: delete).tint(.red)
+                        .accessibilityIdentifier("team-chat-delete-swipe")
+                    Button("Rename", action: rename)
+                        .accessibilityIdentifier("team-chat-rename-swipe")
+                }
+                #endif
+                .contextMenu {
+                    Button("Rename", systemImage: "pencil", action: rename)
+                        .accessibilityIdentifier("team-chat-rename-menu")
+                    Button("Delete", systemImage: "trash", role: .destructive, action: delete)
+                        .accessibilityIdentifier("team-chat-delete-menu")
                 }
         } else {
             content
@@ -551,6 +641,65 @@ struct TeamCreateView: View {
                                               memberName: memberName.trimmingCharacters(in: .whitespacesAndNewlines))
             saving = false
             if made { dismiss() }
+        }
+    }
+}
+
+/// Make a named chat, or give one a new name, in the form of TeamCreateView: one field under "Chat name", Cancel, and
+/// Create or Save. An error of the Mac shows in the banner of the sheet.
+struct TeamChatNameView: View {
+    @Environment(AppStore.self) private var store
+    @Environment(\.dismiss) private var dismiss
+    let room: TeamRoom
+    /// The chat of a rename. Nil for a new chat.
+    let chat: TeamNamedChat?
+    @State private var name = ""
+    @State private var saving = false
+    @FocusState private var focused: Bool
+
+    private var trimmed: String { name.trimmingCharacters(in: .whitespacesAndNewlines) }
+    private var canSave: Bool { !saving && !trimmed.isEmpty && trimmed != chat?.name }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section(TeamChatManagement.nameHeader) {
+                    TextField(TeamChatManagement.nameHeader, text: $name, prompt: Text(TeamChatManagement.nameHeader))
+                        .fieldUnderHeader()
+                        .focused($focused)
+                        .submitLabel(.done).onSubmit { if canSave { save() } }
+                        .accessibilityIdentifier("team-chat-name")
+                }
+            }
+            .teamForm()
+            .teamBanners()
+            .disabled(saving)
+            #if os(macOS)
+            .frame(width: 420, height: 220)
+            #endif
+            .navigationTitle(chat == nil ? TeamChatManagement.newChat : "Rename chat").inlineNavigationTitle()
+            .onAppear { name = chat?.name ?? ""; focused = true }
+            // The error of the Mac is about this form, so it goes with the sheet and does not stay on the Team screen.
+            .onDisappear { store.error = nil }
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button(chat == nil ? (saving ? "Creating…" : "Create") : (saving ? "Saving…" : "Save"), action: save)
+                        .disabled(!canSave)
+                        .accessibilityIdentifier("team-chat-name-save")
+                }
+            }
+        }
+    }
+
+    private func save() {
+        saving = true
+        store.error = nil
+        Task {
+            let done = if let chat { await store.renameTeamChat(room, chat: chat.id, name: trimmed) }
+                       else { await store.createTeamChat(room, name: trimmed) != nil }
+            saving = false
+            if done { dismiss() }
         }
     }
 }

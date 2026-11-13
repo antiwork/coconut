@@ -51,6 +51,12 @@ CHAT_KINDS = ('team', 'direct')
 PHONES = 'SELECT id FROM devices WHERE peer_key IS NOT NULL'
 
 
+def team_thread(room, chat):
+    """The thread of the alerts of one chat of a team: the room ID for the Team chat, and the room ID, a colon and the
+    chat ID for a named chat. A direct chat has the 64 characters of a member ID after the colon, a named chat 32."""
+    return f'{room}:{chat}' if chat else room
+
+
 def iso(stamp):
     return datetime.fromtimestamp(stamp, timezone.utc).isoformat().replace('+00:00', 'Z') if stamp else None
 
@@ -455,7 +461,7 @@ class PushDelivery:
         if room is None or room['state'] != ACTIVE:
             return False
         message = store.message(item['team'], item['message_id'])
-        return (message is not None and message['first'] > store.read_position(item['team'])
+        return (message is not None and message['first'] > store.read_position(item['team'], message['chat'])
                 and self.team_notifies(room, item['message_id']))
 
     def record_direct(self, room, entry):
@@ -479,6 +485,12 @@ class PushDelivery:
         """The other member of the direct chat of an item, or None when the chat no longer shows its message."""
         message = self.service.team_store.direct(item['team'], item['message_id'])
         return message['member'] if message else None
+
+    def named_chat(self, item):
+        """The named chat of a team item (docs/team-log.md, "Chats of a team"), or None for the Team chat and for a
+        message that no longer shows."""
+        message = self.service.team_store.message(item['team'], item['message_id'])
+        return message['chat'] if message else None
 
     def relevant(self, item):
         """Whether the item still describes something the person has not seen: an open card, a visible message,
@@ -597,17 +609,18 @@ class PushDelivery:
         """The notification for one item, or the count of several. Items are rechecked when the text is written."""
         service = self.service
         if len(items) > 1:
-            # One chat: its kind, its room, and for a direct chat its other member. The kind decides, because a team
-            # item and a direct item of one room are two chats.
-            chats = {(item['kind'], item['team'], self.direct_chat(item) if item['kind'] == 'direct' else None)
-                     for item in items}
+            # One chat: its kind, its room, and for a direct chat its other member or for a team item its named chat.
+            # The kind decides, because a team item and a direct item of one room are two chats.
+            chats = {(item['kind'], item['team'], self.direct_chat(item) if item['kind'] == 'direct'
+                      else self.named_chat(item) if item['kind'] == 'team' else None) for item in items}
             kind, room, member = next(iter(chats)) if len(chats) == 1 else (None, None, None)
             if kind == 'team':
-                # A group of one team has the thread of the team, and a tap opens its chat. An older app opens Inbox.
+                # A group of one chat of a team has the thread of that chat, and a tap opens it. An older app opens
+                # Inbox, or the Team chat for a group of a named chat.
                 return {'aps': {'alert': {'title': 'Coconut', 'body': group_text(items)}, 'sound': 'default',
-                                'thread-id': room},
+                                'thread-id': team_thread(room, member)},
                         'coconut': {'version': 1, 'device_id': device_id, 'kind': 'group', 'count': len(items),
-                                    'team': room}}, None
+                                    'team': room, **({'chat': member} if member else {})}}, None
             if kind == 'direct' and member:
                 # A group of one direct chat has the thread of the chat. It has no `team` at the top, because the app
                 # of today would open the team chat.
@@ -637,8 +650,12 @@ class PushDelivery:
                 payload['aps']['alert'] = direct_alert(service.team_store, room, item['message_id'])
             return payload, item['message_id']
         if item['kind'] == 'team':
-            payload = {'aps': {'alert': {'title': 'Coconut', 'body': TEAM_BODY}, 'sound': 'default', 'thread-id': item['team']},
-                       'coconut': {'version': 1, 'device_id': device_id, 'kind': 'team', 'team': item['team']}}
+            # A message of a named chat carries its chat, so a tap opens that chat. An older app opens the Team chat.
+            chat = self.named_chat(item)
+            payload = {'aps': {'alert': {'title': 'Coconut', 'body': TEAM_BODY}, 'sound': 'default',
+                               'thread-id': team_thread(item['team'], chat)},
+                       'coconut': {'version': 1, 'device_id': device_id, 'kind': 'team', 'team': item['team'],
+                                   **({'chat': chat} if chat else {})}}
             if sealed:
                 payload['aps']['alert'] = team_alert(service.team_store, item['team'], item['message_id'])
             return payload, item['message_id']

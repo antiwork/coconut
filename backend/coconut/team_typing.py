@@ -6,8 +6,9 @@ not one for each key press. TeamStore.accept reads the entries of the other memb
 and `GET /v1/team/rooms` gives the list in `typing`.
 
 - A person's Mac writes the entry of its person with `on` true through `POST /v1/team/rooms/<room>/typing`. The app
-  calls the route while the person changes the draft of the Team chat. The Mac writes at most one such entry in
-  FLOOR_SECONDS for a room.
+  calls the route while the person changes the draft of the Team chat or of a named chat (`chat`). The Mac writes at
+  most one such entry in FLOOR_SECONDS for a room and chat. One entry for each subject in a room stays, so a person
+  types in one chat at a time.
 - A Mac for a team only writes the entry of a bot while a turn of the bot runs (BotTyping): `on` true when the turn
   starts in the gateway, again every AGAIN_SECONDS, and `on` false at the end of the turn.
 
@@ -59,14 +60,15 @@ class TeamTyping:
     """The route of the person, the list of `GET /v1/team/rooms`, and the writes. Team mixes this class in."""
 
     def _init_team_typing(self):
-        # The monotonic time of the last `typing` write of the person in each room, for FLOOR_SECONDS.
-        self._team_typing_sent: dict[str, float] = {}
+        # The monotonic time of the last `typing` write of the person in each room and chat, for FLOOR_SECONDS.
+        self._team_typing_sent: dict[tuple[str, str | None], float] = {}
         self._team_typing_lock = threading.Lock()
 
-    def team_typing(self, room_id: str, device: str) -> dict:
-        """The person of this Mac types in the Team chat of the room: write the `typing` entry of the person with `on`
-        true, at most once in FLOOR_SECONDS. A call inside that time answers at once and writes nothing. A failed write
-        is an error, as a failed send of a message is, and the app ignores it."""
+    def team_typing(self, room_id: str, data: dict, device: str) -> dict:
+        """The person of this Mac types in a chat of the room (`chat`, or the Team chat without it): write the `typing`
+        entry of the person with `on` true, at most once in FLOOR_SECONDS for that chat. A call inside that time
+        answers at once and writes nothing. A failed write is an error, as a failed send of a message is, and the app
+        ignores it."""
         from .service_base import ServiceError
         from .team import PERSON_ONLY, team_errors
         if self._team_bot_only:
@@ -74,34 +76,39 @@ class TeamTyping:
         if not device:
             raise ServiceError(403, PERSON_ONLY)
         self._team_room(room_id)
+        with self.lock:
+            chat = self._team_chat_named(room_id, data.get('chat'))
         now = clock()
         with self._team_typing_lock:
-            last = self._team_typing_sent.get(room_id)
+            last = self._team_typing_sent.get((room_id, chat))
             if last is not None and now - last < FLOOR_SECONDS:
                 return {'room': room_id}
-            self._team_typing_sent[room_id] = now
+            self._team_typing_sent[(room_id, chat)] = now
         try:
             with team_errors(), self._team_room_lock(room_id):
-                self._team_typing_write(self._team_writable(room_id), None, True)
+                self._team_typing_write(self._team_writable(room_id), None, True, chat)
         except BaseException:
             # A write that failed does not hold back the next call.
             with self._team_typing_lock:
-                if self._team_typing_sent.get(room_id) == now:
-                    del self._team_typing_sent[room_id]
+                if self._team_typing_sent.get((room_id, chat)) == now:
+                    del self._team_typing_sent[(room_id, chat)]
             raise
         return {'room': room_id}
 
-    def _team_typing_write(self, room: dict, bot: str | None, on: bool) -> None:
-        """Write the `typing` entry of the person of this Mac, or of the bot with the `bot` entry `bot`, with the next
-        `rev`. The caller holds the lock of the room."""
+    def _team_typing_write(self, room: dict, bot: str | None, on: bool, chat: str | None = None) -> None:
+        """Write the `typing` entry of the person of this Mac, or of the bot with the `bot` entry `bot`, in `chat` (None
+        for the Team chat), with the next `rev`. The caller holds the lock of the room."""
         token = team_keys.read(self.root, room['room'])['token']
         fields = {'kind': 'typing', 'on': on}
         if bot is not None:
             fields['bot'] = bot
+        if chat is not None:
+            fields['chat'] = chat
         self._team_write(room, typing_entry(token, room['room'], bot), False, fields)
 
-    def _team_typing_view(self, room: dict, members: list[dict]) -> list[dict]:
-        """`typing` of a room view: each other subject that types now, the earliest start first. `members` are the
+    def _team_typing_view(self, room: dict, members: list[dict], chat: str | None = None) -> list[dict]:
+        """`typing` of one chat of a room view (None for the Team chat): each other subject that types there now, the
+        earliest start first. `members` are the
         members of the view. A subject shows only while its member is in the list, and a bot only while its `bot` entry
         of the same member is valid. `seconds` is the time that is left, so the app hides the subject without a request.
         The caller holds the service lock."""
@@ -110,7 +117,7 @@ class TeamTyping:
         names = {member['member']: member['name'] for member in members if not member['this_mac']}
         bots = {(bot['member'], bot['entry']): bot['name'] for bot in self.team_store.bots(room['room'])}
         items = []
-        for member, bot, seconds in self.team_store.typing_now(room['room']):
+        for member, bot, seconds in self.team_store.typing_now(room['room'], chat):
             if member not in names or (bot is not None and (member, bot) not in bots):
                 continue
             items.append({'member': member, 'name': names[member],
@@ -127,8 +134,8 @@ class BotTyping:
     AGAIN_SECONDS, and `on` false after `stop`. A turn that ends before the adapter shows it writes nothing. A turn that
     gets a notice at once (no adapter) never starts this thread. A failed write gives one log line."""
 
-    def __init__(self, service, room: str, bot: str, started):
-        self.service, self.room, self.bot, self.started = service, room, bot, started
+    def __init__(self, service, room: str, bot: str, started, chat: str | None = None):
+        self.service, self.room, self.bot, self.started, self.chat = service, room, bot, started, chat
         self.done = threading.Event()
         self.thread = threading.Thread(target=self.run, name='coconut-team-typing', daemon=True)
 
@@ -161,7 +168,7 @@ class BotTyping:
                     share = service._team_share(self.room, self.bot, None)
                 if room is None or share is None:
                     return False
-                service._team_typing_write(room, share, on)
+                service._team_typing_write(room, share, on, self.chat)
             return True
         except Exception as error:
             log.warning('coconut.team_turns room %s: the typing entry of the bot %s did not reach the relay (%s).',

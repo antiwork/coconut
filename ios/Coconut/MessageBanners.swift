@@ -50,7 +50,7 @@ enum MessageBanners {
     ///
     /// - A chat gets a banner only when its newest message is newer (a higher `first`) and is not a message of this
     ///   Mac's person. A chat that is new in the list starts at 0.
-    /// - A new mention of this person in the Team chat of an active team makes a banner: `mentionFirst` grew since the
+    /// - A new mention of this person in the Team chat or a named chat of an active team makes a banner: `mentionFirst` grew since the
     ///   list `before`. It needs no growth of the unread count, because `mention_first` counts unread messages only.
     ///   So a mention reaches the person also in a quiet team, as the push of the iPhone does, also when a plain
     ///   message came after it, and also when the count is at its limit.
@@ -89,9 +89,10 @@ enum MessageBanners {
         if let member = chat.member {
             return MessageBanner(chat: chat, title: room.directPeer(member).name, subtitle: nil, body: body)
         }
+        // A named chat has its name and the name of the team in the place of the team, as the alert of the iPhone.
         let writer = last.writerName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        if writer.isEmpty { return MessageBanner(chat: chat, title: room.name, subtitle: nil, body: body) }
-        return MessageBanner(chat: chat, title: writer, subtitle: room.name, body: body)
+        if writer.isEmpty { return MessageBanner(chat: chat, title: room.chatAndTeam, subtitle: nil, body: body) }
+        return MessageBanner(chat: chat, title: writer, subtitle: room.chatAndTeam, body: body)
     }
 
     /// The identifier of the banner of a chat. A newer banner of the chat takes the place of the older one.
@@ -104,32 +105,35 @@ enum MessageBanners {
 
     /// The thread of a chat, so macOS keeps the banners of one chat together. The push of the iPhone has the same one.
     static func thread(_ chat: TeamChatKey) -> String {
-        guard let member = chat.member else { return chat.room }
-        return chat.room + ":" + member
+        guard let other = chat.member ?? chat.chat else { return chat.room }
+        return chat.room + ":" + other
     }
 
     /// The chat in the `userInfo` of a banner. The push of the iPhone names a direct chat with the same keys.
     static func userInfo(_ chat: TeamChatKey) -> [String: String] {
         var info = ["team": chat.room]
         if let member = chat.member { info["member"] = member }
+        if let named = chat.chat { info["chat"] = named }
         return info
     }
 
     /// The chat of a banner from its `userInfo`, or nil for another notification.
     static func chat(userInfo: [AnyHashable: Any]) -> TeamChatKey? {
         guard let room = userInfo["team"] as? String, !room.isEmpty else { return nil }
-        return TeamChatKey(room: room, member: userInfo["member"] as? String)
+        return TeamChatKey(room: room, member: userInfo["member"] as? String, chat: userInfo["chat"] as? String)
     }
 
     /// The chat that a click on a banner shows: the chat while the list of the teams has it. Nil when the app has no
     /// list yet or no longer has the chat: the click then shows the window and nothing more.
     static func shownChat(_ chat: TeamChatKey?, rooms: TeamRooms?) -> TeamChatKey? {
-        guard let chat, let room = rooms?.rooms.first(where: { $0.room == chat.room }) else { return nil }
+        guard let chat, let room = rooms?.rooms.first(where: { $0.room == chat.room })?.inChat(chat.chat) else {
+            return nil
+        }
         guard let member = chat.member else { return chat }
         return room.directList.contains { $0.member == member } ? chat : nil
     }
 
-    /// One chat of a room in the list: the Team chat, or a direct chat.
+    /// One chat of a room in the list: the Team chat, a named chat, or a direct chat.
     private struct Chat {
         let key: TeamChatKey
         let room: TeamRoom
@@ -144,10 +148,12 @@ enum MessageBanners {
     }
 
     private static func chats(of room: TeamRoom) -> [Chat] {
-        let team = Chat(key: TeamChatKey(room: room.room), room: room, unread: room.unread ?? 0,
-                        last: room.lastMessage, notifies: room.notifiesPhone, mentions: room.status == .active,
-                        mentionFirst: room.mentionFirst ?? 0)
-        return [team] + room.directList.map {
+        // The Team chat and each named chat follow the switch of the team (TeamRoom.inChat).
+        let team = ([room] + room.namedChatRooms).map {
+            Chat(key: $0.chatKey, room: $0, unread: $0.unread ?? 0, last: $0.lastMessage, notifies: $0.notifiesPhone,
+                 mentions: $0.status == .active, mentionFirst: $0.mentionFirst ?? 0)
+        }
+        return team + room.directList.map {
             Chat(key: TeamChatKey(room: room.room, member: $0.member), room: room, unread: $0.unread ?? 0,
                  last: $0.lastMessage, notifies: room.status == .active)
         }

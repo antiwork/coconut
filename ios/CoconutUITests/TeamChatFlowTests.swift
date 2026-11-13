@@ -599,6 +599,159 @@ final class TeamChatFlowTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: path), "The script of the test world did \(flag).")
     }
 
+    // MARK: Named chats
+
+    /// The test world of the named chats: Example Team (COCONUT_CHATS_TEAM) with Ada, the admin, Grace, Lin and the bot
+    /// Reporter of a Mac for a team only. COCONUT_CHATS_DESIGN and COCONUT_CHATS_LAUNCH are the IDs of the chats
+    /// "Design" and "Launch". Grace named Ada in "Design", "Launch" has no message, and Grace wrote Ada a direct message.
+    private struct ChatsWorld {
+        let url: String, code: String, room: String, design: String, launch: String
+        let flags: String?
+
+        init() throws {
+            let env = ProcessInfo.processInfo.environment
+            guard let url = env["COCONUT_TEAM_URL"], let code = env["COCONUT_TEAM_CODE"],
+                  let room = env["COCONUT_CHATS_TEAM"], let design = env["COCONUT_CHATS_DESIGN"],
+                  let launch = env["COCONUT_CHATS_LAUNCH"] else {
+                throw XCTSkip("Run with the test world of the named chats.")
+            }
+            self.url = url; self.code = code; self.room = room; self.design = design; self.launch = launch
+            flags = env["COCONUT_TEAM_FLAGS"]
+        }
+    }
+
+    /// The admin makes a chat on the Team screen. A message in it shows there and not in the Team chat. The admin
+    /// deletes the chat with the swipe action of its row, and the row goes from the Team screen and from the Chats list.
+    @MainActor
+    func testTheAdminMakesAChatWritesThereAndDeletesIt() throws {
+        let world = try ChatsWorld()
+        launchTeamScreen(url: world.url, code: world.code, room: world.room)
+        let new = app.buttons["team-new-chat"]
+        XCTAssertTrue(new.waitForExistence(timeout: 10))
+        new.tap()
+        let field = app.textFields["team-chat-name"]
+        XCTAssertTrue(field.waitForExistence(timeout: 5))
+        field.typeText("Planning")
+        app.buttons["team-chat-name-save"].tap()
+        let row = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'team-chat-row-' AND label CONTAINS 'Planning'")).firstMatch
+        XCTAssertTrue(row.waitForExistence(timeout: 15), "The new chat is a row of the section Chats.")
+        let id = String(row.identifier.dropFirst("team-chat-row-".count))
+        row.tap()
+        let title = app.buttons["team-chat-title"]
+        XCTAssertTrue(title.waitForExistence(timeout: 10))
+        XCTAssertTrue(title.label.hasPrefix("Planning, Example Team"), title.label)
+        write("Hello Planning")
+        XCTAssertTrue(text("Hello Planning").waitForExistence(timeout: 15))
+        // The Team chat does not have the message.
+        back()
+        let team = app.buttons["team-chat-\(world.room)"]
+        XCTAssertTrue(app.buttons["team-chat-\(world.room)-\(id)"].waitForExistence(timeout: 10))
+        team.tap()
+        XCTAssertTrue(title.waitForExistence(timeout: 10))
+        XCTAssertTrue(text("The weekly report is out.").waitForExistence(timeout: 15))
+        XCTAssertFalse(text("Hello Planning").exists)
+        title.tap()
+        // The admin deletes the chat: the swipe action asks first.
+        XCTAssertTrue(row.waitForExistence(timeout: 10))
+        row.swipeLeft()
+        let delete = app.buttons["team-chat-delete-swipe"]
+        XCTAssertTrue(delete.waitForExistence(timeout: 5))
+        delete.tap()
+        let confirm = app.buttons["team-chat-delete-confirm"].firstMatch
+        XCTAssertTrue(confirm.waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["Delete this chat for everyone?"].exists)
+        confirm.tap()
+        XCTAssertTrue(row.waitForNonExistence(timeout: 15), "The row goes from the Team screen.")
+        // The Team screen goes back to the Team chat, and the Team chat to the Chats list.
+        app.navigationBars.buttons.element(boundBy: 0).tap()
+        XCTAssertTrue(title.waitForExistence(timeout: 10))
+        back()
+        XCTAssertTrue(team.waitForExistence(timeout: 10))
+        XCTAssertFalse(app.buttons["team-chat-\(world.room)-\(id)"].exists, "The row goes from the Chats list.")
+    }
+
+    /// The screens of the named chats for a look: the Chats list, the Team screen, the chat "Design" with Reporter. In
+    /// the light look also the sheet "New chat" with its error, and the actions and the question of a delete. With
+    /// COCONUT_CHATS_AS (the name of a person who is not the admin), only the Team screen.
+    @MainActor
+    func testTheNamedChatsInALook() throws {
+        let world = try ChatsWorld()
+        guard let look = ProcessInfo.processInfo.environment["COCONUT_CHATS_LOOK"] else {
+            throw XCTSkip("Set COCONUT_CHATS_LOOK.")
+        }
+        if let person = ProcessInfo.processInfo.environment["COCONUT_CHATS_AS"] {
+            launchTeamScreen(url: world.url, code: world.code, room: world.room)
+            XCTAssertTrue(app.buttons["team-chat-row-\(world.design)"].waitForExistence(timeout: 10))
+            XCTAssertFalse(app.buttons["team-new-chat"].exists, "Only the admin makes a chat.")
+            shot("chats-\(person)-3-team-screen")
+            return
+        }
+        app = XCUIApplication()
+        shots = ProcessInfo.processInfo.environment["COCONUT_TEAM_SHOTS"].map { URL(fileURLWithPath: $0) }
+        continueAfterFailure = false
+        if look == "dark" { app.launchArguments += ["-AppleInterfaceStyle", "Dark", "-UIUserInterfaceStyle", "Dark"] }
+        if look == "large" {
+            app.launchArguments += ["-UIPreferredContentSizeCategoryName", "UICTContentSizeCategoryAccessibilityXXXL"]
+        }
+        app.launchEnvironment = Self.pairing(url: world.url, code: world.code)
+        app.launch()
+        XCTAssertTrue(app.tabBars.buttons["Chats"].waitForExistence(timeout: 15))
+        app.tabBars.buttons["Chats"].tap()
+        let design = app.buttons["team-chat-\(world.room)-\(world.design)"]
+        XCTAssertTrue(design.waitForExistence(timeout: 15))
+        XCTAssertTrue(waitForLabel(design, contains: "You are named", timeout: 10), design.label)
+        XCTAssertTrue(design.label.hasPrefix("Design, Example Team"), design.label)
+        XCTAssertTrue(app.buttons["team-chat-\(world.room)-\(world.launch)"].label.contains("No messages yet"))
+        shot("chats-\(look)-1-list")
+
+        // The Team screen of the admin: the section Chats with "New chat".
+        app.buttons["team-chat-\(world.room)"].tap()
+        let title = app.buttons["team-chat-title"]
+        XCTAssertTrue(title.waitForExistence(timeout: 10))
+        title.tap()
+        let new = app.buttons["team-new-chat"]
+        XCTAssertTrue(new.waitForExistence(timeout: 10))
+        shot("chats-\(look)-2-team-screen")
+        if look == "light" {
+            new.tap()
+            let field = app.textFields["team-chat-name"]
+            XCTAssertTrue(field.waitForExistence(timeout: 5))
+            shot("chats-light-4-new-chat")
+            field.typeText("design")
+            app.buttons["team-chat-name-save"].tap()
+            XCTAssertTrue(app.staticTexts["This team already has a chat with this name."].waitForExistence(timeout: 10))
+            shot("chats-light-4-new-chat-error")
+            app.buttons["Cancel"].tap()
+            let row = app.buttons["team-chat-row-\(world.design)"]
+            XCTAssertTrue(row.waitForExistence(timeout: 5))
+            row.swipeLeft()
+            XCTAssertTrue(app.buttons["team-chat-rename-swipe"].waitForExistence(timeout: 5))
+            shot("chats-light-6-actions")
+            app.buttons["team-chat-delete-swipe"].tap()
+            XCTAssertTrue(app.buttons["team-chat-delete-confirm"].firstMatch.waitForExistence(timeout: 5))
+            shot("chats-light-6-delete-question")
+            cancelQuestion()
+        }
+
+        // The chat "Design": the message of Grace, then Reporter types and answers.
+        let row = app.buttons["team-chat-row-\(world.design)"]
+        XCTAssertTrue(row.waitForExistence(timeout: 10))
+        row.tap()
+        XCTAssertTrue(title.waitForExistence(timeout: 10))
+        // The newest message of Grace: with the largest text, the older ones are above the screen.
+        XCTAssertTrue(text("@Ada").waitForExistence(timeout: 15))
+        shot("chats-\(look)-5-design")
+        guard look == "light", let flags = world.flags else { return }
+        try typingAct(flags, "bot-types", done: "bot-typing", wait: 150)
+        let typing = element("team-typing")
+        XCTAssertTrue(waitForLabel(typing, contains: "Reporter is typing", timeout: 15), typing.label)
+        shot("chats-light-5-design-typing", settle: false)
+        try typingAct(flags, "bot-done", done: "bot-answered")
+        XCTAssertTrue(text("Two designs are open").waitForExistence(timeout: 15))
+        XCTAssertFalse(text("The weekly report is out.").exists, "The Team chat stays apart.")
+        shot("chats-light-5-design-answer")
+    }
+
     // MARK: Direct messages
 
     /// The test world of the direct messages: Example Team (COCONUT_TEAM_EXAMPLE) with Ada, the person of this app,

@@ -387,23 +387,23 @@ enum NotificationDestination: Equatable {
     /// A group notification opens the Inbox list.
     case inboxList
     case conversation(ConversationRoute)
-    /// The chat of a team, by its room ID.
+    /// The Team chat of a team, by its room ID.
     case team(String)
-    /// A direct chat with one person of a team.
-    case direct(TeamChatKey)
+    /// Another chat of a team: a named chat, or a direct chat with one person of the team.
+    case chat(TeamChatKey)
     /// The Chats list: a team notification of a team that the app no longer has.
     case chatList
 
-    /// The place of the chat of a team, a Team chat or a direct chat.
+    /// The place of the chat of a team: the Team chat, a named chat or a direct chat.
     init(chat: TeamChatKey) {
-        self = chat.isDirect ? .direct(chat) : .team(chat.room)
+        self = chat.isDirect || chat.chat != nil ? .chat(chat) : .team(chat.room)
     }
 
     /// The chat that this place shows. Nil for a place that is not a chat of a team.
     var teamChat: TeamChatKey? {
         switch self {
         case .team(let room): TeamChatKey(room: room)
-        case .direct(let chat): chat
+        case .chat(let chat): chat
         default: nil
         }
     }
@@ -422,10 +422,12 @@ struct NotificationTarget: Equatable, Sendable {
     var team: String? = nil
     /// The other member of a direct chat, for a direct message or a group of the messages of one direct chat.
     var member: String? = nil
+    /// The named chat of a team message, or of a group of the messages of one named chat. An older Mac sends none.
+    var named: String? = nil
 
     var conversationRoute: ConversationRoute { ConversationRoute(botId: botId, decisionId: decisionId, messageId: messageId) }
-    /// The chat of a team that the notification opens: a Team chat or a direct chat.
-    var chat: TeamChatKey? { team.map { TeamChatKey(room: $0, member: member) } }
+    /// The chat of a team that the notification opens: a Team chat, a named chat or a direct chat.
+    var chat: TeamChatKey? { team.map { TeamChatKey(room: $0, member: member, chat: named) } }
 
     func destination(pendingDecisionIds: Set<String>, snapshotReady: Bool) -> NotificationDestination? {
         if let chat { return NotificationDestination(chat: chat) }
@@ -445,6 +447,8 @@ struct NotificationTarget: Equatable, Sendable {
         // A team message names its room. A group of one team names it too, and each other group names none.
         let room = data["team"] as? String
         guard room == nil || isLowercaseHex64(room!) else { return nil }
+        // A message of a named chat names the chat too. A value that is not the ID of an entry opens the Team chat.
+        let named = (data["chat"] as? String).flatMap { isEntryId($0) ? $0 : nil }
         // A direct message names the room and the other member of its chat. A group of one direct chat names both too.
         var direct: (room: String, member: String)?
         if let value = data["direct"], !(value is NSNull) {
@@ -456,12 +460,13 @@ struct NotificationTarget: Equatable, Sendable {
         }
         if data["kind"] as? String == "group" {
             deviceId = device; botId = ""; taskId = ""; decisionId = nil; messageId = nil; group = true
-            team = direct?.room ?? room; member = direct?.member
+            team = direct?.room ?? room; member = direct?.member; self.named = direct == nil && room != nil ? named : nil
             return
         }
         if data["kind"] as? String == "team" {
             guard let room else { return nil }
             deviceId = device; botId = ""; taskId = ""; decisionId = nil; messageId = nil; team = room
+            self.named = named
             return
         }
         if data["kind"] as? String == "direct" {
@@ -478,6 +483,11 @@ struct NotificationTarget: Equatable, Sendable {
         guard message == nil || UUID(uuidString: message!) != nil else { return nil }
         deviceId = device; botId = bot; taskId = task; decisionId = decision; messageId = message
     }
+}
+
+/// True for the ID of an entry of a team log: 32 lowercase hex characters, as a named chat has.
+private func isEntryId(_ text: String) -> Bool {
+    text.utf8.count == 32 && text.utf8.allSatisfy { (48...57).contains($0) || (97...102).contains($0) }
 }
 
 @MainActor @Observable

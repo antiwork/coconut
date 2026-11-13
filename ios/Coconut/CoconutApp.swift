@@ -257,7 +257,7 @@ struct CoconutHome: View {
         // the person can have left the team.
         if previewedNotification != target {
             previewedNotification = target
-            let preview = target.chat.map { store.teamNotificationPlace($0.room, member: $0.member) }
+            let preview = target.chat.map { store.teamNotificationPlace($0.room, member: $0.member, chat: $0.chat) }
                 ?? target.decisionId.map(NotificationDestination.inbox) ?? .conversation(target.conversationRoute)
             previewedPlace = preview
             showNotification(preview)
@@ -304,7 +304,7 @@ struct CoconutHome: View {
             selectedTab = .bots
             botsPath = NavigationPath()
             botsPath.append(route)
-        case .team, .direct:
+        case .team, .chat:
             if let chat = destination.teamChat { showTeamChat(chat) }
         case .chatList:
             notificationDecisionId = nil

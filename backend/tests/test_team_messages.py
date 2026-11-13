@@ -39,6 +39,7 @@ class TeamMessageStoreTests(unittest.TestCase):
         self.addCleanup(self.db.close)
         self.db.executescript(team_store.SCHEMA)
         self.store = TeamStore(self.db)
+        self.store.migrate()
         self.store.add_room(room=ROOM, relay='https://relay.example', name='Example Team', member=MEMBER, admin=ADMIN,
                             state=team_store.ACTIVE, epoch=0, profile='{}', created_at='2026-11-10T12:00:00Z')
         self.seq = 0
@@ -76,7 +77,7 @@ class TeamMessageStoreTests(unittest.TestCase):
                                    text='Hello **team**', reply_to=reply, mentions=json.dumps([mention]),
                                    created_at=team_store.relay_time(START + 2),
                                    updated_at=team_store.relay_time(START + 2),
-                                   edited=0))
+                                   edited=0, chat=None))
         self.assertEqual(self.store.chatted, {ROOM})
 
     def test_unknown_fields_and_null_fields_stay_in_the_payload_and_change_nothing(self):
@@ -374,17 +375,18 @@ class TeamMessageStoreTests(unittest.TestCase):
         self.assertEqual([row['first'] for row in self.store.messages(ROOM, 102, 101)], list(range(101, 1, -1)))
         # The index gives the order, so no call sorts or scans the room. A page with `before` starts its search
         # at `before`. The plan is the one of the statements that TeamStore.messages runs.
-        for before, search in ((None, '(room=?)'), (50, '(room=? AND first<?)')):
-            plan = self.plan(*self.store._page(ROOM, before, 101))
-            self.assertIn(f'SEARCH m USING INDEX team_messages_order {search}', plan)
-            self.assertNotIn('TEMP B-TREE', plan)
-        plan = self.plan('SELECT 1 FROM team_messages m WHERE m.room=? AND m.first>? AND m.member!=? LIMIT 99',
-                         (ROOM, 50, MEMBER))
-        self.assertIn('team_messages_order', plan)
-        # The check of a mention walks the index back from the newest row to the read position and sorts nothing.
-        # The LIMIT of the inner query stops the walk after MAX_MENTION_ROWS rows.
-        plan = self.plan(team_store.MENTION_SQL, (ROOM, 50, MEMBER, MEMBER))
-        self.assertIn('SEARCH team_messages USING INDEX team_messages_order (room=? AND first>?)', plan)
+        for chat in (None, entry_id(5)):
+            for before, search in ((None, '(room=? AND chat=?)'), (50, '(room=? AND chat=? AND first<?)')):
+                plan = self.plan(*self.store._page(ROOM, chat, before, 101))
+                self.assertIn(f'SEARCH m USING INDEX team_messages_chat {search}', plan)
+                self.assertNotIn('TEMP B-TREE', plan)
+            plan = self.plan('SELECT 1 FROM team_messages m WHERE m.room=? AND m.chat IS ? AND m.first>? '
+                             'AND m.member!=? LIMIT 99', (ROOM, chat, 50, MEMBER))
+            self.assertIn('team_messages_chat', plan)
+            # The check of a mention walks the index back from the newest row to the read position and sorts nothing.
+            # The LIMIT of the inner query stops the walk after MAX_MENTION_ROWS rows.
+            plan = self.plan(team_store.MENTION_SQL, (ROOM, chat, 50, MEMBER, MEMBER))
+            self.assertIn('SEARCH team_messages USING INDEX team_messages_chat (room=? AND chat=? AND first>?)', plan)
         self.assertNotIn('TEMP B-TREE', plan)
         for value in timings.values():
             self.assertLess(value, 50)
