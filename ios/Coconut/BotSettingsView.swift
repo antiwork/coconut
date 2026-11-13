@@ -4,6 +4,7 @@ import SwiftUI
 // when the person submits it, and when the page closes. Back never drops an edit.
 struct BotSettingsView: View {
     @Environment(AppStore.self) private var store
+    @Environment(\.windowShowsError) private var windowShowsError
     let botId: String
     @State private var edits: BotDraft?
     @State private var routineOpen = false
@@ -45,7 +46,7 @@ struct BotSettingsView: View {
                     }
                 }
             }
-            if let error = store.error { Section { InlineError(error) } }
+            if !windowShowsError, let error = store.error { Section { InlineError(error) } }
         }
         .settingsBackground()
         .navigationTitle(draft?.name ?? "Bot").inlineNavigationTitle()
@@ -59,7 +60,10 @@ struct BotSettingsView: View {
         .onChange(of: draft?.avatar) { _, _ in save() }
         .onChange(of: draft?.color) { _, _ in save() }
         .onDisappear(perform: save)
-        .sheet(isPresented: $routineOpen) { NavigationStack { RoutineEditorView(botId: botId) } }
+        // A sheet has no notice over it, so it shows the error itself.
+        .sheet(isPresented: $routineOpen) {
+            NavigationStack { RoutineEditorView(botId: botId) }.environment(\.windowShowsError, false)
+        }
     }
 
     private func routineLink(_ routine: Routine, detail: String) -> some View {
@@ -196,6 +200,7 @@ struct BotTextDraft {
 
 private struct RoutineEditorView: View {
     @Environment(AppStore.self) private var store
+    @Environment(\.windowShowsError) private var windowShowsError
     @Environment(\.dismiss) private var dismiss
     let botId: String
     var routine: Routine? = nil
@@ -260,7 +265,7 @@ private struct RoutineEditorView: View {
                     Button("Delete routine", role: .destructive) { deleteOpen = true }
                 }
             }
-            if let error = store.error { Section { InlineError(error) } }
+            if !windowShowsError, let error = store.error { Section { InlineError(error) } }
         }
         .settingsBackground()
         .navigationTitle(routine == nil ? "New routine" : "Routine").inlineNavigationTitle()

@@ -172,7 +172,7 @@ class WithdrawalCorrections:
             raise ServiceError(409, 'The card changed after the withdrawal. Read its current state.')
         if any(decision.get(field) for field in HUMAN_FIELDS):
             raise ServiceError(409, 'A person answered or dismissed this card. Keep their answer.')
-        if decision.get('_receipt_id') or decision.get('_source_recheck') or self.db.execute(
+        if decision.get('_receipt_id') or self.db.execute(
                 "SELECT 1 FROM tasks WHERE json_extract(data,'$._resume_decision')=?", (decision['id'],)).fetchone():
             raise ServiceError(409, 'The withdrawal already continued work. Reopening the card cannot undo it.')
         if decision['action_type'] == 'draft_message':

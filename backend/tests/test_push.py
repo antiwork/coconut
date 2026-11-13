@@ -66,7 +66,7 @@ class PushTests(unittest.TestCase):
         self.run_task('Write report')
         decision = self.service.snapshot()['decisions'][0]
         with self.service.transaction():
-            for change in ({'_hidden': True}, {'_deleted': True}, {'_source_recheck': True}, {'status': 'completed'}):
+            for change in ({'_hidden': True}, {'_deleted': True}, {'status': 'resolved', 'resolution': 'source_changed'}, {'status': 'completed'}):
                 self.service._put('decisions', dict(decision, id=str(uuid4()), **change))
         self.assertEqual(self.service.push.inbox_badge_count(), 1)
         self.assertTrue(self.flush())

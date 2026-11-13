@@ -435,6 +435,7 @@ LIBRARY_INSTRUCTIONS = (
     'save it again with the same key when its facts change, for example from a routine. Each save adds a version. '
     'The title is the heading of the page. Do not start the content with the title as a heading. '
     'Pages have blocks: callouts, Mermaid diagrams, charts, tables and task lists. coconut_save_document names them. '
+    'Follow the notes in the answer of a save. '
     'Use them so a page reads like a short article and not like a chat answer. '
     'You can also save a document on your own, without a request, when the person will want to come back to it: a '
     'postmortem, a weekly report, a decision record or research. A status update is not a document. Before you make a '

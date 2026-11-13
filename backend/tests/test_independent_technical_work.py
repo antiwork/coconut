@@ -178,7 +178,7 @@ class IndependentTechnicalWorkTests(unittest.TestCase):
         owner, source = self.lane_native()
         for change in (dict(action_type='native_approval'), dict(action_type='draft_message', draft={'body': 'Hi'}),
                        dict(merge_pr_url='https://github.com/antiwork/gumroad/pull/8541'), dict(_receipt_id='call'),
-                       dict(inbox_kind='proposal'), dict(_source_recheck=True),
+                       dict(inbox_kind='proposal'), dict(status='resolved', resolution='source_changed'),
                        dict(_answers=[dict(choice='reply', decided_by='person-device')])):
             with self.subTest(change=sorted(change)):
                 self.service._put('decisions', dict(self.gate, **change))
@@ -1351,7 +1351,7 @@ class DeclinedMergeLaneTests(unittest.TestCase):
                      dict(id='leave_open', label='Leave #8661 open', answer='approve', explanation='')],
             selected_option_id=None, selected_option_label=None, correction='', decided_by='person-device',
             decided_at='2026-10-26T19:30:02Z', created_at='2026-10-26T17:28:08Z', _native=True, _receipt_id=None,
-            _source_recheck=None, outcome='Answer recorded. Hermes will continue.',
+            outcome='Answer recorded. Hermes will continue.',
             _answers=[dict(choice='reject', option_id=None, correction='', predicted_option_id=None,
                            decided_by='person-device')])
         self.work = dict(id='paused-work', task_id=owner['id'], bot_id=owner['bot_id'], kind='work', title=owner['title'],
@@ -1482,7 +1482,7 @@ class DeclinedMergeLaneTests(unittest.TestCase):
             'draft': dict(action_type='draft_message', draft={'body': 'Merge it'}),
             'proposal': dict(inbox_kind='proposal'),
             'tool question': dict(_receipt_id='call'),
-            'source recheck': dict(_source_recheck=True),
+            'closed for its source': dict(status='resolved', resolution='source_changed'),
             'legacy': dict(_native=False),
             'hidden': dict(_hidden=True),
             'approved': dict(status='approved', selected_option_id='merge',
@@ -1850,7 +1850,7 @@ class HeldMergeLaneTests(unittest.TestCase):
                           explanation='Keep the verified draft available for further review.', risk='low')],
             selected_option_id='leave_open', selected_option_label='Leave #8669 open', correction='',
             decided_by='person-device', decided_at='2026-10-27T00:19:28Z', created_at='2026-10-27T00:10:00Z',
-            _native=True, _receipt_id=None, _source_recheck=None, _action={}, outcome='Hermes continued with your answer.',
+            _native=True, _receipt_id=None, _action={}, outcome='Hermes continued with your answer.',
             _answers=[dict(choice='approve', option_id='leave_open', correction='', predicted_option_id=None,
                            decided_by='person-device')])
         self.paused_at = now()
@@ -1989,7 +1989,7 @@ class HeldMergeLaneTests(unittest.TestCase):
             'reply answer': dict(_answers=[dict(answer, choice='reply')]),
             'draft': dict(draft={'body': 'Merge it'}), 'tool': dict(action_type='native_approval'),
             'proposal': dict(inbox_kind='proposal'), 'tool question': dict(_receipt_id='call'),
-            'source recheck': dict(_source_recheck=True), 'legacy': dict(_native=False),
+            'closed for its source': dict(status='resolved', resolution='source_changed'), 'legacy': dict(_native=False),
             'hidden': dict(_hidden=True), 'deleted': dict(_deleted=True),
             'explicit stop': dict(decided_by='cancellation'), 'archived': dict(decided_by='archive'),
             'unsigned': dict(decided_by=None), 'agent answer': dict(_answers=[dict(answer, decided_by=None)]),

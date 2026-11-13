@@ -50,6 +50,8 @@ class PRObservation:
     required_checks_observed: bool = False
     base_branch: str | None = None
     diff: dict | None = None
+    # The time of the merge, or of the close without a merge. GitHub gives it. None for an open PR.
+    ended_at: str | None = None
 
     def fields(self) -> dict:
         """The observed values that a PR artifact stores."""
@@ -614,13 +616,19 @@ class GitHubPRTracker:
         return (facts, issue) if with_kind else facts
 
     def observe_issue(self, url: str) -> dict | None:
-        """Read issue facts without a model call. Failure keeps the last observation."""
+        """Read issue facts without a model call. Failure keeps the last observation.
+
+        The facts include `closed_at`, the time of the latest close. A card does not keep it (decision_sources.issue_facts).
+        """
         from .decision_sources import github_source
         source = github_source(url)
         if not source or source[0] != 'issues':
             return None
         try:
-            return self._issue_record(source[1], time.monotonic() + 10)
+            facts, issue = self._issue_record(source[1], time.monotonic() + 10, with_kind=True)
+            if facts is not None:
+                facts['closed_at'] = issue.get('closed_at') if isinstance(issue.get('closed_at'), str) else None
+            return facts
         except HTTPError as error:
             error.close()
         except (URLError, TimeoutError, OSError, HTTPException, PRTrackingError, ValueError, TypeError):
@@ -796,6 +804,8 @@ class GitHubPRTracker:
             sha, state, draft, merged, title = before
             base_branch = (initial.get("base") or {}).get("ref")
             diff = _diff(initial)
+            ended_at = initial.get('merged_at' if merged else 'closed_at')
+            ended_at = ended_at if state == 'closed' and isinstance(ended_at, str) else None
             checks_state = None
             required_checks_state = None
             required_checks_observed = False
@@ -838,7 +848,7 @@ class GitHubPRTracker:
                     check_failures = hashlib.sha256(json.dumps(sorted(failures)).encode()).hexdigest()
             return PRObservation(result, sha, title, url, detail, checked_at, True, "merged" if merged else state,
                                  draft, checks_state, required_checks_state, review_checks, check_failures, required_checks_observed, base_branch,
-                                 diff)
+                                 diff, ended_at)
         except HTTPError as error:
             detail = f"GitHub refresh failed (HTTP {error.code})."
             error.close()

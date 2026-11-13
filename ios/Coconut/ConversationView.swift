@@ -48,6 +48,7 @@ struct ConversationView: View {
     @FocusState private var composerFocused: Bool
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.toggleBotDetails) private var toggleBotDetails
+    @Environment(\.windowShowsError) private var windowShowsError
     @ScaledMetric(relativeTo: .body) private var nameWidth = 150
 
     init(botId: String, focusDecisionId: String? = nil, focusMessageId: String? = nil, attachedWork: WorkReference? = nil) {
@@ -344,13 +345,23 @@ struct ConversationView: View {
                         didFocusDecision = true
                     }
                 }
+                #if os(iOS)
+                // The notice stays below the header at each scroll position, over the messages only.
+                .modifier(ChatErrorNotice())
+                #endif
                 .safeAreaInset(edge: .bottom, spacing: 0) {
-                    ConversationComposer(bot: bot, task: activeTask, text: $messageDraft,
-                                         attachments: $messageAttachments, scheduling: $messageScheduling,
-                                         scheduledAt: $messageScheduledAt, mentions: $messageMentions,
-                                         focused: $composerFocused, replyTo: $replyTo, workContext: $workContext,
-                                         onStop: requestStop)
-                        .fixedSize(horizontal: false, vertical: true)
+                    VStack(spacing: 0) {
+                        #if os(macOS)
+                        // In the Mac window the notice takes its own space above the composer.
+                        if windowShowsError { WindowErrorNotice() }
+                        #endif
+                        ConversationComposer(bot: bot, task: activeTask, text: $messageDraft,
+                                             attachments: $messageAttachments, scheduling: $messageScheduling,
+                                             scheduledAt: $messageScheduledAt, mentions: $messageMentions,
+                                             focused: $composerFocused, replyTo: $replyTo, workContext: $workContext,
+                                             onStop: requestStop)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
                 }
                 .onAppear { isVisible = true; footerScroll.reset() }
                 .onReceive(DaySeparator.changes) { _ in dayReference = Date() }
@@ -431,6 +442,7 @@ struct ConversationView: View {
         .inlineNavigationTitle()
         .preference(key: ConversationFooterPreference.self,
                     value: isVisible ? (!composerFocused && footerScroll.allowsMinimization) : nil)
+        .preference(key: ChatHoldsNoticePreference.self, value: windowShowsError && isVisible)
     }
 
     #if os(macOS)
@@ -449,9 +461,6 @@ struct ConversationView: View {
     @ViewBuilder
     private func conversationHeader(bot: Bot, messages: [Message]) -> some View {
         VStack(spacing: BoardStyle.Space.s) {
-            if let error = store.error {
-                ErrorBanner(message: error) { store.error = nil }
-            }
             if messages.isEmpty {
                 VStack(spacing: BoardStyle.Space.m) {
                     BotAvatar(bot: bot, size: 68)

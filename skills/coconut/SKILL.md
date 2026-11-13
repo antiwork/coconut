@@ -1,18 +1,18 @@
 ---
 name: coconut
 description: Update, pair, repair, and join teams with Coconut.
-version: 1.2.0
+version: 1.3.0
 author: Coconut
 platforms: [macos]
 metadata:
   hermes:
-    tags: [coconut, iphone, mac, pairing, updates, troubleshooting, routines, cron, team]
+    tags: [coconut, iphone, mac, pairing, updates, troubleshooting, routines, cron, team, library, pages]
     related_skills: [hermes-agent]
 ---
 
 # Coconut Skill
 
-Coconut is an iPhone app and a Mac service. The service runs on this Mac and runs bots, each with its own Hermes profile. The iPhone reaches the service through an end-to-end encrypted relay. This skill tells you how to update Coconut, pair an iPhone, find the cause of a problem, and make a routine that spends model tokens only when there is work. It does not change Hermes itself.
+Coconut is an iPhone app and a Mac service. The service runs on this Mac and runs bots, each with its own Hermes profile. The iPhone reaches the service through an end-to-end encrypted relay. This skill tells you how to update Coconut, pair an iPhone, find the cause of a problem, make a routine that spends model tokens only when there is work, and write a good page for the Library. It does not change Hermes itself.
 
 **This skill is a hub.** Before you answer a detail question, load the matching reference with `skill_view`.
 
@@ -23,6 +23,7 @@ Coconut is an iPhone app and a Mac service. The service runs on this Mac and run
 | "Coconut is offline", the relay, `hermes_unavailable`, logs, data | `references/troubleshooting.md` |
 | Each `coconut` command and its output | `references/cli.md` |
 | A routine, a cron job, a script gate (`wakeAgent`), a check that should cost fewer tokens, waiting for delegated work | `references/routines.md` |
+| A page of the Library, a report page, the notes of a save of `coconut_save_document` | `references/pages.md` |
 
 ## When to Use
 
@@ -33,6 +34,7 @@ Coconut is an iPhone app and a Mac service. The service runs on this Mac and run
 - The person asks how Coconut and Hermes work together on this Mac.
 - You create or change a routine, or a routine runs often and finds nothing new.
 - You want the result of a delegated task. Do not make a cron job for it: see `references/routines.md`.
+- You write a page of the Library, or a save of a page answers with notes: see `references/pages.md`.
 
 ## Prerequisites
 

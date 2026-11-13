@@ -140,6 +140,8 @@ struct CoconutHome: View {
         .onChange(of: store.lastSync) { _, _ in openNotification() }
         .onChange(of: store.connection) { _, _ in openNotification() }
         .onAppear { openNotification() }
+        // VoiceOver reads a new notice when it shows, as on the Mac.
+        .announcesErrors(store.error)
     }
 
     private func root(tab: HomeTab, path: Binding<NavigationPath>) -> some View {

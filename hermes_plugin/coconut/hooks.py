@@ -12,7 +12,9 @@ Records. The comments of a native task and the messages between bots are records
 (native_conversation.turn_records). After the join, `add_records` adds to the turn's own text only the records that
 the session does not hold yet, and `commit_records` notes their IDs when the turn ends. A session holds a record only
 when it has the ID and a user message of the session still has the record's text. A new session holds none. After a
-compression, which keeps the session ID on current Hermes, the next turn gets each lost record again.
+compression, which keeps the session ID on current Hermes, the next turn gets each lost record again. One record names
+the current revision of the bot's instructions. A running session keeps its first system prompt, so it gets a note
+once for each change of that revision (instructions_note_due).
 
 Cron runs. A cron run of the gateway in a bot's profile reports to a Coconut turn through the session hooks
 (cron.py).
@@ -440,6 +442,8 @@ def join_conversation(event=None, session_store=None, gateway=None, **_):
     from .adapter import RECORDS
     records = RECORDS.pop(str(event.message_id), None)
     session = _join_session(source, session_store)
+    if session is not None and compresses(event):
+        forget_revision(session)
     if records is None:
         return None
     return add_records(event, records, session)
@@ -490,10 +494,25 @@ def _join_session(source, session_store):
 
 # The state_meta key of Hermes that holds the IDs of the records that the turns of a session added (add_records).
 RECORDS_KEY = 'coconut.records.'
+# The state_meta key of Hermes that holds the revision of the bot's instructions that a session last saw.
+INSTRUCTIONS_KEY = 'coconut.instructions.'
 # The IDs that a session keeps on record, newest last.
 RECORDS_KEPT = 5000
-# The records that a running turn adds to its session: (state database, session ID, record IDs).
+# The records that a running turn adds to its session: (state database, session ID, record IDs, revision of the
+# instructions to store or None).
 PENDING_RECORDS: dict[str, tuple] = {}
+# The revision of the instructions that each session last saw, as this process knows it: (state database, session ID)
+# to revision, oldest first. An open of the state database is slow, so a steady turn opens none (add_records).
+SEEN_REVISIONS: dict[tuple, str] = {}
+SEEN_KEPT = 512
+
+
+def _remember_revision(path, session, revision):
+    key = (str(path), session)
+    SEEN_REVISIONS.pop(key, None)
+    SEEN_REVISIONS[key] = revision
+    while len(SEEN_REVISIONS) > SEEN_KEPT:
+        del SEEN_REVISIONS[next(iter(SEEN_REVISIONS))]
 
 
 def records_text(records):
@@ -526,6 +545,50 @@ def session_text(db, session):
     return _one_space(' '.join(texts))
 
 
+def instructions_note_due(record, seen, session):
+    """Whether a session gets the note about changed instructions (gateway_chat._instructions_record).
+
+    `seen` is the revision that the session last saw, or None. `session` is the session row of Hermes, or None when
+    Hermes has no row yet. Hermes builds the system prompt of a new session from the current files, and a continuing
+    session keeps it. So a new session gets no note: no row, or a row without a message, as after /new. A session gets
+    the note when it saw another revision. A session without a revision on record, for example from an earlier Coconut
+    or after a compression (forget_revision), gets it when it started before the newest change of the files."""
+    if session is None:
+        return False
+    if seen is not None:
+        return seen != record.get('revision')
+    if session.get('message_count') == 0:
+        return False
+    started, changed = session.get('started_at'), record.get('changed_at')
+    return started is not None and changed is not None and started < changed
+
+
+def compresses(event) -> bool:
+    """Whether a Coconut event is /compress: the compression that the adapter starts after a turn
+    (adapter.CoconutAdapter._compress), or the command that the person typed."""
+    return (getattr(getattr(event, 'message_type', None), 'value', None) == 'command'
+            and (event.text or '').split()[:1] == ['/compress'])
+
+
+def forget_revision(session):
+    """Before a compression of a session, forget the revision of the instructions that it saw.
+
+    The summary of the compression replaces the message with the note, and Hermes keeps the stored system prompt
+    (gateway /compress seeds it). Without a revision on record, the next turn gets the note again when the session
+    started before the newest change of SOUL.md (instructions_note_due). SessionDB has no delete of a meta key, so the
+    value is empty."""
+    SEEN_REVISIONS.pop((str(session[0]), session[1]), None)
+    try:
+        from hermes_state import SessionDB
+        db = SessionDB(db_path=session[0])
+        try:
+            db.set_meta(INSTRUCTIONS_KEY + session[1], '')
+        finally:
+            db.close()
+    except Exception:
+        LOG.exception('Coconut: a session could not forget the revision of its instructions.')
+
+
 def add_records(event, records, session):
     """The rewrite of the turn's own text with the records that its session does not hold yet.
 
@@ -535,45 +598,77 @@ def add_records(event, records, session):
     compression, the next turn gets each record again whose text the session lost. After /new or a reset of Hermes,
     or on a Hermes that compresses into a new session, the session is new. A new session has no key, so its first
     turn gets every record. Without a session of the bot's conversation (`session` None) the turn gets every record
-    too. When the turn ends, `commit_records` notes the IDs of the records that the turn added."""
-    new = records
-    if session is not None:
+    too. When the turn ends, `commit_records` notes the IDs of the records that the turn added.
+
+    The record of the instructions is no record of data. It adds a note before the records once for each change
+    (instructions_note_due). It adds none for a marked record (`noted`) and never a second copy of a note that the
+    turn's text already has. Without a session of the bot's conversation, the turn gets no note. A turn opens the state
+    database only for data records or for a revision that the session did not see in this process (SEEN_REVISIONS)."""
+    instructions = next((record for record in records if record.get('kind') == 'instructions'), None)
+    new = records = [record for record in records if record.get('kind') != 'instructions']
+    note, revision = '', None
+    if session is not None and instructions is not None:
+        if SEEN_REVISIONS.get((str(session[0]), session[1])) != instructions.get('revision'):
+            revision = instructions.get('revision')
+        elif not records:
+            # The steady turn: the session saw this revision, and the turn has no data records.
+            return None
+    if session is not None and (records or revision):
         try:
             from hermes_state import SessionDB
             db = SessionDB(db_path=session[0])
             try:
-                noted = set(json.loads(db.get_meta(RECORDS_KEY + session[1]) or '[]'))
-                if any(record['id'] in noted for record in records):
-                    text = session_text(db, session[1])
-                    new = [record for record in records
-                           if record['id'] not in noted or _one_space(record['text']) not in text]
+                if records:
+                    noted = set(json.loads(db.get_meta(RECORDS_KEY + session[1]) or '[]'))
+                    if any(record['id'] in noted for record in records):
+                        text = session_text(db, session[1])
+                        new = [record for record in records
+                               if record['id'] not in noted or _one_space(record['text']) not in text]
+                if revision:
+                    # An empty value: the session forgot its revision (forget_revision).
+                    seen = db.get_meta(INSTRUCTIONS_KEY + session[1]) or None
+                    if seen is not None:
+                        _remember_revision(session[0], session[1], seen)
+                    # The rules read the session row only without a revision on record.
+                    row = db.get_session(session[1]) if seen is None else {}
+                    # A marked record: the turn's own text has the note of an answered card (resume_prompt).
+                    if (not instructions.get('noted') and instructions_note_due(instructions, seen, row)
+                            and _one_space(instructions['text']) not in _one_space(event.text or '')):
+                        note = '\n\n' + instructions['text']
+                    if seen == revision:
+                        revision = None
             finally:
                 db.close()
         except Exception:
             LOG.exception('Coconut: the records of a session could not be read. The turn gets every record.')
-            new = records
-    if session is not None and new:
-        PENDING_RECORDS[str(event.message_id)] = (session[0], session[1], [record['id'] for record in new])
-    if not new:
+            new, note, revision = records, '', None
+    if session is not None and (new or revision):
+        PENDING_RECORDS[str(event.message_id)] = (session[0], session[1], [record['id'] for record in new], revision)
+    if not (new or note):
         return None
-    return {'action': 'rewrite', 'text': (event.text or '') + records_text(new)}
+    return {'action': 'rewrite', 'text': (event.text or '') + note + records_text(new)}
 
 
 def commit_records(turn, held=True):
     """Note the IDs of the records that a turn added to its session, when the session saved the turn's text. The key
     holds the IDs that the turns added. The session holds a record only while a user message still has its text
-    (add_records)."""
+    (add_records). Also note the revision of the instructions that the turn named."""
     pending = PENDING_RECORDS.pop(str(turn), None)
     if pending is None or not held:
         return
-    path, session, identities = pending
+    path, session, identities, revision = pending
     try:
         from hermes_state import SessionDB
         db = SessionDB(db_path=path)
         try:
-            kept = [identity for identity in json.loads(db.get_meta(RECORDS_KEY + session) or '[]')
-                    if identity not in identities]
-            db.set_meta(RECORDS_KEY + session, json.dumps((kept + identities)[-RECORDS_KEPT:]))
+            if identities:
+                kept = [identity for identity in json.loads(db.get_meta(RECORDS_KEY + session) or '[]')
+                        if identity not in identities]
+                db.set_meta(RECORDS_KEY + session, json.dumps((kept + identities)[-RECORDS_KEPT:]))
+            if revision:
+                # The session has seen this revision, with or without the note.
+                db.set_meta(INSTRUCTIONS_KEY + session, revision)
+                _remember_revision(path, session, revision)
         finally:
             db.close()
     except Exception:
