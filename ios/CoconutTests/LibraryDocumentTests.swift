@@ -33,16 +33,111 @@ final class LibraryDocumentTests: XCTestCase {
                          document("signups", bot: "tuner", day: 4), document("checklist", bot: "desk", day: 3, pinned: true),
                          document("old", bot: "tuner", day: 1, pinned: false),
                          document("lost", bot: "deleted", day: 8, pinned: true)]
-        let sections = LibrarySections(documents: documents, bots: [bot("tuner"), bot("desk")])
+        let sections = LibrarySections(documents: documents, bots: [bot("tuner"), bot("desk")], showsPinned: true)
         XCTAssertEqual(sections.pinned.map(\.key), ["revenue", "checklist"])
         // The pinned document of Tuner is its latest update, so Tuner stays before Desk.
         XCTAssertEqual(sections.groups.map(\.owner.id), ["tuner", "desk"])
         XCTAssertEqual(sections.groups.map { $0.documents.map(\.key) }, [["signups", "old"], ["notes"]])
         // The details of one bot show only its documents. A bot with only pinned documents has no group.
         let desk = LibrarySections(documents: documents.filter { $0.key != "notes" }, bots: [bot("tuner"), bot("desk")],
-                                   botId: "desk")
+                                   botId: "desk", showsPinned: true)
         XCTAssertEqual(desk.pinned.map(\.key), ["checklist"])
         XCTAssertTrue(desk.groups.isEmpty)
+    }
+
+    private static func pinBot(_ id: String, pinned: Bool = false) -> Bot {
+        Bot(id: id, sessionId: "session-\(id)", name: id, role: "", avatar: "sparkle", color: "777777",
+            instructions: "", status: "idle", lastMessage: "", unreadCount: 0, archived: false,
+            createdAt: "2026-11-01T12:00:00Z", pinned: pinned)
+    }
+
+    private static func pinPage(_ key: String, bot: String, day: Int, pinned: Bool? = nil) -> BotDocument {
+        BotDocument(id: key, botId: bot, key: key, title: key, format: "markdown", version: 1,
+                    createdAt: "2026-11-01T12:00:00Z", updatedAt: "2026-11-0\(day)T12:00:00Z", pinned: pinned)
+    }
+
+    /// The Library of the Mac has no section "Pinned": the sidebar shows the pinned pages. A pinned page stays in the
+    /// group of its bot, in the order of its update. The iPhone keeps the section.
+    func testTheLibraryHasThePinnedSectionOnTheIPhoneAndNotOnTheMac() {
+        let bots = [Self.pinBot("tuner"), Self.pinBot("desk")]
+        let documents = [Self.pinPage("notes", bot: "desk", day: 5),
+                         Self.pinPage("revenue", bot: "tuner", day: 7, pinned: true),
+                         Self.pinPage("signups", bot: "tuner", day: 4)]
+        let mac = LibrarySections(documents: documents, bots: bots, showsPinned: false)
+        XCTAssertFalse(mac.showsPinned)
+        XCTAssertTrue(mac.pinned.isEmpty)
+        XCTAssertEqual(mac.groups.map(\.owner.id), ["tuner", "desk"])
+        XCTAssertEqual(mac.groups.map { $0.documents.map(\.key) }, [["revenue", "signups"], ["notes"]])
+        XCTAssertEqual(mac.groups[0].documents.map(\.isPinned), [true, false], "The pinned row has the mark.")
+        let phone = LibrarySections(documents: documents, bots: bots, showsPinned: true)
+        XCTAssertEqual(phone.pinned.map(\.key), ["revenue"])
+        XCTAssertEqual(phone.groups.map { $0.documents.map(\.key) }, [["signups"], ["notes"]])
+        #if os(macOS)
+        XCTAssertFalse(LibrarySections.platformShowsPinned)
+        XCTAssertFalse(LibrarySections(documents: documents, bots: bots).showsPinned)
+        #else
+        XCTAssertTrue(LibrarySections.platformShowsPinned)
+        XCTAssertTrue(LibrarySections(documents: documents, bots: bots).showsPinned)
+        #endif
+    }
+
+    /// The section "Pinned" of the Mac sidebar: the pinned bots, then the pinned pages in the order of the pinned list
+    /// of the Library, newest update first. A page of an unknown bot stays hidden. The section shows when it has a bot
+    /// or a page.
+    func testTheSidebarPinsThePinnedBotsAndThenThePinnedPages() {
+        let bots = [Self.pinBot("tuner", pinned: true), Self.pinBot("desk")]
+        let plain = Self.pinPage("plain", bot: "tuner", day: 8)
+        let documents = [Self.pinPage("old", bot: "desk", day: 2, pinned: true),
+                         Self.pinPage("new", bot: "tuner", day: 6, pinned: true), plain,
+                         Self.pinPage("lost", bot: "gone", day: 9, pinned: true)]
+        let both = SidebarPins(pinnedBots: [bots[0]], documents: documents, bots: bots)
+        XCTAssertEqual(both.bots.map(\.id), ["tuner"])
+        XCTAssertEqual(both.pages.map(\.key), ["new", "old"])
+        XCTAssertFalse(both.isEmpty)
+        let onlyBots = SidebarPins(pinnedBots: [bots[0]], documents: [plain], bots: bots)
+        XCTAssertTrue(onlyBots.pages.isEmpty)
+        XCTAssertFalse(onlyBots.isEmpty)
+        let onlyPages = SidebarPins(pinnedBots: [], documents: documents, bots: bots)
+        XCTAssertEqual(onlyPages.pages.map(\.key), ["new", "old"])
+        XCTAssertFalse(onlyPages.isEmpty)
+        XCTAssertTrue(SidebarPins(pinnedBots: [], documents: [plain], bots: bots).isEmpty)
+        XCTAssertTrue(SidebarPins(pinnedBots: [], documents: [], bots: bots).isEmpty)
+    }
+
+    /// A document card in a chat on the Mac selects the pinned row of a pinned page. Another page opens inside the
+    /// Library, and so does a page that the list does not have yet.
+    func testADocumentCardOpensThePinnedRowOrTheLibrary() {
+        let documents = [Self.pinPage("pinned", bot: "tuner", day: 2, pinned: true),
+                         Self.pinPage("plain", bot: "tuner", day: 3)]
+        XCTAssertEqual(MacPagePlace.card("pinned", documents: documents), .pinnedRow("pinned"))
+        XCTAssertEqual(MacPagePlace.card("plain", documents: documents), .inLibrary("plain"))
+        XCTAssertEqual(MacPagePlace.card("new", documents: documents), .inLibrary("new"))
+        XCTAssertEqual(MacPagePlace.card("pinned", documents: nil), .inLibrary("pinned"))
+    }
+
+    /// The page of a pinned row stays open when its pin goes, inside the Library. A deleted page shows the Library
+    /// list. Any other change of the list, and a list that did not load, keep the row.
+    func testThePageOfAPinnedRowAfterAChangeOfTheList() {
+        let pinned = Self.pinPage("page", bot: "tuner", day: 2, pinned: true)
+        let other = Self.pinPage("other", bot: "tuner", day: 3)
+        XCTAssertNil(MacPagePlace.afterChange(open: "page", documents: [pinned, other]))
+        XCTAssertNil(MacPagePlace.afterChange(open: "page", documents: nil))
+        var unpinned = pinned
+        unpinned.pinned = false
+        XCTAssertEqual(MacPagePlace.afterChange(open: "page", documents: [unpinned]), .inLibrary("page"))
+        XCTAssertEqual(MacPagePlace.afterChange(open: "page", documents: [other]), .libraryList)
+    }
+
+    /// The question before a delete says that the page goes for the team too when the person shares it with a team.
+    func testTheQuestionBeforeADeleteNamesTheTeamOfASharedPage() {
+        var page = Self.pinPage("notes", bot: "tuner", day: 2)
+        XCTAssertEqual(page.deleteMessage, "Coconut removes each version. You cannot undo this.")
+        page.audience = "team"
+        page.teams = [DocumentTeam(room: "r1", name: "Example Team")]
+        XCTAssertEqual(page.deleteMessage, "Coconut removes each version, also for your team. You cannot undo this.")
+        // A team page of another Mac cannot be deleted here, so it has no question.
+        page.team = DocumentTeam(room: "r1", name: "Example Team")
+        XCTAssertFalse(page.canDelete)
     }
 
     /// The Mac sends no pin value for a document that never had a pin, and a service from before pins sends none.
@@ -159,7 +254,8 @@ final class LibraryDocumentTests: XCTestCase {
     func testATeamBotIsAGroupInTheOrderOfItsLatestUpdate() throws {
         let list = try APIJSON.decoder().decode(DocumentList.self, from: Data(Self.teamList.utf8))
         let ada = Self.libraryBot("ada", name: "Ada")
-        let sections = LibrarySections(documents: list.documents, bots: [ada], teamBots: list.teamBots ?? [])
+        let sections = LibrarySections(documents: list.documents, bots: [ada], teamBots: list.teamBots ?? [],
+                                       showsPinned: true)
         // A pinned team page shows with the other pinned pages.
         XCTAssertEqual(sections.pinned.map(\.id), ["t-room-p2"])
         // Reporter has the latest update. A page of a team bot that the list does not name stays hidden.
@@ -170,11 +266,11 @@ final class LibraryDocumentTests: XCTestCase {
         XCTAssertNil(sections.groups[1].owner.teamName)
         // The inspector of a local bot shows no team page.
         let inspector = LibrarySections(documents: list.documents, bots: [ada], teamBots: list.teamBots ?? [],
-                                        botId: "ada")
+                                        botId: "ada", showsPinned: true)
         XCTAssertTrue(inspector.pinned.isEmpty)
         XCTAssertEqual(inspector.groups.map(\.owner.id), ["ada"])
         // A list without team bots keeps each team page hidden.
-        let withoutTeams = LibrarySections(documents: list.documents, bots: [ada])
+        let withoutTeams = LibrarySections(documents: list.documents, bots: [ada], showsPinned: true)
         XCTAssertEqual(withoutTeams.groups.map(\.owner.id), ["ada"])
         XCTAssertTrue(withoutTeams.pinned.isEmpty)
     }
@@ -232,6 +328,31 @@ final class LibraryDocumentTests: XCTestCase {
             try await waitUntil { store.documents?.first?.summary == "Second" }
             XCTAssertEqual(store.documents?.first?.summary, "Second")
             XCTAssertEqual(server.listRequests, 2)
+        }
+        #endif
+    }
+
+    /// The Mac sidebar loads the list on its own. That load shows no notice when it fails: the person did not ask for
+    /// it. A load that the person starts still shows one.
+    @MainActor
+    func testAQuietLoadOfTheLibraryShowsNoNoticeWhenItFails() async throws {
+        #if !(DEBUG && targetEnvironment(simulator))
+        throw XCTSkip("This HTTP fixture requires a debug simulator build.")
+        #else
+        var state = try PreviewStateFixture.load()
+        state.cursor = 10; state.syncVersion = 1
+        let server = try LibraryServer(state: APIJSON.encoder().encode(state), botId: state.bots[0].id,
+                                       cursor: state.cursor)
+        let address = try await server.start()
+        try await withPairedStore(address: address) { store in
+            server.stop()
+            store.error = nil
+            let quiet = await store.loadDocuments(quiet: true)
+            XCTAssertFalse(quiet)
+            XCTAssertNil(store.error)
+            let loud = await store.loadDocuments()
+            XCTAssertFalse(loud)
+            XCTAssertNotNil(store.error)
         }
         #endif
     }
