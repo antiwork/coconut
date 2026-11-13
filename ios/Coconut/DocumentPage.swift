@@ -247,9 +247,10 @@ struct DocumentPage {
     /* A table that page.js does not lay out (a cell of two columns, only a header, or a table that a script of the
        page makes later) scrolls inside itself and never moves the page. */
     table:not(.fitted) { display: block; overflow-x: auto; }
-    /* A tile takes the width that its number needs: a number never breaks. */
-    .metrics { display: flex; flex-wrap: wrap; gap: var(--space); }
-    .metrics > div { flex: 1 1 140px; background: var(--surface); border-radius: var(--radius); padding: 12px 16px; }
+    /* Tiles in balanced rows: page.js sets --columns, and the tiles of a shorter last row share its width. */
+    .metrics { display: flex; flex-wrap: wrap; gap: var(--space); --columns: 2; }
+    .metrics > div { flex: 1 1 calc((100% - (var(--columns) - 1) * var(--space)) / var(--columns)); min-width: 0;
+                     background: var(--surface); border-radius: var(--radius); padding: 12px 16px; }
     .metrics p { margin: 0; }
     .metrics .label { font-size: var(--size-1); color: var(--text-2); }
     .metrics .value { margin-top: 4px; font-size: var(--size-5); font-weight: 600; line-height: 1.2;
@@ -262,6 +263,19 @@ struct DocumentPage {
     svg text.quiet { font-weight: 400; opacity: 0.9; }
     figure { margin: 0 0 16px; }
     figure.chart.broken { color: var(--text-2); font-size: var(--size-2); }
+    /* A chart: a line of series names, the plot with hairlines and quiet numbers, then a quiet caption. */
+    /* Only the chart block of page.js: a chart that a bot draws by hand in an HTML page keeps its own look. */
+    figure.chart[data-spec] { min-width: 0; }
+    figure.chart[data-spec] svg { direction: ltr; }
+    figure.chart[data-spec] svg text { font-variant-numeric: tabular-nums; }
+    figure.chart[data-spec] svg { max-width: 100%; }
+    figure.chart[data-spec] [aria-label="y-grid"] line { stroke: var(--line); stroke-opacity: 1; stroke-width: 1;
+                                                         shape-rendering: crispEdges; }
+    figure.chart[data-spec] figcaption { font-size: var(--size-1); }
+    figure.chart[data-spec] .legend { display: flex; flex-wrap: wrap; gap: 4px 16px; margin: 0 0 8px;
+                                      font-size: var(--size-1); color: var(--text-2); }
+    figure.chart[data-spec] .legend .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%;
+                                           margin-right: 4px; }
     pre.mermaid { background: none; padding: 0; text-align: center; overflow-x: auto; }
     pre.mermaid svg { margin: 0 auto; }
     pre.mermaid .node rect, pre.mermaid .cluster rect { rx: 8px; ry: 8px; }
