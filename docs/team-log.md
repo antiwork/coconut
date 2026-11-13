@@ -9,7 +9,7 @@ A team has two kinds of Mac:
 - **A person's Mac** (a full install): its bots are the person's, and nobody else can ask them. The person shares a page of a bot with a team by one act on the page, and stops when they want. The bot of the page is then the author of the page in the team, and nothing more.
 - **A Mac for a team only** (see [Team-only mode](#team-only-mode)): its bots are the team's. Each page that such a bot saves with the audience "team" goes to the teams of the bot.
 
-Status: the relay has the room (`relay/src/room.js`). The Mac backend makes, joins, leaves and copies a room for the tools on the Mac, and it learns of a new entry at once through the socket of the room (see [Mac](#mac)). It shares the pages that a person shares, and the Library of the phone lists the team pages of the other Macs (see [Bots and pages](#bots-and-pages)). It keeps the Team chat and serves it to the phone, and the app lists the team bots and the people that a person can name with `@` (see [Team chat](#team-chat) and [Mentions of a person](#mentions-of-a-person)). A bot of a Mac for a team only answers in the Team chat (see [A bot answers](#a-bot-answers)). A message of another member reaches this Mac through the socket in about one second, and a person's Mac notifies its phones (see [Notifications](#notifications)). The Mac keeps the direct messages between two people and serves them to the phone, and the app shows them (see [Direct messages](#direct-messages)). The admin removes a member (see [Removal](#removal)), and the room then gets a new room key (see [Key change](#key-change)). The admin deletes a message of another member (see [The admin deletes a message](#the-admin-deletes-a-message)). This part is not built yet:
+Status: the relay has the room (`relay/src/room.js`). The Mac backend makes, joins, leaves and copies a room for the tools on the Mac, and it learns of a new entry at once through the socket of the room (see [Mac](#mac)). It shares the pages that a person shares, and the Library of the phone lists the team pages of the other Macs (see [Bots and pages](#bots-and-pages)). It keeps the Team chat and serves it to the phone, and the app lists the team bots and the people that a person can name with `@` (see [Team chat](#team-chat) and [Mentions of a person](#mentions-of-a-person)). A bot of a Mac for a team only answers in the Team chat (see [A bot answers](#a-bot-answers)). A message of another member reaches this Mac through the socket in about one second, and a person's Mac notifies its phones (see [Notifications](#notifications)). The Mac keeps the direct messages between two people and serves them to the phone, and the app shows them (see [Direct messages](#direct-messages)). The admin removes a member (see [Removal](#removal)), and the room then gets a new room key (see [Key change](#key-change)). The admin deletes a message of another member (see [The admin deletes a message](#the-admin-deletes-a-message)). The admin makes more chats with a name in a team (see [Chats of a team](#chats-of-a-team)). This part is not built yet:
 
 - A call of `GET .../members` that finds a member that left without a `delete` entry.
 
@@ -83,16 +83,17 @@ Each payload has these fields:
 | `delete` | `false` | The member of the replaced entry | None. It replaces an entry that its author deletes. |
 | `bot` | `true` | The Mac that runs the bot, one entry for each bot | `name` (1 to 80 characters), `avatar` (at most 80), `color` (at most 20), `open` (`true` for a bot that answers each member, or absent) |
 | `page` | `true` | The Mac that runs the bot of the page, one entry for each document | `bot` (the entry ID of the `bot` entry), `key`, `title`, `format`, `summary` (or null), `content`, `version` (the version of the document on its Mac), `expires_at` (or null) |
-| `message` | `false` | Any member | `text` (1 to 16,000 characters), `reply_to` (an entry ID, or absent), `mentions` (at most 16 entry IDs, or absent), `bot` (the entry ID of a `bot` entry of the same member, or absent). See [Team chat](#team-chat). |
+| `message` | `false` | Any member | `text` (1 to 16,000 characters), `reply_to` (an entry ID, or absent), `mentions` (at most 16 entry IDs, or absent), `bot` (the entry ID of a `bot` entry of the same member, or absent), `chat` (the entry ID of a `chat` entry, or absent for the Team chat). See [Team chat](#team-chat). |
 | `direct` | `false` | A person's Mac | `box`: the text of a direct message to one other member, sealed a second time with the pair key of the two members. See [Direct messages](#direct-messages). |
 | `remove` | `true` | The admin, one entry for each removed member | `member` (the member ID of the removed member), `name` (the last name that the admin's Mac showed for it, or absent). See [Removal](#removal). |
-| `typing` | `false` | Any member, one entry for its person and one for each of its bots in each room | `on` (`true` or `false`), `bot` (the entry ID of a `bot` entry of the same member, or absent for the person of the Mac). See [Typing](#typing). |
+| `typing` | `false` | Any member, one entry for its person and one for each of its bots in each room | `on` (`true` or `false`), `bot` (the entry ID of a `bot` entry of the same member, or absent for the person of the Mac), `chat` (the entry ID of a `chat` entry, or absent for the Team chat). See [Typing](#typing). |
+| `chat` | `true` | The admin, one entry for each chat of the team | `name` (1 to 50 characters). See [Chats of a team](#chats-of-a-team). |
 | `key` | `true` | The admin, one entry for each new epoch | `epoch` (the new epoch), `agreement` (the public agreement key of the admin), `boxes` (for each member ID, the room key of the new epoch in a box for that member). See [Key change](#key-change). |
 | `erase` | `false` | The admin, one entry for each deleted message | `entry` (the entry ID of a `message` entry of another member). See [The admin deletes a message](#the-admin-deletes-a-message). |
 
 The kinds `member`, `delete`, `bot`, `page`, `message`, `direct`, `remove`, `key` and `erase` are complete. See [Bots and pages](#bots-and-pages) for the rules of `bot` and `page`, [Team chat](#team-chat) for `message`, and [Direct messages](#direct-messages) for `direct`. Each other kind gets its fields in the pull request that builds it. A new kind needs no change of the relay and no change of the body.
 
-The kind `typing` is complete too. See [Typing](#typing).
+The kinds `typing` and `chat` are complete too. See [Typing](#typing) and [Chats of a team](#chats-of-a-team).
 
 A key in a payload is unpadded base64url, as in a pairing setup.
 
@@ -109,7 +110,7 @@ A Mac writes the `name` of its own `member` entry by a stricter rule: 1 to 80 co
    - If the Mac has no room key for the epoch, and the epoch is before the first epoch that the Mac has a key for, skip the entry. A member that joins later never gets the keys of earlier epochs.
    - If the epoch is later, keep the bytes until the key comes in a `key` entry. Then open them again.
 3. If the Mac already has this entry ID, accept the entry only from the same member and only with a higher `rev`.
-4. Accept `remove`, `key` and `erase` only from the admin. The admin is the member ID that the welcome names.
+4. Accept `remove`, `key`, `erase` and `chat` only from the admin. The admin is the member ID that the welcome names.
 5. If the kind is unknown, keep the payload and show nothing.
 
 ## Relay routes
@@ -324,16 +325,16 @@ A Mac can join at the time of the change: it took its invite before the removal 
 
 #### The kept entries again
 
-A Mac that joins after the change gets only the new key in its welcome, so it cannot open a kept entry of an older epoch. So each Mac, after it moved to a new epoch, writes each of its own kept `member`, `bot` and `page` entries again with the new key: the same entry ID, the next `rev`, and the same fields. The admin does not write its `remove` and `key` entries again.
+A Mac that joins after the change gets only the new key in its welcome, so it cannot open a kept entry of an older epoch. So each Mac, after it moved to a new epoch, writes each of its own kept `member`, `bot`, `page` and `chat` entries again with the new key: the same entry ID, the next `rev`, and the same fields. The admin does not write its `remove` and `key` entries again.
 
 - The store keeps the epoch of the body of each entry (`team_entries`). So the Mac finds the entries that are left after a stop, and a repeat writes nothing.
 - The Mac writes at most 100 entries again in one minute in one room, and the rest at the next passes. The relay takes 300 writes of one member in one minute, so the person can still write in the chat.
 
 A write again changes nothing that a person sees. A reader follows this rule:
 
-- A new write of a `member`, `bot` or `page` entry with the same fields as the write that the store has (each field except `rev` and `at`) is a write again.
+- A new write of a `member`, `bot`, `page` or `chat` entry with the same fields as the write that the store has (each field except `rev` and `at`) is a write again.
 - A write again goes into `team_entries` as each other write does: its `seq`, its `rev`, its epoch and its payload. So the rule of `rev` and the work of the kept entries above stay correct.
-- A write again changes nothing that a person sees. A page keeps its `created_at` and its `updated_at`, a member and a bot keep their rows and their names, and no event goes to the phone. The version of a page for the phone is the `rev` of its entry, so it can move by one, with no event. The Mac that wrote again keeps its own rows the same way.
+- A write again changes nothing that a person sees. A page keeps its `created_at` and its `updated_at`, a member, a bot and a chat keep their rows and their names, and no event goes to the phone. The version of a page for the phone is the `rev` of its entry, so it can move by one, with no event. The Mac that wrote again keeps its own rows the same way.
 - A Mac that reads the entry for the first time, for example a member that joins later, takes it as it comes.
 - A real change after a write again, for example a new version of a page, gets a new time and an event, as before.
 - The move of a room to a new epoch adds no event, because the phone shows no epoch.
@@ -388,9 +389,11 @@ Everything else is in `coconut.sqlite3`:
 | `team_page_entries` | The entry ID of each document of this Mac that a room has or had as a `page` entry. One document keeps one entry ID. |
 | `team_bots` | A view of `team_entries`: the valid `bot` entries of the other members, and the `bot` entries of this Mac with the profile that it wrote. |
 | `team_pages` | A view of `team_entries`: the `page` entries of the other members, with the pin of this Mac and the time of the first write that this Mac saw, and the `page` entries of this Mac with the bot and the version that it wrote. |
-| `team_messages` | A view of `team_entries`: one row for each valid `message` entry, with its `first`, member, bot, text, reply, mentions, the times of the relay, and whether it was edited. An index on the room and `first` gives a page of messages and the unread count without a scan of the room. |
+| `team_messages` | A view of `team_entries`: one row for each valid `message` entry, with its `first`, member, bot, chat, text, reply, mentions, the times of the relay, and whether it was edited. An index on the room, the chat and `first` gives a page of messages and the unread count of one chat without a scan of the room. |
 | `team_names` | The last name that the store showed for each member and each bot of a room. A `delete` entry does not remove it. |
-| `team_reads` | The read position of this Mac in the chat of each room. |
+| `team_reads` | The read position of this Mac in the Team chat of each room. |
+| `team_chats` | A view of `team_entries`: the valid `chat` entries of the admin, with the name, the `first` and the time of the first write that this Mac saw. See [Chats of a team](#chats-of-a-team). |
+| `team_chat_reads` | The read position of this Mac in each named chat that the person read: one row for each room and chat. |
 | `team_triggers` | Only on a team-only Mac: the messages that start a turn of a bot of this Mac, in the order in which the Mac accepted them, each with a mark for a turn that began. See [A bot answers](#a-bot-answers). |
 | `team_directs` | The direct messages that this Mac shows: one row for each `direct` entry whose box opens for this Mac, with the other member of its chat. See [Direct messages](#direct-messages). |
 | `team_direct_reads` | The read position of this Mac in each direct chat: one row for each room and other member. |
@@ -499,6 +502,7 @@ A room in an answer has what the Team screen shows, so the app needs no other re
 | `unread`, `last_message` | The unread count of the Team chat, from 0 to 99, and the newest message that the chat shows: `first`, `member`, `member_name`, `this_mac`, `bot`, `bot_name`, `text` (its first 200 characters) and `created_at`, or null. `member`, `this_mac` and `bot` have the values of a message in a page, so the Chats list of the app can show "You" for a message of this Mac's person: `this_mac` is true and `bot` is null. An older service sends none of the three. See [Team chat](#team-chat). |
 | `mentioned`, `mention_first` | `mentioned` is true while an unread message of the Team chat names this Mac's person. The rule of the unread count decides which message is unread. `mention_first` is the `first` of the newest such message, and it is absent when `mentioned` is false. An older service sends neither, so the app shows people in its `@` list only for a room with `mentioned`. See [Mentions of a person](#mentions-of-a-person). |
 | `typing` | Who types in the Team chat now, the earliest start first: `member`, `name`, `bot`, `bot_name` and `seconds` for each other subject. See [Typing](#typing). An older service sends none. |
+| `chats`, `can_manage_chats` | The named chats of the team, and true on the admin's Mac of an `active` room. See [Chats of a team](#chats-of-a-team). An older service sends neither. |
 | `relay`, `member`, `admin`, `epoch` | For the tools. |
 | `directs` | Only for a request with `X-Coconut-Team: direct` from a paired device. Then each member also has `direct`. See [Direct messages](#direct-messages). |
 
@@ -629,12 +633,13 @@ The routes have the authorization of the other team routes, and a write with an 
 
 | Request | Answer |
 | --- | --- |
-| `GET /v1/team/rooms/<room>/messages?before=<first>&limit=<n>` | One page, newest first: `{room, messages, before}`. `limit` is 1 to 100, and 50 without it. `before` of the answer is the `first` to ask for the next page, or null when no older message exists. Also a room that is not `active` has its history. |
-| `POST /v1/team/rooms/<room>/messages`, body `{text, reply_to?, mentions?}` | Writes a message of the person and answers `{room, message}`. `reply_to` is the `id` of a message that the chat shows. `mentions` is a list of member IDs of `members` and `id` values of `bots` of `GET /v1/team/rooms`. The Mac writes the entry IDs of the contract. With an `Idempotency-Key`, the entry ID of the message comes from the room, the device and the key. So a repeat after a write without an answer finds that write and sends no second message. |
+| `GET /v1/team/rooms/<room>/messages?before=<first>&limit=<n>&chat=<id>` | One page, newest first: `{room, messages, before}`. `limit` is 1 to 100, and 50 without it. `before` of the answer is the `first` to ask for the next page, or null when no older message exists. Also a room that is not `active` has its history. |
+| `POST /v1/team/rooms/<room>/messages`, body `{text, reply_to?, mentions?, chat?}` | Writes a message of the person and answers `{room, message}`. `reply_to` is the `id` of a message that the chat shows. `mentions` is a list of member IDs of `members` and `id` values of `bots` of `GET /v1/team/rooms`. The Mac writes the entry IDs of the contract. With an `Idempotency-Key`, the entry ID of the message comes from the room, the device and the key. So a repeat after a write without an answer finds that write and sends no second message. |
 | `PATCH /v1/team/rooms/<room>/messages/<id>`, body `{text}` | Changes the text of a message of this Mac's person, and answers `{room, message}`. The other fields stay. The same text writes nothing. A message of another member or of a bot answers 403. |
 | `DELETE /v1/team/rooms/<room>/messages/<id>` | Removes a message of this Mac's person with a `delete` entry, and answers `{room, id, deleted: true}`. When the entry is already a `delete` entry of this Mac, for example after a delete without an answer, the Mac gives the same answer and writes nothing. An ID that the store does not have answers 404. On the admin's Mac, a message of another member or of a bot gets an `erase` entry (see [The admin deletes a message](#the-admin-deletes-a-message)). On another Mac, an entry of another member answers 403. |
-| `POST /v1/team/rooms/<room>/read`, body `{first}` | Moves the read position, and answers `{room, read, unread}`. |
-| `POST /v1/team/rooms/<room>/typing` | The person types in the Team chat, and answers `{room}`. See [Typing](#typing). |
+| `POST /v1/team/rooms/<room>/read`, body `{first, chat?}` | Moves the read position, and answers `{room, read, unread}`. |
+| `POST /v1/team/rooms/<room>/typing`, body `{chat?}` | The person types in the Team chat, and answers `{room}`. See [Typing](#typing). |
+| The routes of the named chats | See [Chats of a team](#chats-of-a-team). Without `chat`, each route above means the Team chat. |
 | `PUT /v1/team/rooms/<room>/notifications`, body `{enabled}` | Turns the notifications of the room on or off for the phones of this Mac, and answers `{room, notifications}`. See [Notifications](#notifications). |
 
 A message in an answer:
@@ -645,6 +650,7 @@ A message in an answer:
 | `member`, `member_name`, `this_mac` | The member ID of the writer, its name (see rule 7), and true for a message of this Mac. |
 | `bot`, `bot_name` | The `t-<room ID>-<entry ID>` ID of the team bot that wrote the message, and the last name that `team_names` has for it, also for a bot that the team no longer has. Both are null for a message of a person. |
 | `text`, `reply_to` | The text, and the `id` of the message that this one answers, or null. |
+| `chat` | The entry ID of the named chat of the message, or null for the Team chat. |
 | `reply` | The message that `reply_to` names, so the app can quote it without a second request: `id`, `member`, `member_name`, `bot`, `bot_name`, and the first 200 code points of its `text`. Null when `reply_to` is null, or when the chat does not show that message: removed, not valid, or never seen by this Mac. One query reads the answered messages of a whole page. |
 | `mentions` | For each mention: the member ID of a member, or the `t-` ID of a team bot. A mention that the store cannot name stays out. |
 | `created_at`, `edited_at` | The times of rule 6. `edited_at` is null for a message without an edit. |
@@ -719,7 +725,7 @@ Rules of a trigger. A `message` entry starts a turn of a bot of this Mac when ea
 
 The Mac keeps the triggers in `team_triggers`, in the order in which it accepted them, in the transaction of the accept. At most 8 triggers wait for one bot in one room. The Mac skips a trigger over that bound, with a log line. One thread runs the triggers of one bot in one room one at a time. Before a turn, one transaction checks rules 2, 3 and 5 again, checks that the message still shows (a removal skips the trigger), and marks the trigger as started. When the turn ends, the row goes. So a trigger runs at most once: a row that is started at a start of the service is a turn that a stop cut off, and the bot posts a notice instead of a second run, which could repeat a tool action. An update drains the service: no new turn starts, and the running turn ends first.
 
-The turn goes to the Hermes gateway of the bot through the gateway bridge (`team` of `GatewayBridge.run_turn`): the text, the member ID and the name of the sender, the team as a group chat with the chat ID `<bot ID>:team:<room ID>`, the rules of the chat, and as quoted context at most 20 messages since the last message of the bot, each with the name of its writer. The context is data, not instructions. A turn has no task, no card and no row in `tasks`, `messages` or `decisions`. It stops after 30 minutes.
+The turn goes to the Hermes gateway of the bot through the gateway bridge (`team` of `GatewayBridge.run_turn`): the text, the member ID and the name of the sender, the team as a group chat with the chat ID `<bot ID>:team:<room ID>` (`<bot ID>:team:<room ID>:<chat entry ID>` in a named chat, see [Chats of a team](#chats-of-a-team)), the rules of the chat, and as quoted context at most 20 messages of the same chat since the last message of the bot, each with the name of its writer. The context is data, not instructions. A turn has no task, no card and no row in `tasks`, `messages` or `decisions`. It stops after 30 minutes.
 
 Rules of a reply:
 
@@ -780,6 +786,73 @@ What the phone gets:
 - The app shows one row under the newest message, above the composer: the small face of each subject, the text, and three dots. The texts are "Grace is typing", "Grace and Lin are typing", and for three or more "3 people are typing". A bot counts as one subject with its name. The row of the team in the Chats list and in the Mac sidebar shows the same text in place of the newest message.
 
 No log line has a name. Typing in a direct chat is not built yet: a `typing` entry is sealed only with the room key, so it would tell each member that two people talk.
+
+#### Chats of a team
+
+A team has the Team chat, and the admin can make more chats with a name, for example "Design" and "Launch". Each member of the team reads each chat. A chat is one kept entry of the admin, and a message names its chat. So the relay and the helper need no change.
+
+The payload of a `chat` entry: `{"kind": "chat", "rev": n, "at": "...", "name": "Design"}`. The entry is kept. The ID of a chat is its entry ID.
+
+- The admin's Mac writes the entry, and only the admin: rule 4 of a reader refuses the entry of another member. The entry ID is 16 random bytes, or for a request with an `Idempotency-Key` it comes from the room, the device and the key, as for a message.
+- A rename is a new write of the same entry with the next `rev`. A removal is a `delete` entry over it.
+- The admin's Mac writes a `name` by the strict rule of a member name, with 1 to 50 code points: no space at its start or end, no line break, no control character. A reader takes each `name` of 1 to 50 code points of valid Unicode text.
+- The admin's Mac writes the entry again after a key change, as each other kept entry (see [The kept entries again](#the-kept-entries-again)).
+- `message` and `typing` have the field `chat`: the entry ID of a `chat` entry, or absent for the Team chat. A reader takes null as an absent field.
+- At most 20 chats in a room. The admin's Mac refuses the 21st. The relay keeps 512 kept entries of one member, so the chats fit.
+
+Rules for a Mac that reads a `chat` entry:
+
+1. Rule 4 of a reader accepts the entry only from the admin.
+2. The entry is valid when `name` has 1 to 50 code points of valid Unicode text. An entry that does not fit stays in the store and shows nothing.
+3. A valid entry shows a chat with that name. Its `created_at` is the `at` of the first write that this Mac saw. The chats of a room sort by `first`, so a rename keeps the place of a chat.
+4. A removed chat, by a `delete` entry or by a new write that does not fit, goes on this Mac: the chat leaves the list, its rows of `team_messages` and its read position go, its waiting notifications send nothing, its waiting triggers go, and a running turn of a bot in it stops. A message for it that comes later shows nothing.
+5. A Mac with an older Coconut does not know the kind. It keeps the entry by rule 5 of a reader and shows nothing.
+
+Rules for a message in a named chat:
+
+1. A message is valid only when `chat` is an entry ID or absent. A message that does not fit stays in the store and shows nothing.
+2. A message with a `chat` shows only when `chat` names a valid `chat` entry of the admin. The `chat` entry can come after the message, so the check runs when the Mac reads the chat, as for `bot`.
+3. `reply_to` shows only when the answered message is in the same chat. A reply across chats has no quote, and it starts no turn of the bot of the answered message.
+4. `erase` does not change: it names a message, in each chat.
+5. A Mac with an older Coconut ignores the field `chat` (rule 2 of the readers of a message). So it shows a message of a named chat in its Team chat, and its bot answers there. Nothing gets lost. The two chats come together again when that Mac gets the update.
+
+What each Mac keeps for each chat on its own, the Team chat and each named chat:
+
+- The messages: `team_messages` has the `chat` of each message, and null for the Team chat. The index on the room, the chat and `first` gives a page, the unread count and the newest message of one chat without a scan of the room.
+- The read position: `team_reads` for the Team chat, as before, and `team_chat_reads` for a named chat. The position of a named chat starts at the later of the `first` of the `member` entry of this Mac and the `first` of the `chat` entry. So the history from before a join, and the messages that came before the chat showed, do not count as unread. It moves only forward, and never past the newest message of that chat.
+- The unread count, `mentioned` and `mention_first` follow the rules of the Team chat, with the messages and the read position of the chat.
+- Typing: a Mac keeps one `typing` entry for each subject in a room, as before, so a person types in one chat at a time. The `chat` of the entry says where. A person's Mac writes at most one entry in 4 seconds for each room and chat.
+
+The routes. Each one has the authorization of the other team routes, and a write with an `Idempotency-Key` is safe to repeat (see [Repeat a write](#repeat-a-write)). Only a paired device makes, renames and deletes a chat: the token of the bridge file gets 403. Only the admin's Mac does it: another Mac answers 403 with "Only the admin of the team can change its chats." A room that is not `active` answers 409.
+
+| Request | Answer |
+| --- | --- |
+| `POST /v1/team/rooms/<room>/chats`, body `{name}` | Makes a chat, and answers `{room, chat}`: the room view and the ID of the chat. A name that another chat of the room has, compared with `casefold`, answers 409 with "This team already has a chat with this name." The 21st chat answers 409 with "A team can have at most 20 chats." |
+| `PATCH /v1/team/rooms/<room>/chats/<id>`, body `{name}` | Renames the chat, and answers `{room, chat}`. The same name writes nothing. The rules of a name are those of a new chat. |
+| `DELETE /v1/team/rooms/<room>/chats/<id>` | Removes the chat with a `delete` entry, and answers `{room, chat}`. A chat that is already removed gets the same answer and writes nothing. |
+| `GET .../messages?chat=<id>`, `POST .../messages` with `chat`, `POST .../read` with `chat`, `POST .../typing` with `chat` | The routes of the Team chat for a named chat. Without `chat`, each route means the Team chat, as before. An unknown or removed chat answers 404 with "This chat is no longer in the team." `PATCH` and `DELETE` of a message need no chat, because the message has one. |
+
+The room view of `GET /v1/team/rooms`:
+
+- `chats`: one item for each named chat, in the order of `first`: `id`, `name`, `created_at`, and the fields that the room has for the Team chat: `unread`, `last_message`, `mentioned`, `mention_first` (only when `mentioned` is true) and `typing`.
+- `can_manage_chats`: true on the admin's Mac of an `active` room. The app shows "New chat" and the actions of a chat only with this field.
+- The fields of the room itself stay the fields of the Team chat, so an older app shows the Team chat as before and no named chat.
+
+Events: a new, renamed or removed chat adds `team.updated`. A change inside a named chat adds `team_messages.updated` and `team_typing.updated` with `{"team": <room ID>}`, as for the Team chat.
+
+Notifications follow the switch `notifications` of the room: one switch for each chat of the team. A message in a named chat changes three parts of [Notifications](#notifications):
+
+1. The subtitle of the sealed alert is the name of the chat and the name of the team: "Design · Example Team".
+2. `thread-id` is the room ID, a colon, and the ID of the chat. So the alerts of one chat group together.
+3. The `coconut` part has `"chat": <chat ID>`, as one message and as a group of the messages of that chat. A tap opens that chat. An older app reads `team` and opens the Team chat. A group of messages of more than one chat opens Inbox.
+
+A bot of a Mac for a team only answers in the chat where a person names it (see [A bot answers](#a-bot-answers)):
+
+- The trigger keeps the chat of its message. The quoted context has only messages of that chat. Each message of the reply, each notice and the `typing` entry of the bot carry the same `chat`.
+- Each chat is its own session in Hermes: the chat ID is `<bot ID>:team:<room ID>` for the Team chat and `<bot ID>:team:<room ID>:<chat entry ID>` for a named chat. The name of the group chat for Hermes is "<team> · <chat>".
+- The bound of 8 waiting triggers for one bot in one room stays, and one thread still runs the triggers of one bot in one room one at a time.
+
+No log line has the name of a chat.
 
 ### Direct messages
 

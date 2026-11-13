@@ -29,6 +29,7 @@ class TeamStoreTests(unittest.TestCase):
         self.addCleanup(self.db.close)
         self.db.executescript(team_store.SCHEMA)
         self.store = TeamStore(self.db)
+        self.store.migrate()
         for room in (ROOM, OTHER_ROOM):
             self.store.add_room(room=room, relay='https://relay.example', name='Example Team', member=MEMBER, admin=ADMIN,
                                 state=team_store.ACTIVE, epoch=0, profile='{}', created_at='2026-11-10T12:00:00Z')
