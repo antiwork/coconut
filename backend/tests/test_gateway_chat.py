@@ -409,6 +409,49 @@ class ServiceRoutingTests(unittest.TestCase):
         self.assertEqual(self.read('bots', self.bot['id'])['last_message'], 'I am well.')
         self.assertEqual(self.service.gateway_status()['connected_profiles'], [self.service.profiles.row(self.bot)['name']])
 
+    def instructions_records(self, text):
+        task = self.send(text)
+        adapter = Adapter(self.service.gateway_bridge, self.home, [{'kind': 'done', 'outcome': 'success'}])
+        adapter.start()
+        self.service._run_task(task['id'])
+        adapter.join(5)
+        self.assertEqual(self.read('tasks', task['id'])['status'], 'completed')
+        return [record for record in adapter.turns[0].get('records') or [] if record.get('kind') == 'instructions']
+
+    def test_a_turn_with_records_tells_the_plugin_the_revision_of_the_instructions(self):
+        # A continuing Hermes session keeps its first system prompt. The plugin adds the note once for each change of
+        # SOUL.md (hooks.add_records), so the turn names its revision and the time of its change. Hermes freezes the
+        # memory of a session by design, so a change of the memory files gives no note.
+        import hashlib
+        from coconut.native_conversation import SESSION_INSTRUCTIONS_CHANGED
+        (self.home / 'SOUL.md').write_text('Be brief.')
+        os.utime(self.home / 'SOUL.md', (1793546240, 1793546240))
+        (self.home / 'memories').mkdir(exist_ok=True)
+        (self.home / 'memories/USER.md').write_text('The person likes tables.')
+        os.utime(self.home / 'memories/USER.md', (1793546300, 1793546300))
+        revision = hashlib.sha256(b'Be brief.').hexdigest()
+        expected = [{'id': 'instructions:' + revision, 'kind': 'instructions', 'revision': revision,
+                     'changed_at': 1793546240, 'text': SESSION_INSTRUCTIONS_CHANGED.strip()}]
+        self.assertEqual(self.instructions_records('How are you?'), expected)
+        (self.home / 'memories/MEMORY.md').write_text('The bot saved a fact.')
+        self.assertEqual(self.instructions_records('And now?'), expected)
+
+    def test_a_turn_sends_no_instructions_record_without_a_readable_soul(self):
+        (self.home / 'SOUL.md').unlink(missing_ok=True)
+        self.assertEqual(self.instructions_records('How are you?'), [])
+        (self.home / 'other.md').write_text('Elsewhere.')
+        (self.home / 'SOUL.md').symlink_to(self.home / 'other.md')
+        self.assertEqual(self.instructions_records('How are you?'), [])
+
+    def test_a_turn_that_has_the_note_of_an_answered_card_marks_the_instructions_record(self):
+        # The answer to a card after a change already tells the bot to read its files again (resume_prompt). The
+        # plugin then adds no second note, but notes the revision (hooks.add_records).
+        from coconut.native_conversation import INSTRUCTIONS_CHANGED
+        (self.home / 'SOUL.md').write_text('Be brief.')
+        self.assertNotIn('noted', self.service._instructions_record(self.bot, 'Approved.')[0])
+        record = self.service._instructions_record(self.bot, 'Approved.\n' + INSTRUCTIONS_CHANGED + '{}')[0]
+        self.assertIs(record['noted'], True)
+
     def test_a_chat_turn_waits_for_the_gateway_and_runs_when_an_adapter_connects(self):
         task = self.send('Wait for the gateway.')
         runner = threading.Thread(target=self.service._run_task, args=(task['id'],), daemon=True)
@@ -497,8 +540,10 @@ class ServiceRoutingTests(unittest.TestCase):
         adapter.join(5)
         self.assertEqual(self.provider.starts, [])
         # The model gets the text with the records that the session does not hold yet: every record in a new session.
+        # A new session gets no note about the instructions (hooks.add_records).
         from coconut.native_conversation import records_text
-        return adapter.turns[0]['text'] + records_text(adapter.turns[0].get('records') or [])
+        return adapter.turns[0]['text'] + records_text([record for record in adapter.turns[0].get('records') or []
+                                                        if record.get('kind') != 'instructions'])
 
     def test_an_attached_file_goes_to_the_gateway_as_text_of_the_turn(self):
         import base64
@@ -1461,7 +1506,7 @@ class ServiceRoutingTests(unittest.TestCase):
         self.assertEqual(adapter.turns[0]['chat_id'], other['id'] + ':work:' + delivered['_execution_session_id'])
         # The delivered message is a record of the turn, which the session of the chat keeps once (turn_records).
         self.assertNotIn('delivered by the service', text)
-        records = adapter.turns[0]['records']
+        records = [record for record in adapter.turns[0]['records'] if record.get('kind') != 'instructions']
         self.assertEqual(len(records), 1)
         self.assertTrue(records[0]['id'].startswith('message:0:'))
         self.assertIn('Explicit message delivered by the service.', records[0]['text'])

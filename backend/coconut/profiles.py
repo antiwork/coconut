@@ -185,6 +185,19 @@ class HermesProfiles:
         home = self.home(bot)
         return prompt_revision(home, boundary=self.boundary(home))
 
+    def soul_revision(self, bot: dict) -> tuple[str, float] | None:
+        """The hash of SOUL.md and the time of its last change, or None without SOUL.md."""
+        if self.row(bot) is None:
+            return None
+        home = self.home(bot)
+        path = home / 'SOUL.md'
+        _safe(path, self.boundary(home))
+        try:
+            content = read_regular(path, 'SOUL.md')
+        except FileNotFoundError:
+            return None
+        return hashlib.sha256(content).hexdigest(), path.stat().st_mtime
+
     def write_instructions(self, bot: dict, text: str) -> None:
         home = self.existing_home(bot)
         _write(home / 'SOUL.md', text, self.boundary(home))

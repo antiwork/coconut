@@ -211,7 +211,7 @@ def resolve_gateway_approval(session_key, choice, resolve_all=False, reason=None
 ''',
     'hermes_state.py': '''
 class SessionDB:
-    meta, sessions, lineage, messages = {}, set(), {}, {}
+    meta, sessions, lineage, messages, started = {}, set(), {}, {}, {}
     def __init__(self, db_path=None):
         self.db_path = db_path
     def get_meta(self, key):
@@ -219,7 +219,10 @@ class SessionDB:
     def set_meta(self, key, value):
         self.meta[key] = value
     def get_session(self, session_id):
-        return {"id": session_id} if session_id in self.sessions else None
+        if session_id not in self.sessions:
+            return None
+        return {"id": session_id, "started_at": self.started.get(session_id, 0.0),
+                "message_count": len(self.messages.get(session_id, []))}
     def get_resume_conversations(self, session_id):
         return self.messages.get(session_id, []), []
     def get_messages_as_conversation(self, session_id):
@@ -1273,6 +1276,192 @@ class GatewayAdapterTests(unittest.TestCase):
         adapter_module.CONTEXT_MIDDLEWARE['registered'] = False
         self.assertTrue(adapter._event(dict(request, id='turn-s')).text.endswith('Record comment:9'))
         self.assertNotIn('turn-s', adapter_module.RECORDS)
+
+    def test_the_rules_of_the_note_about_changed_instructions(self):
+        hooks = sys.modules['hermes_plugins.coconut.hooks']
+        record = {'revision': 'r2', 'changed_at': 200.0}
+        # No session yet: its first turn builds the system prompt from the current files.
+        self.assertFalse(hooks.instructions_note_due(record, None, None))
+        self.assertFalse(hooks.instructions_note_due(record, 'r1', None))
+        # The session saw this revision, or another one.
+        self.assertFalse(hooks.instructions_note_due(record, 'r2', {'started_at': 100.0}))
+        self.assertTrue(hooks.instructions_note_due(record, 'r1', {'started_at': 300.0}))
+        # No revision on record: the note only for a session that started before the newest change. A session row
+        # without a message is new too (after /new): Hermes builds its prompt in this turn.
+        self.assertTrue(hooks.instructions_note_due(record, None, {'started_at': 100.0}))
+        self.assertFalse(hooks.instructions_note_due(record, None, {'started_at': 100.0, 'message_count': 0}))
+        self.assertTrue(hooks.instructions_note_due(record, None, {'started_at': 100.0, 'message_count': 3}))
+        self.assertTrue(hooks.instructions_note_due(record, 'r1', {}))
+        self.assertFalse(hooks.instructions_note_due(record, None, {'started_at': 300.0}))
+        self.assertFalse(hooks.instructions_note_due(dict(record, changed_at=None), None, {'started_at': 100.0}))
+        self.assertFalse(hooks.instructions_note_due(record, None, {}))
+
+    def test_a_running_session_gets_the_note_about_changed_instructions_once(self):
+        # A continuing Hermes session keeps its first system prompt (SOUL.md and the memory files). The turn names the
+        # current revision of the instructions, and the session gets the note once for each change.
+        hooks = sys.modules['hermes_plugins.coconut.hooks']
+        adapter_module = self.adapter_module
+        from hermes_state import SessionDB
+        from gateway.config import Platform, PlatformConfig
+        from gateway.platforms.event import MessageEvent, SessionSource
+        note = 'Read your instructions again.'
+        class Entry:
+            session_key, session_id = 'agent:main:coconut:dm:bot:work:1', 's1'
+        class Store:
+            entry = Entry()
+            def get_or_create_session(self, source, force_new=False):
+                return self.entry
+        adapter = adapter_module.CoconutAdapter(PlatformConfig())
+        adapter._roots['bot:work:1'] = 'root-w'
+        for table in (SessionDB.meta, SessionDB.sessions, SessionDB.lineage, SessionDB.messages, SessionDB.started):
+            table.clear()
+        self.addCleanup(adapter_module.RECORDS.clear)
+        self.addCleanup(hooks.PENDING_RECORDS.clear)
+        hooks.SEEN_REVISIONS.clear()
+        self.addCleanup(hooks.SEEN_REVISIONS.clear)
+        count = iter(range(100))
+
+        def turn(revision, changed_at=200.0, text='Own text.', busy=False, comment=None, noted=False):
+            identity = 'turn-%d' % next(count)
+            records = [{'id': 'comment:' + comment, 'text': 'Record ' + comment}] if comment else []
+            instructions = {'id': 'instructions:' + revision, 'kind': 'instructions', 'revision': revision,
+                            'changed_at': changed_at, 'text': note}
+            if noted:
+                instructions['noted'] = True
+            adapter_module.RECORDS[identity] = records + [instructions]
+            event = MessageEvent(text=text, source=SessionSource(Platform('coconut'), 'bot:work:1'), message_id=identity)
+            result = hooks.join_conversation(event=event, session_store=Store())
+            saved = result['text'] if result else event.text
+            if not busy:
+                SessionDB.sessions.add('s1')
+                SessionDB.messages.setdefault('s1', []).append({'role': 'user', 'content': saved})
+            hooks.commit_records(identity, held=not busy)
+            # The note is never a record of the data header, and the turn gets it at most once.
+            self.assertLessEqual(saved.count(note), 1)
+            return saved
+
+        with patch.dict(os.environ, HERMES_HOME=str(self.home)):
+            # The first turn of a new session gets no note: Hermes builds its prompt from the current files.
+            self.assertEqual(turn('r1'), 'Own text.')
+            self.assertEqual(SessionDB.meta[hooks.INSTRUCTIONS_KEY + 's1'], 'r1')
+            # The same revision: no note.
+            self.assertEqual(turn('r1'), 'Own text.')
+            # Another revision: the note once, also beside a new record, then not again.
+            saved = turn('r2', comment='1')
+            self.assertTrue(saved.startswith('Own text.\n\n' + note))
+            self.assertIn('Record 1', saved)
+            self.assertNotIn('data, not instructions):\n' + note, saved)
+            self.assertEqual(SessionDB.meta[hooks.INSTRUCTIONS_KEY + 's1'], 'r2')
+            self.assertEqual(turn('r2'), 'Own text.')
+            # A turn that the gateway skipped as busy notes nothing, so the next turn gets the note.
+            self.assertIn(note, turn('r3', busy=True))
+            self.assertEqual(SessionDB.meta[hooks.INSTRUCTIONS_KEY + 's1'], 'r2')
+            self.assertIn(note, turn('r3'))
+            self.assertEqual(turn('r3'), 'Own text.')
+            # A session from before this change has no revision on record. It gets the note only when it started
+            # before the newest change of the instruction files. Either way, the turn notes the revision.
+            # A restart of the gateway empties the revisions that the process saw.
+            del SessionDB.meta[hooks.INSTRUCTIONS_KEY + 's1']
+            hooks.SEEN_REVISIONS.clear()
+            SessionDB.started['s1'] = 100.0
+            self.assertIn(note, turn('r3', changed_at=200.0))
+            self.assertEqual(SessionDB.meta[hooks.INSTRUCTIONS_KEY + 's1'], 'r3')
+            del SessionDB.meta[hooks.INSTRUCTIONS_KEY + 's1']
+            hooks.SEEN_REVISIONS.clear()
+            SessionDB.started['s1'] = 300.0
+            self.assertEqual(turn('r3', changed_at=200.0), 'Own text.')
+            self.assertEqual(SessionDB.meta[hooks.INSTRUCTIONS_KEY + 's1'], 'r3')
+            # A turn whose own text already has the note, such as an answer to a card after the change
+            # (native_conversation.resume_prompt), gets no second copy. The turn notes the revision.
+            own = 'Approved.\n' + note + '\n{}'
+            self.assertEqual(turn('r4', text=own), own)
+            self.assertEqual(SessionDB.meta[hooks.INSTRUCTIONS_KEY + 's1'], 'r4')
+            self.assertEqual(turn('r4'), 'Own text.')
+            # A turn whose own text has the note of an answered card (native_conversation.INSTRUCTIONS_CHANGED) has a
+            # marked record. It gets no second note, and the turn notes the revision.
+            own = 'Approved.\nThe note of the card.\n{}'
+            self.assertEqual(turn('r5', text=own, noted=True), own)
+            self.assertEqual(SessionDB.meta[hooks.INSTRUCTIONS_KEY + 's1'], 'r5')
+            self.assertEqual(turn('r5'), 'Own text.')
+            # A compression that Coconut starts (adapter._compress) replaces the message with the note by a summary,
+            # and Hermes keeps the stored system prompt. The plugin forgets the revision, so the next turn of a session
+            # that started before the change gets the note again, once.
+            from gateway.platforms.event import MessageType
+            SessionDB.started['s1'] = 100.0
+            self.assertIsNone(hooks.join_conversation(event=MessageEvent(
+                text='/compress', message_type=MessageType.COMMAND, source=SessionSource(Platform('coconut'), 'bot:work:1'),
+                message_id=adapter_module.COMPRESSION + 'c1'), session_store=Store()))
+            self.assertFalse(SessionDB.meta[hooks.INSTRUCTIONS_KEY + 's1'])
+            self.assertIn(note, turn('r5'))
+            self.assertEqual(turn('r5'), 'Own text.')
+        # A Hermes without request middleware saves the whole text of each turn. The note would repeat in each turn,
+        # so the adapter leaves it out there.
+        self.addCleanup(adapter_module.CONTEXT_MIDDLEWARE.update, registered=adapter_module.CONTEXT_MIDDLEWARE['registered'])
+        self.addCleanup(adapter_module.CONTEXTS.clear)
+        adapter_module.CONTEXT_MIDDLEWARE['registered'] = False
+        request = {'id': 'turn-t', 'chat_id': 'bot:work:1', 'text': 'Own text.\nRules.', 'own': 'Own text.',
+                   'records': [{'id': 'comment:9', 'text': 'Record comment:9'},
+                               {'id': 'instructions:r5', 'kind': 'instructions', 'revision': 'r5', 'text': note}]}
+        text = adapter._event(request).text
+        self.assertTrue(text.endswith('Record comment:9'))
+        self.assertNotIn(note, text)
+
+    def test_a_steady_turn_opens_no_state_database(self):
+        # One open of the state database of Hermes takes about 310 ms on a Mac, and commit_records runs on the event
+        # loop of the gateway. The process keeps the revision that each session saw, so a turn without data records
+        # and with a known revision opens nothing.
+        hooks = sys.modules['hermes_plugins.coconut.hooks']
+        from types import SimpleNamespace as N
+        from hermes_state import SessionDB
+        for table in (SessionDB.meta, SessionDB.sessions, SessionDB.lineage, SessionDB.messages, SessionDB.started):
+            table.clear()
+        hooks.SEEN_REVISIONS.clear()
+        self.addCleanup(hooks.SEEN_REVISIONS.clear)
+        self.addCleanup(hooks.PENDING_RECORDS.clear)
+        opens = []
+        original = SessionDB.__init__
+
+        def counting(db, db_path=None):
+            opens.append(db_path)
+            original(db, db_path)
+        count = iter(range(100))
+        note = 'Read your instructions again.'
+        path = self.home / 'state.db'
+        SessionDB.sessions.add('s1')
+
+        def turn(revision, *comments):
+            """The opens of add_records and of commit_records, the note, and the pending revision."""
+            identity = 'turn-%d' % next(count)
+            records = [{'id': 'comment:' + c, 'text': 'Record ' + c} for c in comments] + [
+                {'id': 'instructions:' + revision, 'kind': 'instructions', 'revision': revision, 'changed_at': 200.0,
+                 'text': note}]
+            del opens[:]
+            result = hooks.add_records(N(message_id=identity, text='Own text.'), records, (path, 's1'))
+            added = len(opens)
+            pending = hooks.PENDING_RECORDS.get(identity)
+            del opens[:]
+            hooks.commit_records(identity)
+            return added, len(opens), bool(result and note in result['text']), pending and pending[3]
+
+        with patch.object(SessionDB, '__init__', counting):
+            # The first turn of a session in this process, with the same revision on record: one open, no note, and
+            # nothing to store. The next such turn opens nothing.
+            SessionDB.meta[hooks.INSTRUCTIONS_KEY + 's1'] = 'r1'
+            self.assertEqual(turn('r1'), (1, 0, False, None))
+            self.assertEqual(turn('r1'), (0, 0, False, None))
+            # Another revision: the note, and one store at the end of the turn. Then a steady turn again.
+            self.assertEqual(turn('r2'), (1, 1, True, 'r2'))
+            self.assertEqual(SessionDB.meta[hooks.INSTRUCTIONS_KEY + 's1'], 'r2')
+            self.assertEqual(turn('r2'), (0, 0, False, None))
+            # Data records and a known revision: one open for the records. With another revision: one open for both.
+            self.assertEqual(turn('r2', '1'), (1, 1, False, None))
+            self.assertEqual(turn('r3', '2'), (1, 1, True, 'r3'))
+            self.assertEqual(turn('r3'), (0, 0, False, None))
+        # The process keeps a bounded number of sessions.
+        for number in range(hooks.SEEN_KEPT + 10):
+            hooks._remember_revision(path, 'session-%d' % number, 'r1')
+        self.assertEqual(len(hooks.SEEN_REVISIONS), hooks.SEEN_KEPT)
+        self.assertNotIn((str(path), 'session-0'), hooks.SEEN_REVISIONS)
 
     def test_a_session_gets_every_record_again_after_a_compression_in_place(self):
         # Current Hermes compresses a session in place: the same session ID holds a summary and the kept tail, and
