@@ -366,24 +366,24 @@
 
     // The labels under the plot (the x labels). The whole rule:
     // - A set of labels fits when each label has its own text, each label is inside its bounds, and two labels are at
-    //   least 8 px apart. On a band, the bounds are the edges of the svg. On a line, an area or dots, they are the left
-    //   edge of the svg and its right edge less the width of the lowest y number and 8 px, because that number stands
-    //   at the height of the labels.
-    // - On a band, a label starts at the start of its band. On a line, an area or dots, a label is centered on its
-    //   point, and a label that would pass a bound moves in until it touches the bound.
+    //   least 8 px apart. The bounds are the left edge of the svg and 1 px before the lowest y number at its right
+    //   edge, because that number stands at the height of the labels: a label never meets it.
+    // - On a band (bars), a label starts at the start of its band. On a line, an area or dots, a label is centered on
+    //   its point, and a label that would pass a bound moves in until it touches the bound.
     // - Names (the x values are texts), on a band or on a line: the first name and each k-th name, with the lowest k
     //   that fits, also without the last label. A name that has no room is cut with "…" to its room: the k steps to
     //   the next label less 8 px, shared with the label at each side. A cut keeps whole characters (an emoji, a flag
-    //   or a letter with its marks) and keeps at least the width of "Mm…".
+    //   or a letter with its marks). A name is cut only when its k steps less 8 px have room for "Mm…".
     // - Dates and runs of numbers on a band: the first value and each k-th value, in full, with the lowest k that
     //   fits, also without the last label.
-    // - Dates and numbers on a line, an area or dots: the ticks of d3 with the largest count that fits, at most one
-    //   for each 56 px. When the dates come in even steps (each hour, each day, each week), the first date and each
-    //   k-th date with the lowest k that fits are a second choice. The choice with more labels shows; on a tie, the
-    //   dates of the data. When each choice gives at most one label, each second tick of d3 is a third choice.
+    // - Dates and numbers on a line, an area or dots: the ticks of d3 with the largest count that fits (at most one
+    //   for each 56 px), also without the last tick. When the dates come in even steps (each hour, each day, each
+    //   week), the first date and each k-th date with the lowest k that fits are a second choice. The choice with more
+    //   labels shows; on a tie, the dates of the data. When each choice gives at most one label, each second tick of
+    //   d3 is a third choice.
     // - When no set fits, no label shows.
     const scale = draw({ ticks: [] }).scale("x");
-    const bound = band ? width : width - measure(yText(y.ticks[0])) - 8;
+    const bound = width - measure(yText(y.ticks[0])) - 1;
     const place = (svg) => {
       const texts = [...svg.querySelectorAll('[aria-label="x-axis tick label"] text')];
       if (band) return texts;
@@ -449,6 +449,20 @@
         // full name that passes its room by less than that half pixel first gets a try in full.
         const labels = shown.map((value, index) => (full[index] <= rooms[index] + slack ? value
           : spans[index] >= least ? cutTo(value, rooms[index]) : null));
+        if (!band && !labels.includes(null)) {
+          // A cut name on a line gets its full text back when the labels at its sides leave room for it.
+          const box = (index, size) => {
+            const left = Math.min(Math.max(0, at(shown[index]) - size / 2), bound - size);
+            return [left, left + size];
+          };
+          labels.forEach((label, index) => {
+            if (label === shown[index]) return;
+            const [left, right] = box(index, full[index] + 0.5);
+            const before = index ? box(index - 1, measure(labels[index - 1]))[1] + 8 : 0;
+            const after = index + 1 < labels.length ? box(index + 1, measure(labels[index + 1]))[0] - 8 : bound;
+            if (left >= before && right <= after) labels[index] = shown[index];
+          });
+        }
         return labels.includes(null) || new Set(labels).size < labels.length ? null
           : new Map(shown.map((value, index) => [value, labels[index]]));
       };
@@ -482,8 +496,10 @@
     const counts = d3.range(tickCount(plotWidth / 56), 0, -1);
     const tickSets = counts.map((count) => (kind === "date" ? d3.utcTicks(first, last, count)
       : d3.ticks(first, last, count).filter((tick) => !whole || Number.isInteger(tick))));
-    let best = tickSets.flatMap((ticks) => [ticks, ticks.slice(0, -1)])
-      .find((ticks) => tryLabels(ticks, formatOf(ticks))) || [];
+    // Without its last tick, a set first keeps the form of all its ticks ("Oct 13, 12 AM"), then takes its own form.
+    let best = tickSets.flatMap((ticks) => [[ticks, ticks], [ticks.slice(0, -1), ticks], [ticks.slice(0, -1)]])
+      .map(([ticks, all = ticks]) => [ticks, all])
+      .find(([ticks, all]) => tryLabels(ticks, formatOf(all)))?.[0] || [];
     let chosen = drawn;
     const times = kind === "date" ? [...new Set(xs.map(Number))].sort((a, b) => a - b) : [];
     const steps = new Set(times.slice(1).map((time, index) => time - times[index]));

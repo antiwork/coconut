@@ -1206,8 +1206,9 @@ final class LibraryDocumentTests: XCTestCase {
         XCTAssertTrue(facts[0].contains(",3 PM "), facts[0])
         XCTAssertTrue(facts[1].contains(" 2022,2023,2024,2025 "), facts[1])
         XCTAssertTrue(facts[2].contains(" 2026-10-13,2026-10-14,Total "), facts[2])
-        // The first tick is midnight of Oct 13 as written, not the evening before.
-        XCTAssertTrue(facts[3].contains(" Oct 13, 12 AM,"), facts[3])
+        // The first tick is midnight of Oct 13 as written, not the evening before. Without the tick of Oct 14, the
+        // ticks are hours of one day and show no day.
+        XCTAssertNotNil(facts[3].range(of: #" (Oct 13, )?12 AM,"#, options: .regularExpression), facts[3])
     }
 
     /// Labels on a scale of dates go by position: uneven dates keep each label that has room. A band of names keeps
@@ -1576,6 +1577,7 @@ final class LibraryDocumentTests: XCTestCase {
             XCTAssertEqual(facts[2][0], "1", "one long name: \(lines[2])")
             XCTAssertEqual(facts[3][1], "3", "1.1, 1.10 and 1.2: \(lines[3])")
             XCTAssertEqual(facts[4][2], "true", "the left edge: \(lines[4])")
+            XCTAssertEqual(facts[4][0], "2", "a long first name and a short one both show: \(lines[4])")
             XCTAssertTrue(lines[5].hasSuffix(" Oct 13/Oct 14"), "a date with an offset: \(lines[5])")
             XCTAssertEqual(facts[6][3], "true", "the first dot: \(lines[6])")
             XCTAssertEqual(facts[7][1], "2", "a row without x: \(lines[7])")
@@ -1606,6 +1608,150 @@ final class LibraryDocumentTests: XCTestCase {
             + ".join(',') + ' | ' + scrolls();"
         let result = try await answer(of: (Self.probes + widths).wrappedInFunction, in: view, once: "358,175,175 | 0")
         XCTAssertEqual(result, "358,175,175 | 0")
+    }
+
+    /// The rule of the x labels (see the comment at the top of the label code of page.js), as a script. For each chart
+    /// it answers: the count of labels, whether the set fits (each label has its own text, is inside the svg, ends
+    /// before the lowest y number, and is at least 8 px from the next), whether the labels of names follow the rule of
+    /// names (the first name and each k-th name, each in full or cut with "…" at a whole character), and the labels.
+    private static let labelRule = """
+        const parts = (text) => [...new Intl.Segmenter(undefined, { granularity: "grapheme" }).segment(text)]
+          .map((part) => part.segment);
+        const cuts = (name) => parts(name).slice(1).map((_, end) => parts(name).slice(0, end + 1).join("").trimEnd() + "…");
+        const rule = (figure, names) => {
+          const svg = figure.querySelector("svg.plot");
+          if (!svg) return "0 false false no svg";
+          const frame = svg.getBoundingClientRect();
+          const lowest = [...svg.querySelectorAll("[aria-label='y-axis tick label'] text")]
+            .map((text) => text.getBoundingClientRect()).sort((a, b) => b.top - a.top)[0];
+          const texts = [...svg.querySelectorAll("[aria-label='x-axis tick label'] text")];
+          const labels = texts.map((text) => text.textContent);
+          const boxes = texts.map((text) => text.getBoundingClientRect()).sort((a, b) => a.left - b.left);
+          const fits = new Set(labels).size === labels.length && boxes.every((box, index) => box.left >= frame.left - 0.5
+            && box.right <= lowest.left + 0.5 && (!index || box.left - boxes[index - 1].right >= 7.95));
+          let named = true;
+          if (names) {
+            // Some k gives the shown names: names 0, k, 2k and on, with or without the last one.
+            const shows = (k) => {
+              const count = Math.ceil(names.length / k);
+              return (labels.length === count || labels.length === count - 1) && labels.every((label, index) =>
+                label === names[index * k] || cuts(names[index * k]).includes(label));
+            };
+            named = !labels.length || names.some((_, index) => shows(index + 1));
+          }
+          return [labels.length, fits, named, labels.join("/")].join(" ");
+        };
+        """
+
+    /// The fourth review of the chart labels: each chart follows the rule of the labels at 320, 390 and 744 px (and
+    /// 375 px), and shows at least as many labels as the chart before #484, unless its labels met.
+    @MainActor
+    func testTheLabelsOfTheFourthChartReviewFollowTheRule() async throws {
+        let products = (1...40).map { "Product \($0)" }
+        let fruit = ["🍎", "🍊", "🍋", "🍌", "🍉", "🍇", "🍓", "🍒", "🍑", "🥭", "🍍", "🥝"]
+        let emoji = (0..<40).map { "\(fruit[$0 % 12]) Item \($0 + 1)" }
+        let methods = ["Stripe", "PayPal", "Apple Pay", "Google Pay", "Bank", "Other", "Cash", "Gift card", "Credit",
+                       "Klarna", "Affirm", "Crypto"]
+        let long = "Course" + String(repeating: "s", count: 54)
+        let months = (1...12).map { String(format: "2026-%02d-01", $0) }
+        func rows(_ xs: [String]) -> String {
+            xs.enumerated().map { #"{"x": "\#($1)", "y": \#(100 + ($0 * 37) % 400)}"# }.joined(separator: ", ")
+        }
+        func chart(_ type: String, _ xs: [String]) -> String {
+            Self.chart(#"{"type": "\#(type)", "x": "x", "y": "y", "data": [\#(rows(xs))]}"#)
+        }
+        let charts: [(String, [String])] = [("line", products), ("dot", products), ("line", months),
+                                             ("line", methods), ("line", emoji), ("bar", emoji),
+                                             ("line", Array(months.prefix(6))), ("line", [long, "B"]),
+                                             ("bar", Array(methods.prefix(7)))]
+        let markdown = "Lead." + charts.map { chart($0.0, $0.1) }.joined()
+        let names = charts.map { [months, Array(months.prefix(6))].contains($0.1) ? "null" : "[" + $0.1.map { "\"\($0)\"" }
+            .joined(separator: ", ") + "]" }
+        let script = Self.labelRule + """
+            const names = [\(names.joined(separator: ", "))];
+            return [...document.querySelectorAll("figure.chart[data-spec]")].map((figure, index) => rule(figure, names[index]))
+              .join("\\n") + "\\n" + scrolls();
+            """
+        // The least count of labels of each chart at each width: the count of the chart before #484.
+        let least: [CGFloat: [Int]] = [320: [3, 3, 4, 3, 3, 4, 2, 1, 7], 375: [3, 3, 4, 4, 4, 5, 6, 1, 4],
+                                       390: [4, 4, 4, 4, 4, 5, 6, 1, 7], 744: [7, 7, 12, 6, 7, 8, 6, 1, 7]]
+        for width: CGFloat in [320, 375, 390, 744] {
+            let (view, window) = try await loadPage(markdown, width: width)
+            defer { close(window) }
+            let lines = (try await probe(view, script) ?? "").components(separatedBy: "\n")
+            XCTAssertEqual(lines.count, charts.count + 1, lines.joined(separator: "\n"))
+            guard lines.count == charts.count + 1 else { continue }
+            for (index, line) in lines.dropLast().enumerated() {
+                let facts = line.components(separatedBy: " ")
+                XCTAssertEqual(facts[1], "true", "chart \(index + 1) at \(width): the labels do not fit: \(line)")
+                XCTAssertEqual(facts[2], "true", "chart \(index + 1) at \(width): the rule of names: \(line)")
+                XCTAssertGreaterThanOrEqual(Int(facts[0]) ?? 0, least[width]![index],
+                                            "chart \(index + 1) at \(width): fewer labels than before: \(line)")
+            }
+            // 6 months at 744 px: a label on each first day of a month, as the data.
+            if width == 744 { XCTAssertTrue(lines[6].hasSuffix(" Jan 1/Feb 1/Mar 1/Apr 1/May 1/Jun 1"), lines[6]) }
+            // 12 names on a line keep the first name in full from 390 px.
+            if width >= 390 { XCTAssertTrue(lines[3].contains(" Stripe/"), lines[3]) }
+            // A long first name and a short second name: both show.
+            XCTAssertTrue(lines[7].hasPrefix("2 true true Course") && lines[7].hasSuffix("/B"), lines[7])
+            XCTAssertEqual(lines.last, "0", "the page scrolls sideways at \(width)")
+        }
+    }
+
+    /// The boxes of the fourth review: a chart shares a flex row with a text that grows and with a nested row, the
+    /// charts of a table row share the row, and a line of weekly dates in a box of 273 px shows dates of the data.
+    @MainActor
+    func testChartsShareARowAndKeepTheirLabelsInSmallBoxes() async throws {
+        func spec(_ type: String, _ xs: [String]) -> String {
+            let rows = xs.enumerated().map { #"{"x": "\#($1)", "y": \#($0 + 3)}"# }.joined(separator: ", ")
+            return #"{"type": "\#(type)", "x": "x", "y": "y", "data": [\#(rows)]}"#.replacingOccurrences(of: "\"", with: "&quot;")
+        }
+        let weeks = ["2026-10-01", "2026-10-08", "2026-10-15", "2026-10-22", "2026-10-29", "2026-11-05", "2026-11-12",
+                     "2026-11-19"]
+        let bar = spec("bar", ["Courses", "Ebooks", "Memberships", "Bundles", "Physical"])
+        let figure = { (spec: String) in #"<figure class="chart" data-spec="\#(spec)"></figure>"# }
+        let note = #"<div class="side" style="flex: 1">A note at the side of the chart that takes its share.</div>"#
+        let html = """
+            <p>Lead.</p>
+            <div id="a" style="display: flex; gap: 8px">\(figure(bar))\(note)</div>
+            <div id="b" style="display: flex; gap: 8px">\(figure(bar))\(figure(bar))\(note)</div>
+            <div id="c" style="display: flex; gap: 8px"><div style="display: flex; gap: 8px; flex: 1; min-width: 0">\
+            \(figure(bar))\(figure(spec("line", weeks)))</div>\(figure(bar))</div>
+            <table id="d"><tr><td>\(figure(bar))</td><td>\(figure(spec("line", weeks)))</td></tr></table>
+            <div id="e" style="width: 273px">\(figure(spec("line", weeks)))</div>
+            """
+        let script = Self.labelRule + """
+            const widths = (id) => [...document.getElementById(id).querySelectorAll("figure, .side")]
+              .map((element) => element.querySelector("svg.plot") || element.classList.contains("side")
+                ? Math.round(element.getBoundingClientRect().width) : 0);
+            const weekly = document.querySelector("#e figure");
+            return [widths("a"), widths("b"), widths("c"), widths("d"), rule(weekly, null)].join(" | ") + " | " + scrolls();
+            """
+        for width: CGFloat in [320, 390, 744] {
+            let (view, window) = try await loadPage(html, width: width, markdown: false)
+            defer { close(window) }
+            let answer = try await probe(view, script) ?? ""
+            let parts = answer.components(separatedBy: " | ")
+            XCTAssertEqual(parts.count, 6, answer)
+            guard parts.count == 6 else { continue }
+            let sizes = parts.prefix(4).map { $0.components(separatedBy: ",").compactMap { Int($0) } }
+            // A chart and a text that grows share the row; two charts and the text share it in thirds.
+            XCTAssertLessThanOrEqual(abs(sizes[0][0] - sizes[0][1]), 2, "a chart and a text at \(width): \(answer)")
+            XCTAssertLessThanOrEqual(sizes[1].max()! - sizes[1].min()!, 2, "two charts and a text at \(width): \(answer)")
+            // A nested row that grows and a chart share the row, and each chart draws.
+            XCTAssertTrue(sizes[2].allSatisfy { $0 > 0 }, "a nested row at \(width): \(answer)")
+            XCTAssertLessThanOrEqual(abs(sizes[2][0] + sizes[2][1] + 8 - sizes[2][2]), 2, "a nested row at \(width): \(answer)")
+            // Both charts of a table row draw, and they share the row.
+            XCTAssertTrue(sizes[3].count == 2 && sizes[3].allSatisfy { $0 > 0 }, "a table row at \(width): \(answer)")
+            XCTAssertLessThanOrEqual(abs(sizes[3][0] - sizes[3][1]), 4, "a table row at \(width): \(answer)")
+            // 8 weekly dates in 273 px: at least two labels, each one a date of the data.
+            let weekly = parts[4].components(separatedBy: " ")
+            XCTAssertEqual(weekly[1], "true", answer)
+            XCTAssertGreaterThanOrEqual(Int(weekly[0]) ?? 0, 2, answer)
+            let days = ["Oct 1", "Oct 8", "Oct 15", "Oct 22", "Oct 29", "Nov 5", "Nov 12", "Nov 19"]
+            XCTAssertTrue(weekly[3...].joined(separator: " ").components(separatedBy: "/").allSatisfy(days.contains), answer)
+            XCTAssertEqual(parts[5], "0", "the page scrolls sideways at \(width)")
+        }
     }
 
     /// The answer of a script of statements after the probes.
