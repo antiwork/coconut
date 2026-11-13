@@ -107,6 +107,10 @@ class CloseEndedCardsTests(unittest.TestCase):
         prompt, _ = turn_input(dict(operation='resume', task=task, decision=saved, history=[]))
         self.assertIn('Issue #12 closed on GitHub. Coconut closed this card. The person chose nothing.', prompt)
         self.assertIn('A closed card is no approval and no rejection.', prompt)
+        # Nobody answered the card, so the turn gets no note about changed instructions, also from an older answer record.
+        from coconut.native_conversation import INSTRUCTIONS_CHANGED
+        prompt, _ = turn_input(dict(operation='resume', task=task, decision=saved, history=[], instructions_changed=True))
+        self.assertNotIn(INSTRUCTIONS_CHANGED.strip(), prompt)
         self.service._queue_decision_refreshes()
         self.assertEqual(self.service._all('contexts'), [])
 
