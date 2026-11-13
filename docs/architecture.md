@@ -53,6 +53,10 @@ Other bots continue. Context requests produce linked answers while preserving th
 Pending card checks include the current profile revision.
 A change to identity or memory schedules a new assessment of the same card.
 This check does not answer the card.
+Each card that the Inbox shows accepts an answer. No check locks a card.
+The source pass closes a card when GitHub says that a linked issue closed, or a linked PR merged or closed, after the card was made (`decision_sources.source_change`).
+It also closes a merge card when its PR has a new head. A merge card whose own PR merged closes as "Already merged.".
+The person chose nothing. A task that waits only for that card continues and reads the source again.
 After an answer, the service starts a continuation with the recorded choice and the index of the completed tool
 receipts (`coconut_read_receipts`). A turn does not repeat a completed effect.
 

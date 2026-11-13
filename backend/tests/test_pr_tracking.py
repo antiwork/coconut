@@ -62,8 +62,11 @@ class PRStateTests(unittest.TestCase):
         value = dict(state='open', title='Follow up', updated_at='2026-09-18T00:00:00Z', comments=2)
         tracker = PayloadTracker([value])
         self.assertEqual(tracker.observe_issue('https://github.com/example/project/issues/12#issuecomment-9'),
-                         dict(value, state_reason=None))
+                         dict(value, state_reason=None, closed_at=None))
         self.assertEqual(tracker.paths, ['/repos/example/project/issues/12'])
+        closed = dict(value, state='closed', closed_at='2026-09-19T00:00:00Z')
+        self.assertEqual(PayloadTracker([closed]).observe_issue('https://github.com/example/project/issues/12')['closed_at'],
+                         '2026-09-19T00:00:00Z')
         self.assertIsNone(tracker.observe_issue('https://example.invalid/project/issues/12'))
         self.assertIsNone(tracker.observe_issue('https://github.com/example/../issues/12'))
         self.assertIsNone(PayloadTracker([dict(state='open')]).observe_issue('https://github.com/example/project/issues/12'))
@@ -248,6 +251,13 @@ class PRStateTests(unittest.TestCase):
         self.assertEqual(tracker.observe(URL).state, "merged")
         self.assertEqual(len(tracker.paths), 1)
         self.assertEqual(PayloadTracker([pull(state="closed")]).observe(URL).state, "failed")
+
+    def test_an_ended_pr_reports_the_time_of_its_end(self):
+        merged = pull(state="closed", merged=True, merged_at="2026-09-19T00:00:00Z", closed_at="2026-09-19T00:00:00Z")
+        self.assertEqual(PayloadTracker([merged]).observe(URL).ended_at, "2026-09-19T00:00:00Z")
+        closed = pull(state="closed", closed_at="2026-09-20T00:00:00Z")
+        self.assertEqual(PayloadTracker([closed]).observe(URL).ended_at, "2026-09-20T00:00:00Z")
+        self.assertIsNone(tracker_for(after=pull(closed_at="2026-09-20T00:00:00Z")).observe(URL).ended_at)
 
     def test_open_pr_with_merge_commit_sha_does_not_prove_merge(self):
         result = tracker_for(before=pull(merge_commit_sha="b" * 40)).observe(URL)

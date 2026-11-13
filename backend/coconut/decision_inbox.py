@@ -254,7 +254,6 @@ class DecisionInbox:
         A dismissed card about a source covers that source until the source changes (work_sources.coverage).
         """
         from .service import now, encoded
-        decision.pop('_source_recheck', None)
         decision['outcome'] = DISMISSED_OUTCOME
         if decision.get('_gateway_question'):
             self.dismiss_gateway_question(decision)

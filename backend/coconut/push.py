@@ -521,7 +521,7 @@ class PushDelivery:
         count = 0
         for (raw,) in self.service.db.execute("SELECT data FROM decisions WHERE json_extract(data,'$.status')='pending'"):
             decision = json.loads(raw)
-            if any(decision.get(key) for key in ('_hidden', '_deleted', '_source_recheck')) or decision['bot_id'] not in visible:
+            if any(decision.get(key) for key in ('_hidden', '_deleted')) or decision['bot_id'] not in visible:
                 continue
             task = self.service._get('tasks', decision['task_id'])
             if task['bot_id'] in visible and task.get('conversation_bot_id', task['bot_id']) in visible:

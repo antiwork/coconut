@@ -859,12 +859,7 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
 
     @staticmethod
     def _public(obj: dict) -> dict:
-        result = {key: value for key, value in obj.items() if not key.startswith('_')}
-        if obj.get('_source_recheck') and obj.get('status') == 'pending':
-            # Older clients render unknown statuses as approved draft receipts.
-            # Keep their pending presentation; answers remain fenced server-side.
-            result['source_refreshing'] = True
-        return result
+        return {key: value for key, value in obj.items() if not key.startswith('_')}
 
     def pairing_code(self, lifetime: int = 300, *, tunnel: bool = False) -> str:
         with self.transaction():
@@ -2712,8 +2707,6 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
         if decision.get('_gateway_question'):
             # The answer or a reply goes to the waiting gateway turn. A dismissal goes there too (dismiss_gateway_question).
             return self.answer_gateway_question(decision, task, data, device)
-        if decision.get('_source_recheck'):
-            raise ServiceError(409, 'The source changed. Coconut is updating this decision.')
         if not isinstance(data.get('revision'), int) or isinstance(data['revision'], bool) or data['revision'] != decision['revision']:
             raise ServiceError(409, 'This decision changed. Refresh it before answering.')
         if data.get('option') is not None:
@@ -3126,7 +3119,6 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
                             before = self._public(current)
                             current['checked_at'] = observation.checked_at
                             if observation.observed:
-                                self._invalidate_terminal_pr_cards(current['bot_id'], observation)
                                 if current.get('pr_state') == 'open' and observation.pr_state in ('merged', 'closed'):
                                     current['_terminal_review_pending'] = True
                                 current.update(observation.fields(), title=(observation.title or current['title'])[:200], preview=observation.detail, observed_at=observation.checked_at, refresh_error=None)

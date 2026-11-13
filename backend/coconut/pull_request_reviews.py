@@ -122,7 +122,6 @@ class PullRequestReviews:
         return requested_at
 
     def _resolve_merged_pr_decisions(self):
-        from .service import now
         with self.transaction():
             decisions = [json.loads(row[0]) for row in self.db.execute(PENDING_MERGE_CARDS)]
             merged = set()
@@ -135,24 +134,9 @@ class PullRequestReviews:
                 if (not url or decision['status'] != 'pending' or decision['action_type'] != 'question'
                         or (decision['bot_id'], url.lower()) not in merged):
                     continue
-                task = self._get('tasks', decision['task_id'])
                 response = ('This PR has already merged. Coconut closed the merge question after verifying GitHub. '
                             'The person did not select an option. Do not merge again or treat this as approval for other work.')
-                decision.update(status='resolved', outcome='Already merged.', resolved_at=now(),
-                                revision=decision['revision'] + 1)
-                self._put('decisions', decision)
-                if decision.get('_receipt_id'):
-                    record = self._get('native_receipts', decision['_receipt_id'])
-                    if record['state'] == 'awaiting_answer':
-                        record.update(state='completed', completed_at=now(),
-                                      result=json.dumps({'response': response, 'resolution': 'merged', 'url': url}))
-                        self._put('native_receipts', record)
-                self._event('decision.updated', self._public(decision), task['bot_id'], task['id'])
-                if decision.get('inbox_kind') != 'proposal' and task['status'] == 'needs_you':
-                    task.update(status='queued', _resume_decision=decision['id'], updated_at=now())
-                    self._put('tasks', task)
-                    self._event('task.updated', self._public(task), task['bot_id'], task['id'])
-                    self._refresh_bot(task['bot_id'])
+                self._close_card_for_source(decision, url, response, 'merged', outcome='Already merged.')
 
     def _migrate_pr_review_sources(self):
         for artifact in self._all('artifacts'):

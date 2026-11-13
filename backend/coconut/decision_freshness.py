@@ -128,34 +128,53 @@ class _PlannedWrites:
 
 
 class DecisionFreshness:
-    def _invalidate_terminal_pr_cards(self, bot_id, observation):
-        from .decision_sources import github_links
-        if not observation.observed or observation.pr_state not in ('merged', 'closed'):
-            return
-        for decision in self._all('decisions'):
-            if (not decision.get('_native') or decision.get('action_type') not in ('question', 'draft_message')
-                    or decision['bot_id'] != bot_id or decision['status'] != 'pending'
-                    or observation.url.lower() not in {url.lower() for url in github_links(decision)}):
-                continue
-            url = next(url for url in github_links(decision) if url.lower() == observation.url.lower())
-            if observation.pr_state == 'merged' and (decision.get('merge_pr_url') or '').lower() == url.lower():
-                continue
-            checked = decision.get('_source_check', {})
-            source = checked.get('facts', {}).get(url, {})
-            if (decision.get('_source_recheck') or (checked.get('revision') == decision['revision']
-                    and checked.get('links') == github_links(decision)
-                    and source.get('pr_state') == observation.pr_state
-                    and source.get('head_sha') == observation.head_sha)):
-                continue
-            # Hide the obsolete choice immediately; the owner still decides whether follow-up work remains.
-            decision['_source_recheck'] = True
-            decision['revision'] += 1
-            self._put('decisions', decision)
-            self._event('decision.updated', self._public(decision), bot_id, decision['task_id'])
+    def _close_card_for_source(self, decision, url, response, receipt_resolution, **fields):
+        """Close a pending card because its GitHub source at `url` changed. The caller holds the transaction.
+
+        The person chose nothing. Each party that waits for the card learns it, as for a withdrawal: the tool call that
+        asked the card and a gateway turn that waits for the card get `response`, and a task that waits only for this
+        card continues with _resume_decision. A suggestion, an ended task and a cancelled task get no turn. A check of
+        the card stops. `fields` holds the outcome that the person reads.
+        """
+        from .service import now
+        task = self._get('tasks', decision['task_id'])
+        decision.update(status='resolved', resolved_at=now(), revision=decision['revision'] + 1, **fields)
+        decision.pop('_source_recheck', None)
+        self._put('decisions', decision)
+        if decision.get('_gateway_question'):
+            question = decision['_gateway_question']
+            self.gateway_bridge.answer(question['turn_id'], dict(question_id=question['question_id'], text=response,
+                                                                 choice='deny' if question['kind'] == 'approval' else ''))
+        if decision.get('_receipt_id'):
+            record = self._get('native_receipts', decision['_receipt_id'])
+            if record['state'] == 'awaiting_answer':
+                record.update(state='completed', completed_at=now(),
+                              result=json.dumps({'response': response, 'resolution': receipt_resolution, 'url': url}))
+                self._put('native_receipts', record)
+        for row in self.db.execute("SELECT data FROM contexts WHERE json_extract(data,'$.decision_id')=?",
+                                   (decision['id'],)).fetchall():
+            context = json.loads(row[0])
+            if context.get('_decision_refresh') and context['status'] in ('queued', 'working'):
+                context['status'] = 'cancelled'
+                self._put('contexts', context)
+                if hasattr(self.provider, 'cancel_context'):
+                    self.provider.cancel_context(task['id'], context['id'])
+                self._event('context.cancelled', {'id': context['id'], 'decision_id': decision['id']}, task['bot_id'], task['id'])
+        self._event('decision.updated', self._public(decision), task['bot_id'], task['id'])
+        if (decision.get('inbox_kind') != 'proposal' and task['status'] == 'needs_you'
+                and not any(d['id'] != decision['id'] and d.get('inbox_kind') != 'proposal' for d in (
+                    json.loads(row[0]) for row in self.db.execute(
+                        "SELECT data FROM decisions WHERE json_extract(data,'$.task_id')=? "
+                        "AND json_extract(data,'$.status')='pending'", (task['id'],))))):
+            task.update(status='queued', _resume_decision=decision['id'], updated_at=now())
+            self._put('tasks', task)
+            self._event('task.updated', self._public(task), task['bot_id'], task['id'])
+        self._refresh_bot(task['bot_id'])
 
     def _refresh_decision_sources(self, observations, *, decision_ids=None, read_cache=None, cancelled=None):
         """Return the revision and links actually observed, including unchanged facts."""
-        from .decision_sources import github_links, github_source
+        from .decision_sources import github_links, github_source, issue_facts, source_change
+        from .native_conversation import SOURCE_CHANGED_TEXT
         with self.lock:
             if self.stopping.is_set() or (cancelled is not None and cancelled.is_set()):
                 return {}
@@ -172,6 +191,8 @@ class DecisionFreshness:
             if decision_ids is not None and decision['id'] not in decision_ids:
                 continue
             facts = {url: value for url, value in decision.get('_source_facts', {}).items() if url in links}
+            # The sources that changed after the card was made (source_change). The first one closes the card.
+            changes = []
             for url in links:
                 key = (decision['bot_id'], url.lower())
                 if decision['bot_id'] not in trackers:
@@ -181,11 +202,9 @@ class DecisionFreshness:
                     if key not in observations:
                         observations[key] = read(('pr', *key), lambda: tracker.observe(url))
                     value = observations[key]
-                    with self.lock:
-                        if self.stopping.is_set() or (cancelled is not None and cancelled.is_set()):
-                            return {}
-                        with self.transaction():
-                            self._invalidate_terminal_pr_cards(decision['bot_id'], value)
+                    if value.observed:
+                        changes.append((url, source_change(decision, url, state=value.pr_state, head_sha=value.head_sha,
+                                                           ended_at=getattr(value, 'ended_at', None))))
                     current_facts = dict(facts.get(url, {}))
                     identity = {field: getattr(value, field, None) for field in ('head_sha', 'base_branch')}
                     changed = any(fact and fact != current_facts.get(field) for field, fact in identity.items())
@@ -214,12 +233,26 @@ class DecisionFreshness:
                     if key not in issues:
                         issues[key] = read(('issue', *key), lambda: tracker.observe_issue(url))
                     if issues[key] is not None:
-                        facts[url] = issues[key]
+                        facts[url] = issue_facts(issues[key])
+                        changes.append((url, source_change(decision, url, state=issues[key].get('state'),
+                                                           ended_at=issues[key].get('closed_at'))))
             with self.lock:
                 if self.stopping.is_set() or (cancelled is not None and cancelled.is_set()):
                     return {}
                 with self.transaction():
+                    # Read the card again under the lock: a person can answer it during the reads.
                     current = self._get('decisions', decision['id'])
+                    url, change = next(((url, change) for url, change in changes
+                                        if change and url in github_links(current)), (None, None))
+                    if (change and current['status'] == 'pending' and current.get('_native')
+                            and current.get('action_type') in ('question', 'draft_message')):
+                        self._close_card_for_source(current, url, change + ' ' + SOURCE_CHANGED_TEXT, 'source_changed',
+                                                    resolution='source_changed', outcome=change)
+                        continue
+                    if current['status'] == 'pending' and current.pop('_source_recheck', None):
+                        # A service before this release locked a card whose PR ended. Nothing locks a card now.
+                        self._put('decisions', current)
+                        self._event('decision.updated', self._public(current), current['bot_id'], current['task_id'])
                     if (current['status'] == 'pending' and current['revision'] == decision['revision']
                             and github_links(current) == links):
                         if current.get('_source_facts', {}) != facts:
@@ -828,7 +861,6 @@ class DecisionFreshness:
             with self._shared_reads():
                 fingerprint, _ = self._decision_evidence(decision, self._task_map(), records, artifacts,
                                                        profile_revision=profile_revision)
-            decision.pop('_source_recheck', None)
             decision['assessment_stale'] = False
             # Observed facts (including pre-upgrade terminal facts) are not a
             # completed check of the choices. Only this fenced result is one.

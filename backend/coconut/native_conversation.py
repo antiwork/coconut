@@ -377,10 +377,19 @@ def context_prompt(request, rows=None):
     return prompt
 
 
+# What the bot learns when Coconut closes a card because its GitHub source changed (decision_freshness). The outcome
+# of the card comes first, for example "Issue #12 closed on GitHub.". Each such turn pays for these words.
+SOURCE_CHANGED_TEXT = ('Coconut closed this card. The person chose nothing. Read the source again. '
+                       'Make a new card with the current facts only if the person must still decide something. '
+                       'Do not repeat the old question unchanged. A closed card is no approval and no rejection.\n')
+
+
 def resume_prompt(request):
     """The text of a turn that continues after an answered card (operation `resume`), for the worker and the gateway."""
     decision = request['decision']
-    if decision.get('status') == 'replied':
+    if decision.get('status') == 'resolved' and decision.get('resolution') == 'source_changed':
+        prompt = decision['outcome'] + ' ' + SOURCE_CHANGED_TEXT
+    elif decision.get('status') == 'replied':
         prompt = ('The person replied with text. Coconut closed the old card. '
                   'Use the reply and original proposal to continue the task in the normal conversation. '
                   'Answer questions and apply requested changes. Create a new card only if a human choice is still needed. '

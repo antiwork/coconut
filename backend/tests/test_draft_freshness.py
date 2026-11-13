@@ -152,24 +152,38 @@ class DraftFreshnessTests(unittest.TestCase):
         self.assertEqual(len(self.service._all('contexts')), 1)
         self.assertEqual(self.service._get('decisions', decision['id'])['status'], 'pending')
 
-    def test_refreshing_draft_wire_stays_pending_for_legacy_cards(self):
+    def linked_draft_pass(self, merged_at, **fields):
+        """A draft that links a PR, and one source pass in which GitHub says that the PR merged at `merged_at`."""
         from dataclasses import replace
+        from types import SimpleNamespace
+        from unittest.mock import patch
         from test_service_pr import URL, observation
         decision = self.draft()
-        decision['sources'] = [dict(kind='pull_request', title='Synthetic PR', url=URL)]
+        decision.update(sources=[dict(kind='pull_request', title='Synthetic PR', url=URL)], **fields)
         self.service._put('decisions', decision)
-        self.service._invalidate_terminal_pr_cards(self.bot['id'], replace(observation('merged'), pr_state='merged'))
-        saved = self.service._get('decisions', decision['id'])
-        wire = next(d for d in self.service.snapshot()['decisions'] if d['id'] == decision['id'])
-        # b566e3b Cards.swift renders its receipt (including the green draft
-        # approval fallback) only for !isPending. Unknown fields are ignored.
-        self.assertEqual(wire['status'], 'pending')
-        self.assertTrue(wire.get('source_refreshing'))
-        self.assertEqual(wire['draft'], decision['draft'])
+        merged = replace(observation('merged'), pr_state='merged', ended_at=merged_at)
+        tracker = SimpleNamespace(observe=lambda url: merged, observe_discussion=lambda url: None)
+        with patch.object(self.service, '_pr_tracker_for', return_value=tracker):
+            self.service._refresh_decision_sources({})
+        return decision, self.service._get('decisions', decision['id'])
+
+    def test_a_draft_whose_pr_merged_after_it_closes_and_sends_nothing(self):
+        decision, saved = self.linked_draft_pass(datetime.now(timezone.utc).isoformat())
+        self.assertEqual((saved['status'], saved['outcome']), ('resolved', 'Pull request #42 merged on GitHub.'))
         self.assertEqual(saved['_answers'], [])
         self.assertIsNone(saved.get('decided_by'))
-        for revision in (decision['revision'], saved['revision']):
-            with self.subTest(revision=revision), self.assertRaises(ServiceError):
-                self.write('POST', f"/v1/decisions/{decision['id']}/answer", dict(
-                    revision=revision, option_id='send', choice='approve', draft_hash=decision['draft_hash']))
+        with self.assertRaises(ServiceError):
+            self.write('POST', f"/v1/decisions/{decision['id']}/answer", dict(
+                revision=saved['revision'], option_id='send', choice='approve', draft_hash=decision['draft_hash']))
         self.assertNotIn('_execution_task_id', self.service._get('decisions', decision['id']))
+
+    def test_a_stored_lock_on_a_draft_goes_and_send_works(self):
+        # The service before this release locked the draft. The PR merged before the draft was made.
+        decision, saved = self.linked_draft_pass('2000-01-01T00:00:00Z', _source_recheck=True)
+        wire = next(d for d in self.service.snapshot()['decisions'] if d['id'] == decision['id'])
+        self.assertEqual(wire['status'], 'pending')
+        self.assertNotIn('source_refreshing', wire)
+        self.assertNotIn('_source_recheck', saved)
+        answered = self.write('POST', f"/v1/decisions/{decision['id']}/answer", dict(
+            revision=saved['revision'], option_id='send', choice='approve', draft_hash=decision['draft_hash']))
+        self.assertEqual(answered['status'], 'approved')
