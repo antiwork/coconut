@@ -190,6 +190,82 @@ class TeamOnlyFlowTests(TeamOnlyMacs, unittest.TestCase):
                 fields = page if home is None else dict(page, home=home)
                 self.assertEqual(self.refusal(self.only.gateway_document, fields), (400, team_only.HOME))
 
+    def remove(self, **fields) -> dict:
+        """DELETE /v1/gateway/document of the tooling: the home and the key, without an audience."""
+        return self.only.gateway_document_delete({'home': str(self.home), 'key': 'weekly-report', **fields})
+
+    def versions(self) -> int:
+        return self.only.db.execute('SELECT COUNT(*) FROM document_versions').fetchone()[0]
+
+    def team_entries(self, room: str, kind: str) -> list[str]:
+        """The entry IDs of the team-only Mac on the relay of this kind."""
+        import base64
+        from team_fakes import decode
+        member = self.only.team_store.room(room)['member']
+        found = []
+        for row in self.relay.rooms[room]['entries'].values():
+            payload = json.loads(base64.b64decode(decode(row['body'])['payload']))
+            if payload['kind'] == kind and row['member'] == member:
+                found.append(row['id'])
+        return found
+
+    def test_the_tooling_deletes_a_team_page_and_the_bot_stays(self):
+        room = self.team()
+        bot = self.declare()
+        self.share(room, bot)
+        self.save()
+        self.sync()
+        self.save(content='4 tasks are open.')
+        self.sync()
+        self.assertEqual((self.library(), self.versions()), ({'pages': [('Weekly report', 2)], 'bots': ['Reporter']}, 2))
+        (page_entry,) = self.team_entries(room, 'page')
+        self.assertEqual(self.remove(), {'status': 'deleted', 'key': 'weekly-report'})
+        self.assertEqual((self.stored(), self.versions()), (0, 0))
+        self.sync()
+        # The bot stays in the team: the team shares the bot, not only its pages.
+        self.assertEqual(self.library(), {'pages': [], 'bots': ['Reporter']})
+        self.assertEqual(self.team_entries(room, 'page'), [])
+        self.assertIn(page_entry, self.team_entries(room, 'delete'))
+        # A repeat finds no page.
+        self.assertEqual(self.remove(), {'status': 'absent', 'key': 'weekly-report'})
+
+    def test_the_tooling_deletes_a_page_that_waits_for_a_team(self):
+        self.declare()
+        self.save()
+        with mock.patch.object(self.only, 'team_wake') as wake:
+            # A delete takes no audience. A page of a bot without a team goes too.
+            self.assertEqual(self.remove(audience='private'), {'status': 'deleted', 'key': 'weekly-report'})
+        wake.assert_called()
+        self.assertEqual((self.stored(), self.versions()), (0, 0))
+        with mock.patch.object(self.only, 'team_wake') as wake:
+            self.assertEqual(self.remove(), {'status': 'absent', 'key': 'weekly-report'})
+            self.assertEqual(self.remove(key='never-saved'), {'status': 'absent', 'key': 'never-saved'})
+        wake.assert_not_called()
+
+    def test_a_delete_refuses_a_bad_home_or_key_and_keeps_each_page(self):
+        from coconut.documents import KEY_RULE
+        self.declare()
+        other_home = Path(self.temp.name) / 'other-hermes'
+        other_home.mkdir()
+        self.declare('Helper', home=other_home)
+        self.save()
+        self.save(home=str(other_home))
+        for home in (None, '', 'hermes', '~/.hermes', 7, 'a\0b'):
+            with self.subTest(home=home):
+                fields = {'key': 'weekly-report'} if home is None else {'home': home, 'key': 'weekly-report'}
+                self.assertEqual(self.refusal(self.only.gateway_document_delete, fields), (400, team_only.HOME))
+        undeclared = str(self.home / 'profiles' / 'reporter')
+        self.assertEqual(self.refusal(lambda: self.remove(home=undeclared)), (404, team_only.UNKNOWN_HOME))
+        for key in (None, 7, 'Weekly Report', ''):
+            with self.subTest(key=key):
+                self.assertEqual(self.refusal(lambda: self.remove(key=key)), (400, KEY_RULE))
+        self.assertEqual(self.refusal(self.only.gateway_document_delete, {'home': str(self.home)}), (400, KEY_RULE))
+        self.assertEqual(self.stored(), 2)
+        # The delete of one bot's key keeps the page of the other bot with the same key.
+        self.assertEqual(self.remove()['status'], 'deleted')
+        self.assertEqual(self.stored(), 1)
+        self.assertEqual(self.save(home=str(other_home))['status'], 'unchanged')
+
     def test_the_tool_reads_the_mode_and_the_bots(self):
         self.team()
         bot = self.declare()
@@ -564,6 +640,13 @@ class ProcessTests(unittest.TestCase):
                          (400, {'error': TEAM_PAGE}))
         status, answer = self.request('GET', '/v1/team/status', token=self.token)
         self.assertEqual((status, answer['mode'], answer['bots'], answer['rooms']), (200, 'team', 1, []), answer)
+        # The tooling deletes the page with the token of the bridge file. Without it the page stays.
+        delete = {'home': str(self.home), 'key': 'weekly-report'}
+        self.assertEqual(self.request('DELETE', '/v1/gateway/document', delete)[0], 401)
+        self.assertEqual(self.request('DELETE', '/v1/gateway/document', delete, self.token),
+                         (200, {'status': 'deleted', 'key': 'weekly-report'}))
+        self.assertEqual(self.request('DELETE', '/v1/gateway/document', delete, self.token),
+                         (200, {'status': 'absent', 'key': 'weekly-report'}))
 
         # The team routes need the token of the bridge file.
         self.assertEqual(self.request('GET', '/v1/team/rooms')[0], 401)
@@ -575,6 +658,11 @@ class ProcessTests(unittest.TestCase):
                                           ('POST', '/v1/gateway/tools', {}, self.token),
                                           ('POST', '/v1/gateway/cron', {}, self.token),
                                           ('POST', '/v1/gateway/files', {}, self.token),
+                                          ('DELETE', '/v1/documents/x', {}, self.token),
+                                          # Only the page route takes DELETE, and it takes only POST and DELETE.
+                                          ('DELETE', '/v1/gateway/poll', {}, self.token),
+                                          ('DELETE', '/v1/gateway/tools', {}, self.token),
+                                          ('PUT', '/v1/gateway/document', {}, self.token),
                                           ('GET', '/v1/documents', None, None)):
             with self.subTest(path=path):
                 self.assertEqual(self.request(method, path, body, token), (503, refusal))

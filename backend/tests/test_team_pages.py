@@ -224,6 +224,30 @@ class TeamPageTests(TeamMacs, unittest.TestCase):
         self.sync()
         self.assertEqual((self.team_pages(), self.entries('bot')), ([], []))
 
+    def test_a_delete_of_the_tooling_takes_a_shared_page_and_its_bot_out(self):
+        self.publish()
+        self.share()
+        self.sync()
+        (written,) = self.entries('page')
+        self.assertEqual((len(self.team_pages()), len(self.entries('bot'))), (1, 1))
+        # The tooling of the Mac deletes the page with DELETE /v1/gateway/document.
+        home = str(self.first.profiles.home(self.bot))
+        with mock.patch.object(self.first, 'team_wake', wraps=self.first.team_wake) as wake:
+            self.assertEqual(self.first.gateway_document_delete({'home': home, 'key': 'weekly-report'}),
+                             {'status': 'deleted', 'key': 'weekly-report'})
+        wake.assert_called()
+        self.assertEqual(self.first.team_store.shares(self.room_id), {})
+        self.sync()
+        # The `delete` entry takes the place of the `page` entry, and the bot goes with its last shared page.
+        self.assertEqual((self.entries('page'), self.entries('bot')), ([], []))
+        self.assertIn(written['id'], [row['id'] for row in self.entries('delete')])
+        self.assertEqual((self.team_pages(), self.library()['team_bots']), ([], []))
+        # A repeat finds no page and wakes nothing.
+        with mock.patch.object(self.first, 'team_wake') as wake:
+            self.assertEqual(self.first.gateway_document_delete({'home': home, 'key': 'weekly-report'}),
+                             {'status': 'absent', 'key': 'weekly-report'})
+        wake.assert_not_called()
+
     def test_a_new_name_of_the_bot_writes_its_entry_again(self):
         self.publish()
         self.share()

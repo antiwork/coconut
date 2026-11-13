@@ -269,6 +269,27 @@ print(urllib.request.urlopen(request).read().decode())
 
 The other Macs of the team show the page in their Library within a minute.
 
+#### Delete a page
+
+Your agent deletes a page with the same route and the method `DELETE`. The request names the home and the key. It needs no audience:
+
+```python
+import json, pathlib, urllib.request
+bridge = json.loads(pathlib.Path('~/Coconut/.runtime/host/gateway/bridge.json').expanduser().read_text())
+page = {'home': str(pathlib.Path('~/.hermes').expanduser()), 'key': 'weekly-report'}
+request = urllib.request.Request(bridge['url'] + '/v1/gateway/document', data=json.dumps(page).encode(),
+                                 headers={'Authorization': 'Bearer ' + bridge['token'],
+                                          'Content-Type': 'application/json'}, method='DELETE')
+print(urllib.request.urlopen(request).read().decode())
+```
+
+The answer is one of two:
+
+- `{"status": "deleted", "key": "weekly-report"}`: the service removes the page with all its versions.
+- `{"status": "absent", "key": "weekly-report"}`: the bot of this home has no page with this key. The service changes nothing. A delete is safe to repeat.
+
+The other Macs of the team drop the page from their Library within a minute. This route is the way to delete a page. Do not edit the store of the service by hand.
+
 ### Check that it works
 
 Run `coconut status`. Expect:

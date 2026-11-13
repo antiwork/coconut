@@ -392,7 +392,20 @@ class TeamLogTests(unittest.TestCase):
         self.assertEqual((status, answer['document']['teams']), (200, []), answer)
         self.assertEqual(self.team_library(first, second), {'documents': [], 'team_bots': []})
 
-        # The first Mac shares again, then leaves the room, and its pages go from the second Mac.
+        # The first Mac shares again. The tooling deletes the page, and the second Mac loses it.
+        self.assertEqual(first.phone('PUT', f'/v1/team/rooms/{room_id}/pages/{document["id"]}', {})[0], 200)
+        self.assertEqual(len(self.team_library(first, second)['documents']), 1)
+        delete = {'home': page['home'], 'key': 'weekly-report'}
+        self.assertEqual(first.call('DELETE', '/v1/gateway/document', delete),
+                         (200, {'status': 'deleted', 'key': 'weekly-report'}))
+        self.assertEqual(self.team_library(first, second), {'documents': [], 'team_bots': []})
+        self.assertEqual(first.call('DELETE', '/v1/gateway/document', delete),
+                         (200, {'status': 'absent', 'key': 'weekly-report'}))
+
+        # The tooling saves the page again, and Ada shares it. Then the first Mac leaves the room, and its pages go
+        # from the second Mac.
+        self.assertEqual(first.call('POST', '/v1/gateway/document', page)[1]['version'], 1)
+        document = first.document(bot)
         self.assertEqual(first.phone('PUT', f'/v1/team/rooms/{room_id}/pages/{document["id"]}', {})[0], 200)
         self.assertEqual(len(self.team_library(first, second)['documents']), 1)
         self.assertEqual(first.call('DELETE', f'/v1/team/rooms/{room_id}')[0], 200)
@@ -922,6 +935,18 @@ class TeamOnlyTests(unittest.TestCase):
         self.assertTrue(commands, 'The socket of the room needs the helper.')
         for command in commands:
             self.assertTrue(command.startswith(str(self.helper_path)), command)
+
+        # The tooling deletes the page. Ada's Library loses it, and the team bot stays.
+        delete = {'home': str(self.home), 'key': 'weekly-report'}
+        self.assertEqual(self.reporter.call('DELETE', '/v1/gateway/document', delete),
+                         (200, {'status': 'deleted', 'key': 'weekly-report'}))
+        self.wait_until(lambda: self.library() == {'pages': [], 'bots': [(bot_id, 'Reporter')]},
+                        self.LIMIT_SECONDS + 5)
+        self.assertEqual(self.reporter.call('DELETE', '/v1/gateway/document', delete),
+                         (200, {'status': 'absent', 'key': 'weekly-report'}))
+        # A new save brings the page back for the removal of the bot below.
+        self.assertEqual(self.reporter.call('POST', '/v1/gateway/document', page)[1]['status'], 'saved')
+        self.wait_until(lambda: self.library()['pages'], self.LIMIT_SECONDS + 5)
 
         # The removal of the bot takes its page out of Ada's Library.
         (bot,) = self.reporter.call('GET', '/v1/team/bots')[1]['bots']

@@ -29,9 +29,11 @@ from urllib.parse import parse_qs, unquote, urlsplit
 from .service_base import ServiceError
 
 PEER_KEY = re.compile(r'[0-9a-f]{64}')
-# Only the main listener serves these. The tunnel listener carries the phone's requests.
+# The page route of the tooling of the Mac. POST saves a page, and DELETE deletes it.
+PAGE_ROUTE = '/v1/gateway/document'
+# Only the main listener serves these, each with POST. The tunnel listener carries the phone's requests.
 GATEWAY_ROUTES = ('/v1/gateway/poll', '/v1/gateway/events', '/v1/gateway/tools', '/v1/gateway/cron',
-                  '/v1/gateway/wake', '/v1/gateway/messages', '/v1/gateway/files', '/v1/gateway/document')
+                  '/v1/gateway/wake', '/v1/gateway/messages', '/v1/gateway/files', PAGE_ROUTE)
 # The routes of the adapter that a team-only service serves: the turns of the team chat (team_turns.py) and the sends
 # of Hermes outside a turn. No tool, no cron and no file of a phone.
 TEAM_GATEWAY_ROUTES = ('/v1/gateway/poll', '/v1/gateway/events', '/v1/gateway/messages')
@@ -190,8 +192,9 @@ class Handler(BaseHTTPRequestHandler):
         """A phone that shows no finished Work asks the recent state to leave it out."""
         return self.headers.get('X-Coconut-Work') == 'recent'
 
-    def _gateway(self, bridge, path):
-        """The routes of the `coconut` adapter of the Hermes gateway on this Mac. See gateway_bridge."""
+    def _gateway(self, bridge, path, method):
+        """The routes of the `coconut` adapter of the Hermes gateway on this Mac, and the page route of the tooling.
+        See gateway_bridge."""
         if not bridge.authorized(self.headers.get('Authorization', '')):
             raise ServiceError(401, 'Use the token in <data>/gateway/bridge.json.')
         data = self._body()
@@ -206,8 +209,11 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(200, self.server.service.gateway_message(data))
             elif path == '/v1/gateway/files':
                 self._json(200, self.server.service.gateway_file(data))
-            elif path == '/v1/gateway/document':
-                self._json(200, self.server.service.gateway_document(data))
+            elif path == PAGE_ROUTE:
+                # Only this route takes DELETE (_serve).
+                service = self.server.service
+                self._json(200, service.gateway_document_delete(data) if method == 'DELETE'
+                           else service.gateway_document(data))
             else:
                 self._json(200, bridge.poll(data) if path == '/v1/gateway/poll' else bridge.event(data))
         except (TypeError, ValueError) as error:
@@ -227,19 +233,21 @@ class Handler(BaseHTTPRequestHandler):
         self._json(200, service.team_request(method, url.path, data, key, device, direct))
 
     def _team_only(self, service, method, url):
-        """The routes of a team-only service (team_only.py): the team routes and the page route, for a tool of this
-        Mac, and the routes of the adapter of the team mode (TEAM_GATEWAY_ROUTES), each with the token of the bridge
-        file. Each other route says that this Mac runs Coconut for a team only."""
-        page = method == 'POST' and url.path == '/v1/gateway/document'
+        """The routes of a team-only service (team_only.py): the team routes and the page route (POST saves, DELETE
+        deletes), for a tool of this Mac, and the routes of the adapter of the team mode (TEAM_GATEWAY_ROUTES), each
+        with the token of the bridge file. Each other route says that this Mac runs Coconut for a team only."""
+        page = method in ('POST', 'DELETE') and url.path == PAGE_ROUTE
         gateway = method == 'POST' and url.path in TEAM_GATEWAY_ROUTES
         if not page and not gateway and not url.path.startswith(TEAM_ROUTES):
             service.refuse()
         if not service.gateway_bridge.authorized(self.headers.get('Authorization', '')):
             raise ServiceError(401, 'Use the token in <data>/gateway/bridge.json.')
         if page:
-            self._json(200, service.gateway_document(self._body()))
+            data = self._body()
+            self._json(200, service.gateway_document_delete(data) if method == 'DELETE'
+                       else service.gateway_document(data))
         elif gateway:
-            self._gateway(service.gateway_bridge, url.path)
+            self._gateway(service.gateway_bridge, url.path, method)
         else:
             self._team(service, method, url)
 
@@ -268,8 +276,10 @@ class Handler(BaseHTTPRequestHandler):
             if getattr(service, 'team_only', False):
                 self._team_only(service, method, url)
                 return
-            if method == 'POST' and url.path in GATEWAY_ROUTES and not self.server.tunnel and hasattr(service, 'gateway_bridge'):
-                self._gateway(service.gateway_bridge, url.path)
+            gateway = ((method == 'POST' and url.path in GATEWAY_ROUTES)
+                       or (method == 'DELETE' and url.path == PAGE_ROUTE))
+            if gateway and not self.server.tunnel and hasattr(service, 'gateway_bridge'):
+                self._gateway(service.gateway_bridge, url.path, method)
                 return
             team = url.path.startswith(TEAM_ROUTES) and hasattr(service, 'team_request')
             if (team and not self.server.tunnel
