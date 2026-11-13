@@ -95,7 +95,7 @@ final class AppStore {
     @ObservationIgnored private var teamMessageChanges: [TeamChatKey: [String: Int]] = [:]
     @ObservationIgnored private var teamMessageChangeCount = 0
     /// The pace of the calls that tell the Mac that the person types, by room (TeamTypingPace).
-    @ObservationIgnored private var teamTypingPace: [String: TeamTypingPace] = [:]
+    @ObservationIgnored private var teamTypingPace: [TeamChatKey: TeamTypingPace] = [:]
     /// Counts the lists of the teams that the app took. A read answer from before a newer list does not set the count.
     @ObservationIgnored private var teamListVersion = 0
     /// A Library page that a chat quotes in its composer when it opens: "Ask the bot about this page". By bot ID.
@@ -1598,9 +1598,9 @@ final class AppStore {
         assign(\.teamLoadError, nil)
         teamListVersion += 1
         assign(\.chatFilter, ChatFilter.effective(chatFilter, rooms: response.rooms))
-        // A room that left the list takes its chat with it, also unsent messages that a restart brought back.
-        let rooms = Set(response.rooms.map(\.room))
-        dropTeamChats(teamChats.keys.filter { !rooms.contains($0.room) })
+        // A room that left the list takes its chats with it, also unsent messages that a restart brought back. So does
+        // a named chat that the room no longer has.
+        dropTeamChats(teamChats.keys.filter { !teamListHas($0) })
         return true
     }
 
@@ -1623,9 +1623,15 @@ final class AppStore {
         Task { await loadTeam() }
     }
 
-    /// Reads the newest page again of each named chat that the app has, or of each chat for nil.
+    /// Reads the newest page again of each changed chat that the app has, or of each chat for nil. A change of the
+    /// messages of a room names the room only, so it reads the Team chat and each named chat of the room.
     private func reloadTeamChats(_ chats: [TeamChatKey]?) {
-        for chat in chats ?? Array(teamChats.keys) where teamChats[chat] != nil {
+        let changed = chats.map { chats in
+            teamChats.keys.filter { key in
+                chats.contains(key) || (key.chat != nil && chats.contains(TeamChatKey(room: key.room)))
+            }
+        }
+        for chat in changed ?? Array(teamChats.keys) where teamChats[chat] != nil {
             Task { await loadTeamChat(chat) }
         }
     }
@@ -1758,6 +1764,34 @@ final class AppStore {
         return true
     }
 
+    /// Makes a named chat of a team (docs/team-log.md, "Chats of a team"). Return the ID of the chat, or nil when the Mac
+    /// did not make it. The error banner of the sheet then shows the text of the Mac.
+    func createTeamChat(_ room: TeamRoom, name: String) async -> String? {
+        await changeTeamChat(room, path: "team/rooms/\(room.room)/chats", method: "POST", name: name)
+    }
+
+    /// Gives a named chat a new name. Return whether the Mac did it.
+    func renameTeamChat(_ room: TeamRoom, chat: String, name: String) async -> Bool {
+        await changeTeamChat(room, path: "team/rooms/\(room.room)/chats/\(chat)", method: "PATCH", name: name) != nil
+    }
+
+    /// Deletes a named chat for each member. Return whether the Mac did it. The chat and its messages leave the app.
+    func deleteTeamChat(_ room: TeamRoom, chat: String) async -> Bool {
+        await changeTeamChat(room, path: "team/rooms/\(room.room)/chats/\(chat)", method: "DELETE", name: nil) != nil
+    }
+
+    /// One write of the named chats of a room. The answer is the room with its chats, and the list loads again.
+    private func changeTeamChat(_ room: TeamRoom, path: String, method: String, name: String?) async -> String? {
+        let ticket = startTeamWrite(room.room)
+        let answer: TeamChatAnswer? = await write(path, method: method, payload: TeamChatRequest(name: name),
+                                                  as: TeamChatAnswer.self, refreshInBackground: true)
+        guard let answer else { return nil }
+        applyTeamChange(room: answer.room, write: ticket)
+        // A deleted chat leaves the list of the answer, so its messages and its unsent messages go.
+        dropTeamChats(teamChats.keys.filter { !teamListHas($0) })
+        return answer.chat
+    }
+
     /// Leaves a team, or removes a team that this Mac is no longer in. The Mac deletes its copy and its keys.
     func leaveTeam(_ room: TeamRoom) async -> Bool {
         // An answer of an earlier write of the room must not bring the room back.
@@ -1797,10 +1831,10 @@ final class AppStore {
         return newest
     }
 
-    /// True while the list of the teams has the room of the chat. A list that the app has not loaded yet keeps every
-    /// chat. A direct chat stays while its room stays, also after the other member left.
+    /// True while the list of the teams has the chat: its room, and for a named chat that chat. A list that the app has
+    /// not loaded yet keeps every chat. A direct chat stays while its room stays, also after the other member left.
     private func teamListHas(_ chat: TeamChatKey) -> Bool {
-        team.map { list in list.rooms.contains { $0.room == chat.room } } ?? true
+        team.map { list in list.rooms.contains { $0.room == chat.room && $0.inChat(chat.chat) != nil } } ?? true
     }
 
     // MARK: Team chat
@@ -1820,7 +1854,7 @@ final class AppStore {
             teamChatRequests[chat] = request
             let changes = teamChatChanges[chat, default: 0]
             let page: TeamMessagePage
-            do { page = try await client.request("\(chat.path)/messages?limit=\(Self.teamPage)") } catch {
+            do { page = try await client.request("\(chat.path)/messages?limit=\(Self.teamPage)\(chat.query)") } catch {
                 guard self.client === client, teamChatRequests[chat] == request, teamListHas(chat) else { return false }
                 if !(error is CancellationError) { teamChats[chat, default: TeamChat()].error = Self.teamMessage(error) }
                 return false
@@ -1859,7 +1893,7 @@ final class AppStore {
             let page: TeamMessagePage
             do {
                 page = try await client.request(
-                    "\(chat.path)/messages?before=\(upper)&limit=\(Self.teamRereadPage)")
+                    "\(chat.path)/messages?before=\(upper)&limit=\(Self.teamRereadPage)\(chat.query)")
             } catch { return }
             guard self.client === client, teamOlderRequests[chat] == pass, teamListHas(chat),
                   teamChats[chat] != nil else { return }
@@ -1909,7 +1943,9 @@ final class AppStore {
         for _ in 0..<3 {
             let changes = teamChatChanges[chat, default: 0]
             let page: TeamMessagePage
-            do { page = try await client.request("\(chat.path)/messages?before=\(before)&limit=\(Self.teamPage)") }
+            do {
+                page = try await client.request("\(chat.path)/messages?before=\(before)&limit=\(Self.teamPage)\(chat.query)")
+            }
             catch {
                 guard self.client === client else { return false }
                 if !(error is CancellationError) { report(error) }
@@ -1986,7 +2022,7 @@ final class AppStore {
         let change = startMessageChange(chat, id)
         let answer: TeamMessageAnswer? = await write("\(chat.path)/messages",
                                                      payload: TeamSendRequest(text: pending.text, replyTo: pending.replyTo,
-                                                                              mentions: pending.mentions),
+                                                                              mentions: pending.mentions, chat: chat.chat),
                                                      as: TeamMessageAnswer.self, refreshInBackground: true,
                                                      idempotencyKey: pending.idempotencyKey)
         // A new pairing or a removal of the room removed the message, or a newer try of it runs.
@@ -2067,7 +2103,7 @@ final class AppStore {
         guard !isDemo, first > teamReadMark(chat) ?? 0 else { return }
         teamReadPosting[chat] = first
         let list = teamListVersion
-        let answer: TeamReadAnswer? = await write("\(chat.path)/read", payload: TeamReadRequest(first: first),
+        let answer: TeamReadAnswer? = await write("\(chat.path)/read", payload: TeamReadRequest(first: first, chat: chat.chat),
                                                   as: TeamReadAnswer.self, quiet: true, refreshInBackground: true)
         let newestRead = teamReadPosting[chat] == first
         if newestRead { teamReadPosting[chat] = nil }
@@ -2081,19 +2117,25 @@ final class AppStore {
                team?.rooms[index].directs?[direct].unread != unread {
                 team?.rooms[index].directs?[direct].unread = unread
             }
+        } else if let id = chat.chat {
+            if let named = team?.rooms[index].chats?.firstIndex(where: { $0.id == id }),
+               team?.rooms[index].chats?[named].unread != unread {
+                team?.rooms[index].chats?[named].unread = unread
+            }
         } else if team?.rooms[index].unread != unread {
             team?.rooms[index].unread = unread
         }
     }
 
-    /// The person changed the draft of the Team chat: the Mac tells the team that the person types, at the pace of
-    /// TeamTypingPace (docs/team-log.md, "Typing"). A direct chat tells nobody. A failure shows nothing.
+    /// The person changed the draft of the Team chat or of a named chat: the Mac tells the team that the person types,
+    /// at the pace of TeamTypingPace (docs/team-log.md, "Typing"). A direct chat tells nobody. A failure shows nothing.
     func teamDraftChanged(_ chat: TeamChatKey, draft: String) {
         guard !isDemo, !chat.isDirect, connection == .connected, let client,
-              teamTypingPace[chat.room, default: TeamTypingPace()].take(draft: draft, at: .now) else { return }
+              teamTypingPace[chat, default: TeamTypingPace()].take(draft: draft, at: .now) else { return }
+        let body = (try? JSONEncoder().encode(TeamTypingRequest(chat: chat.chat))) ?? Data("{}".utf8)
         Task {
-            let _: TeamTypingAnswer? = try? await client.request("\(chat.path)/typing", method: "POST",
-                                                                 body: Data("{}".utf8), retryTransient: false)
+            let _: TeamTypingAnswer? = try? await client.request("\(chat.path)/typing", method: "POST", body: body,
+                                                                 retryTransient: false)
         }
     }
 
@@ -2757,14 +2799,14 @@ final class AppStore {
         guard let chat = target.chat else { return nil }
         if team?.rooms.contains(where: { $0.room == chat.room }) != true { await loadTeam() }
         guard acceptsNotification(target) else { return nil }
-        return teamNotificationPlace(chat.room, member: chat.member)
+        return teamNotificationPlace(chat.room, member: chat.member, chat: chat.chat)
     }
 
     /// The place of a team notification with the list that the app has now: the Team chat, or the direct chat with
     /// `member`. A list that the app has not loaded, or cannot read, keeps each chat (`teamListHas`), so a tap in a
     /// terminated app opens the chat at once.
-    func teamNotificationPlace(_ room: String, member: String? = nil) -> NotificationDestination {
-        let chat = TeamChatKey(room: room, member: member)
+    func teamNotificationPlace(_ room: String, member: String? = nil, chat named: String? = nil) -> NotificationDestination {
+        let chat = TeamChatKey(room: room, member: member, chat: named)
         return teamListHas(chat) ? NotificationDestination(chat: chat) : .chatList
     }
 
@@ -2890,9 +2932,14 @@ private struct TeamNotificationsAnswer: Decodable, Sendable { let room: String; 
 /// The answer of a share or a stop of a page: the document with its teams.
 private struct PageShareAnswer: Decodable, Sendable { let document: BotDocument }
 /// A nil `mentions` is not in the JSON: a message without a mention sends none.
-private struct TeamSendRequest: Encodable { let text: String; let replyTo: String?; let mentions: [String]? }
+private struct TeamSendRequest: Encodable { let text: String; let replyTo: String?; let mentions: [String]?; let chat: String? }
 private struct TeamEditRequest: Encodable { let text: String }
-private struct TeamReadRequest: Encodable { let first: Int }
+private struct TeamReadRequest: Encodable { let first: Int; let chat: String? }
+private struct TeamTypingRequest: Encodable { let chat: String? }
+/// The body of a new chat and of a new name. A delete sends no name.
+private struct TeamChatRequest: Encodable { let name: String? }
+/// The answer of a change of the named chats: the room, and the ID of the chat.
+private struct TeamChatAnswer: Decodable, Sendable { let room: TeamRoom; let chat: String }
 private struct InstructionsRequest: Encodable { let instructions: String }
 private struct PreferenceRequest: Encodable { let text: String }
 private struct RoutineRequest: Encodable { let name: String; let prompt: String; let cron: String; let timezone: String; let enabled: Bool }
@@ -2931,6 +2978,8 @@ struct OutgoingCache: Codable {
     /// The messages of the direct chats that the Mac did not confirm, by room and other member. An older app has none,
     /// and a cache of an older app loads without it.
     var directMessages: [String: [String: [TeamPendingMessage]]]? = nil
+    /// The messages of the named chats that the Mac did not confirm, by room and chat. An older app has none.
+    var namedMessages: [String: [String: [TeamPendingMessage]]]? = nil
 
     /// The unsent messages of each chat of a team. Each part is nil when it has no message.
     var pendingTeamMessages: [TeamChatKey: [TeamPendingMessage]] {
@@ -2940,17 +2989,23 @@ struct OutgoingCache: Codable {
             for (room, members) in directMessages ?? [:] {
                 for (member, pending) in members { chats[TeamChatKey(room: room, member: member)] = pending }
             }
+            for (room, named) in namedMessages ?? [:] {
+                for (chat, pending) in named { chats[TeamChatKey(room: room, chat: chat)] = pending }
+            }
             return chats
         }
         set {
             var team: [String: [TeamPendingMessage]] = [:]
             var direct: [String: [String: [TeamPendingMessage]]] = [:]
+            var named: [String: [String: [TeamPendingMessage]]] = [:]
             for (chat, pending) in newValue {
                 if let member = chat.member { direct[chat.room, default: [:]][member] = pending }
+                else if let id = chat.chat { named[chat.room, default: [:]][id] = pending }
                 else { team[chat.room] = pending }
             }
             teamMessages = team.isEmpty ? nil : team
             directMessages = direct.isEmpty ? nil : direct
+            namedMessages = named.isEmpty ? nil : named
         }
     }
 }

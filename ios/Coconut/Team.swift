@@ -58,6 +58,14 @@ struct TeamRoom: Decodable, Identifiable, Equatable, Sendable {
     var canDeleteMessages: Bool? = nil
     /// Who types in the Team chat now (docs/team-log.md, "Typing"). An older service sends none.
     var typing: TeamTypingList? = nil
+    /// The named chats of the team (docs/team-log.md, "Chats of a team"). An older service sends none.
+    var chats: [TeamNamedChat]? = nil
+    /// True when this person can make, rename and delete the named chats: the Mac is the admin of an active team
+    /// (TeamChatManagement). An older service sends none, and none is false.
+    var canManageChats: Bool? = nil
+    /// The named chat that this copy of the room shows (TeamRoom.inChat). Nil for the room itself: the Team chat. The
+    /// Mac never sends it.
+    var shownChat: TeamNamedChat? = nil
 
     var id: String { room }
 

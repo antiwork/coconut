@@ -4,28 +4,100 @@ import Foundation
 // other members of the team. So a decode keeps each field that can be missing optional, and a page drops a message
 // that it cannot read instead of the whole page.
 
-/// The key of one chat of a team: the Team chat of a room, or the direct chat of this person with one other member of
-/// the room (docs/team-log.md, "Direct messages"). The view, the route, the store and the paths of the requests use it,
-/// so both chats have one code path. A room ID alone names the Team chat of the room.
+/// The key of one chat of a team: the Team chat of a room, a named chat of the room (docs/team-log.md, "Chats of a
+/// team"), or the direct chat of this person with one other member of the room ("Direct messages"). The view, the
+/// route, the store and the paths of the requests use it, so each chat has one code path. A room ID alone names the
+/// Team chat of the room.
 struct TeamChatKey: Hashable, Sendable, ExpressibleByStringLiteral {
     let room: String
-    /// The member ID of the other person of a direct chat. Nil for the Team chat.
+    /// The member ID of the other person of a direct chat. Nil for the Team chat and a named chat.
     var member: String? = nil
+    /// The ID of a named chat. Nil for the Team chat and a direct chat.
+    var chat: String? = nil
 
-    init(room: String, member: String? = nil) {
+    init(room: String, member: String? = nil, chat: String? = nil) {
         self.room = room
         self.member = member
+        self.chat = chat
     }
 
     init(stringLiteral room: String) { self.init(room: room) }
 
     var isDirect: Bool { member != nil }
 
-    /// The path of the chat on the Mac. The messages and the read position are under it.
+    /// The path of the chat on the Mac. The messages and the read position are under it. A named chat has the path of
+    /// the Team chat, and each request names the chat (`query`, and `chat` in a body).
     var path: String {
         guard let member else { return "team/rooms/\(room)" }
         return "team/rooms/\(room)/directs/\(member)"
     }
+
+    /// The part of a query that names a named chat ("&chat=<ID>"), or nothing for another chat.
+    var query: String { chat.map { "&chat=" + $0 } ?? "" }
+}
+
+/// One named chat of a room, from `chats` of the list of the teams: its ID, its name, and the fields that the room has
+/// for the Team chat. An older service sends no `chats`.
+struct TeamNamedChat: Decodable, Identifiable, Equatable, Sendable {
+    var id: String
+    var name: String
+    var createdAt: String? = nil
+    var unread: Int? = nil
+    var lastMessage: TeamLastMessage? = nil
+    var mentioned: Bool? = nil
+    var mentionFirst: Int? = nil
+    var typing: TeamTypingList? = nil
+}
+
+extension TeamRoom {
+    /// The named chats of the room in the order of the Mac. An older service sends none.
+    var namedChats: [TeamNamedChat] { chats ?? [] }
+
+    /// The room as one of its chats shows it: for a named chat, a copy whose fields of the Team chat (the unread count,
+    /// the newest message, the mention, who types and the time) are those of the named chat, and whose `shownChat` is
+    /// that chat. So the row, the title and the chat view of the Team chat show a named chat with no code of their
+    /// own. Nil for a chat that the room no longer has. Nil as the ID gives the room as it is: the Team chat.
+    func inChat(_ id: String?) -> TeamRoom? {
+        guard let id else { return self }
+        guard let chat = namedChats.first(where: { $0.id == id }) else { return nil }
+        var room = self
+        room.shownChat = chat
+        room.unread = chat.unread
+        room.lastMessage = chat.lastMessage
+        room.mentioned = chat.mentioned
+        room.mentionFirst = chat.mentionFirst
+        room.typing = chat.typing
+        room.createdAt = chat.createdAt
+        return room
+    }
+
+    /// The rooms of the named chats of this room (inChat), in the order of the Mac.
+    var namedChatRooms: [TeamRoom] { namedChats.compactMap { inChat($0.id) } }
+
+    /// The key of the chat that this room shows: the Team chat, or its named chat.
+    var chatKey: TeamChatKey { TeamChatKey(room: room, chat: shownChat?.id) }
+
+    /// The title of the chat that this room shows: the name of the named chat, else the name of the team.
+    var title: String { shownChat?.name ?? name }
+
+    /// The name of the chat and the name of the team, as the subtitle of a banner and an alert of a message have it:
+    /// "Design · Example Team" for a named chat, the name of the team for the Team chat.
+    var chatAndTeam: String { shownChat.map { $0.name + " · " + name } ?? name }
+}
+
+/// Which person makes, renames and deletes the named chats of a team: the admin of an active team, as the service says
+/// in `can_manage_chats`. An older service sends none, and the app then shows no "New chat" and no action.
+enum TeamChatManagement {
+    static let deleteTitle = "Delete this chat for everyone?"
+    static let deleteMessage = "Its messages go from the app of each member."
+    static let deleteConfirm = "Delete"
+    static let newChat = "New chat"
+    static let nameHeader = "Chat name"
+
+    static func allows(_ room: TeamRoom) -> Bool { room.status == .active && room.canManageChats == true }
+
+    /// The section "Chats" of the Team screen shows while the team has a named chat, or while this person can make one.
+    static func showsSection(_ room: TeamRoom) -> Bool { !room.namedChats.isEmpty || allows(room) }
 }
 
 /// One direct chat of a room, from `directs` of the list of the teams: the other member, its last name, the unread
@@ -543,7 +615,8 @@ struct TeamTypingAnswer: Decodable, Sendable {
     var room: String
 }
 
-/// One row of the Chats list: a bot, a team, or a direct chat with one person of a team.
+/// One row of the Chats list: a bot, the Team chat or a named chat of a team (TeamRoom.inChat), or a direct chat with
+/// one person of a team.
 enum ChatListItem: Identifiable, Equatable {
     case bot(Bot)
     case team(TeamRoom)
@@ -552,7 +625,7 @@ enum ChatListItem: Identifiable, Equatable {
     var id: String {
         switch self {
         case .bot(let bot): "bot-" + bot.id
-        case .team(let room): "team-" + room.room
+        case .team(let room): "team-" + room.room + (room.shownChat.map { "-" + $0.id } ?? "")
         case .direct(let room, let direct): "direct-" + room.room + "-" + direct.member
         }
     }
@@ -561,7 +634,7 @@ enum ChatListItem: Identifiable, Equatable {
     var chat: TeamChatKey? {
         switch self {
         case .bot: nil
-        case .team(let room): TeamChatKey(room: room.room)
+        case .team(let room): room.chatKey
         case .direct(let room, let direct): TeamChatKey(room: room.room, member: direct.member)
         }
     }
@@ -595,8 +668,9 @@ enum ChatList {
     }
 
     /// One list, newest activity first. `bots` is in that order already. The activity of a team is its newest message,
-    /// or the time when this Mac made or joined it, and the activity of a direct chat is its newest message. A team
-    /// or a direct chat and a bot with the same time keep the bot first.
+    /// or the time when this Mac made or joined it, the activity of a named chat is its newest message or the time of
+    /// the chat, and the activity of a direct chat is its newest message. A chat of a team and a bot with the same time
+    /// keep the bot first.
     static func items(bots: [Bot], latest: [String: Date], rooms: [TeamRoom],
                       local: [TeamChatKey: TeamLastMessage] = [:]) -> [ChatListItem] {
         func activity(_ bot: Bot) -> Date { latest[bot.id] ?? bot.createdAt.apiDate ?? .distantPast }
@@ -615,11 +689,13 @@ enum ChatList {
         return items
     }
 
-    /// The teams and the direct chats of the rooms (TeamRoom.listedDirects), newest activity first. An older service
-    /// sends no `directs`, so its rooms bring the teams only.
+    /// The teams, their named chats and the direct chats of the rooms (TeamRoom.listedDirects), newest activity first.
+    /// A named chat is a row of a team (TeamRoom.inChat). An older service sends no `chats` and no `directs`, so its
+    /// rooms bring the teams only.
     static func people(_ rooms: [TeamRoom], local: [TeamChatKey: TeamLastMessage] = [:]) -> [ChatListItem] {
         let items = rooms.flatMap { room in
-            [.team(room)] + room.listedDirects(local: local).map { ChatListItem.direct(room, $0) }
+            [.team(room)] + room.namedChatRooms.map(ChatListItem.team)
+                + room.listedDirects(local: local).map { ChatListItem.direct(room, $0) }
         }
         return items.sorted { ($0.peopleActivity, $1.id) > ($1.peopleActivity, $0.id) }
     }
@@ -851,14 +927,16 @@ extension TeamRoom {
     var showsMentionMark: Bool { mentioned == true }
 }
 
-/// What VoiceOver reads for the row of a team in the Chats list and in the Mac sidebar.
+/// What VoiceOver reads for the row of a team or of a named chat in the Chats list and in the Mac sidebar.
 enum TeamRowSpeech {
     static let named = "You are named"
 
-    /// The name, the newest message, the unread count, and "You are named" while the row shows the mark.
+    /// The name (for a named chat: the name of the chat and of the team), the newest message, the unread count, and
+    /// "You are named" while the row shows the mark.
     static func label(_ room: TeamRoom, preview: String?) -> String {
         let unread = room.unread ?? 0
-        return [room.name, preview, unread > 0 ? UnreadBadge.spoken(unread) : nil,
+        return [room.shownChat.map { $0.name + ", " + room.name } ?? room.name, preview,
+                unread > 0 ? UnreadBadge.spoken(unread) : nil,
                 room.showsMentionMark ? named : nil].compactMap { $0 }.joined(separator: ", ")
     }
 }
