@@ -308,7 +308,7 @@ class StateSync:
             settings.update_unconfirmed model_catalog.updated routine.created routine.updated routine.deleted routine.triggered
             routine.reconciliation_required routines.unavailable google.updated device.paired maintenance.withdrawal_corrected
             document.created document.updated document.deleted team.updated team_messages.updated
-            team_directs.updated""".split())
+            team_directs.updated team_typing.updated""".split())
         # The state holds no document, because the phone reads the Library with GET /v1/documents. A document event
         # sends only its task. The save of a turn also adds the message of its card, which has its own event.
         if (after > cursor or len(rows) > 1000 or len(rows) != cursor - after
@@ -411,7 +411,10 @@ class StateSync:
                           # The direct chats that changed, each as its room and its other member.
                           team_directs_changed=[{'team': team, 'member': member} for team, member in sorted(
                               {(value['team'], value['member']) for value in
-                               (json.loads(r[3]) for r in rows if r[1] == 'team_directs.updated')})])
+                               (json.loads(r[3]) for r in rows if r[1] == 'team_directs.updated')})],
+                          # The rooms where who types changed: a person or a bot started, typed on, or ended.
+                          team_typing_changed=sorted({json.loads(r[3])['team'] for r in rows
+                                                      if r[1] == 'team_typing.updated'}))
             if any(m.get('client_request_id') for m in messages):
                 receipts = self.db.execute("SELECT json_group_array(DISTINCT json_extract(data,'$.client_request_id')) FROM messages "
                     "WHERE json_type(data,'$.client_request_id')='text' AND EXISTS(SELECT 1 FROM bots "
@@ -421,7 +424,7 @@ class StateSync:
         # event changes no Work row and no card.
         structural = not rows or refresh_activity or any(r[1] not in ('message.created', 'message.updated', 'bot.read', 'bot.updated',
             'document.created', 'document.updated', 'document.deleted', 'team.updated', 'team_messages.updated',
-            'team_directs.updated') for r in rows)
+            'team_directs.updated', 'team_typing.updated') for r in rows)
         if structural:
             work_outcomes = set()
             if not collection_deltas:

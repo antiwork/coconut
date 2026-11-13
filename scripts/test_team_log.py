@@ -10,7 +10,7 @@ It needs macOS, the Xcode Command Line Tools, and `npm ci` in relay/.
 
 scripts/test_tunnel_loopback.py loads this test too, so the Mac app job of CI runs it after its `npm ci`.
 TeamLogVectorTests checks the test vectors of docs/team-log.md with the real helper. TeamDirectTests sends a direct
-message between two of three Macs in one team.
+message between two of three Macs in one team. TeamTypingTests shows that one person types to the other two.
 """
 from __future__ import annotations
 
@@ -1211,6 +1211,80 @@ class TeamDirectTests(unittest.TestCase):
         output = '\n'.join(logging.Formatter().format(record) for record in records)
         for text in ('Hello', 'Grace', 'Example Team'):
             self.assertNotIn(text, output)
+
+
+@unittest.skipUnless(sys.platform == 'darwin' and shutil.which('xcrun') and shutil.which('node')
+                     and (ROOT / 'relay/node_modules/miniflare').is_dir(),
+                     'The typing test needs macOS, the Xcode Command Line Tools, Node, and npm ci in relay/.')
+class TeamTypingTests(unittest.TestCase):
+    """Grace types in the Team chat through the real relay and the real helper, and the room views of Ada and Lin show
+    her. Her message ends it. The three services run in this process, as in TeamDirectTests."""
+
+    @classmethod
+    def setUpClass(cls):
+        TeamPushTests.setUpClass.__func__(cls)
+
+    @classmethod
+    def tearDownClass(cls):
+        TeamPushTests.tearDownClass.__func__(cls)
+
+    def test_a_person_types_and_the_other_macs_show_it_until_her_message(self):
+        import logging
+        from coconut.providers import FixtureProvider
+        from coconut.service import Service
+        os.environ['COCONUT_TEAM_HELPER'] = str(self.helper_path)
+        self.addCleanup(os.environ.pop, 'COCONUT_TEAM_HELPER', None)
+        records = []
+        handler = logging.Handler(logging.DEBUG)
+        handler.emit = records.append
+        root_logger = logging.getLogger()
+        root_logger.addHandler(handler)
+        self.addCleanup(root_logger.setLevel, root_logger.level)
+        root_logger.setLevel(logging.DEBUG)
+        self.addCleanup(root_logger.removeHandler, handler)
+        macs = []
+        for name in ('ada-typing', 'grace-typing', 'lin-typing'):
+            root = Path(self.temp.name) / name
+            service = Service(root, FixtureProvider(root), start_workers=False)
+            self.addCleanup(service.close)
+            macs.append(service)
+        ada, grace, lin = macs
+
+        def call(service, method, path, data=None):
+            return service.team_request(method, path, data or {}, '', 'test-device')
+
+        def typing(service):
+            service.team_sync_pass()
+            (view,) = call(service, 'GET', '/v1/team/rooms')['rooms']
+            return [(item['name'], item['bot'], item['seconds']) for item in view['typing']]
+
+        room_id = call(ada, 'POST', '/v1/team/rooms', {'name': 'Example Team', 'member_name': 'Ada',
+                                                       'relay': self.url})['room']['room']
+        for service, name in ((grace, 'Grace'), (lin, 'Lin')):
+            link = call(ada, 'POST', f'/v1/team/rooms/{room_id}/invites', {})['link']
+            call(service, 'POST', '/v1/team/join', {'link': link, 'member_name': name})
+        for _ in range(2):
+            for service in macs:
+                service.team_sync_pass()
+        self.assertEqual(call(grace, 'POST', f'/v1/team/rooms/{room_id}/typing'), {'room': room_id})
+        for service in (ada, lin):
+            self.assertEqual(typing(service), [('Grace', None, 10)])
+        self.assertEqual(typing(grace), [])
+        call(grace, 'POST', f'/v1/team/rooms/{room_id}/messages', {'text': 'Hello team'})
+        for service in (ada, lin):
+            self.assertEqual(typing(service), [])
+        # The relay holds one `typing` entry of Grace, and no log line has a name or the text.
+        entries = self.relay_entries(grace, room_id)
+        self.assertEqual(sum(1 for entry in entries if entry['member'] == grace.team_store.room(room_id)['member']
+                             and not entry['kept']), 2, 'One typing entry and one message.')
+        output = '\n'.join(logging.Formatter().format(record) for record in records)
+        for text in ('Hello team', 'Grace', 'Example Team'):
+            self.assertNotIn(text, output)
+
+    def relay_entries(self, service, room_id: str) -> list[dict]:
+        from coconut import team_keys
+        token = team_keys.read(service.root, room_id)['token']
+        return TeamRelay().read(self.url, room_id, token, 0)['entries']
 
 
 @unittest.skipUnless(sys.platform == 'darwin' and shutil.which('xcrun') and shutil.which('node')

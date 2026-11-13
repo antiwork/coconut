@@ -94,6 +94,8 @@ final class AppStore {
     /// answer of the Mac applies only while its change is still the newest one of that message.
     @ObservationIgnored private var teamMessageChanges: [TeamChatKey: [String: Int]] = [:]
     @ObservationIgnored private var teamMessageChangeCount = 0
+    /// The pace of the calls that tell the Mac that the person types, by room (TeamTypingPace).
+    @ObservationIgnored private var teamTypingPace: [String: TeamTypingPace] = [:]
     /// Counts the lists of the teams that the app took. A read answer from before a newer list does not set the count.
     @ObservationIgnored private var teamListVersion = 0
     /// A Library page that a chat quotes in its composer when it opens: "Ask the bot about this page". By bot ID.
@@ -629,7 +631,7 @@ final class AppStore {
         // place to go: its client is not the client of the store.
         team = nil; teamLoadError = nil; latestTeamLoad = nil; teamWrites = [:]
         teamChats = [:]; teamChatRequests = [:]; teamChatChanges = [:]; teamReadPosted = [:]; teamReadPosting = [:]
-        teamChatsOnScreen = []; teamOlderRequests = [:]; teamMessageChanges = [:]
+        teamChatsOnScreen = []; teamOlderRequests = [:]; teamMessageChanges = [:]; teamTypingPace = [:]
         chatFilter = .all
         approvals = nil; parallelWork = nil; fallback = nil; workCapacity = nil; mcpServers = []
         reactionOverrides = [:]; decisionReplyDrafts = [:]; answeringDecisionIds = []
@@ -1615,8 +1617,9 @@ final class AppStore {
         let chats = page.changedTeamChats
         reloadTeamChats(page.reset != nil ? nil : chats)
         // The row of a team or a direct chat shows its newest message and its unread count, so a change of the chat
-        // loads the list too.
-        guard page.teamChanged == true || page.reset != nil || !chats.isEmpty, teamAsked else { return }
+        // loads the list too. The list also says who types.
+        let typing = !(page.teamTypingChanged ?? []).isEmpty
+        guard page.teamChanged == true || page.reset != nil || !chats.isEmpty || typing, teamAsked else { return }
         Task { await loadTeam() }
     }
 
@@ -2080,6 +2083,17 @@ final class AppStore {
             }
         } else if team?.rooms[index].unread != unread {
             team?.rooms[index].unread = unread
+        }
+    }
+
+    /// The person changed the draft of the Team chat: the Mac tells the team that the person types, at the pace of
+    /// TeamTypingPace (docs/team-log.md, "Typing"). A direct chat tells nobody. A failure shows nothing.
+    func teamDraftChanged(_ chat: TeamChatKey, draft: String) {
+        guard !isDemo, !chat.isDirect, connection == .connected, let client,
+              teamTypingPace[chat.room, default: TeamTypingPace()].take(draft: draft, at: .now) else { return }
+        Task {
+            let _: TeamTypingAnswer? = try? await client.request("\(chat.path)/typing", method: "POST",
+                                                                 body: Data("{}".utf8), retryTransient: false)
         }
     }
 

@@ -29,6 +29,11 @@ struct TeamChatView: View {
     @State private var growingAbove = false
     @State private var dayReference = Date()
     @State private var pinnedDay = PinnedDay()
+    /// Who types, as the row under the newest message shows it. It changes with a fade.
+    @State private var typing: [TeamTyping] = []
+    /// The time of the last look at who types: the arrival of a list, or the end of a subject.
+    @State private var typingClock = Date()
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @FocusState private var composerFocused: Bool
     @ScaledMetric(relativeTo: .headline) private var nameWidth = 150
     #if os(macOS)
@@ -105,8 +110,19 @@ struct TeamChatView: View {
                         .fixedSize(horizontal: false, vertical: true)
                         .id(row.id)
                     }
-                    // The row inset and this padding keep 14 points below the last row.
-                    Color.clear.frame(height: 1).padding(.bottom, 9).id(Self.bottom)
+                    // The last row: who types, under the newest message and above the composer, then the anchor of
+                    // the bottom. The row is always there, so the list never adds or removes a row for typing while it
+                    // scrolls to its bottom. A direct chat shows nobody. The row inset and the padding keep 14 points
+                    // below the last message.
+                    VStack(alignment: .leading, spacing: 0) {
+                        if !typing.isEmpty {
+                            TeamTypingRow(room: room, subjects: typing)
+                                .padding(.top, 5)
+                                .transition(.opacity)
+                        }
+                        Color.clear.frame(height: 1)
+                    }
+                    .padding(.bottom, 9).id(Self.bottom)
                 }
                 .listRowInsets(EdgeInsets(top: 5, leading: 16, bottom: 5, trailing: 16))
                 .listRowSeparator(.hidden)
@@ -180,6 +196,15 @@ struct TeamChatView: View {
         // A chat that closes keeps its newest page only, so it opens again without stale older pages.
         .onDisappear { isVisible = false; composerFocused = false; store.closeTeamChat(chatKey) }
         .onReceive(DaySeparator.changes) { _ in dayReference = Date() }
+        .onChange(of: chatKey.isDirect ? [] : room.typingNow(at: typingClock), initial: true) { _, value in
+            withAnimation(BoardStyle.fade(reduceMotion: reduceMotion)) { typing = value }
+        }
+        .typingClock(room.typing, $typingClock)
+        .onChange(of: draft) { _, value in
+            // The person types: the Mac tells the team. Not for an edit of a sent message, and not in a direct chat.
+            guard editing == nil, canWrite(room) else { return }
+            store.teamDraftChanged(chatKey, draft: value)
+        }
         .confirmationDialog(TeamMessageDeletion.title, isPresented: Binding(
             get: { deleting != nil }, set: { if !$0 { deleting = nil } }), titleVisibility: .visible,
                             presenting: deleting) { message in
@@ -803,29 +828,115 @@ struct DirectTitle: View {
     }
 }
 
+extension View {
+    /// Sets `clock` to now when a list of who types arrives, and again at each end of a subject. A view that shows who
+    /// types at `clock` then hides a subject without a request.
+    func typingClock(_ typing: TeamTypingList?, _ clock: Binding<Date>) -> some View {
+        task(id: typing) {
+            clock.wrappedValue = .now
+            for end in typing?.ends ?? [] where end > clock.wrappedValue {
+                try? await Task.sleep(for: .seconds(end.timeIntervalSinceNow))
+                guard !Task.isCancelled else { return }
+                clock.wrappedValue = .now
+            }
+        }
+    }
+}
+
+/// Who types in the Team chat, in the form of the status row of a bot chat (BotStatusRow): the small face of each
+/// subject, the text, and the dots. VoiceOver reads the row as one element.
+struct TeamTypingRow: View {
+    let room: TeamRoom
+    let subjects: [TeamTyping]
+    /// The height of one line of the text, so the faces stand at the middle of the first line.
+    @ScaledMetric(relativeTo: .subheadline) private var lineHeight: CGFloat = 20
+    /// The gap between the last word and the dots, as before an ellipsis.
+    @ScaledMetric(relativeTo: .subheadline) private var dotsGap: CGFloat = 4
+
+    private var text: String { TeamTypingText.text(subjects) ?? "" }
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 8) {
+            HStack(spacing: 2) {
+                ForEach(subjects.prefix(3)) { face($0) }
+            }
+            .frame(height: lineHeight)
+            // The dots end the sentence: their bottom sits on the baseline of the last line of the text.
+            HStack(alignment: .lastTextBaseline, spacing: dotsGap) {
+                Text(text).foregroundStyle(.secondary).lineLimit(2)
+                TypingDots().alignmentGuide(.lastTextBaseline) { $0[.bottom] }
+            }
+        }
+        .font(.subheadline)
+        .frame(minHeight: 32, alignment: .leading)
+        .padding(.leading, 10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(text)
+        .accessibilityIdentifier("team-typing")
+    }
+
+    /// The face of a bot of the team, or of a person, as above a message of the chat.
+    @ViewBuilder private func face(_ subject: TeamTyping) -> some View {
+        if let id = subject.bot {
+            let bot = room.botList.first { $0.id == id }
+            BotAvatar(symbol: bot?.avatar ?? "", color: bot?.color ?? "", size: 18, identity: id, animated: false)
+        } else {
+            PersonFace(member: room.memberList.first { $0.member == subject.member }, memberId: subject.member,
+                       name: subject.name, size: 18)
+        }
+    }
+}
+
 /// The row of a team in the Chats list, in the layout of a bot row: the face, the name with the unread count, the age
 /// of the newest message, and one line of it. A Mac with an older service sends no chat, so the row shows the name only.
 struct TeamContactRow: View {
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let room: TeamRoom
     var avatarSize: CGFloat = 46
 
+    /// The time of the last look at who types: the arrival of a list, or the end of a subject.
+    @State private var typingClock = Date()
+
     var body: some View {
+        content(TeamChatPreview.line(room, at: typingClock))
+            .typingClock(room.typing, $typingClock)
+    }
+
+    private func content(_ line: TeamChatPreview.Line?) -> some View {
         let unread = room.unread ?? 0
-        let preview = room.hasChat ? TeamChatPreview.text(room.lastMessage) : nil
         let date = room.lastMessage?.createdAt?.apiDate
         // An older service sends no chat. The row then has the name only, centered on the face.
-        ChatRowLayout(name: room.name, unread: unread, date: date, mentioned: room.showsMentionMark) {
+        return ChatRowLayout(name: room.name, unread: unread, date: date, mentioned: room.showsMentionMark) {
             TeamFace(room: room, size: avatarSize)
         } subtitle: {
-            if let preview {
-                Text(preview)
-                    .font(.subheadline).foregroundStyle(.secondary)
-                    .lineLimit(dynamicTypeSize.isAccessibilitySize ? 2 : 1)
+            Group {
+                // Who types takes the place of the newest message, as a working phase does in the row of a bot.
+                if let line, line.typing {
+                    // The shimmer has one line. The largest text sizes need two for the whole sentence.
+                    Group {
+                        if dynamicTypeSize.isAccessibilitySize {
+                            Text(line.text).foregroundStyle(.secondary).lineLimit(2)
+                        } else {
+                            ShimmerText(text: line.text)
+                        }
+                    }
+                    .font(.subheadline)
+                    .transition(.opacity)
+                    .accessibilityIdentifier("team-row-typing-\(room.room)")
+                } else if let line {
+                    Text(line.text)
+                        .font(.subheadline).foregroundStyle(.secondary)
+                        .lineLimit(dynamicTypeSize.isAccessibilitySize ? 2 : 1)
+                        .transition(.opacity)
+                }
             }
+            .animation(BoardStyle.fade(reduceMotion: reduceMotion), value: line)
         }
         .accessibilityElement(children: .combine)
-        .accessibilityLabel(TeamRowSpeech.label(room, preview: preview))
+        // VoiceOver reads who types in place of the newest message, as the row shows it.
+        .accessibilityLabel(TeamRowSpeech.label(room, preview: line?.text))
     }
 }
 

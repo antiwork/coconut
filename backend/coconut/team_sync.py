@@ -27,7 +27,7 @@ from .team_helper import TeamFormatError, TeamHelperError, TeamHelperMissing
 from .team_keys import TeamKeysError
 from .team_relay import TeamRelayError
 from .team_store import (ACTIVE, DIRECTS_EVENT, DROPPED, GONE, JOINING, MESSAGES_EVENT, PENDING, REFUSED, REMOVED,
-                         SKIPPED, direct_fields, read_entry)
+                         SKIPPED, TYPING_EVENT, direct_fields, read_entry)
 
 POLL_SECONDS = 30
 MAX_WAIT_SECONDS = 900
@@ -484,9 +484,10 @@ class TeamSync:
 
         The phone learns of a local document from its `document.*` event in GET /v1/updates, so a change of the team
         pages or bots of the Library uses the same type. A change of the members or of the bots of the team adds
-        TEAM_EVENT for the Team screen, and a change of the chat adds MESSAGES_EVENT. Each type is in the `known` set
-        of GET /v1/updates, so an event does not make a phone of today read the whole state again. The fresh messages
-        of other members go to `_team_notify` in the same transaction. The caller holds the transaction.
+        TEAM_EVENT for the Team screen, a change of the chat adds MESSAGES_EVENT, and a change of who types adds
+        TYPING_EVENT. Each type is in the `known` set of GET /v1/updates, so an event does not make a phone of today
+        read the whole state again. The fresh messages of other members go to `_team_notify` in the same transaction.
+        The caller holds the transaction.
         """
         if room_id in self.team_store.touched:
             self.team_store.touched.discard(room_id)
@@ -497,6 +498,9 @@ class TeamSync:
         if room_id in self.team_store.chatted:
             self.team_store.chatted.discard(room_id)
             self._event(MESSAGES_EVENT, {'team': room_id})
+        if room_id in self.team_store.typed:
+            self.team_store.typed.discard(room_id)
+            self._event(TYPING_EVENT, {'team': room_id})
         if room_id in self.team_store.triggered:
             # Only a team-only Mac queues triggers (TeamStore.answers). Its turn thread reads them after the commit.
             self.team_store.triggered.discard(room_id)
