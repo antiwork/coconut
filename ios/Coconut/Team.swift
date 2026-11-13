@@ -56,6 +56,8 @@ struct TeamRoom: Decodable, Identifiable, Equatable, Sendable {
     /// True when this person can delete a message of another person or of a bot in the Team chat: the Mac is the
     /// admin of an active team (TeamMessageDeletion). An older service sends none, and none is false.
     var canDeleteMessages: Bool? = nil
+    /// Who types in the Team chat now (docs/team-log.md, "Typing"). An older service sends none.
+    var typing: TeamTypingList? = nil
 
     var id: String { room }
 

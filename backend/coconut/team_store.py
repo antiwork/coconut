@@ -40,6 +40,8 @@ Each table has the room ID in its key, because a Mac can be in more than one roo
 - `team_erased`: the messages that an `erase` entry of the admin took out of the chat. A later write of such a message
   shows nothing.
 
+Who types in the Team chat is in memory only (`TeamStore.typing`), not in a table: a restart of the service forgets it.
+
 `TeamStore.accept` holds the "Rules for a Mac that reads an entry" of the contract. The secrets of a room are not
 here: team_keys.py keeps them in a private file. The caller holds the transaction of each write.
 """
@@ -151,6 +153,15 @@ DIRECT_FIELDS = ('entry', 'first', 'writer', 'member', 'member_name', 'text', 'r
 # The event of each transaction that changes a direct chat: `{"team": <room>, "member": <other member>}`. GET /v1/updates
 # then has `team_directs_changed`.
 DIRECTS_EVENT = 'team_directs.updated'
+# The event of each change of who types in the Team chat of a room: a person or a bot starts, types on, or ends.
+# GET /v1/updates then has `team_typing_changed`.
+TYPING_EVENT = 'team_typing.updated'
+# A `typing` entry shows only when its `at` of the relay is under this many seconds from the clock of this Mac. So a
+# first read of the log, or a read after a long stop, shows nothing.
+TYPING_FRESH_SECONDS = 60
+# How long a person and a bot show as typing after the read of their `typing` entry, unless a new entry ends it first.
+TYPING_PERSON_SECONDS = 10
+TYPING_BOT_SECONDS = 30
 # The mark in `team_marks` after an app of the person asked for direct messages.
 DIRECT_MARK = 'direct'
 # The limits of a `message` entry, in Unicode code points and in entry IDs.
@@ -371,6 +382,18 @@ def direct_fields(plaintext, to: str) -> dict | None:
     return dict(text=text, reply_to=reply_to)
 
 
+def typing_fields(fields: dict) -> dict | None:
+    """What a `typing` payload says, or None when a field does not fit (docs/team-log.md, "Typing").
+
+    `on` is true or false. `bot` is the entry ID of a `bot` entry of the same member, or absent for the person of the
+    Mac. A reader takes null as an absent field.
+    """
+    on, bot = fields.get('on'), fields.get('bot')
+    if type(on) is not bool or (bot is not None and not entry_id(bot)):
+        return None
+    return dict(on=on, bot=bot)
+
+
 def remove_fields(fields: dict) -> dict | None:
     """The member that a `remove` payload takes out of the room, and its name, or None when a field does not fit.
 
@@ -428,14 +451,14 @@ def key_fields(fields: dict, epoch) -> dict | None:
 
 
 SHOWN = {'member': member_fields, 'bot': bot_fields, 'page': page_fields, 'message': message_fields,
-         'remove': remove_fields, 'erase': erase_fields}
+         'remove': remove_fields, 'erase': erase_fields, 'typing': typing_fields}
 
 
 def read_entry(opened: dict) -> dict:
     """The first part of the reading rules for one entry: the work that needs no database.
 
-    It reads the payload (rule 2), and for a `member`, `bot`, `page`, `message`, `remove`, `erase` or `key` entry it
-    checks the fields that the store uses. The page rules run an HTML parser on up to 512 KiB that another member wrote, so a
+    It reads the payload (rule 2), and for a `member`, `bot`, `page`, `message`, `remove`, `erase`, `typing` or `key`
+    entry it checks the fields that the store uses. The page rules run an HTML parser on up to 512 KiB that another member wrote, so a
     caller runs this part before its transaction and without the lock of the service. A page that is slow to check then slows only the
     sync thread. The result is `opened` with `read` (the text and the fields of the payload, or None) and `shown`
     (the checked fields, or None). TeamStore.accept is the second part.
@@ -479,6 +502,11 @@ class TeamStore:
         # members by room (_note_direct_fresh). TeamSync tells the phone and empties both.
         self.directed: set[tuple[str, str]] = set()
         self.fresh_directs: dict[str, list[str]] = {}
+        # Who types in the Team chat of each room: for each (room, member, bot entry or None) the time of the start
+        # and the time of the end, on the clock below. `typed` has the rooms whose list changed, and TeamSync tells the
+        # phone. Nothing of this goes to the database.
+        self.typing: dict[tuple[str, str, str | None], tuple[float, float]] = {}
+        self.typed: set[str] = set()
         self.clock = time.time
 
     def migrate(self) -> None:
@@ -521,6 +549,8 @@ class TeamStore:
         """Delete the room with its members, its entries and its pending bodies."""
         for table in TABLES:
             self.db.execute(f'DELETE FROM {table} WHERE room=?', (room,))
+        for key in [key for key in self.typing if key[0] == room]:
+            del self.typing[key]
 
     # Entries and members
 
@@ -671,6 +701,13 @@ class TeamStore:
                     self.db.execute(f'DELETE FROM {table} WHERE room=? AND entry=?', (room['room'], entry['id']))
             if other:
                 self.touched.add(room['room'])
+        # Who types: a `typing` entry of another member starts, renews or ends the typing of its subject. A message of
+        # a person ends the typing of that person. A message of a bot does not end the typing of the bot: a bot sends
+        # more than one message in a turn, and its Mac writes `on` false at the end of the turn.
+        if other and fields['kind'] == 'typing' and shown:
+            self._note_typing(room['room'], entry, shown)
+        if other and fields['kind'] == 'message' and shown and shown['bot'] is None:
+            self._end_typing(room['room'], entry['member'], None)
         # The last step, so a failure of an earlier step leaves no note of an entry that the savepoint takes back.
         if existing is None and fields['kind'] == 'message' and fields['rev'] == 1 and shown:
             self._note_fresh(room, entry, shown)
@@ -1030,6 +1067,39 @@ class TeamStore:
         if row is None or entry['first'] <= self.direct_read_position(room['room'], row['member']):
             return
         self.fresh_directs.setdefault(room['room'], []).append(entry['id'])
+
+    # Who types in the Team chat
+
+    def _note_typing(self, room: str, entry: dict, typing: dict) -> None:
+        """Apply one `typing` entry of another member (docs/team-log.md, "Typing"). `on` true with an `at` of the
+        relay under TYPING_FRESH_SECONDS from this clock shows the subject for TYPING_PERSON_SECONDS, or for
+        TYPING_BOT_SECONDS for a bot, from now. An older entry changes nothing. `on` false ends it."""
+        if not typing['on']:
+            self._end_typing(room, entry['member'], typing['bot'])
+            return
+        now = self.clock()
+        if abs(now * 1000 - entry['at']) >= TYPING_FRESH_SECONDS * 1000:
+            return
+        key = (room, entry['member'], typing['bot'])
+        current = self.typing.get(key)
+        start = current[0] if current and current[1] > now else now
+        self.typing[key] = (start, now + (TYPING_BOT_SECONDS if typing['bot'] else TYPING_PERSON_SECONDS))
+        self.typed.add(room)
+
+    def _end_typing(self, room: str, member: str, bot: str | None) -> None:
+        current = self.typing.pop((room, member, bot), None)
+        if current and current[1] > self.clock():
+            self.typed.add(room)
+
+    def typing_now(self, room: str) -> list[tuple[str, str | None, float]]:
+        """Who types in the room now, the earliest start first: the member, the bot entry or None, and the seconds
+        that are left. An end by time needs no event, so this read drops the subjects past their end."""
+        now = self.clock()
+        for key in [key for key, (_, end) in self.typing.items() if end <= now]:
+            del self.typing[key]
+        return [(member, bot, end - now) for (_, member, bot), (start, end) in
+                sorted(((key, value) for key, value in self.typing.items() if key[0] == room),
+                       key=lambda item: (item[1][0], item[0][1], item[0][2] or ''))]
 
     # The triggers of the bots of a team-only Mac
 

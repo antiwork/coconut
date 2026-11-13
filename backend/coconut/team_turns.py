@@ -16,6 +16,8 @@ Only TeamOnlyService mixes this class in. A full Mac queues no trigger, because 
   the answer tells Hermes to end the turn. The reply of a person starts the next turn. No card, no task.
 - The entry ID of a reply comes from the room, the trigger, the bot and the number of the part, so a write that runs
   again adds no message.
+- While a turn runs in the gateway, the team sees the bot as typing: BotTyping (team_typing.py) writes the `typing`
+  entry of the bot on its own thread, and `on` false at each end of the turn.
 
 No log line of this module has the text of a message.
 """
@@ -30,6 +32,7 @@ import time
 from .gateway_bridge import GatewayBusy, GatewayUnavailable
 from .team_store import ACTIVE, MAX_TEXT, TRIGGER_SECONDS
 from .team_sync import ROOM_ERRORS
+from .team_typing import BotTyping
 
 log = logging.getLogger(__name__)
 
@@ -110,6 +113,8 @@ class TeamTurns:
         self._turns_gate = threading.Lock()
         # True while an update asks this service to drain (see _team_poll_drain).
         self._draining = False
+        # The typing writer of the turn of each (room, bot) that runs or ended last. Its thread ends by itself.
+        self._turns_typing: dict[tuple[str, str], BotTyping] = {}
 
     def _start_team_turns(self):
         self._turns_thread = threading.Thread(target=self._turns_loop, name='coconut-team-turns', daemon=True)
@@ -121,6 +126,9 @@ class TeamTurns:
         for thread in [self._turns_thread, *self._turns_running.values()]:
             if thread is not None:
                 thread.join(timeout=20)
+        for typing in list(self._turns_typing.values()):
+            typing.stop()
+            typing.thread.join(timeout=5)
 
     def _team_turns_due(self) -> None:
         self._turns_wake.set()
@@ -262,7 +270,13 @@ class TeamTurns:
                     turn_id = self.gateway_bridge.submit_turn(
                         f'team:{room}:{bot}', home, chat_id(room, bot), turn['text'], chat_name=turn['team_name'],
                         team=turn['team'], deadline=time.monotonic() + TURN_SECONDS)
-                self.gateway_bridge.follow(turn_id, reply.emit)
+                typing = self._turns_typing[(room, bot)] = BotTyping(
+                    self, room, bot, lambda: self._team_turn_shown(turn_id)).start()
+                try:
+                    self.gateway_bridge.follow(turn_id, reply.emit)
+                finally:
+                    # Each end of the turn: an answer, a notice, a stop or a fault. The thread writes `on` false.
+                    typing.stop()
                 # A stop of the service cancels the turn too. The trigger keeps `started`, so the next start posts
                 # the notice.
                 return not self.stopping.is_set()
@@ -280,6 +294,12 @@ class TeamTurns:
                 reply.flush()
                 reply.say(UNFINISHED)
                 return True
+
+    def _team_turn_shown(self, turn_id: str) -> bool:
+        """True when the adapter of the gateway shows the turn: it runs in the gateway now."""
+        with self.gateway_bridge.lock:
+            turn = self.gateway_bridge.turns.get(turn_id)
+            return turn is not None and turn.shown
 
     def _team_notice(self, turn: dict, part: str) -> None:
         """Post UNFINISHED as an answer to the trigger. A second fault here leaves a log line, so the thread goes

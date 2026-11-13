@@ -27,7 +27,8 @@ import pairing  # noqa: E402
 import tunnel  # noqa: E402
 # The Mac app job of CI runs this file after its `npm ci`, so the team log tests run there too.
 from test_team_log import (TeamDirectTests, TeamEraseTests, TeamKeyChangeTests, TeamLogTests,  # noqa: E402,F401
-                           TeamLogVectorTests, TeamOnlyTests, TeamPushTests, TeamRemovalTests, TeamSocketTests, start_failure)
+                           TeamLogVectorTests, TeamOnlyTests, TeamPushTests, TeamRemovalTests, TeamSocketTests,
+                           TeamTypingTests, start_failure)
 import test_team_log  # noqa: E402
 
 
