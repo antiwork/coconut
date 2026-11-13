@@ -733,20 +733,17 @@ class GatewayAdapterTests(unittest.TestCase):
                 hooks.register(ctx)
             self.assertEqual(registered, expected)
 
-    def test_an_empty_reply_after_the_end_of_a_turn_ends_it_without_a_message(self):
-        # Hermes retries a reply without text after a tool call, and then tries its fallback model. After a recorded
-        # wait or a card, the execution middleware gives that reply a closing text, and the chat does not show it.
-        tools = sys.modules['hermes_plugins.coconut.tools']
-        hooks = sys.modules['hermes_plugins.coconut.hooks']
-        END_TEXT = self.adapter_module.END_TEXT
+    @staticmethod
+    def reply(content=None, tool_calls=None):
+        """A model response in the chat format."""
+        message = types.SimpleNamespace(role='assistant', content=content, tool_calls=tool_calls)
+        return types.SimpleNamespace(choices=[types.SimpleNamespace(
+            message=message, finish_reason='tool_calls' if tool_calls else 'stop')])
 
-        def response(content=None, tool_calls=None):
-            message = types.SimpleNamespace(role='assistant', content=content, tool_calls=tool_calls)
-            return types.SimpleNamespace(choices=[types.SimpleNamespace(
-                message=message, finish_reason='tool_calls' if tool_calls else 'stop')])
-
+    @staticmethod
+    def transport_modules():
+        """Stand-ins of the transport modules of Hermes for the chat format (agent/transports/chat_completions.py)."""
         class Transport:
-            # The chat format, as Hermes reads it (agent/transports/chat_completions.py).
             def normalize_response(self, raw):
                 choice = raw.choices[0]
                 return types.SimpleNamespace(content=choice.message.content, tool_calls=choice.message.tool_calls,
@@ -755,9 +752,34 @@ class GatewayAdapterTests(unittest.TestCase):
         transports.get_transport = lambda api_mode: Transport() if api_mode == 'chat_completions' else None
         agent = types.ModuleType('agent')
         agent.transports = transports
+        return {'agent': agent, 'agent.transports': transports}
 
-        def call(raw, api_mode='chat_completions'):
-            return hooks.end_turn_text(request={}, next_call=lambda request: raw, api_mode=api_mode)
+    @staticmethod
+    def model_call(raw, request=None, api_mode='chat_completions'):
+        """A model call of the turn through the execution middleware of the plugin (hooks.end_turn_text)."""
+        hooks = sys.modules['hermes_plugins.coconut.hooks']
+        return hooks.end_turn_text(request=request or {}, next_call=lambda request: raw, api_mode=api_mode)
+
+    def bot_state(self):
+        bot = self.read('bots', self.bot['id'])
+        return bot['last_message'], bot['unread_count']
+
+    def assertQuietEnd(self, task, bot_state):
+        """The turn completed without a message in the chat: no reply, no activity, the same chat list row."""
+        stored = self.read('tasks', task['id'])
+        self.assertEqual((stored['status'], stored.get('_silent_completion')), ('completed', True))
+        with self.service.lock:
+            shown = [(m['kind'], m['text']) for m in self.service._task_messages(task['id'])
+                     if m['role'] == 'assistant' and m['kind'] in ('text', 'activity')]
+        self.assertEqual(shown, [])
+        self.assertEqual(self.bot_state(), bot_state)
+
+    def test_an_empty_reply_after_the_end_of_a_turn_ends_it_without_a_message(self):
+        # Hermes retries a reply without text after a tool call, and then tries its fallback model. After a recorded
+        # wait or a card, the execution middleware gives that reply a closing text, and the chat does not show it.
+        tools = sys.modules['hermes_plugins.coconut.tools']
+        END_TEXT = self.adapter_module.END_TEXT
+        response, call = self.reply, self.model_call
 
         results = []
         async def runner(event):
@@ -781,7 +803,8 @@ class GatewayAdapterTests(unittest.TestCase):
             return await asyncio.to_thread(tool_calls)
         self.connect(runner)
         task = self.write('POST', f'/v1/bots/{self.bot["id"]}/messages', {'text': 'Check the source.'})
-        with patch.dict(sys.modules, {'agent': agent, 'agent.transports': transports}), \
+        before = self.bot_state()
+        with patch.dict(sys.modules, self.transport_modules()), \
                 patch.object(self.service, 'wait_for_task', return_value={'status': 'recorded'}):
             self.service._run_task(task['id'])
         self.assertEqual(results[0].choices[0].message.content, '')
@@ -795,7 +818,7 @@ class GatewayAdapterTests(unittest.TestCase):
         self.assertEqual(results[6].choices[0].message.content, '')
         # The gateway sent the closing text as the reply. The chat shows no message for it, and the turn completed.
         self.assertEqual(self.replies(task), [])
-        self.assertEqual(self.read('tasks', task['id'])['status'], 'completed')
+        self.assertQuietEnd(task, before)
 
     def test_a_reply_of_the_model_with_the_words_of_the_closing_text_reaches_the_chat(self):
         # The chat leaves out only the closing text that the plugin gave an empty reply. After a recorded wait, a model
@@ -822,6 +845,148 @@ class GatewayAdapterTests(unittest.TestCase):
         with patch.object(self.service, 'wait_for_task', return_value={'status': 'recorded'}):
             self.service._run_task(task['id'])
         self.assertEqual(self.replies(task), [(END_TEXT, False)])
+
+    # Requests of a turn in the chat format: a typed message, the same after a tool call and its result, and the same
+    # after the reminder of Hermes.
+    TYPED = {'messages': [{'role': 'user', 'content': 'Do it.'}]}
+    AFTER_TOOL = {'messages': TYPED['messages'] + [
+        {'role': 'assistant', 'content': None, 'tool_calls': [
+            {'id': 'call', 'type': 'function', 'function': {'name': 'terminal', 'arguments': '{}'}}]},
+        {'role': 'tool', 'tool_call_id': 'call', 'content': 'ok'}]}
+    REMINDED = {'messages': AFTER_TOOL['messages'] + [{'role': 'assistant', 'content': '(empty)'},
+                                                      {'role': 'user', 'content': 'Continue.'}]}
+
+    def test_an_empty_reply_after_a_tool_result_gets_one_reminder_and_then_ends_the_turn_quietly(self):
+        # Hermes reminds the model once when it writes nothing after a tool result. A model that stays silent after the
+        # reminder chose to write nothing, so its next empty reply ends the turn with the closing text.
+        END_TEXT, NUDGED = self.adapter_module.END_TEXT, self.adapter_module.NUDGED
+        results, marks = [], []
+        async def runner(event):
+            def model_calls():
+                token = self.session(event.source.chat_id)
+                try:
+                    _holder, turn = self.adapter_module.turn_for_chat(event.source.chat_id)
+                    # Without a tool result before it, an empty reply stays empty: Hermes keeps its retries and its
+                    # fallback model for a typed question.
+                    results.append(self.model_call(self.reply(''), self.TYPED))
+                    marks.append(turn in NUDGED)
+                    # The first empty reply after a tool result stays empty, so Hermes sends its reminder.
+                    results.append(self.model_call(self.reply(''), self.AFTER_TOOL))
+                    marks.append(turn in NUDGED)
+                    # A reply with text or with a tool call stays as it is.
+                    results.append(self.model_call(self.reply('Still here.'), self.REMINDED))
+                    results.append(self.model_call(self.reply(None, [{'id': 'call', 'name': 'terminal'}]), self.REMINDED))
+                    results.append(self.model_call(self.reply(''), self.REMINDED))
+                    return results[-1].choices[0].message.content
+                finally:
+                    from gateway.session_context import SESSION
+                    SESSION.reset(token)
+            return await asyncio.to_thread(model_calls)
+        self.connect(runner)
+        task = self.write('POST', f'/v1/bots/{self.bot["id"]}/messages', {'text': 'Do it.'})
+        before = self.bot_state()
+        with patch.dict(sys.modules, self.transport_modules()):
+            self.service._run_task(task['id'])
+        self.assertEqual(marks, [False, True])
+        self.assertEqual([result.choices[0].message.content for result in results],
+                         ['', '', 'Still here.', None, END_TEXT])
+        self.assertQuietEnd(task, bot_state=before)
+        # The end of the turn clears its state.
+        self.assertEqual((NUDGED, self.adapter_module.CLOSED), (set(), set()))
+
+    def test_a_run_that_hermes_starts_ends_quietly_when_the_model_writes_nothing(self):
+        # No person waits for a reply to a run that Hermes starts by itself, such as the notice of a finished background
+        # process. Its empty reply gets the closing text at once, and the chat shows nothing.
+        results = []
+        async def runner(event):
+            def model_call():
+                token = self.session(event.source.chat_id)
+                try:
+                    return self.model_call(self.reply(''), {'messages': [{'role': 'user', 'content': event.text}]})
+                finally:
+                    from gateway.session_context import SESSION
+                    SESSION.reset(token)
+            results.append(await asyncio.to_thread(model_call))
+            return results[-1].choices[0].message.content
+        self.connect(runner)
+        before = self.bot_state()
+        from gateway.platforms.event import MessageEvent
+        source = self.adapter.build_source(chat_id=self.bot['id'], chat_type='dm', user_id='hermes')
+        event = MessageEvent(text='[IMPORTANT: Background process proc_1 completed normally (exit code 0).]',
+                             source=source, message_id='bg-1', internal=True)
+        with patch.dict(os.environ, HERMES_HOME=str(self.home)), patch.dict(sys.modules, self.transport_modules()):
+            self.complete(self.adapter._process(event))
+        with self.service.lock:
+            task = next(t for t in self.service._all('tasks') if (t.get('_gateway_wake') or {}).get('message_id') == 'bg-1')
+        deadline = time.monotonic() + 5
+        while self.read('tasks', task['id'])['status'] == 'working' and time.monotonic() < deadline:
+            time.sleep(.02)
+        self.assertEqual(results[0].choices[0].message.content, self.adapter_module.END_TEXT)
+        self.assertQuietEnd(task, bot_state=before)
+        self.assertEqual(self.outside(), [])
+        self.assertEqual((self.adapter._hermes_runs, self.adapter_module.CLOSED), ({}, set()))
+
+    def test_the_continuation_after_a_card_answer_ends_quietly(self):
+        # A card ends its turn, and its empty reply gets the closing text at once. The answer continues the work in a
+        # later turn. When that turn stays silent after the reminder of Hermes, it completes without a message, and the
+        # card shows that Hermes continued with the answer.
+        tools = sys.modules['hermes_plugins.coconut.tools']
+        card = {'title': 'Ship it?', 'context': 'The build passed.',
+                'options': [{'id': 'ship', 'label': 'Ship it', 'explanation': ''},
+                            {'id': 'wait', 'label': 'Wait', 'explanation': ''}]}
+        replies = []
+        async def runner(event):
+            def model_calls():
+                token = self.session(event.source.chat_id)
+                try:
+                    if not replies:
+                        tools._service_tool('ask')(card)
+                    else:
+                        replies.append(self.model_call(self.reply(''), self.AFTER_TOOL))
+                    replies.append(self.model_call(self.reply(''), self.REMINDED))
+                    return replies[-1].choices[0].message.content
+                finally:
+                    from gateway.session_context import SESSION
+                    SESSION.reset(token)
+            return await asyncio.to_thread(model_calls)
+        self.connect(runner)
+        task = self.write('POST', f'/v1/bots/{self.bot["id"]}/messages', {'text': 'Ship the release.'})
+        with patch.dict(sys.modules, self.transport_modules()):
+            self.service._run_task(task['id'])
+            self.assertEqual((self.read('tasks', task['id'])['status'], self.replies(task)), ('needs_you', []))
+            decision = next(d for d in self.decisions() if d['task_id'] == task['id'])
+            self.write('POST', f'/v1/decisions/{decision["id"]}/answer', {'option_id': 'ship', 'revision': 1})
+            before = self.bot_state()
+            self.service._run_task(task['id'])
+        END_TEXT = self.adapter_module.END_TEXT
+        self.assertEqual([reply.choices[0].message.content for reply in replies], [END_TEXT, '', END_TEXT])
+        self.assertQuietEnd(task, bot_state=before)
+        self.assertEqual(self.read('decisions', decision['id'])['status'], 'executed')
+
+    def test_a_turn_that_waits_for_a_card_stays_waiting_after_a_quiet_end(self):
+        tools = sys.modules['hermes_plugins.coconut.tools']
+        card = {'title': 'Add a test?', 'context': 'The export has no test.', 'key': 'tests',
+                'options': [{'id': 'yes', 'label': 'Add it', 'explanation': ''},
+                            {'id': 'no', 'label': 'Skip', 'explanation': ''}]}
+        results = []
+        async def runner(event):
+            def calls():
+                token = self.session(event.source.chat_id)
+                try:
+                    proposal = json.loads(tools._service_tool('suggest')(card))
+                    results.append(json.loads(tools._service_tool('wait')(
+                        {'decision_id': proposal['decision_id'], 'reason': 'The answer decides the work.'})))
+                    return self.model_call(self.reply(''), self.AFTER_TOOL).choices[0].message.content
+                finally:
+                    from gateway.session_context import SESSION
+                    SESSION.reset(token)
+            return await asyncio.to_thread(calls)
+        self.connect(runner)
+        task = self.write('POST', f'/v1/bots/{self.bot["id"]}/messages', {'text': 'Fix the export.'})
+        with patch.dict(sys.modules, self.transport_modules()):
+            self.service._run_task(task['id'])
+        self.assertEqual((results[0]['status'], results[0].get('ended')), ('waiting', True))
+        self.assertEqual((self.read('tasks', task['id'])['status'], self.replies(task)), ('waiting', []))
 
     def test_the_coconut_tools_act_for_the_turn_of_the_chat_and_a_card_ends_the_turn(self):
         tools = sys.modules['hermes_plugins.coconut.tools']

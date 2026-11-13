@@ -146,6 +146,103 @@ class PRStateTests(unittest.TestCase):
         result = tracker_for([check(1, conclusion="neutral"), check(2, conclusion="skipped")]).observe(URL)
         self.assertEqual(result.state, "ready_for_review")
 
+    def rerun(self, *runs, lookup=True):
+        """Observe runs of the required check "marketing/ready" and return the observation and the request paths.
+
+        Each run is (id, app id, event, status, conclusion). Each run has its own check suite, 1000 + id. App 15368 is
+        GitHub Actions, and its runs all belong to workflow 7. With `lookup`, the workflow run list follows the commit
+        status: True gives the list of the Actions runs, and any other value is the response itself.
+        """
+        checks = [dict(check(i, state, conclusion), name='marketing/ready', app={'id': app}, check_suite={'id': 1000 + i},
+                       completed_at=f'2026-11-13T12:3{i}:00Z') for i, app, event, state, conclusion in runs]
+        actions = [dict(check_suite_id=1000 + i, workflow_id=7, event=event) for i, app, event, *_ in runs if app == 15368]
+        pr = pull(base={'ref': 'main'})
+        branch = {'protected': True, 'protection': {'required_status_checks': {'contexts': [], 'checks': []}}}
+        rules = [{'type': 'required_status_checks', 'parameters': {
+            'required_status_checks': [{'context': 'marketing/ready', 'integration_id': 15368}]}}]
+        workflow_runs = [{'total_count': len(actions), 'workflow_runs': actions} if lookup is True else lookup] if lookup else []
+        tracker = PayloadTracker([pr, {'total_count': len(checks), 'check_runs': checks}, statuses(), *workflow_runs,
+                                  branch, rules, pr])
+        result = tracker.observe(URL)
+        self.assertEqual(tracker.payloads, [])
+        self.assertEqual(any('/actions/runs?' in path for path in tracker.paths), bool(lookup))
+        return result
+
+    def test_newer_passed_run_of_the_same_job_replaces_an_older_failure(self):
+        result = self.rerun((1, 15368, 'pull_request', 'completed', 'failure'), (2, 15368, 'pull_request', 'completed', 'success'))
+        self.assertTrue(result.observed)
+        self.assertEqual(result.state, 'ready_for_review')
+        self.assertEqual(result.checks_state, 'passed')
+        self.assertIsNone(result.check_failures)
+        self.assertEqual(result.required_checks_state, 'passed')
+
+    def test_newer_failed_run_of_the_same_job_replaces_an_older_pass(self):
+        result = self.rerun((1, 15368, 'pull_request', 'completed', 'success'), (2, 15368, 'pull_request', 'completed', 'failure'),
+                            lookup=False)
+        self.assertEqual(result.state, 'failed')
+        self.assertEqual(result.checks_state, 'failed')
+        self.assertTrue(result.check_failures)
+        self.assertEqual(result.required_checks_state, 'failed')
+
+    def test_the_same_job_of_another_event_is_another_job(self):
+        # One workflow runs for both push and pull_request_target. Both runs are current, as in `gh pr checks`.
+        result = self.rerun((1, 15368, 'push', 'completed', 'failure'), (2, 15368, 'pull_request_target', 'completed', 'success'))
+        self.assertEqual(result.state, 'failed')
+        self.assertEqual(result.checks_state, 'failed')
+        self.assertTrue(result.check_failures)
+        self.assertEqual(result.required_checks_state, 'failed')
+
+    def test_the_same_name_from_another_app_is_another_check(self):
+        result = self.rerun((1, 99, 'pull_request', 'completed', 'failure'), (2, 15368, 'pull_request', 'completed', 'success'),
+                            lookup=False)
+        self.assertEqual(result.state, 'failed')
+        self.assertEqual(result.checks_state, 'failed')
+        self.assertTrue(result.check_failures)
+        self.assertEqual(result.required_checks_state, 'passed')
+
+    def test_newer_running_run_of_the_same_job_replaces_an_older_failure(self):
+        result = self.rerun((1, 15368, 'pull_request', 'completed', 'failure'), (2, 15368, 'pull_request', 'in_progress', None))
+        self.assertEqual(result.state, 'checks_running')
+        self.assertEqual(result.checks_state, 'running')
+        self.assertIsNone(result.check_failures)
+        self.assertEqual(result.required_checks_state, 'running')
+
+    def test_newer_passed_run_replaces_a_run_that_it_cancelled(self):
+        result = self.rerun((1, 15368, 'pull_request', 'completed', 'cancelled'), (2, 15368, 'pull_request', 'completed', 'success'))
+        self.assertEqual(result.state, 'ready_for_review')
+        self.assertIsNone(result.check_failures)
+        self.assertEqual(result.required_checks_state, 'passed')
+
+    def test_failed_workflow_run_lookup_keeps_every_run(self):
+        # A token without Actions read access, or an unexpected answer, merges no run. The refresh still observes.
+        for response in (HTTPError(URL, 403, 'Forbidden', {}, None), ['runs'], {'total_count': 1, 'workflow_runs': 'runs'},
+                         {'total_count': 1, 'workflow_runs': [dict(check_suite_id='1001', workflow_id=7, event='push')]},
+                         {'total_count': 3, 'workflow_runs': []}):
+            with self.subTest(response=response):
+                result = self.rerun((1, 15368, 'pull_request', 'completed', 'failure'),
+                                    (2, 15368, 'pull_request', 'completed', 'success'), lookup=response)
+                self.assertTrue(result.observed)
+                self.assertEqual(result.state, 'failed')
+                self.assertTrue(result.check_failures)
+
+    def test_transient_workflow_run_lookup_error_keeps_the_last_state(self):
+        # A timeout or a server error says nothing about the runs. The refresh stops, so the last state stays.
+        checks = [dict(check(i, 'completed', conclusion), name='marketing/ready', app={'id': 15368}, check_suite={'id': 1000 + i})
+                  for i, conclusion in ((1, 'failure'), (2, 'success'))]
+        for error in (HTTPError(URL, 500, 'Server Error', {}, None), URLError('timed out')):
+            with self.subTest(error=error):
+                tracker = PayloadTracker([pull(), {'total_count': 2, 'check_runs': checks}, statuses(), error])
+                result = tracker.observe(URL)
+                self.assertFalse(result.observed)
+                self.assertIsNone(result.state)
+                self.assertIsNone(result.check_failures)
+
+    def test_no_failure_with_a_newer_run_needs_no_workflow_run_lookup(self):
+        for runs in (((1, 15368, 'pull_request', 'completed', 'success'), (2, 15368, 'pull_request', 'completed', 'success')),
+                     ((1, 15368, 'pull_request', 'completed', 'failure'),)):
+            with self.subTest(runs=runs):
+                self.rerun(*runs, lookup=False)
+
     def test_only_explicit_merged_flag_proves_merge(self):
         tracker = PayloadTracker([pull(state="closed", merged=True)])
         self.assertEqual(tracker.observe(URL).state, "merged")

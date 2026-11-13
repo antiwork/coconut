@@ -282,7 +282,7 @@ class GatewayBridge:
             turn.seen, turn.shown = time.monotonic(), True
             if kind == 'delta':
                 return {'ok': True}
-            turn.events.append({key: data[key] for key in ('kind', 'text', 'message_id', 'interim', 'outcome',
+            turn.events.append({key: data[key] for key in ('kind', 'text', 'message_id', 'interim', 'outcome', 'quiet',
                                                            'question_id', 'question_kind', 'detail', 'choices')
                                 if key in data})
             if kind == 'done':
@@ -473,17 +473,21 @@ class TurnEvents:
     A `silent` turn, such as a reaction or bot traffic, may end in silence: when Hermes sends no reply, or a reply that is
     a silence marker, the turn ends without a message, as the worker ends it (silent_responses.is_silence_reply). A turn
     without `commentary`, such as a reaction, shows no commentary.
+
+    A `quiet` end is the closing text of the plugin, which the chat does not show. When the turn sent no other text, it
+    ends without a message too.
     """
 
     def __init__(self, emit, turn_id=None, silent=False, commentary=True):
         self.emit = emit
         self.turn_id = turn_id
         self.silent, self.commentary = silent, commentary
-        # The message ID and the text of the newest segment, and whether the gateway sent a reply.
+        # The message ID and the text of the newest segment, whether the gateway sent a reply, and whether it sent any
+        # text, a commentary included.
         self.segment = None
         self.text = ''
         self.phase = None
-        self.sent = False
+        self.sent = self.wrote = False
 
     def apply(self, event: dict) -> bool:
         """Apply one event. Return True at the end of the turn."""
@@ -495,6 +499,7 @@ class TurnEvents:
                 'question_id', 'question_kind', 'text', 'detail', 'choices')} | {'turn_id': self.turn_id})
         elif kind == 'send' and text.strip():
             self._phase('writing')
+            self.wrote = True
             if event.get('interim') and not self.commentary:
                 # A reaction turn shows no commentary, as in the worker.
                 return False
@@ -526,6 +531,10 @@ class TurnEvents:
                     # Take back a reply that is a silence marker.
                     self.emit('text_delta', {'text': '', 'replace': True})
                 self.emit('completed', {'summary': 'Complete.', 'silent_response': True, 'reaction_silent': True})
+            elif event.get('outcome') == 'success' and event.get('quiet') and not self.wrote:
+                # The plugin ended the turn with its closing text, because the model chose to write none
+                # (hermes_plugin/coconut/hooks.py, end_turn_text). The chat shows no message for it.
+                self.emit('completed', {'summary': 'Complete.', 'silent_response': True})
             elif event.get('outcome') == 'success':
                 self.emit('completed', {'summary': 'Complete.'})
             elif event.get('outcome') == 'cancelled':
