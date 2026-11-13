@@ -586,20 +586,30 @@ class TeamStoreTests(unittest.TestCase):
 
     def test_no_payload_stops_the_open_of_the_store(self):
         self.write(1, self.member('Reporter', bot_only=True), ADMIN)
-        self.db.execute('UPDATE team_members SET bot_only=0')
+        self.write(2, self.member('Grace', direct=True))
         deep = json.dumps(self.member('Reporter', bot_only=True))[:-1] + ', "x": ' + '[' * 1001 + ']' * 1001 + '}'
         large = json.dumps(self.member('Reporter', bot_only=True, padding='x' * 2_000_000))
-        for name, payload in (('deep', deep), ('not JSON', 'not { json'), ('not an object', '[true]'),
-                              ('large', large), ('another kind', json.dumps(self.bot('Reporter')))):
+        try:
+            # Python 3.11 refuses this depth with RecursionError, and a later Python reads it.
+            json.loads(deep)
+            deep_reads = True
+        except RecursionError:
+            deep_reads = False
+        for name, payload, read in (('deep', deep, deep_reads), ('not JSON', 'not { json', False),
+                                    ('not an object', '[true]', False), ('large', large, True),
+                                    ('another kind', json.dumps(self.bot('Reporter')), False)):
             with self.subTest(payload=name):
                 self.db.execute('UPDATE team_entries SET payload=? WHERE room=? AND id=?', (payload, ROOM, entry_id(1)))
-                self.db.execute('UPDATE team_members SET bot_only=0')
-                with self.assertNoLogs('coconut.team_store', 'ERROR'):
+                self.db.execute('UPDATE team_members SET bot_only=0, direct=0')
+                with self.assertLogs('coconut.team_store', 'WARNING') as logs:
                     store = self.reopen()
-                read = name in ('deep', 'large')
-                self.assertEqual(self.marks(), [(ROOM, 'Reporter', int(read), 0)],
-                                 'A payload that the reader of accept reads sets the mark. Each other one keeps the row.')
-                self.assertEqual(store.changed, {ROOM} if read else set())
+                    team_store.log.warning('The end of the open.')
+                self.assertEqual(len(logs.records), 1 if read else 2, 'A row that does not read has one log line.')
+                self.assertNotIn('Reporter', '\n'.join(logs.output))
+                self.assertEqual(self.marks(), [(ROOM, 'Grace', 0, 1), (ROOM, 'Reporter', int(read), 0)],
+                                 'The other row is repaired. A payload that reads sets the mark. Each other one keeps '
+                                 'the row.')
+                self.assertEqual(store.changed, {ROOM})
 
     def test_the_repair_reads_the_entry_of_the_row_in_its_own_room(self):
         # Two rooms have an entry with the same ID: only the entry of the room of the row counts.
