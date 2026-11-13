@@ -155,8 +155,8 @@ struct TeamRemoval: Identifiable, Equatable {
         if !member.isBotOnly { return first + " The pages that \(member.name) shared leave the Library." }
         switch bots.count {
         case 0: return first
-        case 1: return first + " Its bot \(bots[0]) leaves the team with it."
-        default: return first + " Its bots \(bots.formatted(.list(type: .and))) leave the team with it."
+        case 1: return first + " Its agent \(bots[0]) leaves the team with it."
+        default: return first + " Its agents \(bots.formatted(.list(type: .and))) leave the team with it."
         }
     }
 }

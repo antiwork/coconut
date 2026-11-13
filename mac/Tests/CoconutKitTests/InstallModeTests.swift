@@ -247,8 +247,8 @@ final class InstallModeTests: XCTestCase {
         let status = try await TeamServiceStatus.fetch(transport: service)
         XCTAssertEqual(service.sent, ["GET /v1/team/status", "GET /v1/team/bots"])
         XCTAssertEqual(status.botNames, ["Reporter", "Planner"])
-        XCTAssertEqual(status.rooms.map(\.line), ["Example Team (active): 3 members, 2 bots, connected",
-                                                  "Second Team (active): 1 member, 0 bots, not connected"])
+        XCTAssertEqual(status.rooms.map(\.line), ["Example Team (active): 3 members, 2 agents, connected",
+                                                  "Second Team (active): 1 member, 0 agents, not connected"])
     }
 
     func lines(_ team: Result<TeamServiceStatus, TeamFailure>, service: Status.Service = .running) -> [String] {
@@ -267,11 +267,11 @@ final class InstallModeTests: XCTestCase {
             "Last update error: none",
             "Mode: team only",
             "Service: running (/Users/example/Coconut)",
-            "Bots: Reporter, Planner",
+            "Agents: Reporter, Planner",
             "Team chat of Reporter: on. Hermes takes the messages.",
             "Team chat of Planner: off. To turn it on, run: coconut team connect-chat Planner",
-            "Team: Example Team (active): 3 members, 2 bots, connected",
-            "Team: Second Team (active): 1 member, 0 bots, not connected",
+            "Team: Example Team (active): 3 members, 2 agents, connected",
+            "Team: Second Team (active): 1 member, 0 agents, not connected",
             "Sync error: The relay refused the request.",
         ])
         var empty = Self.answer
@@ -280,7 +280,7 @@ final class InstallModeTests: XCTestCase {
         let nothing = try await TeamServiceStatus.fetch(transport: service(status: empty, bots: ["bots": []]))
         XCTAssertEqual(Array(lines(.success(nothing)).suffix(3)), [
             "Coconut cannot join a team: a part of the app is missing. Run coconut update.",
-            "Bots: none. To add one, run: coconut team new-bot <name>",
+            "Agents: none. To add one, run: coconut team new-agent <name>",
             "Teams: none. To join one, pipe an invite link to: coconut team join",
         ])
         // A bot with its chat whose Hermes gateway does not poll, and a service before the team chat.
@@ -438,7 +438,7 @@ final class InstallModeTests: XCTestCase {
                                     + "INSERT INTO bots VALUES ('b', '{\"name\": \"Planner\", \"chat\": false}'); "
                                     + "INSERT INTO bots VALUES ('c', '{\"name\": \"Writer\", \"plugin\": true}');")
         XCTAssertEqual(remove(install, steps: &steps), "The Hermes home of Reporter, Writer has the team chat of Coconut. "
-                       + "For each bot, run coconut team disconnect-chat <bot>, then remove Coconut.")
+                       + "For each agent, run coconut team disconnect-chat <agent>, then remove Coconut.")
         XCTAssertEqual(steps, [])
         // Without them, the steps run in their order.
         var db: OpaquePointer?
@@ -514,7 +514,7 @@ final class InstallModeTests: XCTestCase {
         sqlite3_close(writer)
         XCTAssertTrue(FileManager.default.fileExists(atPath: install.data.appendingPathComponent("coconut.sqlite3-wal").path))
         XCTAssertEqual(RemoveRequest.refusal(install: install), "The Hermes home of Reporter has the team chat of "
-                       + "Coconut. For each bot, run coconut team disconnect-chat <bot>, then remove Coconut.")
+                       + "Coconut. For each agent, run coconut team disconnect-chat <agent>, then remove Coconut.")
         // A store that another process holds for two seconds, for example the service while it starts.
         let held = try botsStore("INSERT INTO bots VALUES ('a', '{\"name\": \"Planner\", \"plugin\": true}');")
         let path = held.data.appendingPathComponent("coconut.sqlite3").path
@@ -529,7 +529,7 @@ final class InstallModeTests: XCTestCase {
         }
         let started = Date()
         XCTAssertEqual(RemoveRequest.refusal(install: held), "The Hermes home of Planner has the team chat of Coconut. "
-                       + "For each bot, run coconut team disconnect-chat <bot>, then remove Coconut.")
+                       + "For each agent, run coconut team disconnect-chat <agent>, then remove Coconut.")
         XCTAssertGreaterThan(Date().timeIntervalSince(started), 1.5)
         wait(for: [released], timeout: 5)
     }

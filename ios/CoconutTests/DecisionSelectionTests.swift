@@ -21,8 +21,8 @@ final class DecisionSelectionTests: XCTestCase {
             XCTAssertEqual(label(status, draft: true), "Closed", status)
             XCTAssertEqual(label(status, draft: true, outcome: ""), "Closed", status)
         }
-        XCTAssertEqual(label("replied", draft: true, outcome: "Reply received. The bot will continue."),
-                       "Reply received. The bot will continue.")
+        XCTAssertEqual(label("replied", draft: true, outcome: "Reply received. The agent will continue."),
+                       "Reply received. The agent will continue.")
     }
 
     func testAResolvedCardWithoutAChoiceShowsItsOutcome() {

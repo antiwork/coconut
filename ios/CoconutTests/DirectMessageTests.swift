@@ -310,16 +310,16 @@ final class DirectMessageTests: XCTestCase {
                                       schedule: schedule)
         }
         XCTAssertEqual(text(.grouped, .same, team: true), "At any time, Coconut sends one summary at a time about new "
-                       + "cards, bot replies, team messages and direct messages. Urgent cards notify you at once.")
-        XCTAssertEqual(text(.every, .same, team: true), "At any time, Coconut notifies you about every card, every bot "
+                       + "cards, agent replies, team messages and direct messages. Urgent cards notify you at once.")
+        XCTAssertEqual(text(.every, .same, team: true), "At any time, Coconut notifies you about every card, every agent "
                        + "reply, every team message and every direct message.")
         XCTAssertEqual(text(.every, .urgent, team: true), "From 9:00 to 18:00, Coconut notifies you about every card, "
-                       + "every bot reply, every team message and every direct message. Outside those hours, only urgent "
-                       + "cards notify you. Other cards, bot replies, team messages and direct messages wait until 9:00, "
+                       + "every agent reply, every team message and every direct message. Outside those hours, only urgent "
+                       + "cards notify you. Other cards, agent replies, team messages and direct messages wait until 9:00, "
                        + "then one notification tells you about them.")
         // Without a team switch on, a direct message still takes "in Inbox" away.
         XCTAssertEqual(text(.every, .nothing, team: false), "From 9:00 to 18:00, Coconut notifies you about every card, "
-                       + "every bot reply and every direct message. Outside those hours, nothing notifies you. Cards, bot "
+                       + "every agent reply and every direct message. Outside those hours, nothing notifies you. Cards, agent "
                        + "replies and direct messages wait until 9:00, then one notification tells you about them.")
         // Only urgent does not change.
         XCTAssertEqual(text(.urgentOnly, .same, team: true),
@@ -327,7 +327,7 @@ final class DirectMessageTests: XCTestCase {
         // Without `direct` each text stays word for word.
         XCTAssertEqual(NotificationSentence.text(level: .every, outside: .same, replies: true, team: true,
                                                  schedule: schedule),
-                       "At any time, Coconut notifies you about every card, every bot reply and every team message.")
+                       "At any time, Coconut notifies you about every card, every agent reply and every team message.")
     }
 
     // MARK: The cache of unsent messages

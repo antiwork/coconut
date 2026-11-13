@@ -215,7 +215,7 @@ public enum StatusText {
             lines.append("Last update result: \(detail) (\(formatter.string(from: result.time)))")
         }
         if let pending = preferences.pendingInstall {
-            lines.append("Pending install: \(pending.isEmpty ? "a new version" : pending) (the service updates after its running bot work)")
+            lines.append("Pending install: \(pending.isEmpty ? "a new version" : pending) (the service updates after its running agent work)")
         }
         let error = preferences.lastResult.flatMap { $0.outcome == .failed ? $0.message ?? "unknown" : nil }
         lines.append("Last update error: \(error ?? "none")")

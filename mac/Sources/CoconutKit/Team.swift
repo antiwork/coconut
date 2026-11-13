@@ -8,8 +8,8 @@ import Foundation
 ///
 /// The invite link lets a Mac into a team, so `join` reads it from standard input. No output of the tool has it.
 ///
-/// A Mac that runs Coconut for a team only (backend/coconut/team_only.py) takes no bot from Hermes: `new-bot` declares
-/// one for the Hermes home that it stands for, and `add-bot` and `remove-bot` give it to a team or take it back. On a
+/// A Mac that runs Coconut for a team only (backend/coconut/team_only.py) takes no bot from Hermes: `new-agent` declares
+/// one for the Hermes home that it stands for, and `add-agent` and `remove-agent` give it to a team or take it back. On a
 /// person's Mac the bots stay the person's: the person shares a page in the Library, so these commands print how.
 /// `connect-chat` and `disconnect-chat` change the Hermes home of a bot, so scripts/team_chat.py runs them under
 /// Python (`chatArguments`), not this tool.
@@ -26,12 +26,12 @@ public enum TeamCommand: Equatable, Sendable {
     public static let usage = """
         Usage: coconut team [--json]
                coconut team join [--name <text>]       (the invite link on standard input)
-               coconut team new-bot <name> [--home <path>]
-               coconut team add-bot <bot> [--team <name or ID>]
-               coconut team remove-bot <bot> [--team <name or ID>]
+               coconut team new-agent <name> [--home <path>]
+               coconut team add-agent <agent> [--team <name or ID>]
+               coconut team remove-agent <agent> [--team <name or ID>]
                coconut team leave --confirm <name of the team> [--team <name or ID>]
-               coconut team connect-chat <bot> [--confirm]
-               coconut team disconnect-chat <bot>
+               coconut team connect-chat <agent> [--confirm]
+               coconut team disconnect-chat <agent>
         """
 
     /// The text when `join` gets an argument. It does not repeat the argument, because that can be the link.
@@ -102,14 +102,15 @@ public enum TeamCommand: Equatable, Sendable {
             try only(["--name"])
             guard positional.count == 1 else { throw TeamFailure(lines: [linkArgument], status: 64) }
             return .join(name: options["--name"])
-        case "new-bot":
+        // The earlier names new-bot, add-bot and remove-bot still work, but the usage does not show them.
+        case "new-agent", "new-bot":
             try only(["--home"])
             guard positional.count == 2 else { throw TeamFailure.usage }
             return .newBot(positional[1], home: options["--home"])
-        case "add-bot", "remove-bot":
+        case "add-agent", "remove-agent", "add-bot", "remove-bot":
             try only(["--team"])
             guard positional.count == 2 else { throw TeamFailure.usage }
-            return positional[0] == "add-bot" ? .addBot(positional[1], team: options["--team"])
+            return positional[0].hasPrefix("add-") ? .addBot(positional[1], team: options["--team"])
                 : .removeBot(positional[1], team: options["--team"])
         case "leave":
             try only(["--team", "--confirm"])
@@ -162,11 +163,11 @@ public struct TeamFailure: Error, Equatable {
     public static let noLink = TeamFailure(
         "Give the invite link on standard input: pipe it to coconut team join. Do not put the link in the command.")
     public static let fullMac = TeamFailure(
-        "This Mac takes its bots from its Hermes profiles, so it declares no bot. To share a page with a team, open it "
+        "This Mac takes its agents from its Hermes profiles, so it declares no agent. To share a page with a team, open it "
         + "in the Library of the Coconut app.")
     /// The text of the service for the bot routes on a person's Mac (backend/coconut/team_pages.py, PERSONAL_BOTS).
     public static let personalBots = TeamFailure(
-        "The bots of this Mac stay yours, so a team does not get them. To share a page with the team, open it in the "
+        "The agents of this Mac stay yours, so a team does not get them. To share a page with the team, open it in the "
         + "Library of the Coconut app.")
 }
 
@@ -285,13 +286,13 @@ struct TeamRoom: Decodable {
         }
         for bot in bots {
             if bot.thisMac {
-                lines.append("Bot: \(bot.name) (this Mac" + (bot.botId.map { ", ID \($0)" } ?? "") + ")")
+                lines.append("Agent: \(bot.name) (this Mac" + (bot.botId.map { ", ID \($0)" } ?? "") + ")")
             } else {
-                lines.append("Bot: \(bot.name) (Mac of \(bot.memberName))")
+                lines.append("Agent: \(bot.name) (Mac of \(bot.memberName))")
             }
         }
         if bots.isEmpty {
-            lines.append("Bots: none")
+            lines.append("Agents: none")
         }
         if let error = sync?.error {
             lines.append("Sync error: \(error)")
@@ -413,8 +414,8 @@ public struct TeamTool: Sendable {
             body["home"] = URL(fileURLWithPath: NSString(string: home).expandingTildeInPath).standardizedFileURL.path
         }
         let bot = try JSONDecoder.team.decode(Declared.self, from: try await call("POST", "/v1/team/bots", body)).bot
-        return TeamOutput(lines: ["This Mac declared the bot \(bot.name) for the Hermes home \(bot.home).",
-                                  "To add it to a team, run: coconut team add-bot \(quoted(bot.name))"])
+        return TeamOutput(lines: ["This Mac declared the agent \(bot.name) for the Hermes home \(bot.home).",
+                                  "To add it to a team, run: coconut team add-agent \(quoted(bot.name))"])
     }
 
     func addBot(_ argument: String, team: String?) async throws -> TeamOutput {
@@ -423,14 +424,14 @@ public struct TeamTool: Sendable {
         let room = try choose(team, in: answer.rooms)
         let bot = try match(argument, in: answer.macBots, declare: true)
         if room.bots.contains(where: { $0.thisMac && $0.botId == bot.id }) {
-            return TeamOutput(lines: ["The bot \(bot.name) is already in the team \(room.name)."])
+            return TeamOutput(lines: ["The agent \(bot.name) is already in the team \(room.name)."])
         }
         _ = try await call("POST", "/v1/team/rooms/\(path(room.room))/bots", ["bot_id": bot.id])
         guard try await shares(bot, in: room) else {
-            throw TeamFailure("The service answered, but the bot \(bot.name) is not in the team \(room.name). Run "
+            throw TeamFailure("The service answered, but the agent \(bot.name) is not in the team \(room.name). Run "
                               + "coconut team, then try again.")
         }
-        return TeamOutput(lines: ["The bot \(bot.name) is in the team \(room.name) now."])
+        return TeamOutput(lines: ["The agent \(bot.name) is in the team \(room.name) now."])
     }
 
     func removeBot(_ argument: String, team: String?) async throws -> TeamOutput {
@@ -446,14 +447,14 @@ public struct TeamTool: Sendable {
         }
         let bot = try match(argument, in: bots)
         guard room.bots.contains(where: { $0.thisMac && $0.botId == bot.id }) else {
-            return TeamOutput(lines: ["The bot \(bot.name) is not in the team \(room.name)."])
+            return TeamOutput(lines: ["The agent \(bot.name) is not in the team \(room.name)."])
         }
         _ = try await call("DELETE", "/v1/team/rooms/\(path(room.room))/bots/\(path(bot.id))")
         guard try await !shares(bot, in: room) else {
-            throw TeamFailure("The service answered, but the bot \(bot.name) is still in the team \(room.name). Run "
+            throw TeamFailure("The service answered, but the agent \(bot.name) is still in the team \(room.name). Run "
                               + "coconut team, then try again.")
         }
-        return TeamOutput(lines: ["The bot \(bot.name) is no longer in the team \(room.name)."])
+        return TeamOutput(lines: ["The agent \(bot.name) is no longer in the team \(room.name)."])
     }
 
     /// What a leave does, for each form of `coconut team leave` without `--confirm`.
@@ -558,18 +559,18 @@ public struct TeamTool: Sendable {
         let byID = bots.filter { $0.id == argument }
         let found = byID.isEmpty ? bots.filter { $0.name.caseInsensitiveCompare(argument) == .orderedSame } : byID
         if found.isEmpty && declare {
-            throw TeamFailure("This Mac has no bot with the name or ID \"\(argument)\". Declare it first: coconut team "
-                              + "new-bot \(quoted(argument)) --home <the Hermes home of the bot>")
+            throw TeamFailure("This Mac has no agent with the name or ID \"\(argument)\". Declare it first: coconut team "
+                              + "new-agent \(quoted(argument)) --home <the Hermes home of the agent>")
         }
-        let list = bots.isEmpty ? ["This Mac has no bots that a team can take."] : bots.map { "Bot: \($0.name) (ID \($0.id))" }
+        let list = bots.isEmpty ? ["This Mac has no agents that a team can take."] : bots.map { "Agent: \($0.name) (ID \($0.id))" }
         switch found.count {
         case 1:
             return found[0]
         case 0:
-            throw TeamFailure(lines: ["No bot of this Mac has the name or ID \"\(argument)\". The bots of this Mac:"] + list)
+            throw TeamFailure(lines: ["No agent of this Mac has the name or ID \"\(argument)\". The agents of this Mac:"] + list)
         default:
-            throw TeamFailure(lines: ["More than one bot of this Mac has the name \"\(argument)\". Give the ID of the "
-                                      + "bot. The bots of this Mac:"] + list)
+            throw TeamFailure(lines: ["More than one agent of this Mac has the name \"\(argument)\". Give the ID of the "
+                                      + "agent. The agents of this Mac:"] + list)
         }
     }
 
