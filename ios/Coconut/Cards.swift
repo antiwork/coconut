@@ -9,7 +9,11 @@ enum DecisionSelection {
     static func label(status: String, hasDraft: Bool, dismissed: Bool, choosingLabel: String?,
                       selectedOptionLabel: String?, outcome: String?) -> String {
         if dismissed { return "Dismissed" }
-        let said = outcome.flatMap { $0.isEmpty ? nil : $0 }
+        // A row shows an outcome only when it is one short line. A check that withdrew a card leaves its whole evidence
+        // as the outcome; such a card says "Closed".
+        let said = outcome.flatMap { text in
+            text.isEmpty ? nil : text.count <= 80 && !text.contains(where: \.isNewline) ? text : "Closed"
+        }
         if hasDraft {
             switch status {
             case "pending", "approved", "executed": return "Approved for sending"
@@ -32,9 +36,17 @@ enum DecisionSelection {
     /// failed card and a dismissed card keep their own marks.
     static func showsCheck(status: String) -> Bool { choices.contains(status) }
 
-    /// True for a card that closed without a choice of a person (see showsCheck).
+    /// True for a card that closed without a choice of a person (see showsCheck). Its words use the secondary color.
     static func closedWithoutChoice(status: String, dismissed: Bool) -> Bool {
         !dismissed && !["pending", "failed"].contains(status) && !showsCheck(status: status)
+    }
+
+    /// The mark at the end of the receipt row, as the name of a symbol. A card that closed without a choice has none.
+    static func mark(status: String, pending: Bool, dismissed: Bool) -> String? {
+        if dismissed { return "xmark" }
+        if status == "failed" { return "exclamationmark.circle" }
+        if pending { return "arrow.up" }
+        return showsCheck(status: status) ? "checkmark" : nil
     }
 }
 
@@ -238,8 +250,8 @@ struct DecisionCard: View {
                     .fixedSize(horizontal: false, vertical: true)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .accessibilityIdentifier("decision-selection-\(decision.id)")
-                if !closedWithoutChoice {
-                    Image(systemName: isDismissed ? "xmark" : decision.status == "failed" ? "exclamationmark.circle" : decision.isPending ? "arrow.up" : "checkmark")
+                if let mark = DecisionSelection.mark(status: decision.status, pending: decision.isPending, dismissed: isDismissed) {
+                    Image(systemName: mark)
                         .font(.subheadline.weight(.semibold))
                         .foregroundStyle(isDismissed ? .secondary : decision.status == "failed" ? BoardStyle.attention :
                                             decision.isPending ? .secondary : BoardStyle.positive)

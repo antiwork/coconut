@@ -585,6 +585,12 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
             # A phase describes only the running turn. The next turn starts without it.
             obj.pop('phase', None)
             obj.pop('turn_started_at', None)
+        if table == 'decisions' and obj.get('status') == 'pending':
+            # The time of the newest revision of a card (decision_sources.source_change). Each write that raises the
+            # revision sets it: a revision by the bot, a check or the person, an Undo, a restored card.
+            row = self.db.execute("SELECT json_extract(data,'$.revision') FROM decisions WHERE id=?", (obj['id'],)).fetchone()
+            if row and isinstance(row[0], int) and isinstance(obj.get('revision'), int) and obj['revision'] > row[0]:
+                obj['_revised_at'] = now()
         self.db.execute(f'INSERT INTO {table}(id,data) VALUES (?,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data', (obj['id'], encoded(obj)))
 
     def _now(self) -> str:
@@ -1575,7 +1581,8 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
             if parts[3] == 'inbox':
                 return self.update_inbox(decision, task, data)
             if decision['status'] != 'pending' or task['status'] == 'cancelled':
-                raise ServiceError(409, 'This decision is no longer pending.')
+                from .decision_inbox import closed_reason
+                raise ServiceError(409, closed_reason(decision, 'This decision is no longer pending.'))
             if parts[3] == 'draft':
                 return self.edit_message_draft(decision, task, data, device)
             if parts[3] == 'reply':
@@ -3532,10 +3539,9 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
                     TurnTrace(task, 'dispatch').mark('dispatch',
                         queue_age_ms=max(0, round((datetime.now(timezone.utc) - queued_at).total_seconds() * 1000, 1)))
                     task.update(status='working', summary='Working', updated_at=now())
-                    # The cards that Coconut closed for their source while this task waited for another card. This turn
-                    # names them once (native_conversation.closed_cards_note). Only an answer to the other card continues
-                    # such a task, so its next turn continues a card.
-                    closed_cards = task.pop('_closed_cards', []) if task.get('_resume_decision') else []
+                    # The cards of this task that Coconut closed for their source. A turn that continues a card gets them
+                    # as data (native_conversation.decision_context).
+                    closed_cards = self._closed_cards(task_id, task['_resume_decision']) if task.get('_resume_decision') else []
                     if task.get('_gateway_cron'):
                         # A turn of Coconut continues the routine, for example after an answered card. A restart
                         # queues it again like any other turn (_recover).

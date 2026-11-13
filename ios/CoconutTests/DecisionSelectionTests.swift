@@ -52,6 +52,33 @@ final class DecisionSelectionTests: XCTestCase {
         XCTAssertFalse(DecisionSelection.closedWithoutChoice(status: "resolved", dismissed: true))
     }
 
+    func testTheRowShowsOnlyAShortOneLineOutcome() {
+        let eighty = String(repeating: "a", count: 80)
+        XCTAssertEqual(label("resolved", draft: false, outcome: "Issue #12 closed on GitHub."), "Issue #12 closed on GitHub.")
+        XCTAssertEqual(label("resolved", draft: false, outcome: eighty), eighty)
+        XCTAssertEqual(label("resolved", draft: false, outcome: eighty + "a"), "Closed")
+        XCTAssertEqual(label("resolved", draft: false, outcome: "Read the lock file.\nThe dependency is there."), "Closed")
+        XCTAssertEqual(label("resolved", draft: false, outcome: ""), "Resolved")
+        XCTAssertEqual(label("resolved", draft: true, outcome: eighty + "a"), "Closed")
+        XCTAssertEqual(label("resolved", draft: true, outcome: "Two\nlines"), "Closed")
+    }
+
+    func testTheMarkOfEachStatus() {
+        func mark(_ status: String, pending: Bool = false, dismissed: Bool = false) -> String? {
+            DecisionSelection.mark(status: status, pending: pending, dismissed: dismissed)
+        }
+        for status in ["approved", "executed", "rejected", "modified", "replied"] {
+            XCTAssertEqual(mark(status), "checkmark", status)
+        }
+        for status in ["resolved", "cancelled", "a-later-status"] {
+            XCTAssertNil(mark(status), status)
+        }
+        XCTAssertEqual(mark("failed"), "exclamationmark.circle")
+        XCTAssertEqual(mark("pending", pending: true), "arrow.up")
+        XCTAssertEqual(mark("dismissed", dismissed: true), "xmark")
+        XCTAssertEqual(mark("pending", pending: true, dismissed: true), "xmark")
+    }
+
     func testADismissalAndAChoiceInFlightKeepTheirWords() {
         XCTAssertEqual(label("resolved", draft: true, dismissed: true, outcome: "Issue #12 closed on GitHub."), "Dismissed")
         XCTAssertEqual(label("pending", draft: false, choosing: "Install", selected: "Leave"), "Install")

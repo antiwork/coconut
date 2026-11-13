@@ -37,9 +37,10 @@ REFRESH_INSTRUCTIONS = (
     'Do not create another card for this check. Return no chat message when nothing needs to change.'
 )
 
-# A task that waits for two cards keeps waiting when Coconut closes one of them for its source. The task keeps the title
-# and the outcome of at most this many closed cards. Its next turn names them once (native_conversation.closed_cards_note).
+# A task that waits for two cards keeps waiting when Coconut closes one of them for its source. Each turn of the task that
+# continues a card gets the cards that closed so in the last CLOSED_CARDS_HOURS, at most CLOSED_CARDS_KEEP (_closed_cards).
 CLOSED_CARDS_KEEP = 5
+CLOSED_CARDS_HOURS = 24
 
 WITHDRAWAL_RESPONSE = ('Coconut withdrew an obsolete card after checking current evidence. '
                        'No option was selected and no new approval was given. Continue only within the existing request. '
@@ -137,7 +138,7 @@ class DecisionFreshness:
 
         The person chose nothing. Each party that waits for the card learns it, as for a withdrawal: the tool call that
         asked the card gets `response`, and a task that waits only for this card continues with _resume_decision. A task
-        that waits for another card too keeps waiting, and its next turn names this card (CLOSED_CARDS_KEEP). A
+        that waits for another card too keeps waiting, and its next turn gets this card as data (_closed_cards). A
         suggestion, an ended task and a cancelled task get no turn. A check of the card stops. `fields` holds the outcome
         that the person reads. No card of a waiting gateway question comes here: such a card is not native and has no
         GitHub link or merge PR.
@@ -163,18 +164,28 @@ class DecisionFreshness:
                     self.provider.cancel_context(task['id'], context['id'])
                 self._event('context.cancelled', {'id': context['id'], 'decision_id': decision['id']}, task['bot_id'], task['id'])
         self._event('decision.updated', self._public(decision), task['bot_id'], task['id'])
-        if decision.get('inbox_kind') != 'proposal' and task['status'] == 'needs_you':
-            if any(d['id'] != decision['id'] and d.get('inbox_kind') != 'proposal' for d in (
+        if (decision.get('inbox_kind') != 'proposal' and task['status'] == 'needs_you'
+                and not any(d['id'] != decision['id'] and d.get('inbox_kind') != 'proposal' for d in (
                     json.loads(row[0]) for row in self.db.execute(
                         "SELECT data FROM decisions WHERE json_extract(data,'$.task_id')=? "
-                        "AND json_extract(data,'$.status')='pending'", (task['id'],)))):
-                closed = task.get('_closed_cards', []) + [dict(title=decision['title'], outcome=decision['outcome'])]
-                task['_closed_cards'] = closed[-CLOSED_CARDS_KEEP:]
-            else:
-                task.update(status='queued', _resume_decision=decision['id'], updated_at=now())
-                self._event('task.updated', self._public(task), task['bot_id'], task['id'])
+                        "AND json_extract(data,'$.status')='pending'", (task['id'],))))):
+            task.update(status='queued', _resume_decision=decision['id'], updated_at=now())
             self._put('tasks', task)
+            self._event('task.updated', self._public(task), task['bot_id'], task['id'])
         self._refresh_bot(task['bot_id'])
+
+    def _closed_cards(self, task_id, resumed_id=None):
+        """The cards of this task that Coconut closed for their source in the last CLOSED_CARDS_HOURS, newest first, at
+        most CLOSED_CARDS_KEEP, without the card that the turn continues. Each turn of the task derives the list again,
+        so a restart or an archived bot loses nothing. The turn gets it as data (native_conversation.decision_context)."""
+        from datetime import datetime, timedelta, timezone
+        since = (datetime.now(timezone.utc) - timedelta(hours=CLOSED_CARDS_HOURS)).isoformat()
+        cards = [json.loads(row[0]) for row in self.db.execute(
+            "SELECT data FROM decisions WHERE json_extract(data,'$.task_id')=? "
+            "AND json_extract(data,'$.resolution')='source_changed'", (task_id,))]
+        cards = sorted((card for card in cards if card['id'] != resumed_id and (card.get('resolved_at') or '') >= since),
+                       key=lambda card: card['resolved_at'], reverse=True)
+        return [dict(title=card['title'], outcome=card['outcome']) for card in cards[:CLOSED_CARDS_KEEP]]
 
     def _decision_reply_waits(self, decision):
         """True while a reply of the person to this card waits for its turn or runs. That turn can answer the card, so

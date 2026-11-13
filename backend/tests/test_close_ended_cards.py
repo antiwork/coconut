@@ -3,11 +3,11 @@ import json
 import unittest
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
-from unittest.mock import Mock, patch
+from unittest.mock import patch
 
 import legacy_work_sync
 import test_decision_freshness as fixture
-from coconut.service import ServiceError
+from coconut.service import ServiceError, YieldForDecision
 from turn_text import turn_input
 
 setUpModule, tearDownModule = legacy_work_sync.scope()
@@ -54,6 +54,10 @@ class CloseEndedCardsTests(unittest.TestCase):
             decision['_source_seen'] = {url: ago(seen_hours) for url in links}
         decision.update(fields)
         self.service._put('decisions', decision)
+        if '_revised_at' not in fields:
+            # A card of a store: its revision is old, unless the test gives the time of its newest revision.
+            self.service.db.execute("UPDATE decisions SET data=json_remove(data,'$._revised_at') WHERE id=?", (decision['id'],))
+            decision.pop('_revised_at', None)
         self.set_task(decision['task_id'], task_status)
         return decision
 
@@ -102,6 +106,9 @@ class CloseEndedCardsTests(unittest.TestCase):
         self.source_pass(issue_facts=issue('closed', closed_hours=2))
         saved = self.assert_closed(decision, 'Issue #12 closed on GitHub.')
         self.assertEqual(self.events(decision)[-1]['status'], 'resolved')
+        task_events = [json.loads(row[0]) for row in self.service.db.execute(
+            "SELECT data FROM events WHERE type='task.updated' AND task_id=? ORDER BY seq", (decision['task_id'],))]
+        self.assertEqual(task_events[-1]['status'], 'queued')
         task = self.service._get('tasks', decision['task_id'])
         self.assertEqual((task['status'], task['_resume_decision']), ('queued', decision['id']))
         prompt, _ = turn_input(dict(operation='resume', task=task, decision=saved, history=[]))
@@ -114,11 +121,34 @@ class CloseEndedCardsTests(unittest.TestCase):
         self.service._queue_decision_refreshes()
         self.assertEqual(self.service._all('contexts'), [])
 
-    def test_the_revision_that_the_bot_read_marks_the_time_of_the_card(self):
-        # The bot read the open issue 15 hours ago. The issue closed after that read, before the card time.
-        decision = self.card([ISSUE], made_hours=14, seen_hours=15)
-        self.source_pass(issue_facts=issue('closed', closed_hours=14.5))
-        self.assert_closed(decision, 'Issue #12 closed on GitHub.')
+    def test_the_later_of_the_read_and_the_newest_revision_is_the_time_of_the_card(self):
+        for made, seen, closed, stays in ((14, 16, 15, True), (16, 14, 15, True), (14, 16, 13, False), (16, 14, 13, False),
+                                           (20, 10, 10, True)):
+            with self.subTest(made=made, seen=seen, closed=closed):
+                decision = self.card([ISSUE], made_hours=made, seen_hours=seen)
+                self.source_pass(issue_facts=issue('closed', closed_hours=closed))
+                self.assertEqual(self.saved(decision)['status'], 'pending' if stays else 'resolved')
+                self.service._put('decisions', dict(self.saved(decision), status='cancelled'))
+
+    def test_an_end_within_the_clock_margin_of_the_newest_revision_keeps_the_card(self):
+        from datetime import timedelta
+        from coconut.decision_sources import CLOCK_MARGIN_SECONDS
+        stamp = lambda seconds: (NOW - timedelta(seconds=seconds)).strftime('%Y-%m-%dT%H:%M:%SZ')
+        for after, stays in ((CLOCK_MARGIN_SECONDS, True), (CLOCK_MARGIN_SECONDS + 60, False)):
+            with self.subTest(after=after):
+                decision = self.card([ISSUE], seen_hours=14, _revised_at=stamp(3600))
+                facts = dict(issue('closed'), closed_at=stamp(3600 - after))
+                self.source_pass(issue_facts=facts)
+                self.assertEqual(self.saved(decision)['status'], 'pending' if stays else 'resolved')
+                self.service._put('decisions', dict(self.saved(decision), status='cancelled'))
+
+    def test_each_write_that_raises_the_revision_records_its_time(self):
+        decision = self.card([ISSUE], seen_hours=14)
+        self.assertNotIn('_revised_at', self.saved(decision))
+        self.service._put('decisions', dict(self.saved(decision), title='Same revision'))
+        self.assertNotIn('_revised_at', self.saved(decision))
+        self.service._put('decisions', dict(self.saved(decision), revision=2))
+        self.assertTrue(self.saved(decision)['_revised_at'])
 
     # 2
     def test_an_issue_that_was_closed_before_the_card_keeps_the_card(self):
@@ -146,7 +176,9 @@ class CloseEndedCardsTests(unittest.TestCase):
 
     # 4
     def test_a_merge_card_whose_own_pull_request_merged_says_already_merged(self):
-        decision = self.card([], seen_hours=14, merge_pr_url=PR, _merge_pr_head=OLD_HEAD)
+        decision = self.card([], seen_hours=14, merge_pr_url=PR, _merge_pr_head=OLD_HEAD, _receipt_id='merge-ask')
+        self.service._put('native_receipts', dict(id='merge-ask', task_id=decision['task_id'], turn_id=None,
+            action=dict(name='coconut_ask', arguments={}), action_hash='ask', state='awaiting_answer', created_at=ago(14)))
         self.service._put('artifacts', dict(id='shop-pr', kind='pr', bot_id=decision['bot_id'], task_id=decision['task_id'],
                                             url=PR, title='Add the refund page', status='merged', pr_state='merged',
                                             head_sha=OLD_HEAD, observed_at=ago(0), refresh_error=None,
@@ -160,6 +192,8 @@ class CloseEndedCardsTests(unittest.TestCase):
         self.assertEqual((task['status'], task['_resume_decision']), ('queued', decision['id']))
         prompt, _ = turn_input(dict(operation='resume', task=task, decision=saved, history=[]))
         self.assertIn('GitHub confirms this PR already merged.', prompt)
+        result = json.loads(self.service._get('native_receipts', 'merge-ask')['result'])
+        self.assertEqual((result['resolution'], result['url']), ('merged', PR))
 
     # 5
     def test_a_new_head_keeps_the_merge_card(self):
@@ -235,41 +269,111 @@ class CloseEndedCardsTests(unittest.TestCase):
                 self.assertEqual(len([c for c in self.service._all('contexts') if c['status'] == 'queued']), 0)
 
     # 8
-    def test_another_pending_card_keeps_the_task_waiting(self):
+    def two_cards(self):
         decision = self.card([ISSUE], seen_hours=14)
-        other = dict(decision, id='other-card', sources=[], _source_seen={})
+        other = dict(decision, id='other-card', sources=[], _source_seen={}, title='Use the staging database?')
         self.service._put('decisions', other)
+        return decision, other
+
+    def resume(self, task_id, *, gateway=False):
+        """Dispatch the task. Return the task that the worker or the gateway gets, or None."""
+        delivered = {}
+
+        def take(task, *args):
+            delivered['task'] = task
+            return True
+        if gateway:
+            with patch.object(self.service, 'gateway_enabled', return_value=True), \
+                    patch.object(self.service, 'run_gateway_resume', side_effect=take):
+                self.service._run_task(task_id)
+        else:
+            self.service.provider.resume_task = take
+            self.service._run_task(task_id)
+        return delivered.get('task')
+
+    def test_another_pending_card_keeps_the_task_waiting(self):
+        decision, other = self.two_cards()
         self.source_pass(issue_facts=issue('closed', closed_hours=2))
         self.assert_closed(decision, 'Issue #12 closed on GitHub.')
         self.assertEqual(self.saved(other)['status'], 'pending')
         task = self.service._get('tasks', decision['task_id'])
         self.assertEqual(task['status'], 'needs_you')
         self.assertNotIn('_resume_decision', task)
-        # The next turn of the task names the closed card once.
-        self.assertEqual(task['_closed_cards'], [dict(title=decision['title'], outcome='Issue #12 closed on GitHub.')])
-        self.assertEqual(self.answer(other)['status'], 'approved')
-        task = self.service._get('tasks', decision['task_id'])
-        prompt, _ = turn_input(dict(operation='resume', task=task, decision=self.saved(other), history=[]))
-        self.assertTrue(prompt.startswith(f'Closed card "{decision["title"]}": Issue #12 closed on GitHub. '
-                                          'The person chose nothing.\n'))
 
-    def test_the_closed_cards_note_keeps_five_and_the_dispatch_clears_it(self):
-        from coconut.decision_freshness import CLOSED_CARDS_KEEP
+    def test_a_pending_suggestion_does_not_keep_the_task_waiting(self):
         decision = self.card([ISSUE], seen_hours=14)
-        task = self.service._get('tasks', decision['task_id'])
-        task['_closed_cards'] = [dict(title=f'Card {index}', outcome='Issue #9 closed on GitHub.') for index in range(5)]
-        self.service._put('tasks', task)
-        self.service._put('decisions', dict(decision, id='other-card', sources=[], _source_seen={}))
+        self.service._put('decisions', dict(decision, id='suggestion', sources=[], inbox_kind='proposal'))
         self.source_pass(issue_facts=issue('closed', closed_hours=2))
         task = self.service._get('tasks', decision['task_id'])
-        self.assertEqual(len(task['_closed_cards']), CLOSED_CARDS_KEEP)
-        self.assertEqual(task['_closed_cards'][-1]['outcome'], 'Issue #12 closed on GitHub.')
-        self.answer(dict(decision, id='other-card'))
-        delivered = {}
-        self.service.provider.resume_task = lambda task, *args: delivered.setdefault('task', task)
-        self.service._run_task(decision['task_id'])
-        self.assertEqual(len(delivered['task']['_closed_cards']), CLOSED_CARDS_KEEP)
-        self.assertNotIn('_closed_cards', self.service._get('tasks', decision['task_id']))
+        self.assertEqual((task['status'], task['_resume_decision']), ('queued', decision['id']))
+
+    def test_the_close_refreshes_the_bot(self):
+        decision = self.card([ISSUE], seen_hours=14)
+        with patch.object(self.service, '_refresh_bot', wraps=self.service._refresh_bot) as refresh:
+            self.source_pass(issue_facts=issue('closed', closed_hours=2))
+        refresh.assert_any_call(decision['bot_id'])
+
+    def test_the_turn_of_the_other_card_gets_the_closed_card_as_data(self):
+        for gateway in (False, True):
+            with self.subTest(gateway=gateway):
+                decision, other = self.two_cards()
+                self.source_pass(issue_facts=issue('closed', closed_hours=2))
+                self.answer(other)
+                delivered = self.resume(decision['task_id'], gateway=gateway)
+                # Newest first. The second round also lists the card that closed in the first round.
+                self.assertEqual(delivered['_closed_cards'][0], dict(title=decision['title'], outcome='Issue #12 closed on GitHub.'))
+                self.assertEqual(len(delivered['_closed_cards']), 1 + gateway)
+                prompt, _ = turn_input(dict(operation='resume', task=delivered, decision=self.saved(other), history=[]))
+                record = json.loads(prompt[prompt.index('{'):].splitlines()[0])
+                self.assertEqual(record['closed_cards'], delivered['_closed_cards'])
+                self.assertNotIn(decision['title'], prompt[:prompt.index('{')])
+                self.assertNotIn('_closed_cards', self.service._get('tasks', decision['task_id']))
+                self.service._put('decisions', dict(self.saved(other), status='cancelled'))
+
+    def test_each_turn_derives_the_closed_cards_again(self):
+        # A close that comes after the answer to the other card, a turn that does not reach the provider, and a
+        # restart: each turn of the task reads the store again.
+        decision, other = self.two_cards()
+        self.answer(other)
+        self.source_pass(issue_facts=issue('closed', closed_hours=2))
+        task = self.service._get('tasks', decision['task_id'])
+        self.assertEqual((task['status'], task['_resume_decision']), ('queued', 'other-card'))
+        for _ in range(2):
+            with self.service.transaction():
+                stored = self.service._get('tasks', decision['task_id'])
+                stored.update(status='queued')
+                self.service._put('tasks', stored)
+            self.assertEqual(len(self.resume(decision['task_id'])['_closed_cards']), 1)
+
+    def test_the_closed_cards_are_the_newest_five_of_one_day_without_the_continued_card(self):
+        from datetime import timedelta
+        from coconut.decision_freshness import CLOSED_CARDS_KEEP
+        decision = self.card([], seen_hours=None)
+        stamp = lambda hours: (NOW - timedelta(hours=hours)).isoformat()
+        for index, hours in enumerate((1, 2, 3, 4, 5, 6, 7, 25)):
+            self.service._put('decisions', dict(decision, id=f'closed-{index}', title=f'Card {index}', status='resolved',
+                                                resolution='source_changed', outcome=f'Issue #{index} closed on GitHub.',
+                                                resolved_at=stamp(hours)))
+        self.service._put('decisions', dict(decision, id='withdrawn', status='resolved', resolution='work_scope_changed',
+                                            resolved_at=stamp(0)))
+        cards = self.service._closed_cards(decision['task_id'], 'closed-0')
+        self.assertEqual(len(cards), CLOSED_CARDS_KEEP)
+        self.assertEqual([card['title'] for card in cards], ['Card 1', 'Card 2', 'Card 3', 'Card 4', 'Card 5'])
+        # A card that closed more than one day ago is not in the list.
+        self.service._put('decisions', dict(decision, id='old-close', task_id='another-task', status='resolved',
+                                            resolution='source_changed', outcome='Issue #9 closed on GitHub.',
+                                            resolved_at=stamp(25)))
+        self.assertEqual(self.service._closed_cards('another-task'), [])
+
+    def test_a_late_answer_learns_why_the_card_closed(self):
+        decision = self.card([ISSUE], seen_hours=14)
+        self.source_pass(issue_facts=issue('closed', closed_hours=2))
+        with self.assertRaises(ServiceError) as raised:
+            self.write('POST', f"/v1/decisions/{decision['id']}/answer", dict(revision=decision['revision'], option_id='install'))
+        self.assertEqual(str(raised.exception), 'This decision is no longer pending. Issue #12 closed on GitHub.')
+        from coconut.decision_inbox import closed_reason
+        self.assertEqual(closed_reason(dict(status='resolved', resolution='work_scope_changed', outcome='Long.'), 'Text.'),
+                         'Text.')
 
     def test_a_suggestion_or_a_task_that_does_not_wait_gets_no_turn(self):
         for kind, status in (('proposal', 'needs_you'), ('decision', 'working'), ('decision', 'queued')):
@@ -346,7 +450,7 @@ class CloseEndedCardsTests(unittest.TestCase):
             self.service._refresh_decision_sources({})
         self.assertEqual(self.saved(decision)['status'], 'pending')
 
-    def test_a_link_that_a_revision_adds_counts_from_the_revision(self):
+    def test_a_revision_is_the_time_of_the_card_for_each_link(self):
         decision = self.card([PR], seen_hours=14)
         task = self.service._get('tasks', decision['task_id'])
         self.service._revise_question(self.saved(decision), task, dict(
@@ -354,8 +458,9 @@ class CloseEndedCardsTests(unittest.TestCase):
             sources=[dict(kind='pull_request', title='PR', url=PR), dict(kind='issue', title='Issue', url=ISSUE)]),
             'The issue closed.')
         revised = self.saved(decision)
-        self.assertEqual(set(revised['_source_linked_at']), {ISSUE})
-        # The issue closed 5 hours ago: after the card, before the revision that added it.
+        self.assertTrue(revised['_revised_at'])
+        # The issue closed 5 hours ago: after the card, before the revision that added it. A link that a revision
+        # removes and adds again counts the same way.
         self.source_pass(issue_facts=issue('closed', closed_hours=5, updated_hours=5), pr=pull('open'))
         self.assert_open(revised)
 
@@ -387,6 +492,22 @@ class CloseEndedCardsTests(unittest.TestCase):
                 with patch.object(self.service, '_pr_tracker_for', return_value=tracker):
                     self.service._refresh_decision_sources({})
                 self.assert_open(decision)
+
+    def test_a_new_card_keeps_no_time_of_the_close(self):
+        self.start()
+        facts = issue('closed', closed_hours=2, updated_hours=2)
+        tracker = SimpleNamespace(observe_issue=lambda url: facts)
+        with patch.object(self.service, '_pr_tracker_for', return_value=tracker):
+            try:
+                self.service.native_event(self.task['id'], 'native_question', dict(
+                    title='Add the refund page under issue #20?', options=[dict(id='install', label='Install')],
+                    sources=[dict(kind='issue', title='Issue', url=ISSUE)], source_revisions={ISSUE: facts['updated_at']}))
+            except YieldForDecision:
+                pass
+        self.service.running.clear()
+        card = self.service._all('decisions')[-1]
+        self.assertEqual(card['_source_facts'][ISSUE]['state'], 'closed')
+        self.assertNotIn('closed_at', card['_source_facts'][ISSUE])
 
     def test_the_card_keeps_no_time_of_the_close(self):
         decision = self.card([ISSUE], seen_hours=14)
