@@ -386,14 +386,14 @@ class BotRecordTests(TeamOnlyMacs, unittest.TestCase):
             (row,) = self.first.team_request('GET', '/v1/team/rooms', {})['rooms'][0]['bots']
             return row['name'], row['this_mac'], row['open']
 
-        self.assertEqual(list(self.only.team_store.written(room, member).values()), [('bot', 'Reporter', '', '', 0)])
+        self.assertEqual(list(self.only.team_store.written(room, member).values()), [('bot', 'Reporter', '', '', 0, 0)])
         self.assertEqual(seen(), ('Reporter', False, False), 'No mark while the bot does not answer.')
         # The step that connects the bot to its agent sets `chat`. The next pass writes the mark.
         changed = self.call('PATCH', f'/v1/team/bots/{bot["id"]}', {'chat': True})['bot']
         self.assertIs(changed['chat'], True)
         self.assertEqual(self.call('GET', '/v1/team/status')['chat_bots'], 1)
         self.sync()
-        self.assertEqual(list(self.only.team_store.written(room, member).values()), [('bot', 'Reporter', '', '', 1)])
+        self.assertEqual(list(self.only.team_store.written(room, member).values()), [('bot', 'Reporter', '', '', 1, 1)])
         self.assertEqual(seen(), ('Reporter', False, True))
         # A change of the name keeps the mark, and a pass with nothing new writes nothing.
         self.call('PATCH', f'/v1/team/bots/{bot["id"]}', {'name': 'Night Reporter'})

@@ -210,6 +210,29 @@ class NativeTeamChatTests(AsThePerson, TeamOnlyMacs, unittest.TestCase):
         self.assertIn('Design', json.dumps(call['messages']))
         self.assertNotIn('Traceback', self.log.read_text(errors='replace'))
 
+    def test_ada_writes_to_the_bot_in_a_direct_chat_and_its_reply_reaches_her_alone(self):
+        from team_fakes import DEVICE
+        self.start_chat()
+        self.first.team_request('GET', '/v1/team/rooms', {}, '', DEVICE, True)
+        for _ in range(2):
+            self.sync()
+        path = f'/v1/team/rooms/{self.room}/directs/{self.mention}/messages'
+        self.call('POST', path, {'text': 'What is open for me?'}, service=self.first)
+
+        def replies():
+            self.first.team_sync_pass()
+            rows = self.call('GET', path, service=self.first)['messages']
+            return [row for row in reversed(rows) if not row['this_mac']]
+        (first,) = self.wait_until(lambda: replies()[:1])
+        self.assertEqual((first['text'], first['reply_to']), (FIRST, None))
+        self.assertEqual(self.bot_messages(), [], 'The Team chat gets no reply.')
+        # Hermes takes the chat as a DM of Ada: no pairing question, and the reply reached the model call.
+        call = next(request for request in Model.requests if 'open for me' in json.dumps(request['messages']))
+        self.assertIn('Ada', json.dumps(call['messages']))
+        log = self.log.read_text(errors='replace')
+        self.assertNotIn('Traceback', log)
+        self.assertNotIn('Unauthorized user', log)
+
     def test_a_message_during_a_restart_of_the_gateway_gets_its_answer(self):
         from coconut import team_turns
         self.start_chat()

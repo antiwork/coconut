@@ -476,11 +476,11 @@ class TeamStoreTests(unittest.TestCase):
                 self.assertEqual(self.opens()[f'Bot {number}'], 0, 'Only the JSON value true is the mark.')
 
     def test_the_own_bot_entry_keeps_its_mark_for_the_form_of_the_publish_step(self):
-        self.write(1, self.bot('Reporter', open=True))
+        self.write(1, self.bot('Reporter', open=True, direct=True))
         self.write(2, self.bot('Writer'))
         self.assertEqual(self.store.written(ROOM, MEMBER),
-                         {entry_id(1): ('bot', 'Reporter', 'fruit.kiwi', 'A68456', 1),
-                          entry_id(2): ('bot', 'Writer', 'fruit.kiwi', 'A68456', 0)})
+                         {entry_id(1): ('bot', 'Reporter', 'fruit.kiwi', 'A68456', 1, 1),
+                          entry_id(2): ('bot', 'Writer', 'fruit.kiwi', 'A68456', 0, 0)})
 
     def test_a_store_of_an_older_version_gets_the_column_and_reads_each_bot_as_not_open(self):
         db = sqlite3.connect(':memory:', isolation_level=None)

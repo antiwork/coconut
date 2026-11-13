@@ -276,6 +276,22 @@ class TeamAdapterTests(TeamTurnMacs, unittest.TestCase):
         self.assertTrue(polls)
         self.assertFalse(any('lacking' in poll for poll in polls))
 
+    def test_a_turn_of_a_direct_chat_is_a_dm_of_its_own_chat(self):
+        async def runner(event):
+            return None
+        self.connect(runner)
+        chat = f'{self.bot["id"]}:team:{self.room}:direct:{"a" * 64}'
+        event = self.adapter._event({'id': 'turn-1', 'chat_id': chat, 'chat_name': 'Ada · Example Team',
+                                     'text': 'Hello', 'team': {'member': 'a' * 64, 'member_name': 'Ada',
+                                                               'direct': True}})
+        self.assertEqual((event.source.chat_id, event.source.chat_type), (chat, 'dm'))
+        self.assertEqual(self.complete(self.adapter.get_chat_info(chat)),
+                         {'name': 'Ada · Example Team', 'type': 'dm', 'chat_id': chat})
+        # A turn of the team chat stays a group.
+        group = self.adapter._event({'id': 'turn-2', 'chat_id': f'{self.bot["id"]}:team:{self.room}', 'text': 'Hi',
+                                     'team': {'member': 'a' * 64, 'member_name': 'Ada'}})
+        self.assertEqual(group.source.chat_type, 'group')
+
     def test_an_approval_is_denied_and_a_clarify_question_goes_into_the_chat(self):
         from types import SimpleNamespace
         import tools.approval
