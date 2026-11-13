@@ -1,4 +1,4 @@
-"""The bots and the pages that a Mac shares with its teams (docs/team-log.md, "Bots and pages").
+"""The bots and the pages that a Mac shares with its teams (docs/team-log.md, "Agents and pages").
 
 A Mac has two ways to share, one for each kind of Mac:
 

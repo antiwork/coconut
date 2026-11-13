@@ -2,12 +2,27 @@ import Foundation
 import XCTest
 
 /// The apps and the `coconut` tool call a Hermes profile an "agent". This test finds the old word "bot" in the text
-/// that a person reads: the string literals of the Swift sources of the iPhone app and the Mac, and mac/README.md.
+/// that a person reads: the string literals of the Swift sources of the iPhone app, its notification parts and the Mac,
+/// the string values of the preview fixtures, and the README files of mac/, relay/ and updates/.
 final class AgentWordTests: XCTestCase {
-    /// A text that keeps the old word: the file from the repository root, a part of the literal, and the reason.
+    /// A text that keeps the old word: the file from the repository root, the text, and the reason. A text of one word
+    /// allows only a literal that is exactly that word. A longer text allows each literal that contains it.
     private static let allowed: [(file: String, text: String, reason: String)] = [
         ("mac/Sources/CoconutKit/InstallMode.swift", "FROM bots WHERE", "SQL text: the name of the table bots."),
+        ("ios/Coconut/AppStore.swift", "bots", "The route POST /v1/bots of the service: write(\"bots\", …)."),
     ]
+
+    /// The folders of Swift sources. The test skips an optional folder that does not exist.
+    private static let swiftFolders: [(path: String, optional: Bool)] = [
+        ("ios/Coconut", false), ("mac/Sources", false),
+        ("ios/PushShared", true), ("ios/CoconutNotificationService", true),
+    ]
+
+    /// The Markdown files that a person reads. Each must exist.
+    private static let markdownFiles = ["mac/README.md", "relay/README.md", "updates/README.md"]
+
+    /// The app shows the string values of the JSON files in this folder as preview data. The keys are names in code.
+    private static let fixtureFolder = "ios/Coconut/Fixtures"
 
     private static let advice = "Write \"agent\" for a Hermes profile: \"bot\" → \"agent\", \"bots\" → \"agents\", \"a bot\" → \"an agent\". "
         + "Write the commands \"coconut team new-agent\", \"add-agent\" and \"remove-agent\"."
@@ -15,7 +30,11 @@ final class AgentWordTests: XCTestCase {
     func testTheSwiftTextOfTheAppsSaysAgent() throws {
         let root = try Self.repositoryRoot()
         var files = 0
-        for folder in ["ios/Coconut", "mac/Sources"] {
+        for (folder, optional) in Self.swiftFolders {
+            guard FileManager.default.fileExists(atPath: root.appendingPathComponent(folder).path) else {
+                if !optional { XCTFail("The test reads \(folder), but it does not exist. Change swiftFolders.") }
+                continue
+            }
             let enumerator = FileManager.default.enumerator(at: root.appendingPathComponent(folder), includingPropertiesForKeys: nil)
             let swiftFiles = (enumerator?.allObjects ?? []).compactMap { $0 as? URL }.filter { $0.pathExtension == "swift" }
             for file in swiftFiles.sorted(by: { $0.path < $1.path }) {
@@ -33,11 +52,30 @@ final class AgentWordTests: XCTestCase {
         XCTAssertGreaterThan(files, 50, "The test found too few Swift files under \(root.path).")
     }
 
-    func testTheMacReadmeSaysAgent() throws {
-        let path = "mac/README.md"
-        let text = try String(contentsOf: Self.repositoryRoot().appendingPathComponent(path), encoding: .utf8)
-        for (number, line) in Self.failingMarkdownLines(text) where !Self.isAllowed(path, line) {
-            XCTFail("\(path):\(number): \"\(line)\" says \"bot\". \(Self.advice)")
+    func testTheReadmesSayAgent() throws {
+        let root = try Self.repositoryRoot()
+        for path in Self.markdownFiles {
+            guard let text = try? String(contentsOf: root.appendingPathComponent(path), encoding: .utf8) else {
+                XCTFail("The test reads \(path), but this file does not exist. Change markdownFiles.")
+                continue
+            }
+            for (number, line) in Self.failingMarkdownLines(text) where !Self.isAllowed(path, line) {
+                XCTFail("\(path):\(number): \"\(line)\" says \"bot\". \(Self.advice)")
+            }
+        }
+    }
+
+    func testThePreviewFixturesSayAgent() throws {
+        let folder = try Self.repositoryRoot().appendingPathComponent(Self.fixtureFolder)
+        let files = ((try? FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil)) ?? [])
+            .filter { $0.pathExtension == "json" }.sorted { $0.path < $1.path }
+        XCTAssertFalse(files.isEmpty, "The test found no JSON file in \(Self.fixtureFolder). Change fixtureFolder.")
+        for file in files {
+            let path = "\(Self.fixtureFolder)/\(file.lastPathComponent)"
+            let json = try JSONSerialization.jsonObject(with: Data(contentsOf: file), options: [.fragmentsAllowed])
+            for value in Self.failingValues(json) where !Self.isAllowed(path, value.text) {
+                XCTFail("\(path) at \(value.path): \"\(value.text)\" says \"bot\". \(Self.advice)")
+            }
         }
     }
 
@@ -49,25 +87,58 @@ final class AgentWordTests: XCTestCase {
         for source in [#"Text("Delete bot")"#, #"Section("Bots")"#, #"name ?? "Bot""#, #"x + ", bot""#,
                        #"", \(bots) bots""#, #""Delete \(bot?.name ?? "Bot")?""#, #"Text("Ask the bot’s owner")"#,
                        "let s = \"\"\"\n  First line.\n  Ask a bot.\n  \"\"\"", ##"#"A bot "quoted""#"##,
-                       #"Text("Bot:")"#, #"x + "(bot)""#, #"x + "bot\n""#, #"print("run coconut team add-bot Ada")"#] {
+                       #"Text("Bot:")"#, #"x + "(bot)""#, #"x + "bot\n""#, #"print("run coconut team add-bot Ada")"#,
+                       // A bare word can be text. These two lines are from the code before the rename.
+                       #""\(name) (\(state)): \(Self.count(members, "member")), \(Self.count(bots, "bot")), ""#,
+                       #"content.confirmationDialog("Delete \(bot?.name ?? "bot")?","#,
+                       #"kind == "bots""#, #"kind == "bot""#, #"write("bots", payload: request)"#,
+                       #"Text("Ask the bot, not the Telegram bot")"#, #"Text("Telegram botany for a bot")"#] {
             XCTAssertTrue(fails(source), source)
         }
         for source in [#"path: "bots/\(id)""#, #"accessibilityIdentifier("create-bot")"#, #"json["bot_id"]"#,
-                       #"kind == "bots""#, #"kind == "bot""#, #""/v1/bots""#, #"case "new-bot""#, #"type == "bot.created""#,
+                       #"kind == "bots:""#, #""/v1/bots""#, #"case "new-bot""#, #"type == "bot.created""#,
                        #"// A bot in a comment."#, "/* A bot. /* nested */ */",
                        #""\(bot.name) is ready""#, #"Text("Pin to the bottom")"#, #"Text("both of them")"#,
-                       ##"x.firstMatch(of: #/"a bot"/#)"##, #"Text("Robots and bottles")"#] {
+                       ##"x.firstMatch(of: #/"a bot"/#)"##, #"Text("Robots and bottles")"#,
+                       #"Text("Message the Telegram bot of your Hermes")"#, #"Text("Telegram bots do not encrypt")"#,
+                       #"Text("The author is a bot account")"#, #"Text("GitHub makes bot accounts for apps")"#] {
             XCTAssertFalse(fails(source), source)
         }
+        // The allowed list: a text of one word allows only the whole literal, in its own file.
+        XCTAssertTrue(Self.isAllowed("ios/Coconut/AppStore.swift", "bots"))
+        XCTAssertFalse(Self.isAllowed("ios/Coconut/AppStore.swift", "Delete bots"))
+        XCTAssertFalse(Self.isAllowed("ios/Coconut/AppStore.swift", "bot"))
+        XCTAssertFalse(Self.isAllowed("ios/Coconut/ChatView.swift", "bots"))
+        XCTAssertTrue(Self.isAllowed("mac/Sources/CoconutKit/InstallMode.swift", "SELECT id FROM bots WHERE home = ?"))
+        // The fixtures: the test reads each string value and no key.
+        let fixture = #"{"bot": "Ada", "bots": [{"text": "Ask the bot."}, {"kind": "bot_id"}, 3], "note": "bots"}"#
+        let values = try? JSONSerialization.jsonObject(with: Data(fixture.utf8))
+        XCTAssertEqual(Self.failingValues(values ?? NSNull()).map(\.path), [".bots[0].text", ".note"])
         XCTAssertEqual(Self.withoutCodeSpans("Run `coconut team new-bot` for a bot."), "Run \u{FFFC} for a bot.")
         XCTAssertEqual(Self.withoutCodeSpans("Run ``a ` bot`` and `x`."), "Run \u{FFFC} and \u{FFFC}.")
         let readme = ["Each bot runs.", "Run `add-bot <bot>`.", "```", "ls bots/", "```", "Run `coconut team add-bot Ada`.",
-                      "```", "coconut team new-bot Ada", "```", "Run `coconut team add-agent Ada`."].joined(separator: "\n")
+                      "```", "coconut team new-bot Ada", "```", "Run `coconut team add-agent Ada`.",
+                      "Telegram does not encrypt a chat with a Telegram bot end to end."].joined(separator: "\n")
         XCTAssertEqual(Self.failingMarkdownLines(readme).map(\.number), [1, 6, 8])
     }
 
     private static func isAllowed(_ path: String, _ text: String) -> Bool {
-        allowed.contains { $0.file == path && text.contains($0.text) }
+        allowed.contains { $0.file == path && ($0.text.contains(" ") ? text.contains($0.text) : text == $0.text) }
+    }
+
+    /// The key path and the text of each string value of a JSON value that fails. The keys are names in code, so the
+    /// test does not read them.
+    private static func failingValues(_ value: Any, path: String = "") -> [(path: String, text: String)] {
+        switch value {
+        case let text as String:
+            return OldWord.findings(Array(text.unicodeScalars)).isEmpty ? [] : [(path, text)]
+        case let object as [String: Any]:
+            return object.keys.sorted().flatMap { failingValues(object[$0] ?? NSNull(), path: "\(path).\($0)") }
+        case let array as [Any]:
+            return array.enumerated().flatMap { failingValues($1, path: "\(path)[\($0)]") }
+        default:
+            return []
+        }
     }
 
     /// The number and the text of each Markdown line that fails: the line names an earlier command, also in code, or
@@ -120,8 +191,29 @@ private enum OldWord {
         scalar.properties.isAlphabetic || scalar.properties.numericType != nil || "_-/".unicodeScalars.contains(scalar)
     }
 
-    /// The index of each old word in the text.
+    /// Outside meanings of the word, allowed in each file and in each kind of text. A Telegram bot is a Telegram
+    /// account that a program runs. A bot account is a GitHub account of an app. backend/tests/test_visible_words.py
+    /// allows the same phrases.
+    static let allowedPhrases = ["Telegram bots", "Telegram bot", "bot accounts", "bot account"]
+        .map { Array($0.unicodeScalars) }
+
+    /// The text with a space for each scalar of an allowed phrase. The indices of the other scalars stay the same.
+    static func withoutAllowedPhrases(_ text: [Unicode.Scalar]) -> [Unicode.Scalar] {
+        var result = text
+        for index in text.indices where index == 0 || !joinsWord(text[index - 1]) {
+            for phrase in allowedPhrases where text[index...].starts(with: phrase) {
+                let end = index + phrase.count
+                if end == text.count || !joinsWord(text[end]) {
+                    result.replaceSubrange(index..<end, with: repeatElement(" ", count: phrase.count))
+                }
+            }
+        }
+        return result
+    }
+
+    /// The index of each old word in the text, outside the allowed phrases.
     static func matches(_ text: [Unicode.Scalar]) -> [Int] {
+        let text = withoutAllowedPhrases(text)
         var found: [Int] = []
         var index = 0
         while index + 3 <= text.count {
@@ -144,15 +236,26 @@ private enum OldWord {
         text.indices.filter { index in oldCommands.contains { text[index...].starts(with: $0) } }
     }
 
-    /// The scalars of a name in code or data, such as "bots", "bot_id", "/v1/bots" or "bot.created".
+    /// The scalars of a name in code or data, such as "bot_id", "/v1/bots" or "bot.created".
     private static let nameScalars = Set("abcdefghijklmnopqrstuvwxyz0123456789_.:/-".unicodeScalars)
 
-    /// The source lines that fail: each earlier command, and each old word when the literal is not a name. A literal
-    /// is a name when it has only name scalars and marks, so "bots/\(id)" is a name.
+    /// The bare words. A text of only "bot" or "bots" can be text, such as the unit in `count(bots, "bot")`. So it is
+    /// not a name. The allowed list lets each such name in code pass, with its reason.
+    private static let bareWords = ["bot", "bots"].map { Array($0.unicodeScalars) }
+
+    /// A text is a name when it has only name scalars and marks, so "bots/\(id)" is a name. A bare word is not a name.
+    static func isName(_ text: [Unicode.Scalar]) -> Bool {
+        !text.isEmpty && !bareWords.contains(text) && text.allSatisfy { $0 == mark || nameScalars.contains($0) }
+    }
+
+    /// The index of each finding in a text: each earlier command, and each old word when the text is not a name.
+    static func findings(_ text: [Unicode.Scalar]) -> [Int] {
+        commands(text) + (isName(text) ? [] : matches(text))
+    }
+
+    /// The source lines of a literal that fail.
     static func failingLines(of literal: SwiftLiteral) -> [Int] {
-        let isName = !literal.scalars.isEmpty && literal.scalars.allSatisfy { $0 == mark || nameScalars.contains($0) }
-        let found = commands(literal.scalars) + (isName ? [] : matches(literal.scalars))
-        return Set(found.map { literal.lines[$0] }).sorted()
+        Set(findings(literal.scalars).map { literal.lines[$0] }).sorted()
     }
 }
 

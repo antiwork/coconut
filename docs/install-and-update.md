@@ -188,7 +188,7 @@ If no mini configuration exists, the launcher pairs with this development Mac in
 
 ### Pair through Hermes
 
-A person who already uses Hermes can pair without this repository and without touching the Mac. Onboarding on the iPhone is one screen. It shows one message to send to the Hermes agent, for example in a Telegram chat:
+A person who already uses Hermes can pair without this repository and without touching the Mac. Onboarding on the iPhone is one screen. It shows one message to send to the Hermes agent, for example in a Telegram chat with the Telegram bot of your Hermes:
 
 ```
 curl -fsSL https://coconut-updates.gumroad.workers.dev/install | bash -s <code>
@@ -200,7 +200,7 @@ curl -fsSL https://coconut-updates.gumroad.workers.dev/install | bash -s <code>
 4. The script runs `coconut pair <code>`. The Mac seals a new setup for the iPhone in the rendezvous box.
 5. The iPhone opens the setup and pairs by itself.
 
-The code works once, for 10 minutes, and only for the iPhone that made it. Telegram does not encrypt such a chat end to end, so the code passes through Telegram's servers. After the iPhone pairs, the code is useless. `docs/relay-transport.md`, "Pairing code from the iPhone", describes the protocol.
+The code works once, for 10 minutes, and only for the iPhone that made it. Telegram does not encrypt a chat with a Telegram bot end to end, so the code passes through Telegram's servers. After the iPhone pairs, the code is useless. `docs/relay-transport.md`, "Pairing code from the iPhone", describes the protocol.
 
 **Need help?** on the screen shows the download link of Coconut.app, for a Hermes that cannot run commands. The person installs the app by hand, chooses **Pair iPhone** in its menu, and scans the QR code. Settings has **Pair a new Mac**, which opens the same screen.
 

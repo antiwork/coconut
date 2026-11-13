@@ -1,8 +1,8 @@
 """Decide whether the changed files of a pull request can change the result of the service checks.
 
 The jobs `contracts` and `native-kanban` of .github/workflows/hermes-compatibility.yml run backend/tests and
-scripts/test_testflight.py. These tests read backend/, hermes_plugin/, scripts/, skills/, README.md, docs/, and the
-files in NEEDED. A pull request that changes only files in SKIPPABLE, and no file in NEEDED, cannot change their result.
+scripts/test_testflight.py. These tests read backend/, hermes_plugin/, scripts/, skills/, README.md, CONTRIBUTING.md,
+docs/, and the files in NEEDED. A pull request that changes only files in SKIPPABLE, and no file in NEEDED, cannot change their result.
 
 Usage: git diff --no-renames --name-only BASE HEAD | python3 scripts/ci_changes.py
 
