@@ -675,7 +675,7 @@ final class LibraryDocumentTests: XCTestCase {
     }
 
     /// A number of a metric never breaks: a tile takes the width that it needs. Normal numbers keep two tiles in a row
-    /// on a phone and four in the column of a wide window.
+    /// A number of a metric never breaks: a tile whose number does not fit its column takes two columns.
     @MainActor
     func testANumberOfAMetricNeverBreaks() async throws {
         let markdown = """
@@ -697,7 +697,7 @@ final class LibraryDocumentTests: XCTestCase {
         let (phone, phoneWindow) = try await loadPage(markdown, width: 390)
         defer { close(phoneWindow) }
         let onPhone = try await probe(phone, script)
-        XCTAssertEqual(onPhone, "1,1,1,1 | 2 | 0")
+        XCTAssertEqual(onPhone, "1,1,1,1 | 3 | 0")
         let (narrow, narrowWindow) = try await loadPage(markdown, width: 320)
         defer { close(narrowWindow) }
         let onNarrow = try await probe(narrow, script)
@@ -706,7 +706,30 @@ final class LibraryDocumentTests: XCTestCase {
         let (wide, wideWindow) = try await loadPage(markdown, width: 1100)
         defer { close(wideWindow) }
         let onWide = try await probe(wide, script)
-        XCTAssertEqual(onWide, "1,1,1,1 | 1 | 0")
+        XCTAssertEqual(onWide, "1,1,1,1 | 2 | 0")
+    }
+
+    /// Tiles of normal numbers sit in equal columns: two in a row on a phone, also with three tiles, and up to four in
+    /// the column of a wide window.
+    @MainActor
+    func testTilesOfNormalNumbersHaveEqualColumns() async throws {
+        let markdown = "Lead.\n\n| Open | Ready | Drafts | Merged |\n|---|---|---|---|\n| 6 | 3 | 3 | 12 |\n\n"
+            + "| Open | Ready | Drafts |\n|---|---|---|\n| 6 | 3 | 3 |"
+        let script = """
+            return [...document.querySelectorAll(".metrics")].map((metrics) => {
+              const tiles = [...metrics.children].map((tile) => tile.getBoundingClientRect());
+              return new Set(tiles.map((box) => Math.round(box.top))).size + ":"
+                + new Set(tiles.map((box) => Math.round(box.width))).size;
+            }).join(" ");
+            """
+        let (phone, phoneWindow) = try await loadPage(markdown, width: 390)
+        defer { close(phoneWindow) }
+        let onPhone = try await probe(phone, script)
+        XCTAssertEqual(onPhone, "2:1 2:1")
+        let (wide, wideWindow) = try await loadPage(markdown, width: 1100)
+        defer { close(wideWindow) }
+        let onWide = try await probe(wide, script)
+        XCTAssertEqual(onWide, "1:1 1:1")
     }
 
     /// A unit has no digit and at most 16 characters, so "1 552" is no number. A column is a column of numbers only
@@ -825,6 +848,177 @@ final class LibraryDocumentTests: XCTestCase {
                 .join(",");
             """)
         XCTAssertEqual(result, "6,1 | 7,1")
+    }
+
+    /// A bar chart of 30 days, as a bot writes it: the labels 1 to 30 under the bars.
+    private static let monthChart: String = {
+        let rows = (1...30).map { #"{"day": \#($0), "orders": \#(100 + ($0 * 37) % 400)}"# }.joined(separator: ", ")
+        return #"{"type": "bar", "x": "day", "y": "orders", "data": [\#(rows)], "title": "Orders per day", "#
+            + #""y_label": "Orders"}"#
+    }()
+
+    /// The chart in the manner of Apple Health: no two x labels meet, no tick mark and no axis line, at most four
+    /// light lines, and the numbers of the y axis end at the right edge of the column. The caption has the label of the
+    /// y axis first.
+    @MainActor
+    func testABarChartOfThirtyDaysHasNoLabelsThatMeet() async throws {
+        let (view, window) = try await loadPage("Lead.\n\n```chart\n\(Self.monthChart)\n```", width: 390)
+        defer { close(window) }
+        let result = try await probe(view, """
+            const svg = document.querySelector("figure.chart svg");
+            const texts = [...svg.querySelectorAll("text")];
+            const below = texts.filter((text) => text.getAttribute("dominant-baseline") === "hanging")
+              .map((text) => text.getBoundingClientRect()).sort((a, b) => a.left - b.left);
+            const meet = below.slice(1).filter((box, index) => box.left - below[index].right < 8).length;
+            const numbers = texts.filter((text) => text.getAttribute("text-anchor") === "end");
+            const edge = Math.round(svg.getBoundingClientRect().right);
+            const ends = numbers.every((text) => Math.abs(text.getBoundingClientRect().right - edge) <= 1);
+            const lines = [...svg.querySelectorAll("line")];
+            const flat = lines.every((line) => line.getAttribute("y1") === line.getAttribute("y2"));
+            return [below.length > 2 && below.length < 30, meet, ends, flat, lines.length <= 4,
+              svg.querySelectorAll("path").length, document.querySelector("figure.chart figcaption").textContent,
+              Math.round(svg.getBoundingClientRect().left - document.querySelector("main").getBoundingClientRect().left),
+              scrolls()].join(" | ");
+            """)
+        XCTAssertEqual(result, "true | 0 | true | true | true | 30 | Orders · Orders per day | 0 | 0")
+    }
+
+    /// A chart with a series has one line of names with round dots above the plot, and no square.
+    @MainActor
+    func testAChartWithASeriesHasRoundDotsAndNoSquare() async throws {
+        let rows = (1...12).flatMap { day in
+            ["shop", "docs"].map { #"{"day": \#(day), "orders": \#(day * 3), "shop": "\#($0)"}"# }
+        }.joined(separator: ", ")
+        let chart = #"{"type": "bar", "x": "day", "y": "orders", "series": "shop", "data": [\#(rows)]}"#
+        let (view, window) = try await loadPage("Lead.\n\n```chart\n\(chart)\n```", width: 390)
+        defer { close(window) }
+        let result = try await probe(view, """
+            const figure = document.querySelector("figure.chart");
+            const dots = [...figure.querySelectorAll(".legend .dot")];
+            return [figure.querySelector(".legend").textContent, dots.length,
+              dots.every((dot) => getComputedStyle(dot).borderRadius === "50%"
+                && dot.getBoundingClientRect().width === 8),
+              figure.querySelectorAll("rect").length, figure.querySelector(".legend").nextElementSibling.tagName]
+              .join(" | ");
+            """)
+        XCTAssertEqual(result, "shopdocs | 2 | true | 0 | svg")
+    }
+
+    /// The charts of the fixtures still draw: a line of dates, an area, dots and the bars of the waitlist preview. A
+    /// chart that cannot draw shows its reason.
+    @MainActor
+    func testTheChartsOfTodayStillDraw() async throws {
+        let markdown = """
+            Lead.
+
+            ```chart
+            {"type": "line", "x": "date", "y": "signups", "data": [{"date": "2026-10-13", "signups": 42},
+            {"date": "2026-10-20", "signups": 61}, {"date": "2026-10-27", "signups": 58}], "title": "Signups"}
+            ```
+
+            ```chart
+            {"type": "area", "x": "week", "y": "visits", "data": [{"week": 1, "visits": 1200},
+            {"week": 2, "visits": 1800}]}
+            ```
+
+            ```chart
+            {"type": "dot", "x": "week", "y": "visits", "data": [{"week": "A", "visits": 3}, {"week": "B", "visits": 5}]}
+            ```
+
+            ```chart
+            {"type": "bar", "x": "week", "y": "signups", "data": [{"week": "Oct 13", "signups": 42},
+            {"week": "Oct 20", "signups": 61}, {"week": "Oct 27", "signups": 58}, {"week": "Nov 3", "signups": 87}]}
+            ```
+
+            ```chart
+            {"type": "bar", "data":
+            ```
+            """
+        let (view, window) = try await loadPage(markdown, width: 390)
+        defer { close(window) }
+        let result = try await probe(view, """
+            const figures = [...document.querySelectorAll("figure.chart")];
+            const labels = (figure) => [...figure.querySelectorAll("text[dominant-baseline=hanging]")]
+              .map((text) => text.textContent).join(",");
+            return figures.map((figure) => figure.classList.contains("broken") ? "broken"
+              : figure.querySelectorAll("svg path, svg circle").length + ":" + labels(figure)).join(" | ");
+            """)
+        XCTAssertEqual(result, "4:Oct 13,Oct 20,Oct 27 | 4:1,2 | 2:A,B | 4:Oct 13,Oct 20,Oct 27,Nov 3 | broken")
+    }
+
+    /// The chart draws again when the width of its column changes.
+    @MainActor
+    func testAChartDrawsAgainAtANewWidth() async throws {
+        let (view, window) = try await loadPage("Lead.\n\n```chart\n\(Self.monthChart)\n```", width: 390)
+        defer { close(window) }
+        let width = "String(document.querySelector('figure.chart svg').getAttribute('width'))"
+        let narrow = try await string(view, width)
+        view.frame.size.width = 1100
+        let wide = try await answer(of: width, in: view, once: "680")
+        XCTAssertEqual(narrow, "358")
+        XCTAssertEqual(wide, "680")
+    }
+
+    /// The body cells decide if a column is short: a column of short numbers under a long header stays narrow, and its
+    /// header wraps at a space. A table of a phone then stays a table.
+    @MainActor
+    func testAColumnOfShortNumbersUnderALongHeaderStaysNarrow() async throws {
+        let markdown = """
+            Lead.
+
+            | Queue | Open | Waiting | Closed in the last day |
+            |---|---|---|---|
+            | Example inbox | 0 | 0 | 453 |
+            | Example issues of the team | 19 | 13 | 26 |
+            """
+        let (view, window) = try await loadPage(markdown, width: 390)
+        defer { close(window) }
+        let result = try await probe(view, """
+            const header = document.querySelector("main th:last-child");
+            return [forms(), header.className, header.getClientRects().length > 0,
+              Math.round(header.getBoundingClientRect().height) > 50, scrolls()].join(" | ");
+            """)
+        XCTAssertEqual(result, "table |  | true | true | 0")
+    }
+
+    /// An empty header gives no label: a number under it shows alone in a record.
+    @MainActor
+    func testAnEmptyHeaderGivesNoLabel() async throws {
+        let markdown = """
+            Lead.
+
+            | Repository | | Title | Author | State |
+            |---|---|---|---|---|
+            | shop | 4 | Refuse price writes that do not match the product | Ada | draft |
+            """
+        let (view, window) = try await loadPage(markdown, width: 390)
+        defer { close(window) }
+        let label = try await string(view, "String(document.querySelector('main tbody td:nth-child(2)').dataset.label)")
+        XCTAssertEqual(label, "")
+    }
+
+    /// A sign before a currency sign stays with its number: no line breaks between them, and the number is still a
+    /// number.
+    @MainActor
+    func testASignStaysWithItsNumber() async throws {
+        let markdown = """
+            Lead.
+
+            | Net income |
+            |---|
+            | −$2.91M |
+
+            The allowance is −$2.1k in total.
+            """
+        let (view, window) = try await loadPage(markdown, width: 390)
+        defer { close(window) }
+        let result = try await probe(view, """
+            const paragraph = [...document.querySelectorAll("main p")].pop().textContent;
+            const at = paragraph.indexOf("$2.1k");
+            return [document.querySelectorAll(".metrics > div").length, paragraph.charCodeAt(at - 1).toString(16),
+              document.querySelector(".metrics .value").textContent.length].join(" | ");
+            """)
+        XCTAssertEqual(result, "1 | 2060 | 8")
     }
 
     /// The answer of a script of statements after the probes.
