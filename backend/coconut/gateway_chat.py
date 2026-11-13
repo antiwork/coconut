@@ -703,7 +703,7 @@ class GatewayChat:
         """
         if not self.gateway_enabled() or not gateway_context_turn(task):
             return False
-        from .native_conversation import attachment_context, context_prompt
+        from .native_conversation import attachment_context, context_prompt, turn_images
         from .service import ServiceError
         text = context_prompt(dict(operation='context', task=request_task, history=history,
                                    question=context['question']))
@@ -739,7 +739,7 @@ class GatewayChat:
         try:
             self._run_in_gateway(task, bot, text, follow_up, context_id=context['id'], wanted=wanted,
                                  mode='refresh' if check else None, silent=check, commentary=not check,
-                                 session=root, chat=chat,
+                                 session=root, chat=chat, images=turn_images(request_task.get('attachments', [])),
                                  folder=folder if folder and os.path.isdir(folder) else None)
         finally:
             ended.set()
@@ -753,7 +753,7 @@ class GatewayChat:
     def _run_in_gateway(self, task: dict, bot: dict, text: str, emit, *, silent: bool = False,
                         commentary: bool = True, context_id: str | None = None, wanted=None, session: str | None = None,
                         chat: str | None = None, mode: str | None = None, own: str | None = None,
-                        folder: str | None = None, command: str | None = None) -> bool:
+                        folder: str | None = None, command: str | None = None, images: list | None = None) -> bool:
         """Give a turn to the adapter of the bot's profile. Wait for one, at most GATEWAY_WAIT_SECONDS.
 
         The turn joins the bot's conversation, or the Hermes session `session`, for example of a cron run
@@ -767,10 +767,13 @@ class GatewayChat:
                 return self._get('tasks', task['id'])['status'] == 'working'
         # A turn with its own text gets the records that its session keeps once (turn_records): the plugin adds the
         # records that the session does not hold yet to the text that Hermes saves (hooks.add_records).
-        from .native_conversation import turn_records
+        from .native_conversation import turn_images, turn_records
         records = turn_records(task) if own is not None else []
         if own is not None:
             records += self._instructions_record(bot, own)
+        # The attached images of the turn go to Hermes as images, so the model sees a pasted screenshot.
+        if images is None:
+            images = turn_images(task.get('attachments', []))
         try:
             while True:
                 with self.lock:
@@ -785,7 +788,7 @@ class GatewayChat:
                             task['id'], home, chat or bot['id'], text, emit, chat_name=bot.get('name') or 'Coconut',
                             session_root=session or session_root(bot, epoch=task.get('_conversation_epoch')),
                             silent=silent, commentary=commentary, context_id=context_id, mode=mode, own=own, folder=folder,
-                            command=command, records=records)
+                            command=command, records=records, images=images)
                         return True
                     except GatewayUnavailable:
                         # No adapter took the turn, so nothing ran. Wait for the next adapter.

@@ -1,5 +1,6 @@
 """Resume each bot through native Hermes history and compression lineage."""
 import base64
+import os
 import json
 from uuid import UUID, uuid5
 
@@ -58,13 +59,34 @@ def reaction_feedback_context(feedback):
                           for item in feedback], ensure_ascii=False))
 
 
+# The images that the gateway gives the model as images (turn_images). Hermes checks the bytes again before it keeps them.
+IMAGE_TYPES = {'.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif', '.webp': 'image/webp'}
+
+
+def image_type(attachment) -> str | None:
+    """The MIME type of an attached image with its bytes, or None for another file."""
+    if not attachment.get('content_base64'):
+        return None
+    return IMAGE_TYPES.get(os.path.splitext(str(attachment.get('title') or ''))[1].lower())
+
+
+def turn_images(attachments) -> list[dict]:
+    """The attached images of a turn for the adapter, which gives them to Hermes as images of the message
+    (hermes_plugin/coconut/adapter.py). A pasted screenshot is one."""
+    return [{'title': attachment['title'], 'type': kind, 'content_base64': attachment['content_base64']}
+            for attachment in attachments or [] if (kind := image_type(attachment))]
+
+
 def attachment_context(attachments):
-    """The attached files of a turn, as text for the prompt: the text of a text file, or why the bot cannot read it."""
+    """The attached files of a turn, as text for the prompt: the text of a text file, a note for an image that the turn
+    carries as an image (turn_images), or why the bot cannot read it."""
     text = ''
     for attachment in attachments or []:
         text += '\nAttached file: ' + attachment['title'] + '\n'
         encoded = attachment.get('content_base64')
-        if encoded:
+        if image_type(attachment):
+            text += 'This image is attached to this message. Look at it before you answer.'
+        elif encoded:
             try:
                 content = base64.b64decode(encoded, validate=True).decode('utf-8')
                 text += '<attachment_content>\n' + content[:ATTACHMENT_LIMIT] + '\n</attachment_content>'

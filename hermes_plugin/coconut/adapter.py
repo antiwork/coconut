@@ -154,6 +154,23 @@ def approval_label(choice, label) -> str:
         return str(choice).replace('_', ' ').capitalize()
     return text
 
+def cached_images(images) -> tuple[list[str], list[str]]:
+    """Save the attached images of a turn (native_conversation.turn_images) in the image cache of Hermes, and return
+    their paths and types for the message. Hermes then gives each one to the model as an image, as for a photo of
+    another platform. An image that Hermes refuses, for example bytes that are no image, is left out."""
+    from gateway.platforms.base import cache_image_from_bytes
+    urls, types = [], []
+    for image in images or []:
+        try:
+            kind = str(image['type'])
+            ext = {'image/jpeg': '.jpg'}.get(kind, '.' + kind.split('/')[-1])
+            urls.append(cache_image_from_bytes(base64.b64decode(image['content_base64'], validate=True), ext))
+            types.append(kind)
+        except (KeyError, TypeError, ValueError, OSError):
+            LOG.warning('Coconut: an attached image of a turn could not be saved for Hermes.')
+    return urls, types
+
+
 class Bridge:
     """The routes of the Coconut service. Each call blocks, so the adapter runs it in a thread."""
 
@@ -365,11 +382,18 @@ class CoconutAdapter(BasePlatformAdapter):
             # instructions would repeat in each turn, so it stays out (hooks.add_records).
             from .hooks import records_text
             text += records_text([record for record in records if record.get('kind') != 'instructions'])
+        media_urls, media_types = cached_images(turn.get('images'))
+        if len(media_urls) < len(turn.get('images') or []):
+            note = '\n\nAn attached image could not be opened. Do not claim to have seen it.'
+            text += note
+            if str(turn['id']) in CONTEXTS:
+                CONTEXTS[str(turn['id'])] += note
         # A turn that may stay silent, such as a reaction, needs no reply. Hermes then keeps a silence marker silent
         # instead of a notice (gateway.response_filters.silence_allowed).
         return MessageEvent(text=text, message_type=MessageType.TEXT, source=source,
                             message_id=str(turn['id']), allow_gateway_control=False,
-                            reply_expected=False if turn.get('silent') else None)
+                            reply_expected=False if turn.get('silent') else None,
+                            media_urls=media_urls, media_types=media_types)
 
     async def _stop(self, chat_id: str) -> None:
         """Stop the running turn of a chat, as `/stop` does. Coconut cancelled it."""

@@ -198,6 +198,10 @@ def verify_gateway_contract():
     from gateway.platforms.event import MessageEvent
     if 'reply_expected' not in getattr(MessageEvent, '__dataclass_fields__', {}):
         raise ValueError('Hermes changed how a platform marks a message that needs no reply.')
+    # An attached image reaches the model as an image of the message (adapter.cached_images).
+    from gateway.platforms.base import cache_image_from_bytes
+    if not callable(cache_image_from_bytes) or not {'media_urls', 'media_types'} <= set(MessageEvent.__dataclass_fields__):
+        raise ValueError('Hermes changed how a platform gives an image of a message to the model.')
     # The plugin compresses a chat after a turn whose prompt reached the compression threshold (hooks.note_prompt_size).
     from agent.context_compressor import ContextCompressor
     from hermes_cli.config import load_config_readonly
