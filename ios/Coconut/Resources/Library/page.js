@@ -163,17 +163,27 @@
     table.classList.add("fitted");
     tables.push(table);
   }
-  // A table that is wider than its box does not fit, and it is a list of records. The box is the parent of the table,
+  // A table that is wider than its box, or that has a body cell of more than two lines, does not fit, and it is a
+  // list of records. The box is the parent of the table,
   // for example main, a callout or an item of a list. A new width of the box measures again, also when a hidden box
   // shows. The trailing column of each record has the width of the widest trailing cell of its table (--trail).
   const measured = new Map();
+  // The lines of the text of a cell. A cell with a photo has no count.
+  const lines = (cell) => {
+    if (cell.querySelector("img, svg")) return 1;
+    const range = document.createRange();
+    range.selectNodeContents(cell);
+    return Math.round(range.getBoundingClientRect().height / parseFloat(getComputedStyle(cell).lineHeight));
+  };
   const fit = (table) => {
     const box = table.parentElement;
     const style = getComputedStyle(box);
     const width = box.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
     measured.set(box, box.clientWidth);
     table.classList.remove("records");
-    table.classList.toggle("records", table.offsetWidth > width + 0.5);
+    table.classList.toggle("records", table.offsetWidth > width + 0.5 || [...table.rows]
+      .filter((row) => !row.classList.contains("head") && row.parentElement !== table.tHead)
+      .some((row) => [...row.cells].some((cell) => lines(cell) > 2)));
     const trails = [...table.querySelectorAll(".trail")];
     if (!table.classList.contains("records") || !trails.length) return;
     table.style.removeProperty("--trail");
@@ -181,21 +191,34 @@
     table.style.setProperty("--trail", trail + "px");
   };
   tables.forEach(fit);
-  // A tile of metrics sits in a grid of equal columns, two on a phone and up to four in a wide column. A number that
-  // does not fit its column takes two columns, because a number never breaks.
-  const widen = (metrics) => {
-    for (const tile of metrics.children) {
-      tile.classList.remove("wide");
-      const value = tile.querySelector(".value");
-      if (value.scrollWidth > value.clientWidth) tile.classList.add("wide");
+  // Tiles of metrics in balanced rows: at most 3 in a row on a phone and 4 in a wide column, never one tile alone in a
+  // row, and rows as even as possible (5 as 3 and 2). A number never breaks: when one does not fit its tile, the rows
+  // get fewer tiles.
+  const balance = (metrics) => {
+    const tiles = [...metrics.children];
+    const width = metrics.clientWidth;
+    const gap = parseFloat(getComputedStyle(metrics).columnGap) || 0;
+    const needs = tiles.map((tile) => {
+      const range = document.createRange();
+      range.selectNodeContents(tile.querySelector(".value"));
+      const style = getComputedStyle(tile);
+      return range.getBoundingClientRect().width + parseFloat(style.paddingLeft) + parseFloat(style.paddingRight);
+    });
+    let columns = 1;
+    for (let most = Math.min(tiles.length, width < 500 ? 3 : 4); most > 1; most -= 1) {
+      const rows = Math.ceil(tiles.length / most);
+      const even = Math.ceil(tiles.length / rows);
+      const alone = rows > 1 && tiles.length - (rows - 1) * even === 1;
+      if (!alone && Math.max(...needs) <= (width - (even - 1) * gap) / even) { columns = even; break; }
     }
+    metrics.style.setProperty("--columns", columns);
   };
   const sized = new Map();
-  grids.forEach((metrics) => { widen(metrics); sized.set(metrics, metrics.clientWidth); });
+  grids.forEach((metrics) => { balance(metrics); sized.set(metrics, metrics.clientWidth); });
   const tiles = new ResizeObserver((entries) => entries.forEach((entry) => {
     if (sized.get(entry.target) === entry.target.clientWidth) return;
     sized.set(entry.target, entry.target.clientWidth);
-    widen(entry.target);
+    balance(entry.target);
   }));
   grids.forEach((metrics) => tiles.observe(metrics));
   const observer = new ResizeObserver((entries) => {

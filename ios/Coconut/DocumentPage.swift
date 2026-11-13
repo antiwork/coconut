@@ -247,10 +247,10 @@ struct DocumentPage {
     /* A table that page.js does not lay out (a cell of two columns, only a header, or a table that a script of the
        page makes later) scrolls inside itself and never moves the page. */
     table:not(.fitted) { display: block; overflow-x: auto; }
-    /* Tiles in equal columns. A number never breaks: one that does not fit its column takes two (page.js). */
-    .metrics { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: var(--space); }
-    .metrics > div { min-width: 0; background: var(--surface); border-radius: var(--radius); padding: 12px 16px; }
-    .metrics > div.wide { grid-column: span 2; }
+    /* Tiles in balanced rows: page.js sets --columns, and the tiles of a shorter last row share its width. */
+    .metrics { display: flex; flex-wrap: wrap; gap: var(--space); --columns: 2; }
+    .metrics > div { flex: 1 1 calc((100% - (var(--columns) - 1) * var(--space)) / var(--columns)); min-width: 0;
+                     background: var(--surface); border-radius: var(--radius); padding: 12px 16px; }
     .metrics p { margin: 0; }
     .metrics .label { font-size: var(--size-1); color: var(--text-2); }
     .metrics .value { margin-top: 4px; font-size: var(--size-5); font-weight: 600; line-height: 1.2;

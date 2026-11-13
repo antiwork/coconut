@@ -470,12 +470,13 @@ final class LibraryDocumentTests: XCTestCase {
             [...document.querySelectorAll("main table")].map((table) => table.rows[0].cells[0].textContent).join("|")
             """)
         XCTAssertEqual(tables, "Step|Note|Shop|Repository|Product|File")
-        // Two tiles in a row on a phone.
+        // Five tiles whose numbers do not fit a third of a phone: two in a row would leave one tile alone, so each
+        // tile has its own row.
         let columns = try await string(view, """
             [...document.querySelectorAll(".metrics > div")].filter((tile) =>
               tile.offsetTop === document.querySelector(".metrics > div").offsetTop).length
             """)
-        XCTAssertEqual(columns, "2")
+        XCTAssertEqual(columns, "1")
     }
 
     /// A table that does not fit a phone is a list of records: the first cell names the row, and a number has the
@@ -675,7 +676,7 @@ final class LibraryDocumentTests: XCTestCase {
     }
 
     /// A number of a metric never breaks: a tile takes the width that it needs. Normal numbers keep two tiles in a row
-    /// A number of a metric never breaks: a tile whose number does not fit its column takes two columns.
+    /// A number of a metric never breaks: when a number does not fit its tile, the rows get fewer tiles.
     @MainActor
     func testANumberOfAMetricNeverBreaks() async throws {
         let markdown = """
@@ -697,7 +698,7 @@ final class LibraryDocumentTests: XCTestCase {
         let (phone, phoneWindow) = try await loadPage(markdown, width: 390)
         defer { close(phoneWindow) }
         let onPhone = try await probe(phone, script)
-        XCTAssertEqual(onPhone, "1,1,1,1 | 3 | 0")
+        XCTAssertEqual(onPhone, "1,1,1,1 | 4 | 0")
         let (narrow, narrowWindow) = try await loadPage(markdown, width: 320)
         defer { close(narrowWindow) }
         let onNarrow = try await probe(narrow, script)
@@ -709,8 +710,8 @@ final class LibraryDocumentTests: XCTestCase {
         XCTAssertEqual(onWide, "1,1,1,1 | 2 | 0")
     }
 
-    /// Tiles of normal numbers sit in equal columns: two in a row on a phone, also with three tiles, and up to four in
-    /// the column of a wide window.
+    /// Tiles of normal numbers sit in rows of equal tiles: four as two rows of two and three in one row on a phone,
+    /// and up to four in one row in the column of a wide window.
     @MainActor
     func testTilesOfNormalNumbersHaveEqualColumns() async throws {
         let markdown = "Lead.\n\n| Open | Ready | Drafts | Merged |\n|---|---|---|---|\n| 6 | 3 | 3 | 12 |\n\n"
@@ -725,7 +726,7 @@ final class LibraryDocumentTests: XCTestCase {
         let (phone, phoneWindow) = try await loadPage(markdown, width: 390)
         defer { close(phoneWindow) }
         let onPhone = try await probe(phone, script)
-        XCTAssertEqual(onPhone, "2:1 2:1")
+        XCTAssertEqual(onPhone, "2:1 1:1")
         let (wide, wideWindow) = try await loadPage(markdown, width: 1100)
         defer { close(wideWindow) }
         let onWide = try await probe(wide, script)
@@ -1019,6 +1020,91 @@ final class LibraryDocumentTests: XCTestCase {
               document.querySelector(".metrics .value").textContent.length].join(" | ");
             """)
         XCTAssertEqual(result, "1 | 2060 | 8")
+    }
+
+    /// A table stays a table only when no body cell takes more than two lines. A column of titles that only fits
+    /// in three lines is a list of records on a phone, and a table in the column of a wide window.
+    @MainActor
+    func testATableWithACellOfThreeLinesIsAListOfRecords() async throws {
+        let markdown = """
+            Lead.
+
+            | Title | Number | Author | State |
+            |---|---|---|---|
+            | Refuse price writes that do not match the product of the shop | #12 | Ada | open |
+            | Add a field for the access token of the analytics | #13 | Grace | draft |
+            """
+        let (phone, phoneWindow) = try await loadPage(markdown, width: 390)
+        defer { close(phoneWindow) }
+        let onPhone = try await probe(phone, "return forms() + ' | ' + scrolls();")
+        XCTAssertEqual(onPhone, "records | 0")
+        let (wide, wideWindow) = try await loadPage(markdown, width: 1100)
+        defer { close(wideWindow) }
+        let onWide = try await probe(wide, "return forms() + ' | ' + scrolls();")
+        XCTAssertEqual(onWide, "table | 0")
+    }
+
+    /// Rows of metrics are balanced, and no tile is alone in a row: on a phone 3 tiles in one row, 4 as two rows of
+    /// two and 5 as three and two; in the wide column 3 or 4 in one row and 5 as three and two. A long number gets
+    /// fewer tiles in a row.
+    @MainActor
+    func testRowsOfMetricsAreBalanced() async throws {
+        let markdown = """
+            Lead.
+
+            | A | B | C |
+            |---|---|---|
+            | 1 | 2 | 3 |
+
+            | A | B | C | D |
+            |---|---|---|---|
+            | 1 | 2 | 3 | 4 |
+
+            | A | B | C | D | E |
+            |---|---|---|---|---|
+            | 1 | 2 | 3 | 4 | 5 |
+
+            | Revenue | Refund rate | Refunds | Delivery |
+            |---|---|---|---|
+            | $1,234,567 | 2.4% | 12 | 3.5 days |
+            """
+        let script = """
+            return [...document.querySelectorAll(".metrics")].map((metrics) => {
+              const rows = new Map();
+              for (const tile of metrics.children) {
+                const top = Math.round(tile.getBoundingClientRect().top);
+                rows.set(top, (rows.get(top) || 0) + 1);
+              }
+              return [...rows.values()].join("+");
+            }).join(" ") + " | " + scrolls();
+            """
+        let (phone, phoneWindow) = try await loadPage(markdown, width: 390)
+        defer { close(phoneWindow) }
+        let onPhone = try await probe(phone, script)
+        XCTAssertEqual(onPhone, "3 2+2 3+2 1+1+1+1 | 0")
+        let (wide, wideWindow) = try await loadPage(markdown, width: 1100)
+        defer { close(wideWindow) }
+        let onWide = try await probe(wide, script)
+        XCTAssertEqual(onWide, "3 4 3+2 2+2 | 0")
+    }
+
+    /// A bar chart of ISO dates keeps one bar for each day, in the order of the data, and shows short dates.
+    @MainActor
+    func testABarChartOfDatesKeepsEachDayInTheOrderOfTheData() async throws {
+        let days = ["2026-10-17", "2026-10-15", "2026-10-16"] + (18...31).map { "2026-10-\($0)" }
+        let rows = days.enumerated().map { #"{"day": "\#($1)", "orders": \#(10 + $0)}"# }.joined(separator: ", ")
+        let chart = #"{"type": "bar", "x": "day", "y": "orders", "data": [\#(rows)]}"#
+        let (view, window) = try await loadPage("Lead.\n\n```chart\n\(chart)\n```", width: 390)
+        defer { close(window) }
+        let result = try await probe(view, """
+            const svg = document.querySelector("figure.chart svg");
+            const bars = [...svg.querySelectorAll("path")].map((bar) => bar.getBBox());
+            const ordered = bars.every((box, index) => index === 0 || box.x > bars[index - 1].x);
+            const tallest = bars.reduce((best, box, index) => box.height > bars[best].height ? index : best, 0);
+            const labels = [...svg.querySelectorAll("text[dominant-baseline=hanging]")].map((text) => text.textContent);
+            return [bars.length, ordered, tallest, labels[0], labels.length < 8].join(" | ");
+            """)
+        XCTAssertEqual(result, "17 | true | 16 | Oct 17 | true")
     }
 
     /// The answer of a script of statements after the probes.
