@@ -198,7 +198,7 @@ struct LibraryView: View {
     private var emptyLibrary: some View {
         VStack(spacing: 8) {
             Image(systemName: "rectangle.3.group").font(.largeTitle.weight(.light)).foregroundStyle(.secondary)
-            Text("Your Library").font(.headline)
+            Text("Your Library").font(.body.weight(.semibold))
             Text("Bots keep documents here: notes, checklists, and charts that they update.")
                 .font(.subheadline).foregroundStyle(.secondary).multilineTextAlignment(.center)
         }
@@ -438,7 +438,7 @@ struct DocumentCard: View {
                 Image(systemName: document?.isPage == true ? "chart.bar.xaxis" : "doc.text")
                     .font(.body).foregroundStyle(.secondary)
                     .frame(width: 36, height: 36)
-                    .background(BoardStyle.paper, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+                    .background(BoardStyle.paper, in: RoundedRectangle(cornerRadius: BoardStyle.Radius.small, style: .continuous))
                 VStack(alignment: .leading, spacing: 2) {
                     Text(document?.title ?? title).font(.subheadline.weight(.semibold)).foregroundStyle(.primary)
                         .lineLimit(2).multilineTextAlignment(.leading)

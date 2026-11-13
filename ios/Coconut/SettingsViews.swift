@@ -71,7 +71,7 @@ struct AppSettingsView: View {
             .toolbar {
                 ToolbarItem(placement: .leadingBar) {
                     Button { dismiss() } label: {
-                        Image(systemName: "xmark").font(.body.weight(.medium))
+                        Image(systemName: "xmark").font(.body.weight(.semibold))
                             .frame(minWidth: 44, minHeight: 44)
                     }
                     .foregroundStyle(.primary)
@@ -140,7 +140,7 @@ private struct MacConnectionSettingsView: View {
                     Text("Preview uses sample conversations.").foregroundStyle(.secondary)
                 } else if store.hasPairing {
                     LabeledContent("Mac") {
-                        Text(store.pairedMacDescription).font(.caption).textSelection(.enabled)
+                        Text(store.pairedMacDescription).font(.footnote).textSelection(.enabled)
                     }
                     Button("Reconnect") { Task { await store.reconnect() } }
                 } else {
@@ -220,7 +220,7 @@ struct BotIdentityFields: View {
         Section {
             Button { appearanceOpen = true } label: {
                 BotAvatar(symbol: avatar, color: color, size: avatarSize, identity: identity)
-                    .frame(maxWidth: .infinity).padding(.vertical, 14)
+                    .frame(maxWidth: .infinity).padding(.vertical, BoardStyle.Space.l)
             }
             .buttonStyle(.plain).listRowBackground(Color.clear)
             .accessibilityLabel("Change character")
