@@ -890,6 +890,17 @@ struct ConversationComposer: View {
         .padding(.top, 4)
         .padding(.bottom, 8)
         .modifier(ComposerBackdrop())
+        #if os(macOS)
+        .modifier(PasteAttachmentMonitor(enabled: focused && connected && !uploading) { pasted in
+            Task {
+                uploading = true
+                if let artifact = await store.uploadAttachment(bot: bot, data: pasted.data, filename: pasted.filename) {
+                    attachments.append(artifact)
+                }
+                uploading = false
+            }
+        })
+        #endif
         .fileImporter(isPresented: $importing, allowedContentTypes: [.item]) { result in
             if case .success(let url) = result {
                 Task {

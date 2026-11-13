@@ -69,6 +69,89 @@ extension Image {
     }
 }
 
+/// A file or an image that a paste attaches to a message.
+struct PastedAttachment: Equatable {
+    let data: Data
+    let filename: String
+
+    /// The largest attachment that the Mac accepts.
+    static let limit = 4 * 1024 * 1024
+
+    /// The name of a pasted image without a file: "Pasted image 10.42.05.png". A Mac file name has no colon.
+    static func imageName(at date: Date = .now, ext: String) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "HH.mm.ss"
+        return "Pasted image \(formatter.string(from: date)).\(ext)"
+    }
+
+    /// Text that goes into the field even when the pasteboard has an image too. A browser and an app often put the
+    /// address of a copied image next to it, so only a single link or nothing leaves the paste to the image.
+    static func textWins(_ text: String?) -> Bool {
+        let text = text?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !text.isEmpty else { return false }
+        if !text.contains(where: \.isWhitespace), let url = URL(string: text), url.scheme != nil { return false }
+        return true
+    }
+}
+
+#if os(macOS)
+extension PastedAttachment {
+    /// What Command-V attaches from the general pasteboard: a copied file (Finder), or an image (a screenshot, a copied
+    /// image). Nil when the paste is text, so the field pastes it as before.
+    static func fromPasteboard(_ pasteboard: NSPasteboard = .general) -> PastedAttachment? {
+        if let url = (pasteboard.readObjects(forClasses: [NSURL.self],
+                                             options: [.urlReadingFileURLsOnly: true]) as? [URL])?.first,
+           let data = try? Data(contentsOf: url, options: .mappedIfSafe) {
+            return PastedAttachment(data: data, filename: url.lastPathComponent)
+        }
+        guard !textWins(pasteboard.string(forType: .string)) else { return nil }
+        if let png = pasteboard.data(forType: .png), png.count <= limit {
+            return PastedAttachment(data: png, filename: imageName(ext: "png"))
+        }
+        guard let image = NSImage(pasteboard: pasteboard), let tiff = image.tiffRepresentation,
+              let bitmap = NSBitmapImageRep(data: tiff) else { return nil }
+        // A screenshot is small as a PNG. A large photo becomes a JPEG, so that it fits the limit of an attachment.
+        if let png = bitmap.representation(using: .png, properties: [:]), png.count <= limit {
+            return PastedAttachment(data: png, filename: imageName(ext: "png"))
+        }
+        guard let jpeg = bitmap.representation(using: .jpeg, properties: [.compressionFactor: 0.8]) else { return nil }
+        return PastedAttachment(data: jpeg, filename: imageName(ext: "jpg"))
+    }
+}
+
+/// Takes Command-V while the composer has focus and the pasteboard holds a file or an image. The text field itself
+/// pastes only text, so without this an image did nothing. A text paste goes to the field as before.
+struct PasteAttachmentMonitor: ViewModifier {
+    let enabled: Bool
+    let paste: (PastedAttachment) -> Void
+    @State private var monitor: Any?
+
+    func body(content: Content) -> some View {
+        content
+            .onAppear { install() }
+            .onDisappear { remove() }
+            .onChange(of: enabled) { _, _ in remove(); install() }
+    }
+
+    private func install() {
+        guard enabled, monitor == nil else { return }
+        monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+            guard event.modifierFlags.intersection(.deviceIndependentFlagsMask) == .command,
+                  event.charactersIgnoringModifiers?.lowercased() == "v",
+                  let pasted = PastedAttachment.fromPasteboard() else { return event }
+            paste(pasted)
+            return nil
+        }
+    }
+
+    private func remove() {
+        if let monitor { NSEvent.removeMonitor(monitor) }
+        monitor = nil
+    }
+}
+#endif
+
 enum Pasteboard {
     static func copy(_ text: String) {
         #if canImport(UIKit)
