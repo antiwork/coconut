@@ -522,6 +522,50 @@ class TeamStoreTests(unittest.TestCase):
         TeamStore(db).migrate()
         self.assertEqual(db.execute('SELECT name, bot_only FROM team_members').fetchall(), [('Grace', 0)])
 
+    def test_an_older_store_reads_the_marks_of_its_kept_entries_again(self):
+        # A service of an older version kept the entries of a team-only Mac with their marks, and its rows had no
+        # column for them. The team-only Mac does not write the entries again, so only the store can correct the rows.
+        db = sqlite3.connect(':memory:', isolation_level=None)
+        self.addCleanup(db.close)
+        db.execute('CREATE TABLE team_entries (room TEXT NOT NULL, id TEXT NOT NULL, seq INTEGER NOT NULL, '
+                   'first INTEGER NOT NULL, member TEXT NOT NULL, kind TEXT NOT NULL, rev INTEGER NOT NULL, '
+                   'at INTEGER NOT NULL, kept INTEGER NOT NULL, payload TEXT NOT NULL, PRIMARY KEY (room, id))')
+        db.execute('CREATE TABLE team_members (room TEXT NOT NULL, member TEXT NOT NULL, name TEXT NOT NULL, '
+                   'avatar TEXT NOT NULL, color TEXT NOT NULL, agreement TEXT NOT NULL, entry TEXT NOT NULL, '
+                   'PRIMARY KEY (room, member))')
+        db.execute('CREATE TABLE team_bots (room TEXT NOT NULL, entry TEXT NOT NULL, member TEXT NOT NULL, '
+                   'name TEXT NOT NULL, avatar TEXT NOT NULL, color TEXT NOT NULL, PRIMARY KEY (room, entry))')
+        kept = {1: ('member', ADMIN, self.member('Reporter', bot_only=True, direct=True)),
+                2: ('member', MEMBER, self.member('Grace', bot_only=1)),
+                3: ('bot', ADMIN, self.bot('Reporter', open=True)), 4: ('bot', ADMIN, self.bot('Helper', open='true'))}
+        for number, (kind, member, payload) in kept.items():
+            db.execute('INSERT INTO team_entries VALUES (?, ?, ?, ?, ?, ?, 1, 0, 1, ?)',
+                       (ROOM, entry_id(number), number, number, member, kind, json.dumps(payload)))
+            if kind == 'member':
+                db.execute("INSERT INTO team_members VALUES (?, ?, ?, '', '', ?, ?)",
+                           (ROOM, member, payload['name'], AGREEMENT, entry_id(number)))
+            else:
+                db.execute("INSERT INTO team_bots VALUES (?, ?, ?, ?, '', '')",
+                           (ROOM, entry_id(number), member, payload['name']))
+        db.executescript(team_store.SCHEMA)
+        store = TeamStore(db)
+        store.migrate()
+        expected_members = [('Grace', 0, 0), ('Reporter', 1, 1)]
+        expected_bots = [('Helper', 0), ('Reporter', 1)]
+        members = 'SELECT name, bot_only, direct FROM team_members ORDER BY name'
+        bots = 'SELECT name, open FROM team_bots ORDER BY name'
+        self.assertEqual((db.execute(members).fetchall(), db.execute(bots).fetchall()), (expected_members, expected_bots))
+        # A store that got the columns without the marks is correct after its next start too.
+        db.execute('UPDATE team_members SET bot_only=0, direct=0')
+        db.execute('UPDATE team_bots SET open=0')
+        TeamStore(db).migrate()
+        self.assertEqual((db.execute(members).fetchall(), db.execute(bots).fetchall()), (expected_members, expected_bots))
+        self.assertEqual(store.changed, {ROOM}, 'The phone reads the room again.')
+        # A start with correct rows changes no row and no room.
+        again = TeamStore(db)
+        again.migrate()
+        self.assertEqual(again.changed, set())
+
     def test_an_older_store_gets_the_epoch_of_each_entry_as_0(self):
         db = sqlite3.connect(':memory:', isolation_level=None)
         self.addCleanup(db.close)

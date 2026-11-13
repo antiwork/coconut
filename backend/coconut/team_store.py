@@ -531,15 +531,14 @@ class TeamStore:
         self.clock = time.time
 
     def migrate(self) -> None:
-        """Add the columns that a store of an older version lacks. A `bot` row of that version reads as not open
-        until its next write, a `member` row as a person, and a room has its notifications on."""
+        """Add the columns that a store of an older version lacks. A room of that version has its notifications on.
+        The marks of a `bot` row and a `member` row come from their kept entries (_read_marks_again)."""
         if 'open' not in {row[1] for row in self.db.execute('PRAGMA table_info(team_bots)')}:
             self.db.execute('ALTER TABLE team_bots ADD COLUMN open INTEGER NOT NULL DEFAULT 0')
         if 'bot_only' not in {row[1] for row in self.db.execute('PRAGMA table_info(team_members)')}:
             self.db.execute('ALTER TABLE team_members ADD COLUMN bot_only INTEGER NOT NULL DEFAULT 0')
         if 'notifications' not in {row[1] for row in self.db.execute('PRAGMA table_info(team_rooms)')}:
             self.db.execute('ALTER TABLE team_rooms ADD COLUMN notifications INTEGER NOT NULL DEFAULT 1')
-        # A `member` row of an older version reads as a member without direct messages until its next write.
         if 'direct' not in {row[1] for row in self.db.execute('PRAGMA table_info(team_members)')}:
             self.db.execute('ALTER TABLE team_members ADD COLUMN direct INTEGER NOT NULL DEFAULT 0')
         # Each body of an older version has epoch 0, because no Mac changed a room key before this column.
@@ -562,6 +561,25 @@ class TeamStore:
         # named chat and then walk the messages of each other chat.
         self.db.execute('DROP INDEX IF EXISTS team_messages_order')
         self.db.execute('CREATE INDEX IF NOT EXISTS team_messages_chat ON team_messages (room, chat, first)')
+        self._read_marks_again()
+
+    def _read_marks_again(self) -> None:
+        """Set `bot_only` and `direct` of each member row and `open` of each bot row from the kept entry of the row.
+
+        A service of an older version kept the entries with their marks in rows without a column for a mark, and each
+        column came with the value 0. The other Mac does not write its entry again, so without this step a team-only
+        Mac shows as a person, and its bots as bots that answer nobody. Only the JSON value true is a mark, as in
+        member_fields and bot_fields. A row without its kept entry stays. Each start does the step: it changes only a
+        wrong row, and it puts the room of such a row into `changed`, so the phone reads the room again."""
+        def mark(table: str, field: str) -> str:
+            return (f"(SELECT IFNULL(json_type(e.payload, '$.{field}'), '') = 'true' FROM team_entries e "
+                    f'WHERE e.room={table}.room AND e.id={table}.entry)')
+        for table, fields in (('team_members', ('bot_only', 'direct')), ('team_bots', ('open',))):
+            values = {field: f'COALESCE({mark(table, field)}, {field})' for field in fields}
+            wrong = ' OR '.join(f'{field}!={value}' for field, value in values.items())
+            self.changed.update(row[0] for row in self.db.execute(f'SELECT DISTINCT room FROM {table} WHERE {wrong}'))
+            assignments = ', '.join(f'{field}={value}' for field, value in values.items())
+            self.db.execute(f'UPDATE {table} SET {assignments} WHERE {wrong}')
 
     def _read_chats_again(self) -> None:
         """Read the chats of a store of an older version, one time. That version kept each `chat` entry as an entry of
@@ -1246,8 +1264,9 @@ class TeamStore:
         """Queue a turn for each bot of this Mac that the message names or answers (docs/team-log.md, "A bot answers").
 
         The message has no `bot`, is under TRIGGER_SECONDS old, and its member is in the member list. It names the
-        `bot` entry of a bot in `mentions`, or its `reply_to` is a message of that bot. The bot is shared with the room,
-        is not archived, and has its chat connected (`chat` of its record). The signature of the entry proves its
+        `bot` entry of a bot in `mentions`, or its `reply_to` is a message of that bot. A team-only Mac is no person, so
+        a mention of its own `member` entry names a bot too: the one that `_meant_bot` finds. The bot is shared with the
+        room, is not archived, and has its chat connected (`chat` of its record). The signature of the entry proves its
         member, and no other field of a payload decides here. A bot with MAX_WAITING triggers that wait skips the
         message, with a log line and no text of the message.
         """
@@ -1262,8 +1281,11 @@ class TeamStore:
             row = self.db.execute('SELECT bot FROM team_messages WHERE room=? AND entry=? AND member=? AND chat IS ?',
                                   (room_id, message['reply_to'], room['member'], message['chat'])).fetchone()
             answered = row[0] if row else None
-        for bot, share in self.answering(room_id):
-            if share not in message['mentions'] and share != answered:
+        answering = self.answering(room_id)
+        own = self.member(room_id, room['member'])
+        meant = self._meant_bot(room_id, own['name'], answering) if own and own['entry'] in message['mentions'] else None
+        for bot, share in answering:
+            if share not in message['mentions'] and share != answered and bot != meant:
                 continue
             if self.db.execute('SELECT COUNT(*) FROM team_triggers WHERE room=? AND bot=? AND started=0',
                                (room_id, bot)).fetchone()[0] >= MAX_WAITING:
@@ -1280,6 +1302,15 @@ class TeamStore:
         return self.db.execute('''SELECT s.bot, s.entry FROM team_shares s JOIN bots b ON b.id=s.bot
             WHERE s.room=? AND json_extract(b.data, '$.chat')=1 AND COALESCE(json_extract(b.data, '$.archived'), 0)=0
             ORDER BY s.bot''', (room,)).fetchall()
+
+    def _meant_bot(self, room: str, name: str, answering: list[tuple[str, str]]) -> str | None:
+        """The bot that a mention of this Mac's `member` entry names: of the bots in `answering`, the one with the name
+        of the member, compared without case, else the only one. None when the choice is not clear."""
+        names = dict(self.db.execute('SELECT entry, name FROM team_bots WHERE room=?', (room,)).fetchall())
+        same = [bot for bot, share in answering if names.get(share, '').casefold() == name.casefold()]
+        if len(same) == 1:
+            return same[0]
+        return answering[0][0] if len(answering) == 1 else None
 
     def next_trigger(self, room: str, bot: str) -> dict | None:
         """The oldest trigger of the bot in the room whose turn did not begin."""

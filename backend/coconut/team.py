@@ -224,8 +224,16 @@ class Team(TeamSync, TeamSocket, TeamPages, TeamMessages, TeamChats, TeamDirects
         self._init_team_typing()
 
     def _start_team(self):
+        self._team_tell_corrected()
         self._start_team_sync()
         self._start_team_socket()
+
+    def _team_tell_corrected(self):
+        """The open of the store can correct the rows of a room (TeamStore._read_marks_again). An app that is open
+        gets one event for each such room and reads the room again."""
+        with self.transaction():
+            for room in sorted(self.team_store.changed):
+                self._team_tell(room)
 
     def _close_team(self):
         self._close_team_socket()

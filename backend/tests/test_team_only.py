@@ -443,6 +443,37 @@ class BotRecordTests(TeamOnlyMacs, unittest.TestCase):
         view = self.first.team_request('GET', '/v1/team/rooms', {})['rooms'][0]
         self.assertEqual([member['bot_only'] for member in view['members']], [False, True])
 
+    def test_a_store_of_an_older_version_shows_the_team_only_mac_and_its_bot_again_at_the_next_start(self):
+        # A service of a version before the marks kept the `member` and `bot` entries of the team-only Mac in rows
+        # without the marks. The new columns came with 0, and the team-only Mac never writes the entries again.
+        room = self.team()
+        bot = self.declare()
+        self.share(room, bot)
+        self.call('PATCH', f'/v1/team/bots/{bot["id"]}', {'chat': True})
+        self.sync()
+
+        def seen():
+            view = self.first.team_request('GET', '/v1/team/rooms', {})['rooms'][0]
+            return ([(member['name'], member['bot_only']) for member in view['members']],
+                    [(row['name'], row['open']) for row in view['bots']])
+        right = ([('Ada', False), ('Reporter Mac', True)], [('Reporter', True)])
+        self.assertEqual(seen(), right)
+        with self.first.lock:
+            self.first.db.execute('UPDATE team_members SET bot_only=0')
+            self.first.db.execute('UPDATE team_bots SET open=0')
+        self.assertEqual(seen(), ([('Ada', False), ('Reporter Mac', False)], [('Reporter', False)]))
+        # The next start of the service opens the store and tells the app.
+        cursor = self.first.db.execute('SELECT MAX(seq) FROM events').fetchone()[0] or 0
+        self.first.team_store.migrate()
+        self.first._team_tell_corrected()
+        self.assertEqual(seen(), right)
+        events = [row[0] for row in self.first.db.execute('SELECT type FROM events WHERE seq>?', (cursor,))]
+        self.assertEqual(events, ['team.updated'])
+        # A start with correct rows changes nothing and tells nothing.
+        self.first.team_store.migrate()
+        self.first._team_tell_corrected()
+        self.assertEqual(self.first.db.execute('SELECT COUNT(*) FROM events WHERE seq>?', (cursor,)).fetchone()[0], 1)
+
     def test_a_change_keeps_the_home_and_reaches_the_team(self):
         room = self.team()
         bot = self.declare()
