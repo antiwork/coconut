@@ -177,13 +177,16 @@ struct BotMentionPicker<B: MentionableBot>: View {
                                 }
                                 Spacer(minLength: 0)
                             }
-                            .padding(.horizontal, 14).padding(.vertical, 9).frame(minHeight: 50)
+                            .padding(.horizontal, BoardStyle.Space.m).padding(.vertical, BoardStyle.Space.s).frame(minHeight: 50)
                             .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
                         .accessibilityIdentifier(bot.mentionedPerson == nil ? "mention-bot-\(bot.id)" : "mention-person-\(bot.id)")
                         .accessibilityLabel(accessibleName(for: bot))
-                        if bot.id != bots.last?.id { Divider().padding(.leading, 56) }
+                        // The line starts under the name: the inset, the face and the gap.
+                        if bot.id != bots.last?.id {
+                            Divider().padding(.leading, BoardStyle.Space.m + 30 * BotAvatar.scale + BoardStyle.Space.m)
+                        }
                     }
                 }
             }
@@ -203,16 +206,16 @@ struct BotMentionRecipients: View {
     var body: some View {
         if !recipients.isEmpty {
             ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 6) {
-                    Text("Mentioned").font(.caption).foregroundStyle(.secondary)
+                HStack(spacing: BoardStyle.Space.s) {
+                    Text("Mentioned").font(.footnote).foregroundStyle(.secondary)
                     ForEach(recipients) { recipient in
                         Button { remove(recipient) } label: {
-                            HStack(spacing: 5) {
+                            HStack(spacing: BoardStyle.Space.xs) {
                                 Text(recipient.name)
                                 Image(systemName: "xmark").imageScale(.small).fontWeight(.semibold)
                             }
-                            .font(.caption.weight(.medium)).padding(.horizontal, 10)
-                            .padding(.vertical, 7).background(BoardStyle.surface, in: Capsule())
+                            .font(.footnote.weight(.semibold)).padding(.horizontal, BoardStyle.Space.m)
+                            .padding(.vertical, BoardStyle.Space.s).background(BoardStyle.surface, in: Capsule())
                             .frame(minHeight: 44)
                         }
                         .buttonStyle(.plain)
