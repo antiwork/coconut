@@ -41,6 +41,7 @@ struct TeamChatView: View {
     @ScaledMetric(relativeTo: .body) private var nameWidth = 150
     #if os(macOS)
     @Environment(\.openSettings) private var openSettings
+    @State private var sentScroll = SentMessageScroll()
     /// The title of the team floats over the top of the chat. It has two lines (the name and who is in the chat), so it
     /// is 10 points taller than the title of a bot (34).
     private static let titlePillHeight: CGFloat = 44
@@ -57,6 +58,15 @@ struct TeamChatView: View {
     /// The other person of a direct chat. Nil for the Team chat.
     private func peer(_ room: TeamRoom) -> TeamDirectPeer? { chatKey.member.map(room.directPeer) }
     private func currentRows() -> [TeamChatRow] { rows.current(chat, calendar: .current) }
+    /// A sent message waits for the layout of its row, and the other scroll rules wait too (SentMessageScroll). Only on
+    /// a Mac.
+    private var sentWaits: Bool {
+        #if os(macOS)
+        sentScroll.waits
+        #else
+        false
+        #endif
+    }
 
     var body: some View {
         Group {
@@ -168,10 +178,22 @@ struct TeamChatView: View {
                 else if new[0] > old[0] + 0.5 && new[0] + new[2] >= new[1] - 4 { follows = true }
                 #endif
                 // New content, the keyboard and the composer move the bottom. The chat stays there while it follows.
-                if follows && !userScrolling && (new[1] != old[1] || new[2] != old[2] || new[3] != old[3]) {
+                if follows && !userScrolling && !sentWaits && (new[1] != old[1] || new[2] != old[2] || new[3] != old[3]) {
                     proxy.scrollTo(Self.bottom, anchor: .bottom)
                 }
             }
+            #if os(macOS)
+            // A sent message moves the chat one time, after the layout of its row.
+            .modifier(SentMessageMove(scroll: $sentScroll, follows: { follows }) {
+                proxy.scrollTo(Self.bottom, anchor: .bottom)
+            })
+            .onChange(of: ids) { _, _ in
+                // The Mac answers a sent message with a row of its own ID, in place of the row of the message on its
+                // way. The list takes the old row away first, so the chat moved up by the height of that row and the
+                // wheel rule above took the move for the reader's. A chat that follows stays at its newest row.
+                if follows && !userScrolling && !sentWaits { proxy.scrollTo(Self.bottom, anchor: .bottom) }
+            }
+            #endif
             .onScrollPhaseChange { _, phase in
                 #if !os(macOS)
                 pinnedDay.scrolls(phase != .idle)
@@ -182,7 +204,7 @@ struct TeamChatView: View {
                 // The person sent a message: the chat shows it at the bottom.
                 guard id != nil else { return }
                 follows = true
-                proxy.scrollTo(Self.bottom, anchor: .bottom)
+                if !sentWaits { proxy.scrollTo(Self.bottom, anchor: .bottom) }
             }
             .pinnedDayPill(pinnedDay, now: dayReference, below: Self.titleHeight)
             .background(BoardStyle.paper)
@@ -410,6 +432,9 @@ struct TeamChatView: View {
             // The mentions count in the draft before the trim: their places are places in the draft.
             let named = BotMentions.recipients(in: draft, selected: mentions, bots: mentionTargets(room)).map(\.id)
             guard store.sendTeamMessage(chatKey, text: text, replyingTo: replyTo, mentions: named) else { return }
+            #if os(macOS)
+            sentScroll.sent()
+            #endif
             draft = ""
             mentions = []
             replyTo = nil

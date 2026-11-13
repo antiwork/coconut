@@ -39,6 +39,7 @@ struct ConversationView: View {
     @State private var dayReference = Date()
     @State private var pinnedDay = PinnedDay()
     #if os(macOS)
+    @State private var sentScroll = SentMessageScroll()
     /// The chat runs up under the toolbar of the window, where the title of the bot floats. The first message and the
     /// pinned day pill start below the title.
     private static let titleHeight: CGFloat = 52
@@ -125,6 +126,22 @@ struct ConversationView: View {
     /// The row that shows a message, also a message inside a group of photos or of bot messages.
     private static func entryId(containing id: String, in entries: [TranscriptEntry]) -> String? {
         entries.first { $0.id == id || $0.messages.contains { $0.id == id } }?.id
+    }
+
+    /// A sent message waits for the layout of its row, and the other scroll rules wait too (SentMessageScroll). Only on
+    /// a Mac.
+    private var sentWaits: Bool {
+        #if os(macOS)
+        sentScroll.waits
+        #else
+        false
+        #endif
+    }
+
+    private func sendStarted() {
+        #if os(macOS)
+        sentScroll.sent()
+        #endif
     }
 
     private func show(_ row: String, proxy: ScrollViewProxy) {
@@ -275,33 +292,40 @@ struct ConversationView: View {
                     }
                     .onScrollGeometryChange(for: CGSize.self) { $0.contentSize } action: { _, _ in
                         // A scroll of the reader wins over new content: the chat follows again when the scroll ends.
-                        if nearBottom && !userScrolling && (focusTarget == nil || didFocusDecision) {
+                        if nearBottom && !userScrolling && !sentWaits && (focusTarget == nil || didFocusDecision) {
                             proxy.scrollTo("conversation-bottom", anchor: .bottom)
                         }
                     }
                     .onScrollGeometryChange(for: [CGFloat].self) { [$0.containerSize.height, $0.contentInsets.bottom] } action: { _, _ in
                         // Follow keyboard and composer resizing only when the reader stays at the bottom. The keyboard
                         // and the composer change the bottom inset of the chat, not the size of its container.
-                        if !userScrolling && nearBottom && (focusTarget == nil || didFocusDecision) {
+                        if !userScrolling && nearBottom && !sentWaits && (focusTarget == nil || didFocusDecision) {
                             proxy.scrollTo("conversation-bottom", anchor: .bottom)
                         }
                     }
+                    #if os(macOS)
+                    // A sent message moves the chat one time, after the layout of its row.
+                    .modifier(SentMessageMove(scroll: $sentScroll, follows: { nearBottom }) {
+                        footerScroll.reset()
+                        proxy.scrollTo("conversation-bottom", anchor: .bottom)
+                    })
+                    #endif
                     .onChange(of: nearBottom) { _, following in
                         if following { rowHold.release() }
                     }
                     .onChange(of: activity != nil) { _, _ in
-                        if nearBottom && !userScrolling { footerScroll.reset(); proxy.scrollTo("conversation-bottom", anchor: .bottom) }
+                        if nearBottom && !userScrolling && !sentWaits { footerScroll.reset(); proxy.scrollTo("conversation-bottom", anchor: .bottom) }
                     }
                     .onChange(of: messages.last?.id) { _, _ in
-                        if nearBottom { footerScroll.reset(); proxy.scrollTo("conversation-bottom", anchor: .bottom) }
+                        if nearBottom && !sentWaits { footerScroll.reset(); proxy.scrollTo("conversation-bottom", anchor: .bottom) }
                     }
                     .onChange(of: messages.last(where: { $0.role == "user" })?.id) { _, messageId in
                         guard let messageId, messages.last?.id == messageId else { return }
                         nearBottom = true
-                        proxy.scrollTo("conversation-bottom", anchor: .bottom)
+                        if !sentWaits { proxy.scrollTo("conversation-bottom", anchor: .bottom) }
                     }
                     .onChange(of: messages.last?.text) { _, _ in
-                        if nearBottom && !userScrolling { footerScroll.reset(); proxy.scrollTo("conversation-bottom", anchor: .bottom) }
+                        if nearBottom && !userScrolling && !sentWaits { footerScroll.reset(); proxy.scrollTo("conversation-bottom", anchor: .bottom) }
                     }
                     .overlay(alignment: .bottomTrailing) {
                         // Newer messages can be below the screen, for example when a focused card opens the chat.
@@ -359,7 +383,7 @@ struct ConversationView: View {
                                              attachments: $messageAttachments, scheduling: $messageScheduling,
                                              scheduledAt: $messageScheduledAt, mentions: $messageMentions,
                                              focused: $composerFocused, replyTo: $replyTo, workContext: $workContext,
-                                             onStop: requestStop)
+                                             onStop: requestStop, onSend: sendStarted)
                             .fixedSize(horizontal: false, vertical: true)
                     }
                 }
@@ -807,6 +831,8 @@ struct ConversationComposer: View {
     @Binding var replyTo: MessageReference?
     @Binding var workContext: WorkReference?
     var onStop: (AgentTask) -> Void = { _ in }
+    /// The person sends the draft. It comes before the draft clears.
+    var onSend: () -> Void = {}
 
     private var connected: Bool { store.hasPairing || store.isDemo }
     private var recipients: [SelectedBotMention] { BotMentions.recipients(in: text, selected: mentions, bots: store.bots) }
@@ -925,6 +951,7 @@ struct ConversationComposer: View {
         let submittedDate = scheduledAt
         let submittedRecipients = recipients.map(\.id)
         let submittedMentions = mentions
+        onSend()
         text = ""; mentions = []; selection = nil; attachments = []; scheduling = false; replyTo = nil; workContext = nil
         Task {
             let success = await store.send(bot: bot, text: submittedText,
