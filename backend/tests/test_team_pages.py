@@ -279,7 +279,7 @@ class TeamPageTests(TeamMacs, unittest.TestCase):
                 if change == 'archive':
                     # The page cannot be shared while its bot is archived. A restore brings the page back.
                     self.assertEqual(self.refusal(self.share),
-                                     (409, 'The bot of this page is archived. Restore the bot, then share the page.'))
+                                     (409, 'The agent of this page is archived. Restore the agent, then share the page.'))
                     self.first.mutate('PATCH', f'/v1/bots/{self.bot["id"]}', {'archived': False}, str(uuid4()), 'phone')
                     self.sync()
                     self.assertEqual(len(self.team_pages()), 1)
@@ -309,7 +309,7 @@ class TeamPageTests(TeamMacs, unittest.TestCase):
             with self.subTest(method=method):
                 self.assertEqual(self.refusal(self.first.team_request, method, path, body, '', DEVICE),
                                  (409, PERSONAL_BOTS))
-                # A tool of this Mac gets the line of the person's Mac. `coconut team add-bot` reads the mode first.
+                # A tool of this Mac gets the line of the person's Mac. `coconut team add-agent` reads the mode first.
                 self.assertEqual(self.refusal(self.first.team_request, method, path, body), (403, PERSON_ONLY))
         # The refusal changes nothing.
         self.assertEqual(self.own()['teams'], [{'room': self.room_id, 'name': 'Example Team'}])

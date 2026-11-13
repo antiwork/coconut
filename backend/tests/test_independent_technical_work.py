@@ -270,7 +270,7 @@ class IndependentTechnicalWorkTests(unittest.TestCase):
         owner, source = self.lane_native()
         ops = self.write('/v1/bots', {'name': 'Ops'})
         self.service._put('tasks', dict(source, bot_id=ops['id']))
-        self.refused(owner, source, 'Only the owner or its requesting bot')
+        self.refused(owner, source, 'Only the owner or its requesting agent')
         self.assert_untouched(owner)
 
     def test_lane_turn_keeps_local_tools_and_holds_native_actions(self):
@@ -1584,7 +1584,7 @@ class DeclinedMergeLaneTests(unittest.TestCase):
         self.service._put('exchanges', exchange)
         ops = self.write('/v1/bots', {'name': 'Ops'})
         self.service._put('tasks', dict(source, bot_id=ops['id']))
-        self.refused(owner, source, 'Only the owner or its requesting bot')
+        self.refused(owner, source, 'Only the owner or its requesting agent')
         self.service._put('tasks', source)
 
     def test_local_fixes_still_need_a_separate_approval_and_the_decline_never_authorizes(self):
@@ -2231,7 +2231,7 @@ class HeldMergeLaneTests(unittest.TestCase):
         self.service._put('exchanges', exchange)
         ops = self.write('/v1/bots', {'name': 'Ops'})
         self.service._put('tasks', dict(source, bot_id=ops['id']))
-        self.refused(owner, source, 'Only the owner or its requesting bot')
+        self.refused(owner, source, 'Only the owner or its requesting agent')
         self.service._put('tasks', source)
 
     def test_a_read_only_turn_runs_with_its_holds_follows_the_successor_and_returns_to_the_hold_once(self):
