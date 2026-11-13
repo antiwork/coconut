@@ -75,21 +75,123 @@ enum NoticeHeight {
 }
 
 extension EnvironmentValues {
-    /// True in the main window of the Mac: its notice shows the error, so a page there shows no inline copy.
+    /// True in the detail column of the main window of the Mac: its notice shows the error, so a page there shows no
+    /// inline copy. A sheet sets it to false, because it has no notice over it.
     @Entry var windowShowsError = false
     /// The height of the area that holds the notice of the Mac window.
     @Entry var noticeArea: CGFloat?
+    /// The chats of the main window of the Mac that can hold its notice. Nil outside the detail column of that window.
+    @Entry var windowNotice: WindowNotice?
 }
 
-/// True while a chat of the Mac window is on the screen: the chat shows the notice above its composer, so the area
-/// around it shows none.
-struct ChatHoldsNoticePreference: PreferenceKey {
-    static let defaultValue = false
-    static func reduce(value: inout Bool, nextValue: () -> Bool) { value = value || nextValue() }
+/// The place of the notice in the main window of the Mac. A chat on the screen shows the notice above its composer.
+/// When no chat is on the screen, the detail column shows it at its bottom. Exactly one place shows it.
+struct NoticeHolders: Equatable {
+    /// The chats on the screen, in the order that they came on the screen.
+    private(set) var chats: [UUID] = []
+
+    /// The chat that shows the notice: the chat that came on the screen last. Nil when no chat is on the screen.
+    var holder: UUID? { chats.last }
+    /// True when no chat is on the screen, so the detail column shows the notice.
+    var columnShowsNotice: Bool { chats.isEmpty }
+
+    /// A chat comes on the screen.
+    mutating func add(_ chat: UUID) {
+        chats.removeAll { $0 == chat }
+        chats.append(chat)
+    }
+
+    /// A chat leaves the screen, for example because a pushed page covers it.
+    mutating func remove(_ chat: UUID) {
+        chats.removeAll { $0 == chat }
+    }
 }
+
+/// The chats of the main window of the Mac that are on the screen. The window puts it in the environment of its split
+/// view, above each stack of the detail column, so a pushed page gets it too. A preference cannot do this: it does
+/// not cross the stack of the column.
+@MainActor @Observable
+final class WindowNotice {
+    var holders = NoticeHolders()
+}
+
+#if os(macOS)
+/// The notice of the Mac window above the composer of a chat. Put it first in the bottom inset of the chat, above the
+/// composer. While the chat is on the screen, the chat can hold the notice (NoticeHolders).
+///
+/// The notice adds no safe area: a Mac list does not report a new safe area in its scroll geometry, so a chat at its
+/// newest message did not stay there when the notice came. The chat keeps the space of the notice in the last row of
+/// its transcript instead (`height`). A new content size is in the scroll geometry, so the rule of new content keeps
+/// the chat at its newest message.
+struct ChatWindowNotice: View {
+    /// The height of the notice: 0 when it shows no error, or when another place shows the notice.
+    @Binding var height: CGFloat
+    @Environment(\.windowNotice) private var windowNotice
+    @State private var chat = UUID()
+
+    var body: some View {
+        Color.clear.frame(height: 0)
+            .overlay(alignment: .bottom) {
+                if let windowNotice, windowNotice.holders.holder == chat {
+                    WindowErrorNotice()
+                        .fixedSize(horizontal: false, vertical: true)
+                        .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { height = $0 }
+                        .onDisappear { height = 0 }
+                }
+            }
+            .background(OnScreenProbe { [windowNotice, chat] onScreen in
+                if onScreen { windowNotice?.holders.add(chat) } else { windowNotice?.holders.remove(chat) }
+            })
+            .onDisappear { windowNotice?.holders.remove(chat) }
+    }
+}
+
+/// Tells whether its view is on the screen. A page that a stack of the Mac detail column pushes covers the whole
+/// column. The page hides the views under it, but they get no onDisappear, for example a chat under the Model page of
+/// the details next to it. AppKit hides their views, so this view learns it.
+private struct OnScreenProbe: NSViewRepresentable {
+    let changed: @MainActor (Bool) -> Void
+
+    func makeNSView(context: Context) -> ProbeView { ProbeView() }
+
+    func updateNSView(_ view: ProbeView, context: Context) { view.changed = changed }
+
+    final class ProbeView: NSView {
+        var changed: (@MainActor (Bool) -> Void)?
+        private var reported: Bool?
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            report()
+        }
+
+        override func viewDidHide() {
+            super.viewDidHide()
+            report()
+        }
+
+        override func viewDidUnhide() {
+            super.viewDidUnhide()
+            report()
+        }
+
+        // The view takes no click and no wheel event.
+        override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+        private func report() {
+            let onScreen = window != nil && !isHiddenOrHasHiddenAncestor
+            guard onScreen != reported else { return }
+            reported = onScreen
+            // AppKit calls this during an update of SwiftUI, which must not change state. The change waits for it.
+            let changed = changed
+            DispatchQueue.main.async { changed?(onScreen) }
+        }
+    }
+}
+#endif
 
 /// The notice of the Mac window: bottom center, at most 480 points wide, 16 points above what is below it. It takes
-/// its own space, so it covers no control and no message.
+/// its own space, so it covers no control and no message. MacNoticeArea and each chat show it (NoticeHolders).
 struct WindowErrorNotice: View {
     @Environment(AppStore.self) private var store
     @Environment(\.accessibilityReduceMotion) private var reduceMotion

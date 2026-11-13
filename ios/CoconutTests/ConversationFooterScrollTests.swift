@@ -81,14 +81,56 @@ final class ConversationFooterScrollTests: XCTestCase {
         XCTAssertEqual(NoticeHeight.limit(area: 0, line: line, padding: padding), 0)
     }
 
-    // A chat on the screen holds the notice of the Mac window. A chat off the screen does not.
-    func testChatHoldsNoticeWhenAnyChatOnTheScreenHoldsIt() {
-        var holds = ChatHoldsNoticePreference.defaultValue
-        XCTAssertFalse(holds)
-        ChatHoldsNoticePreference.reduce(value: &holds) { false }
-        XCTAssertFalse(holds)
-        ChatHoldsNoticePreference.reduce(value: &holds) { true }
-        ChatHoldsNoticePreference.reduce(value: &holds) { false }
-        XCTAssertTrue(holds)
+    // With no chat on the screen, the detail column of the Mac window shows the notice.
+    func testColumnShowsNoticeWhenNoChatHoldsIt() {
+        var holders = NoticeHolders()
+        XCTAssertTrue(holders.columnShowsNotice)
+        XCTAssertNil(holders.holder)
+        let chat = UUID()
+        holders.add(chat)
+        XCTAssertFalse(holders.columnShowsNotice)
+        holders.remove(chat)
+        XCTAssertTrue(holders.columnShowsNotice)
+        XCTAssertNil(holders.holder)
+    }
+
+    // A page that a stack pushes over a chat covers the chat, so the chat leaves the screen. The column shows the
+    // notice, and the covered chat does not hold it.
+    func testCoveredChatDoesNotHoldNotice() {
+        var holders = NoticeHolders()
+        let chat = UUID()
+        holders.add(chat)
+        holders.remove(chat)
+        XCTAssertTrue(holders.columnShowsNotice)
+        // The page goes back: the chat comes on the screen again and holds the notice again.
+        holders.add(chat)
+        XCTAssertEqual(holders.holder, chat)
+    }
+
+    // Exactly one chat shows the notice: the chat that came on the screen last. A push of a chat over a chat can
+    // show the new chat before the old chat leaves.
+    func testNewestChatOnTheScreenHoldsNotice() {
+        var holders = NoticeHolders()
+        let first = UUID(), second = UUID()
+        holders.add(first)
+        holders.add(second)
+        XCTAssertEqual(holders.holder, second)
+        holders.remove(first)
+        XCTAssertEqual(holders.holder, second)
+        // The order is the other way: the old chat leaves first.
+        holders = NoticeHolders()
+        holders.add(first)
+        holders.remove(first)
+        holders.add(second)
+        XCTAssertEqual(holders.holder, second)
+        // A chat that comes on the screen again is not counted two times.
+        holders.add(first)
+        holders.add(second)
+        XCTAssertEqual(holders.chats, [first, second])
+        holders.remove(second)
+        XCTAssertEqual(holders.holder, first)
+        // A chat that is not in the list changes nothing.
+        holders.remove(UUID())
+        XCTAssertEqual(holders.chats, [first])
     }
 }
