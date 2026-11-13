@@ -738,8 +738,8 @@ final class TeamChatFlowTests: XCTestCase {
         XCTAssertTrue(row.waitForExistence(timeout: 10))
         row.tap()
         XCTAssertTrue(title.waitForExistence(timeout: 10))
-        // The newest message: with the largest text, the older ones are above the screen.
-        XCTAssertTrue(text("the colors are in too.").waitForExistence(timeout: 15))
+        // The newest message of Grace: with the largest text, the older ones are above the screen.
+        XCTAssertTrue(text("@Ada").waitForExistence(timeout: 15))
         shot("chats-\(look)-5-design")
         guard look == "light", let flags = world.flags else { return }
         try typingAct(flags, "bot-types", done: "bot-typing", wait: 150)
