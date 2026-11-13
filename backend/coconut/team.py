@@ -230,9 +230,11 @@ class Team(TeamSync, TeamSocket, TeamPages, TeamMessages, TeamChats, TeamDirects
 
     def _team_tell_corrected(self):
         """The open of the store can correct the rows of a room (TeamStore._read_marks_again). An app that is open
-        gets one event for each such room and reads the room again."""
+        gets one event for each such room and reads the room again. The store keeps each such room until this step
+        (TeamStore.corrected_rooms), because the push code does not exist yet when the store opens. A stop before
+        this step sends the event at the next start."""
         with self.transaction():
-            for room in sorted(self.team_store.changed):
+            for room in self.team_store.corrected_rooms():
                 self._team_tell(room)
 
     def _close_team(self):

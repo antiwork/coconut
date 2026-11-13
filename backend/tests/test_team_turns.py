@@ -8,6 +8,7 @@ runs. test_team_chat_gateway.py runs the adapter of the plugin, and test_native_
 import logging
 import threading
 import time
+import unicodedata
 import unittest
 from unittest import mock
 from uuid import uuid4
@@ -263,6 +264,7 @@ class MemberMentionTests(TeamTurnMacs, unittest.TestCase):
     means its bot (docs/team-log.md, "A bot answers", rule 4)."""
 
     MAC_NAME = 'Reporter'
+    BOT_NAME = 'Reporter'
 
     def team(self) -> str:
         room = self.create()
@@ -294,7 +296,7 @@ class MemberMentionTests(TeamTurnMacs, unittest.TestCase):
         self.serve(lambda turn: (turns.append(turn), reply('Hello.')(turn))[1])
         self.run_turns()
         self.assertEqual(len(turns), 1)
-        self.assertEqual(self.chat()[-1], ('Reporter', 'Hello.', named['id']))
+        self.assertEqual(self.chat()[-1], (self.BOT_NAME, 'Hello.', named['id']))
         self.assertEqual(self.triggers(), [])
 
     def test_a_mention_of_the_mac_and_of_its_bot_starts_one_turn(self):
@@ -369,8 +371,21 @@ class MemberMentionTests(TeamTurnMacs, unittest.TestCase):
         self.run_turns()
         rows = self.call('GET', f'/v1/team/rooms/{self.room}/messages', {'chat': design}, service=self.first)['messages']
         self.assertEqual([(row['bot_name'], row['text'], row['reply_to']) for row in reversed(rows)][-1],
-                         ('Reporter', 'Hi.', named['id']))
+                         (self.BOT_NAME, 'Hi.', named['id']))
         self.assertNotIn('Hi.', [text for _, text, _ in self.chat()])
+
+
+    def test_two_answering_bots_with_the_name_of_the_mac_give_no_turn(self):
+        helper = self.second_bot()
+        # The Mac refuses a second bot with the same name, so the store gets both names as an older Mac could keep them.
+        shares = self.only.team_store.shares(self.room)
+        with self.only.lock:
+            for bot in (self.bot, helper):
+                self.only.db.execute('UPDATE team_bots SET name=? WHERE room=? AND entry=?',
+                                     (self.MAC_NAME.upper(), self.room, shares[bot['id']]))
+        self.send('@Mac hello', mentions=[self.mac])
+        self.sync()
+        self.assertEqual(self.queued(), [])
 
 
 class MemberMentionOtherNameTests(MemberMentionTests):
@@ -390,6 +405,14 @@ class MemberMentionOtherNameTests(MemberMentionTests):
         named = self.send('@Night Mac hello', mentions=[self.mac])
         self.sync()
         self.assertEqual(self.queued(), [(self.bot['id'], named['id'])])
+
+    def test_a_shared_bot_that_does_not_answer_does_not_count(self):
+        helper = self.second_bot()
+        self.connect(chat=False, bot=helper)
+        self.sync()
+        named = self.send('@Night Mac hello', mentions=[self.mac])
+        self.sync()
+        self.assertEqual(self.queued(), [(self.bot['id'], named['id'])], 'Reporter is the only bot that answers.')
 
     def test_a_full_mac_queues_nothing_for_a_mention_of_its_member(self):
         self.join(self.second, self.invite({'room': self.room})['link'], 'Grace')
@@ -1060,6 +1083,24 @@ class FailureTests(TeamTurnMacs, unittest.TestCase):
         self.only._team_poll_drain()
         self.assertFalse(self.only._draining)
         self.assertFalse((self.only.root / 'drained').exists())
+
+
+class MemberMentionUnicodeTests(MemberMentionTests):
+    """The Mac and its bot have one name for a person in two Unicode forms: composed and decomposed accents."""
+
+    MAC_NAME = unicodedata.normalize('NFC', 'Renée')
+    BOT_NAME = unicodedata.normalize('NFD', 'Renée')
+
+    def setUp(self):
+        super().setUp()
+        self.call('PATCH', f'/v1/team/bots/{self.bot["id"]}', {'name': self.BOT_NAME})
+        self.sync()
+
+    def test_of_two_bots_the_mention_asks_the_bot_with_the_name_of_the_mac(self):
+        self.second_bot()
+        named = self.send('@Renée hello', mentions=[self.mac])
+        self.sync()
+        self.assertEqual(self.queued(), [(self.bot['id'], named['id'])])
 
 
 if __name__ == '__main__':

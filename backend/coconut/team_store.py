@@ -33,6 +33,7 @@ Each table has the room ID in its key, because a Mac can be in more than one roo
   Mac, with `member`, the other member of the chat. No query of the Team chat reads this table.
 - `team_direct_reads`: the read position of this Mac in each direct chat: one row for each room and other member.
 - `team_marks`: the lasting marks of this Mac. `direct` means that an app of the person knows direct messages.
+  `corrected:<room>` means that the open of the store corrected a row of the room, and its event did not go out yet.
 - `team_direct_waits`: the `direct` entries that the sync could not try with the key that they need yet, because the
   `member` entry of that key came later in the read. The end of the read tries each one again, then removes it.
 - `team_removed`: the members that a `remove` entry of the admin took out of the room, each with the entry ID of that
@@ -55,6 +56,7 @@ import json
 import logging
 import re
 import time
+import unicodedata
 
 from .team_relay import HEX32, HEX64, number
 
@@ -171,6 +173,8 @@ TYPING_PERSON_SECONDS = 10
 TYPING_BOT_SECONDS = 30
 # The mark in `team_marks` after an app of the person asked for direct messages.
 DIRECT_MARK = 'direct'
+# The prefix of a mark in `team_marks` for a room whose rows the open of the store corrected, until its event goes out.
+CORRECTED_MARK = 'corrected:'
 # The limits of a `message` entry, in Unicode code points and in entry IDs.
 MAX_TEXT = 16000
 MAX_MENTIONS = 16
@@ -474,6 +478,21 @@ SHOWN = {'member': member_fields, 'bot': bot_fields, 'page': page_fields, 'messa
          'remove': remove_fields, 'erase': erase_fields, 'typing': typing_fields, 'chat': chat_fields}
 
 
+def same_name(first: str, second: str) -> bool:
+    """True when two names are the same for a person: equal after Unicode normalization to NFC and casefold."""
+    return unicodedata.normalize('NFC', first).casefold() == unicodedata.normalize('NFC', second).casefold()
+
+
+def stored_fields(kind: str, payload: str) -> dict | None:
+    """The checked fields of a kept entry of this kind, as read_entry finds them for `accept`. None for a payload that
+    does not read, has another kind, or has fields that do not fit. No payload makes it raise."""
+    try:
+        opened = read_entry({'epoch': 0, 'payload': payload.encode()})
+    except Exception:
+        return None
+    return opened['shown'] if opened['read'] and opened['read'][1]['kind'] == kind else None
+
+
 def read_entry(opened: dict) -> dict:
     """The first part of the reading rules for one entry: the work that needs no database.
 
@@ -568,18 +587,57 @@ class TeamStore:
 
         A service of an older version kept the entries with their marks in rows without a column for a mark, and each
         column came with the value 0. The other Mac does not write its entry again, so without this step a team-only
-        Mac shows as a person, and its bots as bots that answer nobody. Only the JSON value true is a mark, as in
-        member_fields and bot_fields. A row without its kept entry stays. Each start does the step: it changes only a
-        wrong row, and it puts the room of such a row into `changed`, so the phone reads the room again."""
-        def mark(table: str, field: str) -> str:
-            return (f"(SELECT IFNULL(json_type(e.payload, '$.{field}'), '') = 'true' FROM team_entries e "
-                    f'WHERE e.room={table}.room AND e.id={table}.entry)')
-        for table, fields in (('team_members', ('bot_only', 'direct')), ('team_bots', ('open',))):
-            values = {field: f'COALESCE({mark(table, field)}, {field})' for field in fields}
-            wrong = ' OR '.join(f'{field}!={value}' for field, value in values.items())
-            self.changed.update(row[0] for row in self.db.execute(f'SELECT DISTINCT room FROM {table} WHERE {wrong}'))
-            assignments = ', '.join(f'{field}={value}' for field, value in values.items())
-            self.db.execute(f'UPDATE {table} SET {assignments} WHERE {wrong}')
+        Mac shows as a person, and its bots as bots that answer nobody. Each start does the step: it changes only a
+        wrong row.
+
+        The step reads each payload with `stored_fields`, the reader of `accept`, so the two cannot disagree. Another
+        member wrote the payload, so the step uses no JSON function of SQLite on it: such a function refuses some
+        JSON that Python reads, and the service would then not start. A row whose entry this reader cannot read keeps
+        its marks, with a log line. So does a row without its kept entry.
+
+        The room of a corrected row goes into `changed`, and into `team_marks` in the same savepoint, so the event
+        for the phone (`corrected_rooms`) is not lost when the service stops before it can send it."""
+        rows = self.db.execute("""SELECT 'member', m.room, m.entry, m.bot_only, m.direct, e.payload FROM team_members m
+                JOIN team_entries e ON e.room=m.room AND e.id=m.entry
+            UNION ALL SELECT 'bot', b.room, b.entry, b.open, 0, e.payload FROM team_bots b
+                JOIN team_entries e ON e.room=b.room AND e.id=b.entry""").fetchall()
+        changes = []
+        for kind, room, entry, first, second, payload in rows:
+            fields = stored_fields(kind, payload)
+            if fields is None:
+                log.warning('coconut.team_log room %s: the kept %s entry %s does not read, so its row keeps its marks.',
+                            room[:8], kind, entry[:8])
+                continue
+            marks = (int(fields['bot_only']), int(fields['direct'])) if kind == 'member' else (int(fields['open']), 0)
+            if marks != (first, second):
+                changes.append((kind, room, entry, marks))
+        if not changes:
+            return
+        self.db.execute('SAVEPOINT team_marks_again')
+        try:
+            for kind, room, entry, (first, second) in changes:
+                if kind == 'member':
+                    self.db.execute('UPDATE team_members SET bot_only=?, direct=? WHERE room=? AND entry=?',
+                                    (first, second, room, entry))
+                else:
+                    self.db.execute('UPDATE team_bots SET open=? WHERE room=? AND entry=?', (first, room, entry))
+                self.db.execute('INSERT OR IGNORE INTO team_marks (mark) VALUES (?)', (CORRECTED_MARK + room,))
+        except BaseException:
+            self.db.execute('ROLLBACK TO team_marks_again')
+            self.db.execute('RELEASE team_marks_again')
+            raise
+        self.db.execute('RELEASE team_marks_again')
+        self.changed.update(room for _, room, _, _ in changes)
+
+    def corrected_rooms(self) -> list[str]:
+        """The rooms whose rows _read_marks_again corrected and whose event did not go out yet. The marks go, and each
+        room that this Mac still has goes into `changed`. The caller holds the transaction and tells the phone."""
+        marks = [row[0] for row in self.db.execute('SELECT mark FROM team_marks WHERE substr(mark, 1, ?)=?',
+                                                   (len(CORRECTED_MARK), CORRECTED_MARK))]
+        self.db.executemany('DELETE FROM team_marks WHERE mark=?', [(mark,) for mark in marks])
+        rooms = sorted(room for room in (mark[len(CORRECTED_MARK):] for mark in marks) if self.room(room))
+        self.changed.update(rooms)
+        return rooms
 
     def _read_chats_again(self) -> None:
         """Read the chats of a store of an older version, one time. That version kept each `chat` entry as an entry of
@@ -860,7 +918,7 @@ class TeamStore:
                 fields = known[1]
             else:
                 payload = self.db.execute('SELECT payload FROM team_entries WHERE room=? AND id=?', (room, entry))
-                fields = member_fields(json.loads(payload.fetchone()[0]))
+                fields = stored_fields('member', payload.fetchone()[0])
             if fields:
                 self.db.execute('''INSERT INTO team_members (room, member, name, avatar, color, agreement, entry,
                     bot_only, direct) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (room, member) DO UPDATE SET
@@ -1305,9 +1363,9 @@ class TeamStore:
 
     def _meant_bot(self, room: str, name: str, answering: list[tuple[str, str]]) -> str | None:
         """The bot that a mention of this Mac's `member` entry names: of the bots in `answering`, the one with the name
-        of the member, compared without case, else the only one. None when the choice is not clear."""
+        of the member (same_name), else the only one. None when the choice is not clear."""
         names = dict(self.db.execute('SELECT entry, name FROM team_bots WHERE room=?', (room,)).fetchall())
-        same = [bot for bot, share in answering if names.get(share, '').casefold() == name.casefold()]
+        same = [bot for bot, share in answering if same_name(names.get(share, ''), name)]
         if len(same) == 1:
             return same[0]
         return answering[0][0] if len(answering) == 1 else None

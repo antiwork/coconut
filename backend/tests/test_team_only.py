@@ -462,16 +462,18 @@ class BotRecordTests(TeamOnlyMacs, unittest.TestCase):
             self.first.db.execute('UPDATE team_members SET bot_only=0')
             self.first.db.execute('UPDATE team_bots SET open=0')
         self.assertEqual(seen(), ([('Ada', False), ('Reporter Mac', False)], [('Reporter', False)]))
-        # The next start of the service opens the store and tells the app.
+        # The next start of the service opens the store and tells the app. The threads of the sync do not start here.
+        def start():
+            self.first.team_store.migrate()
+            with mock.patch.object(self.first, '_start_team_sync'), mock.patch.object(self.first, '_start_team_socket'):
+                self.first._start_team()
         cursor = self.first.db.execute('SELECT MAX(seq) FROM events').fetchone()[0] or 0
-        self.first.team_store.migrate()
-        self.first._team_tell_corrected()
+        start()
         self.assertEqual(seen(), right)
         events = [row[0] for row in self.first.db.execute('SELECT type FROM events WHERE seq>?', (cursor,))]
         self.assertEqual(events, ['team.updated'])
         # A start with correct rows changes nothing and tells nothing.
-        self.first.team_store.migrate()
-        self.first._team_tell_corrected()
+        start()
         self.assertEqual(self.first.db.execute('SELECT COUNT(*) FROM events WHERE seq>?', (cursor,)).fetchone()[0], 1)
 
     def test_a_change_keeps_the_home_and_reaches_the_team(self):

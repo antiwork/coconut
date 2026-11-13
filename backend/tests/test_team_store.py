@@ -566,6 +566,66 @@ class TeamStoreTests(unittest.TestCase):
         again.migrate()
         self.assertEqual(again.changed, set())
 
+    def marks(self) -> list[tuple]:
+        return self.db.execute('SELECT room, name, bot_only, direct FROM team_members ORDER BY room, name').fetchall()
+
+    def reopen(self) -> TeamStore:
+        """The next start of the service: a new store on the same database."""
+        store = TeamStore(self.db)
+        store.migrate()
+        return store
+
+    def test_the_repair_reads_a_payload_as_accept_does(self):
+        # The same key two times: the reader of `accept` keeps the last value, so the member is a person.
+        twice = json.dumps(self.member('Grace'))[:-1] + ', "bot_only": true, "direct": true, "bot_only": false, ' \
+                                                         '"direct": false}'
+        self.assertEqual(self.write(1, twice.encode()), (STORED, None))
+        self.assertEqual(self.marks(), [(ROOM, 'Grace', 0, 0)])
+        store = self.reopen()
+        self.assertEqual((self.marks(), store.changed, store.corrected_rooms()), ([(ROOM, 'Grace', 0, 0)], set(), []))
+
+    def test_no_payload_stops_the_open_of_the_store(self):
+        self.write(1, self.member('Reporter', bot_only=True), ADMIN)
+        self.db.execute('UPDATE team_members SET bot_only=0')
+        deep = json.dumps(self.member('Reporter', bot_only=True))[:-1] + ', "x": ' + '[' * 1001 + ']' * 1001 + '}'
+        large = json.dumps(self.member('Reporter', bot_only=True, padding='x' * 2_000_000))
+        for name, payload in (('deep', deep), ('not JSON', 'not { json'), ('not an object', '[true]'),
+                              ('large', large), ('another kind', json.dumps(self.bot('Reporter')))):
+            with self.subTest(payload=name):
+                self.db.execute('UPDATE team_entries SET payload=? WHERE room=? AND id=?', (payload, ROOM, entry_id(1)))
+                self.db.execute('UPDATE team_members SET bot_only=0')
+                with self.assertNoLogs('coconut.team_store', 'ERROR'):
+                    store = self.reopen()
+                read = name in ('deep', 'large')
+                self.assertEqual(self.marks(), [(ROOM, 'Reporter', int(read), 0)],
+                                 'A payload that the reader of accept reads sets the mark. Each other one keeps the row.')
+                self.assertEqual(store.changed, {ROOM} if read else set())
+
+    def test_the_repair_reads_the_entry_of_the_row_in_its_own_room(self):
+        # Two rooms have an entry with the same ID: only the entry of the room of the row counts.
+        self.write(1, self.member('Grace'))
+        self.accept(dict(self.entry(1), seq=99, first=99), {'epoch': 0, 'payload': json.dumps(
+            self.member('Reporter', bot_only=True)).encode()}, room=OTHER_ROOM)
+        self.assertEqual(self.marks(), [(ROOM, 'Grace', 0, 0), (OTHER_ROOM, 'Reporter', 1, 0)])
+        self.reopen()
+        self.assertEqual(self.marks(), [(ROOM, 'Grace', 0, 0), (OTHER_ROOM, 'Reporter', 1, 0)])
+
+    def test_a_row_without_its_kept_entry_keeps_its_marks(self):
+        self.db.execute("INSERT INTO team_members VALUES (?, ?, 'Reporter', '', '', ?, ?, 1, 1)",
+                        (ROOM, ADMIN, AGREEMENT, entry_id(7)))
+        self.reopen()
+        self.assertEqual(self.marks(), [(ROOM, 'Reporter', 1, 1)])
+
+    def test_a_corrected_room_waits_in_the_store_until_its_event_goes_out(self):
+        self.write(1, self.member('Reporter', bot_only=True), ADMIN)
+        self.db.execute('UPDATE team_members SET bot_only=0')
+        self.reopen()
+        # The service stops before it tells the phone. The next start finds correct rows and still tells the phone.
+        store = self.reopen()
+        self.assertEqual(store.changed, set())
+        self.assertEqual((store.corrected_rooms(), store.changed), ([ROOM], {ROOM}))
+        self.assertEqual(self.reopen().corrected_rooms(), [])
+
     def test_an_older_store_gets_the_epoch_of_each_entry_as_0(self):
         db = sqlite3.connect(':memory:', isolation_level=None)
         self.addCleanup(db.close)

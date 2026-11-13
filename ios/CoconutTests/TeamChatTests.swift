@@ -812,6 +812,18 @@ final class TeamChatTests: XCTestCase {
         let bot = [SelectedBotMention(id: "t-r1-b2", name: "Reporter", location: 0, snapshot: text)]
         XCTAssertEqual(TeamMentions.ids(in: text, selected: person, room: room), ["m-mac"], "A tap gives its row.")
         XCTAssertEqual(TeamMentions.ids(in: text, selected: bot, room: room), ["t-r1-b2"])
+        // A bot and two people with the name: the bot.
+        let three = TeamRoom(room: "r1", name: "Example Team", state: "active",
+                             members: room.memberList + [TeamMember(member: "m-rep", name: "Reporter")],
+                             bots: mentionRoom.botList, mentioned: false)
+        XCTAssertEqual(TeamMentions.ids(in: "@Reporter hello", selected: [], room: three), ["t-r1-b2"])
+        // A name in another Unicode form (decomposed accents) is the same name, as on the Mac of the bot.
+        let accented = TeamRoom(room: "r1", name: "Example Team", state: "active",
+                                members: [TeamMember(member: "m-ada", name: "Ada", thisMac: true),
+                                          TeamMember(member: "m-mac", name: "Ren\u{E9}e")],
+                                bots: [TeamRoomBot(id: "t-r1-b9", name: "Ren\u{E9}e", memberName: "Ren\u{E9}e",
+                                                   thisMac: false, open: true)], mentioned: false)
+        XCTAssertEqual(TeamMentions.ids(in: "@RENE\u{301}E hello", selected: [], room: accented), ["t-r1-b9"])
         // Two people with the same name stay unclear, as before.
         let twins = TeamRoom(room: "r1", name: "Example Team", state: "active",
                              members: [TeamMember(member: "m-ada", name: "Ada", thisMac: true),
