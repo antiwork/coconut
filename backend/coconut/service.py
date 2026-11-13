@@ -3532,6 +3532,10 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
                     TurnTrace(task, 'dispatch').mark('dispatch',
                         queue_age_ms=max(0, round((datetime.now(timezone.utc) - queued_at).total_seconds() * 1000, 1)))
                     task.update(status='working', summary='Working', updated_at=now())
+                    # The cards that Coconut closed for their source while this task waited for another card. This turn
+                    # names them once (native_conversation.closed_cards_note). Only an answer to the other card continues
+                    # such a task, so its next turn continues a card.
+                    closed_cards = task.pop('_closed_cards', []) if task.get('_resume_decision') else []
                     if task.get('_gateway_cron'):
                         # A turn of Coconut continues the routine, for example after an answered card. A restart
                         # queues it again like any other turn (_recover).
@@ -3565,6 +3569,8 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
                 for field in ('_work_todos', '_work_resume', '_source_audit_prompt', '_self_recovery', '_chat_session', '_native_intake', '_native_outcome_id', '_work_context_id', '_direct_reply_message_id'):
                     if field in task:
                         provider_task[field] = task[field]
+                if closed_cards:
+                    provider_task['_closed_cards'] = closed_cards
                 if steps := card_answer_steps(task, decision):
                     provider_task['_source_answer_steps'] = steps
                 if task.get('_native_outcome_id'):

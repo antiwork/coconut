@@ -162,21 +162,19 @@ class CloseEndedCardsTests(unittest.TestCase):
         self.assertIn('GitHub confirms this PR already merged.', prompt)
 
     # 5
-    def test_a_new_head_closes_the_merge_card_and_allows_a_card_for_the_new_head(self):
-        decision = self.card([], seen_hours=14, merge_pr_url=PR, _merge_pr_head=OLD_HEAD)
-        self.source_pass(pr=pull('open', head=NEW_HEAD))
-        self.assert_closed(decision, 'Pull request #14 has new commits.')
-        # No service check binds an approval to the head. Only the close stops an approval of the old head.
-        with self.assertRaisesRegex(ServiceError, 'This decision is no longer pending.'):
-            self.answer(decision)
-        task = self.service._get('tasks', decision['task_id'])
-        new = dict(self.saved(decision), id='new-head-card', status='pending', _merge_pr_head=NEW_HEAD)
-        self.service._validate_merge_decision(new, task)
+    def test_a_new_head_keeps_the_merge_card(self):
+        # Coconut does not close a merge card for a new head. The bot's own review of the PR decides about a new card.
+        for head in (OLD_HEAD, NEW_HEAD):
+            with self.subTest(head=head):
+                decision = self.card([], seen_hours=14, merge_pr_url=PR, _merge_pr_head=OLD_HEAD)
+                self.source_pass(pr=pull('open', head=head))
+                self.assert_open(decision)
+                self.service._put('decisions', dict(self.saved(decision), status='cancelled'))
 
-    def test_the_same_head_keeps_the_merge_card(self):
+    def test_a_merge_card_whose_own_pr_closed_after_it_closes(self):
         decision = self.card([], seen_hours=14, merge_pr_url=PR, _merge_pr_head=OLD_HEAD)
-        self.source_pass(pr=pull('open', head=OLD_HEAD))
-        self.assert_open(decision)
+        self.source_pass(pr=pull('closed', ended_hours=1))
+        self.assert_closed(decision, 'Pull request #14 closed on GitHub.')
 
     # 6
     def test_a_suggestion_on_an_ended_task_closes_without_a_turn(self):
@@ -204,24 +202,37 @@ class CloseEndedCardsTests(unittest.TestCase):
         self.assertEqual((result['resolution'], result['url']), ('source_changed', ISSUE))
         self.assertTrue(result['response'].startswith('Issue #12 closed on GitHub. Coconut closed this card.'))
 
-    def test_a_waiting_gateway_turn_learns_the_close(self):
-        decision = self.card([ISSUE], seen_hours=14, _gateway_question=dict(turn_id='turn-1', question_id='q1', kind='clarify'))
-        bridge = Mock()
-        with patch.object(self.service, 'gateway_bridge', bridge, create=True):
-            self.source_pass(issue_facts=issue('closed', closed_hours=2))
-        self.assert_closed(decision, 'Issue #12 closed on GitHub.')
-        (turn, answer), _ = bridge.answer.call_args
-        self.assertEqual((turn, answer['question_id'], answer['choice']), ('turn-1', 'q1', ''))
-        self.assertTrue(answer['text'].startswith('Issue #12 closed on GitHub. Coconut closed this card.'))
-
-    def test_a_queued_check_of_the_card_stops(self):
-        decision = self.card([ISSUE], seen_hours=14)
-        self.service._put('contexts', dict(id='check', bot_id=decision['bot_id'], task_id=decision['task_id'],
-            decision_id=decision['id'], question='Check.', status='queued', _decision_refresh=True, _decision_revision=1))
+    def test_a_card_that_is_not_native_stays(self):
+        # A question of a gateway turn is such a card: record_gateway_question makes it without _native, sources or a
+        # merge PR. So no waiting gateway turn can wait for a card that the source pass closes.
+        decision = self.card([ISSUE], seen_hours=14, _native=False,
+                             _gateway_question=dict(turn_id='turn-1', question_id='q1', kind='approval'))
         self.source_pass(issue_facts=issue('closed', closed_hours=2))
-        self.assertEqual(self.service._get('contexts', 'check')['status'], 'cancelled')
-        self.service._queue_decision_refreshes()
-        self.assertEqual([c['id'] for c in self.service._all('contexts')], ['check'])
+        self.assertEqual(self.saved(decision)['status'], 'pending')
+
+    def test_a_question_of_a_gateway_turn_has_no_source_to_close_it(self):
+        task = self.service._get('tasks', self.task['id'])
+        with self.service.transaction(), patch.object(self.service, '_technical_lane', return_value=None):
+            self.service.record_gateway_question(task, dict(turn_id='turn-1', question_id='q1', question_kind='clarify',
+                                                            text='Which page? See ' + ISSUE))
+        from coconut.decision_sources import github_links
+        card = self.service._all('decisions')[-1]
+        self.assertEqual((card.get('_native'), github_links(card), card.get('merge_pr_url')), (None, [], None))
+
+    def test_a_queued_or_working_check_of_the_card_stops(self):
+        for status in ('queued', 'working'):
+            with self.subTest(status=status):
+                decision = self.card([ISSUE], seen_hours=14)
+                identity = 'check-' + status
+                self.service._put('contexts', dict(id=identity, bot_id=decision['bot_id'], task_id=decision['task_id'],
+                    decision_id=decision['id'], question='Check.', status=status, _decision_refresh=True,
+                    _decision_revision=1))
+                with patch.object(self.service.provider, 'cancel_context', create=True) as cancel:
+                    self.source_pass(issue_facts=issue('closed', closed_hours=2))
+                self.assertEqual(self.service._get('contexts', identity)['status'], 'cancelled')
+                cancel.assert_called_once_with(decision['task_id'], identity)
+                self.service._queue_decision_refreshes()
+                self.assertEqual(len([c for c in self.service._all('contexts') if c['status'] == 'queued']), 0)
 
     # 8
     def test_another_pending_card_keeps_the_task_waiting(self):
@@ -234,6 +245,40 @@ class CloseEndedCardsTests(unittest.TestCase):
         task = self.service._get('tasks', decision['task_id'])
         self.assertEqual(task['status'], 'needs_you')
         self.assertNotIn('_resume_decision', task)
+        # The next turn of the task names the closed card once.
+        self.assertEqual(task['_closed_cards'], [dict(title=decision['title'], outcome='Issue #12 closed on GitHub.')])
+        self.assertEqual(self.answer(other)['status'], 'approved')
+        task = self.service._get('tasks', decision['task_id'])
+        prompt, _ = turn_input(dict(operation='resume', task=task, decision=self.saved(other), history=[]))
+        self.assertTrue(prompt.startswith(f'Closed card "{decision["title"]}": Issue #12 closed on GitHub. '
+                                          'The person chose nothing.\n'))
+
+    def test_the_closed_cards_note_keeps_five_and_the_dispatch_clears_it(self):
+        from coconut.decision_freshness import CLOSED_CARDS_KEEP
+        decision = self.card([ISSUE], seen_hours=14)
+        task = self.service._get('tasks', decision['task_id'])
+        task['_closed_cards'] = [dict(title=f'Card {index}', outcome='Issue #9 closed on GitHub.') for index in range(5)]
+        self.service._put('tasks', task)
+        self.service._put('decisions', dict(decision, id='other-card', sources=[], _source_seen={}))
+        self.source_pass(issue_facts=issue('closed', closed_hours=2))
+        task = self.service._get('tasks', decision['task_id'])
+        self.assertEqual(len(task['_closed_cards']), CLOSED_CARDS_KEEP)
+        self.assertEqual(task['_closed_cards'][-1]['outcome'], 'Issue #12 closed on GitHub.')
+        self.answer(dict(decision, id='other-card'))
+        delivered = {}
+        self.service.provider.resume_task = lambda task, *args: delivered.setdefault('task', task)
+        self.service._run_task(decision['task_id'])
+        self.assertEqual(len(delivered['task']['_closed_cards']), CLOSED_CARDS_KEEP)
+        self.assertNotIn('_closed_cards', self.service._get('tasks', decision['task_id']))
+
+    def test_a_suggestion_or_a_task_that_does_not_wait_gets_no_turn(self):
+        for kind, status in (('proposal', 'needs_you'), ('decision', 'working'), ('decision', 'queued')):
+            with self.subTest(kind=kind, status=status):
+                decision = self.card([ISSUE], seen_hours=14, inbox_kind=kind, task_status=status)
+                self.source_pass(issue_facts=issue('closed', closed_hours=2))
+                self.assert_closed(decision, 'Issue #12 closed on GitHub.')
+                task = self.service._get('tasks', decision['task_id'])
+                self.assertEqual((task['status'], task.get('_resume_decision')), (status, None))
 
     # 9
     def test_a_stored_lock_closes_or_goes_away(self):
@@ -269,6 +314,86 @@ class CloseEndedCardsTests(unittest.TestCase):
             self.write('POST', f"/v1/decisions/{decision['id']}/answer", dict(revision=decision['revision'], option_id='install'))
         self.assertEqual(raised.exception.status, 409)
         self.assert_closed(decision, 'Issue #12 closed on GitHub.')
+
+    def revise_during_read(self, decision, **revision):
+        task = self.service._get('tasks', decision['task_id'])
+
+        def observe_issue(url):
+            self.service._revise_question(self.saved(decision), task, dict(
+                title='Add the refund page under issue #20?', options=[dict(id='install', label='Install')], **revision),
+                'The issue changed.')
+            return issue('closed', closed_hours=2)
+        with patch.object(self.service, '_pr_tracker_for', return_value=SimpleNamespace(observe_issue=observe_issue)):
+            self.service._refresh_decision_sources({})
+        return self.saved(decision)
+
+    def test_a_revision_during_the_read_keeps_the_card_for_this_pass(self):
+        saved = self.revise_during_read(self.card([ISSUE], seen_hours=14))
+        self.assertEqual((saved['status'], saved['revision']), ('pending', 2))
+
+    def test_a_link_that_a_revision_removes_during_the_read_keeps_the_card(self):
+        saved = self.revise_during_read(self.card([ISSUE], seen_hours=14), sources=[])
+        self.assertEqual((saved['status'], saved['sources']), ('pending', []))
+
+    def test_a_link_that_changes_at_the_same_revision_during_the_read_keeps_the_card(self):
+        # The source facts follow the same rule (test_pr_source_refresh): a stored card can change its links at one revision.
+        decision = self.card([ISSUE], seen_hours=14)
+
+        def observe_issue(url):
+            self.service._put('decisions', dict(self.saved(decision), sources=[]))
+            return issue('closed', closed_hours=2)
+        with patch.object(self.service, '_pr_tracker_for', return_value=SimpleNamespace(observe_issue=observe_issue)):
+            self.service._refresh_decision_sources({})
+        self.assertEqual(self.saved(decision)['status'], 'pending')
+
+    def test_a_link_that_a_revision_adds_counts_from_the_revision(self):
+        decision = self.card([PR], seen_hours=14)
+        task = self.service._get('tasks', decision['task_id'])
+        self.service._revise_question(self.saved(decision), task, dict(
+            title='Issue #12 closed. Add the refund page under issue #20?', options=[dict(id='install', label='Install')],
+            sources=[dict(kind='pull_request', title='PR', url=PR), dict(kind='issue', title='Issue', url=ISSUE)]),
+            'The issue closed.')
+        revised = self.saved(decision)
+        self.assertEqual(set(revised['_source_linked_at']), {ISSUE})
+        # The issue closed 5 hours ago: after the card, before the revision that added it.
+        self.source_pass(issue_facts=issue('closed', closed_hours=5, updated_hours=5), pr=pull('open'))
+        self.assert_open(revised)
+
+    def test_a_reply_that_waits_for_its_turn_keeps_the_card(self):
+        decision = self.card([ISSUE], seen_hours=14)
+        self.write('POST', f"/v1/decisions/{decision['id']}/reply", dict(text='Yes, install them.', revision=1))
+        reply = self.service._all('contexts')[-1]
+        for status in ('queued', 'working'):
+            self.service._put('contexts', dict(reply, status=status))
+            self.source_pass(issue_facts=issue('closed', closed_hours=2))
+            self.assertEqual(self.saved(decision)['status'], 'pending', status)
+        # After the turn of the reply, the next pass closes the card.
+        self.service._put('contexts', dict(reply, status='completed'))
+        self.source_pass(issue_facts=issue('closed', closed_hours=2))
+        self.assert_closed(decision, 'Issue #12 closed on GitHub.')
+
+    def test_not_found_gone_moved_and_refused_reads_close_nothing(self):
+        from io import BytesIO
+        from urllib.error import HTTPError
+        from coconut.pr_tracking import GitHubPRTracker
+        decision = self.card([ISSUE, PR], seen_hours=14)
+        for code in (404, 410, 301, 403, 500):
+            with self.subTest(code=code):
+                tracker = GitHubPRTracker(token='bot')
+
+                def refuse(request, timeout=None, code=code):
+                    raise HTTPError(request.full_url, code, 'refused', {}, BytesIO(b'{}'))
+                tracker._opener = SimpleNamespace(open=refuse)
+                with patch.object(self.service, '_pr_tracker_for', return_value=tracker):
+                    self.service._refresh_decision_sources({})
+                self.assert_open(decision)
+
+    def test_the_card_keeps_no_time_of_the_close(self):
+        decision = self.card([ISSUE], seen_hours=14)
+        self.source_pass(issue_facts=issue('open'))
+        facts = self.saved(decision)['_source_facts'][ISSUE]
+        self.assertEqual(facts['state'], 'open')
+        self.assertNotIn('closed_at', facts)
 
     # 11
     def test_nothing_closes_without_a_read_or_after_a_reopen(self):

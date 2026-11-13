@@ -144,26 +144,33 @@ def _instant(value):
     return instant if instant.tzinfo else instant.replace(tzinfo=timezone.utc)
 
 
-def source_change(decision, url, *, state, ended_at=None, head_sha=None):
-    """Return the outcome of a card whose GitHub source changed after the card was made, or None.
+def stamp_new_links(decision, before):
+    """Record the time at which a revision of a card added a GitHub link (`_source_linked_at`). `before` holds the
+    links of the card before the revision. A revision does not verify a source revision, so this time is the time of
+    the card for that link (source_change)."""
+    from .service import now
+    for url in github_links(decision):
+        if url not in before:
+            decision.setdefault('_source_linked_at', {})[url] = now()
+
+
+def source_change(decision, url, *, state, ended_at=None):
+    """Return the outcome of a card whose GitHub source ended after the card was made, or None.
 
     A closed issue, and a merged or closed PR, count only when GitHub's time of the end is later than the card. The
-    time of the card is the source revision that the bot read before Coconut made the card (`_source_seen`, a GitHub
-    time), or else the card's own time. A source that had ended before the card is not a change. A new head of the PR
-    of a merge card is a change. The caller gives only facts that GitHub returned.
+    time of the card for a link is the source revision that the bot read before Coconut made the card (`_source_seen`,
+    a GitHub time), else the time at which a revision added the link (`_source_linked_at`), else the card's own time.
+    A source that had ended before that time is not a change. The caller gives only facts that GitHub returned.
     """
     number = url.rstrip('/').rsplit('/', 1)[1]
-    merge = (decision.get('merge_pr_url') or '').lower() == url.lower()
-    if merge and state == 'merged':
+    if state == 'merged' and (decision.get('merge_pr_url') or '').lower() == url.lower():
         # _resolve_merged_pr_decisions closes this card with "Already merged.".
         return None
-    if (merge and state == 'open' and head_sha and decision.get('_merge_pr_head')
-            and head_sha != decision['_merge_pr_head']):
-        return f'Pull request #{number} has new commits.'
     if state not in ('closed', 'merged'):
         return None
     end = _instant(ended_at)
-    start = _instant(decision.get('_source_seen', {}).get(url) or decision.get('created_at'))
+    start = _instant(decision.get('_source_seen', {}).get(url) or decision.get('_source_linked_at', {}).get(url)
+                     or decision.get('created_at'))
     if end is None or start is None or end <= start:
         return None
     if github_source(url)[0] == 'issues':

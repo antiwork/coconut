@@ -378,8 +378,10 @@ class DecisionInbox:
             if payload.get('choice') == 'modify':
                 revision = payload.get('revision', {})
                 from .decision_previews import attach_previews
-                from .decision_sources import attach_sources
+                from .decision_sources import attach_sources, github_links, stamp_new_links
+                links = github_links(decision)
                 attach_sources(decision, revision)
+                stamp_new_links(decision, links)
                 attach_previews(self, decision, revision)
                 result = self.edit_message_draft(decision, task,
                     dict(revision=decision['revision'], draft=revision.get('draft')), context['_reply_device'])
@@ -425,6 +427,8 @@ class DecisionInbox:
         if recommended is not None and recommended not in {o['id'] for o in options}:
             raise ServiceError(400, 'Recommend a current choice.')
         require_recommended_first(options, recommended)
+        from .decision_sources import attach_sources, github_links, stamp_new_links
+        links = github_links(decision)
         if 'previous_decision_id' in revision:
             decision.update(self.decision_followup(task, revision))
         merge_url = self._merge_decision_url({'merge_pr_url': revision.get('merge_pr_url', decision.get('merge_pr_url'))}, task)
@@ -440,8 +444,8 @@ class DecisionInbox:
         decision.update(text, explanation=explanation)
         decision.pop('evidence', None)
         from .decision_previews import attach_previews
-        from .decision_sources import attach_sources
         attach_sources(decision, revision)
+        stamp_new_links(decision, links)
         attach_previews(self, decision, revision)
         decision.setdefault('_answers', []).append({'choice': 'revise', 'correction': reason, 'decided_by': actor})
         self._put('decisions', decision)

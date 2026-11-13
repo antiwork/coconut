@@ -257,7 +257,9 @@ class PRStateTests(unittest.TestCase):
         self.assertEqual(PayloadTracker([merged]).observe(URL).ended_at, "2026-09-19T00:00:00Z")
         closed = pull(state="closed", closed_at="2026-09-20T00:00:00Z")
         self.assertEqual(PayloadTracker([closed]).observe(URL).ended_at, "2026-09-20T00:00:00Z")
-        self.assertIsNone(tracker_for(after=pull(closed_at="2026-09-20T00:00:00Z")).observe(URL).ended_at)
+        # An open PR that closed once and opened again keeps the time of that close. It is no end.
+        reopened = pull(closed_at="2026-09-20T00:00:00Z")
+        self.assertIsNone(tracker_for(before=reopened, after=reopened).observe(URL).ended_at)
 
     def test_open_pr_with_merge_commit_sha_does_not_prove_merge(self):
         result = tracker_for(before=pull(merge_commit_sha="b" * 40)).observe(URL)

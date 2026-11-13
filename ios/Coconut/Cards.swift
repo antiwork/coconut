@@ -1,6 +1,30 @@
 import SwiftUI
 import QuickLook
 
+/// The words of the receipt of a card that is not pending.
+enum DecisionSelection {
+    /// A draft says "Approved for sending" only when the person approved it. Coconut can close a card without an answer,
+    /// for example when its GitHub source closed; then the card shows its outcome. The receipt shows no other outcome
+    /// text, except the line under a failed card, which never repeats this label.
+    static func label(status: String, hasDraft: Bool, dismissed: Bool, choosingLabel: String?,
+                      selectedOptionLabel: String?, outcome: String?) -> String {
+        if dismissed { return "Dismissed" }
+        let said = outcome.flatMap { $0.isEmpty ? nil : $0 }
+        if hasDraft {
+            switch status {
+            case "pending", "approved", "executed": return "Approved for sending"
+            case "rejected": return "Discarded"
+            case "failed": return "Could not finish"
+            default: return said ?? "Closed"
+            }
+        }
+        if let choosingLabel { return choosingLabel }
+        if let selectedOptionLabel { return selectedOptionLabel }
+        if status == "resolved", let said { return said }
+        return status.capitalized
+    }
+}
+
 struct DecisionCard: View {
     @Environment(AppStore.self) private var store
     let decision: Decision
@@ -34,14 +58,9 @@ struct DecisionCard: View {
         #endif
     }
     private var selectionLabel: String {
-        if isDismissed { return "Dismissed" }
-        if decision.draft != nil {
-            return decision.status == "rejected" ? "Discarded" : decision.status == "failed" ? "Could not finish" : "Approved for sending"
-        }
-        if let id = submittingOptionId, let option = decision.options.first(where: { $0.id == id }) {
-            return option.label
-        }
-        return decision.selectedOptionLabel ?? decision.status.capitalized
+        DecisionSelection.label(status: decision.status, hasDraft: decision.draft != nil, dismissed: isDismissed,
+                                choosingLabel: submittingOptionId.flatMap { id in decision.options.first { $0.id == id }?.label },
+                                selectedOptionLabel: decision.selectedOptionLabel, outcome: decision.outcome)
     }
     var body: some View {
         Group {

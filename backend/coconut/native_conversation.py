@@ -391,6 +391,13 @@ SOURCE_CHANGED_TEXT = ('Coconut closed this card. The person chose nothing. Read
                        'Do not repeat the old question unchanged. A closed card is no approval and no rejection.\n')
 
 
+def closed_cards_note(task):
+    """One line for each card that Coconut closed for its source while the task waited for another card. Empty without
+    such cards. The fixed words of a line are six: Closed card, The person chose nothing."""
+    return ''.join(f"Closed card \"{card['title']}\": {card['outcome']} The person chose nothing.\n"
+                   for card in task.get('_closed_cards', []))
+
+
 def resume_prompt(request):
     """The text of a turn that continues after an answered card (operation `resume`), for the worker and the gateway."""
     decision = request['decision']
@@ -429,6 +436,7 @@ def resume_prompt(request):
         prompt = 'The service confirmed execution. Report the result briefly. Do not repeat the action.\n'
     else:
         raise ValueError('The decision has no valid continuation state.')
+    prompt = closed_cards_note(request['task']) + prompt
     if decision.get('status') in ('approved', 'replied') and request['task'].get('_source_answer_steps'):
         # The resumed session can lack the audit prompt, so repeat what to do with the answer.
         prompt += 'This card asks about a source that waits for the person. ' + request['task']['_source_answer_steps'] + '\n'
