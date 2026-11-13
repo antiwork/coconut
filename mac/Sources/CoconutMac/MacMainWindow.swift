@@ -6,6 +6,8 @@ enum MacSelection: Hashable {
     case inbox
     case library
     case bot(String)
+    /// A page of the Library, by its document ID.
+    case document(String)
     /// The Team chat of a team, or a direct chat with one person of a team.
     case team(TeamChatKey)
 }
@@ -70,11 +72,8 @@ struct MacMainWindow: View {
             selection = .team(chat)
             model.shownChat = nil
         }
-        .environment(\.openDocument) { id in
-            libraryPath = NavigationPath()
-            libraryPath.append(DocumentRoute(id: id))
-            selection = .library
-        }
+        // A document card in a chat selects its row in the section "Pages", as a chat selects its bot.
+        .environment(\.openDocument) { id in selection = .document(id) }
         .frame(minWidth: 920, minHeight: 480)
         .background(BoardStyle.paper)
         .sheet(isPresented: $createOpen) { BotEditorView() }
@@ -110,6 +109,13 @@ struct MacMainWindow: View {
                     .navigationTitle("Library")
                     .navigationDestination(for: DocumentRoute.self) { DocumentView(documentId: $0.id) }
             }
+        case .document(let documentId):
+            NavigationStack(path: $chatPath) {
+                DocumentView(documentId: documentId)
+                    .id(documentId)
+                    .navigationDestination(for: DocumentRoute.self) { DocumentView(documentId: $0.id) }
+            }
+            .environment(\.pushRoute) { route in chatPath.append(route) }
         case .bot(let botId):
             // The details are a column of fixed width next to the chat, not an inspector. Next to a chat, the
             // inspector's split view did not settle on a layout and stopped the app, below about 1,300 points of
@@ -156,7 +162,8 @@ struct MacMainWindow: View {
     }
 }
 
-/// The sidebar: the Inbox, the pinned bots, and the chats: every other bot and each team, with the last message.
+/// The sidebar: the Inbox, the pinned bots, and the chats: every other bot and each team, with the last message. Then
+/// the pages of the Library, as the people and the bots: each page is a row that opens it.
 struct MacSidebar: View {
     @Environment(AppStore.self) private var store
     @Binding var selection: MacSelection?
@@ -169,6 +176,7 @@ struct MacSidebar: View {
         // date, about 3 ms for each body with 1,500 messages.
         let sections = ChatSections.make(bots: store.bots, messages: store.messages, rooms: store.team?.rooms ?? [],
                                          local: store.newestLocalMessages)
+        let pages = SidebarPages.make(documents: store.documents ?? [], bots: store.bots, teamBots: store.teamBots)
         return List(selection: $selection) {
             MacSidebarLabel(title: "Inbox", symbol: "tray")
                 .badge(store.inboxBadgeCount)
@@ -204,6 +212,11 @@ struct MacSidebar: View {
                     ForEach(sections.bots) { bot in row(bot) }
                 }
             }
+            if !pages.isEmpty {
+                Section("Pages") {
+                    ForEach(pages) { page in pageRow(page) }
+                }
+            }
         }
         .listStyle(.sidebar)
         .modifier(DeleteBotDialog(bot: $deleting))
@@ -215,7 +228,28 @@ struct MacSidebar: View {
         .onChange(of: store.team) { _, team in
             if case .team(let chat) = selection, let team, !team.has(chat) { selection = .inbox }
         }
+        // A deleted page leaves the list. Its page closes, and the Library shows instead. Only a loaded list decides.
+        .onChange(of: store.documents?.map(\.id)) { _, ids in
+            if case .document(let id) = selection, let ids, !ids.contains(id) { selection = .library }
+        }
+        // The section "Pages" needs the list without a visit to the Library. A load without a connection does
+        // nothing, so the list loads again when the Mac connects.
+        .task(id: store.connection) { await store.loadDocuments() }
         .safeAreaInset(edge: .bottom) { MacConnectionFooter() }
+    }
+
+    private func pageRow(_ page: BotDocument) -> some View {
+        MacPageRow(page: page)
+            .padding(.vertical, BoardStyle.Space.xs)
+            .tag(MacSelection.document(page.id))
+            .contextMenu {
+                PinDocumentButton(document: page)
+                if page.canDelete {
+                    Divider()
+                    Button("Delete Page…", role: .destructive) { Task { await store.deleteDocument(page) } }
+                }
+            }
+            .accessibilityIdentifier("sidebar-page-\(page.key)")
     }
 
     private func row(_ bot: Bot) -> some View {
@@ -228,6 +262,35 @@ struct MacSidebar: View {
                 Button("Delete Bot…", role: .destructive) { deleting = bot }
             }
             .accessibilityIdentifier("sidebar-bot-\(bot.id)")
+    }
+}
+
+/// A row of the section "Pages": the kind of the page in the place of a face, its title and the age of its last
+/// update, and its summary or the name of its bot. The layout of the rows of the people and the bots.
+private struct MacPageRow: View {
+    @Environment(AppStore.self) private var store
+    let page: BotDocument
+
+    private var owner: String? {
+        store.bots.first { $0.id == page.botId }?.name ?? store.teamBots.first { $0.id == page.botId }?.name
+    }
+
+    var body: some View {
+        let subtitle = page.summary.flatMap { $0.isEmpty ? nil : $0 } ?? owner ?? page.updatedText
+        ChatRowLayout(name: page.title, unread: 0, date: page.updatedAt.apiDate) {
+            Image(systemName: page.isPage ? "chart.bar.xaxis" : "doc.text")
+                .font(.body).foregroundStyle(.secondary)
+                .frame(width: 32, height: 32)
+                .background(BoardStyle.surface, in: RoundedRectangle(cornerRadius: BoardStyle.Radius.small, style: .continuous))
+                .accessibilityHidden(true)
+        } subtitle: {
+            HStack(spacing: BoardStyle.Space.xs) {
+                if page.isPinned {
+                    Image(systemName: "pin.fill").font(.caption2).foregroundStyle(.secondary).accessibilityLabel("Pinned")
+                }
+                Text(subtitle).font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
+            }
+        }
     }
 }
 

@@ -444,6 +444,23 @@ final class TeamChatTests: XCTestCase {
         XCTAssertEqual(sections.bots.map(\.id), ["writer"])
     }
 
+    /// The section "Pages" of the Mac sidebar: the pinned pages, then the others, newest update first. A page of an
+    /// unknown bot stays hidden, as in the Library.
+    func testThePagesOfTheMacSidebar() {
+        let bots = [bot("planner"), bot("writer")]
+        func page(_ id: String, _ botId: String, _ updated: String, pinned: Bool = false) -> BotDocument {
+            BotDocument(id: id, botId: botId, key: id, title: id, format: "markdown", version: 1,
+                        createdAt: updated, updatedAt: updated, pinned: pinned)
+        }
+        let documents = [page("old", "planner", "2026-11-01T00:00:00Z"),
+                         page("new", "writer", "2026-11-09T00:00:00Z"),
+                         page("pinned", "planner", "2026-10-01T00:00:00Z", pinned: true),
+                         page("mid", "planner", "2026-11-05T00:00:00Z"),
+                         page("orphan", "gone", "2026-11-10T00:00:00Z")]
+        XCTAssertEqual(SidebarPages.make(documents: documents, bots: bots).map(\.id), ["pinned", "new", "mid", "old"])
+        XCTAssertTrue(SidebarPages.make(documents: [], bots: bots).isEmpty, "No pages: the section does not show.")
+    }
+
     func testTheLettersOfAFace() {
         XCTAssertEqual(LetterFace.letters("Example Team"), "ET")
         XCTAssertEqual(LetterFace.letters("design crew"), "DC")
