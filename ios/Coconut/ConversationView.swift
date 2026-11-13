@@ -401,6 +401,10 @@ struct ConversationView: View {
                     }
                     #endif
                 }
+                #if os(iOS)
+                // The notice stays below the header at each scroll position. A Mac shows it at the bottom of the window.
+                .modifier(ChatErrorNotice())
+                #endif
                 #if os(macOS)
                 // A Mac toolbar groups its items into one glass bar. The bot gets a pill of its own over the top of the
                 // chat instead. Next to an inspector it shows and hides the details; elsewhere it opens the settings.
@@ -453,12 +457,6 @@ struct ConversationView: View {
     @ViewBuilder
     private func conversationHeader(bot: Bot, messages: [Message]) -> some View {
         VStack(spacing: BoardStyle.Space.s) {
-            #if os(iOS)
-            // A Mac shows the notice at the bottom of the window (MacNoticeArea), so the chat shows no second copy.
-            if let error = store.error {
-                ErrorBanner(message: error) { store.error = nil }
-            }
-            #endif
             if messages.isEmpty {
                 VStack(spacing: BoardStyle.Space.m) {
                     BotAvatar(bot: bot, size: 68)

@@ -56,6 +56,27 @@ extension View {
     }
 }
 
+/// The notice of an action that failed, over an iPhone chat: right below the header, at each scroll position. It floats
+/// over the messages, as the header does, so it never moves them.
+struct ChatErrorNotice: ViewModifier {
+    @Environment(AppStore.self) private var store
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    func body(content: Content) -> some View {
+        content.overlay(alignment: .top) {
+            VStack {
+                if let error = store.error {
+                    ErrorBanner(message: error) { store.error = nil }
+                        .padding(.horizontal, BoardStyle.Space.l)
+                        .padding(.top, BoardStyle.Space.s)
+                        .transition(.opacity)
+                }
+            }
+            .animation(BoardStyle.fade(reduceMotion: reduceMotion), value: store.error)
+        }
+    }
+}
+
 // A calm notice: the Mac or the relay is away, and the cached state below stays usable.
 struct ConnectionBanner: View {
     let notice: ConnectionNotice
