@@ -42,40 +42,40 @@ struct HomeLaunchView: View {
                         ScrollView(.horizontal, showsIndicators: false) { pinnedTiles(pinned) }
                     }
                     .frame(maxWidth: .infinity)
-                    .padding(.top, 24).padding(.bottom, 24)
+                    .padding(.vertical, BoardStyle.Space.xl)
                 }
                 ForEach(conversations) { item in
                     switch item {
                     case .bot(let bot):
                         NavigationLink(value: ConversationRoute(botId: bot.id)) {
                             BotContactRow(bot: bot)
-                                .padding(.vertical, 12)
+                                .padding(.vertical, BoardStyle.Space.m)
                                 .background(BoardStyle.paper)
                                 .contentShape(Rectangle())
                                 .contextMenu { botActions(bot) }
                         }
                             .buttonStyle(HomePressStyle())
                             .accessibilityIdentifier("bot-conversation-\(bot.id)")
-                            .padding(.horizontal, 24)
+                            .padding(.horizontal, BoardStyle.Space.l)
                     case .team, .direct:
                         // A team and a direct chat have no pin and no delete here. The Team screen has the leave
                         // action.
                         if let chat = item.chat {
                             NavigationLink(value: TeamChatRoute(chat: chat)) {
                                 PeopleRow(item: item)
-                                    .padding(.vertical, 12)
+                                    .padding(.vertical, BoardStyle.Space.m)
                                     .background(BoardStyle.paper)
                                     .contentShape(Rectangle())
                             }
                                 .buttonStyle(HomePressStyle())
                                 .accessibilityIdentifier(Self.identifier(chat))
-                                .padding(.horizontal, 24)
+                                .padding(.horizontal, BoardStyle.Space.l)
                         }
                     }
                 }
             }
-            .padding(.top, pinned.isEmpty || ChatFilter.showsChips(rooms: rooms) ? 16 : 0)
-            .padding(.bottom, 20)
+            .padding(.top, pinned.isEmpty || ChatFilter.showsChips(rooms: rooms) ? BoardStyle.Space.l : 0)
+            .padding(.bottom, BoardStyle.Space.xl)
         }
         .background(BoardStyle.paper)
         .refreshable { await store.reconnect() }
@@ -90,18 +90,18 @@ struct HomeLaunchView: View {
                 .accessibilityIdentifier("chats-filter-\(filter.rawValue)")
         }
         return ViewThatFits(in: .horizontal) {
-            HStack(spacing: 6) { chips }
+            HStack(spacing: BoardStyle.Space.s) { chips }
             VStack(alignment: .leading, spacing: 0) { chips }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.horizontal, 20)
+        .padding(.horizontal, BoardStyle.Space.l)
     }
 
     private func pinnedTiles(_ pinned: [Bot]) -> some View {
-        HStack(spacing: 20) {
+        HStack(spacing: BoardStyle.Space.xl) {
             ForEach(pinned) { bot in
                 NavigationLink(value: ConversationRoute(botId: bot.id)) {
-                    VStack(spacing: 9) {
+                    VStack(spacing: BoardStyle.Space.s) {
                         LiveBotAvatar(bot: bot, size: 76)
                             // The badge sits on the top right corner of the face, not next to the name.
                             .overlay(alignment: .topTrailing) {
@@ -124,7 +124,7 @@ struct HomeLaunchView: View {
                 .buttonStyle(HomePressStyle())
                 .accessibilityIdentifier("pinned-bot-\(bot.id)")
             }
-        }.padding(.horizontal, 24)
+        }.padding(.horizontal, BoardStyle.Space.l)
     }
 
     /// "team-chat-<room>" for a team, "direct-chat-<member>" for a direct chat.
