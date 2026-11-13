@@ -235,8 +235,11 @@
   // code sets the look of Apple Health: no tick mark, no axis label, at most four hairlines with short numbers at the
   // right edge, and labels under the plot that never meet and never repeat.
   // A value is a finite number. A null, an empty text, a missing field or a text such as "1,234" is no value.
-  const amount = (value) => value === null || value === undefined || (typeof value === "string" && !value.trim())
-    ? NaN : Number(value);
+  const amount = (value) => {
+    const number = value === null || value === undefined || (typeof value === "string" && !value.trim()) ? NaN
+      : Number(value);
+    return Number.isFinite(number) ? number : NaN;
+  };
   // An x value is a date only when each x value is an ISO date. A date shows as written: the time zone of the page
   // does not move it to another day.
   const isoDate = /^\d{4}-\d{2}-\d{2}([T ]\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:?\d{2})?)?$/;
@@ -260,9 +263,13 @@
   // The numbers of the y axis: "1,000", "0.5", and short from 10,000 up ("12k", "1.5M", "3B").
   const yFormat = (ticks) => Math.max(...ticks.map(Math.abs)) >= 10000
     ? (value) => d3.format(".2~s")(value).replace("G", "B") : (value) => d3.format(",~r")(value);
+  // A count of ticks is always a small finite number: a count such as Infinity would make d3 work without end.
+  const tickCount = (count) => Number.isFinite(count) ? Math.min(Math.max(Math.floor(count), 1), 24) : 1;
   // At most four lines in even steps from zero, so the zero line always shows.
+  // A domain that is not finite (no value at all) is [0, 0]: the chart shows its zero line.
   const yAxis = ([bottom, top]) => {
-    bottom = Math.min(0, bottom);
+    bottom = Number.isFinite(bottom) ? Math.min(0, bottom) : 0;
+    top = Number.isFinite(top) ? top : 0;
     top = Math.max(0, top) > bottom ? Math.max(0, top) : bottom + 1;
     let step = 1, low = 0, high = 1;
     for (const count of [3, 2, 1]) {
@@ -319,7 +326,7 @@
     const probe = Plot.plot({ width, height: 200, x: { ...x, axis: null }, y: { axis: null }, marks: marks() });
     const y = yAxis(probe.scale("y").domain);
     const yText = yFormat(y.ticks);
-    const right = Math.ceil(Math.max(...textWidth(figure, y.ticks.map(yText)))) + 8;
+    const right = Math.ceil(Math.max(0, ...textWidth(figure, y.ticks.map(yText)))) + 8;
     const plotWidth = width - right;
     const draw = (axis) => {
       figure.querySelector("svg")?.remove();
@@ -364,9 +371,11 @@
       }
       // Whole numbers keep whole ticks.
       const whole = kind === "number" && xs.every(Number.isInteger);
-      for (let count = Math.max(2, Math.floor(plotWidth / 56)); count >= 1; count -= 1) {
-        const ticks = kind === "date" ? d3.utcTicks(...d3.extent(xs), count)
-          : d3.ticks(...d3.extent(xs), count).filter((tick) => !whole || Number.isInteger(tick));
+      const [first, last] = d3.extent(xs);
+      if (!Number.isFinite(+first) || !Number.isFinite(+last)) return void draw({ ticks: [] });
+      for (let count = tickCount(plotWidth / 56); count >= 1; count -= 1) {
+        const ticks = kind === "date" ? d3.utcTicks(first, last, count)
+          : d3.ticks(first, last, count).filter((tick) => !whole || Number.isInteger(tick));
         if (clean(draw({ ticks, tickFormat: kind === "date" ? dateFormat(ticks) : d3.format("~r") }))) return;
       }
       draw({ ticks: [] });
