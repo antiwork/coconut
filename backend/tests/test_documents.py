@@ -709,6 +709,20 @@ class GatewayPageTests(unittest.TestCase):
             self.service.publish_page('no-such-bot', page)
         self.assertEqual(self.rows('documents'), 0)
 
+    def test_a_delete_of_the_tooling_refuses_a_bot_that_goes_after_the_route_found_it(self):
+        # The route finds no profile for a deleted bot (test_gateway_document_route.py). A bot that goes after the
+        # route found its profile is refused in the transaction of the delete, and its key is checked first.
+        self.publish()
+        self.write('DELETE', f'/v1/bots/{self.bot["id"]}')
+        with self.assertRaisesRegex(ServiceError, 'archived or deleted') as refused:
+            self.service.unpublish_page(self.bot['id'], {'key': 'weekly-report'})
+        self.assertEqual(refused.exception.status, 409)
+        with self.assertRaisesRegex(ServiceError, 'lowercase') as refused:
+            self.service.unpublish_page(self.bot['id'], {'key': 'Weekly Report'})
+        self.assertEqual(refused.exception.status, 400)
+        with self.assertRaisesRegex(ServiceError, 'Bot was not found'):
+            self.service.unpublish_page('no-such-bot', {'key': 'weekly-report'})
+
     def test_a_page_of_the_tooling_comes_back_when_it_has_ended(self):
         self.publish(expires_at=(datetime.now(timezone.utc) + timedelta(days=2)).isoformat())
         self.service.db.execute("UPDATE documents SET data=json_set(data,'$.expires_at','2026-01-01T00:00:00Z')")

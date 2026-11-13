@@ -1150,12 +1150,22 @@ class GatewayChat:
         that a bot saves, and the Library shows it as such, but no turn asked for it, so it shows no card in the
         chat and a save that changes nothing writes nothing.
         """
+        return self.publish_page(self._gateway_home_bot(data), data)
+
+    def gateway_document_delete(self, data: dict) -> dict:
+        """DELETE /v1/gateway/document: the tooling of this Mac deletes a page of a bot, without a turn.
+
+        The tooling names the Hermes home of the bot's profile and the key of the page (Documents.unpublish_page).
+        """
+        return self.unpublish_page(self._gateway_home_bot(data), data)
+
+    def _gateway_home_bot(self, data: dict) -> str:
+        """The bot whose active profile has the Hermes home of the request, or the reason to refuse it."""
         from .service import ServiceError, require_text
-        home = os.path.realpath(require_text(data, 'home', 4096))
-        profile = self._gateway_profile(home)
+        profile = self._gateway_profile(os.path.realpath(require_text(data, 'home', 4096)))
         if profile is None:
             raise ServiceError(404, 'This Hermes home is not the profile of a bot.')
-        return self.publish_page(profile['bot_id'], data)
+        return profile['bot_id']
 
     def gateway_page_tool(self, data: dict) -> dict:
         """POST /v1/gateway/tools without a turn: coconut_read_document or coconut_delete_document in a conversation of
@@ -1164,18 +1174,15 @@ class GatewayChat:
         The plugin names the Hermes home of the profile that runs the conversation, as for POST /v1/gateway/document,
         which keeps the page of a save. The home names the bot, so a bot reads and deletes only its own documents. The
         other Coconut tools act for the task of a turn, so they refuse here."""
-        from .service import ServiceError, require_text
+        from .service import ServiceError
         tool = data.get('tool')
         if tool not in OUTSIDE_PAGE_TOOLS:
             raise ServiceError(409, 'This Coconut tool works only during a Coconut chat turn.')
-        home = os.path.realpath(require_text(data, 'home', 4096))
-        profile = self._gateway_profile(home)
-        if profile is None:
-            raise ServiceError(404, 'This Hermes home is not the profile of a bot.')
+        bot_id = self._gateway_home_bot(data)
         arguments = data.get('arguments') if isinstance(data.get('arguments'), dict) else {}
         if tool == 'read_document':
-            return self.read_page(profile['bot_id'], arguments)
-        return self.delete_page(profile['bot_id'], arguments)
+            return self.read_page(bot_id, arguments)
+        return self.delete_page(bot_id, arguments)
 
     def gateway_file(self, data: dict) -> dict:
         """POST /v1/gateway/files: a photo that a bot of the adapter's profile saved on the Mac.

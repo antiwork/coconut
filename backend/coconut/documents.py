@@ -31,6 +31,7 @@ CREATE TABLE IF NOT EXISTS document_versions (document_id TEXT NOT NULL, version
 '''
 FORMATS = ('markdown', 'html')
 KEY = re.compile(r'[a-z0-9][a-z0-9-]{0,63}')
+KEY_RULE = 'key must be 1 to 64 lowercase letters, digits and hyphens, for example signups-daily.'
 MAX_CONTENT = 512 * 1024
 MAX_TITLE = 120
 MAX_SUMMARY = 200
@@ -594,14 +595,21 @@ def expired(document: dict, current: str) -> bool:
     return bool(document.get('expires_at')) and document['expires_at'] <= current
 
 
+def page_key(arguments: dict) -> str:
+    """The key of a page in the arguments of a save, or of a delete of the tooling, or the reason to refuse it."""
+    from .service_base import ServiceError
+    key = arguments.get('key')
+    if not isinstance(key, str) or not KEY.fullmatch(key):
+        raise ServiceError(400, KEY_RULE)
+    return key
+
+
 def page_to_save(arguments: dict) -> tuple[str, str, str, str, str | None]:
     """The key, title, format, content and summary of a page, or the reason to refuse it. The tools of a bot turn
     and the tooling of the Mac save a page through this, so both follow the page rules."""
     from .service_base import ServiceError, require_text
-    key, document_format, content = (arguments.get(name) for name in ('key', 'format', 'content'))
-    if not isinstance(key, str) or not KEY.fullmatch(key):
-        raise ServiceError(400, 'key must be 1 to 64 lowercase letters, digits and hyphens, for example '
-                                'signups-daily.')
+    key = page_key(arguments)
+    document_format, content = arguments.get('format'), arguments.get('content')
     title = require_text(arguments, 'title', MAX_TITLE)
     if document_format not in FORMATS:
         raise ServiceError(400, 'format must be markdown or html.')
@@ -777,6 +785,24 @@ class Documents:
             if bot['archived'] or bot.get('_deleted'):
                 raise ServiceError(409, 'The bot is archived or deleted.')
             return self._delete_key(bot_id, arguments.get('key'), None)
+
+    def unpublish_page(self, bot_id: str, arguments: dict) -> dict:
+        """A page that the tooling of the Mac deletes for a bot, without a turn (DELETE /v1/gateway/document).
+
+        The delete removes the document with all its versions, as a delete from the phone does, also when the page
+        has ended. A key without a document answers "absent" and writes nothing, so the tooling can repeat a delete.
+        """
+        from .service_base import ServiceError
+        key = page_key(arguments)
+        with self.transaction():
+            bot = self._get('bots', bot_id)
+            if bot['archived'] or bot.get('_deleted'):
+                raise ServiceError(409, 'The bot is archived or deleted.')
+            document = self._document_of_key(bot_id, key)
+            if document is None:
+                return {'status': 'absent', 'key': key}
+            self._remove_document(document, None)
+        return {'status': 'deleted', 'key': key}
 
     def _delete_key(self, bot_id: str, key, task_id: str | None) -> dict:
         """Delete the document of a key of the bot. The caller holds the transaction."""
