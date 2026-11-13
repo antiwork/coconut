@@ -14,6 +14,7 @@ import plistlib
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 
 
@@ -254,6 +255,33 @@ def archive(config: dict) -> None:
     print(f"Local archive: {ARCHIVE}. No build was uploaded.")
 
 
+def testflight_notes(config: dict, build: int, previous: str | None, apply: bool) -> str:
+    """Preview the notes a tester reads for a build, and write them when an App Store Connect key is at hand.
+
+    The App Store Connect API reports when the build before this one arrived, so with a key the note covers
+    exactly the commits a tester has not seen. Without one, fall back to the time of the last upload this
+    machine recorded.
+    """
+    sys.path.insert(0, str(ROOT / "scripts"))
+    import testflight as flight
+    key, key_id, issuer = (os.environ.get(name) for name in ("ASC_KEY_PATH", "ASC_KEY_ID", "ASC_ISSUER_ID"))
+    if key and key_id and issuer:
+        bearer = flight.token(Path(key), key_id, issuer)
+        text, entries = flight.notes_for(bearer, build, None)
+    else:
+        bearer = None
+        entries = flight.user_facing_since(previous) if previous else []
+        text = flight.compose(entries)
+    reason = "no commit since the last upload changes something a tester can see" if not entries else f"{len(entries)} change(s)"
+    print(f"\nWhat TestFlight shows for build {build} ({reason}):\n\n{text}\n", flush=True)
+    if apply and bearer:
+        flight.set_notes(bearer, build, text)
+        print(f"App Store Connect keeps these notes for build {build}.")
+    elif apply:
+        print("Set ASC_KEY_PATH, ASC_KEY_ID and ASC_ISSUER_ID to write these notes to App Store Connect.")
+    return text
+
+
 def testflight(config: dict, skip_build: bool = False) -> None:
     """Upload a build restricted to internal TestFlight testing."""
     if config["team"] != "66LJACJ2U7" or config["bundle_id"] != BUNDLE_ID:
@@ -273,12 +301,17 @@ def testflight(config: dict, skip_build: bool = False) -> None:
         "signingStyle": "automatic", "manageAppVersionAndBuildNumber": False,
         "testFlightInternalTestingOnly": True, "uploadSymbols": True,
     }))
+    previous = config.get("testflight_uploaded_at")
+    build_number = int(info["CFBundleVersion"])
+    # Show the notes before the upload so a person can stop it, then write them once Apple lists the build.
+    testflight_notes(config, build_number, previous, apply=False)
     print("Uploading to internal TestFlight. Apple still controls processing and tester access.", flush=True)
     xcode(["-exportArchive", "-archivePath", str(ARCHIVE), "-exportOptionsPlist", str(TESTFLIGHT_OPTIONS),
            "-exportPath", str(BUILD / "testflight"), "-allowProvisioningUpdates"], "testflight.log")
     config["testflight_uploaded_build"] = str(info["CFBundleVersion"])
     config["testflight_uploaded_at"] = datetime.now(timezone.utc).isoformat()
     save_config(config)
+    testflight_notes(config, build_number, previous, apply=True)
     print(f"Uploaded build {info['CFBundleVersion']}. Check processing and the one-person group in App Store Connect.")
 
 
