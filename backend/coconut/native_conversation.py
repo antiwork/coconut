@@ -126,6 +126,10 @@ INSTRUCTIONS_CHANGED = ('Your instructions or your saved memory changed after yo
                         'still show the earlier text. Read SOUL.md, memories/MEMORY.md and memories/USER.md in your '
                         'Hermes home again. Check this answer against them before you act. If it no longer fits them, '
                         'say so and ask again.\n')
+# The note for a running session after SOUL.md changed (gateway_chat._instructions_record, hooks.add_records).
+SESSION_INSTRUCTIONS_CHANGED = ('Your instructions in SOUL.md changed after this conversation started. This conversation '
+                                'can still show the earlier text. Read SOUL.md in your Hermes home again, and follow it '
+                                'from now on.\n')
 
 
 def recent_work_note(task):

@@ -292,6 +292,37 @@ class EmptyReplyFormatTests(unittest.TestCase):
             self.assertEqual(turn('turn-3'), ['comment:1', 'comment:2'])
             self.assertEqual(turn('turn-4'), [])
 
+    def test_a_running_session_gets_the_note_about_changed_instructions_once(self):
+        # hooks.add_records reads the start of a session from the session row of this Hermes (`started_at`).
+        from types import SimpleNamespace as N
+        from unittest.mock import patch
+        temp = tempfile.TemporaryDirectory(prefix='coconut-instructions-')
+        self.addCleanup(temp.cleanup)
+        with patch.dict(os.environ, HERMES_HOME=temp.name):
+            from hermes_state import SessionDB
+            path = Path(temp.name) / 'state.db'
+            db = SessionDB(db_path=path)
+            self.addCleanup(db.close)
+            db.create_session('s1', source='coconut')
+            db.create_session('s2', source='coconut')
+            # A session row without a message is new, so s2 holds one.
+            db.append_message('s2', role='user', content='Earlier.')
+
+            def turn(identity, session, changed_at):
+                record = {'id': 'instructions:r1', 'kind': 'instructions', 'revision': 'r1', 'changed_at': changed_at,
+                          'text': 'Read your instructions again.'}
+                result = self.hooks.add_records(N(message_id=identity, text='Own text.'), [record], (path, session))
+                self.hooks.commit_records(identity)
+                return bool(result and record['text'] in result['text'])
+
+            # Sessions without a revision on record. One started after the newest change: no note.
+            self.assertFalse(turn('turn-1', 's1', time.time() - 3600))
+            self.assertEqual(db.get_meta(self.hooks.INSTRUCTIONS_KEY + 's1'), 'r1')
+            # One started before the newest change: the note once.
+            self.assertTrue(turn('turn-2', 's2', time.time() + 3600))
+            self.assertEqual(db.get_meta(self.hooks.INSTRUCTIONS_KEY + 's2'), 'r1')
+            self.assertFalse(turn('turn-3', 's2', time.time() + 3600))
+
 
 @needs_hermes
 class NativeGatewayChatTests(unittest.TestCase):
