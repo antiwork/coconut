@@ -546,8 +546,17 @@ class TeamStore:
         if 'epoch' not in {row[1] for row in self.db.execute('PRAGMA table_info(team_entries)')}:
             self.db.execute('ALTER TABLE team_entries ADD COLUMN epoch INTEGER NOT NULL DEFAULT 0')
         if 'chat' not in {row[1] for row in self.db.execute('PRAGMA table_info(team_messages)')}:
-            self.db.execute('ALTER TABLE team_messages ADD COLUMN chat TEXT')
-            self._read_chats_again()
+            # The new column and the pass are one step: a stop or an error in the pass takes the column back, so the
+            # next start does the pass again. A savepoint works also inside a transaction of a caller.
+            self.db.execute('SAVEPOINT team_chats_column')
+            try:
+                self.db.execute('ALTER TABLE team_messages ADD COLUMN chat TEXT')
+                self._read_chats_again()
+            except BaseException:
+                self.db.execute('ROLLBACK TO team_chats_column')
+                self.db.execute('RELEASE team_chats_column')
+                raise
+            self.db.execute('RELEASE team_chats_column')
         # One index on the room, the chat and `first` gives a page, the unread count and the newest message of each chat.
         # It takes the place of the index on the room and `first` of an older version, which SQLite would choose for a
         # named chat and then walk the messages of each other chat.
@@ -557,20 +566,33 @@ class TeamStore:
     def _read_chats_again(self) -> None:
         """Read the chats of a store of an older version, one time. That version kept each `chat` entry as an entry of
         an unknown kind, and each message of a named chat in the Team chat, because it ignored the field `chat`. So the
-        chats show now, and each message moves to its chat. A message whose `chat` does not fit goes, as `accept` would
-        not show it."""
+        chats show now, and each message moves to its chat. The pass reads each payload with the reader of an entry
+        (read_payload, chat_fields, message_fields), and a message whose fields do not fit goes, as `accept` would not
+        show it.
+
+        The person read the Team chat of that version, which had the messages of each chat. So each chat starts at the
+        read position of the Team chat, but never past its own newest message."""
         rooms = {room['room']: room for room in self.rooms()}
         rows = self.db.execute("SELECT room, id, first, member, at, payload FROM team_entries WHERE kind='chat'")
         for room, entry, first, member, at, payload in rows.fetchall():
             if room in rooms and member == rooms[room]['admin']:
-                self._show_chat(room, dict(id=entry, first=first, at=at), chat_fields(json.loads(payload)))
-        rows = self.db.execute("""SELECT m.room, m.entry, json_extract(e.payload, '$.chat') FROM team_messages m
-            JOIN team_entries e ON e.room=m.room AND e.id=m.entry WHERE json_extract(e.payload, '$.chat') IS NOT NULL""")
-        for room, entry, chat in rows.fetchall():
-            if entry_id(chat):
-                self.db.execute('UPDATE team_messages SET chat=? WHERE room=? AND entry=?', (chat, room, entry))
-            else:
+                read = read_payload(payload.encode())
+                self._show_chat(room, dict(id=entry, first=first, at=at), chat_fields(read[1]) if read else None)
+        rows = self.db.execute("""SELECT m.room, m.entry, e.payload FROM team_messages m
+            JOIN team_entries e ON e.room=m.room AND e.id=m.entry""")
+        for room, entry, payload in rows.fetchall():
+            read = read_payload(payload.encode())
+            message = message_fields(read[1]) if read else None
+            if message is None:
                 self.db.execute('DELETE FROM team_messages WHERE room=? AND entry=?', (room, entry))
+            elif message['chat'] is not None:
+                self.db.execute('UPDATE team_messages SET chat=? WHERE room=? AND entry=?',
+                                (message['chat'], room, entry))
+        self.db.execute("""INSERT OR REPLACE INTO team_chat_reads (room, chat, first)
+            SELECT r.room, c.entry, MIN(r.first, (SELECT MAX(m.first) FROM team_messages m
+                WHERE m.room=c.room AND m.chat=c.entry))
+            FROM team_reads r JOIN team_chats c ON c.room=r.room
+            WHERE EXISTS (SELECT 1 FROM team_messages m WHERE m.room=c.room AND m.chat=c.entry)""")
 
     def _rows(self, fields, query, values=()) -> list[dict]:
         return [dict(zip(fields, row)) for row in self.db.execute(query, values).fetchall()]
@@ -719,7 +741,8 @@ class TeamStore:
             self._erase(room['room'], shown['entry'])
         # A `chat` entry of the admin shows a named chat. Rule 4 checked the writer above. A `delete` over it removes the
         # chat with its messages.
-        if 'chat' in kinds and self._show_chat(room['room'], entry, shown if fields['kind'] == 'chat' else None):
+        if 'chat' in kinds and self._show_chat(room['room'], entry, shown if fields['kind'] == 'chat' else None,
+                                               fresh=True):
             self.changed.add(room['room'])
         # A `remove` entry of the admin takes a member out. Rule 4 checked the writer above.
         if 'remove' in kinds:
@@ -835,7 +858,7 @@ class TeamStore:
                 return
         self.db.execute('DELETE FROM team_members WHERE room=? AND member=?', (room, member))
 
-    def _show_chat(self, room: str, entry: dict, chat: dict | None) -> bool:
+    def _show_chat(self, room: str, entry: dict, chat: dict | None, fresh: bool = False) -> bool:
         """Set the row of a `chat` entry, or remove the chat (docs/team-log.md, "Chats of a team"). `chat` is what
         read_entry found valid, or None for a name that does not fit and for a `delete` entry over a chat. True when the
         list of the chats changed.
@@ -843,7 +866,8 @@ class TeamStore:
         A new chat shows the messages of the chat that the store has already, because the entries can come in either
         order. A removed chat takes its messages and its read position with it. The triggers of these messages that did
         not start go, and the turn thread stops a running turn, because its trigger no longer shows. The waiting
-        notifications check that the message still shows, so they send nothing.
+        notifications check that the message still shows, so they send nothing. With `fresh`, a chat that starts to
+        show notes its fresh messages for a notification (_note_fresh_chat).
         """
         at = relay_time(entry['at'])
         if chat is None or at is None:
@@ -856,6 +880,7 @@ class TeamStore:
                 self.chatted.add(room)
             self.db.execute('DELETE FROM team_chat_reads WHERE room=? AND chat=?', (room, entry['id']))
             return True
+        new = self.chat(room, entry['id']) is None
         changed = self.db.execute('''INSERT INTO team_chats (room, entry, first, name, created_at) VALUES (?, ?, ?, ?, ?)
             ON CONFLICT (room, entry) DO UPDATE SET first=excluded.first, name=excluded.name
             WHERE team_chats.first!=excluded.first OR team_chats.name!=excluded.name''',
@@ -863,7 +888,22 @@ class TeamStore:
         if changed and self.db.execute('SELECT 1 FROM team_messages WHERE room=? AND chat=? LIMIT 1',
                                        (room, entry['id'])).fetchone():
             self.chatted.add(room)
+        if new and fresh:
+            self._note_fresh_chat(room, entry['id'])
         return changed
+
+    def _note_fresh_chat(self, room: str, chat: str) -> None:
+        """Note the messages of a chat that starts to show, by the rules of a notification (_note_fresh). The relay
+        keeps only the newest write of a `chat` entry, so after a rename the entry comes after the messages of the
+        chat, and these messages did not show when this Mac took them. Only a first write (`rev` 1) notifies. Such a
+        message did not show before, so _note_fresh did not note it then, and the item of a phone has the entry ID in
+        its key, so no message notifies two times."""
+        room_row = self.room(room)
+        rows = self.db.execute('''SELECT e.id, e.first, e.member, e.at, m.bot FROM team_messages m
+            JOIN team_entries e ON e.room=m.room AND e.id=m.entry WHERE m.room=? AND m.chat=? AND e.rev=1
+            ORDER BY m.first''', (room, chat)).fetchall()
+        for entry, first, member, at, bot in rows:
+            self._note_fresh(room_row, dict(id=entry, first=first, member=member, at=at), dict(bot=bot, chat=chat))
 
     def chats(self, room: str) -> list[dict]:
         """The named chats of the room that this Mac shows, in the order of `first`: `entry`, `first`, `name` and

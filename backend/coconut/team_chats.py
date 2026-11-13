@@ -35,8 +35,8 @@ class TeamChats:
         room, the device and the key, as for a message. So a repeat after a write without an answer finds that write
         and makes no second chat."""
         from .team import team_errors
-        name = self._team_chat_name(data)
         self._team_chat_admin(room_id, device)
+        name = self._team_chat_name(data)
         entry = hashlib.sha256(f'{room_id}:chat:{repeat}'.encode()).hexdigest()[:32] if repeat else token_hex(16)
         with team_errors(), self._team_room_lock(room_id):
             room = self._team_writable(room_id)
@@ -53,8 +53,8 @@ class TeamChats:
     def team_chat_rename(self, room_id: str, chat: str, data: dict, device: str) -> dict:
         """Rename a named chat: a new write of its entry with the next `rev`. The same name writes nothing."""
         from .team import team_errors
-        name = self._team_chat_name(data)
         self._team_chat_admin(room_id, device)
+        name = self._team_chat_name(data)
         with team_errors(), self._team_room_lock(room_id):
             room = self._team_writable(room_id)
             with self.lock:

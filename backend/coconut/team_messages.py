@@ -215,9 +215,9 @@ class TeamMessages:
         room, existing = self._team_message_entry(room_id, entry, ('message',))
         if not self._team_person_wrote(room, existing):
             raise ServiceError(403, OWN_MESSAGE)
-        # The admin erased the message, so a new write of it shows nothing on any Mac.
+        # The admin erased the message, or removed its chat, so a new write of it shows nothing on any Mac.
         with self.lock:
-            if self.team_store.erased(room_id, entry):
+            if self.team_store.erased(room_id, entry) or self.team_store.message(room_id, entry) is None:
                 raise ServiceError(404, GONE_MESSAGE)
         return room, existing
 

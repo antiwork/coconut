@@ -10,7 +10,10 @@ from __future__ import annotations
 import json
 import logging
 import sqlite3
+import threading
+import time
 import unittest
+from unittest import mock
 from uuid import uuid4
 
 from coconut import team_store, team_turns
@@ -167,7 +170,10 @@ class ChatStoreTests(unittest.TestCase):
         self.assertNotIn(ROOM, self.store.changed)
         self.assertIn('chat', team_store.WRITTEN_AGAIN)
 
-    def test_an_older_store_reads_its_chats_and_moves_each_message_to_its_chat(self):
+    def older_store(self, rows, read: int | None = None) -> sqlite3.Connection:
+        """A store of a version without named chats: its `team_messages` has no `chat`, it kept each `chat` entry as an
+        entry of an unknown kind, and each message of a named chat in the Team chat. `rows` are (number, member, kind,
+        payload as a dict or as JSON text). `read` is the read position of its Team chat."""
         db = sqlite3.connect(':memory:', isolation_level=None)
         self.addCleanup(db.close)
         db.execute('CREATE TABLE team_messages (room TEXT NOT NULL, entry TEXT NOT NULL, first INTEGER NOT NULL, '
@@ -179,25 +185,101 @@ class ChatStoreTests(unittest.TestCase):
         old = TeamStore(db)
         old.add_room(room=ROOM, relay='https://relay.example', name='Example Team', member=MEMBER, admin=ADMIN,
                      state=team_store.ACTIVE, epoch=0, profile='{}', created_at='2026-11-10T12:00:00Z')
-        rows = ((50, ADMIN, 'chat', self.chat()), (51, OTHER, 'chat', self.chat('Not the admin')),
-                (1, OTHER, 'message', self.message('Design', chat=DESIGN)),
-                (2, OTHER, 'message', self.message('Team chat')), (3, OTHER, 'message', self.message('Bad', chat='x')))
         for seq, (number, member, kind, payload) in enumerate(rows, start=1):
+            text = payload if isinstance(payload, str) else json.dumps(payload)
             db.execute('INSERT INTO team_entries (room, id, seq, first, member, kind, rev, at, kept, payload) '
                        'VALUES (?, ?, ?, ?, ?, ?, 1, ?, 0, ?)',
-                       (ROOM, entry_id(number), seq, seq, member, kind, START + seq, json.dumps(payload)))
+                       (ROOM, entry_id(number), seq, seq, member, kind, START + seq, text))
             if kind == 'message':
                 db.execute("INSERT INTO team_messages VALUES (?, ?, ?, ?, NULL, ?, NULL, '[]', 't', 't', 0)",
-                           (ROOM, entry_id(number), seq, member, payload['text']))
+                           (ROOM, entry_id(number), seq, member, json.loads(text)['text']))
+        if read is not None:
+            db.execute('INSERT INTO team_reads (room, first) VALUES (?, ?)', (ROOM, read))
+        return db
+
+    def older_rows(self) -> tuple:
+        return ((50, ADMIN, 'chat', self.chat()), (51, OTHER, 'chat', self.chat('Not the admin')),
+                (1, OTHER, 'message', self.message('Design', chat=DESIGN)),
+                (2, OTHER, 'message', self.message('Team chat')), (3, OTHER, 'message', self.message('Bad', chat='x')))
+
+    def moved(self, db) -> tuple:
         store = TeamStore(db)
-        store.migrate()
-        store.migrate()
-        self.assertEqual([row['name'] for row in store.chats(ROOM)], ['Design'])
-        self.assertEqual([row['text'] for row in store.messages(ROOM)], ['Team chat'])
-        self.assertEqual([row['text'] for row in store.messages(ROOM, chat=DESIGN)], ['Design'])
+        return ([row['name'] for row in store.chats(ROOM)], [row['text'] for row in store.messages(ROOM)],
+                [row['text'] for row in store.messages(ROOM, chat=DESIGN)])
+
+    def test_an_older_store_reads_its_chats_and_moves_each_message_to_its_chat(self):
+        db = self.older_store(self.older_rows())
+        TeamStore(db).migrate()
+        self.assertEqual(self.moved(db), (['Design'], ['Team chat'], ['Design']))
         indexes = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='index'")}
         self.assertIn('team_messages_chat', indexes)
         self.assertNotIn('team_messages_order', indexes)
+        # A second start changes nothing.
+        changes = db.total_changes
+        TeamStore(db).migrate()
+        self.assertEqual(db.total_changes, changes)
+        self.assertEqual(self.moved(db), (['Design'], ['Team chat'], ['Design']))
+
+    def test_a_stop_in_the_middle_of_the_pass_leaves_the_store_of_before_and_the_next_start_does_it(self):
+        db = self.older_store(self.older_rows())
+        store = TeamStore(db)
+
+        def stop(*arguments, **options):
+            raise KeyboardInterrupt('The process stops here.')
+        store._show_chat = stop
+        with self.assertRaises(KeyboardInterrupt):
+            store.migrate()
+        self.assertFalse(db.in_transaction)
+        self.assertNotIn('chat', {row[1] for row in db.execute('PRAGMA table_info(team_messages)')})
+        TeamStore(db).migrate()
+        self.assertEqual(self.moved(db), (['Design'], ['Team chat'], ['Design']))
+
+    def test_the_pass_reads_the_chat_of_a_message_as_the_reader_of_a_message_does(self):
+        # Two keys `chat`: Python takes the last one, as the reader of a message does. SQLite would take the first.
+        twice = json.dumps(self.message('Twice'))[:-1] + f', "chat": "x", "chat": "{DESIGN}"}}'
+        db = self.older_store(((50, ADMIN, 'chat', self.chat()), (1, OTHER, 'message', twice)))
+        TeamStore(db).migrate()
+        self.assertEqual(self.moved(db), (['Design'], [], ['Twice']))
+
+    def test_a_moved_chat_starts_at_the_read_position_of_the_team_chat(self):
+        rows = ((50, ADMIN, 'chat', self.chat()), (1, OTHER, 'message', self.message('Design 1', chat=DESIGN)),
+                (2, OTHER, 'message', self.message('Design 2', chat=DESIGN)),
+                (3, OTHER, 'message', self.message('Team chat')),
+                (51, ADMIN, 'chat', self.chat('Launch')), (4, OTHER, 'message', self.message('Launch', chat=LAUNCH)))
+        # The person read the Team chat of the older version up to the message `first` 5.
+        db = self.older_store(rows, read=5)
+        store = TeamStore(db)
+        store.migrate()
+        self.assertEqual((store.unread(ROOM, MEMBER, DESIGN), store.unread(ROOM, MEMBER, LAUNCH)), (0, 1))
+        # Never past the newest message of the chat.
+        self.assertEqual((store.read_position(ROOM, DESIGN), store.read_position(ROOM, LAUNCH)), (3, 5))
+
+    def test_a_message_whose_chat_comes_later_in_the_read_notifies_once(self):
+        self.store.db.execute('UPDATE team_rooms SET profile=? WHERE room=?', (json.dumps({'entry': entry_id(9)}), ROOM))
+        self.store.clock = lambda: START / 1000 + 60
+        self.write(9, self.member('Grace'), MEMBER)
+        # The admin made the chat (`first` 2) and renamed it later. The relay keeps only the newest write of the chat
+        # entry, so it comes after the message.
+        self.seq = 2
+        self.write(1, self.message('@Grace look', chat=DESIGN, mentions=[entry_id(9)]), OTHER)
+        self.assertEqual(self.store.fresh, {})
+        self.seq += 1
+        entry = dict(seq=self.seq, first=2, id=DESIGN, member=ADMIN, at=START + self.seq, kept=True, body=b'')
+        self.store.accept(self.store.room(ROOM), entry,
+                          team_store.read_entry({'epoch': 0, 'payload': json.dumps(self.chat('Brand', rev=2)).encode()}))
+        self.assertEqual(self.store.fresh, {ROOM: [entry_id(1)]})
+        # A rename after that notes nothing again.
+        self.store.fresh.clear()
+        self.write(50, self.chat('Brand 2', rev=3))
+        self.assertEqual(self.store.fresh, {})
+
+    def test_a_member_that_joins_after_the_chat_has_messages_reads_from_its_join(self):
+        self.store.db.execute('UPDATE team_rooms SET profile=? WHERE room=?', (json.dumps({'entry': entry_id(9)}), ROOM))
+        self.write(50, self.chat())
+        self.write(1, self.message('History', chat=DESIGN), OTHER)
+        self.write(9, self.member('Grace'), MEMBER)
+        self.write(2, self.message('New', chat=DESIGN), OTHER)
+        self.assertEqual((self.store.read_position(ROOM, DESIGN), self.store.unread(ROOM, MEMBER, DESIGN)), (3, 1))
 
 
 class ChatMacs(KeyChangeMacs):
@@ -325,15 +407,56 @@ class ChatRouteTests(ChatMacs, unittest.TestCase):
         self.assertEqual(self.phone(self.first)('POST', self.path(), {'name': 'Design'}, key)['chat'], first['chat'])
         self.assertEqual(len(self.chats(self.first)), 1)
 
-    def test_an_older_service_has_no_chats_and_an_older_app_reads_the_team_chat(self):
+    def test_a_room_without_a_chat_and_the_fields_of_the_room_stay_the_team_chat(self):
         view = self.view(self.second)
         self.assertEqual((view['chats'], view['can_manage_chats']), ([], False))
+        fields = ('unread', 'last_message', 'mentioned', 'typing')
+        before = {name: view[name] for name in fields}
         design = self.make()
         self.send(self.second, 'In Design', design)
+        self.phone(self.third)('POST', f'/v1/team/rooms/{self.room}/typing', {'chat': design})
         self.sync()
-        # The fields of the room are the Team chat, as an app of today reads them.
-        view = self.view(self.first)
-        self.assertEqual((view['unread'], view['last_message']), (0, None))
+        # An app of today reads only these fields of the room. A message and typing in a named chat change none of
+        # them, so that app shows the Team chat as before.
+        view = self.view(self.second)
+        self.assertEqual({name: view[name] for name in fields}, before)
+        self.assertEqual(view['chats'][0]['last_message']['text'], 'In Design')
+
+    def test_an_older_mac_shows_a_message_of_a_named_chat_in_its_team_chat(self):
+        """Lin's Mac reads as a Mac of an older Coconut: it does not know the kind `chat`, and its reader of a message
+        ignores the field `chat` (rule 2 of the readers of a message). Nothing gets lost."""
+        design = self.make()
+        self.send(self.second, 'In Design', design)
+        self.sync(self.second)
+
+        def older(fields):
+            return team_store.message_fields({name: value for name, value in fields.items() if name != 'chat'})
+        shown = {name: check for name, check in team_store.SHOWN.items() if name != 'chat'}
+        with mock.patch.dict(team_store.SHOWN, dict(shown, message=older), clear=True):
+            # Lin's Mac reads the log again from its start, as a Mac of that version.
+            self.third.team_store.remove_room(self.room)
+            self.third.team_store.add_room(**dict(self.first.team_store.room(self.room), member=self.lin,
+                                                  seq=0, profile='{}'))
+            self.third.team_sync_pass()
+        self.assertEqual(self.page(self.third), ['In Design'])
+
+    def test_a_person_who_is_not_the_admin_gets_403_before_the_check_of_the_name(self):
+        self.assertEqual(self.refusal(self.make, ' bad', '', self.second), (403, ADMIN_ONLY))
+        design = self.make()
+        self.assertEqual(self.refusal(self.phone(self.second), 'PATCH', self.path(design), {'name': ''}),
+                         (403, ADMIN_ONLY))
+
+    def test_an_edit_of_a_message_in_a_removed_chat_writes_nothing(self):
+        design = self.make()
+        sent = self.send(self.second, 'Hello', design)
+        self.sync()
+        self.phone(self.first)('DELETE', self.path(design), {})
+        self.sync()
+        writes = self.writes()
+        self.assertEqual(self.refusal(self.phone(self.second), 'PATCH',
+                                      f'/v1/team/rooms/{self.room}/messages/{sent["id"]}', {'text': 'Changed'}),
+                         (404, 'This message is no longer in the chat.'))
+        self.assertEqual(self.writes(), writes)
 
     def test_a_reply_shows_its_quote_only_in_the_same_chat(self):
         design = self.make()
@@ -517,6 +640,49 @@ class ChatBotTests(TeamTurnMacs, unittest.TestCase):
         self.assertEqual(self.only.gateway_message(data), {'recorded': True})
         self.sync()
         self.assertEqual(self.chat_of(design), [('Reporter', 'The background job finished.', None)])
+
+    def test_the_typing_entry_of_the_bot_names_its_chat(self):
+        design = self.make()
+        self.send('@Reporter what is open?', mentions=[self.mention], chat=design)
+        self.sync()
+
+        def script(turn):
+            # A commentary first, so the gateway shows the turn and the bot types.
+            yield {'kind': 'send', 'message_id': f'{turn["id"]}:1', 'text': 'I look.', 'interim': True}
+            time.sleep(0.5)
+            yield {'kind': 'send', 'message_id': f'{turn["id"]}:2', 'text': 'Done.'}
+            yield {'kind': 'done', 'outcome': 'success'}
+        self.serve(script)
+        self.run_turns()
+        for typing in list(self.only._turns_typing.values()):
+            typing.thread.join(5)
+        rows = self.only.db.execute("SELECT payload FROM team_entries WHERE room=? AND kind='typing'", (self.room,))
+        payloads = [json.loads(payload) for (payload,) in rows.fetchall()]
+        self.assertEqual([(payload['bot'], payload['chat'], payload['on']) for payload in payloads],
+                         [(self.entry, design, False)])
+
+    def test_a_running_turn_stops_when_its_chat_goes(self):
+        design = self.make()
+        self.send('@Reporter please', mentions=[self.mention], chat=design)
+        self.sync()
+        released = threading.Event()
+        self.serve(lambda turn: (released.wait(5), reply('Late answer.')(turn))[1])
+        runner = threading.Thread(target=self.only._turns_run, args=(self.room, self.bot['id']), daemon=True)
+        with self.only._turns_lock:
+            self.only._turns_running[(self.room, self.bot['id'])] = runner
+        runner.start()
+        deadline = time.monotonic() + 5
+        while not self.gateway.turns and time.monotonic() < deadline:
+            time.sleep(.05)
+        self.call('DELETE', f'/v1/team/rooms/{self.room}/chats/{design}', service=self.first)
+        self.sync()
+        self.only._turns_check()
+        self.assertEqual(self.only.gateway_bridge.turns[self.gateway.turns[0]['id']].state, 'stopping')
+        released.set()
+        runner.join(5)
+        self.sync()
+        self.assertEqual(self.chat_of(None), [])
+        self.assertEqual(self.triggers(), [])
 
     def test_the_route_needs_a_paired_device_on_a_team_only_mac(self):
         self.assertEqual(self.refusal(self.only.team_request, 'POST', f'/v1/team/rooms/{self.room}/chats',

@@ -814,12 +814,14 @@ Rules for a message in a named chat:
 2. A message with a `chat` shows only when `chat` names a valid `chat` entry of the admin. The `chat` entry can come after the message, so the check runs when the Mac reads the chat, as for `bot`.
 3. `reply_to` shows only when the answered message is in the same chat. A reply across chats has no quote, and it starts no turn of the bot of the answered message.
 4. `erase` does not change: it names a message, in each chat.
-5. A Mac with an older Coconut ignores the field `chat` (rule 2 of the readers of a message). So it shows a message of a named chat in its Team chat, and its bot answers there. Nothing gets lost. The two chats come together again when that Mac gets the update.
+5. A Mac with an older Coconut ignores the field `chat` (rule 2 of the readers of a message). So it shows a message of a named chat in its Team chat, and its bot answers there. Nothing gets lost. The chats separate again when that Mac gets the update (see the pass below).
+6. A chat entry can come after the messages of its chat, for example after a rename, because the relay keeps only the newest write of the entry. When a chat starts to show, the Mac notes its messages for a notification by the rules of [Notifications](#notifications): a first write, under one hour old, after the read position. Such a message did not show before, and the item of a phone has the entry ID in its key, so no message notifies two times.
 
 What each Mac keeps for each chat on its own, the Team chat and each named chat:
 
 - The messages: `team_messages` has the `chat` of each message, and null for the Team chat. The index on the room, the chat and `first` gives a page, the unread count and the newest message of one chat without a scan of the room.
 - The read position: `team_reads` for the Team chat, as before, and `team_chat_reads` for a named chat. The position of a named chat starts at the later of the `first` of the `member` entry of this Mac and the `first` of the `chat` entry. So the history from before a join, and the messages that came before the chat showed, do not count as unread. It moves only forward, and never past the newest message of that chat.
+- The update from a version without named chats: in one step with the new column `chat` of `team_messages`, the Mac reads each kept `chat` entry of the admin, moves each message to its chat with the reader of a message, and gives each chat the read position of the Team chat, but never past the newest message of the chat, because the person read these messages in the Team chat of that version. A stop or an error in this pass takes the new column back, so the next start does the pass again. After the pass, a start does nothing more.
 - The unread count, `mentioned` and `mention_first` follow the rules of the Team chat, with the messages and the read position of the chat.
 - Typing: a Mac keeps one `typing` entry for each subject in a room, as before, so a person types in one chat at a time. The `chat` of the entry says where. A person's Mac writes at most one entry in 4 seconds for each room and chat.
 
