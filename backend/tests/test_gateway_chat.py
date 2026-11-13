@@ -966,12 +966,35 @@ class ServiceRoutingTests(unittest.TestCase):
             'choice': 'approve', 'option_id': 'ship', 'quote': 'ship it today', 'decision_id': card['id'],
             'decision_revision': 1, 'source_message_id': source}})
         self.assertEqual(result['status'], 'recorded')
+        self.assertNotIn('instruction', result)
         self.service.gateway_bridge.event({'turn_id': adapter.turns[0]['id'], 'kind': 'done', 'outcome': 'success'})
         runner.join(5)
         self.assertEqual(self.read('decisions', card['id'])['status'], 'approved')
         # The answered card continues its own task.
         self.assertEqual(self.read('tasks', task['id'])['_resume_decision'], card['id'])
         self.assertEqual(self.provider.starts, [])
+
+    def test_a_typed_answer_after_an_instruction_change_tells_the_turn_that_records_it(self):
+        task, card, _ = self.ask_in_gateway()
+        (self.home / 'SOUL.md').write_text('The instructions changed after the card.')
+        reply = self.send('Yes, ship it today.')
+        adapter = Adapter(self.service.gateway_bridge, self.home, [])
+        adapter.start()
+        runner = threading.Thread(target=self.service._run_task, args=(reply['id'],), daemon=True)
+        runner.start()
+        adapter.join(5)
+        source = self.read('tasks', reply['id'])['_turn_message_ids'][0]
+        result = self.service.gateway_tool({'turn_id': adapter.turns[0]['id'], 'tool': 'resolve_reply', 'arguments': {
+            'choice': 'approve', 'option_id': 'ship', 'quote': 'ship it today', 'decision_id': card['id'],
+            'decision_revision': 1, 'source_message_id': source}})
+        # This turn can act on the answer, so its tool result carries the note. The answer stands.
+        self.assertEqual(result['status'], 'recorded')
+        self.assertIn('Your instructions or your saved memory changed after you made this card.', result['instruction'])
+        self.service.gateway_bridge.event({'turn_id': adapter.turns[0]['id'], 'kind': 'done', 'outcome': 'success'})
+        runner.join(5)
+        saved = self.read('decisions', card['id'])
+        self.assertEqual(saved['status'], 'approved')
+        self.assertIs(saved['_answers'][-1]['instructions_changed'], True)
 
     def test_a_follow_up_on_a_card_runs_in_the_gateway_and_makes_no_card(self):
         task, card, _ = self.ask_in_gateway()

@@ -2,6 +2,7 @@ import json
 import unittest
 from unittest.mock import patch
 
+from coconut.native_conversation import INSTRUCTIONS_CHANGED
 from coconut.profiles import ProfileError
 from coconut.service import ServiceError, YieldForDecision, now
 import test_decision_freshness as fixtures
@@ -389,6 +390,85 @@ class DecisionProfileFreshnessTests(unittest.TestCase):
             context = self.refresh_with_profile_failure()
         self.assertEqual(context['decision_id'], current['id'])
         self.assertEqual(self.service._get('decisions', decision['id'])['status'], 'pending')
+
+    def resume_text(self, decision):
+        """The text of the gateway turn that continues after this answered card (run_gateway_resume)."""
+        saved = self.service._get('decisions', decision['id'])
+        task = dict(self.service._get('tasks', saved.get('_execution_task_id') or saved['task_id']), _chat_session=True)
+        turns = []
+
+        def run(task, bot, text, emit, **_):
+            turns.append(text)
+            return True
+
+        with patch.object(self.service, 'gateway_enabled', return_value=True), \
+                patch.object(self.service, '_run_in_gateway', run), patch.object(self.service, '_run_work_turn', run):
+            self.assertTrue(self.service.run_gateway_resume(task, self.bot, [], saved, lambda *_: None))
+        return turns[0]
+
+    def proposal(self, **fields):
+        self.start()
+        self.service.native_event(self.task['id'], 'native_proposal', dict(key='proposal', title='Send the reply?', **fields))
+        return self.service._all('decisions')[-1]
+
+    def assert_note(self, decision, expected):
+        """The answer record has `instructions_changed` only when `expected`, and only the turn text holds the note."""
+        saved = self.service._get('decisions', decision['id'])
+        self.assertEqual(saved['status'], 'approved')
+        if expected:
+            self.assertIs(saved['_answers'][-1]['instructions_changed'], True)
+        else:
+            self.assertNotIn('instructions_changed', saved['_answers'][-1])
+        self.assertNotIn(INSTRUCTIONS_CHANGED.strip(), json.dumps(self.service._public(saved)))
+        text = self.resume_text(saved)
+        (self.assertIn if expected else self.assertNotIn)(INSTRUCTIONS_CHANGED, text)
+        return text
+
+    def test_the_note_names_the_changed_instructions_and_memory(self):
+        self.assertTrue(INSTRUCTIONS_CHANGED.startswith(
+            'Your instructions or your saved memory changed after you made this card.'))
+
+    def test_a_question_answered_after_a_profile_change_tells_the_turn_that_continues(self):
+        for name in ('SOUL.md', 'memories/USER.md', 'memories/MEMORY.md'):
+            with self.subTest(name=name):
+                decision = self.question(old=False)
+                self.policy(name, 'Current scoped instructions: ' + name)
+                self.write('POST', '/v1/decisions/' + decision['id'] + '/answer', dict(revision=1, option_id='install'))
+                self.assert_note(decision, True)
+
+    def test_a_proposal_answered_after_a_profile_change_tells_its_continuation(self):
+        decision = self.proposal(options=[dict(id='send', label='Send it'), dict(id='hold', label='Hold it')])
+        self.policy('memories/USER.md', 'The profile has changed.')
+        self.write('POST', '/v1/decisions/' + decision['id'] + '/answer', dict(revision=1, option_id='send'))
+        self.assert_note(decision, True)
+
+    def test_a_draft_sent_after_a_profile_change_tells_its_continuation(self):
+        decision = self.proposal(draft=dict(channel='Gmail', sender='me@example.com', recipient='other@example.com',
+                                            subject='The review', body='The review is ready.'))
+        self.policy('memories/USER.md', 'The profile has changed.')
+        self.write('POST', '/v1/decisions/' + decision['id'] + '/answer',
+            dict(revision=1, option_id='send', draft_hash=decision['draft_hash']))
+        self.assertIn('The person selected Send on this exact draft.', self.assert_note(decision, True))
+
+    def test_an_answer_without_a_profile_change_carries_no_note(self):
+        decision = self.question(old=False)
+        self.write('POST', '/v1/decisions/' + decision['id'] + '/answer', dict(revision=1, option_id='install'))
+        self.assert_note(decision, False)
+
+    def test_a_legacy_card_answer_carries_no_note(self):
+        decision = self.question(old=False)
+        decision.pop('_profile_revision')
+        self.service._put('decisions', decision)
+        self.policy('SOUL.md', 'The profile has changed.')
+        self.write('POST', '/v1/decisions/' + decision['id'] + '/answer', dict(revision=1, option_id='install'))
+        self.assert_note(decision, False)
+
+    def test_an_answer_with_an_unreadable_profile_carries_the_note(self):
+        # Coconut cannot rule out a change, so the answer stands and the bot reads its files again.
+        decision = self.question(old=False)
+        with patch.object(self.service.profiles, 'prompt_revision', side_effect=PermissionError('The native instructions are unreadable.')):
+            self.write('POST', '/v1/decisions/' + decision['id'] + '/answer', dict(revision=1, option_id='install'))
+        self.assert_note(decision, True)
 
 
 if __name__ == '__main__':
