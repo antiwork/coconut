@@ -26,7 +26,7 @@ from test_gateway_chat import Provider
 PLUGIN = Path(__file__).resolve().parents[2] / 'hermes_plugin/coconut'
 # A page whose save answers with one note: the header of its second column has 18 characters.
 WEAK_PAGE = 'The products of the week.\n\n| Product | Orders of the week |\n|---|---|\n| Ink sketching | 131 |'
-NOTE = NOTE_HEADER.format(column=2, table=1, length=18)
+NOTE = NOTE_HEADER
 STUBS = {
     'gateway/__init__.py': '',
     'gateway/platforms/__init__.py': '',

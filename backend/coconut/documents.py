@@ -15,7 +15,6 @@ This module imports only the standard library at its top, so the gateway plugin 
 """
 from __future__ import annotations
 
-import html
 import json
 import re
 from datetime import datetime, time as day_time, timedelta, timezone
@@ -149,11 +148,11 @@ def _declarations(css: str) -> str:
 BLOCKS = ('Write a page like a short report. First, one or two sentences that state the point. Then the key '
           'numbers: a table with one row of numbers shows them large, with a label in each header. Then sections, '
           'each with a short heading and one table or one chart. A callout is only for one decision or one warning, '
-          'in one or two sentences: a quote that starts with [!NOTE], [!TIP], [!IMPORTANT], [!WARNING] or '
-          '[!CAUTION], with an optional title on the same line. A table that does not fit a phone shows each row as '
-          'a record with the first cell as its name and a short last cell at its end, so put the name column first '
-          'and the status last. Give each column one fact and a header of at most 16 characters. A ```chart block '
-          'draws a graph from JSON {"type": "bar", "line", "area" or "dot", "data": [...], "x": "field", "y": '
+          'in one or two sentences without a list: a quote that starts with [!NOTE], [!TIP], [!IMPORTANT], '
+          '[!WARNING] or [!CAUTION], with an optional title on the same line. A table that does not fit a phone shows '
+          'each row as a record with the first cell as its name and a short last cell at its end, so put the name '
+          'column first and the status last. Give each column one fact, not facts joined by dashes, and a header of at '
+          'most 16 characters. A ```chart block draws a graph from JSON {"type": "bar", "line", "area" or "dot", "data": [...], "x": "field", "y": '
           '"field", "series": "field", "title": "..."}: give days as dates (YYYY-MM-DD). A ```mermaid block draws a '
           'diagram (flowchart, sequence, timeline, gantt, pie). Task lists and photos work too. HTML pages have the '
           'same blocks: <pre class="mermaid">, <aside class="callout tip"> and <p class="lead">. The coconut skill '
@@ -260,13 +259,12 @@ def page_problems(content: str) -> list[str]:
 
 
 # The notes of a save: what a Markdown page can do better, for four rules that the lines of the page show without a
-# guess. A note never blocks a save, and when in doubt there is no note: each simplification of the reader can only
-# remove a note, never add one. A note names a place by its position, with fixed words and numbers, and never repeats
-# text of the page: that text can come from outside, and the note goes to the model.
+# guess. A note never blocks a save. When in doubt there is no note: each rule of the reader below can only remove a
+# note, never add one. A note is one fixed sentence for each rule. It names no place and repeats no text of the page.
 #
 # The work has a bound by design. page_notes reads only the first MOST_LINES lines of the first MOST_CHARACTERS
-# characters, and cuts each line to LONGEST_LINE characters. Each later step makes one pass over these lines with plain
-# string methods. No step calls itself, and the result depends only on the page.
+# characters, cuts each line to LONGEST_LINE characters, and makes one pass over these lines with plain string
+# methods. No step calls itself, and the result depends only on the page.
 MOST_NOTES = 3
 MOST_LINES = 2000
 LONGEST_LINE = 1000
@@ -276,151 +274,171 @@ LONGEST_CALLOUT = 300
 FEWEST_COLUMNS = 4
 FEWEST_ROWS = 3
 FEWEST_DASHES = 2
-NOTE_CALLOUT_LIST = 'Callout {callout} holds a list. Put the list in a table, with the name first and a short status last.'
-NOTE_CALLOUT_LONG = ('Callout {callout} has more than 300 characters. A callout holds one or two sentences: put the rest '
-                     'in the page.')
-NOTE_HEADER = 'Column {column} of table {table} has a header of {length} characters. Use at most 16.'
-NOTE_NAME = 'Each row of table {table} starts with the same text. Put the column that names each row first.'
-NOTE_CELL_DASHES = 'A cell of table {table} packs several facts with dashes. Give each fact its own column.'
-NOTE_ITEM_DASHES = 'List item {item} packs several facts with dashes. Put the facts in a table, one in each column.'
+NOTE_CALLOUT = 'A callout holds one or two sentences. Make it shorter, and put the rest in the page.'
+NOTE_HEADER = 'A column header is longer than 16 characters. Make it shorter.'
+NOTE_NAME = 'Each row of a table starts with the same text. Put the column that names each row first.'
+NOTE_DASHES = 'A table cell or a list item packs several facts with dashes. Give each fact its own column.'
 _CALLOUT_KINDS = ('[!NOTE]', '[!TIP]', '[!IMPORTANT]', '[!WARNING]', '[!CAUTION]')
 # Only an em dash between spaces: an en dash between spaces is the sign of a range, as in "Mon – Fri".
 _DASH = ' — '
+# The marks of Markdown and HTML that a header cell can show fewer of than it has. _shown leaves them out.
+_HIDDEN = '*_~`[]!<>'
 
 
-def _visible(text: str) -> str:
-    """The text that a reader sees of inline Markdown, near enough: an entity is its character, a link is its text,
-    and the marks of emphasis and code go. Each simplification makes the text shorter, never longer, so it can only
-    remove a note about a long header or a long callout."""
-    out = []
-    skip = 0  # The depth of the address of a link: "(...)" right after "]".
-    previous = ''
-    for char in text:  # One cut line: at most LONGEST_LINE characters.
-        if skip:
-            skip += (char == '(') - (char == ')')
-        elif char == '(' and previous == ']':
-            skip = 1
-        elif char not in '*_~`[]!':
-            out.append(char)
-        previous = char
-    return html.unescape(''.join(out)).strip()
+def _cut(content: str) -> tuple[list[str], set[int]]:
+    """The lines that the notes read: the first MOST_LINES lines of the first MOST_CHARACTERS characters, each cut to
+    LONGEST_LINE characters, and the numbers of the lines that the cut made shorter. The last line counts as cut when
+    the page goes on after the cut, because the reader cannot see what follows it."""
+    head = content[:MOST_CHARACTERS]
+    lines = head.split('\n', MOST_LINES)
+    more = len(lines) > MOST_LINES or len(content) > MOST_CHARACTERS
+    lines = lines[:MOST_LINES]
+    cut = {index for index, line in enumerate(lines) if len(line) > LONGEST_LINE}  # At most MOST_LINES lines.
+    if more:
+        cut.add(len(lines) - 1)
+    return [line[:LONGEST_LINE] for line in lines], cut
 
 
-def _text(line: str) -> tuple[bool, str]:
-    """Whether a line is in a quote, and its text without the quote marks and the spaces around it."""
-    start = len(line) - len(line.lstrip(' >'))
-    return '>' in line[:start], line[start:].strip()
+def _indent(line: str) -> int:
+    return len(line) - len(line.lstrip(' '))
 
 
-def _cells(text: str) -> list[str]:
-    """The cells of a table line that starts with "|". A pipe in code or after a backslash splits a cell too: such a
-    table gets no notes (_unsure), so a wrong split can only remove a note."""
-    cells = text[1:].split('|')  # One cut line: at most LONGEST_LINE cells.
+def _opens_code(line: str) -> bool:
+    """Whether a line can open code: a fence after optional spaces and quote marks, a tab or four spaces first."""
+    if line.startswith('\t') or _indent(line) >= 4:
+        return True
+    return line.lstrip(' >').startswith(('```', '~~~'))
+
+
+def _shown(cell: str) -> int:
+    """The fewest characters that a header cell can show: without the marks of _HIDDEN, without the address or label
+    of a link ("(...)" or "[...]" right after "]"), without the text of a photo ("![...]"), and with an entity
+    ("&...;") as one character. The cell shows at least this many characters, so a note on it is true. Errs toward
+    no note."""
+    count = index = 0
+    while index < len(cell):  # One cell of one cut line: at most LONGEST_LINE characters.
+        char = cell[index]
+        if index and (char in '([' and cell[index - 1] == ']' or char == '[' and cell[index - 1] == '!'):
+            end = cell.find(')' if char == '(' else ']', index)
+            index = len(cell) if end < 0 else end + 1
+            continue
+        if char == '&':
+            end = cell.find(';', index, index + 33)
+            if end > index:
+                count, index = count + 1, end + 1
+                continue
+        count += char not in _HIDDEN
+        index += 1
+    return count
+
+
+def _list_item(line: str) -> str | None:
+    """The text of a list item for the dash rule: "- ", "* ", "+ ", or digits and ". " after at most three spaces."""
+    if _indent(line) > 3:
+        return None
+    text = line.strip()
+    if text[:2] in ('- ', '* ', '+ '):
+        return text[2:]
+    digits = len(text) - len(text.lstrip('0123456789'))
+    return text[digits + 2:] if digits and text[digits:digits + 2] == '. ' else None
+
+
+def _packed(text: str) -> bool:
+    """Whether a text joins several facts with em dashes. A text with a link can hide its dashes in the title or the
+    address of the link, so it counts as not packed. Errs toward no note."""
+    return '](' not in text and text.count(_DASH) >= FEWEST_DASHES
+
+
+def _cells(line: str) -> list[str]:
+    """The cells of a table line that starts with "|". A pipe in code or after a backslash would split a cell wrongly,
+    so a table with a backtick or a backslash gives no note."""
+    cells = line.strip()[1:].split('|')  # One cut line: at most LONGEST_LINE cells.
     if not cells[-1].strip():
         cells.pop()
     return [cell.strip() for cell in cells]
 
 
-def _unsure(text: str) -> bool:
-    return '`' in text or '\\|' in text
+def _is_delimiter(line: str) -> bool:
+    text = line.strip()
+    return _indent(line) <= 3 and text.startswith('|') and '-' in text and not text.strip('|-: ')
 
 
-def _delimiter(text: str) -> bool:
-    """Whether a text is the line under the header of a table: pipes, dashes, colons and spaces, with a dash."""
-    return text.startswith('|') and '-' in text and not text.strip('|-: ')
+def _callout_notes(lines: list[str]) -> bool:
+    """Whether a callout holds a list item or more than LONGEST_CALLOUT characters. The lines are a run of quote lines
+    after the line of the mark. A list item here is "- ", "* ", "+ ", "1. " or "1) ": a wrapped line can start with
+    another number, as "46. That is the first time." Errs toward no note."""
+    size = 0
+    for line in lines:  # At most MOST_LINES lines.
+        text = line.lstrip(' >').strip()
+        is_break = not text.replace(' ', '').strip('-*_')
+        if (text[:2] in ('- ', '* ', '+ ') or text[:3] in ('1. ', '1) ')) and not is_break:
+            return True
+        size += len(text)
+    return size > LONGEST_CALLOUT
 
 
-def _list_item(text: str) -> str | None:
-    """The text of a list item, or None. A numbered item counts only when it starts at 1, because a wrapped line such as
-    "46. That is the first time." is no list item in marked. A line of only -, * or + and spaces is a break."""
-    if text[:2] in ('- ', '* ', '+ '):
-        return None if not text.replace(' ', '').strip(text[0]) else text[2:].strip()
-    if text[:3] in ('1. ', '1) '):
-        return text[3:].strip()
-    return None
-
-
-def _cut(content: str) -> list[str]:
-    """The lines that the notes read: the first MOST_LINES lines of the first MOST_CHARACTERS characters, each cut to
-    LONGEST_LINE characters."""
-    lines = content[:MOST_CHARACTERS].split('\n', MOST_LINES)[:MOST_LINES]
-    return [line[:LONGEST_LINE].rstrip('\r') for line in lines]
+def _table_notes(lines: list[str], unsure: bool) -> tuple[bool, bool, bool]:
+    """The notes of one table: a long header, the same first cell in each row, a packed cell. The lines are its header,
+    its delimiter and its body. A table that the reader cannot be sure of gives no note."""
+    head = _cells(lines[0])
+    if unsure or any('`' in line or '\\' in line for line in lines) or len(head) != len(_cells(lines[1])):
+        return False, False, False
+    long = any(_shown(cell) > LONGEST_HEADER for cell in head)
+    rows = lines[2:]
+    # The first cell of each row, and the cells of a row only when the row has two dashes. At most MOST_LINES rows.
+    firsts = {row.strip()[1:].split('|', 1)[0].strip() for row in rows}
+    same = len(head) >= FEWEST_COLUMNS and len(rows) >= FEWEST_ROWS and len(firsts) == 1 and '' not in firsts
+    packed = any(_packed(cell) for row in rows if row.count(_DASH) >= FEWEST_DASHES for cell in _cells(row))
+    return long, same, packed
 
 
 def _notes(content: str) -> list[str]:
-    """The notes of a Markdown page, in the order of the rules: a callout, a header, the names of the rows, dashes."""
-    texts = [_text(line) for line in _cut(content)]
-    callout = header = dashes = None
-    callouts = items = 0
-    tables = []        # [columns, rows, first cell, same first cell, usable] of each table, in the order of the page
-    table = None       # The open table.
-    fence = ''         # The marks of the open fence, as "```".
-    quoted = in_callout = False
-    callout_size = 0
+    """The notes of a Markdown page, in the order of the rules, each at most once: a callout, a header, the names of
+    the rows, dashes."""
+    lines, cut = _cut(content)
+    found = set()
     index = 0
-    while index < len(texts):  # At most MOST_LINES lines, each read at most twice.
-        is_quote, text = texts[index]
+    while index < len(lines):  # At most MOST_LINES lines; each line is read in one step below.
+        line = lines[index]
+        if _opens_code(line):
+            # The reader stops at the first line that can open code, and reads nothing after it. Errs toward no note.
+            break
+        start = index == 0 or not lines[index - 1].strip()
+        if _indent(line) <= 3 and line.lstrip(' ').startswith('>'):
+            # A quote: a run of lines that start with ">", which ends at the first other line. It is a callout only
+            # when it starts the page or follows a blank line, and its first line starts with a mark.
+            end = index
+            while end < len(lines) and _indent(lines[end]) <= 3 and lines[end].lstrip(' ').startswith('>'):
+                end += 1
+            if any(_opens_code(text) for text in lines[index:end]):
+                break
+            mark = line.lstrip(' >').strip().upper()
+            if start and mark.startswith(_CALLOUT_KINDS) and _callout_notes(lines[index + 1:end]):
+                found.add(NOTE_CALLOUT)
+            index = end
+            continue
+        if line.lstrip(' ').startswith('|') and index + 1 < len(lines) and _is_delimiter(lines[index + 1]):
+            # A table: a header, its delimiter, then body lines that start with "|". A table that the cut shortened,
+            # or with a line of text right under it (marked reads it as a row), gives no note.
+            end = index + 2
+            while end < len(lines) and _indent(lines[end]) <= 3 and lines[end].lstrip(' ').startswith('|'):
+                end += 1
+            unsure = (any(number in cut for number in range(index, end))
+                      or end < len(lines) and bool(lines[end].strip()))
+            long, same, packed = _table_notes(lines[index:end], unsure)
+            found.update(note for note, hit in ((NOTE_HEADER, long), (NOTE_NAME, same), (NOTE_DASHES, packed)) if hit)
+            index = end
+            continue
+        item = _list_item(line)
+        if item is not None and _packed(item):
+            found.add(NOTE_DASHES)
         index += 1
-        if fence:
-            # A fence ends at a line of its marks, also in a quote. A fence that does not end hides the rest of the page.
-            if text.startswith(fence) and not text.strip(fence[0]):
-                fence = ''
-            continue
-        if text.startswith(('```', '~~~')):
-            fence, table = text[:len(text) - len(text.lstrip(text[0]))], None
-            continue
-        # A quote ends at a line without a quote mark. A callout is a quote whose first line starts with its mark.
-        if is_quote and not quoted and text.startswith(_CALLOUT_KINDS):
-            callouts += 1
-            in_callout, quoted, callout_size = True, True, 0
-            continue
-        quoted = is_quote
-        in_callout = in_callout and is_quote
-        item = _list_item(text)
-        if in_callout and callout is None:
-            if item is not None:
-                callout = NOTE_CALLOUT_LIST.format(callout=callouts)
-            else:
-                callout_size += len(_visible(text))
-                if callout_size > LONGEST_CALLOUT:
-                    callout = NOTE_CALLOUT_LONG.format(callout=callouts)
-        if item is not None:
-            items += 1
-            if dashes is None and item.count(_DASH) >= FEWEST_DASHES:
-                dashes = NOTE_ITEM_DASHES.format(item=items)
-        # A table: a line that starts with "|", then the line under its header, then body lines that start with "|".
-        if not text.startswith('|'):
-            table = None
-        elif table is not None:
-            cells = _cells(text)
-            first = cells[0] if cells else ''
-            table[4] = table[4] and not _unsure(text)
-            table[3] = (bool(first) if table[1] == 0 else table[3] and first == table[2])
-            table[2] = first if table[1] == 0 else table[2]
-            table[1] += 1
-            if dashes is None and table[4] and any(cell.count(_DASH) >= FEWEST_DASHES for cell in cells):
-                dashes = NOTE_CELL_DASHES.format(table=len(tables))
-        elif index < len(texts) and _delimiter(texts[index][1]):
-            head, under = _cells(text), _cells(texts[index][1])
-            index += 1
-            if len(head) != len(under):
-                continue
-            table = [len(head), 0, '', False, not _unsure(text)]
-            tables.append(table)
-            if header is None and table[4]:
-                for column, cell in enumerate(head, 1):  # At most LONGEST_LINE cells.
-                    length = len(_visible(cell))
-                    if length > LONGEST_HEADER:
-                        header = NOTE_HEADER.format(column=column, table=len(tables), length=length)
-                        break
-    name = next((NOTE_NAME.format(table=number) for number, (columns, rows, _, same, usable) in enumerate(tables, 1)
-                 if usable and same and columns >= FEWEST_COLUMNS and rows >= FEWEST_ROWS), None)
-    return [note for note in (callout, header, name, dashes) if note is not None][:MOST_NOTES]
+    return [note for note in (NOTE_CALLOUT, NOTE_HEADER, NOTE_NAME, NOTE_DASHES) if note in found][:MOST_NOTES]
 
 
 def page_notes(document_format: str, content: str) -> list[str]:
-    """What a Markdown page can do better, at most MOST_NOTES notes in the order of the rules. An HTML page gets no
-    notes. The function never raises: a note never stops a save."""
+    """What a Markdown page can do better, at most MOST_NOTES notes in the order of the rules. An HTML page gets no notes.
+    The function never raises: a note never stops a save."""
     if document_format != 'markdown' or not isinstance(content, str):
         return []
     try:

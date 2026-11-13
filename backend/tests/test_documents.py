@@ -56,9 +56,14 @@ class PageRuleTests(unittest.TestCase):
 
     def test_the_texts_of_each_session_stay_short(self):
         # Each bot session pays for these texts. BLOCKS had 197 words before the recipe, and may have 20 more.
+        # LIBRARY_INSTRUCTIONS had 368, and may have 10 more.
         from coconut.card_tools import LIBRARY_INSTRUCTIONS
         self.assertLessEqual(len(documents.BLOCKS.split()), 217)
-        self.assertLessEqual(len(LIBRARY_INSTRUCTIONS.split()), 368)
+        self.assertLessEqual(len(LIBRARY_INSTRUCTIONS.split()), 378)
+        # The texts teach the four rules of the notes: no list in a callout, no facts joined by dashes.
+        self.assertIn('in one or two sentences without a list', documents.BLOCKS)
+        self.assertIn('not facts joined by dashes', documents.BLOCKS)
+        self.assertIn('Follow the notes in the answer of a save.', LIBRARY_INSTRUCTIONS)
 
     def test_a_page_with_tokens_and_the_given_libraries_passes(self):
         self.assertEqual(page_problems(TREEMAP), [])
@@ -204,7 +209,7 @@ class DocumentServiceTests(unittest.TestCase):
 
     def test_a_save_answers_with_the_notes_of_the_page_and_saves_it(self):
         weak = 'The products of the week.\n\n| Product | Orders of the week |\n|---|---|\n| Ink | 131 |\n| Paint | 168 |'
-        note = documents.NOTE_HEADER.format(column=2, table=1, length=18)
+        note = documents.NOTE_HEADER
         self.assertEqual(self.save(content=weak), {'status': 'saved', 'key': 'signups-daily', 'version': 1,
                                                    'expires_at': None, 'notes': [note]})
         self.assertEqual(self.tool('read_document', {'key': 'signups-daily'})['content'], weak)
@@ -737,7 +742,7 @@ class GatewayPageTests(unittest.TestCase):
     def test_a_save_of_the_tooling_answers_with_the_notes_of_the_page(self):
         weak = 'The products of the week.\n\n| Product | Orders of the week |\n|---|---|\n| Ink | 131 |\n| Paint | 168 |'
         expected = {'key': 'weekly-report', 'version': 1, 'expires_at': None,
-                    'notes': [documents.NOTE_HEADER.format(column=2, table=1, length=18)]}
+                    'notes': [documents.NOTE_HEADER]}
         self.assertEqual(self.publish(content=weak), dict(expected, status='saved'))
         # A script on a timer saves the same page again. The answer still names what to improve.
         self.assertEqual(self.publish(content=weak), dict(expected, status='unchanged'))
