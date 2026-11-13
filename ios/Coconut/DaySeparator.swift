@@ -38,7 +38,7 @@ enum DaySeparator {
 /// The date pill of the chat: a small capsule with the fill of a bot bubble, as the date of WhatsApp. It has the same
 /// space around it in its own place and at the top of the chat, so the two pills meet at one position.
 struct DayPill: View {
-    static let spaceAbove: CGFloat = 18
+    static let spaceAbove: CGFloat = BoardStyle.Space.l
     static let spaceBelow: CGFloat = 12
 
     let date: Date
@@ -48,8 +48,8 @@ struct DayPill: View {
 
     var body: some View {
         Text(DaySeparator.label(for: date, now: now))
-            .font(.caption.weight(.semibold))
-            .padding(.horizontal, 14).padding(.vertical, 4)
+            .font(.footnote.weight(.semibold))
+            .padding(.horizontal, BoardStyle.Space.m).padding(.vertical, BoardStyle.Space.xs)
             .background(BoardStyle.surface, in: Capsule())
             // A ring in the color of the page. It does not show on the page. Over a bot bubble, which has the fill of
             // the pill, it keeps the shape of the pinned pill visible.

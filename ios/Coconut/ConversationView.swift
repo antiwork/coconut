@@ -198,10 +198,11 @@ struct ConversationView: View {
                                 BotStatusRow(bot: bot, activity: activity)
                                     .transition(.opacity.animation(BoardStyle.fade(reduceMotion: reduceMotion)))
                             }
-                            // The row inset and this padding keep 14 points below the last row.
-                            Color.clear.frame(height: 1).padding(.bottom, 9).id("conversation-bottom")
+                            // The row inset and this padding keep 13 points below the last row.
+                            Color.clear.frame(height: 1).padding(.bottom, BoardStyle.Space.s).id("conversation-bottom")
                         }
-                        .listRowInsets(EdgeInsets(top: 5, leading: 16, bottom: 5, trailing: 16))
+                        .listRowInsets(EdgeInsets(top: BoardStyle.Space.xs, leading: BoardStyle.Space.l,
+                                                  bottom: BoardStyle.Space.xs, trailing: BoardStyle.Space.l))
                         .listRowSeparator(.hidden)
                         .listRowBackground(Color.clear)
                     }
@@ -601,7 +602,7 @@ struct MessageBubble: View {
     var body: some View {
         HStack {
             if isUser { Spacer(minLength: 36) }
-            VStack(alignment: isUser ? .trailing : .leading, spacing: 3) {
+            VStack(alignment: isUser ? .trailing : .leading, spacing: BoardStyle.Space.xs) {
             VStack(alignment: .leading, spacing: 4) {
                 if let work = message.workContext {
                     Label(work.title, systemImage: "checklist").font(.caption).foregroundStyle(.secondary)
@@ -880,8 +881,8 @@ struct ConversationComposer: View {
                     }.buttonStyle(.plain).accessibilityLabel("Stop \(executorName)'s task").accessibilityIdentifier("stop-current-task")
                 }
                 }
-                .padding(.leading, 14).padding(.trailing, 4)
-                .modifier(ComposerSurface(shape: RoundedRectangle(cornerRadius: 23, style: .continuous)))
+                .padding(.leading, BoardStyle.Space.m).padding(.trailing, BoardStyle.Space.xs)
+                .modifier(ComposerSurface(shape: RoundedRectangle(cornerRadius: BoardStyle.Radius.large, style: .continuous)))
             }
             .modifier(ComposerGlassGroup())
         }
@@ -997,8 +998,8 @@ struct ChatBubbleBackground: ViewModifier {
 
     func body(content: Content) -> some View {
         content
-            .padding(.horizontal, 14)
-            .padding(.vertical, 11)
+            .padding(.horizontal, BoardStyle.Space.m)
+            .padding(.vertical, BoardStyle.Space.m)
             .background(own ? BoardStyle.userBubble : BoardStyle.surface,
                         in: RoundedRectangle(cornerRadius: BoardStyle.Radius.large))
     }
