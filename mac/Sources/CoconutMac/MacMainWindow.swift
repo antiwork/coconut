@@ -30,8 +30,9 @@ struct MacMainWindow: View {
     @State private var chatPath = NavigationPath()
     // The pages of the Library. A document card in a chat opens its document here.
     @State private var libraryPath = NavigationPath()
-    // The right edge of the sidebar in the window, or 0 when the sidebar is hidden. The notice centers right of it.
-    @State private var sidebarEdge: CGFloat = 0
+    // The right edge of the sidebar in the window. The notice centers right of it while the sidebar shows.
+    @State private var sidebarRight: CGFloat = 0
+    @State private var sidebarShown = true
 
     var body: some View {
         if model.mode == .team {
@@ -46,8 +47,10 @@ struct MacMainWindow: View {
             if store.hasPairing || store.isDemo {
                 NavigationSplitView {
                     MacSidebar(selection: $selection)
-                        // A hidden sidebar moves out to the left, so its right edge is 0 or less.
-                        .onGeometryChange(for: CGFloat.self) { $0.frame(in: .global).maxX } action: { sidebarEdge = max(0, $0) }
+                        .onGeometryChange(for: CGFloat.self) { $0.frame(in: .global).maxX } action: { sidebarRight = max(0, $0) }
+                        // AppKit hides a collapsed sidebar but keeps its frame, also when the window opens with the
+                        // sidebar that the person hid. So the right edge counts only while AppKit shows the sidebar.
+                        .background(OnScreenProbe { sidebarShown = $0 })
                         .navigationSplitViewColumnWidth(min: 220, ideal: 260, max: 300)
                         .toolbar {
                             ToolbarItem {
@@ -61,7 +64,7 @@ struct MacMainWindow: View {
                 }
                 // Each page of the detail column gets the notice from here, also a page that a stack pushes: a push
                 // replaces the whole content of the column, with each modifier inside the detail closure.
-                .modifier(MacNoticeArea(sidebarEdge: sidebarEdge))
+                .modifier(MacNoticeArea(sidebarEdge: sidebarShown ? sidebarRight : 0))
             } else {
                 MacPairingView(model: model)
             }

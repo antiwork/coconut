@@ -186,8 +186,9 @@ struct ChatWindowNotice: View {
 
 /// Tells whether its view is on the screen. A page that a stack of the Mac detail column pushes covers the whole
 /// column. The page hides the views under it, but they get no onDisappear, for example a chat under the Model page of
-/// the details next to it. AppKit hides their views, so this view learns it.
-private struct OnScreenProbe: NSViewRepresentable {
+/// the details next to it. A hidden sidebar also gets no onDisappear and keeps its frame. AppKit hides their views,
+/// so this view learns it.
+struct OnScreenProbe: NSViewRepresentable {
     let changed: @MainActor (Bool) -> Void
 
     func makeNSView(context: Context) -> ProbeView { ProbeView() }
