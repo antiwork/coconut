@@ -23,7 +23,8 @@ A bot of this Mac is a record that the person declares (`POST /v1/team/bots`): a
 rules of a `member` entry, and the Hermes home that the bot stands for. The service stores the path of the home and
 compares it. It never opens it. A page (`POST /v1/gateway/document`) names the home, so the home names the bot. No
 person reads the Library on this Mac, so each page names the audience "team". A page of a bot that no team has yet
-waits on this Mac, and the sync writes it when the bot is shared.
+waits on this Mac, and the sync writes it when the bot is shared. The tooling deletes a page with
+`DELETE /v1/gateway/document` and `{home, key}`, without an audience.
 
 Routes, each with the token of the bridge file:
 
@@ -37,7 +38,7 @@ Routes, each with the token of the bridge file:
 `chat` says that the bot answers in the team chat. A declared bot starts with false. The step that connects the bot
 to its Hermes agent sets it to true. While it is true, the `bot` entry of the bot has `open: true`, so the app offers
 the bot after `@`. A change of `chat` writes the entry again in each team of the bot at the next pass.
-- The routes of team.py, and `POST /v1/gateway/document`.
+- The routes of team.py, `POST /v1/gateway/document` and `DELETE /v1/gateway/document`.
 - `POST /v1/gateway/poll`, `/v1/gateway/events` and `/v1/gateway/messages` for the adapter of the team mode.
 """
 from __future__ import annotations
@@ -328,11 +329,20 @@ class TeamOnlyService(TeamTurns, Documents, Team):
         home = checked_home(data.get('home'))
         if data.get('audience') != 'team':
             raise ServiceError(400, TEAM_PAGE)
+        return self.publish_page(self._home_bot(home), data)
+
+    def gateway_document_delete(self, data: dict) -> dict:
+        """DELETE /v1/gateway/document: the tooling deletes a page of a declared bot (Documents.unpublish_page). A
+        delete names no audience. The next pass of the sync replaces the entry of a team page with a `delete` entry."""
+        return self.unpublish_page(self._home_bot(checked_home(data.get('home'))), data)
+
+    def _home_bot(self, home: str) -> str:
+        """The ID of the declared bot of a checked home, or the reason to refuse it."""
         with self.lock:
             row = self.db.execute("SELECT id FROM bots WHERE json_extract(data, '$.home')=?", (home,)).fetchone()
         if row is None:
             raise ServiceError(404, UNKNOWN_HOME)
-        return self.publish_page(row[0], data)
+        return row[0]
 
     def gateway_message(self, data: dict) -> dict:
         """POST /v1/gateway/messages: a send of Hermes in a chat of the team outside a turn of Coconut, for example the

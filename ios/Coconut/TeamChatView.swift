@@ -929,8 +929,10 @@ struct TeamContactRow: View {
     private func content(_ line: TeamChatPreview.Line?) -> some View {
         let unread = room.unread ?? 0
         let date = room.lastMessage?.createdAt?.apiDate
-        // An older service sends no chat. The row then has the name only, centered on the face.
-        return ChatRowLayout(name: room.title, unread: unread, date: date, mentioned: room.showsMentionMark) {
+        // An older service sends no chat. The row then has the name only, centered on the face. It has no "@" mark,
+        // because the mark stands on the second line.
+        return ChatRowLayout(name: room.title, unread: unread, date: date,
+                             mentioned: room.hasChat && room.showsMentionMark) {
             TeamFace(room: room, size: avatarSize)
         } subtitle: {
             Group {
