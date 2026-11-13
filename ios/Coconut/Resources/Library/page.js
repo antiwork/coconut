@@ -59,11 +59,12 @@
   for (const table of main.querySelectorAll("table")) {
     const head = table.tHead && table.tHead.rows[0];
     const body = [...table.tBodies].flatMap((part) => [...part.rows]);
-    // Metrics: a table with one row, 1 to 6 columns and 1 to 24 characters in each cell. Each column is a tile with
-    // the header as its label.
+    // Metrics: a table with one row of numbers, 1 to 6 columns and 1 to 24 characters in each cell. Each column is a
+    // tile with the header as its label. A row with a text cell stays a table, so a list of one row keeps its form.
     const count = head ? head.cells.length : 0;
     if (count >= 1 && count <= 6 && body.length === 1 && body[0].cells.length === count
-        && [...head.cells, ...body[0].cells].every((cell) => text(cell).length >= 1 && text(cell).length <= 24)) {
+        && [...head.cells, ...body[0].cells].every((cell) => text(cell).length >= 1 && text(cell).length <= 24)
+        && [...body[0].cells].every((cell) => number(text(cell)))) {
       const metrics = document.createElement("div");
       metrics.className = "metrics";
       [...head.cells].forEach((header, index) => {
@@ -74,17 +75,12 @@
         const value = document.createElement("p");
         value.className = "value";
         const match = number(text(body[0].cells[index]));
-        if (match) {
-          value.textContent = match[1];
-          if (match[2]) {
-            const unit = document.createElement("span");
-            unit.className = "unit";
-            unit.textContent = match[2];
-            value.append(" ", unit);
-          }
-        } else {
-          value.textContent = text(body[0].cells[index]);
-          value.classList.add("text");
+        value.textContent = match[1];
+        if (match[2]) {
+          const unit = document.createElement("span");
+          unit.className = "unit";
+          unit.textContent = match[2];
+          value.append(" ", unit);
         }
         tile.append(label, value);
         metrics.append(tile);
@@ -106,15 +102,20 @@
     }
     if (!body.length) continue;
     // The record of a row: its first cell with text is the name. Each other cell with text follows on one line, after
-    // " · ", and a number after the label of its column: "Open 4 · Drafts 3".
+    // " · ", and a number after the label of its column: "Open 4 · Drafts 3". A no-break space keeps the dot with the
+    // cell before it, and a label with its number.
     for (const row of body) {
+      // The white space between two cells would be a second space and a line break before the dot.
+      for (const node of [...row.childNodes]) {
+        if (node.nodeType === Node.TEXT_NODE && !node.textContent.trim()) node.remove();
+      }
       const cells = [...row.cells].filter((cell) => text(cell));
       if (!cells.length) continue;
       cells[0].classList.add("name");
       cells.slice(1).forEach((cell, index) => {
         const header = head && head.cells[cell.cellIndex];
-        const label = header && number(text(cell)) ? text(header) + " " : "";
-        cell.dataset.label = (index ? " · " : "") + label;
+        const label = header && number(text(cell)) ? text(header) + " " : "";
+        cell.dataset.label = (index ? " · " : "") + label;
       });
     }
     tables.push(table);

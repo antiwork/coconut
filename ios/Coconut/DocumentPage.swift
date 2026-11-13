@@ -155,7 +155,7 @@ struct DocumentPage {
        5. Space from one scale: 4, 8, 12, 16, 24, 32 px. A section heading has 32 px above it.
        6. A hairline (--line) shows only between the rows of a table and of a record list.
        7. A number in a table or a metric uses tabular figures. A column of numbers aligns right.
-       page.js makes the metrics (a table with one row) and the record list (a table that does not fit). */
+       page.js makes the metrics (a table with one row of numbers) and the record list (a table that does not fit). */
     :root {
       color-scheme: light dark;
       --bg: #ffffff; --surface: #f4f4f4; --line: rgba(0, 0, 0, 0.1);
@@ -218,7 +218,7 @@ struct DocumentPage {
     .callout.caution { --tone: var(--c3); }
     table, .metrics, .metric { font-variant-numeric: tabular-nums; }
     table { width: 100%; border-collapse: collapse; font-size: var(--size-2); }
-    th, td { padding: 9px 12px 9px 0; border-bottom: 1px solid var(--line); vertical-align: top; }
+    th, td { padding: 12px 16px 12px 0; border-bottom: 1px solid var(--line); vertical-align: top; }
     th { color: var(--text-2); font-weight: 400; font-size: var(--size-1); }
     th:last-child, td:last-child { padding-right: 0; }
     th:not([align]) { text-align: left; }
@@ -238,7 +238,6 @@ struct DocumentPage {
     .metrics p { margin: 0; }
     .metrics .label { font-size: var(--size-1); color: var(--text-2); }
     .metrics .value { margin-top: 4px; font-size: var(--size-5); font-weight: 600; line-height: 1.2; }
-    .metrics .value.text { font-size: var(--size-4); }
     .metrics .unit { font-size: var(--size-2); font-weight: 400; color: var(--text-2); }
     img { max-width: 100%; height: auto; border-radius: var(--radius); display: block; }
     svg { display: block; max-width: 100%; height: auto; overflow: visible; }

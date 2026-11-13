@@ -416,13 +416,18 @@ final class LibraryDocumentTests: XCTestCase {
         XCTAssertEqual(html.components(separatedBy: "</script>").count, 2)
     }
 
-    /// A page with each table form of page.js: metrics, a table with one long cell, a short table and a wide table.
+    /// A page with each table form of page.js: metrics, a table with one row of text, a table with one long cell, a
+    /// short table and a wide table.
     private static let tablePage = """
     Lead.
 
-    | Orders | Revenue | Refund rate | Change | Status |
+    | Steps | Revenue | Refund rate | Change | Visits |
     |---|---|---|---|---|
-    | 1,552 steps | $41,200 | 87% | -3 | No data |
+    | 1,552 steps | $41,200 | 87% | -3 | 12k |
+
+    | Step | Status |
+    |---|---|
+    | Deploy | On track |
 
     | Note |
     |---|
@@ -439,8 +444,8 @@ final class LibraryDocumentTests: XCTestCase {
     | docs | #13 | Add a field for the access token of the analytics | Grace | open |
     """
 
-    /// A table with one row is a row of metrics: a large number with its unit, or a text. A table with one row and a
-    /// long cell stays a table.
+    /// A table with one row of numbers is a row of metrics: a large number with its unit. A table with one row that
+    /// has a text cell or a long cell stays a table.
     @MainActor
     func testATableWithOneRowBecomesMetrics() async throws {
         let (view, window) = try await loadPage(Self.tablePage, width: 390)
@@ -448,15 +453,14 @@ final class LibraryDocumentTests: XCTestCase {
         let values = try await string(view, """
             JSON.stringify([...document.querySelectorAll(".metrics > div")].map((tile) => [
               tile.querySelector(".label").textContent, tile.querySelector(".value").firstChild.textContent,
-              tile.querySelector(".unit") ? tile.querySelector(".unit").textContent : "",
-              tile.querySelector(".value.text") ? "text" : "number"]))
+              tile.querySelector(".unit") ? tile.querySelector(".unit").textContent : ""]))
             """)
-        XCTAssertEqual(values, #"[["Orders","1,552","steps","number"],["Revenue","$41,200","","number"],"#
-            + #"["Refund rate","87%","","number"],["Change","-3","","number"],["Status","No data","","text"]]"#)
+        XCTAssertEqual(values, #"[["Steps","1,552","steps"],["Revenue","$41,200",""],["Refund rate","87%",""],"#
+            + #"["Change","-3",""],["Visits","12k",""]]"#)
         let tables = try await string(view, """
             [...document.querySelectorAll("main table")].map((table) => table.rows[0].cells[0].textContent).join("|")
             """)
-        XCTAssertEqual(tables, "Note|Shop|Repository")
+        XCTAssertEqual(tables, "Step|Note|Shop|Repository")
         // Two tiles in a row on a phone.
         let columns = try await string(view, """
             getComputedStyle(document.querySelector(".metrics")).gridTemplateColumns.split(" ").length
@@ -475,33 +479,44 @@ final class LibraryDocumentTests: XCTestCase {
               .map((table) => table.classList.contains("records") ? "records" : "table").join(" ")
             """
         var shown = try await string(view, forms)
-        XCTAssertEqual(shown, "table table records")
+        XCTAssertEqual(shown, "table table table records")
         let records = try await string(view, """
             [...document.querySelectorAll("table.records tbody tr")].map((row) => [...row.cells]
               .filter((cell) => getComputedStyle(cell).display !== "none")
               .map((cell) => (cell.dataset.label || "") + cell.textContent).join("")).join("\\n")
             """)
-        XCTAssertEqual(records, "shop#12 · Refuse price writes that do not match the product · Ada · draft\n"
-            + "docs#13 · Add a field for the access token of the analytics · Grace · open")
+        // A no-break space keeps each dot with the cell before it, so no line of a record starts with a dot.
+        XCTAssertEqual(records, "shop#12\u{a0}· Refuse price writes that do not match the product\u{a0}· Ada"
+            + "\u{a0}· draft\ndocs#13\u{a0}· Add a field for the access token of the analytics\u{a0}· Grace\u{a0}· open")
+        // No white space is left between two cells of a record, so the line cannot break before a dot.
+        let spaces = try await string(view, """
+            [...document.querySelectorAll("table.records tbody tr")]
+              .flatMap((row) => [...row.childNodes]).filter((node) => node.nodeType === Node.TEXT_NODE).length
+            """)
+        XCTAssertEqual(spaces, "0")
         // The name is a line of its own, above the quiet line.
         let name = try await string(view, "getComputedStyle(document.querySelector('table.records td.name')).display")
         XCTAssertEqual(name, "block")
         // A number in a record has the label of its column. A column of numbers aligns right, also its header.
-        let shops = "document.querySelectorAll('main table')[1]"
+        let shops = "document.querySelectorAll('main table')[2]"
         let labels = try await string(view, "[...\(shops).tBodies[0].rows[0].cells].map((cell) => cell.dataset.label)")
-        XCTAssertEqual(labels, ",Open , · Drafts ")
+        // A no-break space keeps a label with its number.
+        XCTAssertEqual(labels, ",Open\u{a0},\u{a0}· Drafts\u{a0}")
         let aligned = try await string(view, """
             [...\(shops).rows].map((row) => [...row.cells]
               .map((cell) => getComputedStyle(cell).textAlign.endsWith("right") ? "right" : "left").join(",")).join(" ")
             """)
         XCTAssertEqual(aligned, "left,right,right left,right,right left,right,right")
+        // The padding of a cell is on the space scale: 12 px above and below, and 16 px before the next column.
+        let padding = try await string(view, "getComputedStyle(\(shops).rows[1].cells[0]).padding")
+        XCTAssertEqual(padding, "12px 16px 12px 0px")
         // The 680 px column of a wide window has room for the table.
         view.frame.size.width = 1100
-        shown = try await answer(of: forms, in: view, once: "table table table")
-        XCTAssertEqual(shown, "table table table")
+        shown = try await answer(of: forms, in: view, once: "table table table table")
+        XCTAssertEqual(shown, "table table table table")
         view.frame.size.width = 390
-        shown = try await answer(of: forms, in: view, once: "table table records")
-        XCTAssertEqual(shown, "table table records")
+        shown = try await answer(of: forms, in: view, once: "table table table records")
+        XCTAssertEqual(shown, "table table table records")
     }
 
     /// The answer of a script as text.
