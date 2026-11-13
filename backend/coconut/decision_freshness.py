@@ -37,10 +37,12 @@ REFRESH_INSTRUCTIONS = (
     'Do not create another card for this check. Return no chat message when nothing needs to change.'
 )
 
-# A task that waits for two cards keeps waiting when Coconut closes one of them for its source. Each turn of the task that
-# continues a card gets the cards that closed so in the last CLOSED_CARDS_HOURS, at most CLOSED_CARDS_KEEP (_closed_cards).
+# Each turn that continues a card gets the cards of its task, and the suggestions of its bot and conversation, that closed
+# for their source in the last CLOSED_CARDS_HOURS: at most CLOSED_CARDS_KEEP, each text cut to CLOSED_CARD_TEXT characters
+# (_closed_cards).
 CLOSED_CARDS_KEEP = 5
 CLOSED_CARDS_HOURS = 24
+CLOSED_CARD_TEXT = 300
 
 WITHDRAWAL_RESPONSE = ('Coconut withdrew an obsolete card after checking current evidence. '
                        'No option was selected and no new approval was given. Continue only within the existing request. '
@@ -138,10 +140,10 @@ class DecisionFreshness:
 
         The person chose nothing. Each party that waits for the card learns it, as for a withdrawal: the tool call that
         asked the card gets `response`, and a task that waits only for this card continues with _resume_decision. A task
-        that waits for another card too keeps waiting, and its next turn gets this card as data (_closed_cards). A
-        suggestion starts a turn of its conversation (_continue_closed_suggestion). An ended task and a cancelled task
-        get no turn. A check of the card stops. `fields` holds the outcome that the person reads. No card of a waiting gateway question comes here: such a card is not native and has no
-        GitHub link or merge PR.
+        that waits for another card too keeps waiting. A suggestion, an ended task and a cancelled task get no turn. A
+        later turn of the bot in this conversation gets this card as data (_closed_cards). A check of the card stops.
+        `fields` holds the outcome that the person reads. No card of a waiting gateway question comes here: such a card
+        is not native and has no GitHub link or merge PR.
         """
         from .service import now
         task = self._get('tasks', decision['task_id'])
@@ -164,9 +166,7 @@ class DecisionFreshness:
                     self.provider.cancel_context(task['id'], context['id'])
                 self._event('context.cancelled', {'id': context['id'], 'decision_id': decision['id']}, task['bot_id'], task['id'])
         self._event('decision.updated', self._public(decision), task['bot_id'], task['id'])
-        if decision.get('inbox_kind') == 'proposal':
-            self._continue_closed_suggestion(decision, task)
-        elif (task['status'] == 'needs_you'
+        if (decision.get('inbox_kind') != 'proposal' and task['status'] == 'needs_you'
                 and not any(d['id'] != decision['id'] and d.get('inbox_kind') != 'proposal' for d in (
                     json.loads(row[0]) for row in self.db.execute(
                         "SELECT data FROM decisions WHERE json_extract(data,'$.task_id')=? "
@@ -176,54 +176,36 @@ class DecisionFreshness:
             self._event('task.updated', self._public(task), task['bot_id'], task['id'])
         self._refresh_bot(task['bot_id'])
 
-    def _continue_closed_suggestion(self, decision, task):
-        """Start one turn of the conversation for suggestions that Coconut closed for their source, as an answer to a
-        suggestion continues it (native_execution.answer_native). The turn continues the first closed suggestion
-        (_resume_decision). Each suggestion that closes before that turn starts joins it (_closed_suggestions), so one
-        merged PR that many suggestions name starts one turn for each bot and conversation. A cancelled task, and an
-        archived, deleted or paused bot get no turn. The caller holds the transaction."""
-        bot, origin = self._get('bots', task['bot_id']), self._get('bots', task['conversation_bot_id'])
-        if (task['status'] == 'cancelled' or self._task_paused(task)
-                or any(item.get('_deleted') or item.get('archived') for item in (bot, origin))):
-            return
-        for row in self.db.execute("SELECT data FROM tasks WHERE json_extract(data,'$.status')='queued' "
-                                   "AND json_extract(data,'$._closed_suggestions') IS NOT NULL").fetchall():
-            waiting = json.loads(row[0])
-            if (waiting['bot_id'], waiting['conversation_bot_id']) == (task['bot_id'], task['conversation_bot_id']):
-                waiting['_closed_suggestions'].append(decision['id'])
-                self._put('tasks', waiting)
-                return
-        continuation = self._send(bot, {'text': decision['title'], 'mode': 'queue'}, thread_id=task['thread_id'],
-                                  parent_task_id=task['id'], conversation_bot_id=task['conversation_bot_id'],
-                                  record_message=False, human_authored=False)
-        stored = self._get('tasks', continuation['id'])
-        stored.update(_resume_decision=decision['id'], _closed_suggestions=[decision['id']], title=decision['title'][:120])
-        if task.get('_chat_session'):
-            # With the gateway, a suggestion of the bot's conversation continues there.
-            self.join_conversation(stored)
-        self._put('tasks', stored)
-
     def _closed_cards(self, task, resumed_id=None):
-        """The cards that Coconut closed for their GitHub source, newest first, at most CLOSED_CARDS_KEEP, without the
-        card that the turn continues: the cards of this task that closed in the last CLOSED_CARDS_HOURS, and the
-        suggestions that joined a turn (_closed_suggestions). A card that closed as "Already merged." counts too. A card
-        that closed more than one day before the turn is left out, and the bot does not learn it from this list. Each
-        turn derives the list again, so a restart or an archived bot loses nothing. The turn gets it as data
-        (native_conversation.decision_context)."""
+        """The cards that Coconut closed because their GitHub source ended, newest first, at most CLOSED_CARDS_KEEP,
+        without the card that the turn continues. A card that closed as "Already merged." counts too. The list has:
+        - the cards of this task, and
+        - the suggestions of the same bot in the same conversation. The conversation is `conversation_bot_id` of the
+          task of a card: the same key decides which cards a turn can see (decision_inbox._decision_visible_to_task).
+        A card that closed more than CLOSED_CARDS_HOURS before the turn is left out. Each turn derives the list again,
+        so a restart or an archived bot loses nothing. The list starts no turn: it is data in the record of the card
+        that a turn continues (native_conversation.decision_context). A title and an outcome are cut to CLOSED_CARD_TEXT.
+        """
         from datetime import datetime, timedelta, timezone
-        if isinstance(task, str):
-            task = dict(id=task)
         since = (datetime.now(timezone.utc) - timedelta(hours=CLOSED_CARDS_HOURS)).isoformat()
-        cards = [json.loads(row[0]) for row in self.db.execute(
-            "SELECT data FROM decisions WHERE json_extract(data,'$.task_id')=? AND json_extract(data,'$.status')='resolved' "
-            "AND (json_extract(data,'$.resolution')='source_changed' OR json_extract(data,'$.outcome')='Already merged.')",
-            (task['id'],))]
-        known = {card['id'] for card in cards}
-        cards += [card for card in (self._get('decisions', identity) for identity in task.get('_closed_suggestions', []))
-                  if card['id'] not in known]
-        cards = sorted((card for card in cards if card['id'] != resumed_id and (card.get('resolved_at') or '') >= since),
-                       key=lambda card: card.get('resolved_at') or '', reverse=True)
-        return [dict(title=card['title'], outcome=card['outcome']) for card in cards[:CLOSED_CARDS_KEEP]]
+        closed = ("AND json_extract(data,'$.status')='resolved' AND (json_extract(data,'$.resolution')='source_changed' "
+                  "OR json_extract(data,'$.outcome')='Already merged.')")
+        cards = {card['id']: card for card in (json.loads(row[0]) for row in self.db.execute(
+            "SELECT data FROM decisions WHERE json_extract(data,'$.task_id')=? " + closed, (task['id'],)))}
+        for row in self.db.execute("SELECT data FROM decisions WHERE json_extract(data,'$.bot_id')=? "
+                                   "AND json_extract(data,'$.inbox_kind')='proposal' " + closed, (task.get('bot_id'),)):
+            card = json.loads(row[0])
+            owner = self.db.execute("SELECT json_extract(data,'$.conversation_bot_id') FROM tasks WHERE id=?",
+                                    (card.get('task_id'),)).fetchone()
+            if owner and owner[0] == task.get('conversation_bot_id'):
+                cards.setdefault(card['id'], card)
+        recent = sorted((card for card in cards.values()
+                         if card['id'] != resumed_id and str(card.get('resolved_at') or '') >= since),
+                        key=lambda card: str(card.get('resolved_at') or ''), reverse=True)
+
+        def text(value):
+            return str(value or '')[:CLOSED_CARD_TEXT]
+        return [dict(title=text(card.get('title')), outcome=text(card.get('outcome'))) for card in recent[:CLOSED_CARDS_KEEP]]
 
     def _decision_reply_waits(self, decision):
         """True while a reply of the person to this card waits for its turn or runs. That turn can answer the card, so

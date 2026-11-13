@@ -50,6 +50,22 @@ enum DecisionSelection {
         !dismissed && !["pending", "failed"].contains(status) && !showsCheck(status: status, decidedBy: decidedBy)
     }
 
+    /// The words, the mark and the color of the receipt row of one card. The view shows exactly this.
+    struct Receipt: Equatable {
+        let label: String
+        let mark: String?
+        let dimmed: Bool
+    }
+
+    static func receipt(_ decision: Decision, dismissed: Bool, choosingLabel: String? = nil) -> Receipt {
+        Receipt(label: label(status: decision.status, hasDraft: decision.draft != nil, dismissed: dismissed,
+                             choosingLabel: choosingLabel, selectedOptionLabel: decision.selectedOptionLabel,
+                             outcome: decision.outcome, decidedBy: decision.decidedBy),
+                mark: mark(status: decision.status, pending: decision.isPending, dismissed: dismissed,
+                           decidedBy: decision.decidedBy),
+                dimmed: closedWithoutChoice(status: decision.status, dismissed: dismissed, decidedBy: decision.decidedBy))
+    }
+
     /// The mark at the end of the receipt row, as the name of a symbol. A card that closed without a choice has none.
     static func mark(status: String, pending: Bool, dismissed: Bool, decidedBy: String? = nil) -> String? {
         if dismissed { return "xmark" }
@@ -91,14 +107,9 @@ struct DecisionCard: View {
         !showsBot
         #endif
     }
-    private var selectionLabel: String {
-        DecisionSelection.label(status: decision.status, hasDraft: decision.draft != nil, dismissed: isDismissed,
-                                choosingLabel: submittingOptionId.flatMap { id in decision.options.first { $0.id == id }?.label },
-                                selectedOptionLabel: decision.selectedOptionLabel, outcome: decision.outcome,
-                                decidedBy: decision.decidedBy)
-    }
-    private var closedWithoutChoice: Bool {
-        DecisionSelection.closedWithoutChoice(status: decision.status, dismissed: isDismissed, decidedBy: decision.decidedBy)
+    private var receipt: DecisionSelection.Receipt {
+        DecisionSelection.receipt(decision, dismissed: isDismissed,
+                                  choosingLabel: submittingOptionId.flatMap { id in decision.options.first { $0.id == id }?.label })
     }
     var body: some View {
         Group {
@@ -255,13 +266,12 @@ struct DecisionCard: View {
     private var decisionReceipt: some View {
         VStack(alignment: .leading, spacing: BoardStyle.Space.m) {
             HStack(alignment: .firstTextBaseline, spacing: 12) {
-                Text(selectionLabel).font(.subheadline)
-                    .foregroundStyle(closedWithoutChoice ? .secondary : .primary)
+                Text(receipt.label).font(.subheadline)
+                    .foregroundStyle(receipt.dimmed ? .secondary : .primary)
                     .fixedSize(horizontal: false, vertical: true)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .accessibilityIdentifier("decision-selection-\(decision.id)")
-                if let mark = DecisionSelection.mark(status: decision.status, pending: decision.isPending, dismissed: isDismissed,
-                                                  decidedBy: decision.decidedBy) {
+                if let mark = receipt.mark {
                     Image(systemName: mark)
                         .font(.subheadline.weight(.semibold))
                         .foregroundStyle(isDismissed ? .secondary : decision.status == "failed" ? BoardStyle.attention :

@@ -103,15 +103,15 @@ def message_content(message):
     return text
 
 
-# The fixed sentence next to `closed_cards` in the record of a card (17 words).
-CLOSED_CARDS_NOTE = ('Coconut closed these cards of this task, because their source on GitHub ended. '
-                     'The person chose nothing.')
+# The fixed sentence next to `closed_cards` in the record of a card (14 words).
+CLOSED_CARDS_NOTE = 'Coconut closed these cards, because their source on GitHub ended. The person chose nothing.'
 
 
 def decision_context(request, decision):
     context = dict(decision)
     if request['task'].get('_closed_cards'):
-        # Other cards of this task that Coconut closed because their GitHub source ended (decision_freshness._closed_cards).
+        # Other cards of this task, and suggestions of this bot in this conversation, that Coconut closed because their
+        # GitHub source ended (decision_freshness._closed_cards).
         # Their titles are data of this record, never lines of the turn text.
         context['closed_cards'] = request['task']['_closed_cards']
         context['closed_cards_note'] = CLOSED_CARDS_NOTE
@@ -401,8 +401,7 @@ def context_prompt(request, rows=None):
 # What the bot learns when Coconut closes a card because its GitHub source changed (decision_freshness). The outcome
 # of the card comes first, for example "Issue #12 closed on GitHub.". Each such turn pays for these words.
 SOURCE_CHANGED_TEXT = ('Coconut closed this card. The person chose nothing. Read the source again. '
-                       'Make a new card with the current facts only if the person must still decide something '
-                       'or a message is still worth sending. '
+                       'Make a new card with the current facts only if the person must still decide something. '
                        'Do not repeat the old question unchanged. A closed card is no approval and no rejection.\n')
 
 
