@@ -3541,7 +3541,7 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
                     task.update(status='working', summary='Working', updated_at=now())
                     # The cards of this task that Coconut closed for their source. A turn that continues a card gets them
                     # as data (native_conversation.decision_context).
-                    closed_cards = self._closed_cards(task_id, task['_resume_decision']) if task.get('_resume_decision') else []
+                    closed_cards = self._closed_cards(task, task['_resume_decision']) if task.get('_resume_decision') else []
                     if task.get('_gateway_cron'):
                         # A turn of Coconut continues the routine, for example after an answered card. A restart
                         # queues it again like any other turn (_recover).

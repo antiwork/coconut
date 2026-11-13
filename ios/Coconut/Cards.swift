@@ -7,13 +7,14 @@ enum DecisionSelection {
     /// for example when its GitHub source closed; then the card shows its outcome. The receipt shows no other outcome
     /// text, except the line under a failed card, which never repeats this label.
     static func label(status: String, hasDraft: Bool, dismissed: Bool, choosingLabel: String?,
-                      selectedOptionLabel: String?, outcome: String?) -> String {
+                      selectedOptionLabel: String?, outcome: String?, decidedBy: String? = nil) -> String {
         if dismissed { return "Dismissed" }
         // A row shows an outcome only when it is one short line. A check that withdrew a card leaves its whole evidence
         // as the outcome; such a card says "Closed".
         let said = outcome.flatMap { text in
             text.isEmpty ? nil : text.count <= 80 && !text.contains(where: \.isNewline) ? text : "Closed"
         }
+        if byService(decidedBy) { return said ?? "Closed" }
         if hasDraft {
             switch status {
             case "pending", "approved", "executed": return "Approved for sending"
@@ -31,22 +32,30 @@ enum DecisionSelection {
     /// The statuses that record a choice of a person on the card: an option, Send, a discard or a reply.
     private static let choices: Set<String> = ["approved", "executed", "rejected", "modified", "replied"]
 
+    /// The deciders that are the service, not a person: a task cancellation, an archive and a workflow permission.
+    private static let serviceDeciders: Set<String> = ["cancellation", "archive", "workflow_permission"]
+
+    /// True when the service, not a person, decided the card (`decided_by`). A task cancellation rejects its cards so.
+    static func byService(_ decidedBy: String?) -> Bool { decidedBy.map(serviceDeciders.contains) ?? false }
+
     /// A receipt shows the check only for a choice of a person. A card that closed without a choice, for example
-    /// `resolved` or `cancelled`, shows its words as a state: no check, in the secondary color. A pending card, a
-    /// failed card and a dismissed card keep their own marks.
-    static func showsCheck(status: String) -> Bool { choices.contains(status) }
+    /// `resolved`, `cancelled` or rejected by a task cancellation, shows its words as a state: no check, in the
+    /// secondary color. A pending card, a failed card and a dismissed card keep their own marks.
+    static func showsCheck(status: String, decidedBy: String? = nil) -> Bool {
+        choices.contains(status) && !byService(decidedBy)
+    }
 
     /// True for a card that closed without a choice of a person (see showsCheck). Its words use the secondary color.
-    static func closedWithoutChoice(status: String, dismissed: Bool) -> Bool {
-        !dismissed && !["pending", "failed"].contains(status) && !showsCheck(status: status)
+    static func closedWithoutChoice(status: String, dismissed: Bool, decidedBy: String? = nil) -> Bool {
+        !dismissed && !["pending", "failed"].contains(status) && !showsCheck(status: status, decidedBy: decidedBy)
     }
 
     /// The mark at the end of the receipt row, as the name of a symbol. A card that closed without a choice has none.
-    static func mark(status: String, pending: Bool, dismissed: Bool) -> String? {
+    static func mark(status: String, pending: Bool, dismissed: Bool, decidedBy: String? = nil) -> String? {
         if dismissed { return "xmark" }
         if status == "failed" { return "exclamationmark.circle" }
         if pending { return "arrow.up" }
-        return showsCheck(status: status) ? "checkmark" : nil
+        return showsCheck(status: status, decidedBy: decidedBy) ? "checkmark" : nil
     }
 }
 
@@ -85,10 +94,11 @@ struct DecisionCard: View {
     private var selectionLabel: String {
         DecisionSelection.label(status: decision.status, hasDraft: decision.draft != nil, dismissed: isDismissed,
                                 choosingLabel: submittingOptionId.flatMap { id in decision.options.first { $0.id == id }?.label },
-                                selectedOptionLabel: decision.selectedOptionLabel, outcome: decision.outcome)
+                                selectedOptionLabel: decision.selectedOptionLabel, outcome: decision.outcome,
+                                decidedBy: decision.decidedBy)
     }
     private var closedWithoutChoice: Bool {
-        DecisionSelection.closedWithoutChoice(status: decision.status, dismissed: isDismissed)
+        DecisionSelection.closedWithoutChoice(status: decision.status, dismissed: isDismissed, decidedBy: decision.decidedBy)
     }
     var body: some View {
         Group {
@@ -250,7 +260,8 @@ struct DecisionCard: View {
                     .fixedSize(horizontal: false, vertical: true)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .accessibilityIdentifier("decision-selection-\(decision.id)")
-                if let mark = DecisionSelection.mark(status: decision.status, pending: decision.isPending, dismissed: isDismissed) {
+                if let mark = DecisionSelection.mark(status: decision.status, pending: decision.isPending, dismissed: isDismissed,
+                                                  decidedBy: decision.decidedBy) {
                     Image(systemName: mark)
                         .font(.subheadline.weight(.semibold))
                         .foregroundStyle(isDismissed ? .secondary : decision.status == "failed" ? BoardStyle.attention :
