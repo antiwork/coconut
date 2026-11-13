@@ -203,9 +203,10 @@ class DocumentServiceTests(unittest.TestCase):
         self.assertEqual([d['key'] for d in self.tool('read_document', {})['documents']], ['signups-daily'])
 
     def test_a_save_answers_with_the_notes_of_the_page_and_saves_it(self):
-        weak = 'The shop had 412 orders and 3 refunds.\n\n| Product | Orders |\n|---|---|\n| Ink | 131 |\n| Paint | 168 |'
+        weak = 'The products of the week.\n\n| Product | Orders of the week |\n|---|---|\n| Ink | 131 |\n| Paint | 168 |'
+        note = documents.NOTE_HEADER.format(column=2, table=1, length=18)
         self.assertEqual(self.save(content=weak), {'status': 'saved', 'key': 'signups-daily', 'version': 1,
-                                                   'expires_at': None, 'notes': [documents.NOTE_METRICS]})
+                                                   'expires_at': None, 'notes': [note]})
         self.assertEqual(self.tool('read_document', {'key': 'signups-daily'})['content'], weak)
         # A page without a note has no key "notes", and an HTML page gets no notes.
         self.assertNotIn('notes', self.save())
@@ -734,8 +735,9 @@ class GatewayPageTests(unittest.TestCase):
         self.assertEqual([d['key'] for d in self.service.documents()['documents']], ['weekly-report'])
 
     def test_a_save_of_the_tooling_answers_with_the_notes_of_the_page(self):
-        weak = 'The shop had 412 orders and 3 refunds.\n\n| Product | Orders |\n|---|---|\n| Ink | 131 |\n| Paint | 168 |'
-        expected = {'key': 'weekly-report', 'version': 1, 'expires_at': None, 'notes': [documents.NOTE_METRICS]}
+        weak = 'The products of the week.\n\n| Product | Orders of the week |\n|---|---|\n| Ink | 131 |\n| Paint | 168 |'
+        expected = {'key': 'weekly-report', 'version': 1, 'expires_at': None,
+                    'notes': [documents.NOTE_HEADER.format(column=2, table=1, length=18)]}
         self.assertEqual(self.publish(content=weak), dict(expected, status='saved'))
         # A script on a timer saves the same page again. The answer still names what to improve.
         self.assertEqual(self.publish(content=weak), dict(expected, status='unchanged'))

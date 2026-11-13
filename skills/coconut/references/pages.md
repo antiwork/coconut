@@ -57,7 +57,7 @@ So put the column that names each row first, and a short status last.
 
 ## The notes of a save
 
-A save of a Markdown page always works. When the page breaks a rule that Coconut can check exactly, the answer of the save has `notes`: at most three short sentences, each with one thing to do. A note names a table by its number from the top of the page, and a column by its number from the left. The person already sees the page. Follow the notes in the next save of the same key.
+A save of a Markdown page always works. When the page breaks a rule that Coconut can check exactly, the answer of the save has `notes`: at most three short sentences, each with one thing to do. A note names a callout, a table or a list item by its number from the top of the page, and a column by its number from the left. The notes check four rules only: a callout with a list or with more than 300 characters, a column header of more than 16 characters, the same first cell in each row of a wide table, and a cell or a list item with two em dashes or more. The other rules of this page have no note. The person already sees the page. Follow the notes in the next save of the same key.
 
 ## Example: the weekly report of a shop
 

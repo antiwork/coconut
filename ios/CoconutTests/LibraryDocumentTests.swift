@@ -1641,33 +1641,6 @@ final class LibraryDocumentTests: XCTestCase {
         return [("example", example), ("weak", weak)]
     }
 
-    /// The pattern of a number in page.js gives the answer of each example of backend/tests/fixtures/numbers.json in
-    /// the JavaScript of the web view. test_page_notes.py runs the same table through the notes of a save, so the two
-    /// meanings of "number" cannot drift apart.
-    @MainActor
-    func testThePatternOfANumberGivesTheAnswersOfTheSharedTable() async throws {
-        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
-            .deletingLastPathComponent()
-        let table = try String(contentsOf: root.appendingPathComponent("backend/tests/fixtures/numbers.json"),
-                               encoding: .utf8)
-        let script = try String(contentsOf: root.appendingPathComponent("ios/Coconut/Resources/Library/page.js"),
-                                encoding: .utf8)
-        let start = try XCTUnwrap(script.range(of: "const number = (text) => text\n    .match("))
-        let end = try XCTUnwrap(script.range(of: ");\n", range: start.upperBound..<script.endIndex))
-        let pattern = String(script[start.upperBound..<end.lowerBound])
-        XCTAssertTrue(pattern.hasSuffix("/su"), pattern)
-        let (view, window) = try await loadPage("Lead.", width: 390)
-        defer { close(window) }
-        let wrong = try await string(view, """
-            (() => {
-              const pattern = \(pattern);
-              return \(table).filter(([text, number]) => Boolean(text.match(pattern)) !== number)
-                .map(([text]) => JSON.stringify(text)).join(" ");
-            })()
-            """)
-        XCTAssertEqual(wrong, "")
-    }
-
     /// At the width of a phone and of a wide column, the page does not scroll sideways, no two labels of a chart meet,
     /// and no word breaks into letters.
     @MainActor
