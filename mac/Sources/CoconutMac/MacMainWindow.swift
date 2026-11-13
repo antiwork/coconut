@@ -200,7 +200,7 @@ struct MacNoticeArea: ViewModifier {
 /// the column gets shorter, also a page that a stack pushes. AppKit hosts the column in a view of its own. A safe area
 /// inset of SwiftUI on the split view does not reach that view, but the safe area of AppKit does: AppKit gives the same
 /// view its left inset next to the sidebar.
-private struct DetailColumnBottomInset: NSViewRepresentable {
+struct DetailColumnBottomInset: NSViewRepresentable {
     let height: CGFloat
 
     func makeNSView(context: Context) -> InsetView { InsetView() }
