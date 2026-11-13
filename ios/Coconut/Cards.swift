@@ -145,11 +145,11 @@ struct DecisionCard: View {
             HStack(spacing: 8) {
                 if let bot = store.bots.first(where: { $0.id == decision.botId }) {
                     BotAvatar(bot: bot, size: 24)
-                    Text(bot.name).font(.subheadline.weight(.medium)).lineLimit(1)
+                    Text(bot.name).font(.subheadline.weight(.semibold)).lineLimit(1)
                 }
                 Spacer(minLength: 12)
                 Text("Open chat").font(.subheadline)
-                Image(systemName: "chevron.right").font(.caption2)
+                Image(systemName: "chevron.right").font(.subheadline).imageScale(.small)
             }
             .frame(maxWidth: .infinity, minHeight: 44).contentShape(Rectangle())
         }.buttonStyle(.plain)
@@ -289,7 +289,7 @@ struct DecisionIntroduction: View {
                 }
             }
             if showsContext, let context = decision.cardContext {
-                VStack(alignment: .leading, spacing: 10) {
+                VStack(alignment: .leading, spacing: BoardStyle.Space.s) {
                     ForEach(Array(context.components(separatedBy: "\n\n").enumerated()), id: \.offset) { _, paragraph in
                         Text(paragraph).font(.subheadline).foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
@@ -369,7 +369,7 @@ struct DecisionChoiceContent: View {
         HStack(alignment: .top, spacing: isCompact ? 8 : 12) {
             VStack(alignment: .leading, spacing: isCompact ? 3 : 5) {
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
-                    (Text(option.label) + Text(isRecommended ? "  Recommended" : "").font(.caption).foregroundColor(.secondary))
+                    (Text(option.label) + Text(isRecommended ? "  Recommended" : "").font(.footnote).foregroundColor(.secondary))
                         .font(.body)
                         .foregroundStyle(.primary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -419,12 +419,12 @@ struct ArtifactCard: View {
 
     var body: some View {
         TimelineView(.periodic(from: .now, by: 30)) { context in
-            VStack(alignment: .leading, spacing: 10) {
+            VStack(alignment: .leading, spacing: BoardStyle.Space.m) {
                 HStack(alignment: .top, spacing: 12) {
                     Image(systemName: artifact.kind == "pr" ? "arrow.triangle.pull" : artifact.kind == "task" ? "checkmark.circle" : "doc.text")
                         .font(.title3).foregroundStyle(.secondary)
                         .frame(width: iconWidth, height: iconHeight)
-                    VStack(alignment: .leading, spacing: 6) {
+                    VStack(alignment: .leading, spacing: BoardStyle.Space.xs) {
                         Text(artifact.title).font(.subheadline.weight(.semibold))
                         StatusLabel(status: artifact.cardStatus(at: context.date))
                     }
@@ -459,13 +459,14 @@ struct ArtifactCard: View {
                             }
                         } label: {
                             Label(downloading ? "Opening…" : "Preview file", systemImage: "doc.text.magnifyingglass")
-                                .font(.subheadline.weight(.medium)).frame(minHeight: 44)
+                                .font(.subheadline.weight(.semibold)).frame(minHeight: 44)
                         }
                         .disabled(downloading)
                     }
                 }
             }
-            .padding(14)
+            // The inset of each card in a chat.
+            .padding(BoardStyle.Space.l)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(BoardStyle.surface, in: RoundedRectangle(cornerRadius: BoardStyle.Radius.large))
             .quickLookPreview($previewURL)
