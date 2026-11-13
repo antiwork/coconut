@@ -57,6 +57,20 @@ def team_thread(room, chat):
     return f'{room}:{chat}' if chat else room
 
 
+def direct_thread(room, chat):
+    """The thread of the alerts of one direct chat (PushDelivery.direct_chat): the room ID, a colon, and the member ID
+    of the other member, or the entry ID of the `bot` entry of a chat with a bot."""
+    member, bot = chat or (None, None)
+    return f'{room}:{bot or member}'
+
+
+def direct_target(room, chat):
+    """The `direct` part of the `coconut` part of one direct chat: the room and the other member, or the room and the
+    team bot ID of a chat with a bot. The second has no `member`, so an older app opens the app and nothing more."""
+    member, bot = chat or (None, None)
+    return {'team': room, 'bot': f't-{room}-{bot}'} if bot else {'team': room, 'member': member}
+
+
 def iso(stamp):
     return datetime.fromtimestamp(stamp, timezone.utc).isoformat().replace('+00:00', 'Z') if stamp else None
 
@@ -479,12 +493,14 @@ class PushDelivery:
         if room is None or room['state'] != ACTIVE:
             return False
         message = store.direct(item['team'], item['message_id'])
-        return message is not None and message['first'] > store.direct_read_position(item['team'], message['member'])
+        return message is not None and message['first'] > store.direct_read_position(item['team'], message['member'],
+                                                                                      message['bot'])
 
     def direct_chat(self, item):
-        """The other member of the direct chat of an item, or None when the chat no longer shows its message."""
+        """The direct chat of an item as (other member, bot entry or None), or None when the chat no longer shows its
+        message."""
         message = self.service.team_store.direct(item['team'], item['message_id'])
-        return message['member'] if message else None
+        return (message['member'], message['bot']) if message else None
 
     def named_chat(self, item):
         """The named chat of a team item (docs/team-log.md, "Chats of a team"), or None for the Team chat and for a
@@ -625,9 +641,9 @@ class PushDelivery:
                 # A group of one direct chat has the thread of the chat. It has no `team` at the top, because the app
                 # of today would open the team chat.
                 return {'aps': {'alert': {'title': 'Coconut', 'body': group_text(items)}, 'sound': 'default',
-                                'thread-id': f'{room}:{member}'},
+                                'thread-id': direct_thread(room, member)},
                         'coconut': {'version': 1, 'device_id': device_id, 'kind': 'group', 'count': len(items),
-                                    'direct': {'team': room, 'member': member}}}, None
+                                    'direct': direct_target(room, member)}}, None
             # Apps before groups need a bot, task, and card to open a notification. They open the first card in Inbox.
             # A team item and a direct item have none, so they come from another item. A group of such items only has
             # none.
@@ -641,12 +657,12 @@ class PushDelivery:
                                 'decision_id': first['decision_id'] if first else None, 'message_id': None}}, None
         item = items[0]
         if item['kind'] == 'direct':
-            room, member = item['team'], self.direct_chat(item)
+            room, chat = item['team'], self.direct_chat(item)
             payload = {'aps': {'alert': {'title': 'Coconut', 'body': DIRECT_BODY}, 'sound': 'default',
-                               'thread-id': f'{room}:{member}'},
+                               'thread-id': direct_thread(room, chat)},
                        'coconut': {'version': 1, 'device_id': device_id, 'kind': 'direct',
-                                   'direct': {'team': room, 'member': member}}}
-            if sealed and member:
+                                   'direct': direct_target(room, chat)}}
+            if sealed and chat:
                 payload['aps']['alert'] = direct_alert(service.team_store, room, item['message_id'])
             return payload, item['message_id']
         if item['kind'] == 'team':
