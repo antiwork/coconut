@@ -225,14 +225,23 @@ struct DocumentPage {
     /* page.js marks each column: short cells stay on one line, and a long column keeps 16 characters on a line. */
     th.one-line, td.one-line { white-space: nowrap; }
     th.long, td.long { min-width: 16ch; }
-    /* A table that does not fit is a list of records: the name of the row, then its other cells on a quiet line. */
+    /* A table that does not fit is a list of records, as a row of the Chats list: the name, a short last cell at the
+       end of its first line, and the other cells on a second line. A number has the text color, and its label, each
+       dot and each text cell are quiet. */
     table.records, table.records tbody, table.records tr { display: block; }
     table.records thead { display: none; }
-    table.records tr { padding: 12px 0; border-bottom: 1px solid var(--line); }
+    table.records tr { position: relative; padding: 12px 0; border-bottom: 1px solid var(--line); }
     table.records td { display: inline; padding: 0; border: 0; white-space: normal; color: var(--text-2); }
     table.records td:not(.name):not([data-label]) { display: none; }
-    table.records td::before { content: attr(data-label); }
+    table.records td::before { content: attr(data-label); color: var(--text-2); }
+    table.records td.number { color: var(--text); }
     table.records td.name { display: block; font-size: var(--size-3); font-weight: 600; color: var(--text); }
+    table.records tr:has(> td.trail) > td.name { padding-right: calc(var(--trail) + 16px); }
+    /* The line height of the name and an empty text at its size put the trailing cell on the baseline of the first
+       line of the name. */
+    table.records td.trail { position: absolute; top: 12px; right: 0; width: var(--trail, auto); text-align: right;
+                             white-space: nowrap; line-height: calc(var(--size-3) * 1.5); }
+    table.records td.trail::after { content: ""; font-size: var(--size-3); }
     .metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: var(--space); }
     .metrics > div { background: var(--surface); border-radius: var(--radius); padding: 12px 16px; }
     .metrics p { margin: 0; }

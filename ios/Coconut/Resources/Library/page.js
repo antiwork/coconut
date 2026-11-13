@@ -101,9 +101,17 @@
       cells.forEach((cell) => cell.classList.add(short ? "one-line" : "long"));
     }
     if (!body.length) continue;
-    // The record of a row: its first cell with text is the name. Each other cell with text follows on one line, after
-    // " · ", and a number after the label of its column: "Open 4 · Drafts 3". A no-break space keeps the dot with the
-    // cell before it, and a label with its number.
+    // The record of a row: its first cell with text is the name. The last column goes to the end of the first line
+    // when each of its cells is short. Each other cell with text follows on the second line, after " · ". A number
+    // has the label of its column before it: "Open 4 · Drafts 3". A no-break space keeps the dot with the cell before
+    // it, and a label with its number.
+    const label = (cell) => {
+      const header = head && head.cells[cell.cellIndex];
+      return header && number(text(cell)) ? text(header) + "\u00a0" : "";
+    };
+    const last = head ? head.cells.length - 1 : 0;
+    const trailing = last > 0 && body.every((row) => !row.cells[last]
+      || (label(row.cells[last]) + text(row.cells[last])).length <= 16);
     for (const row of body) {
       // The white space between two cells would be a second space and a line break before the dot.
       for (const node of [...row.childNodes]) {
@@ -112,15 +120,20 @@
       const cells = [...row.cells].filter((cell) => text(cell));
       if (!cells.length) continue;
       cells[0].classList.add("name");
-      cells.slice(1).forEach((cell, index) => {
-        const header = head && head.cells[cell.cellIndex];
-        const label = header && number(text(cell)) ? text(header) + "\u00a0" : "";
-        cell.dataset.label = (index ? "\u00a0· " : "") + label;
+      const trail = trailing && row.cells[last] !== cells[0] ? row.cells[last] : null;
+      if (trail) {
+        trail.classList.add("trail");
+        trail.dataset.label = label(trail);
+      }
+      cells.slice(1).filter((cell) => cell !== trail).forEach((cell, index) => {
+        cell.dataset.label = (index ? "\u00a0· " : "") + label(cell);
       });
+      for (const cell of cells) if (number(text(cell))) cell.classList.add("number");
     }
     tables.push(table);
   }
-  // A table that is wider than the column does not fit, and it is a list of records. A new width measures again.
+  // A table that is wider than the column does not fit, and it is a list of records. A new width measures again. The
+  // trailing column of each record has the width of the widest trailing cell of its table (--trail).
   let measured = 0;
   const fit = () => {
     if (main.clientWidth === measured) return;
@@ -128,6 +141,11 @@
     for (const table of tables) {
       table.classList.remove("records");
       table.classList.toggle("records", table.offsetWidth > main.clientWidth);
+      const trails = [...table.querySelectorAll("td.trail")];
+      if (!table.classList.contains("records") || !trails.length) continue;
+      table.style.removeProperty("--trail");
+      const width = Math.ceil(Math.max(...trails.map((cell) => cell.getBoundingClientRect().width)));
+      table.style.setProperty("--trail", width + "px");
     }
   };
   if (tables.length) {

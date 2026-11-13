@@ -417,7 +417,8 @@ final class LibraryDocumentTests: XCTestCase {
     }
 
     /// A page with each table form of page.js: metrics, a table with one row of text, a table with one long cell, a
-    /// short table and a wide table.
+    /// short table, a wide table with a short last column, a wide table with a long last column, and a wide table of
+    /// two columns.
     private static let tablePage = """
     Lead.
 
@@ -442,6 +443,14 @@ final class LibraryDocumentTests: XCTestCase {
     |---|---|---|---|---|
     | shop | #12 | Refuse price writes that do not match the product | Ada | draft |
     | docs | #13 | Add a field for the access token of the analytics | Grace | open |
+
+    | Product | Shop | Orders | Note |
+    |---|---|---|---|
+    | Course on watercolor basics | shop | 412 | Waiting for the review of the team |
+
+    | File | State |
+    |---|---|
+    | weekly_sales_summary_of_the_example_team.csv | draft |
     """
 
     /// A table with one row of numbers is a row of metrics: a large number with its unit. A table with one row that
@@ -460,7 +469,7 @@ final class LibraryDocumentTests: XCTestCase {
         let tables = try await string(view, """
             [...document.querySelectorAll("main table")].map((table) => table.rows[0].cells[0].textContent).join("|")
             """)
-        XCTAssertEqual(tables, "Step|Note|Shop|Repository")
+        XCTAssertEqual(tables, "Step|Note|Shop|Repository|Product|File")
         // Two tiles in a row on a phone.
         let columns = try await string(view, """
             getComputedStyle(document.querySelector(".metrics")).gridTemplateColumns.split(" ").length
@@ -479,16 +488,20 @@ final class LibraryDocumentTests: XCTestCase {
               .map((table) => table.classList.contains("records") ? "records" : "table").join(" ")
             """
         var shown = try await string(view, forms)
-        XCTAssertEqual(shown, "table table table records")
+        XCTAssertEqual(shown, "table table table records records records")
+        // Each record as "name | second line | trailing cell".
         let records = try await string(view, """
-            [...document.querySelectorAll("table.records tbody tr")].map((row) => [...row.cells]
-              .filter((cell) => getComputedStyle(cell).display !== "none")
-              .map((cell) => (cell.dataset.label || "") + cell.textContent).join("")).join("\\n")
+            [...document.querySelectorAll("table.records")[0].tBodies[0].rows].map((row) => {
+              const shown = [...row.cells].filter((cell) => getComputedStyle(cell).display !== "none");
+              const part = (test) => shown.filter(test).map((cell) => (cell.dataset.label || "") + cell.textContent);
+              return [part((cell) => cell.classList.contains("name")),
+                part((cell) => !cell.classList.contains("name") && !cell.classList.contains("trail")).join(""),
+                part((cell) => cell.classList.contains("trail"))].join(" | ");
+            }).join("\\n")
             """)
         // A no-break space keeps each dot with the cell before it, so no line of a record starts with a dot.
-        XCTAssertEqual(records, "shop#12\u{00A0}· Refuse price writes that do not match the product\u{00A0}· Ada"
-            + "\u{00A0}· draft\ndocs#13\u{00A0}· Add a field for the access token of the analytics"
-            + "\u{00A0}· Grace\u{00A0}· open")
+        XCTAssertEqual(records, "shop | #12\u{00A0}· Refuse price writes that do not match the product\u{00A0}· Ada | draft\n"
+            + "docs | #13\u{00A0}· Add a field for the access token of the analytics\u{00A0}· Grace | open")
         // No white space is left between two cells of a record, so the line cannot break before a dot.
         let spaces = try await string(view, """
             [...document.querySelectorAll("table.records tbody tr")]
@@ -502,7 +515,7 @@ final class LibraryDocumentTests: XCTestCase {
         let shops = "document.querySelectorAll('main table')[2]"
         let labels = try await string(view, "[...\(shops).tBodies[0].rows[0].cells].map((cell) => cell.dataset.label)")
         // A no-break space keeps a label with its number.
-        XCTAssertEqual(labels, ",Open\u{00A0},\u{00A0}· Drafts\u{00A0}")
+        XCTAssertEqual(labels, ",Open\u{00A0},Drafts\u{00A0}")
         let aligned = try await string(view, """
             [...\(shops).rows].map((row) => [...row.cells]
               .map((cell) => getComputedStyle(cell).textAlign.endsWith("right") ? "right" : "left").join(",")).join(" ")
@@ -513,11 +526,62 @@ final class LibraryDocumentTests: XCTestCase {
         XCTAssertEqual(padding, "12px 16px 12px 0px")
         // The 680 px column of a wide window has room for the table.
         view.frame.size.width = 1100
-        shown = try await answer(of: forms, in: view, once: "table table table table")
-        XCTAssertEqual(shown, "table table table table")
+        let wide = "table table table table table table"
+        shown = try await answer(of: forms, in: view, once: wide)
+        XCTAssertEqual(shown, wide)
         view.frame.size.width = 390
-        shown = try await answer(of: forms, in: view, once: "table table table records")
-        XCTAssertEqual(shown, "table table table records")
+        let narrow = "table table table records records records"
+        shown = try await answer(of: forms, in: view, once: narrow)
+        XCTAssertEqual(shown, narrow)
+    }
+
+    /// A record has a short last cell at the end of its first line, with the same width in each record of a table. A
+    /// number has the text color and its label is quiet. A record of two columns has no second line.
+    @MainActor
+    func testARecordHasATrailingCellAndANumberInTheTextColor() async throws {
+        let (view, window) = try await loadPage(Self.tablePage, width: 390)
+        defer { close(window) }
+        let records = "document.querySelectorAll('table.records')"
+        // The last column of the first table is short, and the last column of the second one is not.
+        let trails = try await string(view, "[...\(records)].map((table) => table.querySelectorAll('td.trail').length)")
+        XCTAssertEqual(trails, "2,0,1")
+        let widths = try await string(view, """
+            [...\(records)[0].querySelectorAll("td.trail")].map((cell) => cell.getBoundingClientRect().width)
+              .concat(getComputedStyle(\(records)[0]).getPropertyValue("--trail"))
+            """)
+        let parts = try XCTUnwrap(widths).split(separator: ",").map(String.init)
+        XCTAssertEqual(parts.count, 3)
+        XCTAssertEqual(parts[0], parts[1], "Each record of a table must have the same trailing width.")
+        XCTAssertEqual(parts[2], "\(Int(Double(parts[0]) ?? 0))px")
+        // The trailing cell sits on the first line, and the name keeps 16 px to it.
+        let gap = try await string(view, """
+            (() => {
+              const row = \(records)[0].tBodies[0].rows[0];
+              const name = row.querySelector("td.name"), trail = row.querySelector("td.trail");
+              return [Math.round(trail.getBoundingClientRect().top - row.getBoundingClientRect().top),
+                parseFloat(getComputedStyle(name).paddingRight) - trail.getBoundingClientRect().width];
+            })()
+            """)
+        XCTAssertEqual(gap, "12,16")
+        // "Orders 412": the number in the text color, its label quiet.
+        let tones = try await string(view, """
+            (() => {
+              const cell = \(records)[1].querySelector("td.number");
+              return [cell.textContent, getComputedStyle(cell).color === getComputedStyle(document.querySelector(".lead")).color,
+                getComputedStyle(cell, "::before").color === getComputedStyle(document.querySelector(".meta")).color];
+            })()
+            """)
+        XCTAssertEqual(tones, "412,true,true")
+        // A record of two columns: the name and the trailing cell, and no second line.
+        let two = try await string(view, """
+            (() => {
+              const row = \(records)[2].tBodies[0].rows[0];
+              const shown = [...row.cells].filter((cell) => getComputedStyle(cell).display !== "none");
+              const name = row.querySelector("td.name").getBoundingClientRect().height;
+              return [shown.length, Math.round(row.getBoundingClientRect().height - name)];
+            })()
+            """)
+        XCTAssertEqual(two, "2,25")
     }
 
     /// The answer of a script as text.
@@ -537,7 +601,7 @@ final class LibraryDocumentTests: XCTestCase {
         return answer
     }
 
-    /// A word of a page breaks only when it alone is wider than its line, never into letters.
+    /// A word of a page breaks only when it alone is wider than its line, never into letters. A word of more than 30 characters can break.
     @MainActor
     func testAWordOfAPageDoesNotBreakIntoLetters() async throws {
         let (view, window) = try await loadPage(Self.tablePage, width: 390)
@@ -553,7 +617,7 @@ final class LibraryDocumentTests: XCTestCase {
                   range.setStart(node, match.index);
                   range.setEnd(node, match.index + match[0].length);
                   const lines = new Set([...range.getClientRects()].map((rect) => Math.round(rect.top)));
-                  if (lines.size > 1) broken.push(match[0]);
+                  if (lines.size > 1 && match[0].length <= 30) broken.push(match[0]);
                 }
               }
               return broken.join(" ");
