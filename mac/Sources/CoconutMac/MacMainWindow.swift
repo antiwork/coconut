@@ -191,7 +191,7 @@ struct MacSidebar: View {
                         // action.
                         if let chat = item.chat {
                             PeopleRow(item: item, avatarSize: 32)
-                                .padding(.vertical, 2)
+                                .padding(.vertical, BoardStyle.Space.xs)
                                 .tag(MacSelection.team(chat))
                                 .accessibilityIdentifier(chat.member.map { "sidebar-direct-" + $0 }
                                                          ?? "sidebar-team-" + chat.room)
@@ -220,7 +220,7 @@ struct MacSidebar: View {
 
     private func row(_ bot: Bot) -> some View {
         BotContactRow(bot: bot, avatarSize: 32)
-            .padding(.vertical, 2)
+            .padding(.vertical, BoardStyle.Space.xs)
             .tag(MacSelection.bot(bot.id))
             .contextMenu {
                 Button(bot.pinned ? "Unpin" : "Pin") { Task { await store.pinBot(bot, pinned: !bot.pinned) } }
@@ -245,7 +245,8 @@ private struct MacConnectionFooter: View {
                 .accessibilityLabel(store.connection == .connected ? "Connected" : "Not connected")
         }
         .font(.footnote).foregroundStyle(.secondary)
-        .padding(.horizontal, BoardStyle.Space.m).padding(.vertical, BoardStyle.Space.s)
+        // The inset of the rows of the sidebar, so the footer shares their left and right edges.
+        .padding(.horizontal, BoardStyle.Space.l).padding(.vertical, BoardStyle.Space.s)
     }
 }
 
