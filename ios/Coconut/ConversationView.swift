@@ -198,7 +198,7 @@ struct ConversationView: View {
                                 BotStatusRow(bot: bot, activity: activity)
                                     .transition(.opacity.animation(BoardStyle.fade(reduceMotion: reduceMotion)))
                             }
-                            // The row inset and this padding keep 13 points below the last row.
+                            // The row inset and this padding keep 12 points below the last row.
                             Color.clear.frame(height: 1).padding(.bottom, BoardStyle.Space.s).id("conversation-bottom")
                         }
                         .listRowInsets(EdgeInsets(top: BoardStyle.Space.xs, leading: BoardStyle.Space.l,

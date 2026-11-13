@@ -160,7 +160,7 @@ struct ChipButton: View {
                 .background(selected ? Color.primary.opacity(0.1) : .clear, in: Capsule())
                 #if os(iOS)
                 // A finger needs 44 points. The capsule stays small.
-                .frame(minHeight: 44)
+                .frame(minWidth: 44, minHeight: 44)
                 .contentShape(Rectangle())
                 #else
                 .contentShape(Capsule())

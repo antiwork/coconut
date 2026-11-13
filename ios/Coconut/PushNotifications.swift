@@ -81,7 +81,7 @@ struct NotificationSettingsView: View {
                     VStack(alignment: .leading, spacing: 4) {
                         Text("What counts as urgent?")
                         if let summary = store.pushStatus?.urgent {
-                            Text(summary.weekText).font(.footnote).foregroundStyle(.secondary)
+                            Text(summary.weekText).font(.subheadline).foregroundStyle(.secondary)
                         }
                     }
                 }
@@ -218,7 +218,7 @@ struct UrgentCardsView: View {
                             Text(example.title ?? "Untitled card")
                             let detail = [example.botName, PushStatus.describe(example.createdAt)].compactMap { $0 }
                             if !detail.isEmpty {
-                                Text(detail.joined(separator: " · ")).font(.footnote).foregroundStyle(.secondary)
+                                Text(detail.joined(separator: " · ")).font(.subheadline).foregroundStyle(.secondary)
                             }
                         }
                     }

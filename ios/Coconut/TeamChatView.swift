@@ -112,12 +112,12 @@ struct TeamChatView: View {
                     }
                     // The last row: who types, under the newest message and above the composer, then the anchor of
                     // the bottom. The row is always there, so the list never adds or removes a row for typing while it
-                    // scrolls to its bottom. A direct chat shows nobody. The row inset and the padding keep 13 points
+                    // scrolls to its bottom. A direct chat shows nobody. The row inset and the padding keep 12 points
                     // below the last message.
                     VStack(alignment: .leading, spacing: 0) {
                         if !typing.isEmpty {
                             TeamTypingRow(room: room, subjects: typing)
-                                .padding(.top, 5)
+                                .padding(.top, BoardStyle.Space.xs)
                                 .transition(.opacity)
                         }
                         Color.clear.frame(height: 1)
@@ -871,7 +871,8 @@ struct TeamTypingRow: View {
         }
         .font(.subheadline)
         .frame(minHeight: 32, alignment: .leading)
-        .padding(.leading, 10)
+        // The text starts at the edge of the text in a bubble, as the name above a message.
+        .padding(.leading, BoardStyle.Space.m)
         .frame(maxWidth: .infinity, alignment: .leading)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(text)

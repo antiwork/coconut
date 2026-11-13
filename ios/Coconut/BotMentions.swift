@@ -190,7 +190,7 @@ struct BotMentionPicker<B: MentionableBot>: View {
                     }
                 }
             }
-            .frame(height: min(CGFloat(bots.count) * (max(50, nameHeight + 18) + 1), 260))
+            .frame(height: min(CGFloat(bots.count) * (max(50, nameHeight + 2 * BoardStyle.Space.s) + 1), 260))
             .background(BoardStyle.surface, in: RoundedRectangle(cornerRadius: BoardStyle.Radius.large))
             .overlay(RoundedRectangle(cornerRadius: BoardStyle.Radius.large).stroke(BoardStyle.line))
             .padding(.bottom, 8)

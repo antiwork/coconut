@@ -22,6 +22,8 @@ struct DecisionPreviewStrip: View {
     let previews: [DecisionPreview]
     @Binding var loadedIds: Set<String>
     var onFrameChange: (CGRect) -> Void = { _ in }
+    /// The height of one line of a caption, so the strip fits the image, the gap and two lines at each text size.
+    @ScaledMetric(relativeTo: .footnote) private var captionLine: CGFloat = 18
     @State private var loaded: [String: PreparedDecisionPreview] = [:]
     @State private var failed = false
     @State private var attempt = 0
@@ -62,7 +64,7 @@ struct DecisionPreviewStrip: View {
                 .scrollIndicators(.hidden)
                 .scrollTargetBehavior(.viewAligned)
             }
-            .frame(height: 240)
+            .frame(height: 200 + BoardStyle.Space.s + 2 * captionLine)
             if failed {
                 Button("Could not load the previews. Retry") { attempt += 1 }
                     .font(.footnote).frame(minHeight: 44)
