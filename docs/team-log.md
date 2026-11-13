@@ -552,7 +552,7 @@ To share on a person's Mac:
   ```
 
 - A share answers 404 for a document that this Mac does not have, a team page of another Mac, a page past its end and a deleted bot, 409 for an archived bot and a room that is not `active`, and 413 for a page that does not fit in one entry.
-- A shared page goes to the team with its bot as the author, and so does each later version that the bot saves. A stop, a delete of the page or of its bot, and a leave of the room take the page out.
+- A shared page goes to the team with its bot as the author, and so does each later version that the bot saves. A stop, a delete of the page or of its bot, and a leave of the room take the page out. The phone, the bot and the tooling of the Mac (`DELETE /v1/gateway/document`) each delete a page.
 - The author entry of a bot: the share row of the bot (`team_shares`, with the entry ID of its `bot` entry) comes in the transaction of the first shared page of that bot in the room. It goes in the transaction of the stop or the delete of the last one. The pass then writes or deletes the `bot` entry. While each shared page of a bot is past its end or its bot is archived, the pass deletes the `bot` entry too, and it writes it again with the same entry ID when a page shows again.
 - A bot cannot share. `coconut_save_document` has no `audience` argument on a person's Mac, and a save through it or through `POST /v1/gateway/document` that names an audience gets 400 with "Only the person can share a page with a team. Save the page without audience." A save without it keeps the shares of the page.
 - What a bot reads about its documents has `audience`: `"team"` while the person shares the page with at least one team, else `"private"`.
@@ -942,7 +942,7 @@ The service starts in this mode with `python3 -m coconut --team-only`, or with `
 What the service does:
 
 - It keeps the team rooms of this Mac in step with the relay: the store, the sync thread, the socket watcher and the helper, as on a full Mac.
-- It serves the team routes on the main listener with the token of the bridge file, so `coconut team` and `scripts/team.py` work as on a full Mac. Only the routes of this section, the team routes and `POST /v1/gateway/document` need the token. Each other route, and a pair request, answers 503 with `{"error": ..., "code": "team_only"}`. `GET /health` works.
+- It serves the team routes on the main listener with the token of the bridge file, so `coconut team` and `scripts/team.py` work as on a full Mac. Only the routes of this section, the team routes, `POST /v1/gateway/document` and `DELETE /v1/gateway/document` need the token. Each other route, and a pair request, answers 503 with `{"error": ..., "code": "team_only"}`. `GET /health` works.
 - It keeps the bots that this Mac declares, and it saves their pages.
 - It gives the messages that name a bot with its chat connected to the Hermes gateway of that bot, and writes the replies into the chat. See [A bot answers](#a-bot-answers). For that, the main listener also serves `POST /v1/gateway/poll`, `/v1/gateway/events` and `/v1/gateway/messages` with the token of the bridge file. No other route of the gateway answers.
 
@@ -960,7 +960,7 @@ A bot of a team-only Mac is a record, because the Mac scans no Hermes profile. A
 
 `GET /v1/team/rooms` also has `"mode": "team"`, and `mac_bots` lists the declared bots. `coconut team new-bot <name> [--home <path>]` declares a bot. `coconut team add-bot <bot>` on a team-only Mac without that bot does not guess: it prints one line that says how to declare it. On a full Mac, `new-bot` says that the Mac takes its bots from its Hermes profiles.
 
-Pages: `POST /v1/gateway/document` saves a page as on a full Mac, but here each page names its audience. The home of the request names the declared bot, and a save that changes nothing answers `unchanged`. No person reads the Library on a team-only Mac, so each save must name `"audience": "team"`. A save without it answers 400 and stores nothing. A page of a shared bot goes to each team of the bot. A page of a bot that no team has yet stays on this Mac, and the sync writes it when the bot is shared. The limits and checks of a page are those of a full Mac.
+Pages: `POST /v1/gateway/document` saves a page as on a full Mac, but here each page names its audience. The home of the request names the declared bot, and a save that changes nothing answers `unchanged`. No person reads the Library on a team-only Mac, so each save must name `"audience": "team"`. A save without it answers 400 and stores nothing. A page of a shared bot goes to each team of the bot. A page of a bot that no team has yet stays on this Mac, and the sync writes it when the bot is shared. The limits and checks of a page are those of a full Mac. `DELETE /v1/gateway/document` with `{home, key}` deletes a page of the declared bot of the home, with all its versions. A delete needs no audience. It answers `deleted`, or `absent` when the bot has no page with this key, and then it changes nothing. The next pass replaces the `page` entry with a `delete` entry, so the other Macs drop the page from their Library. The bot stays in each team that it is shared with.
 
 ## Test vectors
 
