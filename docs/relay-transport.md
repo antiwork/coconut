@@ -210,7 +210,7 @@ The pairing steps:
 3. The iPhone reads the message, opens it with the box key, and deletes the box.
 4. The iPhone pairs with the setup, as in steps 3 to 7 of pairing v2.
 
-The relay sees only the box ID and the ciphertext, so it cannot read the setup or seal another one. The code passes through the chat service that carries the message to Hermes, for example Telegram, which does not encrypt bot chats end to end. Someone who reads the code there within 10 minutes could seal a setup for another Mac. The code works for one box only, the box expires after 10 minutes, and the iPhone deletes it after it receives a setup. After that, the code is useless.
+The relay sees only the box ID and the ciphertext, so it cannot read the setup or seal another one. The code passes through the chat service that carries the message to Hermes, for example Telegram, which does not encrypt that chat end to end. Someone who reads the code there within 10 minutes could seal a setup for another Mac. The code works for one box only, the box expires after 10 minutes, and the iPhone deletes it after it receives a setup. After that, the code is useless.
 
 ## iPhone
 

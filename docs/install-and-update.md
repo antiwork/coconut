@@ -43,7 +43,7 @@ The installer refuses an unrelated folder. It does not install Hermes. See [The 
 Omit this flag to configure separate model access on the mini.
 
 Model keys live in Hermes, as Hermes keeps them: each profile reads its provider keys from its own `.env`. At each start, update and setup, Coconut moves keys that it saved in `<data>/credentials.json` into the default profile's `.env`, then removes that file. It first claims the file with an atomic rename, so a file that arrives during the move waits for the next start. It also gives each named profile the provider keys of the default profile that the profile lacks, as `hermes_cli.profiles.backfill_profile_envs` does for a profile without a `.env`. A key that a profile already has stays. Coconut never prints a key. See `backend/coconut/model_keys.py`.
-The source package never includes keys, bot data, logs, or builds.
+The source package never includes keys, agent data, logs, or builds.
 
 The first installation starts a user LaunchAgent. It restarts Coconut after a process failure and starts after macOS account login.
 It also installs the relay sidecar, the LaunchAgent `com.gumroad.coconut.tunnel`.
@@ -51,7 +51,7 @@ FileVault or a restart can require login before this service becomes available.
 
 This command starts with a new database. It does not copy the development Mac's conversations or profiles.
 
-Coconut automatically gives every bot the same Homebrew configuration path, including bots created after setup.
+Coconut automatically gives every agent the same Homebrew configuration path, including agents created after setup.
 No shell changes or onboarding step are required. Hermes profiles and other tool settings remain separate.
 New installations start with Homebrew’s default trust. Your approved package list is not bundled or copied to another person’s installation.
 Existing trust lists require an explicit import; Coconut never merges private profile settings automatically.
@@ -67,19 +67,19 @@ Each time the service starts, it looks for Hermes in this order:
 
 The official installer keeps the Python packages of Hermes in a dependency environment in the Hermes home, under `installs/<id>`. Its `facts.json` names the active environment, and Coconut runs Hermes with that environment's Python.
 The Hermes home is `HERMES_HOME`. A LaunchAgent does not get the variables of your shell, so when the service has no `HERMES_HOME`, Coconut reads it from your login shell, for example from `~/.zprofile`. Without either, it uses `~/.hermes`.
-Coconut starts each Hermes process with `HERMES_DISABLE_LAZY_INSTALLS=1`. Each bot has its own Hermes home, and without this setting, Hermes would install a dependency environment for each of them.
-A bot's worker also gets `HERMES_RUNTIME_DIR=<bot's Hermes home>/tools`. That is where the bot's terminal `hermes` installs tools such as the browser. Without this setting, the worker would read the tools of the Hermes home that owns the source folder. Bots do not share tools.
-A bot's worker also gives the browser-harness daemons of `browser_exec` a private folder for their sockets: `BH_RUNTIME_DIR=/tmp/cbh-<random id>`, one for each worker process, removed when the worker stops. An AF_UNIX socket path has at most 103 bytes on macOS, which a folder in the bot's Hermes home exceeds. The daemon logs and the browser profiles stay where they were.
+Coconut starts each Hermes process with `HERMES_DISABLE_LAZY_INSTALLS=1`. Each agent has its own Hermes home, and without this setting, Hermes would install a dependency environment for each of them.
+An agent's worker also gets `HERMES_RUNTIME_DIR=<agent's Hermes home>/tools`. That is where the agent's terminal `hermes` installs tools such as the browser. Without this setting, the worker would read the tools of the Hermes home that owns the source folder. Agents do not share tools.
+An agent's worker also gives the browser-harness daemons of `browser_exec` a private folder for their sockets: `BH_RUNTIME_DIR=/tmp/cbh-<random id>`, one for each worker process, removed when the worker stops. An AF_UNIX socket path has at most 103 bytes on macOS, which a folder in the agent's Hermes home exceeds. The daemon logs and the browser profiles stay where they were.
 The login service notices a new Hermes by itself, for example after `hermes update`. Once a minute, it compares the Hermes that its next start would find with the Hermes that it runs on: the Python, the source folder, the checked-out commit, the installer's `facts.json`, and the installed packages. This comparison reads files only.
 After a change, the service starts no new turn. It lets the running turns finish, for at most 10 minutes as during an update, then exits, and launchd starts it again. The new process runs the contract check against the new Hermes.
 While the service waits, `GET /v1/setup` gives the reason "Coconut restarts for the new Hermes when the running turns finish." and `restarting: true`.
 
 The service imports the Hermes modules that it uses, then runs its contract check against them.
-It refuses a Hermes source folder that has a `.env` file, because every bot would get those keys. Hermes reads its keys from `~/.hermes/.env`. The check sends no model request and uses a temporary Hermes home.
+It refuses a Hermes source folder that has a `.env` file, because every agent would get those keys. Hermes reads its keys from `~/.hermes/.env`. The check sends no model request and uses a temporary Hermes home.
 The service then runs under the Python of that Hermes. It saves the result in `.runtime/host/hermes.json`.
 A restart reuses a passed check while Hermes and the Coconut code stay the same. A failed check runs again at each start, so a restart is enough after you repair Hermes.
 
-Without a usable Hermes, the service still starts, but it runs no bots.
+Without a usable Hermes, the service still starts, but it runs no agents.
 The phone can pair and read `GET /v1/setup`, which says why. Every other route answers `503` with the code `hermes_unavailable`.
 When you install or update Hermes, the service restarts by itself within a minute. After another repair, restart Coconut with `python3 scripts/host.py restart`.
 A new Hermes that fails the check causes no second restart: each process compares against the Hermes that it started with.
@@ -89,13 +89,13 @@ If that Hermes worked with the earlier version and fails with the new one, the u
 
 The default model, approvals, and MCP servers in the phone's settings are those of your default Hermes profile. `hermes model` and `hermes config` change the same settings. Each other profile keeps its own settings.
 
-Native Hermes owns login and credential refresh. Coconut does not copy OAuth tokens into bot profiles.
+Native Hermes owns login and credential refresh. Coconut does not copy OAuth tokens into agent profiles.
 
 ## The coconut skill for Hermes
 
 Coconut ships a Hermes skill, `coconut`, in `skills/coconut` of the install folder. It tells Hermes how to update Coconut, pair an iPhone, and find the cause of a problem. Then the Hermes of the Telegram gateway or of the CLI can answer "update Coconut" or "why is Coconut offline".
 
-Coconut adds `<install folder>/skills` to `skills.external_dirs` in the `config.yaml` of the default Hermes profile (`HERMES_HOME`, else `~/.hermes`), and of each profile in `<Hermes home>/profiles`. The bots are those profiles. `scripts/hermes_skills.py add` does this. It runs in `deploy.py` at each install, a first install and each update, and in `scripts/setup_coconut.py`. The service also runs the same edit at each start, in the background. A new bot profile gets the entry when Coconut creates it.
+Coconut adds `<install folder>/skills` to `skills.external_dirs` in the `config.yaml` of the default Hermes profile (`HERMES_HOME`, else `~/.hermes`), and of each profile in `<Hermes home>/profiles`. The agents are those profiles. `scripts/hermes_skills.py add` does this. It runs in `deploy.py` at each install, a first install and each update, and in `scripts/setup_coconut.py`. The service also runs the same edit at each start, in the background. A new agent profile gets the entry when Coconut creates it.
 The edit uses the config reader and writer of Hermes, so comments and the other settings stay. A second run changes nothing. Coconut changes only its own entries: this skills folder and the `coconut` gateway platform below. Earlier versions changed the Hermes config only during setup. Now each update and each start set Coconut's own entries again, so an update keeps them current. A failed edit is a warning in the result of the update or in the service log. It never stops the update or the start.
 
 An update replaces the skill files with the other source files. In an install, the skill files and folders are read-only, so `skill_manage` of Hermes cannot change them. The update makes the folders writable for its own changes, then read-only again.
@@ -110,13 +110,13 @@ A Mac with no person at it can join a team from a message, as `coconut pair <cod
 
 | Command | What it does |
 |---|---|
-| `coconut team` | Prints the teams of this Mac: the name, the ID, the state, the admin, the members, the bots, and the sync error. `--json` prints the answer of the service. |
+| `coconut team` | Prints the teams of this Mac: the name, the ID, the state, the admin, the members, the agents, and the sync error. `--json` prints the answer of the service. |
 | `coconut team join [--name <text>]` | Joins a team with the invite link on standard input. `--name` is the name of this Mac in the member list. Without it, the service uses "Member". |
-| `coconut team new-bot <name> [--home <path>]` | On a team-only Mac: declares a bot for the Hermes home that it stands for. See [A Mac without a person](#a-mac-without-a-person). |
-| `coconut team add-bot <bot> [--team <name or ID>]` | On a Mac for a team only: adds a bot of this Mac to the team. `<bot>` is the ID or the name of the bot. Case does not matter. On a person's Mac it prints how to share a page in the Library. |
-| `coconut team remove-bot <bot> [--team <name or ID>]` | On a Mac for a team only: removes a bot of this Mac from the team. On a person's Mac it prints how to share a page. |
-| `coconut team connect-chat <bot> [--confirm]` | On a team-only Mac: lets the bot answer in the team chat. Without `--confirm`, it prints each change in the Hermes home of the bot and changes nothing. See [Let the bot answer in the team chat](#let-the-bot-answer-in-the-team-chat). |
-| `coconut team disconnect-chat <bot>` | Takes away what `connect-chat` added. |
+| `coconut team new-agent <name> [--home <path>]` | On a team-only Mac: declares an agent for the Hermes home that it stands for. See [A Mac without a person](#a-mac-without-a-person). |
+| `coconut team add-agent <agent> [--team <name or ID>]` | On a Mac for a team only: adds an agent of this Mac to the team. `<agent>` is the ID or the name of the agent. Case does not matter. On a person's Mac it prints how to share a page in the Library. |
+| `coconut team remove-agent <agent> [--team <name or ID>]` | On a Mac for a team only: removes an agent of this Mac from the team. On a person's Mac it prints how to share a page. |
+| `coconut team connect-chat <agent> [--confirm]` | On a team-only Mac: lets the agent answer in the team chat. Without `--confirm`, it prints each change in the Hermes home of the agent and changes nothing. See [Let the agent answer in the team chat](#let-the-agent-answer-in-the-team-chat). |
+| `coconut team disconnect-chat <agent>` | Takes away what `connect-chat` added. |
 | `coconut team leave --confirm <name of the team> [--team <name or ID>]` | Leaves the team, and deletes its copy and its keys on this Mac. The name after `--confirm` chooses the team; `--team <ID>` is necessary only when two teams of this Mac have the same name. Without `--confirm`, it prints what a leave does and the exact command for each team. |
 
 - The invite link is a secret. The tool reads it only from standard input, and no output of the tool has it. In a terminal, the tool asks for the link and does not show it.
@@ -127,33 +127,33 @@ A Mac with no person at it can join a team from a message, as `coconut pair <cod
 
 The tool calls the team routes of the service with the token of `<data>/gateway/bridge.json`. See [the team log](team-log.md#mac). A person makes a team and an invite on the Team screen of the app.
 
-## GitHub access for a bot
+## GitHub access for an agent
 
-Bots use the GitHub CLI login of the Mac account, as your normal Mac Terminal does.
-A bot that had its own GitHub login before this version keeps it: the profile's `.env` sets `GH_CONFIG_DIR` to the bot's own folder.
-Coconut does not copy tokens between bots.
+Agents use the GitHub CLI login of the Mac account, as your normal Mac Terminal does.
+An agent that had its own GitHub login before this version keeps it: the profile's `.env` sets `GH_CONFIG_DIR` to the agent's own folder.
+Coconut does not copy tokens between agents.
 
-From a bot's terminal, run:
+From an agent's terminal, run:
 
 ```sh
 gh auth login --hostname github.com --git-protocol https --web --skip-ssh-key
 ```
 
 Open the device authorization URL on your phone and enter the displayed code. Keep the login process running until authorization finishes.
-Then verify access from the same bot's terminal:
+Then verify access from the same agent's terminal:
 
 ```sh
 gh api user --jq .login
 ```
 
-To run these commands from the Mac's normal Terminal, first find the bot's profile ID:
+To run these commands from the Mac's normal Terminal, first find the agent's profile ID:
 
 ```sh
 sqlite3 ~/Coconut/.runtime/host/coconut.sqlite3 "SELECT json_extract(data, '$.name'), id FROM bots"
 ```
 
-For a bot with its own login, read `GH_CONFIG_DIR` from `.runtime/host/bots/PROFILE_ID/home/.env` in the Coconut folder. Prefix each `gh` command with that value.
-Replace `PROFILE_ID` with that bot's ID. Do not change the shell's `HOME` or paste a token into chat.
+For an agent with its own login, read `GH_CONFIG_DIR` from `.runtime/host/bots/PROFILE_ID/home/.env` in the Coconut folder. Prefix each `gh` command with that value.
+Replace `PROFILE_ID` with that agent's ID. Do not change the shell's `HOME` or paste a token into chat.
 If the Keychain is locked or unavailable, GitHub CLI supports `--insecure-storage`.
 This stores the token unencrypted with owner-only permissions. Use it only if you accept that storage method.
 Reauthorize if GitHub expires or revokes the token.
@@ -161,15 +161,15 @@ See [GitHub CLI authentication](https://cli.github.com/manual/gh_auth_login).
 
 ## CLI login from chat
 
-Bots use the Mac account's `CODEX_HOME`, `GH_CONFIG_DIR` and `XDG_*` folders, unless the profile's `.env` sets them.
+Agents use the Mac account's `CODEX_HOME`, `GH_CONFIG_DIR` and `XDG_*` folders, unless the profile's `.env` sets them.
 Keep these variables unchanged during login and later commands. Do not replace `HOME`.
-Claude Code uses one Mac account login for all bots.
+Claude Code uses one Mac account login for all agents.
 Keep `CLAUDE_CONFIG_DIR` and `CLAUDE_SECURESTORAGE_CONFIG_DIR` unset so Claude Code and Hermes use the same native credential store.
 Claude Code settings and session history also share this account scope. Hermes instructions, memory, and workspaces remain separate.
-An update preserves old bot Claude directories. Coconut does not copy their tokens or settings into the account directory.
-For interactive login, the bot starts a native Hermes terminal with `pty=true` and `background=true`.
+An update preserves old agent Claude directories. Coconut does not copy their tokens or settings into the account directory.
+For interactive login, the agent starts a native Hermes terminal with `pty=true` and `background=true`.
 The process remains available while you authorize from your phone.
-The bot checks a fresh authenticated request before it reports a successful connection.
+The agent checks a fresh authenticated request before it reports a successful connection.
 The Mac account's Keychain must permit access. See [native credential storage](https://code.claude.com/docs/en/authentication#credential-management).
 
 ## Pair the iPhone
@@ -188,7 +188,7 @@ If no mini configuration exists, the launcher pairs with this development Mac in
 
 ### Pair through Hermes
 
-A person who already uses Hermes can pair without this repository and without touching the Mac. Onboarding on the iPhone is one screen. It shows one message to send to the Hermes agent, for example in a Telegram chat with the Hermes bot:
+A person who already uses Hermes can pair without this repository and without touching the Mac. Onboarding on the iPhone is one screen. It shows one message to send to the Hermes agent, for example in a Telegram chat:
 
 ```
 curl -fsSL https://coconut-updates.gumroad.workers.dev/install | bash -s <code>
@@ -200,7 +200,7 @@ curl -fsSL https://coconut-updates.gumroad.workers.dev/install | bash -s <code>
 4. The script runs `coconut pair <code>`. The Mac seals a new setup for the iPhone in the rendezvous box.
 5. The iPhone opens the setup and pairs by itself.
 
-The code works once, for 10 minutes, and only for the iPhone that made it. Telegram does not encrypt bot chats end to end, so the code passes through Telegram's servers. After the iPhone pairs, the code is useless. `docs/relay-transport.md`, "Pairing code from the iPhone", describes the protocol.
+The code works once, for 10 minutes, and only for the iPhone that made it. Telegram does not encrypt such a chat end to end, so the code passes through Telegram's servers. After the iPhone pairs, the code is useless. `docs/relay-transport.md`, "Pairing code from the iPhone", describes the protocol.
 
 **Need help?** on the screen shows the download link of Coconut.app, for a Hermes that cannot run commands. The person installs the app by hand, chooses **Pair iPhone** in its menu, and scans the QR code. Settings has **Pair a new Mac**, which opens the same screen.
 
@@ -212,7 +212,7 @@ A developer with a checkout of this repository runs `python3 ~/Coconut/scripts/s
 4. It prepares notification encryption with `push.py --rebuild`.
 5. It installs Coconut.app when it is missing. It downloads the newest build from the update feed. It accepts the app only when `codesign` and Gatekeeper accept it. The app goes in `/Applications`, or in `~/Applications` when `/Applications` is not writable.
 6. It makes the app run this checkout (the preference `InstallDirectory` of `com.gumroad.coconut.mac`). It keeps the Hermes settings `COCONUT_HERMES_PYTHON`, `COCONUT_HERMES_ROOT` and `HERMES_HOME` of the shell or of the earlier LaunchAgent in the preference `ServiceEnvironment`. If the app ran another folder, that service finishes its running turns, and the login items start again with this checkout.
-7. It moves a service of the earlier LaunchAgents to the app with `host.py migrate-to-app`. The running bot turns finish first. The data stays in place.
+7. It moves a service of the earlier LaunchAgents to the app with `host.py migrate-to-app`. The running agent turns finish first. The data stays in place.
 8. It opens the app. The app registers its login items (the app itself, the service and the relay), and Coconut and its menu bar app start again after a restart. The command waits for the local health check.
 9. It registers the relay route with the sidecar of the app, and restarts the relay login item.
 10. It runs `python3 scripts/pairing.py --share`. It prints the setup link and the path of a QR image that holds the same link last.
@@ -220,7 +220,7 @@ A developer with a checkout of this repository runs `python3 ~/Coconut/scripts/s
 Each failed check prints what to do. You can run the command again at any time. It skips the steps that are complete, and it prints a new setup link.
 A later run uses the saved Hermes settings where the shell has none. `--reset-hermes-settings` forgets them. When the saved settings change, the service finishes its running turns and starts again with them.
 
-Sparkle updates Coconut.app by itself. The source in this checkout stays yours: update it with `git pull`, then run `python3 scripts/host.py restart` while no bot works. The restart stops running bot turns at once.
+Sparkle updates Coconut.app by itself. The source in this checkout stays yours: update it with `git pull`, then run `python3 scripts/host.py restart` while no agent works. The restart stops running agent turns at once.
 The menu bar icon shows the state of the service, the relay and Hermes. **Pair iPhone…** shows a new setup link and its QR code.
 A Hermes agent can print a link without the Command Line Tools: `/Applications/Coconut.app/Contents/Helpers/coconut pair`.
 
@@ -246,11 +246,11 @@ You work in a terminal on that Mac, for example over SSH. In the steps, `coconut
 
 If macOS asks to allow Coconut in Login Items, allow it in System Settings → General → Login Items. If Coconut already runs on this Mac, the set-up does nothing: `open` gives no arguments to an app that runs. To see why, stop the app first with `pkill -x Coconut`, then run step 2 again. If the Mac has a full Coconut install, the set-up then changes nothing, and `coconut status` shows the reason as `Last update error:`.
 
-### Join a team and add a bot
+### Join a team and add an agent
 
-1. Run `coconut team join --name "Reporter Mac"`, then paste the invite link when the command asks for it. A bot pipes the link to the command instead. Expect `This Mac joined the team Example Team.`
-2. Run `coconut team new-bot Reporter --home ~/.hermes`. Give the Hermes home of your agent.
-3. Run `coconut team add-bot Reporter --team "Example Team"`.
+1. Run `coconut team join --name "Reporter Mac"`, then paste the invite link when the command asks for it. An agent pipes the link to the command instead. Expect `This Mac joined the team Example Team.`
+2. Run `coconut team new-agent Reporter --home ~/.hermes`. Give the Hermes home of your agent.
+3. Run `coconut team add-agent Reporter --team "Example Team"`.
 
 ### Publish a page
 
@@ -286,7 +286,7 @@ print(urllib.request.urlopen(request).read().decode())
 The answer is one of two:
 
 - `{"status": "deleted", "key": "weekly-report"}`: the service removes the page with all its versions.
-- `{"status": "absent", "key": "weekly-report"}`: the bot of this home has no page with this key. The service changes nothing. A delete is safe to repeat.
+- `{"status": "absent", "key": "weekly-report"}`: the agent of this home has no page with this key. The service changes nothing. A delete is safe to repeat.
 
 The other Macs of the team drop the page from their Library within a minute. This route is the way to delete a page. Do not edit the store of the service by hand.
 
@@ -297,35 +297,35 @@ Run `coconut status`. Expect:
 ```
 Mode: team only
 Service: running (/Users/<you>/Coconut)
-Bots: Reporter
+Agents: Reporter
 Team chat of Reporter: off. To turn it on, run: coconut team connect-chat Reporter
-Team: Example Team (active): 3 members, 2 bots, connected
+Team: Example Team (active): 3 members, 2 agents, connected
 ```
 
 A line that needs an action says what to run, for example `Teams: none. To join one, pipe an invite link to: coconut team join`.
 
-### Let the bot answer in the team chat
+### Let the agent answer in the team chat
 
-Each member of the teams of the bot can then name the bot in the team chat, and the bot answers in the chat. It is one command for each bot, and you run it. Coconut never does this by itself, and it never starts, stops or restarts your Hermes gateway.
+Each member of the teams of the agent can then name the agent in the team chat, and the agent answers in the chat. It is one command for each agent, and you run it. Coconut never does this by itself, and it never starts, stops or restarts your Hermes gateway.
 
-1. Run `coconut team connect-chat Reporter`. It changes nothing yet. It prints each change in the Hermes home of the bot:
+1. Run `coconut team connect-chat Reporter`. It changes nothing yet. It prints each change in the Hermes home of the agent:
    - a link `plugins/coconut` to the Coconut plugin,
    - `coconut` in `plugins.enabled` of `config.yaml`,
    - in `gateway.platforms.coconut` of `config.yaml`: `enabled: true`, `extra.mode: team` and `extra.bridge` (the address file of the Coconut service).
 2. Read the changes. Then run `coconut team connect-chat Reporter --confirm`. Expect `The team chat of Reporter is connected.` The command writes with the writer of Hermes, so each comment, the order of the keys and the layout of what it does not change stay as they are. Hermes keeps its own copy of `config.yaml` in `backups/config`.
 3. Restart the Hermes gateway of that Hermes home yourself, for example with `hermes gateway restart`. The gateway loads the plugin at its start.
-4. Run `coconut status`. Expect `Team chat of Reporter: on. Hermes takes the messages.` If the line says that Hermes does not take the messages, the gateway did not load the plugin: restart it, then look at its log. If the line names a path, the Hermes home misses a part of the team chat (the link `plugins/coconut`, the plugin behind it, or the entries in `config.yaml`), and the line gives the command that repairs it. If the line says `on, but this Hermes is too old for it (it lacks trusted_inbound)`, the gateway loaded the plugin, but this Hermes cannot run the team chat. Each message that names the bot then gets the notice "Hermes on this Mac needs an update, so I cannot answer." Update Hermes to 0.22.4 or later, for example with `hermes update`, then restart the Hermes gateway of the bot and run `coconut status` again. Hermes skips a plugin folder without its plugin and writes no log line about it, so a restart alone does not help there. The status does not parse `config.yaml`: after an edit with a YAML fault, it shows the fault only when the gateway restarts and no longer takes the messages.
+4. Run `coconut status`. Expect `Team chat of Reporter: on. Hermes takes the messages.` If the line says that Hermes does not take the messages, the gateway did not load the plugin: restart it, then look at its log. If the line names a path, the Hermes home misses a part of the team chat (the link `plugins/coconut`, the plugin behind it, or the entries in `config.yaml`), and the line gives the command that repairs it. If the line says `on, but this Hermes is too old for it (it lacks trusted_inbound)`, the gateway loaded the plugin, but this Hermes cannot run the team chat. Each message that names the agent then gets the notice "Hermes on this Mac needs an update, so I cannot answer." Update Hermes to 0.22.4 or later, for example with `hermes update`, then restart the Hermes gateway of the agent and run `coconut status` again. Hermes skips a plugin folder without its plugin and writes no log line about it, so a restart alone does not help there. The status does not parse `config.yaml`: after an edit with a YAML fault, it shows the fault only when the gateway restarts and no longer takes the messages.
 
 When only another profile of a gateway with several profiles has the team chat, Hermes logs `Skipping invalid ... 'coconut' is not a valid Platform` at each start for the sessions of that chat. The line is expected, and the chat works.
 
-The bot uses the tools that the Hermes config gives to the channel `coconut`. Each member of its teams can make it use them. To limit them, set `platform_toolsets.coconut` in `config.yaml` of the Hermes home, for example `platform_toolsets: {coconut: [web]}`, then restart the gateway. The bot cannot get an approval for a command in the team chat: Coconut denies each approval.
+The agent uses the tools that the Hermes config gives to the channel `coconut`. Each member of its teams can make it use them. To limit them, set `platform_toolsets.coconut` in `config.yaml` of the Hermes home, for example `platform_toolsets: {coconut: [web]}`, then restart the gateway. The agent cannot get an approval for a command in the team chat: Coconut denies each approval.
 
 To take it back:
 
 1. Run `coconut team disconnect-chat Reporter`. It removes exactly what `connect-chat` added. Keys that you added to `gateway.platforms.coconut` stay, and a later `connect-chat` takes them as they are. A list `plugins.enabled` that only Coconut had stays as an empty list.
 2. Restart the Hermes gateway of that Hermes home yourself.
 
-A bot whose Hermes home has the team chat cannot be removed, and Coconut cannot be removed from the Mac: first run `coconut team disconnect-chat` for each bot. When a step of `connect-chat` or `disconnect-chat` fails, for example because Coconut finds no Hermes, `coconut status` shows `Team chat of Reporter: not finished.` with both commands. Each command is safe to run again, and a second run finishes the job. Two commands for the same bot do not run at the same time: the second one waits up to 10 seconds, then says that another command for this bot runs and changes nothing. A `connect-chat` that refuses a Hermes home, for example one with another plugin in `plugins/coconut`, changes nothing and leaves no guard. `disconnect-chat` clears the guard only when each part of Coconut is gone or proved absent: the link, `coconut` in `plugins.enabled`, and the keys of the team chat in `gateway.platforms.coconut`. A home that no longer exists, or whose config does not have the word coconut, needs no Hermes for that. When a part has a form that Coconut cannot read, the command removes what it can, prints one line with the exact key to correct, and keeps the guard. Correct the key, then run the command again. `coconut team remove-bot` takes a bot out of one team only: its chat stays connected, and it answers in its other teams.
+An agent whose Hermes home has the team chat cannot be removed, and Coconut cannot be removed from the Mac: first run `coconut team disconnect-chat` for each agent. When a step of `connect-chat` or `disconnect-chat` fails, for example because Coconut finds no Hermes, `coconut status` shows `Team chat of Reporter: not finished.` with both commands. Each command is safe to run again, and a second run finishes the job. Two commands for the same agent do not run at the same time: the second one waits up to 10 seconds, then says that another command for this agent runs and changes nothing. A `connect-chat` that refuses a Hermes home, for example one with another plugin in `plugins/coconut`, changes nothing and leaves no guard. `disconnect-chat` clears the guard only when each part of Coconut is gone or proved absent: the link, `coconut` in `plugins.enabled`, and the keys of the team chat in `gateway.platforms.coconut`. A home that no longer exists, or whose config does not have the word coconut, needs no Hermes for that. When a part has a form that Coconut cannot read, the command removes what it can, prints one line with the exact key to correct, and keeps the guard. Correct the key, then run the command again. `coconut team remove-agent` takes an agent out of one team only: its chat stays connected, and it answers in its other teams.
 
 ### Update
 
@@ -333,8 +333,8 @@ Coconut.app updates itself, as on every Mac. The Mac stays in team-only mode. To
 
 ### Remove
 
-1. For each bot whose team chat is connected, run `coconut team disconnect-chat <bot>`, then restart its Hermes gateway. `coconut status` lists them. Without this step, the removal stops with a line that names the bots.
-2. Leave each team: `coconut team leave --confirm "Example Team"`. Do this for each team. `coconut team` lists them. Expect `This Mac left the team Example Team.` A Mac that does not leave first stays in the member lists of the other Macs, with its bots and their pages.
+1. For each agent whose team chat is connected, run `coconut team disconnect-chat <agent>`, then restart its Hermes gateway. `coconut status` lists them. Without this step, the removal stops with a line that names the agents.
+2. Leave each team: `coconut team leave --confirm "Example Team"`. Do this for each team. `coconut team` lists them. Expect `This Mac left the team Example Team.` A Mac that does not leave first stays in the member lists of the other Macs, with its agents and their pages.
 3. Stop the app: `pkill -x Coconut`. This sends a signal to the process `Coconut`. An Apple event to quit the app can ask for a permission in a dialog that nobody sees. No login item starts the app again before the next step.
 4. Start it to remove Coconut: `open -g /Applications/Coconut.app --args --remove`. The app removes its login items, its settings and the data of Coconut, moves `~/Coconut` to the Trash, and quits. Nothing else in Hermes changes.
 5. Run `coconut status`. Expect `Service: not installed (/Users/<you>/Coconut)`. A failure shows as `Last update error:`.
@@ -365,7 +365,7 @@ Before it stops Coconut, the updater asks a running service to drain. The servic
 The updater waits up to ten minutes for that, and then it stops the service. A turn that a stop interrupts loses the results of its
 tool calls, and Coconut fails its task at the next start, so that it never repeats an action that may have run. The request ends by
 itself after the wait, so a failed update cannot leave the service paused. A service without this support is stopped at once.
-It retains bot profiles, decisions, events, receipts, artifacts, and credentials.
+It retains agent profiles, decisions, events, receipts, artifacts, and credentials.
 Normal updates do not require another iPhone pairing.
 
 The updater runs the Hermes contract check and checks the service's health on loopback. It rebuilds the relay sidecar, and installs it on a Mac that does not have it yet.
@@ -382,7 +382,7 @@ python3 scripts/remote.py status
 
 An iPhone interface change needs a separate signed app update. Backend changes do not install a new iPhone binary.
 
-A bot can request a service restart after staging a reviewed update. Coconut pauses new work for at most 60 seconds.
+An agent can request a service restart after staging a reviewed update. Coconut pauses new work for at most 60 seconds.
 If active turns remain, Coconut reopens the queue and defers the restart until the workers become idle.
 Repeated requests do not extend the pause. Coconut does not interrupt active turns to meet this deadline.
 
@@ -400,7 +400,7 @@ The mini sends encrypted notifications through Coconut's shared relay and APNs.
 ## Remove Coconut
 
 On the mini, open `~/Coconut/Uninstall Coconut.command`.
-The uninstaller stops the owned service and removes the runtime, keys, bots, and stored work. Your Hermes installation stays.
+The uninstaller stops the owned service and removes the runtime, keys, agents, and stored work. Your Hermes installation stays.
 It removes the `skills.external_dirs` entry of the `coconut` skill from the Hermes profiles, and makes the skill folders writable again.
 It removes the `coconut` gateway platform from the same profiles: the plugin link and its two settings.
 Delete `~/Coconut` to remove its source files afterward.
