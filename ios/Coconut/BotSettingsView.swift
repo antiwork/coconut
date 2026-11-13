@@ -5,6 +5,8 @@ import SwiftUI
 struct BotSettingsView: View {
     @Environment(AppStore.self) private var store
     let botId: String
+    /// False in the main window of the Mac: its floating notice already shows the error, so the page shows no copy.
+    var showsError = true
     @State private var edits: BotDraft?
     @State private var routineOpen = false
 
@@ -45,7 +47,7 @@ struct BotSettingsView: View {
                     }
                 }
             }
-            if let error = store.error { Section { InlineError(error) } }
+            if showsError, let error = store.error { Section { InlineError(error) } }
         }
         .settingsBackground()
         .navigationTitle(draft?.name ?? "Bot").inlineNavigationTitle()

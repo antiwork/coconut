@@ -121,7 +121,7 @@ struct MacMainWindow: View {
                                              focusMessageId: route.messageId, attachedWork: route.workContext)
                         }
                         .navigationDestination(for: BotExchangeRoute.self) { BotExchangeView(route: $0) }
-                        .navigationDestination(for: BotSettingsRoute.self) { BotSettingsView(botId: $0.botId) }
+                        .navigationDestination(for: BotSettingsRoute.self) { BotSettingsView(botId: $0.botId, showsError: false) }
                 }
                 .environment(\.pushRoute) { route in chatPath.append(route) }
                 // The notice stands over the chat, not over the details next to it.
@@ -299,7 +299,7 @@ private struct MacBotDetails: View {
                 // Each bot gets its own settings view. Leaving it saves its edits to that bot, so an unsaved edit
                 // never moves to the next bot.
                 switch tab {
-                case .details: BotSettingsView(botId: botId).id(botId)
+                case .details: BotSettingsView(botId: botId, showsError: false).id(botId)
                 case .library:
                     LibraryView(botId: botId)
                         .navigationDestination(for: DocumentRoute.self) { DocumentView(documentId: $0.id) }
