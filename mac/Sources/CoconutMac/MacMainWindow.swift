@@ -93,23 +93,19 @@ struct MacMainWindow: View {
             // The Library row of the sidebar opens the list. A document card sets the page first and then the row.
             if selected != .library { libraryPath = NavigationPath() }
         }
-        .overlay(alignment: .top) {
-            if let error = store.error {
-                ErrorBanner(message: error) { store.error = nil }.padding(.horizontal, 16).padding(.top, 8)
-            }
-        }
     }
 
     @ViewBuilder private var detail: some View {
         switch selection {
         case .inbox, nil:
-            MacInboxView(selection: $selection)
+            MacInboxView(selection: $selection).modifier(MacNoticeArea())
         case .library:
             NavigationStack(path: $libraryPath) {
                 LibraryView()
                     .navigationTitle("Library")
                     .navigationDestination(for: DocumentRoute.self) { DocumentView(documentId: $0.id) }
             }
+            .modifier(MacNoticeArea())
         case .bot(let botId):
             // The details are a column of fixed width next to the chat, not an inspector. Next to a chat, the
             // inspector's split view did not settle on a layout and stopped the app, below about 1,300 points of
@@ -128,6 +124,8 @@ struct MacMainWindow: View {
                         .navigationDestination(for: BotSettingsRoute.self) { BotSettingsView(botId: $0.botId) }
                 }
                 .environment(\.pushRoute) { route in chatPath.append(route) }
+                // The notice stands over the chat, not over the details next to it.
+                .modifier(MacNoticeArea())
                 .frame(minWidth: 300, maxWidth: .infinity)
                 if inspectorShown {
                     Divider()
@@ -149,10 +147,40 @@ struct MacMainWindow: View {
                 TeamChatView(chatKey: chat)
                     .id(chat)
             }
+            .modifier(MacNoticeArea())
             .ignoresSafeArea(.container, edges: .top)
             .toolbarBackgroundVisibility(.hidden, for: .windowToolbar)
             .toolbar(removing: .title)
         }
+    }
+}
+
+/// The notice of an action that failed, at the bottom center of the detail area. It stands above the composer of a
+/// chat, so it never covers the field. It is at most 480 points wide, so a long text wraps to a few short lines.
+struct MacNoticeArea: ViewModifier {
+    @Environment(AppStore.self) private var store
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var composerHeight: CGFloat = 0
+
+    func body(content: Content) -> some View {
+        content
+            .onPreferenceChange(ComposerHeightPreference.self) { composerHeight = $0 }
+            .overlay(alignment: .bottom) {
+                VStack {
+                    if let error = store.error {
+                        ErrorBanner(message: error) { store.error = nil }
+                            .frame(maxWidth: 480)
+                            .padding(.horizontal, BoardStyle.Space.l)
+                            .padding(.bottom, composerHeight + BoardStyle.Space.l)
+                            .transition(.opacity)
+                    }
+                }
+                .animation(BoardStyle.fade(reduceMotion: reduceMotion), value: store.error)
+            }
+            // VoiceOver reads a new notice when it shows.
+            .onChange(of: store.error) { _, error in
+                if let error { AccessibilityNotification.Announcement(error).post() }
+            }
     }
 }
 

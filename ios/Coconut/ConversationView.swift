@@ -351,6 +351,10 @@ struct ConversationView: View {
                                          focused: $composerFocused, replyTo: $replyTo, workContext: $workContext,
                                          onStop: requestStop)
                         .fixedSize(horizontal: false, vertical: true)
+                        #if os(macOS)
+                        // The notice of the Mac window stands above the composer of the chat on the screen.
+                        .composerHeight(visible: isVisible)
+                        #endif
                 }
                 .onAppear { isVisible = true; footerScroll.reset() }
                 .onReceive(DaySeparator.changes) { _ in dayReference = Date() }
@@ -449,9 +453,12 @@ struct ConversationView: View {
     @ViewBuilder
     private func conversationHeader(bot: Bot, messages: [Message]) -> some View {
         VStack(spacing: BoardStyle.Space.s) {
+            #if os(iOS)
+            // A Mac shows the notice at the bottom of the window (MacNoticeArea), so the chat shows no second copy.
             if let error = store.error {
                 ErrorBanner(message: error) { store.error = nil }
             }
+            #endif
             if messages.isEmpty {
                 VStack(spacing: BoardStyle.Space.m) {
                     BotAvatar(bot: bot, size: 68)

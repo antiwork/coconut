@@ -69,4 +69,13 @@ final class ConversationFooterScrollTests: XCTestCase {
         scroll.scroll(to: 500)
         XCTAssertFalse(scroll.allowsMinimization)
     }
+
+    // A chat that is not on the screen reports 0. The notice of the Mac window uses the composer that is on the screen.
+    func testComposerHeightKeepsTheTallestComposer() {
+        var height = ComposerHeightPreference.defaultValue
+        XCTAssertEqual(height, 0)
+        ComposerHeightPreference.reduce(value: &height) { 64 }
+        ComposerHeightPreference.reduce(value: &height) { 0 }
+        XCTAssertEqual(height, 64)
+    }
 }

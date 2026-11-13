@@ -196,7 +196,13 @@ struct TeamChatView: View {
                 Task { await store.markTeamRead(chatKey, first: first) }
             }
         }
-        .safeAreaInset(edge: .bottom, spacing: 0) { footer(room) }
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            footer(room)
+                #if os(macOS)
+                // The notice of the Mac window stands above the composer of the chat on the screen.
+                .composerHeight(visible: isVisible)
+                #endif
+        }
         .task(id: store.connection) {
             // A load without a connection does nothing, so the chat loads again when the Mac connects.
             guard room.hasChat, store.connection == .connected || store.isDemo else { return }

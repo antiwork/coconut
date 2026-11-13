@@ -6,10 +6,14 @@ struct ErrorBanner: View {
     var body: some View {
         // The icon and the X sit on the baseline of the first text line, so a long message grows below them.
         HStack(alignment: .firstTextBaseline, spacing: BoardStyle.Space.s) {
-            Image(systemName: "exclamationmark.circle")
+            Image(systemName: "exclamationmark.circle").foregroundStyle(BoardStyle.attention)
             // The X is 44 points high, so a message of one line has the height of ConnectionBanner.
-            Text(message).textSelection(.enabled).padding(.vertical, 12)
+            Text(message).textSelection(.enabled).padding(.vertical, BoardStyle.Space.m)
+                .fixedSize(horizontal: false, vertical: true)
+            #if os(iOS)
+            // An iPhone shows the notice across the page. A Mac notice is only as wide as its text.
             Spacer(minLength: 0)
+            #endif
             Button(action: dismiss) {
                 Image(systemName: "xmark").fontWeight(.semibold)
                     .frame(minWidth: 44, minHeight: 44)
@@ -17,14 +21,38 @@ struct ErrorBanner: View {
             }
             // The default button of a Mac draws a bezel around the X. An iPhone shows the same button as before.
             .buttonStyle(.borderless)
+            #if os(macOS)
+            // Escape closes the notice. No other control of the window uses Escape.
+            .keyboardShortcut(.cancelAction)
+            #endif
             .accessibilityLabel("Dismiss error")
         }
-        .font(.footnote)
-        .foregroundStyle(.secondary)
+        .font(.body)
+        // At the largest text sizes a long notice in body was taller than the screen of an iPhone. This size keeps the
+        // text at most as large as the footnote text of the earlier notice.
+        .dynamicTypeSize(...DynamicTypeSize.accessibility3)
+        // The text color on the surface with a hairline, so the text and the notice stand out in light and dark mode.
+        .foregroundStyle(BoardStyle.ink)
         .padding(.leading, BoardStyle.Space.m)
-        .padding(.trailing, 4)
-        .background(BoardStyle.surface, in: RoundedRectangle(cornerRadius: 16))
+        .padding(.trailing, BoardStyle.Space.xs)
+        .background(BoardStyle.surface, in: RoundedRectangle(cornerRadius: BoardStyle.Radius.medium))
+        .overlay(RoundedRectangle(cornerRadius: BoardStyle.Radius.medium).strokeBorder(BoardStyle.line))
         .accessibilityIdentifier("action-error")
+    }
+}
+
+/// The height of the composer at the bottom of a chat on a Mac. The notice of the window stands above it.
+struct ComposerHeightPreference: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = max(value, nextValue()) }
+}
+
+extension View {
+    /// Reports the height of this composer to the notice of the Mac window, or 0 when its chat is not on the screen.
+    func composerHeight(visible: Bool) -> some View {
+        background(GeometryReader { geometry in
+            Color.clear.preference(key: ComposerHeightPreference.self, value: visible ? geometry.size.height : 0)
+        })
     }
 }
 
@@ -38,7 +66,7 @@ struct ConnectionBanner: View {
             // VoiceOver reads the icon and the message as one element. The Pair button stays a separate element.
             HStack(spacing: BoardStyle.Space.s) {
                 Image(systemName: notice.offersPairing ? "link" : "moon.zzz").foregroundStyle(.secondary)
-                Text(notice.message).font(.footnote).foregroundStyle(.secondary)
+                Text(notice.message).font(.footnote).foregroundStyle(BoardStyle.ink)
             }
             .accessibilityElement(children: .combine)
             Spacer(minLength: 0)
@@ -52,7 +80,9 @@ struct ConnectionBanner: View {
         .padding(.leading, BoardStyle.Space.m)
         .padding(.trailing, notice.offersPairing ? BoardStyle.Space.xs : BoardStyle.Space.m)
         .frame(minHeight: 44)
-        .background(BoardStyle.surface, in: RoundedRectangle(cornerRadius: 16))
+        // The same surface and hairline as ErrorBanner.
+        .background(BoardStyle.surface, in: RoundedRectangle(cornerRadius: BoardStyle.Radius.medium))
+        .overlay(RoundedRectangle(cornerRadius: BoardStyle.Radius.medium).strokeBorder(BoardStyle.line))
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("connection-banner")
     }
