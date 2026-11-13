@@ -229,8 +229,18 @@ struct LibrarySections {
     }
 }
 
+/// The pages of the section "Pages" of the Mac sidebar: the pinned pages, then the other pages, each newest update
+/// first. As in the Library, a page of an owner that the app does not know stays hidden.
+enum SidebarPages {
+    static func make(documents: [BotDocument], bots: [Bot], teamBots: [TeamBot] = []) -> [BotDocument] {
+        let sections = LibrarySections(documents: documents, bots: bots, teamBots: teamBots)
+        let others = sections.groups.flatMap(\.documents).sorted { $0.updatedAt > $1.updatedAt }
+        return sections.pinned + others
+    }
+}
+
 /// Pins a document in the Library, or removes its pin.
-private struct PinDocumentButton: View {
+struct PinDocumentButton: View {
     @Environment(AppStore.self) private var store
     let document: BotDocument
 
