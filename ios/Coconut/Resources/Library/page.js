@@ -114,8 +114,8 @@
       cells[0].classList.add("name");
       cells.slice(1).forEach((cell, index) => {
         const header = head && head.cells[cell.cellIndex];
-        const label = header && number(text(cell)) ? text(header) + " " : "";
-        cell.dataset.label = (index ? " · " : "") + label;
+        const label = header && number(text(cell)) ? text(header) + "\u00a0" : "";
+        cell.dataset.label = (index ? "\u00a0· " : "") + label;
       });
     }
     tables.push(table);

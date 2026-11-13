@@ -486,8 +486,9 @@ final class LibraryDocumentTests: XCTestCase {
               .map((cell) => (cell.dataset.label || "") + cell.textContent).join("")).join("\\n")
             """)
         // A no-break space keeps each dot with the cell before it, so no line of a record starts with a dot.
-        XCTAssertEqual(records, "shop#12\u{a0}· Refuse price writes that do not match the product\u{a0}· Ada"
-            + "\u{a0}· draft\ndocs#13\u{a0}· Add a field for the access token of the analytics\u{a0}· Grace\u{a0}· open")
+        XCTAssertEqual(records, "shop#12\u{00A0}· Refuse price writes that do not match the product\u{00A0}· Ada"
+            + "\u{00A0}· draft\ndocs#13\u{00A0}· Add a field for the access token of the analytics"
+            + "\u{00A0}· Grace\u{00A0}· open")
         // No white space is left between two cells of a record, so the line cannot break before a dot.
         let spaces = try await string(view, """
             [...document.querySelectorAll("table.records tbody tr")]
@@ -501,7 +502,7 @@ final class LibraryDocumentTests: XCTestCase {
         let shops = "document.querySelectorAll('main table')[2]"
         let labels = try await string(view, "[...\(shops).tBodies[0].rows[0].cells].map((cell) => cell.dataset.label)")
         // A no-break space keeps a label with its number.
-        XCTAssertEqual(labels, ",Open\u{a0},\u{a0}· Drafts\u{a0}")
+        XCTAssertEqual(labels, ",Open\u{00A0},\u{00A0}· Drafts\u{00A0}")
         let aligned = try await string(view, """
             [...\(shops).rows].map((row) => [...row.cells]
               .map((cell) => getComputedStyle(cell).textAlign.endsWith("right") ? "right" : "left").join(",")).join(" ")
