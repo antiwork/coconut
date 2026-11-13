@@ -2,6 +2,9 @@ import SwiftUI
 
 struct ErrorBanner: View {
     let message: String
+    /// False only for the floating notice of the Mac window, which is as wide as its text. A notice in a column with
+    /// other banners has their width.
+    var fillsWidth = true
     let dismiss: () -> Void
     var body: some View {
         // The icon and the X sit on the baseline of the first text line, so a long message grows below them.
@@ -10,10 +13,7 @@ struct ErrorBanner: View {
             // The X is 44 points high, so a message of one line has the height of ConnectionBanner.
             Text(message).textSelection(.enabled).padding(.vertical, BoardStyle.Space.m)
                 .fixedSize(horizontal: false, vertical: true)
-            #if os(iOS)
-            // An iPhone shows the notice across the page. A Mac notice is only as wide as its text.
-            Spacer(minLength: 0)
-            #endif
+            if fillsWidth { Spacer(minLength: 0) }
             Button(action: dismiss) {
                 Image(systemName: "xmark").fontWeight(.semibold)
                     .frame(minWidth: 44, minHeight: 44)

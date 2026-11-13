@@ -168,7 +168,7 @@ struct MacNoticeArea: ViewModifier {
             .overlay(alignment: .bottom) {
                 VStack {
                     if let error = store.error {
-                        ErrorBanner(message: error) { store.error = nil }
+                        ErrorBanner(message: error, fillsWidth: false) { store.error = nil }
                             .frame(maxWidth: 480)
                             .padding(.horizontal, BoardStyle.Space.l)
                             .padding(.bottom, composerHeight + BoardStyle.Space.l)
