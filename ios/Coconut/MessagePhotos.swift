@@ -63,7 +63,7 @@ struct PhotoCarousel: View {
                     .scaleEffect(pressing == index ? 0.96 : 1)
                     .animation(.spring(duration: 0.25), value: pressing)
                 if !photo.caption.isEmpty {
-                    Text(photo.caption).font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                    Text(photo.caption).font(.footnote).foregroundStyle(.secondary).lineLimit(2)
                         .frame(width: width, alignment: .leading)
                 }
             }
@@ -174,7 +174,7 @@ struct PhotoViewer: View {
             if !photo.caption.isEmpty {
                 Text(photo.caption).font(.subheadline).foregroundStyle(.white)
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, 20).padding(.vertical, 12)
+                    .padding(.horizontal, BoardStyle.Space.l).padding(.vertical, 12)
                     .background(.black.opacity(0.5))
             }
         }
@@ -191,7 +191,7 @@ struct PhotoViewer: View {
             .accessibilityIdentifier("photo-viewer-close")
             Spacer()
             if photos.count > 1 {
-                Text("\(index + 1) of \(photos.count)").font(.subheadline.weight(.medium)).monospacedDigit()
+                Text("\(index + 1) of \(photos.count)").font(.subheadline.weight(.semibold)).monospacedDigit()
             }
             Spacer()
             Group {
@@ -335,7 +335,7 @@ struct RemotePhoto: View {
                 if let image {
                     Image(platformImage: image).resizable().scaledToFill()
                 } else if failed {
-                    Image(systemName: "photo").font(.title2).foregroundStyle(.secondary)
+                    Image(systemName: "photo").font(.title3).foregroundStyle(.secondary)
                 } else {
                     ProgressView()
                 }

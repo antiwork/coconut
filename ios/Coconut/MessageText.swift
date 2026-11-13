@@ -57,7 +57,7 @@ private extension Theme {
                 configuration.label
                     .fixedSize(horizontal: true, vertical: true)
                     .markdownTextStyle { FontFamilyVariant(.monospaced); FontSize(.em(0.85)) }
-                    .padding(10)
+                    .padding(BoardStyle.Space.m)
             }
             .accessibilityElement(children: .ignore)
             .accessibilityLabel(configuration.content)

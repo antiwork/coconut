@@ -167,7 +167,7 @@ struct OnboardingView: View {
     @ViewBuilder private var actions: some View {
         #if os(macOS)
         // Standard Mac buttons at their own size. Return copies the message.
-        HStack(spacing: 10) {
+        HStack(spacing: BoardStyle.Space.s) {
             ShareLink(item: messageText) { Label("Share…", systemImage: "square.and.arrow.up") }
                 .accessibilityIdentifier("share-hermes-message")
             Button {
@@ -229,7 +229,7 @@ struct OnboardingView: View {
                 ProgressView().controlSize(.small)
                 Text("Pairing with \(name)…")
             }
-            .font(.subheadline.weight(.medium))
+            .font(.subheadline.weight(.semibold))
             .accessibilityElement(children: .combine)
             .accessibilityIdentifier("onboarding-status")
         case .failed(let text):

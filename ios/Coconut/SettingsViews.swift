@@ -140,7 +140,7 @@ private struct MacConnectionSettingsView: View {
                     Text("Preview uses sample conversations.").foregroundStyle(.secondary)
                 } else if store.hasPairing {
                     LabeledContent("Mac") {
-                        Text(store.pairedMacDescription).font(.caption).textSelection(.enabled)
+                        Text(store.pairedMacDescription).font(.footnote).textSelection(.enabled)
                     }
                     Button("Reconnect") { Task { await store.reconnect() } }
                 } else {

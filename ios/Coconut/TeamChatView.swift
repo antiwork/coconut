@@ -89,7 +89,7 @@ struct TeamChatView: View {
                             Task { await loadEarlier(anchor: anchor, proxy: proxy) }
                         } label: {
                             if chat.loadingEarlier || growingAbove { ProgressView() }
-                            else { Text("Load earlier messages").font(.caption) }
+                            else { Text("Load earlier messages").font(.footnote) }
                         }
                         .frame(maxWidth: .infinity, minHeight: 44)
                         .disabled(chat.loadingEarlier || growingAbove)
@@ -321,7 +321,7 @@ struct TeamChatView: View {
             Text(reason)
                 .font(.subheadline).foregroundStyle(.secondary).multilineTextAlignment(.center)
                 .frame(maxWidth: .infinity)
-                .padding(.horizontal, 24).padding(.vertical, 14)
+                .padding(.horizontal, 24).padding(.vertical, BoardStyle.Space.m)
                 .modifier(ComposerBackdrop())
                 .accessibilityIdentifier("team-chat-closed")
         } else {

@@ -400,7 +400,7 @@ struct UnreadBadge: View {
 
 struct BotActivityDot: View {
     @Environment(AppStore.self) private var store
-    @ScaledMetric(relativeTo: .caption) private var size = 10
+    @ScaledMetric(relativeTo: .footnote) private var size = 10
     let bot: Bot
     var body: some View {
         if store.isBotActive(bot) {

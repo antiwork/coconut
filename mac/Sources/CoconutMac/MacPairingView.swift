@@ -28,7 +28,7 @@ struct MacPairingView: View {
                         .buttonStyle(.borderedProminent)
                         .disabled(pairingHere)
                         .accessibilityIdentifier("pair-this-mac")
-                        if let failure { Text(failure).font(.callout).foregroundStyle(BoardStyle.destructive) }
+                        if let failure { Text(failure).font(.subheadline).foregroundStyle(BoardStyle.destructive) }
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)

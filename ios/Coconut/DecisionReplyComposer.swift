@@ -10,7 +10,7 @@ struct DecisionReplyComposer: View {
     private var canRespond: Bool { store.canSubmitDecision }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: BoardStyle.Space.s) {
             HStack(alignment: .bottom, spacing: 8) {
                 TextField("Reply…", text: Binding(
                     get: { store.decisionReplyDrafts[decision.id] ?? "" },
@@ -31,10 +31,10 @@ struct DecisionReplyComposer: View {
             .background(BoardStyle.paper, in: RoundedRectangle(cornerRadius: BoardStyle.Radius.small))
             .overlay(RoundedRectangle(cornerRadius: BoardStyle.Radius.small).stroke(BoardStyle.line))
             if sendingReply {
-                Text("Sending…").font(.caption).foregroundStyle(.secondary)
+                Text("Sending…").font(.footnote).foregroundStyle(.secondary)
             }
             if let responseError {
-                Text(responseError).font(.caption).foregroundStyle(.secondary)
+                Text(responseError).font(.footnote).foregroundStyle(.secondary)
             }
         }
     }
