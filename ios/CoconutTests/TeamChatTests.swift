@@ -499,6 +499,14 @@ final class TeamChatTests: XCTestCase {
         XCTAssertEqual([5, 42, 99, 100, 140].map(UnreadBadge.text), ["5", "42", "99", "99+", "99+"])
     }
 
+    /// One character gives a circle: no side space. Two and three characters give a capsule with the small space of the
+    /// scale at each side.
+    func testTheUnreadBadgeIsACircleForOneCharacterAndACapsuleForMore() {
+        XCTAssertEqual(UnreadBadge.sidePadding(UnreadBadge.text(3)), 0)
+        XCTAssertEqual(UnreadBadge.sidePadding(UnreadBadge.text(66)), BoardStyle.Space.s)
+        XCTAssertEqual(UnreadBadge.sidePadding(UnreadBadge.text(140)), BoardStyle.Space.s)
+    }
+
     func testTheLineOfWhoIsInTheChat() {
         func room(people: Int, bots: Int) -> TeamRoom {
             TeamRoom(room: "r", name: "Example Team", state: "active",
