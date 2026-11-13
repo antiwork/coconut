@@ -1610,26 +1610,44 @@ final class LibraryDocumentTests: XCTestCase {
         XCTAssertEqual(result, "358,175,175 | 0")
     }
 
-    /// The rule of the x labels (see the comment at the top of the label code of page.js), as a script. For each chart
-    /// it answers: the count of labels, whether the set fits (each label has its own text, is inside the svg, ends
-    /// before the lowest y number, and is at least 8 px from the next), whether the labels of names follow the rule of
-    /// names (the first name and each k-th name, each in full or cut with "…" at a whole character), and the labels.
+    /// The rule of the x labels (see the comment at the top of the label code of page.js), as a script. Each fact
+    /// comes from what the page measures in this run, so the rule holds for each font. For each chart it answers:
+    /// - the count of labels;
+    /// - fits: each label has its own text, is inside the svg, ends before the lowest y number, and is at least 8 px
+    ///   from the next;
+    /// - named: the labels of names are the first name and each k-th name, each in full or cut with "…" at a whole
+    ///   character;
+    /// - cut: the full text of each cut name does not fit its place between the labels at its sides;
+    /// - most: one more label of the same width does not fit between two labels, so no lower k fits;
+    /// - the labels.
     private static let labelRule = """
         const parts = (text) => [...new Intl.Segmenter(undefined, { granularity: "grapheme" }).segment(text)]
           .map((part) => part.segment);
         const cuts = (name) => parts(name).slice(1).map((_, end) => parts(name).slice(0, end + 1).join("").trimEnd() + "…");
         const rule = (figure, names) => {
           const svg = figure.querySelector("svg.plot");
-          if (!svg) return "0 false false no svg";
+          if (!svg) return "0 false false false false no svg";
           const frame = svg.getBoundingClientRect();
           const lowest = [...svg.querySelectorAll("[aria-label='y-axis tick label'] text")]
             .map((text) => text.getBoundingClientRect()).sort((a, b) => b.top - a.top)[0];
-          const texts = [...svg.querySelectorAll("[aria-label='x-axis tick label'] text")];
+          const texts = [...svg.querySelectorAll("[aria-label='x-axis tick label'] text")]
+            .sort((a, b) => a.getBoundingClientRect().left - b.getBoundingClientRect().left);
           const labels = texts.map((text) => text.textContent);
-          const boxes = texts.map((text) => text.getBoundingClientRect()).sort((a, b) => a.left - b.left);
-          const fits = new Set(labels).size === labels.length && boxes.every((box, index) => box.left >= frame.left - 0.5
-            && box.right <= lowest.left + 0.5 && (!index || box.left - boxes[index - 1].right >= 7.95));
-          let named = true;
+          const boxes = texts.map((text) => text.getBoundingClientRect())
+            .map((box) => ({ left: box.left - frame.left, right: box.right - frame.left }));
+          const bound = lowest.left - frame.left;
+          const fits = new Set(labels).size === labels.length && boxes.every((box, index) => box.left >= -0.5
+            && box.right <= bound + 0.5 && (!index || box.left - boxes[index - 1].right >= 7.95));
+          const group = svg.querySelector("[aria-label='x-axis tick label']");
+          const width = (text) => {
+            const element = document.createElementNS("http://www.w3.org/2000/svg", "text");
+            element.textContent = text;
+            group.append(element);
+            const size = element.getComputedTextLength();
+            element.remove();
+            return size;
+          };
+          let named = true, cut = true, most = true;
           if (names) {
             // Some k gives the shown names: names 0, k, 2k and on, with or without the last one.
             const shows = (k) => {
@@ -1637,14 +1655,38 @@ final class LibraryDocumentTests: XCTestCase {
               return (labels.length === count || labels.length === count - 1) && labels.every((label, index) =>
                 label === names[index * k] || cuts(names[index * k]).includes(label));
             };
-            named = !labels.length || names.some((_, index) => shows(index + 1));
+            const k = names.findIndex((_, index) => shows(index + 1)) + 1;
+            named = !labels.length || k > 0;
+            if (k > 0) {
+              const scale = svg.scale("x");
+              const band = scale.type === "band";
+              const end = Math.max(...[...svg.querySelectorAll("[aria-label='y-grid'] line")]
+                .map((line) => +line.getAttribute("x2")));
+              // A cut name in full, at its place: on a band from the start of its band, on a line centered on its
+              // point and moved in at the bounds. It does not fit with 1 px to spare.
+              cut = labels.every((label, index) => {
+                const name = names[index * k];
+                if (label === name) return true;
+                const size = width(name);
+                const x = scale.apply(name);
+                const left = band ? x : Math.min(Math.max(0, x - size / 2), bound - size);
+                const before = index ? boxes[index - 1].right + 8 : 0;
+                const after = Math.min(index + 1 < boxes.length ? boxes[index + 1].left - 8 : bound, band ? end : bound);
+                return left < before + 1 || left + size > after - 1;
+              });
+              // Each name shows, or between two labels the room is less than one more label of the widest width and
+              // two gaps of 8 px.
+              const widest = Math.max(0, ...labels.map(width));
+              most = k === 1 && labels.length === names.length
+                || boxes.every((box, index) => !index || box.left - boxes[index - 1].right < widest + 16 + 0.5);
+            }
           }
-          return [labels.length, fits, named, labels.join("/")].join(" ");
+          return [labels.length, fits, named, cut, most, labels.join("/")].join(" ");
         };
         """
 
-    /// The fourth review of the chart labels: each chart follows the rule of the labels at 320, 390 and 744 px (and
-    /// 375 px), and shows at least as many labels as the chart before #484, unless its labels met.
+    /// The fourth review of the chart labels: each chart follows the rule of the labels at 320, 375, 390 and 744 px.
+    /// The test holds for each font: CHART_TEST_FONT_SIZE sets another size of the labels for a run.
     @MainActor
     func testTheLabelsOfTheFourthChartReviewFollowTheRule() async throws {
         let products = (1...40).map { "Product \($0)" }
@@ -1669,31 +1711,53 @@ final class LibraryDocumentTests: XCTestCase {
             .joined(separator: ", ") + "]" }
         let script = Self.labelRule + """
             const names = [\(names.joined(separator: ", "))];
-            return [...document.querySelectorAll("figure.chart[data-spec]")].map((figure, index) => rule(figure, names[index]))
-              .join("\\n") + "\\n" + scrolls();
+            const days = ["Jan 1", "Feb 1", "Mar 1", "Apr 1", "May 1", "Jun 1", "Jul 1", "Aug 1", "Sep 1", "Oct 1",
+              "Nov 1", "Dec 1"];
+            // The months show each first day of a month, or, when those labels do not all fit at their dates in this
+            // font, the first month and each k-th month.
+            const monthly = (figure, count) => {
+              const svg = figure.querySelector("svg.plot");
+              const scale = svg.scale("x");
+              const frame = svg.getBoundingClientRect();
+              const bound = [...svg.querySelectorAll("[aria-label='y-axis tick label'] text")]
+                .map((text) => text.getBoundingClientRect()).sort((a, b) => b.top - a.top)[0].left - frame.left;
+              const group = svg.querySelector("[aria-label='x-axis tick label']");
+              const boxes = days.slice(0, count).map((day, index) => {
+                const element = document.createElementNS("http://www.w3.org/2000/svg", "text");
+                element.textContent = day;
+                group.append(element);
+                const size = element.getComputedTextLength();
+                element.remove();
+                const left = Math.min(Math.max(0, scale.apply(new Date(Date.UTC(2026, index, 1))) - size / 2), bound - size);
+                return [left, left + size];
+              });
+              const all = boxes.every((box, index) => !index || box[0] - boxes[index - 1][1] >= 8);
+              const shown = [...svg.querySelectorAll("[aria-label='x-axis tick label'] text")].map((text) => text.textContent);
+              return shown.join("/") === days.slice(0, count).join("/")
+                || !all && rule(figure, days.slice(0, count)).split(" ")[2] === "true";
+            };
+            const figures = [...document.querySelectorAll("figure.chart[data-spec]")];
+            return figures.map((figure, index) => rule(figure, names[index])).join("\\n") + "\\n"
+              + monthly(figures[2], 12) + " " + monthly(figures[6], 6) + "\\n" + scrolls();
             """
-        // The least count of labels of each chart at each width: the count of the chart before #484.
-        let least: [CGFloat: [Int]] = [320: [3, 3, 4, 3, 3, 4, 2, 1, 7], 375: [3, 3, 4, 4, 4, 5, 6, 1, 4],
-                                       390: [4, 4, 4, 4, 4, 5, 6, 1, 7], 744: [7, 7, 12, 6, 7, 8, 6, 1, 7]]
         for width: CGFloat in [320, 375, 390, 744] {
             let (view, window) = try await loadPage(markdown, width: width)
             defer { close(window) }
             let lines = (try await probe(view, script) ?? "").components(separatedBy: "\n")
-            XCTAssertEqual(lines.count, charts.count + 1, lines.joined(separator: "\n"))
-            guard lines.count == charts.count + 1 else { continue }
-            for (index, line) in lines.dropLast().enumerated() {
+            XCTAssertEqual(lines.count, charts.count + 2, lines.joined(separator: "\n"))
+            guard lines.count == charts.count + 2 else { continue }
+            for (index, line) in lines.prefix(charts.count).enumerated() {
                 let facts = line.components(separatedBy: " ")
+                XCTAssertGreaterThan(Int(facts[0]) ?? 0, 0, "chart \(index + 1) at \(width): no label: \(line)")
                 XCTAssertEqual(facts[1], "true", "chart \(index + 1) at \(width): the labels do not fit: \(line)")
                 XCTAssertEqual(facts[2], "true", "chart \(index + 1) at \(width): the rule of names: \(line)")
-                XCTAssertGreaterThanOrEqual(Int(facts[0]) ?? 0, least[width]![index],
-                                            "chart \(index + 1) at \(width): fewer labels than before: \(line)")
+                XCTAssertEqual(facts[3], "true", "chart \(index + 1) at \(width): a cut name fits in full: \(line)")
+                XCTAssertEqual(facts[4], "true", "chart \(index + 1) at \(width): one more label fits: \(line)")
             }
-            // 6 months at 744 px: a label on each first day of a month, as the data.
-            if width == 744 { XCTAssertTrue(lines[6].hasSuffix(" Jan 1/Feb 1/Mar 1/Apr 1/May 1/Jun 1"), lines[6]) }
-            // 12 names on a line keep the first name in full from 390 px.
-            if width >= 390 { XCTAssertTrue(lines[3].contains(" Stripe/"), lines[3]) }
+            // 12 and 6 months: each first day of a month, or each k-th one when not all of them fit.
+            XCTAssertEqual(lines[charts.count], "true true", "months at \(width): \(lines[2]) | \(lines[6])")
             // A long first name and a short second name: both show.
-            XCTAssertTrue(lines[7].hasPrefix("2 true true Course") && lines[7].hasSuffix("/B"), lines[7])
+            XCTAssertTrue(lines[7].hasPrefix("2 true true true true Course") && lines[7].hasSuffix("/B"), lines[7])
             XCTAssertEqual(lines.last, "0", "the page scrolls sideways at \(width)")
         }
     }
@@ -1720,12 +1784,16 @@ final class LibraryDocumentTests: XCTestCase {
             <table id="d"><tr><td>\(figure(bar))</td><td>\(figure(spec("line", weeks)))</td></tr></table>
             <div id="e" style="width: 273px">\(figure(spec("line", weeks)))</div>
             """
+        // The labels of the weekly dates are the first date of the data and each k-th date, with no label between.
+        let days = ["Oct 1", "Oct 8", "Oct 15", "Oct 22", "Oct 29", "Nov 5", "Nov 12", "Nov 19"]
         let script = Self.labelRule + """
             const widths = (id) => [...document.getElementById(id).querySelectorAll("figure, .side")]
               .map((element) => element.querySelector("svg.plot") || element.classList.contains("side")
                 ? Math.round(element.getBoundingClientRect().width) : 0);
             const weekly = document.querySelector("#e figure");
-            return [widths("a"), widths("b"), widths("c"), widths("d"), rule(weekly, null)].join(" | ") + " | " + scrolls();
+            const days = [\(days.map { "\"\($0)\"" }.joined(separator: ", "))];
+            return [widths("a"), widths("b"), widths("c"), widths("d"), rule(weekly, days)].join(" | ")
+              + " | " + scrolls();
             """
         for width: CGFloat in [320, 390, 744] {
             let (view, window) = try await loadPage(html, width: width, markdown: false)
@@ -1744,12 +1812,10 @@ final class LibraryDocumentTests: XCTestCase {
             // Both charts of a table row draw, and they share the row.
             XCTAssertTrue(sizes[3].count == 2 && sizes[3].allSatisfy { $0 > 0 }, "a table row at \(width): \(answer)")
             XCTAssertLessThanOrEqual(abs(sizes[3][0] - sizes[3][1]), 4, "a table row at \(width): \(answer)")
-            // 8 weekly dates in 273 px: at least two labels, each one a date of the data.
+            // 8 weekly dates in 273 px: at least two labels, they fit, and they follow the rule of the data.
             let weekly = parts[4].components(separatedBy: " ")
-            XCTAssertEqual(weekly[1], "true", answer)
-            XCTAssertGreaterThanOrEqual(Int(weekly[0]) ?? 0, 2, answer)
-            let days = ["Oct 1", "Oct 8", "Oct 15", "Oct 22", "Oct 29", "Nov 5", "Nov 12", "Nov 19"]
-            XCTAssertTrue(weekly[3...].joined(separator: " ").components(separatedBy: "/").allSatisfy(days.contains), answer)
+            XCTAssertGreaterThanOrEqual(Int(weekly[0]) ?? 0, 2, "weekly dates at \(width): \(answer)")
+            XCTAssertEqual(Array(weekly[1...4]), ["true", "true", "true", "true"], "weekly dates at \(width): \(answer)")
             XCTAssertEqual(parts[5], "0", "the page scrolls sideways at \(width)")
         }
     }
@@ -1809,6 +1875,15 @@ final class LibraryDocumentTests: XCTestCase {
         -> (WKWebView, AnyObject) {
         let configuration = WKWebViewConfiguration()
         DocumentPage.scripts(diagrams: false).forEach(configuration.userContentController.addUserScript)
+        // A test run can set another size of the chart labels (CHART_TEST_FONT_SIZE, for example 15px), to prove that
+        // a test of the label rule holds for each font.
+        if let size = ProcessInfo.processInfo.environment["CHART_TEST_FONT_SIZE"] {
+            let style = "svg text { font-size: \(size) !important; }"
+            configuration.userContentController.addUserScript(WKUserScript(
+                source: "const style = document.createElement('style'); style.textContent = '\(style)'; "
+                    + "document.documentElement.append(style);",
+                injectionTime: .atDocumentStart, forMainFrameOnly: true))
+        }
         let view = WKWebView(frame: CGRect(x: 0, y: 0, width: width, height: 800), configuration: configuration)
         #if os(iOS)
         let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
