@@ -180,6 +180,10 @@ struct ChatWindowNotice: View {
             .background(OnScreenProbe { [windowNotice, chat] onScreen in
                 if onScreen { windowNotice?.holders.add(chat) } else { windowNotice?.holders.remove(chat) }
             })
+            // A new chat replaces the old chat in one update: the old chat leaves in onDisappear, the new chat comes in
+            // onAppear. The probe reports one turn of the main queue later. Without the add here, the column showed
+            // the notice for that one turn.
+            .onAppear { windowNotice?.holders.add(chat) }
             .onDisappear { windowNotice?.holders.remove(chat) }
     }
 }
