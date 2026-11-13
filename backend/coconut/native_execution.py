@@ -201,8 +201,9 @@ class NativeExecution:
         choice = option['answer'] if option else data.get('choice')
         if choice not in ('approve', 'reject', 'modify', 'reply') or (choice == 'approve' and not option):
             raise ServiceError(400, 'Choose one of the current options.')
-        # Hermes owns exact command approvals; profile checks apply to model questions and drafts. The answer stands
-        # when the instructions changed, and the bot checks it against them when it continues (run_gateway_resume).
+        # A change of the bot instructions does not block an answer. The person answers the card that the app shows, and
+        # the choice keeps its own scope. A continuing Hermes session keeps its first system prompt, so the turn that
+        # continues gets a note to read the instructions again (native_conversation.INSTRUCTIONS_CHANGED).
         instructions_changed = (choice == 'approve' and decision['action_type'] in ('question', 'draft_message')
                                 and self._decision_profile_changed(decision))
         if decision.get('previews') and choice == 'approve' and data.get('previews_hash') != decision.get('previews_hash'):

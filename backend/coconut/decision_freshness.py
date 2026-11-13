@@ -374,14 +374,15 @@ class DecisionFreshness:
         self._put('decisions', decision)
 
     def _decision_profile_changed(self, decision):
-        """Whether the bot's instructions changed after the bot made this card. An unreadable profile refuses the answer."""
+        """Whether the bot's instructions changed after the bot made this card. A card without a saved revision and an
+        unreadable profile give False: Coconut then cannot say that they changed."""
         from .profiles import ProfileError
-        from .service import ServiceError
+        if not decision.get('_profile_revision'):
+            return False
         try:
-            current = self.profiles.prompt_revision(self._get('bots', decision['bot_id']))
-        except (OSError, ProfileError) as error:
-            raise ServiceError(409, 'Coconut cannot read the current bot instructions. This answer must wait for a new check.') from error
-        return decision.get('_profile_revision') != current
+            return decision['_profile_revision'] != self.profiles.prompt_revision(self._get('bots', decision['bot_id']))
+        except (OSError, ProfileError):
+            return False
 
     def _decision_refresh_prompt(self, decision, task, work, decisions):
         tasks = self._task_map()
