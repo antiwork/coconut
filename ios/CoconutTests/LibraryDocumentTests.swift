@@ -1334,31 +1334,44 @@ final class LibraryDocumentTests: XCTestCase {
             {"type": "area", "x": "x", "y": "y", "series": "s", "data": [{"x": 1, "y": 2, "s": "a"},
             {"x": 2, "y": 2, "s": "a"}, {"x": 3, "y": 2, "s": "a"}, {"x": 1, "y": 3, "s": "b"}, {"x": 3, "y": 3, "s": "b"}]}
             """))
-        XCTAssertTrue(facts[0].contains(" Jan 1,Jan 2 "), facts[0])
+        // The rules, not the pixels: the fonts of each platform give other widths.
         // The labels of 30 days: the words between the numbers of the y axis and the last four facts.
         let words = facts[2].components(separatedBy: " ")
         let steps = words[1..<(words.count - 4)].joined(separator: " ").components(separatedBy: ",")
             .compactMap { Int($0.components(separatedBy: " ").last ?? "") }
-        XCTAssertGreaterThan(steps.count, 2, facts[2])
+        XCTAssertGreaterThanOrEqual(steps.count, 2, facts[2])
         XCTAssertEqual(Set(zip(steps.dropFirst(), steps).map { $0 - $1 }).count, 1, facts[2])
-        XCTAssertTrue(facts[3].contains(" Dec 29,Jan 5 "), facts[3])
-        XCTAssertEqual(facts[4].components(separatedBy: " ")[1].components(separatedBy: ",").count, 8, facts[4])
         XCTAssertTrue(facts[6].hasPrefix("0,2,4,6 "), facts[6])
+        // Each chart of labels: the first label shows, no two labels meet or have the same text, each label is inside
+        // the chart, and a date label names the day of its value.
         let (view, window) = try await loadPage("Lead." + Self.chart("""
+            {"type": "bar", "x": "x", "y": "y", "data": [{"x": "2026-01-01T00:00:00Z", "y": 1},
+            {"x": "2026-01-02T00:00:00Z", "y": 2}]}
+            """) + Self.chart("""
             {"type": "bar", "x": "x", "y": "y", "data": [\(weeks)]}
+            """) + Self.chart("""
+            {"type": "bar", "x": "x", "y": "y", "data": [{"x": "2025-12-29", "y": 1}, {"x": "2026-01-05", "y": 2}]}
+            """) + Self.chart("""
+            {"type": "bar", "x": "x", "y": "y", "data": [\(eight)]}
             """) + Self.chart("""
             {"type": "bar", "x": "x", "y": "y", "data": [{"x": "\(long)", "y": 3}]}
             """), width: 390)
         defer { close(window) }
         let result = try await probe(view, """
-            const figures = [...document.querySelectorAll("figure.chart[data-spec]")];
-            const texts = (figure) => [...figure.querySelectorAll("[aria-label='x-axis tick label'] text")];
-            const names = texts(figures[0]).map((text) => text.textContent);
-            const svg = figures[1].querySelector("svg").getBoundingClientRect();
-            return [new Set(names).size === names.length, names.length >= 1,
-              texts(figures[1]).every((text) => text.getBoundingClientRect().right <= svg.right + 0.5)].join(" | ");
+            const days = [["Jan 1", "Jan 2"], null, ["Dec 29", "Jan 5"], null, null];
+            return [...document.querySelectorAll("figure.chart[data-spec]")].map((figure, index) => {
+              const texts = [...figure.querySelectorAll("[aria-label='x-axis tick label'] text")];
+              const names = texts.map((text) => text.textContent);
+              const svg = figure.querySelector("svg").getBoundingClientRect();
+              const boxes = texts.map((text) => text.getBoundingClientRect()).sort((a, b) => a.left - b.left);
+              return [names.length >= 1, new Set(names).size === names.length,
+                boxes.every((box, at) => box.left >= svg.left - 0.5 && box.right <= svg.right + 0.5
+                  && (!at || box.left - boxes[at - 1].right >= 8)),
+                !days[index] || (names[0] === days[index][0] && names.every((name) => days[index].includes(name)))]
+                .join(",");
+            }).join(" ");
             """)
-        XCTAssertEqual(result, "true | true | true")
+        XCTAssertEqual(result, Array(repeating: "true,true,true,true", count: 5).joined(separator: " "))
     }
 
     /// Charts in a flex box: three in a row never make the page scroll sideways, and a chart in a column with a height

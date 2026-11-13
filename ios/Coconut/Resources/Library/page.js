@@ -310,7 +310,8 @@
         ...(dots ? [Plot.dot(valid, { x: "x", y: "y", fill: tone, r: 3 })] : [])],
       dot: () => [Plot.dot(valid, { x: "x", y: "y", fill: tone, r: 3 })],
     }[type];
-    const x = band ? { type: "band", domain: xs, paddingInner: 0.25, paddingOuter: 0 }
+    // A band starts at the left edge of the column and ends at the end of the plot: no outer padding and no rounding.
+    const x = band ? { type: "band", domain: xs, paddingInner: 0.25, paddingOuter: 0, align: 0, round: false }
       : kind === "text" ? { type: "point", domain: xs } : { type: kind === "date" ? "utc" : "linear" };
     const look = { background: "transparent", color: "var(--text-2)", fontSize: "var(--size-1)", overflow: "visible",
       fontFamily: "-apple-system, system-ui, sans-serif", fontVariantNumeric: "tabular-nums" };
@@ -372,13 +373,14 @@
       return;
     }
     // A band: names keep each label, cut to its step. Days and runs of numbers show the first and each k-th label.
-    const step = plotWidth / Math.max(1, xs.length - 0.25);
-    const shift = { textAnchor: "start", dx: -(step * 0.75) / 2 };
+    const scale = draw({ ticks: [] }).scale("x");
+    const step = scale.step;
+    const shift = { textAnchor: "start", dx: -scale.bandwidth / 2 };
     const format = kind === "date" ? dateFormat(xs) : (value) => String(value);
     if (kind === "text") {
       // A label ends 8 px before the next step, and the last one at the end of the plot.
-      const cut = (value, index) => {
-        const room = Math.min(step - 8, plotWidth - index * step);
+      const cut = (value) => {
+        const room = Math.min(step - 8, plotWidth - scale.apply(value));
         let words = format(value);
         while (words.length > 1 && textWidth(figure, [words === format(value) ? words : words + "…"])[0] > room) {
           words = words.slice(0, -1).trimEnd();
