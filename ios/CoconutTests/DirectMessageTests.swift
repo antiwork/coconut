@@ -626,7 +626,8 @@ final class BotDirectChatTests: XCTestCase {
             + #" "bots": [{"id": "t-r1-e1", "name": "Reporter", "open": true, "direct": true},"#
             + #" {"id": "t-r1-e2", "name": "Scribe", "direct": false}],"#
             + #" "directs": [],"#
-            + #" "bot_directs": [{"bot": "t-r1-e1", "bot_name": "Reporter", "unread": 2, "typing": 12, "last_message":"#
+            + #" "bot_directs": [{"bot": "t-r1-e1", "bot_name": "Reporter", "member": "m-mac", "member_name": "Reporter Mac","#
+            + #" "unread": 2, "typing": 12, "last_message":"#
             + #" {"first": 7, "this_mac": false, "text": "4 pull requests wait.", "created_at": "2026-11-10T12:00:00Z"}},"#
             + #" {"bot": "t-r1-e3", "bot_name": "Former", "unread": 0, "typing": null, "last_message": null},"#
             + #" {"bot": "t-r1-e4", "typing": "soon"}]}]}"#
@@ -635,6 +636,9 @@ final class BotDirectChatTests: XCTestCase {
         XCTAssertEqual(room.botList.map(\.direct), [true, false])
         XCTAssertEqual(room.botDirectList.map(\.bot), ["t-r1-e1", "t-r1-e3", "t-r1-e4"])
         XCTAssertEqual(room.botDirectList.first?.unread, 2)
+        XCTAssertEqual(room.botDirectList.first?.member, "m-mac")
+        XCTAssertEqual(room.botDirectList.first?.memberName, "Reporter Mac")
+        XCTAssertNil(room.botDirectList[2].member, "Each new field is optional.")
         XCTAssertEqual(room.botDirectList.first?.lastMessage?.text, "4 pull requests wait.")
         XCTAssertEqual(room.botDirectList.first?.typing?.items.first?.seconds, 12)
         XCTAssertNil(room.botDirectList[1].typing)

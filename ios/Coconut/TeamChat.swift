@@ -135,6 +135,9 @@ struct TeamDirect: Decodable, Identifiable, Equatable, Sendable {
 struct TeamBotDirect: Decodable, Identifiable, Equatable, Sendable {
     var bot: String
     var botName: String? = nil
+    /// The member ID of the Mac of the bot, and its last name. The app does not show them.
+    var member: String? = nil
+    var memberName: String? = nil
     var unread: Int? = nil
     var lastMessage: TeamLastMessage? = nil
     /// The bot types in the chat (docs/team-log.md, "The Mac for a team only", rule 12): the seconds that were left
@@ -143,10 +146,12 @@ struct TeamBotDirect: Decodable, Identifiable, Equatable, Sendable {
 
     var id: String { bot }
 
-    init(bot: String, botName: String? = nil, unread: Int? = nil, lastMessage: TeamLastMessage? = nil,
-         typing: TeamTypingList? = nil) {
+    init(bot: String, botName: String? = nil, member: String? = nil, memberName: String? = nil, unread: Int? = nil,
+         lastMessage: TeamLastMessage? = nil, typing: TeamTypingList? = nil) {
         self.bot = bot
         self.botName = botName
+        self.member = member
+        self.memberName = memberName
         self.unread = unread
         self.lastMessage = lastMessage
         self.typing = typing
@@ -156,6 +161,8 @@ struct TeamBotDirect: Decodable, Identifiable, Equatable, Sendable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         bot = try container.decode(String.self, forKey: .bot)
         botName = try? container.decodeIfPresent(String.self, forKey: .botName)
+        member = try? container.decodeIfPresent(String.self, forKey: .member)
+        memberName = try? container.decodeIfPresent(String.self, forKey: .memberName)
         unread = try? container.decodeIfPresent(Int.self, forKey: .unread)
         lastMessage = try? container.decodeIfPresent(TeamLastMessage.self, forKey: .lastMessage)
         // A value that is not a number of seconds shows nobody.
@@ -164,7 +171,7 @@ struct TeamBotDirect: Decodable, Identifiable, Equatable, Sendable {
         }
     }
 
-    private enum CodingKeys: String, CodingKey { case bot, botName, unread, lastMessage, typing }
+    private enum CodingKeys: String, CodingKey { case bot, botName, member, memberName, unread, lastMessage, typing }
 }
 
 /// The other side of a direct chat, as the chat and its row show it: a person of the team, or a bot of the team.
