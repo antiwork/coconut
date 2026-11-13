@@ -106,6 +106,10 @@ class TeamDirects:
         with team_errors(), self._team_room_lock(room_id):
             room = self._team_writable(room_id)
             with self.lock:
+                if bot is not None:
+                    # The read of _team_writable can bring the `bot` entry, so the member of the chat comes again from
+                    # the store under the lock.
+                    member = self.team_store.bot_member(room_id, bot)
                 if self.team_store.entry(room_id, entry) is not None:
                     return self._team_direct_answer(room_id, member, bot, entry)
                 agreement = self._team_direct_reachable(room, member, bot)
@@ -336,10 +340,12 @@ class TeamDirects:
 
     def _team_bot_direct_summary(self, room: dict) -> list[dict]:
         """The direct chats with a bot of a room for GET /v1/team/rooms: one item for each chat with a message that
-        shows, newest chat first. A chat with a bot that left stays. `typing` is null: this version does not read the
+        shows, newest chat first. A chat with a bot that left stays. `member` and `member_name` name the Mac of the
+        `bot` entry: a reader does not check that this Mac runs Coconut for a team only. `typing` is null: this version does not read the
         typing sign of a bot in a direct chat. The caller holds the service lock."""
         from .team_pages import team_id
-        return [{'bot': team_id(room['room'], row['bot']), 'bot_name': row['bot_name'],
+        return [{'bot': team_id(room['room'], row['bot']), 'bot_name': row['bot_name'], 'member': row['member'],
+                 'member_name': row['member_name'],
                  'unread': self.team_store.direct_unread(room['room'], row['member'], row['bot']),
                  'last_message': {'first': row['first'], 'this_mac': row['writer'] == room['member'],
                                   'text': row['text'][:PREVIEW], 'created_at': row['created_at']},
