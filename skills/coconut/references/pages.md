@@ -57,7 +57,7 @@ So put the column that names each row first, and a short status last.
 
 ## The notes of a save
 
-A save of a Markdown page always works. When the page breaks a rule that Coconut can check exactly, the answer of the save has `notes`: at most three short sentences, each with one thing to do. The person already sees the page. Follow the notes in the next save of the same key.
+A save of a Markdown page always works. When the page breaks a rule that Coconut can check exactly, the answer of the save has `notes`: at most three short sentences, each with one thing to do. A note names a table by its number from the top of the page, and a column by its number from the left. The person already sees the page. Follow the notes in the next save of the same key.
 
 ## Example: the weekly report of a shop
 

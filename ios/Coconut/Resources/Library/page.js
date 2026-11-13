@@ -63,10 +63,11 @@
 
   // A number: a sign, a currency sign, the digits 0 to 9 with separators, then a percent sign or one letter such as k
   // or M. A unit can follow after a space: at most 16 characters and no digit. "1,552 steps", "$41,200", "87%", "-3",
-  // "27.6 in". The flag u counts characters, not UTF-16 units. The notes of a save (backend/coconut/documents.py) use
+  // "27.6 in". The space before a unit can also be a no-break, thin or narrow no-break space, as in "12 %". The flag
+  // u counts characters, not UTF-16 units. The notes of a save (backend/coconut/documents.py) use
   // the same pattern, and the tests of both run the table in backend/tests/fixtures/numbers.json.
   const number = (text) => text
-    .match(/^([+\-−]?\u2060?[$€£¥]?[0-9](?:[0-9,.]*[0-9])?(?:%|[A-Za-z](?![A-Za-z]))?)(?:[ \t\u00a0]+([^0-9]{1,16}))?$/su);
+    .match(/^([+\-−]?\u2060?[$€£¥]?[0-9](?:[0-9,.]*[0-9])?(?:%|[A-Za-z](?![A-Za-z]))?)(?:[ \t\u00a0\u2009\u202f]+([^0-9]{1,16}))?$/su);
   const text = (cell) => cell.textContent.trim();
   // A cell has content when it has text, a photo, a drawing or a check box. A plain cell has only text.
   const filled = (cell) => text(cell) || cell.querySelector("img, svg, input");

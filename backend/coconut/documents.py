@@ -15,12 +15,12 @@ This module imports only the standard library at its top, so the gateway plugin 
 """
 from __future__ import annotations
 
+import html
 import json
 import re
+import time
 from datetime import datetime, time as day_time, timedelta, timezone
-import html
 from html.parser import HTMLParser
-import unicodedata
 
 SCHEMA = '''
 CREATE TABLE IF NOT EXISTS documents (id TEXT PRIMARY KEY, data TEXT NOT NULL);
@@ -261,38 +261,59 @@ def page_problems(content: str) -> list[str]:
 
 
 # The notes of a save: what a Markdown page can do better, for the rules that Coconut can check exactly. A note never
-# blocks a save. The texts are in the order of the rules, and a save answers with at most MAX_NOTES of them.
-#
-# Each save runs this check, and Python runs one thread at a time, so a slow check stops the whole service. Each step is
-# linear in the size of the page: one pass over the lines, patterns that never read the same text twice, and no text
-# that grows in a loop. test_page_notes.py (TimeTests) checks this with hostile pages of 512 KB.
+# blocks a save. The texts are in the order of the rules, and a save answers with at most MAX_NOTES of them. A note
+# names a place by its position and its size and never repeats text of the page: the page can hold text from outside,
+# and the note goes to the model.
 MAX_NOTES = 3
 NOTE_METRICS = ('Show the key numbers large: put a table with one row of numbers under the first paragraph, with a '
                 'label in each header.')
 NOTE_CALLOUT = ('A callout holds one or two sentences. Put its list in a table, with the name first and a short status '
                 'last.')
 NOTE_LONG_CALLOUT = 'A callout holds one or two sentences. Make this one shorter, and put the rest in the page.'
-NOTE_HEADER = 'The column header "{}" is long. Use at most 16 characters.'
-NOTE_NAME = 'Put the column that names each row first. Now each row starts with "{}".'
-NOTE_DASHES = 'Give each fact its own column. One cell packs several facts with dashes.'
+NOTE_HEADER = 'Column {column} of table {table} has a header of {length} characters. Use at most 16.'
+NOTE_NAME = 'Each row of table {table} starts with the same text. Put the column that names each row first.'
+NOTE_DASHES = 'A cell of table {table} packs several facts with dashes. Give each fact its own column.'
 LONGEST_HEADER = 16
 LONGEST_CALLOUT = 300
 # The limits of a row of tiles in page.js: 1 to 6 columns, and 1 to 24 characters in each header and each cell.
+# page.js counts the length of a text in UTF-16 units (String.length), so an emoji counts 2.
 MOST_TILES = 6
 LONGEST_TILE = 24
+
+# The budget of the notes. Each save runs them, and Python runs one thread at a time, so their work has a bound that no
+# page can pass. A real report page has some dozen blocks: tens of lines, tables of 2 to 8 columns and tens of rows, and
+# lines of at most a few hundred characters. A page past a limit is no error: it gets the notes of the part that the
+# reader read, or none. No step does work in proportion to the rows times the columns of the page, and no step computes
+# the same value again.
+MOST_LINES = 2000
+LONGEST_LINE = 2000
+MOST_COLUMNS = 12
+MOST_ROWS = 200
+MOST_TABLES = 50
+MOST_CALLOUTS = 50
+MOST_ITEMS = 2000
+MOST_SECONDS = 0.05
+_clock = time.perf_counter
+
 # A number has the meaning of `number` in page.js (ios/Coconut/Resources/Library/page.js): a sign, a currency sign,
 # the digits 0 to 9 with separators, then a percent sign or one letter such as k or M. A unit can follow after a space:
 # at most 16 characters and no digit. The pattern has the same text as the one of page.js, which has the flag u, so both
 # count characters and not UTF-16 units. Python uses fullmatch, so "$" is the end of the text, as in JavaScript.
 # test_page_notes.py and LibraryDocumentTests run one table of examples (tests/fixtures/numbers.json) on both sides.
 _NUMBER = re.compile(r'^([+\-−]?\u2060?[$€£¥]?[0-9](?:[0-9,.]*[0-9])?(?:%|[A-Za-z](?![A-Za-z]))?)'
-                     r'(?:[ \t\u00a0]+([^0-9]{1,16}))?$', re.S)
+                     r'(?:[ \t\u00a0\u2009\u202f]+([^0-9]{1,16}))?$', re.S)
 _QUOTES = re.compile(r'(?: {0,3}> ?)*')
 _FENCE = re.compile(r' {0,3}(`{3,}|~{3,})([^`]*)')
 _INDENTED_CODE = re.compile(r'(?: {4}| {0,3}\t)')
-_DEFINITION = re.compile(r' {0,3}\[[^\[\]]+\]:')
+_DEFINITION = re.compile(r' {0,3}\[[^\[\]]+\]:[ \t]*\S+(?:[ \t]+(?:"[^"]*"|\'[^\']*\'|\([^()]*\)))?[ \t]*$')
+# The start of an HTML block in marked: a comment or a tag of a block, which can also end a paragraph, or a tag
+# alone on its line, which cannot.
+_HTML_BLOCK = re.compile(r' {0,3}<(?:!--|/?(?:address|article|aside|blockquote|details|dialog|div|dl|fieldset|figcaption|'
+                         r'figure|footer|form|h[1-6]|header|hr|li|main|nav|ol|p|pre|section|summary|table|tbody|td|th|'
+                         r'thead|tr|ul|script|style)(?:[\s/>]|$))', re.I)
+_HTML_TAG = re.compile(r' {0,3}</?[A-Za-z][A-Za-z0-9-]*(?:\s[^<>]*)?/?>\s*$')
 _CALLOUT_START = re.compile(r'\[!(?:NOTE|TIP|IMPORTANT|WARNING|CAUTION)\]', re.I)
-_LIST_ITEM = re.compile(r' {0,3}(?:([-*+])|([0-9]{1,9})[.)])(?:[ \t]+(\S.*)|[ \t]*$)')
+_LIST_ITEM = re.compile(r' {0,3}(?:([-*+])|([0-9]{1,9})[.)])(?:([ \t]+)(\S.*)|[ \t]*$)')
 _DELIMITER = re.compile(r'\|?[ \t]*:?-+:?[ \t]*(?:\|[ \t]*:?-+:?[ \t]*)*\|?')
 _HEADING = re.compile(r' {0,3}#{1,6}(?:[ \t]|$)')
 _UNDERLINE = re.compile(r'(?:=+|-+)[ \t]*')
@@ -301,39 +322,44 @@ _LINE_END = re.compile(r'\r\n|\r|\n')
 _CELL_SPLIT = re.compile(r'(?<!\\)\|')
 # A link or a photo. Its text and its address hold no bracket, so each match reads each character at most once.
 _LINK = re.compile(r'!?\[([^\[\]]*)\]\([^()\[\]]*\)')
-_MARKUP = re.compile(r'\*\*|__|~~|[*`]|(?<![0-9A-Za-z])_|_(?![0-9A-Za-z])|\\(?=[^\w\s])')
 _IMAGE = re.compile(r'!\[[^\[\]]*\]\([^()\[\]]*\)')
-# What makes a cell more than plain text in marked: emphasis, code, a link, a photo or an address.
-_NOT_PLAIN = re.compile(r'(?<!\\)(?:[*`]|~~)|\]\(|(?<![0-9A-Za-z\\])_|(?<!\\)_(?![0-9A-Za-z])|https?://|www\.', re.I)
+_MARKUP = re.compile(r'\*\*|__|~~|[*`]|(?<![0-9A-Za-z])_|_(?![0-9A-Za-z])|\\(?=[^\w\s])')
+# What makes a cell of a tile more than plain text in marked: a pair of marks of code, emphasis or a strike, a link, a
+# photo or an address. A single star, as in "Revenue*", is text. A tile cell is short, so these patterns read little.
+_NOT_PLAIN = re.compile(r'`[^`]+`|(?<!\\)\*(?=\S)[^*]*?(?<=\S)\*|(?<![0-9A-Za-z\\])_(?=\S)[^_]*?(?<=\S)_(?![0-9A-Za-z])'
+                        r'|(?<!\\)~(?=\S)[^~]*?(?<=\S)~|\]\(|https?://|www\.', re.I)
 _ESCAPE = re.compile(r'\\([!-/:-@\[-`{-~])')
 # The white space that trim() removes in JavaScript, which page.js uses on the text of a cell.
 _JS_SPACE = (' \t\n\v\f\r\u00a0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a\u2028\u2029'
              '\u202f\u205f\u3000\ufeff')
 _DASH = re.compile(r'(?<= )[—–](?= )')
 _YEAR = re.compile(r'(?:19|20)[0-9]{2}')
+_DATE = re.compile(r'[0-9]{1,4}[./-][0-9]{1,2}[./-][0-9]{1,4}')
 _MONTH = re.compile(r'(?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec|january|february|march|april|june|july|'
                     r'august|september|october|november|december)\.?', re.I)
 _WORD_EDGES = '()[]{}*`_"\'.,;:!?'
 
 
+class _Spent(Exception):
+    """The notes used their time. The page gets no notes."""
+
+
 def _plain(text: str) -> str:
-    """The text of inline Markdown, near the text that the page shows: a link is its text, and the marks of
-    emphasis, code and escapes go."""
-    return ' '.join(unicodedata.normalize('NFC', html.unescape(_MARKUP.sub('', _LINK.sub(r'\1', text)))).split())
+    """The text of inline Markdown, near the text that the page shows: a link is its text, an entity is its character,
+    and the marks of emphasis, code and escapes go."""
+    return ' '.join(html.unescape(_MARKUP.sub('', _LINK.sub(r'\1', text))).split())
 
 
-def _cells(line: str, count: int | None = None) -> list[str]:
-    """The cells of a table row, as Markdown. An escaped pipe stays in its cell. With a count, a short row gets empty
-    cells and a long row loses its last cells, as in marked."""
+def _cells(line: str) -> tuple[list[str], int]:
+    """The first MOST_COLUMNS cells of a table row, as Markdown, and the count of all its cells. An escaped pipe stays
+    in its cell."""
     text = line.strip()
     if text.startswith('|'):
         text = text[1:]
     if text.endswith('|') and not text.endswith('\\|'):
         text = text[:-1]
-    cells = [cell.strip() for cell in _CELL_SPLIT.split(text)]
-    if count is not None:
-        cells = cells[:count] + [''] * (count - len(cells))
-    return cells
+    cells = _CELL_SPLIT.split(text, maxsplit=MOST_COLUMNS)[:MOST_COLUMNS]
+    return [cell.strip() for cell in cells], len(_CELL_SPLIT.findall(text)) + 1
 
 
 def _number(text: str) -> bool:
@@ -342,38 +368,77 @@ def _number(text: str) -> bool:
     return len(text) <= LONGEST_TILE and _NUMBER.fullmatch(text) is not None
 
 
-def _tiles(header: list[str], rows: list[list[str]]) -> bool:
-    """Whether page.js draws a table as a row of tiles: one body row, 1 to MOST_TILES columns, and plain cells of 1 to
-    LONGEST_TILE characters, each body cell a number."""
-    if len(rows) != 1 or not 1 <= len(header) <= MOST_TILES:
-        return False
-    cells = header + rows[0]
-    if any(_NOT_PLAIN.search(cell) for cell in cells):
-        return False
-    texts = [html.unescape(_ESCAPE.sub(r'\1', cell)).strip(_JS_SPACE) for cell in cells]
-    return (all(1 <= len(text) <= LONGEST_TILE for text in texts)
-            and all(_number(text) for text in texts[len(header):]))
+def _units(text: str) -> int:
+    """The length of a text as page.js counts it: in UTF-16 units."""
+    return len(text) + sum(1 for char in text if ord(char) > 0xFFFF)
 
 
-def _quoted(text: str) -> str:
-    """A text of the page in a note: at most 40 characters."""
-    return text if len(text) <= 40 else text[:39] + '…'
+class _Table:
+    """What the notes need of a table, read row by row: each value once, and no list of all its rows."""
+
+    def __init__(self, header: list[str], count: int):
+        self.header = header          # The first MOST_COLUMNS header cells, as Markdown.
+        self.count = count            # The count of all its columns.
+        self.rows = 0
+        self.first_row = None         # The cells of the first body row, as Markdown.
+        self.first_text = None        # The text of the first cell of the first body row.
+        self.same = True              # Whether each body row starts with that text.
+        self.dashes = False           # Whether a body cell packs facts with dashes.
+
+    def add(self, cells: list[str]):
+        self.rows += 1
+        if self.rows > MOST_ROWS:
+            return
+        first = _plain(cells[0]) if cells else ''
+        if self.first_row is None:
+            self.first_row, self.first_text = cells, first
+        elif first != self.first_text:
+            self.same = False
+        if not self.dashes:
+            self.dashes = any(len(_DASH.findall(_plain(cell))) >= 2 for cell in cells[:self.count])
+
+    def tiles(self) -> bool:
+        """Whether page.js draws the table as a row of tiles: one body row, 1 to MOST_TILES columns, and plain cells
+        of 1 to LONGEST_TILE UTF-16 units, each body cell a number. marked gives a short row empty cells."""
+        if self.rows != 1 or not 1 <= self.count <= MOST_TILES:
+            return False
+        cells = self.header + [self.first_row[index] if index < len(self.first_row) else ''
+                               for index in range(self.count)]
+        if any(len(cell) > 4 * LONGEST_TILE or _NOT_PLAIN.search(cell) for cell in cells):
+            return False
+        texts = [html.unescape(_ESCAPE.sub(r'\1', cell)).strip(_JS_SPACE) for cell in cells]
+        return (all(1 <= _units(text) <= LONGEST_TILE for text in texts)
+                and all(_number(text) for text in texts[self.count:]))
+
+
+def _lines(content: str):
+    """The first MOST_LINES lines of a text, each cut to LONGEST_LINE characters."""
+    start = 0
+    for _ in range(MOST_LINES):
+        end = _LINE_END.search(content, start)
+        if end is None:
+            yield content[start:start + LONGEST_LINE]
+            return
+        yield content[start:min(end.start(), start + LONGEST_LINE)]
+        start = end.end()
 
 
 class _PageShape:
-    """The facts of a Markdown page that the notes need, in one pass over its lines.
+    """The facts of a Markdown page that the notes need, in one pass over its lines, within the budget.
 
-    The reader follows marked for the blocks that the notes need: fenced code, quotes, headings, lists, tables and
-    paragraphs. A line in a quote counts as a line of its block too, so a table in a callout is a table. A fence that
-    does not end runs to the end of its quote or of the page. A line of a list item that has an indent is a block of
-    the item, so a table in an item is a table, and a paragraph of an item is not the first paragraph of the page.
+    The reader follows marked for the blocks that the notes need: fenced code, quotes, headings, lists, tables, HTML
+    and paragraphs. A line in a quote counts as a line of its block too, so a table in a callout is a table. A fence
+    that does not end runs to the end of its quote or of the page. A line of a list item that has an indent is a block
+    of the item, so a table in an item is a table, and a paragraph of an item is not the first paragraph of the page.
     """
 
     def __init__(self):
-        self.tables = []      # [header cells, body rows], as Markdown
+        self.tables = []      # _Table, in the order of the page
         self.charts = 0
         self.first = None     # The text of the first paragraph of the page, outside a quote and a list.
         self.callouts = []    # [has a list, characters of text]
+        self.items = 0
+        self.full = False     # The page passed a limit of tables, callouts or list items.
         self._paragraph = []
         self._paragraph_top = False
         self._table = None
@@ -381,14 +446,25 @@ class _PageShape:
         self._fence = None    # The marks of the open fence.
         self._fence_quoted = False
         self._fence_item = False
+        self._html = None     # "comment" or "block" while an HTML block runs.
+        self._html_quoted = False
+        self._quote_inside = False
+        self._callout_title = False  # Whether the open paragraph starts with the mark of a callout.
+        self._indented = False  # Whether the last line of the open paragraph has an indent of code.
         self._quoted = False
         self._quote_start = False
         self._in_list = False
+        self._item_indent = 2
         self._blank = True
 
     def read(self, content: str):
-        for line in _LINE_END.split(content):
+        started = _clock()
+        for number, line in enumerate(_lines(content)):
+            if number % 64 == 0 and _clock() - started > MOST_SECONDS:
+                raise _Spent
             self._line(line)
+            if self.full:
+                break
         self._end_blocks()
         return self
 
@@ -397,30 +473,53 @@ class _PageShape:
             self.first = ' '.join(self._paragraph)
         self._paragraph = []
         self._table = None
+        self._callout_title = False
 
     def _line(self, line: str):
-        # A fence outside a quote holds each line until its end, also a line that starts with ">".
-        if self._fence and not self._fence_quoted:
+        # A fence outside a quote holds each line until its end, also a line that starts with ">". A fence of a list
+        # item also ends with the item: at a line without an indent after a blank line, or at the start of another
+        # block. In marked, another line without an indent is a lazy line of the item, so it stays in the fence.
+        if (self._fence and self._fence_item and line.strip() and line[:1] not in (' ', '\t')
+                and (self._blank or self._starts_block(line) or _HTML_BLOCK.match(line))):
+            self._fence = None
+            self._in_list = False
+        elif self._fence and not self._fence_quoted:
             self._fence_line(line)
+            self._blank = not line.strip()
+            return
+        # An HTML block outside a quote holds each line until its end too.
+        if self._html and not self._html_quoted:
+            self._html_line(line)
             return
         marks = _QUOTES.match(line).end()
         quoted = marks > 0
+        # A quote with the indent of a list item belongs to the item, and a quote without it starts after the list.
+        inside = (quoted and (self._in_list or self._quoted and self._quote_inside)
+                  and len(line) - len(line.lstrip(' ')) >= self._item_indent)
         if marks:
             line = line[marks:]
         text = line.strip()
-        if not quoted and self._quoted and self._paragraph and text and not self._starts_block(line):
-            # A lazy line continues the paragraph of the quote.
-            if self._callout is not None:
-                self._callout[1] += len(_plain(text))
-            self._paragraph.append(text)
-            return
-        if quoted != self._quoted:
+        if not quoted and self._quoted and text and not self._interrupts(line):
+            # A lazy line continues the paragraph of the quote, and a lazy line with a pipe continues its table.
+            if self._table is not None and '|' in text:
+                self._table.add(_cells(text)[0])
+                return
+            if self._paragraph and '|' not in text:
+                if self._callout is not None:
+                    self._callout[1] += len(_plain(text))
+                self._paragraph.append(text)
+                return
+        if quoted != self._quoted or quoted and inside != self._quote_inside:
             self._end_blocks()
-            self._fence = None
+            self._fence = self._html = None
             self._in_list = False
             self._quoted, self._quote_start, self._callout = quoted, quoted, None
+            self._quote_inside = inside
         if self._fence:
             self._fence_line(line)
+            return
+        if self._html:
+            self._html_line(line)
             return
         blank = not text
         if self._quote_start and not blank:
@@ -428,20 +527,32 @@ class _PageShape:
             if _CALLOUT_START.match(text):
                 # The rest of the first line is the title of the callout. In marked it starts the first paragraph of
                 # the quote, which a lazy line can continue.
+                if len(self.callouts) == MOST_CALLOUTS:
+                    self.full = True
+                    return
                 self._callout = [False, 0]
                 self.callouts.append(self._callout)
-                self._paragraph, self._paragraph_top = [text], False
+                self._paragraph, self._paragraph_top, self._callout_title = [text], False, True
+                self._indented = False
                 return
         if self._callout is not None and not blank:
             self._callout[1] += len(_plain(text))
         if self._in_list and not blank:
             if line[:1] in (' ', '\t'):
-                # A block of the list item: a paragraph, a table, a fence or a list inside it.
-                self._block(line.lstrip(' \t'), text, nested=True)
+                # A block of the list item: a paragraph, a table, a fence or a list inside it. Four columns more than
+                # the text of the item make indented code.
+                indent = len(line[:len(line) - len(line.lstrip(' \t'))].expandtabs(4))
+                if not (indent >= self._item_indent + 4 and not self._paragraph and self._table is None):
+                    self._block(line.lstrip(' \t'), text, nested=True)
                 self._blank = False
                 return
-            if not self._blank and not _LIST_ITEM.match(line):
-                # A lazy line continues the paragraph of the item.
+            if not self._blank and not self._starts_block(line) and not _HTML_BLOCK.match(line):
+                # A lazy line continues the table or the paragraph of the item. A line with a pipe can start a table
+                # there.
+                if self._table is not None:
+                    self._table.add(_cells(text)[0])
+                elif '|' in text:
+                    self._block(line, text, nested=True)
                 self._blank = False
                 return
         if not blank and not self._paragraph and self._table is None and _INDENTED_CODE.match(line):
@@ -455,6 +566,20 @@ class _PageShape:
     def _starts_block(line: str) -> bool:
         return bool(_FENCE.match(line) or _HEADING.match(line) or _BREAK.fullmatch(line) or _LIST_ITEM.fullmatch(line))
 
+    @staticmethod
+    def _interrupts(line: str) -> bool:
+        """Whether a line starts a block that can end a paragraph or a table in marked: a fence, a heading, a break,
+        an HTML block, or a list whose first item has text and, for a numbered list, starts at 1."""
+        if _FENCE.match(line) or _HEADING.match(line) or _BREAK.fullmatch(line) or _HTML_BLOCK.match(line):
+            return True
+        match = _LIST_ITEM.fullmatch(line)
+        return bool(match and match[4] and (match[1] or match[2] == '1'))
+
+    def _html_line(self, line: str):
+        # marked ends a comment at "-->" and another HTML block at a blank line.
+        if ('-->' in line) if self._html == 'comment' else not line.strip():
+            self._html = None
+
     def _fence_line(self, line: str):
         match = _FENCE.match(line.lstrip(' \t') if self._fence_item else line)
         if match and match[1][0] == self._fence[0] and len(match[1]) >= len(self._fence) and not match[2].strip():
@@ -464,6 +589,13 @@ class _PageShape:
         if not text:
             self._end_blocks()
             return
+        if self._table is not None:
+            # In marked each line after a table row is a row too, also without a pipe, until a blank line or another
+            # block.
+            if not self._interrupts(line):
+                self._table.add(_cells(text)[0])
+                return
+            self._table = None
         if match := _FENCE.match(line):
             self._end_blocks()
             if not nested:
@@ -473,25 +605,41 @@ class _PageShape:
             if match[2].strip().lower() == 'chart':
                 self.charts += 1
             return
-        if self._table is not None:
-            if '|' in text:
-                self._table[1].append(_cells(text, len(self._table[0])))
-                return
-            self._table = None
-        if self._paragraph and '|' in self._paragraph[-1] + text and _DELIMITER.fullmatch(text):
-            header = _cells(self._paragraph[-1])
-            if len(header) == len(_cells(text)):
+        # A header line with an indent of code continues a paragraph, so it starts no table.
+        if (self._paragraph and not self._indented and not _INDENTED_CODE.match(line)
+                and '|' in self._paragraph[-1] + text and _DELIMITER.fullmatch(text)):
+            header, count = _cells(self._paragraph[-1])
+            if count == _cells(text)[1]:
                 self._paragraph.pop()
                 self._end_blocks()
-                self._table = [header, []]
+                if len(self.tables) == MOST_TABLES:
+                    self.full = True
+                    return
+                self._table = _Table(header, count)
                 self.tables.append(self._table)
                 return
         if not self._paragraph and _DEFINITION.match(line):
             # A definition of a link shows nothing.
             return
+        if _HTML_BLOCK.match(line) or not self._paragraph and _HTML_TAG.match(line):
+            # An HTML block: page.js shows it as text, never as the first paragraph.
+            self._end_blocks()
+            if not nested:
+                self._in_list = False
+            self._html_quoted = self._quoted
+            if '<!--' not in line:
+                self._html = 'block'
+            elif '-->' not in line:
+                self._html = 'comment'
+            return
         if self._paragraph and _UNDERLINE.fullmatch(text):
-            # A line of = or - under a paragraph makes it a heading.
+            # A line of = or - under a paragraph makes it a heading. A heading that starts with the mark of a callout
+            # is no callout.
+            if self._callout_title:
+                del self.callouts[-1]
+                self._callout = None
             self._paragraph = []
+            self._callout_title = False
             return
         if _HEADING.match(line) or _BREAK.fullmatch(line):
             self._end_blocks()
@@ -501,26 +649,35 @@ class _PageShape:
         match = _LIST_ITEM.fullmatch(line)
         # In marked, a list interrupts a paragraph only when its first item has text and, for a numbered list, starts
         # at 1. Else the line continues the paragraph, as "46. That is the first time." after a wrapped line.
-        if match and (not self._paragraph or match[3] and (match[1] or match[2] == '1')):
+        if match and (not self._paragraph or match[4] and (match[1] or match[2] == '1')):
             self._end_blocks()
             self._in_list = True
+            # Five spaces or more after the mark make the text of the item indented code.
+            code = bool(match[4]) and len(match[3].expandtabs(4)) >= 5
+            self._item_indent = match.start(4) if match[4] and not code else match.start(3) + 1 if match[3] else len(line)
+            self.items += 1
+            self.full = self.items >= MOST_ITEMS
             if self._callout is not None:
                 self._callout[0] = True
+            if match[4] and not code:
+                # The text of the item is a block of the item: a paragraph, a fence or the header of a table.
+                self._block(match[4], match[4].strip(), nested=True)
             return
         if not self._paragraph:
             self._paragraph_top = not self._quoted and not nested
         if not nested:
             self._in_list = False
+        self._indented = bool(_INDENTED_CODE.match(line))
         self._paragraph.append(text)
 
 
 def _numbers(text: str) -> int:
-    """The count of the words of a text that are numbers, up to two. A year and the day of a date are no key
-    numbers: "Nov 13, 2026" has none."""
+    """The count of the words of a text that are numbers, up to two. A date and a year are no key numbers:
+    "Nov 13, 2026" and "13.11.2026" have none."""
     words = [word.strip(_WORD_EDGES) for word in _plain(_IMAGE.sub(' ', text)).split()]
     count = 0
     for index, word in enumerate(words):
-        if not _number(word) or _YEAR.fullmatch(word):
+        if not _number(word) or _YEAR.fullmatch(word) or _DATE.fullmatch(word):
             continue
         if len(word) <= 2 and word.isdigit() and any(
                 0 <= near < len(words) and _MONTH.fullmatch(words[near]) for near in (index - 1, index + 1)):
@@ -533,32 +690,37 @@ def _numbers(text: str) -> int:
 
 def _notes(content: str) -> list[str]:
     """The notes of a Markdown page. page_notes guards it, and the tests call it directly, so an error shows."""
+    started = _clock()
     page = _PageShape().read(content)
     notes = []
-    if ((page.tables or page.charts) and not any(_tiles(header, rows) for header, rows in page.tables)
+    if ((page.tables or page.charts) and not any(table.tiles() for table in page.tables)
             and page.first and _numbers(page.first) >= 2):
         notes.append(NOTE_METRICS)
     if any(has_list for has_list, _ in page.callouts):
         notes.append(NOTE_CALLOUT)
     elif any(size > LONGEST_CALLOUT for _, size in page.callouts):
         notes.append(NOTE_LONG_CALLOUT)
-    long = next((text for header, _ in page.tables for text in map(_plain, header) if len(text) > LONGEST_HEADER),
+    long = next(((number, column, length) for number, table in enumerate(page.tables, 1)
+                 for column, length in enumerate(map(len, map(_plain, table.header)), 1) if length > LONGEST_HEADER),
                 None)
     if long is not None:
-        notes.append(NOTE_HEADER.format(_quoted(long)))
-    same = next((_plain(rows[0][0]) for header, rows in page.tables if len(header) >= 4 and len(rows) >= 3
-                 and _plain(rows[0][0]) and all(_plain(row[0]) == _plain(rows[0][0]) for row in rows)), None)
+        notes.append(NOTE_HEADER.format(table=long[0], column=long[1], length=long[2]))
+    same = next((number for number, table in enumerate(page.tables, 1)
+                 if table.count >= 4 and table.rows >= 3 and table.first_text and table.same), None)
     if same is not None:
-        notes.append(NOTE_NAME.format(_quoted(same)))
+        notes.append(NOTE_NAME.format(table=same))
     # Only a cell: a list item or a paragraph can use two dashes for an aside, so a note there would be a guess.
-    if any(len(_DASH.findall(_plain(cell))) >= 2 for _, rows in page.tables for row in rows for cell in row):
-        notes.append(NOTE_DASHES)
+    dashes = next((number for number, table in enumerate(page.tables, 1) if table.dashes), None)
+    if dashes is not None:
+        notes.append(NOTE_DASHES.format(table=dashes))
+    if _clock() - started > MOST_SECONDS:
+        raise _Spent
     return notes[:MAX_NOTES]
 
 
 def page_notes(document_format: str, content: str) -> list[str]:
     """What a Markdown page can do better, at most MAX_NOTES notes in the order of the rules. An HTML page gets no
-    notes. The function never raises: a note never stops a save."""
+    notes, and a page that uses up the budget gets none. The function never raises: a note never stops a save."""
     if document_format != 'markdown' or not isinstance(content, str):
         return []
     try:

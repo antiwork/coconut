@@ -739,6 +739,10 @@ class GatewayPageTests(unittest.TestCase):
         self.assertEqual(self.publish(content=weak), dict(expected, status='saved'))
         # A script on a timer saves the same page again. The answer still names what to improve.
         self.assertEqual(self.publish(content=weak), dict(expected, status='unchanged'))
+        # A delete answers with no notes.
+        self.assertEqual(self.service.unpublish_page(self.bot['id'], {'key': 'weekly-report'}),
+                         {'status': 'deleted', 'key': 'weekly-report'})
+        self.assertEqual(self.publish(content=weak), dict(expected, status='saved'))
         self.assertEqual(self.publish(), {'status': 'saved', 'key': 'weekly-report', 'version': 2,
                                           'expires_at': None})
         self.assertEqual(self.publish(), {'status': 'unchanged', 'key': 'weekly-report', 'version': 2,
