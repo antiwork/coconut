@@ -149,7 +149,8 @@ BLOCKS = ('Write a page like a short article: its first paragraph is the lead, o
           '"line", "area" or "dot", "data": [...], "x": "field", "y": "field", "series": "field", "title": "..."}; '
           'tables, task lists and photos work too. A table with one row of numbers shows them large: use it for key '
           'numbers, with labels in the header. A wide table shows on a phone as a list with the first cell of each '
-          'row as its name, so put the name column first. Show a process as a diagram, numbers as a chart, a '
+          'row as its name and a short last cell at its end, so put the name column first and the status '
+          'last. Show a process as a diagram, numbers as a chart, a '
           'decision as a callout and a comparison as a table. HTML pages have the same blocks: <pre class="mermaid">, '
           '<aside class="callout tip"> and <p class="lead">.')
 SAVE_SCHEMA = {'name': 'coconut_save_document', 'description': (

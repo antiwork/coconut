@@ -44,7 +44,7 @@ class PageRuleTests(unittest.TestCase):
         # page.js makes metrics only of a row of numbers, and names a record by the first cell of its row.
         description = documents.SAVE_SCHEMA['description']
         self.assertIn('A table with one row of numbers shows them large', description)
-        self.assertIn('with the first cell of each row as its name', description)
+        self.assertIn('with the first cell of each row as its name and a short last cell at its end', description)
 
     def test_a_page_with_tokens_and_the_given_libraries_passes(self):
         self.assertEqual(page_problems(TREEMAP), [])
