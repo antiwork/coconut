@@ -2,6 +2,7 @@ import json
 import unittest
 from unittest.mock import patch
 
+from coconut.native_conversation import INSTRUCTIONS_CHANGED
 from coconut.profiles import ProfileError
 from coconut.service import ServiceError, YieldForDecision, now
 import test_decision_freshness as fixtures
@@ -93,9 +94,6 @@ class DecisionProfileFreshnessTests(unittest.TestCase):
         decision = self.service._all('decisions')[-1]
         self.assertEqual(decision['_profile_revision'], captured)
         self.assertTrue(decision['assessment_stale'])
-        with self.assertRaises(ServiceError) as error:
-            self.write('POST', '/v1/decisions/' + decision['id'] + '/answer', dict(revision=1, option_id='ready'))
-        self.assertEqual(error.exception.status, 409)
         context = self.refresh()
         self.assertEqual(context['decision_id'], decision['id'])
 
@@ -112,8 +110,7 @@ class DecisionProfileFreshnessTests(unittest.TestCase):
         decision = self.service._all('decisions')[-1]
         self.assertEqual(decision['_profile_revision'], captured)
         self.assertEqual(self.service._get('native_receipts', call['id'])['_worker_profile_revision'], captured)
-        with self.assertRaises(ServiceError):
-            self.write('POST', '/v1/decisions/' + decision['id'] + '/answer', dict(revision=1, option_id='ready'))
+        self.assertTrue(decision['assessment_stale'])
 
     def test_an_older_intent_without_provenance_needs_a_new_check(self):
         self.start()
@@ -129,8 +126,6 @@ class DecisionProfileFreshnessTests(unittest.TestCase):
         decision = self.service._all('decisions')[-1]
         self.assertIsNone(decision['_profile_revision'])
         self.assertTrue(decision['assessment_stale'])
-        with self.assertRaises(ServiceError):
-            self.write('POST', '/v1/decisions/' + decision['id'] + '/answer', dict(revision=1, option_id='ready'))
         self.assertEqual(self.refresh()['decision_id'], decision['id'])
 
     def test_refresh_requires_its_worker_revision_even_when_the_files_change_back(self):
@@ -205,7 +200,7 @@ class DecisionProfileFreshnessTests(unittest.TestCase):
         self.assertEqual((saved['merge_pr_url'], saved['_merge_pr_head']), (url, head))
         self.assertIsNone(saved['decided_by'])
         self.assertEqual(len(self.service._all('decisions')), 1)
-        with self.assertRaisesRegex(ServiceError, 'changed') as error:
+        with self.assertRaisesRegex(ServiceError, 'This decision changed') as error:
             self.write('POST', '/v1/decisions/' + decision['id'] + '/answer', dict(revision=1, option_id='ready'))
         self.assertEqual(error.exception.status, 409)
 
@@ -224,34 +219,65 @@ class DecisionProfileFreshnessTests(unittest.TestCase):
         self.assertEqual(self.service._all('contexts'), [])
         self.assertEqual(self.service._get('tasks', self.task['id'])['_resume_decision'], decision['id'])
 
-    def test_profile_change_blocks_an_old_choice_before_the_background_check(self):
+    def stale_answer(self, name):
+        """Ask a question with a tool receipt, change the instruction file `name`, and answer with the first option."""
+        self.start()
+        call = self.service.native_event(self.task['id'], 'native_call', dict(name='tool_call', arguments={'calls': []}))
+        with self.assertRaises(YieldForDecision):
+            self.service.native_event(self.task['id'], 'native_question', dict(title='Install the test dependencies?',
+                options=[dict(id='install', label='Install'), dict(id='leave', label='Leave')], receipt_id=call['id']))
+        self.service.running.clear()
+        decision = self.service._all('decisions')[-1]
+        self.policy(name, 'Current scoped instructions: ' + name)
+        self.assertNotEqual(decision['_profile_revision'], self.service.profiles.prompt_revision(self.bot))
+        self.write('POST', '/v1/decisions/' + decision['id'] + '/answer', dict(revision=1, option_id='install'))
+        return decision, call
+
+    def test_profile_change_accepts_a_choice_before_the_background_check(self):
         for name in ('SOUL.md', 'memories/USER.md', 'memories/MEMORY.md'):
             with self.subTest(name=name):
-                decision = self.question(old=False)
-                self.policy(name, 'Current scoped instructions: ' + name)
-                before = json.dumps({table: self.service._all(table) for table in ('decisions', 'tasks', 'native_receipts')}, sort_keys=True)
-                with self.assertRaisesRegex(ServiceError, 'instructions changed') as error:
-                    self.write('POST', '/v1/decisions/' + decision['id'] + '/answer', dict(revision=1, option_id='install'))
-                self.assertEqual(error.exception.status, 409)
-                self.assertEqual(json.dumps({table: self.service._all(table) for table in ('decisions', 'tasks', 'native_receipts')}, sort_keys=True), before)
-                self.assertEqual(self.service._all('contexts'), [])
+                for context in self.service._all('contexts'):
+                    self.finish(context)
+                decision, call = self.stale_answer(name)
+                saved = self.service._get('decisions', decision['id'])
+                self.assertEqual((saved['revision'], saved['status'], saved['selected_option_id'], saved['selected_option_label']),
+                                 (1, 'approved', 'install', 'Install'))
+                self.assertEqual(self.service._get('tasks', self.task['id'])['_resume_decision'], decision['id'])
+                receipt = self.service._get('native_receipts', call['id'])
+                self.assertEqual((receipt['state'], json.loads(receipt['result'])), ('completed', {'response': 'Install'}))
 
-    def test_legacy_card_waits_for_one_fenced_check_then_accepts_its_current_choice(self):
+    def test_a_card_pass_keeps_an_answer_given_after_a_profile_change(self):
+        decision, _ = self.stale_answer('memories/USER.md')
+        self.allow_refresh(decision)
+        before = json.dumps(self.service._get('decisions', decision['id']), sort_keys=True)
+        contexts = json.dumps(self.service._all('contexts'), sort_keys=True)
+        self.service._queue_decision_refreshes()
+        self.assertEqual(json.dumps(self.service._get('decisions', decision['id']), sort_keys=True), before)
+        self.assertEqual(json.dumps(self.service._all('contexts'), sort_keys=True), contexts)
+
+    def test_an_answer_ends_a_working_check_of_a_stale_card_without_a_change(self):
+        decision = self.question(old=False)
+        self.policy('SOUL.md', 'Current scoped instructions.')
+        context = self.refresh()
+        self.write('POST', '/v1/decisions/' + decision['id'] + '/answer', dict(revision=1, option_id='install'))
+        before = json.dumps(self.service._get('decisions', decision['id']), sort_keys=True)
+        with self.assertRaisesRegex(ServiceError, 'no longer matches the pending question'):
+            self.service.refresh_decision(context['id'], dict(status='revise', evidence='The new instructions change the card.',
+                revision=dict(title='Leave the test dependencies?', options=[dict(id='leave', label='Leave')],
+                              recommended_option_id='leave')))
+        self.finish(context)
+        self.service._queue_decision_refreshes()
+        self.assertEqual(json.dumps(self.service._get('decisions', decision['id']), sort_keys=True), before)
+        self.assertEqual(len(self.service._all('contexts')), 1)
+
+    def test_legacy_card_accepts_its_choice_without_a_check(self):
         decision = self.question(old=False)
         decision.pop('_profile_revision')
         self.service._put('decisions', decision)
-        with self.assertRaises(ServiceError) as error:
-            self.write('POST', '/v1/decisions/' + decision['id'] + '/answer', dict(revision=1, option_id='install'))
-        self.assertEqual(error.exception.status, 409)
-        context = self.refresh()
-        self.service.refresh_decision(context['id'], dict(status='current', evidence='The current profile still supports this choice.'))
-        self.finish(context)
-        self.allow_refresh(decision)
-        self.service._queue_decision_refreshes()
-        self.assertEqual(len(self.service._all('contexts')), 1)
         self.write('POST', '/v1/decisions/' + decision['id'] + '/answer', dict(revision=1, option_id='install'))
         saved = self.service._get('decisions', decision['id'])
         self.assertEqual((saved['revision'], saved['status'], saved['selected_option_id']), (1, 'approved', 'install'))
+        self.assertEqual(self.service._all('contexts'), [])
 
     def test_current_profile_accepts_the_same_ready_only_option_after_a_check(self):
         decision = self.question(old=False)
@@ -275,16 +301,13 @@ class DecisionProfileFreshnessTests(unittest.TestCase):
         self.write('POST', '/v1/decisions/' + decision['id'] + '/answer', dict(revision=1, choice='reject'))
         self.assertEqual(self.service._get('decisions', decision['id'])['status'], 'rejected')
 
-    def test_unreadable_profile_blocks_approval_without_mutating_the_answer(self):
+    def test_unreadable_profile_does_not_block_an_approval(self):
         decision = self.question(old=False)
-        before = json.dumps(self.service._get('decisions', decision['id']), sort_keys=True)
         with patch.object(self.service.profiles, 'prompt_revision', side_effect=PermissionError('The native instructions are unreadable.')):
-            with self.assertRaisesRegex(ServiceError, 'cannot read') as error:
-                self.write('POST', '/v1/decisions/' + decision['id'] + '/answer', dict(revision=1, option_id='install'))
-        self.assertEqual(error.exception.status, 409)
-        self.assertEqual(json.dumps(self.service._get('decisions', decision['id']), sort_keys=True), before)
+            self.write('POST', '/v1/decisions/' + decision['id'] + '/answer', dict(revision=1, option_id='install'))
+        self.assertEqual(self.service._get('decisions', decision['id'])['status'], 'approved')
 
-    def test_profile_change_blocks_a_send_before_any_draft_continuation(self):
+    def test_profile_change_accepts_a_send_of_the_reviewed_draft(self):
         self.start()
         self.service.native_event(self.task['id'], 'native_proposal', dict(key='draft', title='Send the reply?',
             draft=dict(channel='Gmail', sender='me@example.com', recipient='other@example.com',
@@ -292,11 +315,17 @@ class DecisionProfileFreshnessTests(unittest.TestCase):
         decision = self.service._all('decisions')[-1]
         self.policy('memories/USER.md', 'The profile has changed.')
         before = json.dumps({table: self.service._all(table) for table in ('decisions', 'tasks', 'native_receipts')}, sort_keys=True)
-        with self.assertRaises(ServiceError) as error:
-            self.write('POST', '/v1/decisions/' + decision['id'] + '/answer',
-                dict(revision=1, option_id='send', draft_hash=decision['draft_hash']))
+        with self.assertRaisesRegex(ServiceError, 'full draft') as error:
+            self.write('POST', '/v1/decisions/' + decision['id'] + '/answer', dict(revision=1, option_id='send', draft_hash='0' * 64))
         self.assertEqual(error.exception.status, 409)
+        with self.assertRaisesRegex(ServiceError, 'Edit the draft') as error:
+            self.write('POST', '/v1/decisions/' + decision['id'] + '/answer', dict(revision=1, choice='modify', correction='Shorter.'))
+        self.assertEqual(error.exception.status, 400)
         self.assertEqual(json.dumps({table: self.service._all(table) for table in ('decisions', 'tasks', 'native_receipts')}, sort_keys=True), before)
+        self.write('POST', '/v1/decisions/' + decision['id'] + '/answer',
+            dict(revision=1, option_id='send', draft_hash=decision['draft_hash']))
+        saved = self.service._get('decisions', decision['id'])
+        self.assertEqual((saved['status'], saved['selected_option_id'], saved['outcome']), ('approved', 'send', 'Approved for sending.'))
 
     def test_native_allow_once_keeps_its_exact_action_after_a_profile_change(self):
         self.start()
@@ -359,10 +388,87 @@ class DecisionProfileFreshnessTests(unittest.TestCase):
 
         with patch.object(self.service.profiles, 'prompt_revision', side_effect=read):
             context = self.refresh_with_profile_failure()
-            with self.assertRaisesRegex(ServiceError, 'cannot read'):
-                self.write('POST', '/v1/decisions/' + decision['id'] + '/answer', dict(revision=1, option_id='install'))
         self.assertEqual(context['decision_id'], current['id'])
         self.assertEqual(self.service._get('decisions', decision['id'])['status'], 'pending')
+
+    def resume_text(self, decision):
+        """The text of the gateway turn that continues after this answered card (run_gateway_resume)."""
+        saved = self.service._get('decisions', decision['id'])
+        task = dict(self.service._get('tasks', saved.get('_execution_task_id') or saved['task_id']), _chat_session=True)
+        turns = []
+
+        def run(task, bot, text, emit, **_):
+            turns.append(text)
+            return True
+
+        with patch.object(self.service, 'gateway_enabled', return_value=True), \
+                patch.object(self.service, '_run_in_gateway', run), patch.object(self.service, '_run_work_turn', run):
+            self.assertTrue(self.service.run_gateway_resume(task, self.bot, [], saved, lambda *_: None))
+        return turns[0]
+
+    def proposal(self, **fields):
+        self.start()
+        self.service.native_event(self.task['id'], 'native_proposal', dict(key='proposal', title='Send the reply?', **fields))
+        return self.service._all('decisions')[-1]
+
+    def assert_note(self, decision, expected):
+        """The answer record has `instructions_changed` only when `expected`, and only the turn text holds the note."""
+        saved = self.service._get('decisions', decision['id'])
+        self.assertEqual(saved['status'], 'approved')
+        if expected:
+            self.assertIs(saved['_answers'][-1]['instructions_changed'], True)
+        else:
+            self.assertNotIn('instructions_changed', saved['_answers'][-1])
+        self.assertNotIn(INSTRUCTIONS_CHANGED.strip(), json.dumps(self.service._public(saved)))
+        text = self.resume_text(saved)
+        (self.assertIn if expected else self.assertNotIn)(INSTRUCTIONS_CHANGED, text)
+        return text
+
+    def test_the_note_names_the_changed_instructions_and_memory(self):
+        self.assertTrue(INSTRUCTIONS_CHANGED.startswith(
+            'Your instructions or your saved memory changed after you made this card.'))
+
+    def test_a_question_answered_after_a_profile_change_tells_the_turn_that_continues(self):
+        for name in ('SOUL.md', 'memories/USER.md', 'memories/MEMORY.md'):
+            with self.subTest(name=name):
+                decision = self.question(old=False)
+                self.policy(name, 'Current scoped instructions: ' + name)
+                self.write('POST', '/v1/decisions/' + decision['id'] + '/answer', dict(revision=1, option_id='install'))
+                self.assert_note(decision, True)
+
+    def test_a_proposal_answered_after_a_profile_change_tells_its_continuation(self):
+        decision = self.proposal(options=[dict(id='send', label='Send it'), dict(id='hold', label='Hold it')])
+        self.policy('memories/USER.md', 'The profile has changed.')
+        self.write('POST', '/v1/decisions/' + decision['id'] + '/answer', dict(revision=1, option_id='send'))
+        self.assert_note(decision, True)
+
+    def test_a_draft_sent_after_a_profile_change_tells_its_continuation(self):
+        decision = self.proposal(draft=dict(channel='Gmail', sender='me@example.com', recipient='other@example.com',
+                                            subject='The review', body='The review is ready.'))
+        self.policy('memories/USER.md', 'The profile has changed.')
+        self.write('POST', '/v1/decisions/' + decision['id'] + '/answer',
+            dict(revision=1, option_id='send', draft_hash=decision['draft_hash']))
+        self.assertIn('The person selected Send on this exact draft.', self.assert_note(decision, True))
+
+    def test_an_answer_without_a_profile_change_carries_no_note(self):
+        decision = self.question(old=False)
+        self.write('POST', '/v1/decisions/' + decision['id'] + '/answer', dict(revision=1, option_id='install'))
+        self.assert_note(decision, False)
+
+    def test_a_legacy_card_answer_carries_no_note(self):
+        decision = self.question(old=False)
+        decision.pop('_profile_revision')
+        self.service._put('decisions', decision)
+        self.policy('SOUL.md', 'The profile has changed.')
+        self.write('POST', '/v1/decisions/' + decision['id'] + '/answer', dict(revision=1, option_id='install'))
+        self.assert_note(decision, False)
+
+    def test_an_answer_with_an_unreadable_profile_carries_the_note(self):
+        # Coconut cannot rule out a change, so the answer stands and the bot reads its files again.
+        decision = self.question(old=False)
+        with patch.object(self.service.profiles, 'prompt_revision', side_effect=PermissionError('The native instructions are unreadable.')):
+            self.write('POST', '/v1/decisions/' + decision['id'] + '/answer', dict(revision=1, option_id='install'))
+        self.assert_note(decision, True)
 
 
 if __name__ == '__main__':

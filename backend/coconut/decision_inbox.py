@@ -404,7 +404,12 @@ class DecisionInbox:
             'correction': context['question'] if choice == 'modify' else '',
             'revision': decision['revision'],
         }, context['_reply_device'], callbacks)
-        return {'status': 'recorded', 'decision': result}
+        reply = {'status': 'recorded', 'decision': result}
+        if decision['_answers'][-1].get('instructions_changed'):
+            # This turn can act on the answer before the turn that continues the card, so it gets the note too.
+            from .native_conversation import INSTRUCTIONS_CHANGED
+            reply['instruction'] = INSTRUCTIONS_CHANGED.strip()
+        return reply
 
     def _revise_question(self, decision, task, revision, reason, actor=None):
         from .service import ServiceError

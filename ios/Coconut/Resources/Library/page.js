@@ -243,10 +243,10 @@
       : Number(value);
     return Number.isFinite(number) ? number : NaN;
   };
-  // An x value is a date only when each x value is an ISO date. A date shows as written: the time zone of the page
-  // does not move it to another day.
+  // An x value is a date only when each x value is a valid ISO date. A date keeps the day and the time that its text
+  // says: neither the zone of the page nor the offset of the text moves it.
   const isoDate = /^\d{4}-\d{2}-\d{2}([T ]\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:?\d{2})?)?$/;
-  const toDate = (text) => new Date(/[T ]\d{2}:\d{2}[^Z+-]*$/.test(text) ? text + "Z" : text);
+  const toDate = (text) => new Date(/[T ]/.test(text) ? text.replace(/(Z|[+-]\d{2}:?\d{2})$/, "") + "Z" : text);
   // The form of a date label comes from the values: a time when one has a time (with the day when they cover more
   // than one day), else a day inside one year, else a year or a month and a year. It is the shortest form that gives
   // each value its own text.
@@ -305,7 +305,8 @@
     const names = [...new Set(data.map((row) => row.series))];
     const type = ["bar", "line", "area", "dot"].includes(spec.type) ? spec.type : "bar";
     const band = type === "bar";
-    const xs = [...new Map(data.map((row) => [+row.x === +row.x ? +row.x : row.x, row.x])).values()];
+    // Only a date is keyed as a number: the texts "1.1" and "1.10" are two values.
+    const xs = [...new Map(data.map((row) => [kind === "date" ? +row.x : row.x, row.x])).values()];
     const tone = spec.series ? "series" : palette[0];
     const line = { strokeWidth: 2, strokeLinejoin: "round", strokeLinecap: "round" };
     const valid = data.filter((row) => Number.isFinite(row.y));
@@ -321,8 +322,9 @@
       dot: () => [Plot.dot(valid, { x: "x", y: "y", fill: tone, r: 3 })],
     }[type];
     // A band starts at the left edge of the column and ends at the end of the plot: no outer padding and no rounding.
+    // A dot at the start of a line keeps its round end inside the chart (insetLeft).
     const x = band ? { type: "band", domain: xs, paddingInner: 0.25, paddingOuter: 0, align: 0, round: false }
-      : kind === "text" ? { type: "point", domain: xs } : { type: kind === "date" ? "utc" : "linear" };
+      : { ...(kind === "text" ? { type: "point", domain: xs } : { type: kind === "date" ? "utc" : "linear" }), insetLeft: 3 };
     const look = { background: "transparent", color: "var(--text-2)", fontSize: "var(--size-1)", overflow: "visible",
       fontFamily: "-apple-system, system-ui, sans-serif", fontVariantNumeric: "tabular-nums" };
     // The domain of y from Plot, with its stack, then the lines and the room for their numbers.
@@ -348,6 +350,14 @@
       figure.querySelector(".legend") ? figure.querySelector(".legend").after(svg) : figure.prepend(svg);
       return svg;
     };
+    // A text cut with an ellipsis to the room that it has.
+    const cutTo = (text, room) => {
+      let words = String(text);
+      while (words.length > 1 && textWidth(figure, [words === String(text) ? words : words + "…"])[0] > room) {
+        words = words.slice(0, -1).trimEnd();
+      }
+      return words === String(text) ? words : words + "…";
+    };
     // The labels under the plot never meet, never repeat and never pass the end of the column. On a scale, the first
     // and the last label start or end at the edge of the plot when they would pass it.
     const clean = (svg) => {
@@ -359,27 +369,35 @@
         if (last.getBoundingClientRect().right > frame.left + plotWidth) last.setAttribute("text-anchor", "end");
       }
       const boxes = texts.map((text) => text.getBoundingClientRect()).sort((a, b) => a.left - b.left);
-      const end = svg.getBoundingClientRect().right;
-      return new Set(texts.map((text) => text.textContent)).size === texts.length
-        && boxes.every((box, index) => box.right <= end + 0.5 && (!index || box.left - boxes[index - 1].right >= 8));
+      const { left, right: end } = svg.getBoundingClientRect();
+      return new Set(texts.map((text) => text.textContent)).size === texts.length && boxes.every((box, index) =>
+        box.left >= left - 0.5 && box.right <= end + 0.5 && (!index || box.left - boxes[index - 1].right >= 8));
     };
     if (!band) {
       // A scale of dates or numbers: the ticks of Plot (d3), with their count bounded by the width. A date tick has
       // one line in the form of the span of the ticks.
       if (kind === "text") {
+        // Names on a line keep each label, cut to the room between two points, or each k-th one.
+        const room = (xs.length > 1 ? plotWidth / (xs.length - 1) : plotWidth) - 8;
+        const short = new Map(xs.map((value) => [value, cutTo(value, room)]));
         for (let every = 1; every <= xs.length; every += 1) {
-          if (clean(draw({ ticks: xs.filter((_, index) => index % every === 0) }))) return;
+          const ticks = xs.filter((_, index) => index % every === 0);
+          if (clean(draw({ ticks, tickFormat: (value) => short.get(value) }))) return;
         }
-        return;
+        return void draw({ ticks: [] });
       }
       // Whole numbers keep whole ticks.
       const whole = kind === "number" && xs.every(Number.isInteger);
       const [first, last] = d3.extent(xs);
       if (!Number.isFinite(+first) || !Number.isFinite(+last)) return void draw({ ticks: [] });
       for (let count = tickCount(plotWidth / 56); count >= 1; count -= 1) {
-        const ticks = kind === "date" ? d3.utcTicks(first, last, count)
+        const all = kind === "date" ? d3.utcTicks(first, last, count)
           : d3.ticks(first, last, count).filter((tick) => !whole || Number.isInteger(tick));
-        if (clean(draw({ ticks, tickFormat: kind === "date" ? dateFormat(ticks) : d3.format("~r") }))) return;
+        // d3 has no step between a week and a month: each second tick comes before a lower count.
+        for (const every of [1, 2]) {
+          const ticks = all.filter((_, index) => index % every === 0);
+          if (clean(draw({ ticks, tickFormat: kind === "date" ? dateFormat(ticks) : d3.format("~r") }))) return;
+        }
       }
       draw({ ticks: [] });
       return;
@@ -391,14 +409,7 @@
     const format = kind === "date" ? dateFormat(xs) : (value) => String(value);
     if (kind === "text") {
       // A label ends 8 px before the next step, and the last one at the end of the plot.
-      const cut = (value) => {
-        const room = Math.min(step - 8, plotWidth - scale.apply(value));
-        let words = format(value);
-        while (words.length > 1 && textWidth(figure, [words === format(value) ? words : words + "…"])[0] > room) {
-          words = words.slice(0, -1).trimEnd();
-        }
-        return words === format(value) ? words : words + "…";
-      };
+      const cut = (value) => cutTo(format(value), Math.min(step - 8, plotWidth - scale.apply(value)));
       const labels = xs.map(cut);
       if (step >= textWidth(figure, ["Mm…"])[0] + 8 && new Set(labels).size === labels.length) {
         const text = new Map(xs.map((value, index) => [value, labels[index]]));
@@ -416,9 +427,11 @@
   for (const figure of main.querySelectorAll("figure.chart[data-spec]")) {
     try {
       const spec = JSON.parse(figure.dataset.spec);
-      const rows = spec.data || [];
+      // A row without an x value has no place on the chart.
+      const rows = (spec.data || []).filter((row) => row && ![null, undefined, ""].includes(row[spec.x]));
       const values = rows.map((row) => row[spec.x]);
-      const kind = values.length && values.every((value) => typeof value === "string" && isoDate.test(value)) ? "date"
+      const kind = values.length && values.every((value) => typeof value === "string" && isoDate.test(value)
+        && Number.isFinite(+toDate(value))) ? "date"
         : values.every((value) => typeof value === "number") ? "number" : "text";
       const data = rows.map((row) => ({
         x: kind === "date" ? toDate(row[spec.x]) : kind === "number" ? row[spec.x] : String(row[spec.x]),
@@ -449,9 +462,6 @@
         element.textContent = caption;
         figure.append(element);
       }
-      // In a row of a flex box, the charts share the width. In a column, a chart keeps its own height.
-      const box = getComputedStyle(figure.parentElement);
-      if (box.display.endsWith("flex") && box.flexDirection.startsWith("row")) figure.style.flex = "1 1 0";
       drawChart(figure, spec, data, kind);
       // A new width of the column draws the chart again, with the rule of the tables.
       let drawn = figure.clientWidth;
