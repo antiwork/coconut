@@ -1,5 +1,6 @@
 // The blocks of a Library page (DocumentPage.swift). A Markdown page arrives as text in #coconut-markdown and becomes
-// HTML here. Then both formats get the same blocks: the lead, callouts, charts and Mermaid diagrams.
+// HTML here. Then both formats get the same blocks: the lead, callouts, metrics, tables, charts and Mermaid diagrams.
+// The look of each block is in the stylesheet of DocumentPage.swift, with the rules of a page.
 (function () {
   "use strict";
   const main = document.querySelector("main");
@@ -50,6 +51,89 @@
     quote.replaceWith(callout);
   }
 
+  // A number: a sign, a currency sign, digits with separators, then a percent sign or one letter such as k or M. The
+  // text after it is its unit: "1,552 steps", "$41,200", "87%", "-3", "27.6 in".
+  const number = (text) => text.match(/^([+\-−]?[$€£¥]?\d(?:[\d,.]*\d)?(?:%|[A-Za-z](?![A-Za-z]))?)(?:\s+(.+))?$/s);
+  const text = (cell) => cell.textContent.trim();
+  const tables = [];
+  for (const table of main.querySelectorAll("table")) {
+    const head = table.tHead && table.tHead.rows[0];
+    const body = [...table.tBodies].flatMap((part) => [...part.rows]);
+    // Metrics: a table with one row, 1 to 6 columns and 1 to 24 characters in each cell. Each column is a tile with
+    // the header as its label.
+    const count = head ? head.cells.length : 0;
+    if (count >= 1 && count <= 6 && body.length === 1 && body[0].cells.length === count
+        && [...head.cells, ...body[0].cells].every((cell) => text(cell).length >= 1 && text(cell).length <= 24)) {
+      const metrics = document.createElement("div");
+      metrics.className = "metrics";
+      [...head.cells].forEach((header, index) => {
+        const tile = document.createElement("div");
+        const label = document.createElement("p");
+        label.className = "label";
+        label.textContent = text(header);
+        const value = document.createElement("p");
+        value.className = "value";
+        const match = number(text(body[0].cells[index]));
+        if (match) {
+          value.textContent = match[1];
+          if (match[2]) {
+            const unit = document.createElement("span");
+            unit.className = "unit";
+            unit.textContent = match[2];
+            value.append(" ", unit);
+          }
+        } else {
+          value.textContent = text(body[0].cells[index]);
+          value.classList.add("text");
+        }
+        tile.append(label, value);
+        metrics.append(tile);
+      });
+      table.replaceWith(metrics);
+      continue;
+    }
+    // A table: a column of numbers aligns right. A column of short cells keeps each cell on one line, and each other
+    // column keeps at least 16 characters on a line.
+    const rows = [...table.rows];
+    for (let index = 0; index < Math.max(0, ...rows.map((row) => row.cells.length)); index += 1) {
+      const cells = rows.map((row) => row.cells[index]).filter(Boolean);
+      const values = body.map((row) => row.cells[index]).filter(Boolean);
+      if (values.length && values.every((cell) => number(text(cell)))) {
+        for (const cell of cells) if (!cell.hasAttribute("align")) cell.setAttribute("align", "right");
+      }
+      const short = Math.max(...cells.map((cell) => text(cell).length)) <= 16;
+      cells.forEach((cell) => cell.classList.add(short ? "one-line" : "long"));
+    }
+    if (!body.length) continue;
+    // The record of a row: its first cell with text is the name. Each other cell with text follows on one line, after
+    // " · ", and a number after the label of its column: "Open 4 · Drafts 3".
+    for (const row of body) {
+      const cells = [...row.cells].filter((cell) => text(cell));
+      if (!cells.length) continue;
+      cells[0].classList.add("name");
+      cells.slice(1).forEach((cell, index) => {
+        const header = head && head.cells[cell.cellIndex];
+        const label = header && number(text(cell)) ? text(header) + " " : "";
+        cell.dataset.label = (index ? " · " : "") + label;
+      });
+    }
+    tables.push(table);
+  }
+  // A table that is wider than the column does not fit, and it is a list of records. A new width measures again.
+  let measured = 0;
+  const fit = () => {
+    if (main.clientWidth === measured) return;
+    measured = main.clientWidth;
+    for (const table of tables) {
+      table.classList.remove("records");
+      table.classList.toggle("records", table.offsetWidth > main.clientWidth);
+    }
+  };
+  if (tables.length) {
+    fit();
+    new ResizeObserver(fit).observe(main);
+  }
+
   // Charts: {"type": "bar" | "line" | "area" | "dot", "data": [...], "x": "field", "y": "field", "series": "field",
   // "title": "...", "y_label": "..."}. The colors are the palette of the page.
   const isoDate = /^\d{4}-\d{2}-\d{2}/;
@@ -74,7 +158,7 @@
         x: { label: null, ...(spec.type === "bar" ? { type: "band", domain: [...new Set(data.map((row) => row[spec.x]))] } : {}) },
         y: { grid: true, label: spec.y_label || null },
         color: { range: palette, legend: Boolean(spec.series) },
-        style: { background: "transparent", color: "var(--text-2)", fontSize: "12px",
+        style: { background: "transparent", color: "var(--text-2)", fontSize: "var(--size-1)",
           fontFamily: "-apple-system, system-ui, sans-serif" },
       });
       if (spec.title) {
@@ -112,7 +196,7 @@
       startOnLoad: false, securityLevel: "strict", theme: "base",
       fontFamily: "-apple-system, system-ui, sans-serif",
       themeVariables: {
-        fontFamily: "-apple-system, system-ui, sans-serif", fontSize: "14px",
+        fontFamily: "-apple-system, system-ui, sans-serif", fontSize: token("--size-2"),
         background: token("--bg"), mainBkg: token("--surface"), primaryColor: token("--surface"),
         primaryTextColor: token("--text"), primaryBorderColor: token("--c6"), secondaryColor: token("--bg"),
         tertiaryColor: token("--surface"), lineColor: token("--c6"), textColor: token("--text"),
