@@ -69,8 +69,8 @@ def bot_entry(bot: dict, open: bool = False) -> dict:
     A lone surrogate becomes U+FFFD, because UTF-8 cannot encode it and the other Macs refuse it.
 
     `open` marks a bot that answers each member in the team chat: only a team-only Mac writes it, for a bot whose
-    record has `chat` true (team_only.py). A bot of a person answers only that person, so the entry of a full Mac has
-    no `open`.
+    record has `chat` true (team_only.py). The same bot answers direct messages, so the entry also gets `direct`. A bot
+    of a person answers only that person, so the entry of a full Mac has neither mark.
     """
     fields = {'kind': 'bot'}
     for name, limit in MEMBER_LIMITS.items():
@@ -79,7 +79,7 @@ def bot_entry(bot: dict, open: bool = False) -> dict:
         fields[name] = ''.join('�' if '\ud800' <= character <= '\udfff' else character
                                for character in value[:limit])
     if open:
-        fields['open'] = True
+        fields['open'] = fields['direct'] = True
     return fields
 
 
@@ -432,8 +432,8 @@ class TeamPages:
         wanted = {}
         for bot_id, bot in bots.items():
             fields = bot_entry(bot, open=self._team_opens(bot))
-            wanted[shares[bot_id]] = (('bot', fields['name'], fields['avatar'], fields['color'],
-                                       self._team_opens(bot)), {'bot_id': bot_id}, fields)
+            wanted[shares[bot_id]] = (('bot', fields['name'], fields['avatar'], fields['color'], 'open' in fields,
+                                       'direct' in fields), {'bot_id': bot_id}, fields)
         for document in documents:
             wanted[entries[document['id']]] = (('page', shares[document['bot_id']], document['version']),
                                                {'document': document['id'], 'key': document['key']}, document)

@@ -27,11 +27,12 @@ Each table has the room ID in its key, because a Mac can be in more than one roo
 - `team_reads`: the read position of this Mac in the Team chat of each room: the `first` of the newest message that
   the person read.
 - `team_chat_reads`: the read position of this Mac in each named chat that the person read.
-- `team_triggers`: on a team-only Mac only, the messages that start a turn of a bot of this Mac, in the order in which
-  this Mac accepted them (team_turns.py). `started` marks a trigger whose turn began.
+- `team_triggers`: on a team-only Mac only, the messages and the direct messages that start a turn of a bot of this
+  Mac, in the order in which this Mac accepted them (team_turns.py). `started` marks a trigger whose turn began.
 - `team_directs`: the direct messages that this Mac shows: one row for each `direct` entry whose box opens for this
   Mac, with `member`, the other member of the chat. `bot` is the `bot` entry of a chat with a bot, or null for a
-  chat of two people, and `page` the page that a message is about. No query of the Team chat reads this table.
+  chat of two people, and `page` the page that a message is about. On a team-only Mac each row is a message of a chat
+  of a person with a bot of this Mac: `member` is the person. No query of the Team chat reads this table.
 - `team_direct_reads`: the read position of this Mac in each direct chat of two people: one row for each room and
   other member.
 - `team_bot_direct_reads`: the read position of this Mac in each direct chat with a bot: one row for each room and
@@ -46,7 +47,8 @@ Each table has the room ID in its key, because a Mac can be in more than one roo
 - `team_erased`: the messages that an `erase` entry of the admin took out of the chat. A later write of such a message
   shows nothing.
 
-Who types in a chat is in memory only (`TeamStore.typing`), not in a table: a restart of the service forgets it.
+Who types in a chat is in memory only (`TeamStore.typing` and `TeamStore.direct_typing`), not in a table: a restart of
+the service forgets it.
 
 `TeamStore.accept` holds the "Rules for a Mac that reads an entry" of the contract. The secrets of a room are not
 here: team_keys.py keeps them in a private file. The caller holds the transaction of each write.
@@ -169,6 +171,10 @@ DIRECT_FIELDS = ('entry', 'first', 'writer', 'member', 'member_name', 'text', 'r
 # runs at read time.
 SHOWN_DIRECT = '''(d.bot IS NULL OR EXISTS (SELECT 1 FROM team_names b WHERE b.room=d.room AND b.entry=d.bot
     AND b.kind='bot' AND b.member=d.member))'''
+# On a Mac for a team only, a message of a direct chat with a bot of this Mac shows only while `bot` names a `bot`
+# entry of this Mac that the store showed once (team_names).
+OWN_BOT_DIRECT = '''EXISTS (SELECT 1 FROM team_names b JOIN team_rooms r ON r.room=b.room WHERE b.room=d.room
+    AND b.entry=d.bot AND b.kind='bot' AND b.member=r.member)'''
 # The event of each transaction that changes a direct chat of two people: `{"team": <room>, "member": <other member>}`.
 # GET /v1/updates then has `team_directs_changed`.
 DIRECTS_EVENT = 'team_directs.updated'
@@ -409,11 +415,8 @@ def direct_fields(plaintext, to: str, page: bool = False) -> dict | None:
     ignores `page` in a box without `bot` and in a message of the Mac of the bot, so a person's Mac reads it only in
     an own message.
     """
-    try:
-        fields = json.loads(bytes(plaintext).decode('utf-8'))
-    except (TypeError, ValueError, RecursionError):
-        return None
-    if not isinstance(fields, dict) or not isinstance(fields.get('to'), str) or fields['to'] != to:
+    fields = box_fields(plaintext, to)
+    if fields is None:
         return None
     text, reply_to = fields.get('text'), fields.get('reply_to')
     if not unicode_text(text) or not 0 < len(text) <= MAX_TEXT:
@@ -423,6 +426,27 @@ def direct_fields(plaintext, to: str, page: bool = False) -> dict | None:
     if any(value is not None and not entry_id(value) for value in (reply_to, bot, about)):
         return None
     return dict(text=text, reply_to=reply_to, bot=bot, page=about)
+
+
+def direct_typing_fields(plaintext, to: str) -> dict | None:
+    """The typing sign of a bot in the plaintext of a box (docs/team-log.md, "The Mac for a team only", rule 12), or
+    None when the box is not one. `to` must name this Mac, `bot` is an entry ID, `on` is true or false, and the box
+    has no `text`."""
+    fields = box_fields(plaintext, to)
+    if fields is None or fields.get('text') is not None:
+        return None
+    if type(fields.get('on')) is not bool or not entry_id(fields.get('bot')):
+        return None
+    return dict(bot=fields['bot'], on=fields['on'])
+
+
+def box_fields(plaintext, to: str) -> dict | None:
+    """The JSON object of the plaintext of a box when its `to` names `to`, else None."""
+    try:
+        fields = json.loads(bytes(plaintext).decode('utf-8'))
+    except (TypeError, ValueError, RecursionError):
+        return None
+    return fields if isinstance(fields, dict) and isinstance(fields.get('to'), str) and fields['to'] == to else None
 
 
 def typing_fields(fields: dict) -> dict | None:
@@ -553,6 +577,9 @@ class TeamStore:
         # time. `typed` has the rooms whose lists changed, and TeamSync tells the phone. Nothing of this goes to the
         # database.
         self.typing: dict[tuple[str, str, str | None], tuple[float, float, str | None]] = {}
+        # The typing sign of a bot in a direct chat with the person of this Mac: for each (room, member of the bot,
+        # bot entry) the time of the end on the clock below. It adds the room to `typed` too.
+        self.direct_typing: dict[tuple[str, str, str], float] = {}
         self.typed: set[str] = set()
         self.clock = time.time
 
@@ -656,8 +683,9 @@ class TeamStore:
         """Delete the room with its members, its entries and its pending bodies."""
         for table in TABLES:
             self.db.execute(f'DELETE FROM {table} WHERE room=?', (room,))
-        for key in [key for key in self.typing if key[0] == room]:
-            del self.typing[key]
+        for typing in (self.typing, self.direct_typing):
+            for key in [key for key in typing if key[0] == room]:
+                del typing[key]
 
     # Entries and members
 
@@ -772,6 +800,13 @@ class TeamStore:
         # A trigger is the first write of a message of another member that this Mac sees. A later write is an edit.
         if self.answers and existing is None and other and fields['kind'] == 'message' and fields['rev'] == 1 and shown:
             self._queue_triggers(room, entry, shown)
+        # The same holds for a direct message to a bot of this Mac. A message that waited for its key is history.
+        if (self.answers and existing is None and other and fields['kind'] == 'direct' and fields['rev'] == 1
+                and opened.get('direct')):
+            self._queue_direct_trigger(room, entry, opened['direct'])
+        # The typing sign of a bot in a direct chat with the person of this Mac.
+        if other and fields['kind'] == 'direct' and opened.get('sign'):
+            self._note_direct_typing(room['room'], entry, opened['sign'])
         # An `erase` entry of the admin takes a message of another member out of the chat. Rule 4 checked the writer
         # above. A later write over the `erase` entry does not bring the message back.
         if fields['kind'] == 'erase' and shown:
@@ -1279,6 +1314,31 @@ class TeamStore:
                             typing['chat'])
         self.typed.add(room)
 
+    def _note_direct_typing(self, room: str, entry: dict, sign: dict) -> None:
+        """Apply the typing sign of a bot in a direct chat (docs/team-log.md, "The Mac for a team only", rule 12). `on`
+        true with an `at` of the relay under TYPING_FRESH_SECONDS from this clock shows the bot for TYPING_BOT_SECONDS
+        from now. An older sign changes nothing. `on` false ends it. A message of the bot does not end it."""
+        key = (room, entry['member'], sign['bot'])
+        now = self.clock()
+        if not sign['on']:
+            if self.direct_typing.pop(key, 0) > now:
+                self.typed.add(room)
+            return
+        if abs(now * 1000 - entry['at']) >= TYPING_FRESH_SECONDS * 1000:
+            return
+        self.direct_typing[key] = now + TYPING_BOT_SECONDS
+        self.typed.add(room)
+
+    def direct_typing_now(self, room: str, member: str, bot: str) -> float | None:
+        """The seconds that are left of the typing sign of a bot in its direct chat, or None. An end by time needs no
+        event, so this read drops a sign past its end."""
+        key, now = (room, member, bot), self.clock()
+        end = self.direct_typing.get(key)
+        if end is not None and end <= now:
+            del self.direct_typing[key]
+            return None
+        return None if end is None else end - now
+
     def _end_typing(self, room: str, member: str, bot: str | None) -> None:
         current = self.typing.pop((room, member, bot), None)
         if current and current[1] > self.clock():
@@ -1318,16 +1378,33 @@ class TeamStore:
                                   (room_id, message['reply_to'], room['member'], message['chat'])).fetchone()
             answered = row[0] if row else None
         for bot, share in self.answering(room_id):
-            if share not in message['mentions'] and share != answered:
-                continue
-            if self.db.execute('SELECT COUNT(*) FROM team_triggers WHERE room=? AND bot=? AND started=0',
-                               (room_id, bot)).fetchone()[0] >= MAX_WAITING:
-                log.warning('coconut.team_log room %s: the bot %s has %d messages that wait, so it skips the entry %s.',
-                            room_id[:8], bot, MAX_WAITING, entry['id'])
-                continue
-            if self.db.execute('INSERT OR IGNORE INTO team_triggers (room, bot, entry) VALUES (?, ?, ?)',
-                               (room_id, bot, entry['id'])).rowcount:
-                self.triggered.add(room_id)
+            if share in message['mentions'] or share == answered:
+                self._queue(room_id, bot, entry['id'])
+
+    def _queue_direct_trigger(self, room: dict, entry: dict, direct: dict) -> None:
+        """Queue a turn for the bot of this Mac that a direct message names (docs/team-log.md, "The Mac for a team
+        only", rule 3). The box opened for this Mac, so `to` names it. The message is under TRIGGER_SECONDS old, its
+        member is in the member list, and its `bot` is the `bot` entry of a bot of this Mac that answers in the room."""
+        room_id = room['room']
+        if direct['bot'] is None or self.clock() * 1000 - entry['at'] >= TRIGGER_SECONDS * 1000:
+            return
+        if self.member(room_id, entry['member']) is None:
+            return
+        for bot, share in self.answering(room_id):
+            if share == direct['bot']:
+                self._queue(room_id, bot, entry['id'])
+
+    def _queue(self, room_id: str, bot: str, entry: str) -> None:
+        """Add a trigger of a bot. The Team chat, the named chats and the direct chats share the bound of MAX_WAITING
+        triggers that wait for one bot in one room. Over it, the bot skips the message, with a log line and no text."""
+        if self.db.execute('SELECT COUNT(*) FROM team_triggers WHERE room=? AND bot=? AND started=0',
+                           (room_id, bot)).fetchone()[0] >= MAX_WAITING:
+            log.warning('coconut.team_log room %s: the bot %s has %d messages that wait, so it skips the entry %s.',
+                        room_id[:8], bot, MAX_WAITING, entry)
+            return
+        if self.db.execute('INSERT OR IGNORE INTO team_triggers (room, bot, entry) VALUES (?, ?, ?)',
+                           (room_id, bot, entry)).rowcount:
+            self.triggered.add(room_id)
 
     def answering(self, room: str) -> list[tuple[str, str]]:
         """The bots of this Mac that answer in the chat of the room, each with the entry ID of its `bot` entry: shared
@@ -1365,6 +1442,24 @@ class TeamStore:
                                (room, chat, bot)).fetchone()[0]
         rows = self._messages('m.chat IS ? AND m.first<? AND m.first>? ORDER BY m.first DESC LIMIT ?',
                               (room, chat, first, last or 0, limit))
+        return rows[::-1]
+
+    # The direct chats of the bots of a Mac for a team only. The member of such a chat is the person, and its `bot` is a
+    # `bot` entry of this Mac, so SHOWN_DIRECT does not hold here: OWN_BOT_DIRECT does.
+
+    def bot_direct(self, room: str, entry: str) -> dict | None:
+        """One message of a direct chat of a person with a bot of this Mac, or None."""
+        rows = self._rows(DIRECT_FIELDS, self._direct_sql('d.entry=?', OWN_BOT_DIRECT), (room, entry))
+        return rows[0] if rows else None
+
+    def bot_context(self, room: str, member: str, bot: str, first: int, limit: int) -> list[dict]:
+        """The messages of the direct chat of `member` with a bot of this Mac (its `bot` entry ID) before `first` and
+        after the newest message of the bot there, at most `limit`, oldest first."""
+        last = self.db.execute('''SELECT MAX(d.first) FROM team_directs d JOIN team_rooms r ON r.room=d.room
+            WHERE d.room=? AND d.member=? AND d.bot=? AND d.writer=r.member''', (room, member, bot)).fetchone()[0]
+        rows = self._rows(DIRECT_FIELDS, self._direct_sql(
+            'd.member=? AND d.bot=? AND d.first<? AND d.first>? ORDER BY d.first DESC LIMIT ?', OWN_BOT_DIRECT),
+                          (room, member, bot, first, last or 0, limit))
         return rows[::-1]
 
     # What this Mac shares
@@ -1450,9 +1545,9 @@ class TeamStore:
 
     def written(self, room: str, member: str) -> dict[str, tuple]:
         """The `bot` and `page` entries that this Mac wrote and did not delete, each with its form: the profile and
-        the mark `open` of a bot, or the bot and the version of a page. `accept` keeps the form in columns, so no
-        payload is parsed."""
-        bots = self.db.execute('SELECT entry, name, avatar, color, open FROM team_bots WHERE room=? AND member=?',
+        the marks `open` and `direct` of a bot, or the bot and the version of a page. `accept` keeps the form in
+        columns, so no payload is parsed."""
+        bots = self.db.execute('SELECT entry, name, avatar, color, open, direct FROM team_bots WHERE room=? AND member=?',
                                (room, member)).fetchall()
         pages = self.db.execute('SELECT entry, bot, version FROM team_pages WHERE room=? AND member=?',
                                 (room, member)).fetchall()
@@ -1641,14 +1736,14 @@ class TeamStore:
         return row[0] if row else None
 
     @staticmethod
-    def _direct_sql(where: str) -> str:
+    def _direct_sql(where: str, shown: str = SHOWN_DIRECT) -> str:
         # The name of the other member and of the bot is the last one that the store showed, also after a `delete`
         # (team_names).
         return f'''SELECT d.entry, d.first, d.writer, d.member, n.name, d.text, d.reply_to, d.created_at, d.updated_at,
             d.edited, d.bot, k.name, d.page FROM team_directs d
             LEFT JOIN team_names n ON n.room=d.room AND n.member=d.member AND n.kind='member'
             LEFT JOIN team_names k ON k.room=d.room AND k.entry=d.bot AND k.kind='bot'
-            WHERE d.room=? AND {SHOWN_DIRECT} AND {where}'''
+            WHERE d.room=? AND {shown} AND {where}'''
 
     def direct_read_position(self, room: str, member: str, bot: str | None = None) -> int:
         """The `first` of the newest message that the person read in one direct chat. It starts at 0, so each message

@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 from secrets import token_hex
 
 from . import team_keys
@@ -336,12 +337,19 @@ class TeamDirects:
 
     def _team_bot_direct_summary(self, room: dict) -> list[dict]:
         """The direct chats with a bot of a room for GET /v1/team/rooms: one item for each chat with a message that
-        shows, newest chat first. A chat with a bot that left stays. `typing` is null: this version does not read the
-        typing sign of a bot in a direct chat. The caller holds the service lock."""
+        shows, newest chat first. A chat with a bot that left stays. `typing` is the whole number of seconds that are
+        left of the typing sign of the bot, or null. A sign shows only while the room is active and the member of the
+        bot is in the member list. The caller holds the service lock."""
         from .team_pages import team_id
+
+        def typing(row) -> int | None:
+            if room['state'] != ACTIVE or self.team_store.member(room['room'], row['member']) is None:
+                return None
+            seconds = self.team_store.direct_typing_now(room['room'], row['member'], row['bot'])
+            return None if seconds is None else math.ceil(seconds)
         return [{'bot': team_id(room['room'], row['bot']), 'bot_name': row['bot_name'],
                  'unread': self.team_store.direct_unread(room['room'], row['member'], row['bot']),
                  'last_message': {'first': row['first'], 'this_mac': row['writer'] == room['member'],
                                   'text': row['text'][:PREVIEW], 'created_at': row['created_at']},
-                 'typing': None}
+                 'typing': typing(row)}
                 for row in self.team_store.bot_direct_chats(room['room'])]
