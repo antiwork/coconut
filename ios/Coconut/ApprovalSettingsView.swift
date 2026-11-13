@@ -23,13 +23,13 @@ struct ApprovalSettingsView: View {
                         ForEach(settings.modes) { mode in
                             Button { save(mode.id) } label: {
                                 HStack {
-                                    VStack(alignment: .leading, spacing: 4) {
+                                    VStack(alignment: .leading, spacing: BoardStyle.Space.line) {
                                         Text(mode.label).foregroundStyle(.primary)
-                                        Text(mode.description).font(.footnote).foregroundStyle(.secondary)
+                                        Text(mode.description).font(.subheadline).foregroundStyle(.secondary)
                                     }
                                     Spacer()
                                     if effective == mode.id { Image(systemName: "checkmark") }
-                                }.padding(.vertical, 3)
+                                }.padding(.vertical, BoardStyle.Space.xs)
                             }
                             .accessibilityAddTraits(effective == mode.id ? .isSelected : [])
                         }

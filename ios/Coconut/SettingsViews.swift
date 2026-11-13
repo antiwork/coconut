@@ -316,14 +316,14 @@ struct BotAppearancePicker: View {
                 .frame(maxWidth: .infinity).padding(.vertical, 12)
         }.listRowBackground(Color.clear)
         Section("Fruit") {
-            LazyVGrid(columns: [GridItem(.adaptive(minimum: 76))], spacing: 18) {
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 76))], spacing: BoardStyle.Space.l) {
                 ForEach(FruitArtwork.all, id: \.id) { fruit in
                     Button { avatar = "fruit." + fruit.id; color = fruit.color } label: {
-                        VStack(spacing: 3) {
+                        VStack(spacing: BoardStyle.Space.xs) {
                             BotAvatar(symbol: "fruit." + fruit.id, color: fruit.color, size: 56, animated: false)
-                            Text(fruit.name).font(.caption2).foregroundStyle(.secondary)
+                            Text(fruit.name).font(.footnote).foregroundStyle(.secondary)
                         }
-                        .frame(maxWidth: .infinity).padding(.vertical, 7)
+                        .frame(maxWidth: .infinity).padding(.vertical, BoardStyle.Space.s)
                         .background(selectedFruit.id == fruit.id ? BoardStyle.ink.opacity(0.07) : .clear,
                                     in: RoundedRectangle(cornerRadius: 16))
                     }
