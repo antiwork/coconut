@@ -264,12 +264,16 @@ struct DocumentPage {
     figure { margin: 0 0 16px; }
     figure.chart.broken { color: var(--text-2); font-size: var(--size-2); }
     /* A chart: a line of series names, the plot with hairlines and quiet numbers, then a quiet caption. */
-    figure.chart svg text { font-variant-numeric: tabular-nums; }
-    figure.chart line { stroke: var(--line); stroke-width: 1; shape-rendering: crispEdges; }
-    figure.chart figcaption { font-size: var(--size-1); }
-    figure.chart .legend { display: flex; flex-wrap: wrap; gap: 4px 16px; margin: 0 0 8px; font-size: var(--size-1);
-                           color: var(--text-2); }
-    figure.chart .legend .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 4px; }
+    /* Only the chart block of page.js: a chart that a bot draws by hand in an HTML page keeps its own look. */
+    figure.chart[data-spec] { flex: 1 1 160px; min-width: min(100%, 160px); }
+    figure.chart[data-spec] svg { direction: ltr; }
+    figure.chart[data-spec] svg text { font-variant-numeric: tabular-nums; }
+    figure.chart[data-spec] line { stroke: var(--line); stroke-width: 1; shape-rendering: crispEdges; }
+    figure.chart[data-spec] figcaption { font-size: var(--size-1); }
+    figure.chart[data-spec] .legend { display: flex; flex-wrap: wrap; gap: 4px 16px; margin: 0 0 8px;
+                                      font-size: var(--size-1); color: var(--text-2); }
+    figure.chart[data-spec] .legend .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%;
+                                           margin-right: 4px; }
     pre.mermaid { background: none; padding: 0; text-align: center; overflow-x: auto; }
     pre.mermaid svg { margin: 0 auto; }
     pre.mermaid .node rect, pre.mermaid .cluster rect { rx: 8px; ry: 8px; }

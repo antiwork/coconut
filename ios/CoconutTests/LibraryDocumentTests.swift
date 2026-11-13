@@ -944,7 +944,7 @@ final class LibraryDocumentTests: XCTestCase {
             return figures.map((figure) => figure.classList.contains("broken") ? "broken"
               : figure.querySelectorAll("svg path, svg circle").length + ":" + labels(figure)).join(" | ");
             """)
-        XCTAssertEqual(result, "4:Oct 13,Oct 20,Oct 27 | 4:1,2 | 2:A,B | 4:Oct 13,Oct 20,Oct 27,Nov 3 | broken")
+        XCTAssertEqual(result, "4:Oct 13,Oct 20,Oct 27 | 2:1,2 | 2:A,B | 4:Oct 13,Oct 20,Oct 27,Nov 3 | broken")
     }
 
     /// The chart draws again when the width of its column changes.
@@ -1105,6 +1105,199 @@ final class LibraryDocumentTests: XCTestCase {
             return [bars.length, ordered, tallest, labels[0], labels.length < 8].join(" | ");
             """)
         XCTAssertEqual(result, "17 | true | 16 | Oct 17 | true")
+    }
+
+    /// The facts of each chart of a page: the numbers of the y axis, the labels under the plot, the bars, lines and
+    /// dots, and whether a mark leaves the plot.
+    private static let chartFacts = """
+        const facts = (figure) => {
+          const svg = figure.querySelector("svg");
+          const axis = [...svg.querySelectorAll("text[text-anchor=end]")].map((text) => text.textContent);
+          const under = [...svg.querySelectorAll("text[dominant-baseline=hanging]")].map((text) => text.textContent);
+          const paths = [...svg.querySelectorAll("path")];
+          const box = svg.getBoundingClientRect();
+          const inside = paths.every((path) => {
+            const rect = path.getBoundingClientRect();
+            return rect.top >= box.top - 1 && rect.bottom <= box.top + 170;
+          });
+          return [axis.join(","), under.join(","), paths.length, svg.querySelectorAll("circle").length, inside,
+            paths.some((path) => (path.getAttribute("d") || "").includes("NaN"))].join(" ");
+        };
+        """
+
+    /// The facts of each chart block of a page, one line for each.
+    @MainActor
+    private func chartFacts(_ markdown: String, width: CGFloat = 390) async throws -> [String] {
+        let (view, window) = try await loadPage(markdown, width: width)
+        defer { close(window) }
+        let result = try await probe(view, Self.chartFacts + """
+            return [...document.querySelectorAll("figure.chart[data-spec]")].map(facts).join("\\n");
+            """)
+        return (result ?? "").components(separatedBy: "\n")
+    }
+
+    private static func chart(_ json: String) -> String { "\n\n```chart\n" + json + "\n```" }
+
+    /// A value that is not a finite number is no value: a text such as "1,234", a null or an empty text. A stack adds
+    /// its positive parts up and its negative parts down, apart. Rows with the same x add up without a series, and
+    /// an area with a series stacks.
+    @MainActor
+    func testAStackAddsItsPositiveAndNegativePartsApart() async throws {
+        let facts = try await chartFacts("Lead." + Self.chart("""
+            {"type": "bar", "x": "x", "y": "y", "series": "s", "data": [{"x": "A", "y": 5, "s": "shop"},
+            {"x": "A", "y": "1,234", "s": "docs"}, {"x": "B", "y": -3, "s": "shop"}, {"x": "B", "y": 4, "s": "docs"}]}
+            """) + Self.chart("""
+            {"type": "bar", "x": "x", "y": "y", "data": [{"x": "A", "y": 5}, {"x": "A", "y": 9}]}
+            """) + Self.chart("""
+            {"type": "area", "x": "x", "y": "y", "series": "s", "data": [{"x": 1, "y": 2, "s": "shop"},
+            {"x": 2, "y": 2, "s": "shop"}, {"x": 1, "y": 3, "s": "docs"}, {"x": 2, "y": 3, "s": "docs"}]}
+            """) + Self.chart("""
+            {"type": "line", "x": "x", "y": "y", "data": [{"x": 1, "y": 42}, {"x": 2, "y": null}, {"x": 3, "y": 58},
+            {"x": 4, "y": ""}]}
+            """))
+        XCTAssertEqual(facts, [
+            "−5,0,5 A,B 3 0 true false",
+            "0,5,10,15 A 2 0 true false",
+            "0,2,4,6 1,2 4 0 true false",
+            "0,20,40,60 1,2,3,4 1 2 true false",
+        ])
+    }
+
+    /// The zero line always shows, and the other lines keep even steps from it. A flat range draws. A negative
+    /// number has the minus sign (U+2212).
+    @MainActor
+    func testTheZeroLineShowsWithNegativeValues() async throws {
+        let facts = try await chartFacts("Lead." + Self.chart("""
+            {"type": "bar", "x": "x", "y": "y", "data": [{"x": "A", "y": -1}, {"x": "B", "y": 12}, {"x": "C", "y": 5}]}
+            """) + Self.chart("""
+            {"type": "bar", "x": "x", "y": "y", "data": [{"x": "A", "y": -5}, {"x": "B", "y": -3}]}
+            """) + Self.chart("""
+            {"type": "bar", "x": "x", "y": "y", "data": [{"x": "A", "y": 0}, {"x": "B", "y": 0}]}
+            """))
+        XCTAssertEqual(facts, ["−10,0,10,20 A,B,C 3 0 true false", "−6,−4,−2,0 A,B 2 0 true false",
+                               "0,0.5,1 A,B 2 0 true false"])
+    }
+
+    /// A date label has the form of the span of the values, and two labels never show the same text. A date without
+    /// a time is that calendar day. When one x value is no date, each x value is text.
+    @MainActor
+    func testADateLabelHasTheFormOfTheSpan() async throws {
+        let facts = try await chartFacts("Lead." + Self.chart("""
+            {"type": "line", "x": "x", "y": "y", "data": [{"x": "2026-10-13T09:00:00", "y": 1},
+            {"x": "2026-10-13T12:00:00", "y": 2}, {"x": "2026-10-13T15:00:00", "y": 3}]}
+            """) + Self.chart("""
+            {"type": "bar", "x": "x", "y": "y", "data": [{"x": "2022-01-01", "y": 1}, {"x": "2023-01-01", "y": 2},
+            {"x": "2024-01-01", "y": 3}, {"x": "2025-01-01", "y": 4}]}
+            """) + Self.chart("""
+            {"type": "bar", "x": "x", "y": "y", "data": [{"x": "2026-10-13", "y": 1}, {"x": "2026-10-14", "y": 2},
+            {"x": "Total", "y": 3}]}
+            """) + Self.chart("""
+            {"type": "line", "x": "x", "y": "y", "data": [{"x": "2026-10-13T00:00:00", "y": 1},
+            {"x": "2026-10-14", "y": 2}]}
+            """))
+        XCTAssertTrue(facts[0].hasPrefix("0,1,2,3 9 AM,12 PM,3 PM "), facts[0])
+        XCTAssertTrue(facts[1].contains(" 2022,2023,2024,2025 "), facts[1])
+        XCTAssertTrue(facts[2].contains(" 2026-10-13,2026-10-14,Total "), facts[2])
+        XCTAssertTrue(facts[3].contains(" Oct 13,Oct 14 "), facts[3])
+    }
+
+    /// Labels on a scale of dates go by position: uneven dates keep each label that has room. A band of names keeps
+    /// each name and cuts a long one to its step.
+    @MainActor
+    func testUnevenDatesAndABandOfNamesKeepTheirLabels() async throws {
+        let (view, window) = try await loadPage("Lead." + Self.chart("""
+            {"type": "line", "x": "x", "y": "y", "data": [{"x": "2026-01-05", "y": 1}, {"x": "2026-01-06", "y": 2},
+            {"x": "2026-03-01", "y": 3}, {"x": "2026-06-15", "y": 2}, {"x": "2026-10-01", "y": 4}]}
+            """) + Self.chart("""
+            {"type": "bar", "x": "x", "y": "y", "data": [{"x": "Courses", "y": 41}, {"x": "Ebooks", "y": 18},
+            {"x": "Memberships of the team", "y": 15}, {"x": "Bundles", "y": 9}, {"x": "Physical", "y": 6}]}
+            """), width: 390)
+        defer { close(window) }
+        let result = try await probe(view, """
+            const figures = [...document.querySelectorAll("figure.chart[data-spec]")];
+            const labels = (figure) => [...figure.querySelectorAll("text[dominant-baseline=hanging]")];
+            const boxes = labels(figures[1]).map((text) => text.getBoundingClientRect())
+              .sort((a, b) => a.left - b.left);
+            const meet = boxes.slice(1).filter((box, index) => box.left - boxes[index].right < 8).length;
+            return [labels(figures[0]).map((text) => text.textContent).join(","),
+              labels(figures[1]).length, labels(figures[1]).some((text) => text.textContent.endsWith("…")), meet,
+              scrolls()].join(" | ");
+            """)
+        XCTAssertEqual(result, "Jan 5,Mar 1,Jun 15,Oct 1 | 5 | true | 0 | 0")
+    }
+
+    /// The numbers of the y axis: commas under 10,000, short from 10,000 up, and decimals. A line of more than 12
+    /// points has no dots.
+    @MainActor
+    func testTheNumbersOfTheYAxisAndTheDotsOfALine() async throws {
+        let long = (1...13).map { #"{"x": \#($0), "y": \#($0 * 70)}"# }.joined(separator: ", ")
+        let facts = try await chartFacts("Lead." + Self.chart("""
+            {"type": "line", "x": "x", "y": "y", "data": [\(long)]}
+            """) + Self.chart("""
+            {"type": "bar", "x": "x", "y": "y", "data": [{"x": "A", "y": 12500}, {"x": "B", "y": 3000}]}
+            """) + Self.chart("""
+            {"type": "bar", "x": "x", "y": "y", "data": [{"x": "A", "y": 0.5}, {"x": "B", "y": 0.25}]}
+            """))
+        XCTAssertTrue(facts[0].hasPrefix("0,500,1,000 "), facts[0])
+        XCTAssertTrue(facts[0].hasSuffix(" 1 0 true false"), facts[0])
+        XCTAssertTrue(facts[1].hasPrefix("0,5k,10k,15k "), facts[1])
+        XCTAssertTrue(facts[2].hasPrefix("0,0.2,0.4,0.6 "), facts[2])
+    }
+
+    /// The stylesheet of a chart styles only the chart block of page.js: a figure that a bot draws by hand keeps its
+    /// own lines. A chart in a right-to-left box keeps its numbers inside, and two charts in one flex row get a
+    /// sensible width.
+    @MainActor
+    func testTheChartStyleIsOnlyForTheChartBlock() async throws {
+        let spec = #"{"type": "bar", "x": "x", "y": "y", "data": [{"x": "A", "y": 1200}, {"x": "B", "y": 300}]}"#
+            .replacingOccurrences(of: "\"", with: "&quot;")
+        let html = """
+            <p>Lead.</p>
+            <figure class="chart"><svg width="100" height="20">
+            <line x1="0" x2="100" y1="10" y2="10" stroke="red"/></svg>
+            <figcaption>By hand</figcaption></figure>
+            <div dir="rtl"><figure class="chart" data-spec="\(spec)"></figure></div>
+            <div style="display: flex; gap: 8px"><figure class="chart" data-spec="\(spec)"></figure>
+            <figure class="chart" data-spec="\(spec)"></figure></div>
+            """
+        let (view, window) = try await loadPage(html, width: 390, markdown: false)
+        defer { close(window) }
+        let result = try await probe(view, """
+            const hand = document.querySelector("figure.chart:not([data-spec])");
+            const charts = [...document.querySelectorAll("figure.chart[data-spec] svg")];
+            const right = charts[0].getBoundingClientRect().right;
+            const inside = [...charts[0].querySelectorAll("text[text-anchor=end]")]
+              .every((text) => text.getBoundingClientRect().right <= right + 1);
+            return [getComputedStyle(hand.querySelector("line")).stroke,
+              getComputedStyle(hand.querySelector("figcaption")).fontSize,
+              inside, charts.slice(1).every((svg) => svg.getBoundingClientRect().width >= 160), scrolls()].join(" | ");
+            """)
+        XCTAssertEqual(result, "rgb(255, 0, 0) | 15px | true | true | 0")
+    }
+
+    /// One tile has a row of its own, two share a row, and six sit in two rows of three.
+    @MainActor
+    func testOneTwoAndSixTiles() async throws {
+        let markdown = "Lead.\n\n| A |\n|---|\n| 1 |\n\n| A | B |\n|---|---|\n| 1 | 2 |\n\n"
+            + "| A | B | C | D | E | F |\n|---|---|---|---|---|---|\n| 1 | 2 | 3 | 4 | 5 | 6 |"
+        let script = """
+            return [...document.querySelectorAll(".metrics")].map((metrics) => {
+              const rows = new Map();
+              for (const tile of metrics.children) {
+                const top = Math.round(tile.getBoundingClientRect().top);
+                rows.set(top, (rows.get(top) || 0) + 1);
+              }
+              return [...rows.values()].join("+");
+            }).join(" ");
+            """
+        let (phone, phoneWindow) = try await loadPage(markdown, width: 390)
+        defer { close(phoneWindow) }
+        let onPhone = try await probe(phone, script)
+        XCTAssertEqual(onPhone, "1 2 3+3")
+        let (wide, wideWindow) = try await loadPage(markdown, width: 1100)
+        defer { close(wideWindow) }
+        let onWide = try await probe(wide, script)
+        XCTAssertEqual(onWide, "1 2 3+3")
     }
 
     /// The answer of a script of statements after the probes.
