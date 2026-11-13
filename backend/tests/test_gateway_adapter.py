@@ -890,6 +890,32 @@ class GatewayAdapterTests(unittest.TestCase):
         # The end of the turn clears its state.
         self.assertEqual((NUDGED, self.adapter_module.CLOSED), (set(), set()))
 
+    def test_a_turn_with_only_commentary_ends_quietly_without_a_completion_message(self):
+        # A turn can show commentary, run its tools and then end with the closing text. The commentary stays in the
+        # chat. The end adds no "Complete." line to the chat list and no unread message.
+        async def runner(event):
+            await self.adapter.send(event.source.chat_id, 'I am looking.', metadata={'_interim_send': True})
+            def model_calls():
+                token = self.session(event.source.chat_id)
+                try:
+                    self.model_call(self.reply(''), self.AFTER_TOOL)
+                    return self.model_call(self.reply(''), self.REMINDED).choices[0].message.content
+                finally:
+                    from gateway.session_context import SESSION
+                    SESSION.reset(token)
+            return await asyncio.to_thread(model_calls)
+        self.connect(runner)
+        task = self.write('POST', f'/v1/bots/{self.bot["id"]}/messages', {'text': 'Do it.'})
+        with patch.dict(sys.modules, self.transport_modules()):
+            self.service._run_task(task['id'])
+        stored = self.read('tasks', task['id'])
+        self.assertEqual((stored['status'], stored.get('_silent_completion')), ('completed', True))
+        with self.service.lock:
+            shown = [(m['kind'], m['text'], bool(m.get('_interim'))) for m in self.service._task_messages(task['id'])
+                     if m['role'] == 'assistant']
+        self.assertEqual(shown, [('text', 'I am looking.', True)])
+        self.assertEqual(self.bot_state()[0], 'I am looking.')
+
     def test_a_run_that_hermes_starts_ends_quietly_when_the_model_writes_nothing(self):
         # No person waits for a reply to a run that Hermes starts by itself, such as the notice of a finished background
         # process. Its empty reply gets the closing text at once, and the chat shows nothing.
