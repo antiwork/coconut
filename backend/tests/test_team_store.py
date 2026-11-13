@@ -4,8 +4,12 @@ Each test gives TeamStore.accept an entry as the relay sends it, and the answer 
 needs the helper or the relay.
 """
 import json
+from pathlib import Path
 import sqlite3
+import tempfile
+import time
 import unittest
+from unittest import mock
 
 from coconut import team_store
 from coconut.team_store import DROPPED, PENDING, REFUSED, SAME, SKIPPED, STORED, TeamStore
@@ -588,35 +592,94 @@ class TeamStoreTests(unittest.TestCase):
         self.write(1, self.member('Reporter', bot_only=True), ADMIN)
         self.write(2, self.member('Grace', direct=True))
         deep = json.dumps(self.member('Reporter', bot_only=True))[:-1] + ', "x": ' + '[' * 1001 + ']' * 1001 + '}'
-        large = json.dumps(self.member('Reporter', bot_only=True, padding='x' * 2_000_000))
+        large = json.dumps(self.member('Reporter', bot_only=True, padding='x' * 500_000))
+        over = json.dumps(self.member('Reporter', bot_only=True, padding='x' * team_store.MAX_MARK_PAYLOAD))
         try:
             # Python 3.11 refuses this depth with RecursionError, and a later Python reads it.
             json.loads(deep)
             deep_reads = True
         except RecursionError:
             deep_reads = False
+        invalid = json.dumps(self.member('Reporter', bot_only=True)).encode().replace(b'Reporter', b'Rep\xffrter')
         for name, payload, read in (('deep', deep, deep_reads), ('not JSON', 'not { json', False),
                                     ('not an object', '[true]', False), ('large', large, True),
+                                    ('over the bound', over, False), ('not UTF-8', invalid, False),
                                     ('another kind', json.dumps(self.bot('Reporter')), False)):
             with self.subTest(payload=name):
-                self.db.execute('UPDATE team_entries SET payload=? WHERE room=? AND id=?', (payload, ROOM, entry_id(1)))
-                self.db.execute('UPDATE team_members SET bot_only=0, direct=0')
+                # Bytes go in as TEXT with the bytes as they are, as a damaged store can have them.
+                self.db.execute('UPDATE team_entries SET payload=CAST(? AS TEXT) WHERE room=? AND id=?',
+                                (payload, ROOM, entry_id(1)))
+                # Wrong marks on both rows: the row that reads gets (1, 0), and a row that does not read keeps (1, 1).
+                self.db.execute('UPDATE team_members SET bot_only=1, direct=1')
                 with self.assertLogs('coconut.team_store', 'WARNING') as logs:
                     store = self.reopen()
                     team_store.log.warning('The end of the open.')
                 self.assertEqual(len(logs.records), 1 if read else 2, 'A row that does not read has one log line.')
-                self.assertNotIn('Reporter', '\n'.join(logs.output))
-                self.assertEqual(self.marks(), [(ROOM, 'Grace', 0, 1), (ROOM, 'Reporter', int(read), 0)],
-                                 'The other row is repaired. A payload that reads sets the mark. Each other one keeps '
-                                 'the row.')
+                self.assertNotIn('Rep', '\n'.join(logs.output))
+                self.assertEqual(self.marks(), [(ROOM, 'Grace', 0, 1), (ROOM, 'Reporter', 1, 0 if read else 1)],
+                                 'The other row is repaired. A payload that reads sets the marks, and each other one '
+                                 'keeps the row.')
                 self.assertEqual(store.changed, {ROOM})
 
+    def test_an_error_or_a_lock_ends_the_repair_and_the_next_open_does_it(self):
+        with tempfile.TemporaryDirectory() as folder:
+            db = sqlite3.connect(Path(folder) / 'store.sqlite3', isolation_level=None, timeout=30)
+            self.addCleanup(db.close)
+            db.executescript(team_store.SCHEMA)
+            store = TeamStore(db)
+            store.migrate()
+            store.add_room(room=ROOM, relay='https://relay.example', name='Example Team', member=MEMBER, admin=ADMIN,
+                           state=team_store.ACTIVE, epoch=0, profile='{}', created_at='2026-11-10T12:00:00Z')
+            self.store, self.db = store, db
+            self.write(1, self.member('Reporter', bot_only=True), ADMIN)
+            db.execute('UPDATE team_members SET bot_only=0')
+            # A fault of the database in the read.
+            with mock.patch.object(TeamStore, '_wrong_marks', side_effect=sqlite3.DatabaseError('damaged')), \
+                    self.assertLogs('coconut.team_store', 'WARNING') as logs:
+                failed = self.reopen()
+            self.assertEqual((len(logs.records), failed.changed, self.marks()), (1, set(), [(ROOM, 'Reporter', 0, 0)]))
+            # Another connection holds the write lock: the open waits about MARK_WAIT_MS, not the 30 seconds of the
+            # connection, and the rows stay.
+            holder = sqlite3.connect(Path(folder) / 'store.sqlite3', isolation_level=None)
+            self.addCleanup(holder.close)
+            holder.execute('BEGIN IMMEDIATE')
+            begin = time.monotonic()
+            with self.assertLogs('coconut.team_store', 'WARNING'):
+                locked = self.reopen()
+            waited = time.monotonic() - begin
+            holder.execute('ROLLBACK')
+            self.assertLess(waited, 5)
+            self.assertEqual((locked.changed, self.marks(), locked.corrected_waiting()),
+                             (set(), [(ROOM, 'Reporter', 0, 0)], False))
+            self.assertEqual(db.execute('PRAGMA busy_timeout').fetchone()[0], 30_000, 'The bound of the connection.')
+            # The next open repairs the row.
+            self.assertEqual((self.reopen().changed, self.marks()), ({ROOM}, [(ROOM, 'Reporter', 1, 0)]))
+            # Right rows take no write lock: the open passes while another connection writes.
+            holder.execute('BEGIN IMMEDIATE')
+            with self.assertNoLogs('coconut.team_store', 'WARNING'):
+                self.reopen()
+            holder.execute('ROLLBACK')
+
+    def test_the_reader_of_a_kept_entry_never_raises(self):
+        payload = json.dumps(self.member('Reporter'))
+        self.assertEqual(team_store.stored_fields('member', payload.encode())['name'], 'Reporter')
+        for error in (MemoryError, RecursionError, TypeError, RuntimeError):
+            with self.subTest(error=error.__name__), mock.patch.object(team_store, 'read_entry', side_effect=error):
+                self.assertIsNone(team_store.stored_fields('member', payload))
+
+    def test_the_repair_clears_a_mark_too(self):
+        self.write(1, self.member('Reporter'), ADMIN)
+        self.db.execute('UPDATE team_members SET bot_only=1, direct=1')
+        self.assertEqual((self.reopen().changed, self.marks()), ({ROOM}, [(ROOM, 'Reporter', 0, 0)]))
+
     def test_the_repair_reads_the_entry_of_the_row_in_its_own_room(self):
-        # Two rooms have an entry with the same ID: only the entry of the room of the row counts.
+        # Two rooms have an entry with the same ID: only the entry of the room of the row counts, and only the row of
+        # that room changes.
         self.write(1, self.member('Grace'))
         self.accept(dict(self.entry(1), seq=99, first=99), {'epoch': 0, 'payload': json.dumps(
             self.member('Reporter', bot_only=True)).encode()}, room=OTHER_ROOM)
         self.assertEqual(self.marks(), [(ROOM, 'Grace', 0, 0), (OTHER_ROOM, 'Reporter', 1, 0)])
+        self.db.execute('UPDATE team_members SET bot_only=0 WHERE room=?', (OTHER_ROOM,))
         self.reopen()
         self.assertEqual(self.marks(), [(ROOM, 'Grace', 0, 0), (OTHER_ROOM, 'Reporter', 1, 0)])
 
@@ -633,8 +696,13 @@ class TeamStoreTests(unittest.TestCase):
         # The service stops before it tells the phone. The next start finds correct rows and still tells the phone.
         store = self.reopen()
         self.assertEqual(store.changed, set())
+        self.assertTrue(store.corrected_waiting())
         self.assertEqual((store.corrected_rooms(), store.changed), ([ROOM], {ROOM}))
-        self.assertEqual(self.reopen().corrected_rooms(), [])
+        self.assertFalse(self.reopen().corrected_waiting())
+        # A room that this Mac left gets no event, and its mark goes.
+        self.db.execute('INSERT INTO team_marks (mark) VALUES (?)', (team_store.CORRECTED_MARK + 'c' * 64,))
+        store = self.reopen()
+        self.assertEqual((store.corrected_rooms(), store.changed, store.corrected_waiting()), ([], set(), False))
 
     def test_an_older_store_gets_the_epoch_of_each_entry_as_0(self):
         db = sqlite3.connect(':memory:', isolation_level=None)

@@ -51,6 +51,7 @@ here: team_keys.py keeps them in a private file. The caller holds the transactio
 from __future__ import annotations
 
 import base64
+from contextlib import contextmanager
 from datetime import datetime, timezone
 import json
 import logging
@@ -175,6 +176,12 @@ TYPING_BOT_SECONDS = 30
 DIRECT_MARK = 'direct'
 # The prefix of a mark in `team_marks` for a room whose rows the open of the store corrected, until its event goes out.
 CORRECTED_MARK = 'corrected:'
+# The repair of the marks at a start (TeamStore._read_marks_again) reads a kept `member` or `bot` payload only up to this
+# size. An honest one has at most some kilobytes: four short text fields of at most 80 code points and a key.
+MAX_MARK_PAYLOAD = 1 << 20
+# The longest wait of that repair, and of the event after it, for the write lock of another connection. A write of the
+# service lasts some milliseconds, and the next start tries again, so a start never waits long for it.
+MARK_WAIT_MS = 1000
 # The limits of a `message` entry, in Unicode code points and in entry IDs.
 MAX_TEXT = 16000
 MAX_MENTIONS = 16
@@ -479,15 +486,18 @@ SHOWN = {'member': member_fields, 'bot': bot_fields, 'page': page_fields, 'messa
 
 
 def same_name(first: str, second: str) -> bool:
-    """True when two names are the same for a person: equal after Unicode normalization to NFC and casefold."""
+    """True when two names are the same for a person: equal after Unicode normalization to NFC and casefold().
+
+    The limit: casefold() does not join each letter with its other case. About 11 letters, for example some letters
+    with a title case of their own, stay different from their other case here."""
     return unicodedata.normalize('NFC', first).casefold() == unicodedata.normalize('NFC', second).casefold()
 
 
-def stored_fields(kind: str, payload: str) -> dict | None:
+def stored_fields(kind: str, payload: str | bytes) -> dict | None:
     """The checked fields of a kept entry of this kind, as read_entry finds them for `accept`. None for a payload that
     does not read, has another kind, or has fields that do not fit. No payload makes it raise."""
     try:
-        opened = read_entry({'epoch': 0, 'payload': payload.encode()})
+        opened = read_entry({'epoch': 0, 'payload': payload.encode() if isinstance(payload, str) else payload})
     except Exception:
         return None
     return opened['shown'] if opened['read'] and opened['read'][1]['kind'] == kind else None
@@ -587,47 +597,82 @@ class TeamStore:
 
         A service of an older version kept the entries with their marks in rows without a column for a mark, and each
         column came with the value 0. The other Mac does not write its entry again, so without this step a team-only
-        Mac shows as a person, and its bots as bots that answer nobody. Each start does the step: it changes only a
-        wrong row.
+        Mac shows as a person, and its bots as bots that answer nobody.
 
-        The step reads each payload with `stored_fields`, the reader of `accept`, so the two cannot disagree. Another
-        member wrote the payload, so the step uses no JSON function of SQLite on it: such a function refuses some
-        JSON that Python reads, and the service would then not start. A row whose entry this reader cannot read keeps
-        its marks, with a log line. So does a row without its kept entry.
+        The step is a best effort: it must never stop or slow a start. Each error ends it with one log line, and the
+        next start tries again. It reads one row at a time, each payload as bytes, so one damaged row does not stop the
+        read. It reads each payload with `stored_fields`, the reader of `accept`, and no JSON function of SQLite: such
+        a function refuses some JSON that Python reads. A row whose entry does not read, or is over MAX_MARK_PAYLOAD
+        bytes, keeps its marks with a log line. So does a row without its kept entry. Only when a row is wrong does it
+        write, and it waits at most MARK_WAIT_MS for the write lock.
 
-        The room of a corrected row goes into `changed`, and into `team_marks` in the same savepoint, so the event
-        for the phone (`corrected_rooms`) is not lost when the service stops before it can send it."""
-        rows = self.db.execute("""SELECT 'member', m.room, m.entry, m.bot_only, m.direct, e.payload FROM team_members m
-                JOIN team_entries e ON e.room=m.room AND e.id=m.entry
-            UNION ALL SELECT 'bot', b.room, b.entry, b.open, 0, e.payload FROM team_bots b
-                JOIN team_entries e ON e.room=b.room AND e.id=b.entry""").fetchall()
+        The room of a corrected row goes into `changed`, and into `team_marks` in the same savepoint, so the event for
+        the phone (`corrected_rooms`) is not lost when the service stops before it can send it."""
+        try:
+            changes = self._wrong_marks()
+            if changes:
+                with self.short_wait():
+                    self._write_marks(changes)
+                self.changed.update(room for _, room, _, _ in changes)
+        except Exception as error:
+            log.warning('coconut.team_log: the start did not read the marks of the members and bots again (%s). The '
+                        'next start tries again.', type(error).__name__)
+
+    def _wrong_marks(self) -> list[tuple[str, str, str, tuple[int, int]]]:
+        """Each member row and bot row whose marks differ from its kept entry: (kind, room, key, marks). The key is the
+        member ID of a member row and the entry ID of a bot row: the primary key of the row in its room.
+
+        CROSS JOIN keeps the order of the tables: SQLite walks the few rows of the members and bots and finds each entry
+        by its key. It does not walk each entry of the store."""
+        blob = 'CAST(e.payload AS BLOB)'
+        read = f'length({blob}), CASE WHEN length({blob}) <= {MAX_MARK_PAYLOAD} THEN {blob} END'
+        cursor = self.db.execute(f"""SELECT 'member', m.room, m.entry, m.member, m.bot_only, m.direct, {read}
+                FROM team_members m CROSS JOIN team_entries e ON e.room=m.room AND e.id=m.entry AND e.kind='member'
+            UNION ALL SELECT 'bot', b.room, b.entry, b.entry, b.open, 0, {read}
+                FROM team_bots b CROSS JOIN team_entries e ON e.room=b.room AND e.id=b.entry AND e.kind='bot'""")
         changes = []
-        for kind, room, entry, first, second, payload in rows:
-            fields = stored_fields(kind, payload)
+        for kind, room, entry, key, first, second, size, payload in cursor:
+            fields = stored_fields(kind, payload) if payload is not None else None
             if fields is None:
-                log.warning('coconut.team_log room %s: the kept %s entry %s does not read, so its row keeps its marks.',
-                            room[:8], kind, entry[:8])
+                log.warning('coconut.team_log room %s: the kept %s entry %s (%d bytes) does not read, so its row keeps '
+                            'its marks.', room[:8], kind, entry[:8], size or 0)
                 continue
             marks = (int(fields['bot_only']), int(fields['direct'])) if kind == 'member' else (int(fields['open']), 0)
             if marks != (first, second):
-                changes.append((kind, room, entry, marks))
-        if not changes:
-            return
+                changes.append((kind, room, key, marks))
+        return changes
+
+    def _write_marks(self, changes: list[tuple[str, str, str, tuple[int, int]]]) -> None:
         self.db.execute('SAVEPOINT team_marks_again')
         try:
-            for kind, room, entry, (first, second) in changes:
+            for kind, room, key, (first, second) in changes:
                 if kind == 'member':
-                    self.db.execute('UPDATE team_members SET bot_only=?, direct=? WHERE room=? AND entry=?',
-                                    (first, second, room, entry))
+                    self.db.execute('UPDATE team_members SET bot_only=?, direct=? WHERE room=? AND member=?',
+                                    (first, second, room, key))
                 else:
-                    self.db.execute('UPDATE team_bots SET open=? WHERE room=? AND entry=?', (first, room, entry))
-                self.db.execute('INSERT OR IGNORE INTO team_marks (mark) VALUES (?)', (CORRECTED_MARK + room,))
+                    self.db.execute('UPDATE team_bots SET open=? WHERE room=? AND entry=?', (first, room, key))
+            self.db.executemany('INSERT OR IGNORE INTO team_marks (mark) VALUES (?)',
+                                [(CORRECTED_MARK + room,) for room in {room for _, room, _, _ in changes}])
         except BaseException:
             self.db.execute('ROLLBACK TO team_marks_again')
             self.db.execute('RELEASE team_marks_again')
             raise
         self.db.execute('RELEASE team_marks_again')
-        self.changed.update(room for _, room, _, _ in changes)
+
+    @contextmanager
+    def short_wait(self):
+        """Wait at most MARK_WAIT_MS for a lock of another connection, then give the old bound back."""
+        before = self.db.execute('PRAGMA busy_timeout').fetchone()[0]
+        self.db.execute(f'PRAGMA busy_timeout={MARK_WAIT_MS}')
+        try:
+            yield
+        finally:
+            self.db.execute(f'PRAGMA busy_timeout={int(before)}')
+
+    def corrected_waiting(self) -> bool:
+        """True when a corrected room waits for its event. A read only: it takes no lock."""
+        return self.db.execute('SELECT 1 FROM team_marks WHERE substr(mark, 1, ?)=? LIMIT 1',
+                               (len(CORRECTED_MARK), CORRECTED_MARK)).fetchone() is not None
 
     def corrected_rooms(self) -> list[str]:
         """The rooms whose rows _read_marks_again corrected and whose event did not go out yet. The marks go, and each

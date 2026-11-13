@@ -232,10 +232,20 @@ class Team(TeamSync, TeamSocket, TeamPages, TeamMessages, TeamChats, TeamDirects
         """The open of the store can correct the rows of a room (TeamStore._read_marks_again). An app that is open
         gets one event for each such room and reads the room again. The store keeps each such room until this step
         (TeamStore.corrected_rooms), because the push code does not exist yet when the store opens. A stop before
-        this step sends the event at the next start."""
-        with self.transaction():
-            for room in self.team_store.corrected_rooms():
-                self._team_tell(room)
+        this step sends the event at the next start.
+
+        The step must not stop or slow a start: it takes the write lock only when a room waits, and it waits at most
+        MARK_WAIT_MS for it. Each error leaves the marks for the next start, with one log line. An app that connects
+        reads the rooms anyway, so a late event only delays an open app."""
+        if not self.team_store.corrected_waiting():
+            return
+        try:
+            with self.team_store.short_wait(), self.transaction():
+                for room in self.team_store.corrected_rooms():
+                    self._team_tell(room)
+        except Exception as error:
+            log.warning('coconut.team_log: the start did not tell the phone of the corrected rooms (%s). The next start '
+                        'tries again.', type(error).__name__)
 
     def _close_team(self):
         self._close_team_socket()

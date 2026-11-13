@@ -468,12 +468,27 @@ class BotRecordTests(TeamOnlyMacs, unittest.TestCase):
             with mock.patch.object(self.first, '_start_team_sync'), mock.patch.object(self.first, '_start_team_socket'):
                 self.first._start_team()
         cursor = self.first.db.execute('SELECT MAX(seq) FROM events').fetchone()[0] or 0
-        start()
+        # Another connection holds the write lock at the first start. The start goes on after a short wait, and the
+        # event waits in the store for the next start.
+        holder = sqlite3.connect(self.first.root / 'coconut.sqlite3', isolation_level=None)
+        self.addCleanup(holder.close)
+        self.first.team_store.migrate()
+        holder.execute('BEGIN IMMEDIATE')
+        begin = time.monotonic()
+        with self.assertLogs('coconut.team', 'WARNING'):
+            start()
+        holder.execute('ROLLBACK')
+        self.assertLess(time.monotonic() - begin, 5)
         self.assertEqual(seen(), right)
+        self.assertTrue(self.first.team_store.corrected_waiting())
+        start()
         events = [row[0] for row in self.first.db.execute('SELECT type FROM events WHERE seq>?', (cursor,))]
         self.assertEqual(events, ['team.updated'])
-        # A start with correct rows changes nothing and tells nothing.
-        start()
+        # A start with correct rows changes nothing, tells nothing, and takes no write lock.
+        holder.execute('BEGIN IMMEDIATE')
+        with self.assertNoLogs('coconut', 'WARNING'):
+            start()
+        holder.execute('ROLLBACK')
         self.assertEqual(self.first.db.execute('SELECT COUNT(*) FROM events WHERE seq>?', (cursor,)).fetchone()[0], 1)
 
     def test_a_change_keeps_the_home_and_reaches_the_team(self):
