@@ -287,7 +287,7 @@ enum ChatRowText {
 }
 
 /// The layout of one row of the Chats list and of the Mac sidebar, for a bot and a team, as the chat list of WhatsApp.
-/// The face comes first. Then a grid of two lines. The name and the age of the newest message share the first line.
+/// The face comes first. A grid of two lines follows. The name and the age of the newest message share the first line.
 /// The line under the name and the badges share the second line. The badges are the round "@" mark of a team whose
 /// unread message names this person, and then the unread count. WhatsApp and Telegram have the same mark. The age
 /// and the badges end at one right edge. No line is empty, so a row of one line has its text centered on the face.
@@ -332,8 +332,8 @@ struct ChatRowLayout<Face: View, Subtitle: View>: View {
                     GridRow(alignment: .center) {
                         subtitle()
                         if hasBadges {
-                            // A frame of no height puts the badges on the center of the line and gives the line no
-                            // height. A badge thus does not move the text and does not make the row taller.
+                            // The row centers its cells. A frame of no height adds no height to the line. A badge thus
+                            // does not move the text and does not make the row taller.
                             badges.fixedSize().frame(height: 0).gridColumnAlignment(.trailing)
                         }
                     }

@@ -57,10 +57,10 @@ enum BoardStyle {
     /// The face at the start of a row of the Chats list. The Mac sidebar has its own smaller face.
     static let rowFace: CGFloat = 46
 
+    #if os(macOS)
     /// The height of the unread badge and of the "@" mark: the height of one line of text under the name of a chat
     /// row. A badge fills the second line of the row, so it ends where that line ends, above and under. The badge
     /// grows with that text.
-    #if os(macOS)
     static let badge: CGFloat = 14
     #else
     static let badge: CGFloat = 18
