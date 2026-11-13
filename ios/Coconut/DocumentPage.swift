@@ -5,9 +5,9 @@ import WebKit
 ///
 /// Coconut owns the style of the page and the bot owns its structure. The page gets the design tokens of Coconut as
 /// CSS variables, an article stylesheet with the system font, d3 and Observable Plot, and the blocks of page.js: the
-/// lead, callouts, charts and Mermaid diagrams. Mermaid is large, so only a page with a diagram loads it.
-/// `coconut.palette` gives a script the six chart colors of the current appearance. A photo that a bot saved on the
-/// Mac (`coconut-file://`) loads through the app. The content security policy blocks every load from
+/// lead, callouts, metrics, tables, charts and Mermaid diagrams. Mermaid is large, so only a page with a diagram
+/// loads it. `coconut.palette` gives a script the six chart colors of the current appearance. A photo that a bot
+/// saved on the Mac (`coconut-file://`) loads through the app. The content security policy blocks every load from
 /// the network, and the web view keeps no data. A web link opens in the browser after the person agrees. The Mac checks the
 /// same rules when the bot saves the page (backend/coconut/documents.py).
 @MainActor
@@ -109,8 +109,8 @@ struct DocumentPage {
     }
 
     /// d3, Observable Plot, marked and the tokens before the page, and page.js after it. Mermaid joins only a page that
-    /// can have a diagram. Each file is read once from the app.
-    private static func scripts(diagrams: Bool) -> [WKUserScript] {
+    /// can have a diagram. Each file is read once from the app. The tests load a page with them.
+    static func scripts(diagrams: Bool) -> [WKUserScript] {
         let start = libraries + [tokens]
         let end = (diagrams ? [mermaid] : []) + [blocks]
         return start.compactMap { $0 }.map { WKUserScript(source: $0, injectionTime: .atDocumentStart, forMainFrameOnly: true) }
@@ -142,13 +142,27 @@ struct DocumentPage {
     /// The design tokens of a page. The colors match the app: BoardStyle for the surfaces and the text, and a
     /// palette of six chart colors with a lighter set for dark mode.
     private static let stylesheet = """
+    /* The rules of a page. A bot writes the structure, and this stylesheet sets the look.
+       1. One column. It is at most 680 px wide and sits in the center of a wide window. On a phone the side margin
+          is 16 px, the margin of the app: the text of the page then starts under the left edge of the back button.
+       2. One typeface: the system font. Five sizes: 13, 15, 17, 20 and 28 px (--size-1 to --size-5), the iOS text
+          styles footnote, subheadline, body, title 3 and title 1. Two weights in running text: regular and
+          semibold. Only the title of the page is bold.
+       3. Two text colors: text and quiet. One link color. Each other color shows only in a chart, a diagram and the
+          tone of a callout.
+       4. One surface: --surface with a radius of 12 px. Only a metric, a callout and a code block use it. No shadow,
+          no border, no gradient, no icon, no zebra rows, no animation.
+       5. Space from one scale: 4, 8, 12, 16, 24, 32 px. A section heading has 32 px above it.
+       6. A hairline (--line) shows only between the rows of a table and of a record list.
+       7. A number in a table or a metric uses tabular figures. A column of numbers aligns right.
+       page.js makes the metrics (a table with one row of numbers) and the record list (a table that does not fit). */
     :root {
       color-scheme: light dark;
       --bg: #ffffff; --surface: #f4f4f4; --line: rgba(0, 0, 0, 0.1);
       --text: #000000; --text-2: rgba(60, 60, 67, 0.6);
       --c1: #1d9e75; --c2: #378add; --c3: #d85a30; --c4: #7f77dd; --c5: #ba7517; --c6: #888780;
       --on-color: #ffffff;
-      --size-1: 13px; --size-2: 15px; --size-3: 17px; --size-4: 22px; --size-5: 28px;
+      --size-1: 13px; --size-2: 15px; --size-3: 17px; --size-4: 20px; --size-5: 28px;
       --space: 8px; --radius: 12px;
     }
     @media (prefers-color-scheme: dark) {
@@ -159,54 +173,91 @@ struct DocumentPage {
       }
     }
     * { box-sizing: border-box; }
-    html, body { margin: 0; background: var(--bg); color: var(--text); }
-    body { font: var(--size-3)/1.5 -apple-system, system-ui, sans-serif; padding: 8px 24px 56px;
-           -webkit-text-size-adjust: 100%; overflow-wrap: anywhere; }
-    header { margin-bottom: 20px; }
+    html { background: var(--bg); }
+    body { margin: 0 auto; max-width: 712px; padding: 8px 16px 32px; background: var(--bg); color: var(--text);
+           font: var(--size-3)/1.5 -apple-system, system-ui, sans-serif; -webkit-text-size-adjust: 100%;
+           overflow-wrap: break-word; }
+    header { margin-bottom: 24px; }
     /* The header shows the title. A page that starts with its own title heading would show it twice. */
     main > h1:first-child { display: none; }
-    h1 { font-size: 28px; font-weight: 700; line-height: 1.15; letter-spacing: -0.02em; margin: 0 0 8px; }
-    main h1 { font-size: var(--size-4); margin: 36px 0 10px; }
-    h2 { font-size: 20px; font-weight: 650; line-height: 1.25; letter-spacing: -0.01em; margin: 36px 0 10px; }
+    h1 { font-size: var(--size-5); font-weight: 700; line-height: 1.15; letter-spacing: -0.02em; margin: 0 0 8px; }
+    main h1 { font-size: var(--size-4); font-weight: 600; margin: 32px 0 8px; }
+    h2 { font-size: var(--size-4); font-weight: 600; line-height: 1.25; letter-spacing: -0.01em; margin: 32px 0 8px; }
     h3 { font-size: var(--size-3); font-weight: 600; margin: 24px 0 8px; }
-    p, ul, ol, table, pre, figure, blockquote, aside { margin: 0 0 16px; }
-    ul, ol { padding-left: 22px; }
-    li { margin: 0 0 6px; }
-    li > ul, li > ol { margin: 6px 0 0; }
-    li:has(> input[type=checkbox]) { list-style: none; margin-left: -22px; }
-    input[type=checkbox] { margin: 0 8px 0 0; accent-color: var(--c1); }
-    hr { border: 0; border-top: 0.5px solid var(--line); margin: 28px 0; }
-    .lead { font-size: 20px; line-height: 1.4; letter-spacing: -0.01em; }
+    p, ul, ol, table, pre, figure, blockquote, aside, .metrics { margin: 0 0 16px; }
+    ul, ol { padding-left: 24px; }
+    li { margin: 0 0 4px; }
+    li > ul, li > ol { margin: 4px 0 0; }
+    li:has(> input[type=checkbox]) { list-style: none; margin-left: -24px; }
+    input[type=checkbox] { margin: 0 8px 0 0; accent-color: var(--c2); }
+    hr { border: 0; border-top: 0.5px solid var(--line); margin: 32px 0; }
+    .lead { font-size: var(--size-4); line-height: 1.4; letter-spacing: -0.01em; }
     .meta, .note, small, figcaption { color: var(--text-2); font-size: var(--size-2); }
     .meta { margin: 0; }
-    .meta.shared { margin-top: 2px; }
-    figcaption { margin-top: 6px; }
+    .meta.shared { margin-top: 4px; }
+    figcaption { margin-top: 8px; }
     .metric { font-size: var(--size-5); font-weight: 600; margin: 0 0 12px; }
-    .delta { font-size: var(--size-2); font-weight: 400; color: var(--c1); }
-    .card { background: var(--surface); border-radius: var(--radius); padding: 12px 14px; margin: 0 0 12px; }
+    .delta { font-size: var(--size-2); font-weight: 400; color: var(--text-2); }
+    .card { background: var(--surface); border-radius: var(--radius); padding: 12px 16px; margin: 0 0 12px; }
     a { color: var(--c2); text-decoration: none; }
-    strong { font-weight: 650; }
-    code { font: 0.88em ui-monospace, SFMono-Regular, monospace; background: var(--surface); padding: 1px 5px;
-           border-radius: 5px; }
-    pre { background: var(--surface); border-radius: var(--radius); padding: 12px 14px; overflow-x: auto; }
-    pre code { background: none; padding: 0; font-size: var(--size-1); line-height: 1.5; }
-    blockquote { border-left: 3px solid var(--line); padding: 2px 0 2px 14px; color: var(--text-2); }
+    strong { font-weight: 600; }
+    code { font: 0.88em ui-monospace, SFMono-Regular, monospace; }
+    pre { background: var(--surface); border-radius: var(--radius); padding: 12px 16px; overflow-x: auto; }
+    pre code { font-size: var(--size-1); line-height: 1.5; }
+    blockquote { border-left: 3px solid var(--line); padding: 0 0 0 12px; color: var(--text-2); }
     blockquote > :last-child, .callout > :last-child { margin-bottom: 0; }
-    .callout { border-radius: var(--radius); padding: 14px 16px; --tone: var(--c2);
-               background: color-mix(in srgb, var(--tone) 12%, var(--bg)); font-size: var(--size-2); }
+    /* A [!NOTE] callout also has the class "note" of a quiet line. Its text keeps the text color. */
+    .callout { background: var(--surface); border-radius: var(--radius); padding: 12px 16px; --tone: var(--c2);
+               color: var(--text); font-size: var(--size-2); }
     .callout p { margin: 0 0 8px; }
-    .callout .kicker { font-size: var(--size-1); font-weight: 650; text-transform: uppercase; letter-spacing: 0.04em;
+    .callout .kicker { font-size: var(--size-1); font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em;
                        color: var(--tone); margin: 0 0 4px; }
     .callout.tip { --tone: var(--c1); }
     .callout.important { --tone: var(--c4); }
     .callout.warning { --tone: var(--c5); }
     .callout.caution { --tone: var(--c3); }
-    table { width: 100%; border-collapse: collapse; font-size: var(--size-2); display: block; overflow-x: auto; }
-    th, td { text-align: left; padding: 9px 12px 9px 0; border-bottom: 1px solid var(--line); vertical-align: top; }
-    th { color: var(--text-2); font-weight: 500; font-size: var(--size-1); }
+    table, .metrics, .metric { font-variant-numeric: tabular-nums; }
+    table { width: 100%; border-collapse: collapse; font-size: var(--size-2); }
+    th, td { padding: 12px 16px 12px 0; border-bottom: 1px solid var(--line); vertical-align: top; }
+    th { color: var(--text-2); font-weight: 400; font-size: var(--size-1); }
+    th:last-child, td:last-child { padding-right: 0; }
+    th:not([align]) { text-align: left; }
+    /* page.js marks each column: short cells stay on one line, and a long column keeps 16 characters on a line. */
+    th.one-line, td.one-line { white-space: nowrap; }
+    th.long, td.long { min-width: 16ch; }
+    /* A table that does not fit is a list of records, as a row of the Chats list: the name, a short last cell at the
+       end of its first line, and the other cells on a second line. A number has the text color, and its label, each
+       dot and each text cell are quiet. */
+    table.records, table.records tbody, table.records tfoot, table.records tr { display: block; }
+    table.records thead, table.records tr.head { display: none; }
+    table.records tr { position: relative; padding: 12px 0; border-bottom: 1px solid var(--line); }
+    table.records :is(td, th) { display: inline; min-width: 0; padding: 0; border: 0; font-size: inherit;
+                                font-weight: inherit; white-space: normal; color: var(--text-2); }
+    table.records :is(td, th):not(.name):not([data-label]) { display: none; }
+    table.records :is(td, th)::before { content: attr(data-label); color: var(--text-2); }
+    table.records .number { color: var(--text); }
+    table.records .name { display: block; font-size: var(--size-3); font-weight: 600; color: var(--text);
+                          text-align: start; }
+    table.records tr:has(> .trail) > .name { padding-right: calc(var(--trail) + 16px); }
+    /* The line height of the name and an empty text at its size put the trailing cell on the baseline of the first
+       line of the name. */
+    table.records .trail { position: absolute; top: 12px; right: 0; width: var(--trail, auto); text-align: right;
+                           white-space: nowrap; line-height: calc(var(--size-3) * 1.5); }
+    table.records .trail::after { content: ""; font-size: var(--size-3); }
+    /* A table that page.js does not lay out (a cell of two columns, only a header, or a table that a script of the
+       page makes later) scrolls inside itself and never moves the page. */
+    table:not(.fitted) { display: block; overflow-x: auto; }
+    /* A tile takes the width that its number needs: a number never breaks. */
+    .metrics { display: flex; flex-wrap: wrap; gap: var(--space); }
+    .metrics > div { flex: 1 1 140px; background: var(--surface); border-radius: var(--radius); padding: 12px 16px; }
+    .metrics p { margin: 0; }
+    .metrics .label { font-size: var(--size-1); color: var(--text-2); }
+    .metrics .value { margin-top: 4px; font-size: var(--size-5); font-weight: 600; line-height: 1.2;
+                      white-space: nowrap; }
+    .metrics .unit { font-size: var(--size-2); font-weight: 400; color: var(--text-2); }
     img { max-width: 100%; height: auto; border-radius: var(--radius); display: block; }
     svg { display: block; max-width: 100%; height: auto; overflow: visible; }
-    svg text { font-family: -apple-system, system-ui, sans-serif; fill: var(--text-2); font-size: 11px; }
+    svg text { font-family: -apple-system, system-ui, sans-serif; fill: var(--text-2); font-size: var(--size-1); }
     svg text.on-color { fill: var(--on-color); font-weight: 600; }
     svg text.quiet { font-weight: 400; opacity: 0.9; }
     figure { margin: 0 0 16px; }
@@ -214,7 +265,7 @@ struct DocumentPage {
     pre.mermaid { background: none; padding: 0; text-align: center; overflow-x: auto; }
     pre.mermaid svg { margin: 0 auto; }
     pre.mermaid .node rect, pre.mermaid .cluster rect { rx: 8px; ry: 8px; }
-    pre.mermaid svg text, pre.mermaid svg span { fill: var(--text); color: var(--text); font-size: 14px; }
+    pre.mermaid svg text, pre.mermaid svg span { fill: var(--text); color: var(--text); font-size: var(--size-2); }
     """
 }
 

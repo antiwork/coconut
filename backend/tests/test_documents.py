@@ -40,6 +40,12 @@ def share_with_active_room(service, document: str) -> None:
 
 
 class PageRuleTests(unittest.TestCase):
+    def test_the_save_tool_names_the_metrics_and_the_record_form_of_a_table(self):
+        # page.js makes metrics only of a row of numbers, and names a record by the first cell of its row.
+        description = documents.SAVE_SCHEMA['description']
+        self.assertIn('A table with one row of numbers shows them large', description)
+        self.assertIn('with the first cell of each row as its name and a short last cell at its end', description)
+
     def test_a_page_with_tokens_and_the_given_libraries_passes(self):
         self.assertEqual(page_problems(TREEMAP), [])
         self.assertEqual(page_problems('<style>#bad { margin: 0 } #add, #fed .x:hover { padding: 0 }</style>'), [])

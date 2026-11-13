@@ -1,5 +1,6 @@
 import XCTest
 import Network
+import WebKit
 @testable import Coconut
 
 final class LibraryDocumentTests: XCTestCase {
@@ -415,6 +416,503 @@ final class LibraryDocumentTests: XCTestCase {
         XCTAssertEqual(html.components(separatedBy: "</script>").count, 2)
     }
 
+    /// A page with each table form of page.js: metrics, a table with one row of text, a table with one long cell, a
+    /// short table, a wide table with a short last column, a wide table with a long last column, and a wide table of
+    /// two columns.
+    private static let tablePage = """
+    Lead.
+
+    | Steps | Revenue | Refund rate | Change | Visits |
+    |---|---|---|---|---|
+    | 1,552 steps | $41,200 | 87% | -3 | 12k |
+
+    | Step | Status |
+    |---|---|
+    | Deploy | On track |
+
+    | Note |
+    |---|
+    | This one cell has more than twenty-four characters |
+
+    | Shop | Open | Drafts |
+    |---|---|---|
+    | shop | 4 | 3 |
+    | docs | 12 | 0 |
+
+    | Repository | Pull request | Title | Author | State |
+    |---|---|---|---|---|
+    | shop | #12 | Refuse price writes that do not match the product | Ada | draft |
+    | docs | #13 | Add a field for the access token of the analytics | Grace | open |
+
+    | Product | Shop | Orders | Note |
+    |---|---|---|---|
+    | Course on watercolor basics | shop | 412 | Waiting for the review of the team |
+
+    | File | State |
+    |---|---|
+    | weekly_sales_summary_of_the_example_team.csv | draft |
+    """
+
+    /// A table with one row of numbers is a row of metrics: a large number with its unit. A table with one row that
+    /// has a text cell or a long cell stays a table.
+    @MainActor
+    func testATableWithOneRowBecomesMetrics() async throws {
+        let (view, window) = try await loadPage(Self.tablePage, width: 390)
+        defer { close(window) }
+        let values = try await string(view, """
+            JSON.stringify([...document.querySelectorAll(".metrics > div")].map((tile) => [
+              tile.querySelector(".label").textContent, tile.querySelector(".value").firstChild.textContent,
+              tile.querySelector(".unit") ? tile.querySelector(".unit").textContent : ""]))
+            """)
+        XCTAssertEqual(values, #"[["Steps","1,552","steps"],["Revenue","$41,200",""],["Refund rate","87%",""],"#
+            + #"["Change","-3",""],["Visits","12k",""]]"#)
+        let tables = try await string(view, """
+            [...document.querySelectorAll("main table")].map((table) => table.rows[0].cells[0].textContent).join("|")
+            """)
+        XCTAssertEqual(tables, "Step|Note|Shop|Repository|Product|File")
+        // Two tiles in a row on a phone.
+        let columns = try await string(view, """
+            [...document.querySelectorAll(".metrics > div")].filter((tile) =>
+              tile.offsetTop === document.querySelector(".metrics > div").offsetTop).length
+            """)
+        XCTAssertEqual(columns, "2")
+    }
+
+    /// A table that does not fit a phone is a list of records: the first cell names the row, and a number has the
+    /// label of its column. In the column of a wide window the same table is a table again.
+    @MainActor
+    func testAWideTableIsAListOfRecordsOnAPhoneAndATableInAWideWindow() async throws {
+        let (view, window) = try await loadPage(Self.tablePage, width: 390)
+        defer { close(window) }
+        let forms = """
+            [...document.querySelectorAll("main table")]
+              .map((table) => table.classList.contains("records") ? "records" : "table").join(" ")
+            """
+        var shown = try await string(view, forms)
+        XCTAssertEqual(shown, "table table table records records records")
+        // Each record as "name | second line | trailing cell".
+        let records = try await string(view, """
+            [...document.querySelectorAll("table.records")[0].tBodies[0].rows].map((row) => {
+              const shown = [...row.cells].filter((cell) => getComputedStyle(cell).display !== "none");
+              const part = (test) => shown.filter(test).map((cell) => (cell.dataset.label || "") + cell.textContent);
+              return [part((cell) => cell.classList.contains("name")),
+                part((cell) => !cell.classList.contains("name") && !cell.classList.contains("trail")).join(""),
+                part((cell) => cell.classList.contains("trail"))].join(" | ");
+            }).join("\\n")
+            """)
+        // A no-break space keeps each dot with the cell before it, so no line of a record starts with a dot.
+        XCTAssertEqual(records, "shop | #12\u{00A0}· Refuse price writes that do not match the product\u{00A0}· Ada | draft\n"
+            + "docs | #13\u{00A0}· Add a field for the access token of the analytics\u{00A0}· Grace | open")
+        // No white space is left between two cells of a record, so the line cannot break before a dot.
+        let spaces = try await string(view, """
+            [...document.querySelectorAll("table.records tbody tr")]
+              .flatMap((row) => [...row.childNodes]).filter((node) => node.nodeType === Node.TEXT_NODE).length
+            """)
+        XCTAssertEqual(spaces, "0")
+        // The name is a line of its own, above the quiet line.
+        let name = try await string(view, "getComputedStyle(document.querySelector('table.records td.name')).display")
+        XCTAssertEqual(name, "block")
+        // A number in a record has the label of its column. A column of numbers aligns right, also its header.
+        let shops = "document.querySelectorAll('main table')[2]"
+        let labels = try await string(view, "[...\(shops).tBodies[0].rows[0].cells].map((cell) => cell.dataset.label)")
+        // A no-break space keeps a label with its number.
+        XCTAssertEqual(labels, ",Open\u{00A0},Drafts\u{00A0}")
+        let aligned = try await string(view, """
+            [...\(shops).rows].map((row) => [...row.cells]
+              .map((cell) => getComputedStyle(cell).textAlign.endsWith("right") ? "right" : "left").join(",")).join(" ")
+            """)
+        XCTAssertEqual(aligned, "left,right,right left,right,right left,right,right")
+        // The padding of a cell is on the space scale: 12 px above and below, and 16 px before the next column.
+        let padding = try await string(view, "getComputedStyle(\(shops).rows[1].cells[0]).padding")
+        XCTAssertEqual(padding, "12px 16px 12px 0px")
+        // The 680 px column of a wide window has room for the table.
+        view.frame.size.width = 1100
+        let wide = "table table table table table table"
+        shown = try await answer(of: forms, in: view, once: wide)
+        XCTAssertEqual(shown, wide)
+        view.frame.size.width = 390
+        let narrow = "table table table records records records"
+        shown = try await answer(of: forms, in: view, once: narrow)
+        XCTAssertEqual(shown, narrow)
+    }
+
+    /// A record has a short last cell at the end of its first line, with the same width in each record of a table. A
+    /// number has the text color and its label is quiet. A record of two columns has no second line.
+    @MainActor
+    func testARecordHasATrailingCellAndANumberInTheTextColor() async throws {
+        let (view, window) = try await loadPage(Self.tablePage, width: 390)
+        defer { close(window) }
+        let records = "document.querySelectorAll('table.records')"
+        // The last column of the first table is short, and the last column of the second one is not.
+        let trails = try await string(view, "[...\(records)].map((table) => table.querySelectorAll('td.trail').length)")
+        XCTAssertEqual(trails, "2,0,1")
+        let widths = try await string(view, """
+            [...\(records)[0].querySelectorAll("td.trail")].map((cell) => cell.getBoundingClientRect().width)
+              .concat(getComputedStyle(\(records)[0]).getPropertyValue("--trail"))
+            """)
+        let parts = try XCTUnwrap(widths).split(separator: ",").map(String.init)
+        XCTAssertEqual(parts.count, 3)
+        XCTAssertEqual(parts[0], parts[1], "Each record of a table must have the same trailing width.")
+        XCTAssertEqual(parts[2], "\(Int(Double(parts[0]) ?? 0))px")
+        // The trailing cell sits on the first line, and the name keeps 16 px to it.
+        let gap = try await string(view, """
+            (() => {
+              const row = \(records)[0].tBodies[0].rows[0];
+              const name = row.querySelector("td.name"), trail = row.querySelector("td.trail");
+              return [Math.round(trail.getBoundingClientRect().top - row.getBoundingClientRect().top),
+                parseFloat(getComputedStyle(name).paddingRight) - trail.getBoundingClientRect().width];
+            })()
+            """)
+        XCTAssertEqual(gap, "12,16")
+        // "Orders 412": the number in the text color, its label quiet.
+        let tones = try await string(view, """
+            (() => {
+              const cell = \(records)[1].querySelector("td.number");
+              return [cell.textContent, getComputedStyle(cell).color === getComputedStyle(document.querySelector(".lead")).color,
+                getComputedStyle(cell, "::before").color === getComputedStyle(document.querySelector(".meta")).color];
+            })()
+            """)
+        XCTAssertEqual(tones, "412,true,true")
+        // A record of two columns: the name and the trailing cell, and no second line.
+        let two = try await string(view, """
+            (() => {
+              const row = \(records)[2].tBodies[0].rows[0];
+              const shown = [...row.cells].filter((cell) => getComputedStyle(cell).display !== "none");
+              const name = row.querySelector("td.name").getBoundingClientRect().height;
+              return [shown.length, Math.round(row.getBoundingClientRect().height - name)];
+            })()
+            """)
+        XCTAssertEqual(two, "2,25")
+    }
+
+    /// The probes of the review tests: the scroll width of the page, the form of each table, and the text that a
+    /// record shows, with the label before each cell.
+    private static let probes = """
+        const scrolls = () => String(document.scrollingElement.scrollWidth - document.scrollingElement.clientWidth);
+        const forms = () => [...document.querySelectorAll("main table")]
+          .map((table) => table.classList.contains("records") ? "records" : "table").join(" ");
+        const shown = (row) => [...row.cells].filter((cell) => getComputedStyle(cell).display !== "none")
+          .map((cell) => (cell.dataset.label || "") + cell.textContent.trim()).join("");
+        """
+
+    /// An HTML table without a head section: a first row of only header cells is the head. A header cell of a body row
+    /// can be the name, a row of the foot is a record, and a table with a cell of two columns stays a table that
+    /// scrolls inside itself.
+    @MainActor
+    func testAnHTMLTableWithoutAHeadSectionGetsTheSameBlocks() async throws {
+        let html = """
+            <p>Lead.</p>
+            <table><tr><th>Shop</th><th>Orders</th><th>Title</th><th>Owner</th><th>Reviewer</th><th>State</th></tr>
+            <tr><th scope="row">shop</th><td>4</td><td>Refuse price writes that do not match the product</td>
+            <td>Ada</td><td>Grace</td><td>draft</td></tr>
+            <tfoot><tr><td>Total</td><td>4</td><td></td><td></td><td></td><td>open</td></tr></tfoot></table>
+            <table><tr><th>Orders</th><th>Revenue</th></tr><tr><td>412</td><td>$41,200</td></tr></table>
+            <table><thead><tr><th colspan="2">Item of the long list of the shop</th><th>Count</th></tr></thead>
+            <tbody><tr><td>Course</td><td>12</td>
+            <td>Refuse_price_writes_that_do_not_match_the_product_of_the_shop_of_the_team</td></tr></tbody></table>
+            """
+        let (view, window) = try await loadPage(html, width: 390, markdown: false)
+        defer { close(window) }
+        let result = try await probe(view, """
+            const table = document.querySelector("main table");
+            const name = table.rows[1].cells[0];
+            return [forms(), getComputedStyle(table.rows[0]).display, shown(table.rows[1]),
+              getComputedStyle(name).fontSize, shown(table.rows[2]), document.querySelectorAll(".metrics > div").length,
+              scrolls()].join(" | ");
+            """)
+        XCTAssertEqual(result, "records table | none | shopOrders\u{00A0}4\u{00A0}· Refuse price writes that do not "
+            + "match the product\u{00A0}· Ada\u{00A0}· Gracedraft | 17px | TotalOrders\u{00A0}4open | 2 | 0")
+    }
+
+    /// A cell with only a photo keeps its photo in a record. A row with a link is no row of metrics, so the link stays.
+    @MainActor
+    func testACellWithAPhotoStaysAndALinkIsNoMetric() async throws {
+        let photo = "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7"
+        let markdown = """
+            Lead.
+
+            | Photo | Name | Role | Team | Room | Note |
+            |---|---|---|---|---|---|
+            | ![Ada](\(photo)) | Ada | Engineer | Example Team | North | The first long note of the page for a list |
+
+            | Orders | Revenue |
+            |---|---|
+            | [12](https://example.com/orders) | $4 |
+            """
+        let (view, window) = try await loadPage(markdown, width: 390)
+        defer { close(window) }
+        let result = try await probe(view, """
+            return [forms(), getComputedStyle(document.querySelector("main td img").closest("td")).display,
+              document.querySelectorAll("main a").length, document.querySelectorAll(".metrics").length].join(" | ");
+            """)
+        XCTAssertEqual(result, "records table | block | 1 | 0")
+    }
+
+    /// The name of a record starts at the left edge, also in a column of numbers or a centered column.
+    @MainActor
+    func testTheNameOfARecordIsLeftAligned() async throws {
+        let markdown = """
+            Lead.
+
+            | Year | Revenue | Costs | Profit | Note |
+            |---|---|---|---|---|
+            | 2024 | $41,200 | $30,100 | $11,100 | The first full year of the shop of the team |
+
+            | Repository | Pull request | Title | Author | State |
+            |:---:|:---:|:---:|:---:|:---:|
+            | shop | #12 | Refuse price writes that do not match the product | Ada | draft |
+            """
+        let (view, window) = try await loadPage(markdown, width: 390)
+        defer { close(window) }
+        let result = try await probe(view, """
+            return forms() + " | " + [...document.querySelectorAll("main td.name")].map((name) => {
+              const range = document.createRange();
+              range.selectNodeContents(name);
+              return Math.round(range.getClientRects()[0].left - name.closest("tr").getBoundingClientRect().left);
+            }).join(",");
+            """)
+        XCTAssertEqual(result, "records records | 0,0")
+    }
+
+    /// A number of a metric never breaks: a tile takes the width that it needs. Normal numbers keep two tiles in a row
+    /// on a phone and four in the column of a wide window.
+    @MainActor
+    func testANumberOfAMetricNeverBreaks() async throws {
+        let markdown = """
+            Lead.
+
+            | Revenue | Refund rate | Refunds | Delivery |
+            |---|---|---|---|
+            | $1,234,567 | 2.4% | 12 | 3.5 days |
+            """
+        let script = """
+            const tiles = [...document.querySelectorAll(".metrics > div")];
+            const lines = tiles.map((tile) => {
+              const value = tile.querySelector(".value");
+              return Math.round(value.offsetHeight / parseFloat(getComputedStyle(value).lineHeight));
+            });
+            const rows = new Set(tiles.map((tile) => Math.round(tile.getBoundingClientRect().top))).size;
+            return lines.join(",") + " | " + rows + " | " + scrolls();
+            """
+        let (phone, phoneWindow) = try await loadPage(markdown, width: 390)
+        defer { close(phoneWindow) }
+        let onPhone = try await probe(phone, script)
+        XCTAssertEqual(onPhone, "1,1,1,1 | 2 | 0")
+        let (narrow, narrowWindow) = try await loadPage(markdown, width: 320)
+        defer { close(narrowWindow) }
+        let onNarrow = try await probe(narrow, script)
+        XCTAssertEqual(onNarrow?.hasPrefix("1,1,1,1 | "), true, onNarrow ?? "")
+        XCTAssertEqual(onNarrow?.hasSuffix(" | 0"), true, onNarrow ?? "")
+        let (wide, wideWindow) = try await loadPage(markdown, width: 1100)
+        defer { close(wideWindow) }
+        let onWide = try await probe(wide, script)
+        XCTAssertEqual(onWide, "1,1,1,1 | 1 | 0")
+    }
+
+    /// A unit has no digit and at most 16 characters, so "1 552" is no number. A column is a column of numbers only
+    /// when each of its cells with text is a number: a column of sentences that start with a digit, or a mixed column,
+    /// does not align right and has no label in a record.
+    @MainActor
+    func testANumberHasAShortUnitAndAColumnOfNumbersHasOnlyNumbers() async throws {
+        let markdown = """
+            Lead.
+
+            | Steps | Rate |
+            |---|---|
+            | 1 552 | 2 |
+
+            | Step | Note |
+            |---|---|
+            | one | 3 pull requests wait for a review today |
+
+            | Repository | Count | Title | Author | State |
+            |---|---|---|---|---|
+            | shop | 4 | Refuse price writes that do not match the product | Ada | draft |
+            | docs | n/a | Add a field for the access token of the analytics | Grace | open |
+            """
+        let (view, window) = try await loadPage(markdown, width: 390)
+        defer { close(window) }
+        let result = try await probe(view, """
+            const tables = document.querySelectorAll("main table");
+            const align = (cell) => getComputedStyle(cell).textAlign.endsWith("right") ? "right" : "left";
+            return [document.querySelectorAll(".metrics").length, forms(), align(tables[1].rows[1].cells[1]),
+              shown(tables[2].tBodies[0].rows[0])].join(" | ");
+            """)
+        XCTAssertEqual(result, "0 | table table records | left | shop4\u{00A0}· Refuse price writes that do not match "
+            + "the product\u{00A0}· Adadraft")
+    }
+
+    /// No table makes the page scroll sideways: a table in a callout and in a nested list fits its own box, a table in
+    /// a hidden panel becomes a list when the panel shows, and a table that a script makes later or a table with only
+    /// a header scrolls inside itself.
+    @MainActor
+    func testNoTableMakesThePageScrollSideways() async throws {
+        let wide = "<tr><td>shop</td><td>4</td><td>Refuse price writes that do not match the product</td><td>Ada</td>"
+            + "<td>draft</td><td>Grace</td><td>price-writes</td></tr>"
+        let head = "<thead><tr><th>Repository</th><th>Open</th><th>Title</th><th>Author</th><th>State</th>"
+            + "<th>Reviewer</th><th>Branch</th></tr></thead>"
+        let html = """
+            <p>Lead.</p>
+            <aside class="callout note"><p class="kicker">Note</p><table>\(head)<tbody>\(wide)</tbody></table></aside>
+            <ul><li>One<ul><li>Two<table>\(head)<tbody>\(wide)</tbody></table></li></ul></li></ul>
+            <div id="panel" hidden><table>\(head)<tbody>\(wide)</tbody></table></div>
+            <table>\(head)</table>
+            """
+        let (view, window) = try await loadPage(html, width: 390, markdown: false)
+        defer { close(window) }
+        let before = try await probe(view, "return forms() + ' | ' + scrolls();")
+        XCTAssertEqual(before, "records records table table | 0")
+        _ = try await probe(view, """
+            document.getElementById("panel").hidden = false;
+            const later = document.createElement("table");
+            const row = later.insertRow();
+            for (const word of ["Refuse", "price", "writes", "that", "do", "not", "match", "the", "product"]) {
+              row.insertCell().textContent = word + "_of_the_shop_of_the_team";
+            }
+            document.querySelector("main").append(later);
+            return "";
+            """)
+        let after = try await answer(of: (Self.probes + "return forms() + ' | ' + scrolls();").wrappedInFunction,
+                                     in: view, once: "records records records table table | 0")
+        XCTAssertEqual(after, "records records records table table | 0")
+    }
+
+    /// A trailing cell has no minimum width: a long last header does not widen it.
+    @MainActor
+    func testATrailingCellHasNoMinimumWidth() async throws {
+        let markdown = """
+            Lead.
+
+            | Repository | Pull request | Title | Author | The state of the review of the team |
+            |---|---|---|---|---|
+            | shop | #12 | Refuse price writes that do not match the product | Ada | open |
+            """
+        let (view, window) = try await loadPage(markdown, width: 390)
+        defer { close(window) }
+        let width = try await string(view, """
+            Math.round(document.querySelector("main td.trail").getBoundingClientRect().width)
+            """)
+        XCTAssertLessThan(Int(width ?? "") ?? 999, 60, width ?? "")
+    }
+
+    /// The limits of metrics: 1 to 6 columns and 1 to 24 characters in each cell.
+    @MainActor
+    func testTheLimitsOfMetrics() async throws {
+        let markdown = """
+            Lead.
+
+            | A | B | C | D | E | F |
+            |---|---|---|---|---|---|
+            | 1 | 2 | 3 | 4 | 5 | 6 |
+
+            | A | B | C | D | E | F | G |
+            |---|---|---|---|---|---|---|
+            | 1 | 2 | 3 | 4 | 5 | 6 | 7 |
+
+            | Long |
+            |---|
+            | 123456789012345678901234 |
+
+            | Longer |
+            |---|
+            | 1234567890123456789012345 |
+            """
+        let (view, window) = try await loadPage(markdown, width: 390)
+        defer { close(window) }
+        let result = try await probe(view, """
+            return [...document.querySelectorAll(".metrics")].map((metrics) => metrics.children.length).join(",")
+              + " | " + [...document.querySelectorAll("main table")].map((table) => table.rows[0].cells.length)
+                .join(",");
+            """)
+        XCTAssertEqual(result, "6,1 | 7,1")
+    }
+
+    /// The answer of a script of statements after the probes.
+    @MainActor
+    private func probe(_ view: WKWebView, _ body: String) async throws -> String? {
+        try await string(view, (Self.probes + body).wrappedInFunction)
+    }
+
+    /// The answer of a script as text.
+    @MainActor
+    private func string(_ view: WKWebView, _ script: String) async throws -> String? {
+        try await view.evaluateJavaScript("String(" + script + ")") as? String
+    }
+
+    /// The answer of a script, after it gives the expected answer or after 5 seconds.
+    @MainActor
+    private func answer(of script: String, in view: WKWebView, once expected: String) async throws -> String? {
+        var answer: String?
+        for _ in 0..<50 where answer != expected {
+            try await Task.sleep(for: .milliseconds(100))
+            answer = try? await string(view, script)
+        }
+        return answer
+    }
+
+    /// A word of a page breaks only when it alone is wider than its line, never into letters. A word of more than 30 characters can break.
+    @MainActor
+    func testAWordOfAPageDoesNotBreakIntoLetters() async throws {
+        let (view, window) = try await loadPage(Self.tablePage, width: 390)
+        defer { close(window) }
+        let broken = try await view.evaluateJavaScript("""
+            (() => {
+              const broken = [];
+              const walker = document.createTreeWalker(document.querySelector("main"), NodeFilter.SHOW_TEXT);
+              while (walker.nextNode()) {
+                const node = walker.currentNode;
+                for (const match of node.textContent.matchAll(/\\S+/g)) {
+                  const range = document.createRange();
+                  range.setStart(node, match.index);
+                  range.setEnd(node, match.index + match[0].length);
+                  const lines = new Set([...range.getClientRects()].map((rect) => Math.round(rect.top)));
+                  if (lines.size > 1 && match[0].length <= 30) broken.push(match[0]);
+                }
+              }
+              return broken.join(" ");
+            })()
+            """) as? String
+        XCTAssertEqual(broken, "")
+    }
+
+    /// Loads a Markdown or HTML page with the scripts of the app in a web view of this width, in a window, as the app
+    /// does.
+    @MainActor
+    private func loadPage(_ content: String, width: CGFloat, markdown: Bool = true) async throws
+        -> (WKWebView, AnyObject) {
+        let configuration = WKWebViewConfiguration()
+        DocumentPage.scripts(diagrams: false).forEach(configuration.userContentController.addUserScript)
+        let view = WKWebView(frame: CGRect(x: 0, y: 0, width: width, height: 800), configuration: configuration)
+        #if os(iOS)
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
+        // The web view is in a visible window, as in the app, so the page sees a change of its width.
+        let window = UIWindow(windowScene: scene)
+        window.windowLevel = .alert + 1
+        window.addSubview(view)
+        window.makeKeyAndVisible()
+        #else
+        let window = NSWindow(contentRect: CGRect(x: -20000, y: 0, width: 1200, height: 800), styleMask: [.borderless],
+                              backing: .buffered, defer: false)
+        window.contentView?.addSubview(view)
+        window.orderFrontRegardless()
+        #endif
+        view.loadHTMLString(DocumentPage.html(title: "T", meta: "M", content: content, markdown: markdown),
+                            baseURL: nil)
+        let ready = try await answer(of: "document.readyState === 'complete' && !!document.querySelector('main p')",
+                                     in: view, once: "true")
+        XCTAssertEqual(ready, "true", "The page did not load.")
+        return (view, window)
+    }
+
+    @MainActor
+    private func close(_ window: AnyObject) {
+        #if os(iOS)
+        (window as? UIWindow)?.isHidden = true
+        #else
+        (window as? NSWindow)?.orderOut(nil)
+        #endif
+    }
+
     /// The Library asks for its list when it opens and on a pull to refresh. The person can pin during that request.
     @MainActor
     func testAnOlderListDoesNotUndoAPinOrADeleteThatTheMacConfirmed() async throws {
@@ -621,4 +1119,9 @@ private final class LibraryServer: @unchecked Sendable {
     }
 
     func stop() { listener.cancel() }
+}
+
+private extension String {
+    /// A script of statements as one expression for `evaluateJavaScript`.
+    var wrappedInFunction: String { "(() => {\n" + self + "\n})()" }
 }
