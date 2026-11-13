@@ -147,7 +147,7 @@ BLOCKS = ('Write a page like a short article: its first paragraph is the lead, o
           '[!WARNING] or [!CAUTION], with an optional title on the same line; a ```mermaid block draws a diagram '
           '(flowchart, sequence, timeline, gantt, pie); a ```chart block draws a graph from JSON {"type": "bar", '
           '"line", "area" or "dot", "data": [...], "x": "field", "y": "field", "series": "field", "title": "..."}; '
-          'tables, task lists and photos work too. A table with one row shows as large numbers: use it for key '
+          'tables, task lists and photos work too. A table with one row of numbers shows them large: use it for key '
           'numbers, with labels in the header. A wide table shows on a phone as a list with the first cell of each '
           'row as its name, so put the name column first. Show a process as a diagram, numbers as a chart, a '
           'decision as a callout and a comparison as a table. HTML pages have the same blocks: <pre class="mermaid">, '
