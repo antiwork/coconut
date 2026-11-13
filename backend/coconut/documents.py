@@ -775,8 +775,9 @@ class Documents:
         """PATCH /v1/documents/<id> from the phone: pin the document in the Library, or remove its pin.
 
         A pin is how this Mac shows the Library to its person. It is not content of the page: it changes no version
-        and no update time, a bot does not read it, and a save of the page keeps it. A pin adds no event: the phone
-        reads the pin with the Library list.
+        and no update time, a bot does not read it, and a save of the page keeps it. A change of a pin adds one
+        document event, so that each other app of the person loads the Library list again: the Mac sidebar shows the
+        pinned pages.
         """
         from .service_base import ServiceError
         from .team_pages import team_ids, team_page
@@ -789,11 +790,13 @@ class Documents:
                 # The pin of a team page is of this Mac only. The other Macs of the team do not see it. A page that
                 # the Library does not show raises here, and the transaction takes the pin back.
                 self.team_store.pin(*ids, pinned)
+                self._event('document.updated', {'id': document_id})
                 return team_page(self.db, document_id, self._now())
             document = self._shown_document(document_id)
             if (document.get('pinned') is True) != pinned:
                 document['pinned'] = pinned
                 self._put('documents', document)
+                self._event('document.updated', {'id': document_id}, document['bot_id'])
             return self._team_shared_document(document)
 
     def _write_document(self, task: dict, bot: dict, key: str, title: str, document_format: str, content: str,

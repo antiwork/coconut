@@ -73,8 +73,15 @@ struct MacMainWindow: View {
             selection = .team(chat)
             model.shownChat = nil
         }
-        // A document card in a chat selects its row in the section "Pages", as a chat selects its bot.
-        .environment(\.openDocument) { id in selection = .document(id) }
+        // A document card in a chat selects the pinned row of its page, else it opens the page inside the Library.
+        .environment(\.openDocument) { id in show(MacPagePlace.card(id, documents: store.documents)) }
+        // The page of a pinned row stays open when its pin goes: the Library shows it. A deleted page leaves the
+        // Library list.
+        .onChange(of: store.documents) { _, documents in
+            guard case .document(let id) = selection,
+                  let place = MacPagePlace.afterChange(open: id, documents: documents) else { return }
+            show(place)
+        }
         .frame(minWidth: 920, minHeight: 480)
         .background(BoardStyle.paper)
         .announcesErrors(store.error)
@@ -89,10 +96,29 @@ struct MacMainWindow: View {
             TeamJoinView(link: $0.link)
         }
         // Each choice in the sidebar starts at its own root, so another bot never shows the last bot's pages.
-        .onChange(of: selection) { _, selected in
+        .onChange(of: selection) { old, selected in
+            // The menu of an open pinned page deletes it and then dismisses it, which clears the selection. The
+            // Library list shows, not the Inbox.
+            if selected == nil, case .document(let id)? = old,
+               MacPagePlace.afterChange(open: id, documents: store.documents) == .libraryList {
+                show(.libraryList)
+                return
+            }
             chatPath = NavigationPath()
             // The Library row of the sidebar opens the list. A document card sets the page first and then the row.
             if selected != .library { libraryPath = NavigationPath() }
+        }
+    }
+
+    private func show(_ place: MacPagePlace) {
+        switch place {
+        case .pinnedRow(let id): selection = .document(id)
+        case .inLibrary(let id):
+            libraryPath = NavigationPath([DocumentRoute(id: id)])
+            selection = .library
+        case .libraryList:
+            libraryPath = NavigationPath()
+            selection = .library
         }
     }
 
@@ -108,13 +134,9 @@ struct MacMainWindow: View {
             }
             .modifier(MacNoticeArea())
         case .document(let documentId):
-            NavigationStack(path: $chatPath) {
-                DocumentView(documentId: documentId)
-                    .id(documentId)
-                    .navigationDestination(for: DocumentRoute.self) { DocumentView(documentId: $0.id) }
-            }
-            .environment(\.pushRoute) { route in chatPath.append(route) }
-            .modifier(MacNoticeArea())
+            // A page has no links to other pages, so its stack has only the page.
+            NavigationStack { DocumentView(documentId: documentId).id(documentId) }
+                .modifier(MacNoticeArea())
         case .bot(let botId):
             // The details are a column of fixed width next to the chat, not an inspector. Next to a chat, the
             // inspector's split view did not settle on a layout and stopped the app, below about 1,300 points of
@@ -182,8 +204,8 @@ struct MacNoticeArea: ViewModifier {
     }
 }
 
-/// The sidebar: the Inbox, the pinned bots, and the chats: every other bot and each team, with the last message. Then
-/// the pages of the Library, as the people and the bots: each page is a row that opens it.
+/// The sidebar: the Inbox, the pinned bots and the pinned pages, and the chats: every other bot and each team, with the
+/// last message.
 struct MacSidebar: View {
     @Environment(AppStore.self) private var store
     @Binding var selection: MacSelection?
@@ -196,7 +218,8 @@ struct MacSidebar: View {
         // date, about 3 ms for each body with 1,500 messages.
         let sections = ChatSections.make(bots: store.bots, messages: store.messages, rooms: store.team?.rooms ?? [],
                                          local: store.newestLocalMessages)
-        let pages = SidebarPages.make(documents: store.documents ?? [], bots: store.bots, teamBots: store.teamBots)
+        let pins = SidebarPins(pinnedBots: sections.pinned, documents: store.documents ?? [], bots: store.bots,
+                               teamBots: store.teamBots)
         return List(selection: $selection) {
             MacSidebarLabel(title: "Inbox", symbol: "tray")
                 .badge(store.inboxBadgeCount)
@@ -207,9 +230,10 @@ struct MacSidebar: View {
                 .tag(MacSelection.library)
                 .accessibilityIdentifier("sidebar-library")
             // A section without rows does not show.
-            if !sections.pinned.isEmpty {
+            if !pins.isEmpty {
                 Section("Pinned") {
-                    ForEach(sections.pinned) { bot in row(bot) }
+                    ForEach(pins.bots) { bot in row(bot) }
+                    ForEach(pins.pages) { page in pageRow(page) }
                 }
             }
             if !sections.people.isEmpty {
@@ -232,11 +256,6 @@ struct MacSidebar: View {
                     ForEach(sections.bots) { bot in row(bot) }
                 }
             }
-            if !pages.isEmpty {
-                Section("Pages") {
-                    ForEach(pages) { page in pageRow(page) }
-                }
-            }
         }
         .listStyle(.sidebar)
         .modifier(DeleteBotDialog(bot: $deleting))
@@ -248,26 +267,21 @@ struct MacSidebar: View {
         .onChange(of: store.team) { _, team in
             if case .team(let chat) = selection, let team, !team.has(chat) { selection = .inbox }
         }
-        // A deleted page leaves the list. Its page closes, and the Library shows instead. Only a loaded list decides.
-        .onChange(of: store.documents?.map(\.id)) { _, ids in
-            if case .document(let id) = selection, let ids, !ids.contains(id) { selection = .library }
+        // The pinned pages need the list without a visit to the Library: one quiet load when the Mac connects and no
+        // list is there. After that, the updates load the list again on each change of a page and on a reset.
+        .task(id: store.connection == .connected) {
+            if store.documents == nil { await store.loadDocuments(quiet: true) }
         }
-        // The section "Pages" needs the list without a visit to the Library. A load without a connection does
-        // nothing, so the list loads again when the Mac connects.
-        .task(id: store.connection) { await store.loadDocuments() }
         .safeAreaInset(edge: .bottom) { MacConnectionFooter() }
     }
 
+    /// A pinned page. Its menu only unpins: the Library and the page itself have the other actions.
     private func pageRow(_ page: BotDocument) -> some View {
-        MacPageRow(page: page)
+        MacPinnedPageRow(page: page)
             .padding(.vertical, BoardStyle.Space.xs)
             .tag(MacSelection.document(page.id))
             .contextMenu {
-                PinDocumentButton(document: page)
-                if page.canDelete {
-                    Divider()
-                    Button("Delete Page…", role: .destructive) { Task { await store.deleteDocument(page) } }
-                }
+                Button("Unpin") { Task { await store.pinDocument(page, pinned: false) } }
             }
             .accessibilityIdentifier("sidebar-page-\(page.key)")
     }
@@ -285,32 +299,30 @@ struct MacSidebar: View {
     }
 }
 
-/// A row of the section "Pages": the kind of the page in the place of a face, its title and the age of its last
-/// update, and its summary or the name of its bot. The layout of the rows of the people and the bots.
-private struct MacPageRow: View {
+/// A pinned page in the sidebar: the symbol of its kind in the place of a face, its title, and the name of its bot.
+/// It has no time and no unread mark, so it does not read as a chat. The face column has the width of a bot face, so
+/// the edges and the height match the bot rows.
+private struct MacPinnedPageRow: View {
     @Environment(AppStore.self) private var store
     let page: BotDocument
 
-    private var owner: String? {
-        store.bots.first { $0.id == page.botId }?.name ?? store.teamBots.first { $0.id == page.botId }?.name
+    private var owner: String {
+        store.bots.first { $0.id == page.botId }?.name ?? store.teamBots.first { $0.id == page.botId }?.name ?? ""
     }
 
     var body: some View {
-        let subtitle = page.summary.flatMap { $0.isEmpty ? nil : $0 } ?? owner ?? page.updatedText
-        ChatRowLayout(name: page.title, unread: 0, date: page.updatedAt.apiDate) {
-            Image(systemName: page.isPage ? "chart.bar.xaxis" : "doc.text")
+        ChatRowLayout(name: page.title, unread: 0, date: nil) {
+            Image(systemName: page.symbol)
                 .font(.body).foregroundStyle(.secondary)
-                .frame(width: 32, height: 32)
+                .frame(width: 32 * BotAvatar.scale, height: 32 * BotAvatar.scale)
                 .background(BoardStyle.surface, in: RoundedRectangle(cornerRadius: BoardStyle.Radius.small, style: .continuous))
                 .accessibilityHidden(true)
         } subtitle: {
-            HStack(spacing: BoardStyle.Space.xs) {
-                if page.isPinned {
-                    Image(systemName: "pin.fill").font(.caption2).foregroundStyle(.secondary).accessibilityLabel("Pinned")
-                }
-                Text(subtitle).font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
-            }
+            Text(owner).font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
         }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("\(page.title), page, \(owner)")
+        .accessibilityHint("Opens the page")
     }
 }
 
