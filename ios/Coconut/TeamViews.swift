@@ -842,23 +842,25 @@ private struct TeamBanners: ViewModifier {
         Group {
             if above {
                 VStack(spacing: 0) {
-                    banners
+                    banners(area: nil)
                     content
                 }
             } else {
-                content.safeAreaInset(edge: .top, spacing: 0) { banners }
+                content.topBanners { banners(area: $0) }
             }
         }
         .fullScreen(isPresented: $pairing) { OnboardingView() }
     }
 
-    @ViewBuilder private var banners: some View {
+    /// The banners. The area is the height of the page, or nil above a chat, where no error shows.
+    @ViewBuilder private func banners(area: CGFloat?) -> some View {
         let notice = store.isDemo ? nil : store.connection.notice
         let error = above ? nil : store.error
         if notice != nil || error != nil {
             VStack(spacing: 8) {
                 if let notice { ConnectionBanner(notice: notice) { pairing = true } }
-                if let error { ErrorBanner(message: error) { store.error = nil } }
+                // The page less the padding above and under the column.
+                if let error { ErrorBanner(message: error, area: area.map { $0 - 16 }) { store.error = nil } }
             }
             .padding(.horizontal, 16).padding(.vertical, 8)
         }

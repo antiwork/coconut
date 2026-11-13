@@ -157,8 +157,7 @@ struct CoconutHome: View {
                 .navigationTitle("")
                 .navigationBarTitleDisplayMode(.inline)
                 .toolbar { rootToolbar(inbox: tab != .bots) }
-                .safeAreaInset(edge: .top, spacing: 0) {
-                    // The banners take their own space, so the page starts below them and they cover no row.
+                .topBanners { area in
                     let notice = store.isDemo ? nil : store.connection.notice
                     if notice != nil || store.error != nil {
                         VStack(spacing: 8) {
@@ -169,7 +168,8 @@ struct CoconutHome: View {
                                 }
                             }
                             if let error = store.error {
-                                ErrorBanner(message: error) { store.error = nil }
+                                // The page less the padding under the column.
+                                ErrorBanner(message: error, area: area.map { $0 - 8 }) { store.error = nil }
                             }
                         }
                         .padding(.horizontal, 16).padding(.bottom, 8)
