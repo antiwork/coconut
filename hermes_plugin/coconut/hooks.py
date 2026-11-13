@@ -24,10 +24,13 @@ Cards. A card of coconut_ask ends its turn, and a follow-up on a pending card ca
 (pre_tool_call) blocks those tool calls. The card rules of the worker go into the system prompt of each Coconut session
 with the hint of the platform (coconut.platform_hint).
 
-End of a turn. A card, a recorded wait and a recorded card check end their turn. The model then often writes no text,
-and Hermes treats an empty reply after a tool call as a failure: it asks again, waits, tries again and then tries the
-fallback model. `end_turn_text` (llm_execution middleware) gives such an empty reply a fixed closing text, so Hermes
-ends the turn at once. The chat does not show that text (adapter.ends_quietly).
+End of a turn. A model can choose to write no text at the end of a turn: after a card, a recorded wait or a recorded
+card check, after its last tool, or in a run that Hermes started by itself. Hermes treats an empty reply after a tool
+call as a failure: it asks again, waits, tries again and then tries the fallback model. `end_turn_text` (llm_execution
+middleware) gives such an empty reply a fixed closing text, so Hermes ends the turn. After a card, a wait, a check and
+in a run of Hermes, it does so at once. In another turn, it lets Hermes remind the model once after a tool result, and
+closes the next empty reply. The chat does not show that text (adapter.ends_quietly), and the adapter reports the end of
+the turn as quiet, so the chat shows no message for it.
 
 Compression. `note_prompt_size` (post_api_request) marks a Coconut chat whose model call reached the compression
 threshold of Hermes, and the adapter compresses that chat after the turn. `follow_new_session` (on_session_reset) keeps
@@ -212,7 +215,7 @@ def add_turn_context(request=None, **_):
         if len(kept) != len(tools):
             changes['tools'], reasons = kept, ['tools of the turn']
     context = CONTEXTS.get(turn)
-    key = next((name for name in ('messages', 'input') if isinstance(request.get(name), list)), None)
+    key = items_key(request)
     items = list(request[key]) if context and key else []
     index = next((i for i in range(len(items) - 1, -1, -1) if turn_message(items[i])), None)
     if index is not None:
@@ -233,6 +236,11 @@ def add_turn_context(request=None, **_):
     if not changes:
         return None
     return {'request': dict(request, **changes), 'source': 'coconut', 'reason': ' and '.join(reasons)}
+
+
+def items_key(request):
+    """The key of the item list in a model request: `messages`, or `input` in the Responses format. None without one."""
+    return next((name for name in ('messages', 'input') if isinstance(request.get(name), list)), None)
 
 
 def turn_message(item):
@@ -257,19 +265,30 @@ def _tool_name(tool):
 
 
 def end_turn_text(request=None, next_call=None, api_mode='', **_):
-    """llm_execution middleware: end a turn that a card, a recorded wait or a recorded card check ended (PAUSED,
-    WAITED), also when the model writes no text after it.
+    """llm_execution middleware: end a Coconut turn with the closing text when the model chose to write no text.
 
     Hermes treats a reply without text and without tool calls after a tool call as a failure. It asks the model again,
     tries again after a wait three times, then tries its fallback model, and at last fails the turn
-    (agent/turn_empty_response.py, recover_empty_response). After such a tool, a reply without text is the normal end of
-    the turn. So the middleware gives that reply the text adapter.END_TEXT, and Hermes ends the turn with it. The chat
-    does not show END_TEXT (adapter.ends_quietly). A reply with text or with a tool call stays as it is. Every other
-    model call goes through unchanged."""
+    (agent/turn_empty_response.py, recover_empty_response). The fallback model then writes a reply that the model chose
+    not to write. So the middleware gives such an empty reply the text adapter.END_TEXT, and Hermes ends the turn with
+    it:
+
+    - In a turn that a card, a recorded wait or a recorded card check ended (PAUSED, WAITED), at once.
+    - In a run that Hermes started by itself, for example for a finished background process, at once. No person waits
+      for its reply.
+    - In another turn, when the model wrote no text after a tool result once (NUDGED). That first empty reply stays as
+      it is, so Hermes reminds the model. The next empty reply of the turn gets the text.
+
+    An empty reply without a tool result before it, in a turn without the mark, stays as it is: a typed question keeps
+    the retries and the fallback model of Hermes. A reply with text or with a tool call stays as it is. The chat does
+    not show END_TEXT (adapter.ends_quietly)."""
     response = next_call(request)
-    from .adapter import CLOSED, PAUSED, WAITED
+    from .adapter import CLOSED, HERMES_RUNS, NUDGED, PAUSED, WAITED
     _holder, turn = _turn()
-    if turn is None or (turn not in PAUSED and turn not in WAITED):
+    if turn is None:
+        return response
+    at_once = turn in PAUSED or turn in WAITED or turn in HERMES_RUNS
+    if not at_once and turn not in NUDGED and not after_tool_result(request):
         return response
     try:
         closed = with_end_text(response, api_mode)
@@ -278,10 +297,26 @@ def end_turn_text(request=None, next_call=None, api_mode='', **_):
         return response
     if closed is None:
         return response
+    if not at_once and turn not in NUDGED:
+        NUDGED.add(turn)
+        LOG.info('Coconut: the model wrote no text after a tool result in turn %s. Hermes reminds it.', turn)
+        return response
     # The chat leaves out only this closing text, not the same words from the model (adapter.ends_quietly).
     CLOSED.add(turn)
-    LOG.info('Coconut: the model wrote no text after the end of turn %s. The turn ends with its closing text.', turn)
+    LOG.info('Coconut: the model wrote no text in turn %s. The turn ends with its closing text.', turn)
     return closed
+
+
+def after_tool_result(request):
+    """Whether the last item of a model request is a tool result: a `tool` message of the chat format, a
+    function_call_output item of the Responses format, or a user message of tool_result blocks of the Anthropic format
+    (turn_message)."""
+    key = items_key(request) if isinstance(request, dict) else None
+    item = request[key][-1] if key and request[key] else None
+    if not isinstance(item, dict):
+        return False
+    return (item.get('role') == 'tool' or item.get('type') == 'function_call_output'
+            or (item.get('role') == 'user' and not turn_message(item)))
 
 
 # Think blocks that some models write in the text. Hermes does not count them as a reply.

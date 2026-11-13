@@ -221,6 +221,20 @@ class TurnEventTests(unittest.TestCase):
         self.assertEqual(emitted[-1], ('completed', {'summary': 'Complete.', 'silent_response': True,
                                                      'reaction_silent': True}))
 
+    def test_a_quiet_end_of_the_plugin_completes_the_turn_without_a_message(self):
+        # The plugin ended the turn with its closing text, which the chat does not show (hooks.end_turn_text).
+        done = {'kind': 'done', 'outcome': 'success', 'quiet': True}
+        emitted, _ = self.translate({'kind': 'typing'}, done, commentary=True)
+        self.assertEqual(emitted, [('phase', {'phase': 'thinking'}),
+                                   ('completed', {'summary': 'Complete.', 'silent_response': True})])
+        # Text that the turn sent before, a reply or a commentary, is its result, as without the closing text.
+        for send in ({'kind': 'send', 'message_id': 'm:1', 'text': 'Shipped.'},
+                     {'kind': 'send', 'message_id': 'c:1', 'text': 'Let me look.', 'interim': True}):
+            emitted, _ = self.translate(send, done, commentary=True)
+            self.assertEqual(emitted[-1], ('completed', {'summary': 'Complete.'}))
+        emitted, _ = self.translate(dict(done, outcome='failure'), commentary=True)
+        self.assertEqual(emitted[-1][0], 'failed')
+
     def test_segments_become_interim_messages_and_the_last_one_is_the_reply(self):
         emitted, done = self.translate(
             {'kind': 'typing'},

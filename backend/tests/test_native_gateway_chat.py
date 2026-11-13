@@ -41,6 +41,8 @@ ASKED = ''
 # The nudge of Hermes after an empty reply that follows a tool call (agent/conversation_loop.py).
 EMPTY_NUDGE = 'returned an empty response'
 RESUMED = 'Continue the original task using this recorded answer.'
+# A chat turn whose model runs a tool and then writes nothing, also after the reminder of Hermes.
+QUIET = 'Note the result and stay quiet.'
 SHIPPED = 'Shipping now.'
 # A chat turn that leaves its task list unfinished, and the turn that Coconut starts to continue it.
 LIST = 'Track the docs work in a list.'
@@ -67,6 +69,14 @@ def answer(request):
     messages = request.get('messages') or []
     users = [index for index, message in enumerate(messages) if message.get('role') == 'user']
     last = json.dumps(messages[users[-1]].get('content')) if users else ''
+    # The own text of the last user message. The context of the turn can follow it (hooks.add_turn_context).
+    own = str(messages[users[-1]].get('content')) if users else ''
+    if own.startswith(QUIET) or (EMPTY_NUDGE in own and QUIET in json.dumps(messages)):
+        if own.startswith(QUIET) and request.get('tools') and not any(m.get('role') == 'tool' for m in messages[users[-1]:]):
+            return dict(role='assistant', content=None, tool_calls=[dict(
+                id='call-quiet', type='function', function=dict(name='terminal', arguments=json.dumps(dict(
+                    command='echo noted'))))])
+        return dict(role='assistant', content='')
     if OUTPUT in last:
         return dict(role='assistant', content=FINISHED)
     if ATTACHED in last:
@@ -216,6 +226,41 @@ class EmptyReplyFormatTests(unittest.TestCase):
             for response in items:
                 with self.subTest(mode, response=response):
                     self.assertIsNone(end(response, mode))
+
+    def test_a_reply_of_only_reasoning_from_the_codex_backend_gets_the_closing_text(self):
+        # The Codex backend of OpenAI can end with only a reasoning item. Hermes reads that reply as incomplete and asks
+        # again, and after three such replies it tries its fallback model. The closed copy is a final reply.
+        from types import SimpleNamespace as N
+        from agent.transports import get_transport
+        reasoning = N(type='reasoning', id='rs_1', encrypted_content='opaque', status='completed',
+                      summary=[N(type='summary_text', text='Nothing to add.')])
+        response = N(output=[reasoning], status='completed', usage=None)
+        read = lambda raw: get_transport('codex_responses').normalize_response(raw, issuer_kind='codex_backend')
+        self.assertEqual((read(response).content, read(response).finish_reason), ('', 'incomplete'))
+        closed = self.hooks.with_end_text(response, 'codex_responses')
+        self.assertIsNotNone(closed)
+        reply = read(closed)
+        self.assertEqual((reply.content.strip(), reply.tool_calls, reply.finish_reason),
+                         (adapter_text('END_TEXT'), None, 'stop'))
+
+    def test_the_last_item_of_a_request_is_a_tool_result_in_each_format(self):
+        # hooks.after_tool_result on the requests that the converters of this Hermes build from the same messages.
+        from agent.anthropic_message_convert import convert_messages_to_anthropic
+        from agent.codex_responses_adapter import _chat_messages_to_responses_input
+        typed = [{'role': 'user', 'content': 'Do it.'}]
+        after_tool = typed + [
+            {'role': 'assistant', 'content': None, 'tool_calls': [
+                {'id': 'call_1', 'type': 'function', 'function': {'name': 'terminal', 'arguments': '{}'}}]},
+            {'role': 'tool', 'tool_call_id': 'call_1', 'content': 'ok'}]
+        reminded = after_tool + [{'role': 'assistant', 'content': '(empty)'},
+                                 {'role': 'user', 'content': 'Continue.'}]
+        for messages, expected in ((typed, False), (after_tool, True), (reminded, False)):
+            requests = {'chat_completions': {'messages': messages},
+                        'codex_responses': {'input': _chat_messages_to_responses_input(messages)},
+                        'anthropic_messages': {'messages': convert_messages_to_anthropic(messages)[1]}}
+            for mode, request in requests.items():
+                with self.subTest(mode, last=messages[-1]['content']):
+                    self.assertIs(self.hooks.after_tool_result(request), expected)
 
     def test_a_session_gets_every_record_again_after_hermes_compresses_it_in_place(self):
         # hooks.add_records with the state database of this Hermes. Its compression keeps the session ID and the key of
@@ -479,6 +524,23 @@ class NativeGatewayChatTests(unittest.TestCase):
             self.assertEqual((service._get('tasks', task['id'])['status'], replies[-1:]), ('completed', [SHIPPED]),
                              diagnostics())
             self.assertNotIn(adapter_text('END_TEXT'), replies, diagnostics())
+
+            if 'llm_execution' in VALID_MIDDLEWARE:
+                # The model writes nothing after its tool result, and Hermes reminds it once. It stays silent, so the
+                # turn ends with the closing text, without the retries and the fallback model of Hermes. The chat shows
+                # nothing for it.
+                calls = len(Model.requests)
+                task = service.mutate('POST', f'/v1/bots/{bot["id"]}/messages', {'text': QUIET}, str(uuid4()), 'phone')
+                service._run_task(task['id'])
+                stored = service._get('tasks', task['id'])
+                self.assertEqual((stored['status'], stored.get('_silent_completion')), ('completed', True),
+                                 diagnostics())
+                self.assertEqual([m['text'] for m in service._task_messages(task['id']) if m['role'] == 'assistant'
+                                  and m['kind'] in ('text', 'activity')], [], diagnostics())
+                reminders = [r for r in Model.requests[calls:] if EMPTY_NUDGE in json.dumps(r['messages'])]
+                self.assertEqual(len(reminders), 1, diagnostics())
+                # The tool call, the empty reply and the empty reply after the reminder: no retry.
+                self.assertEqual(len(Model.requests) - calls, 3, diagnostics())
 
             # The todo list of a gateway turn is the work of its task. An unfinished list continues in a later turn.
             task = service.mutate('POST', f'/v1/bots/{bot["id"]}/messages', {'text': LIST}, str(uuid4()), 'phone')

@@ -227,6 +227,43 @@ def _diff(pr: dict[str, Any]) -> dict | None:
     return None
 
 
+def _app_and_name(check: dict[str, Any]) -> tuple:
+    app = check.get("app")
+    return app.get("id") if isinstance(app, dict) else None, check.get("name")
+
+
+def _failed(check: dict[str, Any]) -> bool:
+    phase = check.get("status")
+    return phase == "failure" or (phase == "completed" and check.get("conclusion") in _FAIL)
+
+
+def _failed_run_has_newer(checks: list[dict[str, Any]]) -> bool:
+    """True when a failed run has a newer run with the same app and name, which can supersede it."""
+    return any(isinstance(f.get("name"), str) and o["id"] > f["id"] and _app_and_name(o) == _app_and_name(f)
+               for f in checks if _failed(f) for o in checks)
+
+
+def _latest_runs(checks: list[dict[str, Any]], suites: dict[int, tuple]) -> list[dict[str, Any]]:
+    """Keep only the newest run of each job, as GitHub and `gh pr checks` do.
+
+    filter=latest keeps the newest run in one check suite, but a workflow that runs again on the same commit makes a
+    new suite. A job is the name, the workflow and the event, and a newer run has a higher id. `suites` maps a check
+    suite of GitHub Actions to its workflow and event. A run outside `suites` stays. The commit stays in the key, so
+    that the commit guard in _classify still sees a run on another commit.
+    """
+    newest = {}
+    for check in checks:
+        suite = check.get("check_suite")
+        suite_id = suite.get("id") if isinstance(suite, dict) else None
+        name, commit = check.get("name"), check.get("head_sha")
+        key = check["id"]
+        if type(suite_id) is int and suite_id in suites and isinstance(name, str) and isinstance(commit, str):
+            key = (name, *suites[suite_id], commit)
+        if key not in newest or check["id"] > newest[key]["id"]:
+            newest[key] = check
+    return list(newest.values())
+
+
 def _classify(
     draft: bool, checks: list[dict[str, Any]], status: dict[str, Any], sha: str
 ) -> tuple[str, str]:
@@ -431,6 +468,37 @@ class GitHubPRTracker:
             if len(checks) > total or not batch:
                 raise PRTrackingError("GitHub checks changed during refresh. Refresh again.")
         raise PRTrackingError("Too many checks to confirm the pull request state.")
+
+    def _workflow_suites(self, prefix, sha, deadline):
+        """Map each Actions check suite on the commit to its (workflow_id, event).
+
+        An empty map means that no run supersedes another. A token without Actions access (403, 404), an answer in an
+        unknown shape, or more than 300 workflow runs gives an empty map. Each other error stops the refresh, so that
+        the last state stays.
+        """
+        suites, seen = {}, 0
+        for page in range(1, 4):
+            try:
+                payload = self._get(f"{prefix}/actions/runs?head_sha={sha}&per_page=100&page={page}", deadline)
+            except HTTPError as error:
+                if error.code not in (403, 404):
+                    raise
+                error.close()
+                return {}
+            if not isinstance(payload, dict):
+                return {}
+            total, runs = payload.get("total_count"), payload.get("workflow_runs")
+            if type(total) is not int or total > 300 or not isinstance(runs, list) or not all(
+                    isinstance(run, dict) and type(run.get("check_suite_id")) is int
+                    and type(run.get("workflow_id")) is int and isinstance(run.get("event"), str) for run in runs):
+                return {}
+            suites.update((run["check_suite_id"], (run["workflow_id"], run["event"])) for run in runs)
+            seen += len(runs)
+            if seen == total:
+                return suites
+            if seen > total or not runs:
+                return {}
+        return {}
 
     def _required_checks(self, prefix, pr, checks, status, deadline):
         """Use both branch protection and effective rules; unknown rules stay unknown."""
@@ -742,8 +810,10 @@ class GitHubPRTracker:
                 status = self._statuses(prefix, sha, deadline)
                 if not isinstance(status, dict):
                     raise PRTrackingError('GitHub returned incomplete commit status data.')
-                result, detail = _classify(draft, checks, status, sha)
-                required_checks_state, required_checks_observed = self._required_checks(prefix, initial, checks, status, deadline)
+                suites = self._workflow_suites(prefix, sha, deadline) if _failed_run_has_newer(checks) else {}
+                latest = _latest_runs(checks, suites)
+                result, detail = _classify(draft, latest, status, sha)
+                required_checks_state, required_checks_observed = self._required_checks(prefix, initial, latest, status, deadline)
                 review_events = self._reviews(path, deadline)
                 final = self._get(path, deadline)
                 after = _pr_fields(final)
@@ -754,15 +824,14 @@ class GitHubPRTracker:
                 if (initial.get('base') or {}).get('ref') != (final.get('base') or {}).get('ref'):
                     raise PRTrackingError('The target branch changed during refresh. Refresh again.')
                 title = after[4]
-                checks_state = {"failed": "failed", "checks_running": "running", "opened": "none", "ready_for_review": "passed"}[_classify(False, checks, status, sha)[0]]
+                checks_state = {"failed": "failed", "checks_running": "running", "opened": "none", "ready_for_review": "passed"}[_classify(False, latest, status, sha)[0]]
                 reviews = sorted(('check', c['id'], c.get('conclusion'), c.get('completed_at')) for c in checks
                                  if c.get('status') == 'completed' and any(
                                      name in str(c.get('name') or '').lower() for name in self._review_check_names))
                 reviews.extend(review_events)
                 if reviews:
                     review_checks = hashlib.sha256(json.dumps(sorted(reviews)).encode()).hexdigest()
-                failures = [('check', str(c['id']), c.get('conclusion'), c.get('completed_at')) for c in checks
-                            if c.get('status') == 'failure' or (c.get('status') == 'completed' and c.get('conclusion') in _FAIL)]
+                failures = [('check', str(c['id']), c.get('conclusion'), c.get('completed_at')) for c in latest if _failed(c)]
                 failures += [('status', str(s.get('id')), s.get('context'), s.get('updated_at')) for s in status['statuses']
                              if s.get('state') in ('failure', 'error')]
                 if failures:
