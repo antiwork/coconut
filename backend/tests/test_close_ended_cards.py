@@ -516,7 +516,8 @@ class CloseEndedCardsTests(unittest.TestCase):
             self.assertEqual(self.answer(card)['status'], 'approved')
 
     def test_a_card_of_an_old_store_with_a_revision_closes_only_with_a_known_time(self):
-        for fields, stays in ((dict(revision=3), True), (dict(revision=3, _revised_at=ago(14)), False), (dict(revision=1), False)):
+        for fields, stays in ((dict(revision=3), True), (dict(revision=2, _revised_at=None), True),
+                               (dict(revision=3, _revised_at=ago(14)), False), (dict(revision=1), False)):
             with self.subTest(fields=fields):
                 decision = self.card([ISSUE], made_hours=30, seen_hours=30, **fields)
                 self.source_pass(issue_facts=issue('closed', closed_hours=2))
