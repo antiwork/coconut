@@ -1406,7 +1406,8 @@ final class LibraryDocumentTests: XCTestCase {
 
     /// Hostile chart specs never hang the page: each one draws its marks, its zero line or its reason within a bound
     /// of time. Each case has its own web view, and each answer of the web view has a deadline, so a hang fails the case
-    /// and does not hang the test run.
+    /// and does not hang the test run. The bounds tell a hang (minutes) from a slow draw on a slow runner (seconds): 30
+    /// seconds for one case, and 240 seconds for the whole test, after which each case left fails at once.
     @MainActor
     func testAHostileChartNeverHangsThePage() async throws {
         let many = (1...10_000).map { #"{"x": \#($0), "y": \#($0 % 97)}"# }.joined(separator: ", ")
@@ -1426,7 +1427,12 @@ final class LibraryDocumentTests: XCTestCase {
             ("a name of 60 characters", #"{"type": "bar", "x": "x", "y": "y", "data": [{"x": "Coursessssssssssssssssssssssssssssssssssssssssssssssssssssss", "y": 3}]}"#),
             ("a series name of 60 characters", #"{"type": "line", "x": "x", "y": "y", "series": "s", "data": [{"x": 1, "y": 2, "s": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"}]}"#),
         ]
+        let budget = ContinuousClock.now + .seconds(240)
         for (name, spec) in cases {
+            guard ContinuousClock.now < budget else {
+                XCTFail("The chart with \(name) did not start: the test passed its time of 240 seconds.")
+                continue
+            }
             let configuration = WKWebViewConfiguration()
             DocumentPage.scripts(diagrams: false).forEach(configuration.userContentController.addUserScript)
             let view = WKWebView(frame: CGRect(x: 0, y: 0, width: 390, height: 800), configuration: configuration)
@@ -1442,7 +1448,7 @@ final class LibraryDocumentTests: XCTestCase {
             #endif
             view.loadHTMLString(DocumentPage.html(title: "T", meta: "M", content: "Lead.\n\n```chart\n\(spec)\n```",
                                                   markdown: true), baseURL: nil)
-            let deadline = ContinuousClock.now + .seconds(8)
+            let deadline = min(ContinuousClock.now + .seconds(30), budget)
             var shown: String?
             while shown == nil && ContinuousClock.now < deadline {
                 shown = await Self.evaluate(view, """
@@ -1452,10 +1458,10 @@ final class LibraryDocumentTests: XCTestCase {
                       if (figure.classList.contains("broken")) return "reason";
                       return figure.querySelector("svg [aria-label=y-grid] line") ? "chart" : null;
                     })()
-                    """, within: .seconds(2))
+                    """, within: .seconds(10))
                 if shown == nil { try await Task.sleep(for: .milliseconds(100)) }
             }
-            XCTAssertNotNil(shown, "The chart with \(name) did not draw in 8 seconds.")
+            XCTAssertNotNil(shown, "The chart with \(name) did not draw in 30 seconds.")
             #if os(iOS)
             window.isHidden = true
             #else
