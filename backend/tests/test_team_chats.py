@@ -2,8 +2,8 @@
 
 ChatStoreTests gives TeamStore.accept entries as the relay sends them, also entries that another member made to break
 the rules. ChatRouteTests runs Ada's Mac (the admin), Grace's Mac and Lin's Mac with FakeRelay and FakeHelper, as the
-app calls them. ChatPushTests checks the notification of a message in a named chat. scripts/test_team_log.py runs the real
-helper and relay.
+app calls them. ChatPushTests checks the notification of a message in a named chat, and ChatBotTests a bot of a Mac for
+a team only that answers in a named chat. scripts/test_team_log.py runs the real helper and relay.
 """
 from __future__ import annotations
 
@@ -13,12 +13,13 @@ import sqlite3
 import unittest
 from uuid import uuid4
 
-from coconut import team_store
+from coconut import team_store, team_turns
 from coconut.team_chats import ADMIN_ONLY, GONE_CHAT, SAME_NAME, TOO_MANY
 from coconut.team_store import MAX_CHATS, REFUSED, STORED, TeamStore
 from test_team_key_change import KeyChangeMacs
 from test_team_messages import ADMIN, AGREEMENT, MEMBER, OTHER, ROOM, START, entry_id
 from test_team_push import TeamPushMacs, flush
+from test_team_turns import TeamTurnMacs, reply
 
 DESIGN, LAUNCH = entry_id(50), entry_id(51)
 
@@ -445,6 +446,81 @@ class ChatPushTests(TeamPushMacs, unittest.TestCase):
         self.phone(self.second)('POST', f'/v1/team/rooms/{self.room}/read', {'first': sent['first'], 'chat': launch})
         flush(self.second)
         self.assertEqual(self.payloads(), [])
+
+
+class ChatBotTests(TeamTurnMacs, unittest.TestCase):
+    """The bot Reporter of the team-only Mac answers in the named chat where Ada names it."""
+
+    def make(self, name: str = 'Design') -> str:
+        chat = self.call('POST', f'/v1/team/rooms/{self.room}/chats', {'name': name}, service=self.first)['chat']
+        self.sync()
+        return chat
+
+    def chat_of(self, chat):
+        rows = self.call('GET', f'/v1/team/rooms/{self.room}/messages', {'chat': chat} if chat else {},
+                         service=self.first)['messages']
+        return [(row['bot_name'] or row['member_name'], row['text'], row['reply_to']) for row in reversed(rows)]
+
+    def test_the_trigger_the_context_and_the_reply_stay_in_the_chat(self):
+        design = self.make()
+        self.send('Plan in the Team chat.')
+        self.send('Plan in Design.', chat=design)
+        named = self.send('@Reporter what is open?', mentions=[self.mention], chat=design)
+        self.sync()
+        turns = []
+        self.serve(lambda turn: (turns.append(turn), reply('Done.')(turn))[1])
+        self.run_turns()
+        (turn,) = turns
+        self.assertEqual(turn['chat_id'], f'{self.bot["id"]}:team:{self.room}:{design}')
+        self.assertEqual(turn['chat_name'], 'Example Team · Design')
+        self.assertIn('the chat Design of the team Example Team', turn['team']['rules'])
+        self.assertIn('Plan in Design.', turn['team']['context'])
+        self.assertNotIn('Team chat', turn['team']['context'])
+        self.assertEqual(self.chat_of(design)[-1], ('Reporter', 'Done.', named['id']))
+        self.assertEqual([text for _, text, _ in self.chat_of(None)], ['Plan in the Team chat.'])
+        self.assertEqual(team_turns.parse_chat(turn['chat_id']), (self.room, self.bot['id'], design))
+        self.assertEqual(team_turns.parse_chat(team_turns.chat_id(self.room, self.bot['id'])),
+                         (self.room, self.bot['id'], None))
+
+    def test_a_reply_to_the_bot_in_another_chat_starts_nothing(self):
+        design = self.make()
+        self.send('@Reporter hello', mentions=[self.mention])
+        self.sync()
+        self.serve(reply('Hi.'))
+        self.run_turns()
+        (answer,) = [row for row in self.call('GET', f'/v1/team/rooms/{self.room}/messages', {},
+                                              service=self.first)['messages'] if row['bot_name'] == 'Reporter']
+        # The app cannot send it, so the store of the team-only Mac gets it as another Mac would write it.
+        with self.first._team_room_lock(self.room):
+            self.first._team_write(self.first.team_store.room(self.room), entry_id(98), False,
+                                   {'kind': 'message', 'text': 'Thanks', 'chat': design, 'reply_to': answer['id']})
+        self.sync()
+        self.assertEqual(self.triggers(), [])
+
+    def test_a_removed_chat_starts_no_turn_and_takes_no_reply(self):
+        design = self.make()
+        self.send('@Reporter what is open?', mentions=[self.mention], chat=design)
+        self.sync()
+        self.assertEqual(len(self.triggers()), 1)
+        self.call('DELETE', f'/v1/team/rooms/{self.room}/chats/{design}', service=self.first)
+        self.sync()
+        self.assertEqual(self.triggers(), [])
+        # A send of Hermes into the removed chat goes nowhere.
+        data = {'home': str(self.home), 'chat_id': team_turns.chat_id(self.room, self.bot['id'], design),
+                'kind': 'send', 'message_id': 'outside:1', 'text': 'Late news.'}
+        self.assertFalse(self.only.gateway_message(data)['recorded'])
+
+    def test_a_send_outside_a_turn_goes_into_its_named_chat(self):
+        design = self.make()
+        data = {'home': str(self.home), 'chat_id': team_turns.chat_id(self.room, self.bot['id'], design),
+                'kind': 'send', 'message_id': 'outside:1', 'text': 'The background job finished.'}
+        self.assertEqual(self.only.gateway_message(data), {'recorded': True})
+        self.sync()
+        self.assertEqual(self.chat_of(design), [('Reporter', 'The background job finished.', None)])
+
+    def test_the_route_needs_a_paired_device_on_a_team_only_mac(self):
+        self.assertEqual(self.refusal(self.only.team_request, 'POST', f'/v1/team/rooms/{self.room}/chats',
+                                      {'name': 'Design'})[0], 403)
 
 
 if __name__ == '__main__':

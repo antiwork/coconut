@@ -191,6 +191,25 @@ class NativeTeamChatTests(AsThePerson, TeamOnlyMacs, unittest.TestCase):
         self.assertEqual(len(Model.requests), calls, 'A message that names nobody starts no turn.')
         self.assertNotIn('Traceback', self.log.read_text(errors='replace'))
 
+    def test_ada_names_the_bot_in_a_named_chat_and_its_reply_stays_there(self):
+        self.start_chat()
+        design = self.call('POST', f'/v1/team/rooms/{self.room}/chats', {'name': 'Design'}, service=self.first)['chat']
+        self.sync()
+        named = self.send('@Reporter what is open in design?', mentions=[self.mention], chat=design)
+
+        def replies():
+            self.first.team_sync_pass()
+            rows = self.call('GET', f'/v1/team/rooms/{self.room}/messages', {'chat': design},
+                             service=self.first)['messages']
+            return [row for row in reversed(rows) if row['bot']]
+        (first,) = self.wait_until(lambda: replies()[:1])
+        self.assertEqual((first['text'], first['reply_to'], first['chat']), (FIRST, named['id'], design))
+        self.assertEqual(self.bot_messages(), [], 'The Team chat gets no reply.')
+        # The chat is its own session in Hermes: the group chat has the name of the team and of the chat.
+        call = next(request for request in Model.requests if 'open in design' in json.dumps(request['messages']))
+        self.assertIn('Design', json.dumps(call['messages']))
+        self.assertNotIn('Traceback', self.log.read_text(errors='replace'))
+
     def test_a_message_during_a_restart_of_the_gateway_gets_its_answer(self):
         from coconut import team_turns
         self.start_chat()
