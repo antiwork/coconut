@@ -42,40 +42,40 @@ struct HomeLaunchView: View {
                         ScrollView(.horizontal, showsIndicators: false) { pinnedTiles(pinned) }
                     }
                     .frame(maxWidth: .infinity)
-                    .padding(.top, 24).padding(.bottom, 24)
+                    .padding(.vertical, BoardStyle.Space.xl)
                 }
                 ForEach(conversations) { item in
                     switch item {
                     case .bot(let bot):
                         NavigationLink(value: ConversationRoute(botId: bot.id)) {
                             BotContactRow(bot: bot)
-                                .padding(.vertical, 12)
+                                .padding(.vertical, BoardStyle.Space.m)
                                 .background(BoardStyle.paper)
                                 .contentShape(Rectangle())
                                 .contextMenu { botActions(bot) }
                         }
                             .buttonStyle(HomePressStyle())
                             .accessibilityIdentifier("bot-conversation-\(bot.id)")
-                            .padding(.horizontal, 24)
+                            .padding(.horizontal, BoardStyle.Space.l)
                     case .team, .direct:
                         // A team and a direct chat have no pin and no delete here. The Team screen has the leave
                         // action.
                         if let chat = item.chat {
                             NavigationLink(value: TeamChatRoute(chat: chat)) {
                                 PeopleRow(item: item)
-                                    .padding(.vertical, 12)
+                                    .padding(.vertical, BoardStyle.Space.m)
                                     .background(BoardStyle.paper)
                                     .contentShape(Rectangle())
                             }
                                 .buttonStyle(HomePressStyle())
                                 .accessibilityIdentifier(Self.identifier(chat))
-                                .padding(.horizontal, 24)
+                                .padding(.horizontal, BoardStyle.Space.l)
                         }
                     }
                 }
             }
-            .padding(.top, pinned.isEmpty || ChatFilter.showsChips(rooms: rooms) ? 16 : 0)
-            .padding(.bottom, 20)
+            .padding(.top, pinned.isEmpty || ChatFilter.showsChips(rooms: rooms) ? BoardStyle.Space.l : 0)
+            .padding(.bottom, BoardStyle.Space.xl)
         }
         .background(BoardStyle.paper)
         .refreshable { await store.reconnect() }
@@ -90,18 +90,18 @@ struct HomeLaunchView: View {
                 .accessibilityIdentifier("chats-filter-\(filter.rawValue)")
         }
         return ViewThatFits(in: .horizontal) {
-            HStack(spacing: 6) { chips }
+            HStack(spacing: BoardStyle.Space.s) { chips }
             VStack(alignment: .leading, spacing: 0) { chips }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.horizontal, 20)
+        .padding(.horizontal, BoardStyle.Space.l)
     }
 
     private func pinnedTiles(_ pinned: [Bot]) -> some View {
-        HStack(spacing: 20) {
+        HStack(spacing: BoardStyle.Space.xl) {
             ForEach(pinned) { bot in
                 NavigationLink(value: ConversationRoute(botId: bot.id)) {
-                    VStack(spacing: 9) {
+                    VStack(spacing: BoardStyle.Space.s) {
                         LiveBotAvatar(bot: bot, size: 76)
                             // The badge sits on the top right corner of the face, not next to the name.
                             .overlay(alignment: .topTrailing) {
@@ -124,7 +124,7 @@ struct HomeLaunchView: View {
                 .buttonStyle(HomePressStyle())
                 .accessibilityIdentifier("pinned-bot-\(bot.id)")
             }
-        }.padding(.horizontal, 24)
+        }.padding(.horizontal, BoardStyle.Space.l)
     }
 
     /// "team-chat-<room>" for a team, "team-chat-<room>-<chat>" for a named chat, "direct-chat-<member>" for a direct
@@ -153,15 +153,15 @@ struct ChipButton: View {
     var body: some View {
         Button(action: action) {
             Text(title)
-                .font(.body.weight(selected ? .medium : .regular))
+                .font(.body.weight(selected ? .semibold : .regular))
                 .foregroundStyle(selected ? .primary : .secondary)
                 .lineLimit(1)
-                .padding(.horizontal, 14).padding(.vertical, 5)
+                .padding(.horizontal, BoardStyle.Space.m).padding(.vertical, BoardStyle.Space.xs)
                 .frame(minHeight: 30)
                 .background(selected ? Color.primary.opacity(0.1) : .clear, in: Capsule())
                 #if os(iOS)
                 // A finger needs 44 points. The capsule stays small.
-                .frame(minHeight: 44)
+                .frame(minWidth: 44, minHeight: 44)
                 .contentShape(Rectangle())
                 #else
                 .contentShape(Capsule())
@@ -224,7 +224,7 @@ struct BotContactRow: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let bot: Bot
     /// The face of the bot. The iPhone list shows a large face; a Mac sidebar shows a smaller one.
-    var avatarSize: CGFloat = 46
+    var avatarSize: CGFloat = BoardStyle.rowFace
     private var latestMessage: Message? {
         latestConversationMessage(in: store.messages.filter { $0.botId == bot.id })
     }
@@ -300,30 +300,31 @@ struct ChatRowLayout<Face: View, Subtitle: View>: View {
     @ViewBuilder let subtitle: () -> Subtitle
 
     var body: some View {
-        HStack(spacing: 14) {
+        HStack(spacing: BoardStyle.Space.m) {
             face()
             if dynamicTypeSize.isAccessibilitySize {
                 // The badge grows with the text and stands on its own line, so it covers no name.
-                VStack(alignment: .leading, spacing: 5) {
+                VStack(alignment: .leading, spacing: BoardStyle.Space.line) {
                     nameText
                     if date != nil || unread > 0 || mentioned {
-                        HStack(spacing: 8) {
-                            if let date { CompactAgeLabel(date: date).font(.caption).foregroundStyle(.secondary) }
+                        HStack(spacing: BoardStyle.Space.s) {
+                            if let date { ageText(date) }
                             badges
                         }
                     }
                     subtitle()
                 }
             } else {
-                HStack(alignment: .top, spacing: 8) {
-                    VStack(alignment: .leading, spacing: 5) {
+                // The name and the age share their first baseline.
+                HStack(alignment: .firstTextBaseline, spacing: BoardStyle.Space.s) {
+                    VStack(alignment: .leading, spacing: BoardStyle.Space.line) {
                         nameText
                         subtitle()
                     }
                     Spacer(minLength: 0)
                     if date != nil || unread > 0 || mentioned {
-                        VStack(alignment: .trailing, spacing: 6) {
-                            if let date { CompactAgeLabel(date: date).font(.caption).foregroundStyle(.secondary) }
+                        VStack(alignment: .trailing, spacing: BoardStyle.Space.xs) {
+                            if let date { ageText(date) }
                             badges
                         }
                         .fixedSize()
@@ -335,12 +336,16 @@ struct ChatRowLayout<Face: View, Subtitle: View>: View {
     }
 
     private var nameText: some View {
-        Text(name).font(.body.weight(unread > 0 ? .semibold : .medium)).lineLimit(1)
+        Text(name).font(.body.weight(unread > 0 ? .semibold : .regular)).lineLimit(1)
+    }
+
+    private func ageText(_ date: Date) -> some View {
+        CompactAgeLabel(date: date).font(.footnote.monospacedDigit()).foregroundStyle(.secondary)
     }
 
     /// The "@" mark, then the unread count.
     private var badges: some View {
-        HStack(spacing: 4) {
+        HStack(spacing: BoardStyle.Space.xs) {
             if mentioned { MentionBadge() }
             if unread > 0 { UnreadBadge(count: unread) }
         }
@@ -354,7 +359,7 @@ struct MentionBadge: View {
 
     var body: some View {
         Text("@")
-            .font(.caption2.weight(.bold))
+            .font(.caption2.weight(.semibold))
             .foregroundStyle(BoardStyle.controlLabel)
             .frame(width: size, height: size)
             .background(UnreadBadge.fill, in: Circle())
@@ -396,7 +401,7 @@ struct UnreadBadge: View {
 
 struct BotActivityDot: View {
     @Environment(AppStore.self) private var store
-    @ScaledMetric(relativeTo: .caption) private var size = 10
+    @ScaledMetric(relativeTo: .footnote) private var size = 10
     let bot: Bot
     var body: some View {
         if store.isBotActive(bot) {

@@ -96,12 +96,12 @@ struct BotExchangeRow: View {
             .accessibilityLabel("\(prefix) \(peer?.name ?? "Deleted bot")")
             .accessibilityIdentifier("bot-exchange-\(message.id)")
         }
-        .font(.caption)
+        .font(.footnote)
         .frame(maxWidth: .infinity, minHeight: 44)
     }
 
     private var chip: some View {
-        HStack(spacing: 5) {
+        HStack(spacing: BoardStyle.Space.xs) {
             if let peer { BotAvatar(bot: peer, size: 17) }
             Text(peer?.name ?? "Deleted bot").lineLimit(1)
         }
@@ -159,8 +159,8 @@ struct BotExchangeView: View {
                         .disabled(route.botIds.contains { store.historyLoading.contains($0) })
                     }
                     ForEach(messages) { message in
-                        VStack(alignment: .leading, spacing: 5) {
-                            HStack(spacing: 6) {
+                        VStack(alignment: .leading, spacing: BoardStyle.Space.xs) {
+                            HStack(spacing: BoardStyle.Space.s) {
                                 if let bot = store.bots.first(where: { $0.id == message.senderBotId }) {
                                     BotAvatar(bot: bot, size: 20)
                                     Text(bot.name)
@@ -169,7 +169,7 @@ struct BotExchangeView: View {
                                 if let date = message.createdAt.apiDate {
                                     Text(date.formatted(date: .abbreviated, time: .shortened))
                                 }
-                            }.font(.caption).foregroundStyle(.secondary).padding(.horizontal, 10)
+                            }.font(.footnote).foregroundStyle(.secondary).padding(.horizontal, BoardStyle.Space.m)
                             MessageBubble(message: message)
                         }.id(message.id)
                     }
@@ -194,7 +194,7 @@ struct BotExchangeView: View {
             .safeAreaInset(edge: .bottom) {
                 HStack {
                     Spacer()
-                    Label("Read-only", systemImage: "lock").font(.caption).foregroundStyle(.secondary)
+                    Label("Read-only", systemImage: "lock").font(.footnote).foregroundStyle(.secondary)
                     Spacer()
                     if !nearBottom {
                         Button { proxy.scrollTo("exchange-bottom", anchor: .bottom) } label: {

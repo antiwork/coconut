@@ -222,9 +222,9 @@ private struct ModelRow: View {
     let provider: String
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 3) {
+        VStack(alignment: .leading, spacing: BoardStyle.Space.line) {
             Text(name)
-            Text(provider).font(.caption).foregroundStyle(.secondary)
+            Text(provider).font(.subheadline).foregroundStyle(.secondary)
         }
     }
 }

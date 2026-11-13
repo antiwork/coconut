@@ -191,7 +191,7 @@ struct MacSidebar: View {
                         // action.
                         if let chat = item.chat {
                             PeopleRow(item: item, avatarSize: 32)
-                                .padding(.vertical, 2)
+                                .padding(.vertical, BoardStyle.Space.xs)
                                 .tag(MacSelection.team(chat))
                                 .accessibilityIdentifier(chat.member.map { "sidebar-direct-" + $0 }
                                                          ?? "sidebar-team-" + chat.room + (chat.chat.map { "-" + $0 } ?? ""))
@@ -220,7 +220,7 @@ struct MacSidebar: View {
 
     private func row(_ bot: Bot) -> some View {
         BotContactRow(bot: bot, avatarSize: 32)
-            .padding(.vertical, 2)
+            .padding(.vertical, BoardStyle.Space.xs)
             .tag(MacSelection.bot(bot.id))
             .contextMenu {
                 Button(bot.pinned ? "Unpin" : "Pin") { Task { await store.pinBot(bot, pinned: !bot.pinned) } }
@@ -244,8 +244,9 @@ private struct MacConnectionFooter: View {
                 .frame(width: 7, height: 7)
                 .accessibilityLabel(store.connection == .connected ? "Connected" : "Not connected")
         }
-        .font(.caption).foregroundStyle(.secondary)
-        .padding(.horizontal, 12).padding(.vertical, 10)
+        .font(.footnote).foregroundStyle(.secondary)
+        // The inset of the rows of the sidebar, so the footer shares their left and right edges.
+        .padding(.horizontal, BoardStyle.Space.l).padding(.vertical, BoardStyle.Space.s)
     }
 }
 
@@ -258,7 +259,7 @@ private struct MacBotDetails: View {
         VStack(spacing: 0) {
             // Text tabs. The current one sits on a soft capsule. The same height and top space as the bot's title over
             // the chat, so both sit in one row.
-            HStack(spacing: 2) {
+            HStack(spacing: BoardStyle.Space.xs) {
                 tabButton("Details", .details)
                 tabButton("Library", .library)
             }

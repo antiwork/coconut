@@ -41,7 +41,7 @@ struct HeldBubbleView<Header: View, Preview: View>: View {
             // little, so the message stays at least 120 points tall and the view scrolls.
             let previewHeight = min(380, max(120, geometry.size.height - 260))
             ScrollView {
-                VStack(alignment: alignment, spacing: 10) {
+                VStack(alignment: alignment, spacing: BoardStyle.Space.m) {
                     header { action in close(then: action) }
                     // The message keeps its own height. Without this, the stack would stretch it to fill the screen.
                     preview(previewHeight).fixedSize(horizontal: false, vertical: true)
@@ -61,7 +61,7 @@ struct HeldBubbleView<Header: View, Preview: View>: View {
                         .buttonStyle(.plain)
                         ForEach(afterShare, content: actionRow)
                     }
-                    .padding(.vertical, 6)
+                    .padding(.vertical, BoardStyle.Space.s)
                     .frame(width: 220, alignment: .leading)
                     .background(.regularMaterial, in: RoundedRectangle(cornerRadius: BoardStyle.Radius.medium))
                 }
@@ -120,8 +120,8 @@ struct HeldTextPreview: View {
 
     var body: some View {
         MessageText(text: text, linkColor: own ? BoardStyle.userBubbleLink : .blue, allowsTextSelection: false)
-            .padding(.horizontal, 14)
-            .padding(.vertical, 11)
+            .padding(.horizontal, BoardStyle.Space.m)
+            .padding(.vertical, BoardStyle.Space.m)
             .fixedSize(horizontal: false, vertical: true)
             .frame(maxHeight: maxHeight, alignment: .top)
             .background(own ? BoardStyle.userBubble : BoardStyle.surface)

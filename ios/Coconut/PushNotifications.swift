@@ -81,7 +81,7 @@ struct NotificationSettingsView: View {
                     VStack(alignment: .leading, spacing: 4) {
                         Text("What counts as urgent?")
                         if let summary = store.pushStatus?.urgent {
-                            Text(summary.weekText).font(.caption).foregroundStyle(.secondary)
+                            Text(summary.weekText).font(.subheadline).foregroundStyle(.secondary)
                         }
                     }
                 }
@@ -96,7 +96,7 @@ struct NotificationSettingsView: View {
                         VStack(alignment: .trailing, spacing: 2) {
                             Text(PushStatus.explain(error))
                             if let at = PushStatus.describe(store.pushStatus?.lastErrorAt) {
-                                Text(at).font(.caption).foregroundStyle(.secondary)
+                                Text(at).font(.footnote).foregroundStyle(.secondary)
                             }
                         }
                         .multilineTextAlignment(.trailing)
@@ -111,7 +111,7 @@ struct NotificationSettingsView: View {
                     } else { push.openSystemSettings() }
                 }
                 if push.allowed && !push.badgesAllowed {
-                    Text("App badges are off in iOS Settings.").font(.caption).foregroundStyle(.secondary)
+                    Text("App badges are off in iOS Settings.").font(.footnote).foregroundStyle(.secondary)
                 }
                 if let error = store.pushRegistrationError ?? push.error {
                     InlineError(error)
@@ -218,7 +218,7 @@ struct UrgentCardsView: View {
                             Text(example.title ?? "Untitled card")
                             let detail = [example.botName, PushStatus.describe(example.createdAt)].compactMap { $0 }
                             if !detail.isEmpty {
-                                Text(detail.joined(separator: " · ")).font(.caption).foregroundStyle(.secondary)
+                                Text(detail.joined(separator: " · ")).font(.subheadline).foregroundStyle(.secondary)
                             }
                         }
                     }

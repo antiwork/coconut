@@ -64,10 +64,10 @@ struct BotSettingsView: View {
 
     private func routineLink(_ routine: Routine, detail: String) -> some View {
         NavigationLink { RoutineEditorView(botId: botId, routine: routine) } label: {
-            VStack(alignment: .leading, spacing: 3) {
+            VStack(alignment: .leading, spacing: BoardStyle.Space.line) {
                 Text(routine.name)
                 Text(detail).font(.subheadline).foregroundStyle(.secondary).lineLimit(2)
-            }.padding(.vertical, 3)
+            }.padding(.vertical, BoardStyle.Space.xs)
         }
     }
 

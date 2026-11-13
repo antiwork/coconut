@@ -22,6 +22,8 @@ struct DecisionPreviewStrip: View {
     let previews: [DecisionPreview]
     @Binding var loadedIds: Set<String>
     var onFrameChange: (CGRect) -> Void = { _ in }
+    /// The height of one line of a caption, so the strip fits the image, the gap and two lines at each text size.
+    @ScaledMetric(relativeTo: .footnote) private var captionLine: CGFloat = 18
     @State private var loaded: [String: PreparedDecisionPreview] = [:]
     @State private var failed = false
     @State private var attempt = 0
@@ -34,7 +36,7 @@ struct DecisionPreviewStrip: View {
                     HStack(alignment: .top, spacing: 8) {
                         ForEach(previews) { preview in
                             Button { selection = preview } label: {
-                                VStack(alignment: .leading, spacing: 6) {
+                                VStack(alignment: .leading, spacing: BoardStyle.Space.s) {
                                     ZStack {
                                         RoundedRectangle(cornerRadius: BoardStyle.Radius.small).fill(BoardStyle.paper)
                                         if let image = loaded[preview.id]?.thumbnail {
@@ -45,7 +47,7 @@ struct DecisionPreviewStrip: View {
                                         } else { ProgressView() }
                                     }
                                     .frame(height: 200)
-                                    Text(preview.caption).font(.caption).foregroundStyle(.secondary)
+                                    Text(preview.caption).font(.footnote).foregroundStyle(.secondary)
                                         .lineLimit(2).frame(maxWidth: .infinity, alignment: .leading)
                                 }
                                 .frame(width: previews.count == 1 ? geometry.size.width : min(geometry.size.width * 0.86, max(140, 200 * CGFloat(preview.width) / CGFloat(max(1, preview.height)))))
@@ -62,10 +64,10 @@ struct DecisionPreviewStrip: View {
                 .scrollIndicators(.hidden)
                 .scrollTargetBehavior(.viewAligned)
             }
-            .frame(height: 240)
+            .frame(height: 200 + BoardStyle.Space.s + 2 * captionLine)
             if failed {
                 Button("Could not load the previews. Retry") { attempt += 1 }
-                    .font(.caption).frame(minHeight: 44)
+                    .font(.footnote).frame(minHeight: 44)
             }
         }
         .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { onFrameChange($0) }

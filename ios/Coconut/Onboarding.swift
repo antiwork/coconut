@@ -60,7 +60,7 @@ struct OnboardingView: View {
             HStack {
                 Spacer()
                 Button { close() } label: {
-                    Image(systemName: "xmark").font(.subheadline.weight(.medium)).frame(minWidth: 44, minHeight: 44)
+                    Image(systemName: "xmark").font(.subheadline.weight(.semibold)).frame(minWidth: 44, minHeight: 44)
                 }
                 .foregroundStyle(.primary)
                 .opacity(firstRun ? 0 : 1)
@@ -70,7 +70,7 @@ struct OnboardingView: View {
             .padding(.top, 4)
             #endif
             ScrollView {
-                VStack(spacing: 14) {
+                VStack(spacing: BoardStyle.Space.m) {
                     #if os(macOS)
                     // A Mac window centers a narrow column, as the setup pages of macOS do.
                     Image(nsImage: NSApplication.shared.applicationIconImage)
@@ -89,9 +89,9 @@ struct OnboardingView: View {
                             .font(.footnote).foregroundStyle(.secondary)
                             .multilineTextAlignment(.center)
                     }
-                    message.padding(.top, 14)
+                    message.padding(.top, BoardStyle.Space.m)
                     actions
-                    status.padding(.top, 10)
+                    status.padding(.top, BoardStyle.Space.m)
                 }
                 #if os(macOS)
                 .frame(maxWidth: 440)
@@ -99,7 +99,7 @@ struct OnboardingView: View {
                 .frame(maxWidth: .infinity)
                 .containerRelativeFrame(.vertical, alignment: .center)
                 #else
-                .padding(.top, 20)
+                .padding(.top, BoardStyle.Space.xl)
                 .frame(maxWidth: .infinity)
                 #endif
             }
@@ -110,8 +110,8 @@ struct OnboardingView: View {
                 .frame(minHeight: 44)
                 .accessibilityIdentifier("onboarding-help")
         }
-        .padding(.horizontal, 24)
-        .padding(.bottom, 8)
+        .padding(.horizontal, BoardStyle.Space.l)
+        .padding(.bottom, BoardStyle.Space.s)
         .background(BoardStyle.paper.ignoresSafeArea())
         .animation(reduceMotion ? nil : .easeInOut(duration: 0.25), value: phase)
         .task(id: attempt) { await rendezvous() }
@@ -154,11 +154,11 @@ struct OnboardingView: View {
 
     private var message: some View {
         Text(messageText)
-            .font(.callout)
+            .font(.body)
             .textSelection(.enabled)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(16)
-            .background(Color.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+            .padding(BoardStyle.Space.l)
+            .background(Color.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: BoardStyle.Radius.medium, style: .continuous))
             .redacted(reason: pending == nil ? .placeholder : [])
             .privacySensitive()
             .accessibilityIdentifier("hermes-message")
@@ -167,7 +167,7 @@ struct OnboardingView: View {
     @ViewBuilder private var actions: some View {
         #if os(macOS)
         // Standard Mac buttons at their own size. Return copies the message.
-        HStack(spacing: 10) {
+        HStack(spacing: BoardStyle.Space.s) {
             ShareLink(item: messageText) { Label("Share…", systemImage: "square.and.arrow.up") }
                 .accessibilityIdentifier("share-hermes-message")
             Button {
@@ -229,11 +229,11 @@ struct OnboardingView: View {
                 ProgressView().controlSize(.small)
                 Text("Pairing with \(name)…")
             }
-            .font(.subheadline.weight(.medium))
+            .font(.subheadline.weight(.semibold))
             .accessibilityElement(children: .combine)
             .accessibilityIdentifier("onboarding-status")
         case .failed(let text):
-            VStack(spacing: 6) {
+            VStack(spacing: BoardStyle.Space.s) {
                 InlineError(text).multilineTextAlignment(.center)
                 Button("Try again") { attempt += 1 }
                     .font(.subheadline.weight(.semibold))

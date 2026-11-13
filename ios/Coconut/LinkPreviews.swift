@@ -11,7 +11,7 @@ struct LinkPreviewList: View {
     @State private var previews: [URL: LinkPreview] = [:]
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: BoardStyle.Space.s) {
             ForEach(links.filter { previews[$0] != nil }, id: \.self) { url in
                 LinkPreviewCard(url: url, preview: previews[url]!, large: links.count == 1)
             }
@@ -59,7 +59,7 @@ private struct LinkPreviewCard: View {
     private func largeCard(_ preview: LinkPreview, image: URL) -> some View {
         VStack(alignment: .leading, spacing: 0) {
             RemotePhoto(url: image).frame(height: 150)
-            text(preview).padding(.horizontal, 12).padding(.vertical, 10)
+            text(preview).padding(.horizontal, 12).padding(.vertical, BoardStyle.Space.m)
         }
         .frame(width: 280, alignment: .leading)
         .background(BoardStyle.surface)
@@ -67,7 +67,7 @@ private struct LinkPreviewCard: View {
     }
 
     private func compactRow(_ preview: LinkPreview) -> some View {
-        HStack(spacing: 10) {
+        HStack(spacing: BoardStyle.Space.m) {
             Group {
                 if let image = preview.image {
                     RemotePhoto(url: image)
@@ -77,7 +77,7 @@ private struct LinkPreviewCard: View {
             }
             .frame(width: 44, height: 44)
             .background(BoardStyle.line.opacity(0.4))
-            .clipShape(RoundedRectangle(cornerRadius: 8))
+            .clipShape(RoundedRectangle(cornerRadius: BoardStyle.Radius.small))
             text(preview)
         }
         .padding(8)
@@ -88,7 +88,7 @@ private struct LinkPreviewCard: View {
     private func text(_ preview: LinkPreview) -> some View {
         VStack(alignment: .leading, spacing: 2) {
             Text(preview.title).font(.subheadline.weight(.semibold)).lineLimit(2)
-            Text(preview.site).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+            Text(preview.site).font(.footnote).foregroundStyle(.secondary).lineLimit(1)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }

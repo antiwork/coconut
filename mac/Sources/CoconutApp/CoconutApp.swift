@@ -211,7 +211,7 @@ struct PairingView: View {
                 Text("Scan the code in Coconut on the iPhone, or open the link on the iPhone.")
                     .multilineTextAlignment(.center)
                 Text(pairing.link)
-                    .font(.caption.monospaced())
+                    .font(.footnote.monospaced())
                     .lineLimit(2)
                     .truncationMode(.middle)
                     .textSelection(.enabled)
@@ -223,7 +223,7 @@ struct PairingView: View {
                     Button("New Code") { Task { await model.pair() } }
                 }
                 Text("The code works once and expires after ten minutes. Send it only to the person who pairs.")
-                    .font(.caption)
+                    .font(.footnote)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
             } else if model.isPairing {

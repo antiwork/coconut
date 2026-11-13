@@ -41,6 +41,21 @@ enum BoardStyle {
         static let medium: CGFloat = 16
         static let small: CGFloat = 12
     }
+
+    /// The space scale. Each padding and each gap is one of these values. `line` is only for the gap between two
+    /// lines of one block of text, for example a name and the line under it.
+    enum Space {
+        static let line: CGFloat = 2
+        static let xs: CGFloat = 4
+        static let s: CGFloat = 8
+        static let m: CGFloat = 12
+        static let l: CGFloat = 16
+        static let xl: CGFloat = 24
+        static let xxl: CGFloat = 32
+    }
+
+    /// The face at the start of a row of the Chats list. The Mac sidebar has its own smaller face.
+    static let rowFace: CGFloat = 46
 }
 
 extension Color {
@@ -56,13 +71,14 @@ struct StatusLabel: View {
     var compact = false
 
     var body: some View {
-        HStack(spacing: 5) {
+        // The symbol takes the text style of the word next to it.
+        HStack(spacing: BoardStyle.Space.xs) {
             Image(systemName: symbol)
                 .imageScale(.small)
-                .fontWeight(.bold)
+                .fontWeight(.semibold)
             Text(Self.label(for: status))
-                .font(compact ? .caption2.weight(.medium) : .caption.weight(.medium))
         }
+        .font(compact ? .subheadline : .footnote)
         .foregroundStyle(tint)
     }
 
@@ -118,7 +134,7 @@ struct QuietEmptyState: View {
     @ScaledMetric(relativeTo: .subheadline) private var messageWidth = 280
 
     var body: some View {
-        VStack(spacing: 14) {
+        VStack(spacing: BoardStyle.Space.m) {
             Image(systemName: symbol)
                 .font(.largeTitle.weight(.light))
                 .foregroundStyle(.secondary)
@@ -130,7 +146,7 @@ struct QuietEmptyState: View {
         }
         .frame(maxWidth: .infinity)
         .padding(.vertical, 70)
-        .padding(.horizontal, 24)
+        .padding(.horizontal, BoardStyle.Space.xl)
     }
 }
 

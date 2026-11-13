@@ -29,7 +29,8 @@ struct BotStatusRow: View {
             .animation(fade, value: writing)
         }
         .frame(minHeight: 32, alignment: .leading)
-        .padding(.leading, 4)
+        // The text starts at the edge of the text in a bubble.
+        .padding(.leading, BoardStyle.Space.m)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("\(bot.name): \(label(at: .now))")
         .accessibilityIdentifier("bot-working-\(bot.id)")

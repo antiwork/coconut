@@ -5,7 +5,7 @@ struct ErrorBanner: View {
     let dismiss: () -> Void
     var body: some View {
         // The icon and the X sit on the baseline of the first text line, so a long message grows below them.
-        HStack(alignment: .firstTextBaseline, spacing: 10) {
+        HStack(alignment: .firstTextBaseline, spacing: BoardStyle.Space.s) {
             Image(systemName: "exclamationmark.circle")
             // The X is 44 points high, so a message of one line has the height of ConnectionBanner.
             Text(message).textSelection(.enabled).padding(.vertical, 12)
@@ -21,7 +21,7 @@ struct ErrorBanner: View {
         }
         .font(.footnote)
         .foregroundStyle(.secondary)
-        .padding(.leading, 14)
+        .padding(.leading, BoardStyle.Space.m)
         .padding(.trailing, 4)
         .background(BoardStyle.surface, in: RoundedRectangle(cornerRadius: 16))
         .accessibilityIdentifier("action-error")
@@ -34,9 +34,9 @@ struct ConnectionBanner: View {
     let pair: () -> Void
 
     var body: some View {
-        HStack(spacing: 10) {
+        HStack(spacing: BoardStyle.Space.s) {
             // VoiceOver reads the icon and the message as one element. The Pair button stays a separate element.
-            HStack(spacing: 10) {
+            HStack(spacing: BoardStyle.Space.s) {
                 Image(systemName: notice.offersPairing ? "link" : "moon.zzz").foregroundStyle(.secondary)
                 Text(notice.message).font(.footnote).foregroundStyle(.secondary)
             }
@@ -49,8 +49,8 @@ struct ConnectionBanner: View {
                     .accessibilityIdentifier("connection-banner-pair")
             }
         }
-        .padding(.leading, 14)
-        .padding(.trailing, notice.offersPairing ? 4 : 14)
+        .padding(.leading, BoardStyle.Space.m)
+        .padding(.trailing, notice.offersPairing ? BoardStyle.Space.xs : BoardStyle.Space.m)
         .frame(minHeight: 44)
         .background(BoardStyle.surface, in: RoundedRectangle(cornerRadius: 16))
         .accessibilityElement(children: .contain)
@@ -63,11 +63,11 @@ struct ConnectionRow: View {
 
     var body: some View {
         HStack(spacing: 8) {
-            Text(store.connection.title).font(.caption.weight(.medium))
+            Text(store.connection.title).font(.footnote.weight(.semibold))
             Spacer()
             if let lastSync = store.lastSync {
                 CompactAgeLabel(date: lastSync)
-                    .font(.caption2.monospacedDigit())
+                    .font(.footnote.monospacedDigit())
                     .accessibilityLabel("Last synchronized \(lastSync.formatted())")
             }
         }

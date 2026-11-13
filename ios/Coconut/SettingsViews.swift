@@ -71,7 +71,7 @@ struct AppSettingsView: View {
             .toolbar {
                 ToolbarItem(placement: .leadingBar) {
                     Button { dismiss() } label: {
-                        Image(systemName: "xmark").font(.body.weight(.medium))
+                        Image(systemName: "xmark").font(.body.weight(.semibold))
                             .frame(minWidth: 44, minHeight: 44)
                     }
                     .foregroundStyle(.primary)
@@ -114,10 +114,10 @@ struct SettingsNavigationLabel: View {
     let subtitle: String
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
+        VStack(alignment: .leading, spacing: BoardStyle.Space.line) {
             Text(title).foregroundStyle(.primary)
             Text(subtitle).font(.subheadline).foregroundStyle(.secondary)
-        }.padding(.vertical, 5)
+        }.padding(.vertical, BoardStyle.Space.xs)
     }
 }
 
@@ -140,7 +140,7 @@ private struct MacConnectionSettingsView: View {
                     Text("Preview uses sample conversations.").foregroundStyle(.secondary)
                 } else if store.hasPairing {
                     LabeledContent("Mac") {
-                        Text(store.pairedMacDescription).font(.caption).textSelection(.enabled)
+                        Text(store.pairedMacDescription).font(.footnote).textSelection(.enabled)
                     }
                     Button("Reconnect") { Task { await store.reconnect() } }
                 } else {
@@ -220,7 +220,7 @@ struct BotIdentityFields: View {
         Section {
             Button { appearanceOpen = true } label: {
                 BotAvatar(symbol: avatar, color: color, size: avatarSize, identity: identity)
-                    .frame(maxWidth: .infinity).padding(.vertical, 14)
+                    .frame(maxWidth: .infinity).padding(.vertical, BoardStyle.Space.l)
             }
             .buttonStyle(.plain).listRowBackground(Color.clear)
             .accessibilityLabel("Change character")
@@ -316,14 +316,14 @@ struct BotAppearancePicker: View {
                 .frame(maxWidth: .infinity).padding(.vertical, 12)
         }.listRowBackground(Color.clear)
         Section("Fruit") {
-            LazyVGrid(columns: [GridItem(.adaptive(minimum: 76))], spacing: 18) {
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 76))], spacing: BoardStyle.Space.l) {
                 ForEach(FruitArtwork.all, id: \.id) { fruit in
                     Button { avatar = "fruit." + fruit.id; color = fruit.color } label: {
-                        VStack(spacing: 3) {
+                        VStack(spacing: BoardStyle.Space.xs) {
                             BotAvatar(symbol: "fruit." + fruit.id, color: fruit.color, size: 56, animated: false)
-                            Text(fruit.name).font(.caption2).foregroundStyle(.secondary)
+                            Text(fruit.name).font(.footnote).foregroundStyle(.secondary)
                         }
-                        .frame(maxWidth: .infinity).padding(.vertical, 7)
+                        .frame(maxWidth: .infinity).padding(.vertical, BoardStyle.Space.s)
                         .background(selectedFruit.id == fruit.id ? BoardStyle.ink.opacity(0.07) : .clear,
                                     in: RoundedRectangle(cornerRadius: 16))
                     }

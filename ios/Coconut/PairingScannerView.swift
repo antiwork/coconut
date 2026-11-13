@@ -143,7 +143,7 @@ struct PastePairingSetupView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var payload = ""
     @State private var error: String?
-    @ScaledMetric(relativeTo: .caption) private var editorHeight = 180.0
+    @ScaledMetric(relativeTo: .footnote) private var editorHeight = 180.0
     let importPayload: (String) throws -> Void
 
     var body: some View {
@@ -151,7 +151,7 @@ struct PastePairingSetupView: View {
             Form {
                 Section {
                     TextEditor(text: $payload)
-                        .font(.caption.monospaced()).frame(minHeight: editorHeight)
+                        .font(.footnote.monospaced()).frame(minHeight: editorHeight)
                         .noAutocapitalization().autocorrectionDisabled().privacySensitive()
                         .accessibilityLabel("Pairing link").accessibilityIdentifier("pairing-setup-payload")
                 } footer: {

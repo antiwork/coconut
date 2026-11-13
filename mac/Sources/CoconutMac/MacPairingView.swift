@@ -15,8 +15,8 @@ struct MacPairingView: View {
     var body: some View {
         VStack(spacing: 0) {
             if servesHere {
-                VStack(alignment: .leading, spacing: 10) {
-                    Text("This Mac runs Coconut").font(.headline)
+                VStack(alignment: .leading, spacing: BoardStyle.Space.m) {
+                    Text("This Mac runs Coconut").font(.body.weight(.semibold))
                     Text("Use the bots of this Mac here. Coconut pairs this window with the service on this Mac.")
                         .foregroundStyle(.secondary)
                     HStack {
@@ -28,13 +28,13 @@ struct MacPairingView: View {
                         .buttonStyle(.borderedProminent)
                         .disabled(pairingHere)
                         .accessibilityIdentifier("pair-this-mac")
-                        if let failure { Text(failure).font(.callout).foregroundStyle(BoardStyle.destructive) }
+                        if let failure { Text(failure).font(.subheadline).foregroundStyle(BoardStyle.destructive) }
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(20)
+                .padding(BoardStyle.Space.l)
                 .background(BoardStyle.surface, in: RoundedRectangle(cornerRadius: BoardStyle.Radius.medium))
-                .padding([.horizontal, .top], 20)
+                .padding([.horizontal, .top], BoardStyle.Space.l)
             }
             OnboardingView(firstRun: !store.hasPairing)
         }

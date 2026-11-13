@@ -12,11 +12,11 @@ struct MCPSettingsView: View {
             Section {
                 ForEach(store.mcpServers) { server in
                     NavigationLink { MCPConnectionView(server: server) } label: {
-                        VStack(alignment: .leading, spacing: 4) {
+                        VStack(alignment: .leading, spacing: BoardStyle.Space.line) {
                             Text(server.id)
                             Text(server.url.isEmpty ? "Configured in Hermes" : server.url)
-                                .font(.footnote).foregroundStyle(.secondary).lineLimit(1)
-                        }.padding(.vertical, 3)
+                                .font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
+                        }.padding(.vertical, BoardStyle.Space.xs)
                     }
                 }
                 Button { adding = true } label: {
