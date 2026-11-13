@@ -267,9 +267,14 @@ struct DocumentPage {
     /* Only the chart block of page.js: a chart that a bot draws by hand in an HTML page keeps its own look. */
     /* A chart takes the full width of its box, also in a flex row or column, and never more. */
     figure.chart[data-spec] { min-width: 0; width: 100%; }
+    /* In a table with a chart, the columns share the width of the table in equal parts: a chart never widens its cell. */
+    table:has(figure.chart[data-spec]) { table-layout: fixed; }
     figure.chart[data-spec] svg { direction: ltr; }
     figure.chart[data-spec] svg text { font-variant-numeric: tabular-nums; }
     figure.chart[data-spec] svg { max-width: 100%; }
+    /* The plot is 200 px high. With the height auto, WebKit makes it 199.98 px high and draws each text a little narrower
+       than its measure. */
+    figure.chart[data-spec] svg.plot { height: 200px; }
     figure.chart[data-spec] [aria-label="y-grid"] line { stroke: var(--line); stroke-opacity: 1; stroke-width: 1;
                                                          shape-rendering: crispEdges; }
     figure.chart[data-spec] figcaption { font-size: var(--size-1); }

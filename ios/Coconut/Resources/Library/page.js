@@ -67,7 +67,7 @@
     .match(/^([+\-−]?\u2060?[$€£¥]?\d(?:[\d,.]*\d)?(?:%|[A-Za-z](?![A-Za-z]))?)(?:\s+(\D{1,16}))?$/s);
   const text = (cell) => cell.textContent.trim();
   // A cell has content when it has text, a photo, a drawing or a check box. A plain cell has only text.
-  const filled = (cell) => text(cell) || cell.querySelector("img, svg, input");
+  const filled = (cell) => text(cell) || cell.querySelector("img, svg, input, figure.chart");
   const plain = (cell) => [...cell.childNodes].every((node) => node.nodeType === Node.TEXT_NODE);
   const tables = [];
   const grids = [];
@@ -249,7 +249,8 @@
   // each value its own text.
   const dateFormat = (dates) => {
     const times = [...new Set(dates.map((date) => date.getTime()))];
-    const span = Math.max(...times) - Math.min(...times);
+    const [first, last] = d3.extent(times);
+    const span = last - first;
     const day = 864e5;
     const timed = times.some((time) => time % day);
     const forms = timed ? (span <= day ? ["%-I %p", "%-I:%M %p", "%b %-d, %-I %p"] : ["%b %-d, %-I %p", "%b %-d, %H:%M"])
@@ -263,8 +264,6 @@
   // The numbers of the y axis: "1,000", "0.5", and short from 10,000 up ("12k", "1.5M", "3B").
   const yFormat = (ticks) => Math.max(...ticks.map(Math.abs)) >= 10000
     ? (value) => d3.format(".2~s")(value).replace("G", "B") : (value) => d3.format(",~r")(value);
-  // A count of ticks is always a small finite number: a count such as Infinity would make d3 work without end.
-  const tickCount = (count) => Number.isFinite(count) ? Math.min(Math.max(Math.floor(count), 1), 24) : 1;
   // At most four lines in even steps from zero, so the zero line always shows.
   // A domain that is not finite (no value at all) is [0, 0]: the chart shows its zero line.
   const yAxis = ([bottom, top]) => {
@@ -282,21 +281,31 @@
       .map((index) => Number((low + index * step).toPrecision(12)));
     return { domain: [low, high], ticks };
   };
+  // The width of each text. The code appends all texts first and then measures them: one layout for all texts.
   const textWidth = (figure, texts) => {
     const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
-    figure.append(svg);
-    const widths = texts.map((text) => {
+    const elements = texts.map((text) => {
       const element = document.createElementNS("http://www.w3.org/2000/svg", "text");
       element.textContent = text;
       svg.append(element);
-      return element.getComputedTextLength();
+      return element;
     });
+    figure.append(svg);
+    const widths = elements.map((element) => element.getComputedTextLength());
     svg.remove();
     return widths;
   };
+  // The labels under the plot. Each label is a value of the data: a name as it is, a number as String(value), a date
+  // in the form of dateFormat. The code goes through the points from left to right. A point gets its label only when
+  // the box of the label stays in the chart and starts at least 8 px after the box of the last label that shows. The
+  // chart ends 8 px before the lowest y number. On a band, a label starts at the left edge of its bar. On each other
+  // scale, a label is centered on its point and stays inside the chart. A name is never cut, with one exception: when
+  // no label shows yet and the label is wider than the chart, the code cuts it to whole characters and an ellipsis.
+  const segmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" });
   const drawChart = (figure, spec, data, kind) => {
     figure.querySelector("svg")?.remove();
-    const width = figure.clientWidth;
+    // The whole pixels of the width of the figure. clientWidth rounds up: a wider svg shrinks, and its texts change.
+    const width = Math.floor(parseFloat(getComputedStyle(figure).width));
     if (!width) return;
     const palette = coconut.palette;
     const names = [...new Set(data.map((row) => row.series))];
@@ -307,7 +316,8 @@
     const tone = spec.series ? "series" : palette[0];
     const line = { strokeWidth: 2, strokeLinejoin: "round", strokeLinecap: "round" };
     const valid = data.filter((row) => Number.isFinite(row.y));
-    const dots = names.every((name) => valid.filter((row) => row.series === name).length <= 12);
+    // A line has dots when each series has at most 12 values. The code counts the rows of each series one time.
+    const dots = (d3.max(d3.rollup(valid, (rows) => rows.length, (row) => row.series).values()) ?? 0) <= 12;
     const z = spec.series ? "series" : undefined;
     const marks = {
       // Only a bar without a stack has round top corners: Plot rounds each part of a stack.
@@ -328,98 +338,61 @@
     const probe = Plot.plot({ width, height: 200, x: { ...x, axis: null }, y: { axis: null }, marks: marks() });
     const y = yAxis(probe.scale("y").domain);
     const yText = yFormat(y.ticks);
-    const right = Math.ceil(Math.max(0, ...textWidth(figure, y.ticks.map(yText)))) + 8;
-    const plotWidth = width - right;
-    const draw = (axis) => {
-      figure.querySelector("svg")?.remove();
-      const svg = Plot.plot({
-        width, height: 200, marginTop: 8, marginBottom: 24, marginLeft: 0, marginRight: right, style: look,
-        x: { ...x, axis: null }, y: { domain: y.domain, axis: null }, color: { domain: names, range: palette },
-        marks: [
-          Plot.gridY(y.ticks, { stroke: "var(--line)", strokeOpacity: 1 }),
-          ...marks(),
-          Plot.axisY(y.ticks, { anchor: "right", tickSize: 0, tickPadding: 0, textAnchor: "end", dx: right,
-            tickFormat: yText, label: null }),
-          Plot.axisX({ tickSize: 0, tickPadding: 6, label: null, ...axis }),
-        ],
-      });
-      svg.setAttribute("class", "plot");
-      figure.querySelector(".legend") ? figure.querySelector(".legend").after(svg) : figure.prepend(svg);
-      return svg;
-    };
-    // A text cut with an ellipsis to the room that it has.
-    const cutTo = (text, room) => {
-      let words = String(text);
-      while (words.length > 1 && textWidth(figure, [words === String(text) ? words : words + "…"])[0] > room) {
-        words = words.slice(0, -1).trimEnd();
-      }
-      return words === String(text) ? words : words + "…";
-    };
-    // The labels under the plot never meet, never repeat and never pass the end of the column. On a scale, the first
-    // and the last label start or end at the edge of the plot when they would pass it.
-    const clean = (svg) => {
-      const texts = [...svg.querySelectorAll('[aria-label="x-axis tick label"] text')];
-      if (!band && texts.length) {
-        const frame = svg.getBoundingClientRect();
-        if (texts[0].getBoundingClientRect().left < frame.left) texts[0].setAttribute("text-anchor", "start");
-        const last = texts[texts.length - 1];
-        if (last.getBoundingClientRect().right > frame.left + plotWidth) last.setAttribute("text-anchor", "end");
-      }
-      const boxes = texts.map((text) => text.getBoundingClientRect()).sort((a, b) => a.left - b.left);
-      const { left, right: end } = svg.getBoundingClientRect();
-      return new Set(texts.map((text) => text.textContent)).size === texts.length && boxes.every((box, index) =>
-        box.left >= left - 0.5 && box.right <= end + 0.5 && (!index || box.left - boxes[index - 1].right >= 8));
-    };
-    if (!band) {
-      // A scale of dates or numbers: the ticks of Plot (d3), with their count bounded by the width. A date tick has
-      // one line in the form of the span of the ticks.
-      if (kind === "text") {
-        // Names on a line keep each label, cut to the room between two points, or each k-th one.
-        const room = (xs.length > 1 ? plotWidth / (xs.length - 1) : plotWidth) - 8;
-        const short = new Map(xs.map((value) => [value, cutTo(value, room)]));
-        for (let every = 1; every <= xs.length; every += 1) {
-          const ticks = xs.filter((_, index) => index % every === 0);
-          if (clean(draw({ ticks, tickFormat: (value) => short.get(value) }))) return;
-        }
-        return void draw({ ticks: [] });
-      }
-      // Whole numbers keep whole ticks.
-      const whole = kind === "number" && xs.every(Number.isInteger);
-      const [first, last] = d3.extent(xs);
-      if (!Number.isFinite(+first) || !Number.isFinite(+last)) return void draw({ ticks: [] });
-      for (let count = tickCount(plotWidth / 56); count >= 1; count -= 1) {
-        const all = kind === "date" ? d3.utcTicks(first, last, count)
-          : d3.ticks(first, last, count).filter((tick) => !whole || Number.isInteger(tick));
-        // d3 has no step between a week and a month: each second tick comes before a lower count.
-        for (const every of [1, 2]) {
-          const ticks = all.filter((_, index) => index % every === 0);
-          if (clean(draw({ ticks, tickFormat: kind === "date" ? dateFormat(ticks) : d3.format("~r") }))) return;
-        }
-      }
-      draw({ ticks: [] });
-      return;
-    }
-    // A band: names keep each label, cut to its step. Days and runs of numbers show the first and each k-th label.
-    const scale = draw({ ticks: [] }).scale("x");
-    const step = scale.step;
-    const shift = { textAnchor: "start", dx: -scale.bandwidth / 2 };
+    const yWidths = textWidth(figure, y.ticks.map(yText));
+    const right = Math.ceil(Math.max(0, ...yWidths)) + 8;
+    // The chart of the labels ends 8 px before the lowest y number, at the right edge of the svg.
+    const end = width - yWidths[0] - 8;
     const format = kind === "date" ? dateFormat(xs) : (value) => String(value);
-    if (kind === "text") {
-      // A label ends 8 px before the next step, and the last one at the end of the plot.
-      const cut = (value) => cutTo(format(value), Math.min(step - 8, plotWidth - scale.apply(value)));
-      const labels = xs.map(cut);
-      if (step >= textWidth(figure, ["Mm…"])[0] + 8 && new Set(labels).size === labels.length) {
-        const text = new Map(xs.map((value, index) => [value, labels[index]]));
-        if (clean(draw({ ticks: xs, tickFormat: (value) => text.get(value), ...shift }))) return;
+    const texts = xs.map(format);
+    const widths = textWidth(figure, texts);
+    const svg = Plot.plot({
+      width, height: 200, marginTop: 8, marginBottom: 24, marginLeft: 0, marginRight: right, style: look,
+      x: { ...x, axis: null }, y: { domain: y.domain, axis: null }, color: { domain: names, range: palette },
+      marks: [
+        Plot.gridY(y.ticks, { stroke: "var(--line)", strokeOpacity: 1 }),
+        ...marks(),
+        Plot.axisY(y.ticks, { anchor: "right", tickSize: 0, tickPadding: 0, textAnchor: "end", dx: right,
+          tickFormat: yText, label: null }),
+      ],
+    });
+    svg.setAttribute("class", "plot");
+    // A text cut to the room that it has: the most whole characters, then an ellipsis. A binary search measures it.
+    const cut = (text, room) => {
+      const parts = [...segmenter.segment(text)].map((part) => part.segment);
+      let low = 0, high = parts.length - 1;
+      while (low < high) {
+        const middle = Math.ceil((low + high) / 2);
+        if (textWidth(figure, [parts.slice(0, middle).join("").trimEnd() + "…"])[0] <= room) low = middle;
+        else high = middle - 1;
       }
+      return low ? parts.slice(0, low).join("").trimEnd() + "…" : "";
+    };
+    const scale = svg.scale("x");
+    const points = xs.map((value, index) => ({ at: scale.apply(value), text: texts[index], size: widths[index] }))
+      .filter((point) => Number.isFinite(point.at)).sort((a, b) => a.at - b.at);
+    const labels = document.createElementNS("http://www.w3.org/2000/svg", "g");
+    labels.setAttribute("aria-label", "x-axis tick label");
+    // The svg of Plot centers each text (text-anchor middle). A label starts at its x.
+    labels.setAttribute("text-anchor", "start");
+    let edge = -Infinity;
+    for (const point of points) {
+      let { text, size } = point;
+      if (edge === -Infinity && size > end) {
+        text = cut(text, end);
+        size = text ? textWidth(figure, [text])[0] : 0;
+      }
+      const left = band ? point.at : Math.min(Math.max(point.at - size / 2, 0), end - size);
+      if (!text || left < edge + 8 || left + size > end) continue;
+      const label = document.createElementNS("http://www.w3.org/2000/svg", "text");
+      label.setAttribute("x", left);
+      label.setAttribute("y", 182);
+      label.setAttribute("dy", "0.71em");
+      label.textContent = text;
+      labels.append(label);
+      edge = left + size;
     }
-    const widest = Math.max(...textWidth(figure, xs.map(format)));
-    for (let every = Math.max(1, Math.ceil((widest + 8) / step)); every <= xs.length; every += 1) {
-      const ticks = xs.filter((_, index) => index % every === 0);
-      if (clean(draw({ ticks, tickFormat: format, ...shift }))) return;
-      if (clean(draw({ ticks: ticks.slice(0, -1), tickFormat: format, ...shift }))) return;
-    }
-    draw({ ticks: [] });
+    svg.append(labels);
+    figure.querySelector(".legend") ? figure.querySelector(".legend").after(svg) : figure.prepend(svg);
   };
   for (const figure of main.querySelectorAll("figure.chart[data-spec]")) {
     try {
