@@ -51,19 +51,32 @@
     quote.replaceWith(callout);
   }
 
-  // A number: a sign, a currency sign, digits with separators, then a percent sign or one letter such as k or M. The
-  // text after it is its unit: "1,552 steps", "$41,200", "87%", "-3", "27.6 in".
-  const number = (text) => text.match(/^([+\-−]?[$€£¥]?\d(?:[\d,.]*\d)?(?:%|[A-Za-z](?![A-Za-z]))?)(?:\s+(.+))?$/s);
+  // A number: a sign, a currency sign, digits with separators, then a percent sign or one letter such as k or M. A unit
+  // can follow after a space: at most 16 characters and no digit. "1,552 steps", "$41,200", "87%", "-3", "27.6 in".
+  const number = (text) => text.match(/^([+\-−]?[$€£¥]?\d(?:[\d,.]*\d)?(?:%|[A-Za-z](?![A-Za-z]))?)(?:\s+(\D{1,16}))?$/s);
   const text = (cell) => cell.textContent.trim();
+  // A cell has content when it has text, a photo, a drawing or a check box. A plain cell has only text.
+  const filled = (cell) => text(cell) || cell.querySelector("img, svg, input");
+  const plain = (cell) => [...cell.childNodes].every((node) => node.nodeType === Node.TEXT_NODE);
   const tables = [];
   for (const table of main.querySelectorAll("table")) {
-    const head = table.tHead && table.tHead.rows[0];
-    const body = [...table.tBodies].flatMap((part) => [...part.rows]);
-    // Metrics: a table with one row of numbers, 1 to 6 columns and 1 to 24 characters in each cell. Each column is a
-    // tile with the header as its label. A row with a text cell stays a table, so a list of one row keeps its form.
+    const all = [...table.rows];
+    // A table with a cell of more than one column or row stays a table. It scrolls inside itself.
+    if (all.some((row) => [...row.cells].some((cell) => cell.colSpan > 1 || cell.rowSpan > 1))) continue;
+    // The head: the first row of the head section, or else a first row of only header cells. Each other row, also a
+    // row of the foot, is a body row.
+    const first = all[0];
+    const head = table.tHead && table.tHead.rows[0]
+      || (first && first.cells.length && [...first.cells].every((cell) => cell.tagName === "TH") ? first : null);
+    const body = all.filter((row) => row !== head && row.parentElement !== table.tHead);
+    if (!body.length) continue;
+    if (head) head.classList.add("head");
+    // Metrics: one row of plain numbers, 1 to 6 columns and 1 to 24 characters in each cell. Each column is a tile
+    // with the header as its label. A row with a text cell stays a table, so a list of one row keeps its form.
     const count = head ? head.cells.length : 0;
     if (count >= 1 && count <= 6 && body.length === 1 && body[0].cells.length === count
-        && [...head.cells, ...body[0].cells].every((cell) => text(cell).length >= 1 && text(cell).length <= 24)
+        && [...head.cells, ...body[0].cells].every((cell) => plain(cell) && text(cell).length >= 1
+          && text(cell).length <= 24)
         && [...body[0].cells].every((cell) => number(text(cell)))) {
       const metrics = document.createElement("div");
       metrics.className = "metrics";
@@ -88,36 +101,36 @@
       table.replaceWith(metrics);
       continue;
     }
-    // A table: a column of numbers aligns right. A column of short cells keeps each cell on one line, and each other
-    // column keeps at least 16 characters on a line.
-    const rows = [...table.rows];
-    for (let index = 0; index < Math.max(0, ...rows.map((row) => row.cells.length)); index += 1) {
-      const cells = rows.map((row) => row.cells[index]).filter(Boolean);
-      const values = body.map((row) => row.cells[index]).filter(Boolean);
-      if (values.length && values.every((cell) => number(text(cell)))) {
+    // A table: a column of numbers aligns right. It is a column where each body cell with text is a number. A column
+    // of short cells keeps each cell on one line, and each other column keeps at least 16 characters on a line.
+    const numeric = [];
+    for (let index = 0; index < Math.max(...all.map((row) => row.cells.length)); index += 1) {
+      const cells = all.map((row) => row.cells[index]).filter(Boolean);
+      const values = body.map((row) => row.cells[index]).filter((cell) => cell && text(cell));
+      numeric[index] = values.length > 0 && values.every((cell) => number(text(cell)));
+      if (numeric[index]) {
         for (const cell of cells) if (!cell.hasAttribute("align")) cell.setAttribute("align", "right");
       }
       const short = Math.max(...cells.map((cell) => text(cell).length)) <= 16;
       cells.forEach((cell) => cell.classList.add(short ? "one-line" : "long"));
     }
-    if (!body.length) continue;
-    // The record of a row: its first cell with text is the name. The last column goes to the end of the first line
-    // when each of its cells is short. Each other cell with text follows on the second line, after " · ". A number
-    // has the label of its column before it: "Open 4 · Drafts 3". A no-break space keeps the dot with the cell before
-    // it, and a label with its number.
+    // The record of a row: its first cell with content is the name. The last column goes to the end of the first
+    // line when each of its cells is short. Each other cell with content follows on the second line, after " · ". A
+    // cell of a column of numbers has the label of its column before it: "Open 4 · Drafts 3". A no-break space keeps
+    // the dot with the cell before it, and a label with its number.
     const label = (cell) => {
       const header = head && head.cells[cell.cellIndex];
-      return header && number(text(cell)) ? text(header) + "\u00a0" : "";
+      return header && numeric[cell.cellIndex] && text(cell) ? text(header) + "\u00a0" : "";
     };
     const last = head ? head.cells.length - 1 : 0;
     const trailing = last > 0 && body.every((row) => !row.cells[last]
-      || (label(row.cells[last]) + text(row.cells[last])).length <= 16);
+      || plain(row.cells[last]) && (label(row.cells[last]) + text(row.cells[last])).length <= 16);
     for (const row of body) {
       // The white space between two cells would be a second space and a line break before the dot.
       for (const node of [...row.childNodes]) {
         if (node.nodeType === Node.TEXT_NODE && !node.textContent.trim()) node.remove();
       }
-      const cells = [...row.cells].filter((cell) => text(cell));
+      const cells = [...row.cells].filter(filled);
       if (!cells.length) continue;
       cells[0].classList.add("name");
       const trail = trailing && row.cells[last] !== cells[0] ? row.cells[last] : null;
@@ -128,30 +141,37 @@
       cells.slice(1).filter((cell) => cell !== trail).forEach((cell, index) => {
         cell.dataset.label = (index ? "\u00a0· " : "") + label(cell);
       });
-      for (const cell of cells) if (number(text(cell))) cell.classList.add("number");
+      for (const cell of cells) if (numeric[cell.cellIndex]) cell.classList.add("number");
     }
+    table.classList.add("fitted");
     tables.push(table);
   }
-  // A table that is wider than the column does not fit, and it is a list of records. A new width measures again. The
-  // trailing column of each record has the width of the widest trailing cell of its table (--trail).
-  let measured = 0;
-  const fit = () => {
-    if (main.clientWidth === measured) return;
-    measured = main.clientWidth;
-    for (const table of tables) {
-      table.classList.remove("records");
-      table.classList.toggle("records", table.offsetWidth > main.clientWidth);
-      const trails = [...table.querySelectorAll("td.trail")];
-      if (!table.classList.contains("records") || !trails.length) continue;
-      table.style.removeProperty("--trail");
-      const width = Math.ceil(Math.max(...trails.map((cell) => cell.getBoundingClientRect().width)));
-      table.style.setProperty("--trail", width + "px");
-    }
+  // A table that is wider than its box does not fit, and it is a list of records. The box is the parent of the table,
+  // for example main, a callout or an item of a list. A new width of the box measures again, also when a hidden box
+  // shows. The trailing column of each record has the width of the widest trailing cell of its table (--trail).
+  const measured = new Map();
+  const fit = (table) => {
+    const box = table.parentElement;
+    const style = getComputedStyle(box);
+    const width = box.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
+    measured.set(box, box.clientWidth);
+    table.classList.remove("records");
+    table.classList.toggle("records", table.offsetWidth > width + 0.5);
+    const trails = [...table.querySelectorAll(".trail")];
+    if (!table.classList.contains("records") || !trails.length) return;
+    table.style.removeProperty("--trail");
+    const trail = Math.ceil(Math.max(...trails.map((cell) => cell.getBoundingClientRect().width)));
+    table.style.setProperty("--trail", trail + "px");
   };
-  if (tables.length) {
-    fit();
-    new ResizeObserver(fit).observe(main);
-  }
+  tables.forEach(fit);
+  const observer = new ResizeObserver((entries) => {
+    for (const entry of entries) {
+      const box = entry.target;
+      if (measured.get(box) === box.clientWidth) continue;
+      for (const table of tables) if (table.parentElement === box) fit(table);
+    }
+  });
+  new Set(tables.map((table) => table.parentElement)).forEach((box) => observer.observe(box));
 
   // Charts: {"type": "bar" | "line" | "area" | "dot", "data": [...], "x": "field", "y": "field", "series": "field",
   // "title": "...", "y_label": "..."}. The colors are the palette of the page.

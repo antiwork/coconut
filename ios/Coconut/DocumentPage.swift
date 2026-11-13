@@ -228,25 +228,32 @@ struct DocumentPage {
     /* A table that does not fit is a list of records, as a row of the Chats list: the name, a short last cell at the
        end of its first line, and the other cells on a second line. A number has the text color, and its label, each
        dot and each text cell are quiet. */
-    table.records, table.records tbody, table.records tr { display: block; }
-    table.records thead { display: none; }
+    table.records, table.records tbody, table.records tfoot, table.records tr { display: block; }
+    table.records thead, table.records tr.head { display: none; }
     table.records tr { position: relative; padding: 12px 0; border-bottom: 1px solid var(--line); }
-    table.records td { display: inline; padding: 0; border: 0; white-space: normal; color: var(--text-2); }
-    table.records td:not(.name):not([data-label]) { display: none; }
-    table.records td::before { content: attr(data-label); color: var(--text-2); }
-    table.records td.number { color: var(--text); }
-    table.records td.name { display: block; font-size: var(--size-3); font-weight: 600; color: var(--text); }
-    table.records tr:has(> td.trail) > td.name { padding-right: calc(var(--trail) + 16px); }
+    table.records :is(td, th) { display: inline; min-width: 0; padding: 0; border: 0; font-size: inherit;
+                                font-weight: inherit; white-space: normal; color: var(--text-2); }
+    table.records :is(td, th):not(.name):not([data-label]) { display: none; }
+    table.records :is(td, th)::before { content: attr(data-label); color: var(--text-2); }
+    table.records .number { color: var(--text); }
+    table.records .name { display: block; font-size: var(--size-3); font-weight: 600; color: var(--text);
+                          text-align: start; }
+    table.records tr:has(> .trail) > .name { padding-right: calc(var(--trail) + 16px); }
     /* The line height of the name and an empty text at its size put the trailing cell on the baseline of the first
        line of the name. */
-    table.records td.trail { position: absolute; top: 12px; right: 0; width: var(--trail, auto); text-align: right;
-                             white-space: nowrap; line-height: calc(var(--size-3) * 1.5); }
-    table.records td.trail::after { content: ""; font-size: var(--size-3); }
-    .metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: var(--space); }
-    .metrics > div { background: var(--surface); border-radius: var(--radius); padding: 12px 16px; }
+    table.records .trail { position: absolute; top: 12px; right: 0; width: var(--trail, auto); text-align: right;
+                           white-space: nowrap; line-height: calc(var(--size-3) * 1.5); }
+    table.records .trail::after { content: ""; font-size: var(--size-3); }
+    /* A table that page.js does not lay out (a cell of two columns, only a header, or a table that a script of the
+       page makes later) scrolls inside itself and never moves the page. */
+    table:not(.fitted) { display: block; overflow-x: auto; }
+    /* A tile takes the width that its number needs: a number never breaks. */
+    .metrics { display: flex; flex-wrap: wrap; gap: var(--space); }
+    .metrics > div { flex: 1 1 140px; background: var(--surface); border-radius: var(--radius); padding: 12px 16px; }
     .metrics p { margin: 0; }
     .metrics .label { font-size: var(--size-1); color: var(--text-2); }
-    .metrics .value { margin-top: 4px; font-size: var(--size-5); font-weight: 600; line-height: 1.2; }
+    .metrics .value { margin-top: 4px; font-size: var(--size-5); font-weight: 600; line-height: 1.2;
+                      white-space: nowrap; }
     .metrics .unit { font-size: var(--size-2); font-weight: 400; color: var(--text-2); }
     img { max-width: 100%; height: auto; border-radius: var(--radius); display: block; }
     svg { display: block; max-width: 100%; height: auto; overflow: visible; }
