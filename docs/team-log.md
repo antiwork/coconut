@@ -898,7 +898,7 @@ The recipient is inside the box. Another member of the team can open the outer s
 
 1. Only a person's Mac with the mark reads the kind. Each other Mac keeps the entry by the rule of an unknown kind and shows nothing.
 2. The Mac opens each box before the transaction of the answer, without the lock of the service, as it opens the bodies. No call to the helper or the relay runs in a transaction.
-3. An entry of another member: the pair key takes the agreement key of the newest valid `member` entry of the writer that the Mac has at that point. The store has some, and the `member` entries before it in the same answer of the relay count, in their order. When the box opens, `to` is this Mac, and the fields fit, the entry is a message of the chat with the writer. When the box does not open or names another member, the entry is not for this Mac and shows nothing.
+3. An entry of another member: the pair key takes the agreement key of the newest valid `member` entry of the writer that the Mac has at that point. The store has some, and the `member` entries before it in the same answer of the relay count, in their order. When the box opens, `to` is this Mac, and the fields fit, the entry is a message of the chat with the writer. This holds for a box without `bot`. A box with `bot` is a message of a chat with an agent: see [Direct chat with an agent](#direct-chat-with-an-agent). When the box does not open or names another member, the entry is not for this Mac and shows nothing.
 4. An own entry that the store does not have: the Mac tries the pair key of each other member until the box opens and `to` names that member. This happens after a stop between the write to the relay and the write to the store, and when the store is behind the relay. A Mac never reads a room without its row in the store.
 5. The relay keeps only the newest write of an entry and gives it at the `seq` of that write. So when a member writes its `member` entry again, for a new name or the mark `direct`, that entry comes after the direct entries from before the change. A Mac that reads the room from an earlier position meets these direct entries before the key that they need. So such an entry waits (`team_direct_waits`, in the transaction that accepts the entry): an entry of a writer without a `member` entry at that point, and an own entry that no key of the known members opened. When the Mac has read the room to its end, it tries each waiting entry one more time, outside a transaction, with the members that the store has now. Then the wait ends, also for an entry that does not open and for a writer that still has no `member` entry. A message that shows then is history: it adds the event of its chat and no notification. A `delete` over a waiting entry and a new write of it end its wait, and a new write gets its own try. A leave removes the waits of the room.
 6. The newest write of an entry counts. A write that no longer opens, and a `delete` over the entry, remove the message from the chat on this Mac.
@@ -937,6 +937,8 @@ A direct message notifies the phone like a team message (see [Notifications](#no
 5. The `coconut` part is `{"version": 1, "device_id": ..., "kind": "direct", "direct": {"team": <room ID>, "member": <member ID>}}`. A group whose items are all direct messages of one chat has the thread of that chat and `{"version": 1, "device_id": ..., "kind": "group", "count": n, "direct": {"team": <room ID>, "member": <member ID>}}`. Neither has `team` at the top, because the app of today would open the Team chat. Each other group opens Inbox, also a group of team messages and direct messages of one room.
 6. A group counts "direct message" and "direct messages" after "team message".
 
+Rules 4 and 5 give the title, the thread and the `direct` part of a message of a chat of two people: a box without `bot`. A message of a chat with an agent has the name of the agent, the thread of its `bot` entry and the team bot ID. See [Events and notifications of a chat with an agent](#events-and-notifications-of-a-chat-with-an-agent).
+
 No log line has the text of a direct message, the name of a writer or the name of a team.
 
 ### Direct chat with an agent
@@ -952,11 +954,11 @@ A team bot ID is `t-<room ID>-<entry ID of the bot entry>`, as in `bots` of `GET
 The payload of a `bot` entry has the optional field `direct`.
 
 - `direct: true` means "this agent answers direct messages".
-- Only a Mac for a team only writes it, and only while the record of the bot has `chat` true (the rule of `open`).
+- Only a Mac for a team only writes it, and only while the record of the agent has `chat` true (the rule of `open`).
 - A missing `direct` and each other value are false. The agent still shows.
 - The mark is part of the form of an own `bot` entry, so a change of `chat` writes the entry again in each team.
 - A reader keeps the mark in `team_bots` (`direct`). A store of an older version gets the column in one step, and each row reads as false until the next write of its entry.
-- A change of `direct` of an agent of another member adds `team.updated`, as each other change of a bot.
+- A change of `direct` of an agent of another member adds `team.updated`, as each other change of an agent.
 
 #### The box of a chat with an agent
 
@@ -1001,11 +1003,13 @@ The Mac checks the mark first, then the `bot` entry and its member, then `direct
 
 These rules add to [Rules for a Mac that reads a `direct` entry](#rules-for-a-mac-that-reads-a-direct-entry). The pair key, the wait for a `member` entry, the times and the newest write do not change.
 
-1. An entry of another member whose box opens, names this Mac in `to`, and has `bot`: a message of the chat of this person with that agent. The store keeps the writer, the member (the writer) and the bot.
+1. An entry of another member whose box opens, names this Mac in `to`, and has `bot`: a message of the chat of this person with that agent. The store keeps the writer, the member (the writer) and the `bot` entry of the agent.
 2. An own entry that the store does not have: the Mac tries the pair key of each other member, as before. When the box opens with `to` that member and has `bot`, the entry is a message of the chat with that agent, with its `page`.
-3. A message with `bot` shows only while `bot` names a `bot` entry of the member of the chat that the store has a name for (`team_names`, kind `bot`), as a message of a bot in the Team chat. The `bot` entry can come after the message, so the check runs in each query of the chat, not when the Mac accepts the entry. A new name of the `bot` entry, also its first name, changes the chat.
+3. A message with `bot` shows only while `bot` names a `bot` entry of the member of the chat that the store has a name for (`team_names`, kind `bot`), as a message of an agent in the Team chat. The `bot` entry can come after the message, so the check runs in each query of the chat, not when the Mac accepts the entry. A new name of the `bot` entry, also its first name, changes the chat.
 4. A message with `bot` is never part of the chat of two people with that member, and a message without `bot` is never part of a chat with an agent. The page of messages, the newest message, the list of the chats, the unread count, the read position, the reply quote, an edit, a removal and the notification of each chat read only its own messages.
 5. The chat keeps its history after the agent or its Mac leaves the team. The name comes from `team_names`.
+
+A reader does not check that the Mac of the `bot` entry is a Mac for a team only. A member can write as an agent of its own Mac, as it can in the Team chat. So each item of `bot_directs` names the Mac of the agent (`member`, `member_name`), and the app lets a person write only to an agent of `bots` with `direct`.
 
 The chat with an agent is one chat for each room and `bot` entry. Its read position is in `team_bot_direct_reads`, apart from the read position of the chat of two people with the same member. It starts at 0 and only moves forward, never past the newest message of the chat that shows. The unread count is the number of messages of the other side after it, up to 99.
 
@@ -1034,7 +1038,7 @@ A message of a chat of two people has no `page`.
 `GET /v1/team/rooms` with `X-Coconut-Team: direct` from a paired device:
 
 - Each item of `bots` has `direct`: true when this Mac can send the agent a direct message now (see [Who can write to an agent](#who-can-write-to-an-agent)). An agent of this Mac has `direct` false. Without the header, no item has the field.
-- Each room has `bot_directs`: one item for each chat with an agent that has a message that shows, newest chat first: `bot` (the team bot ID), `bot_name` (the last name of `team_names`), `unread`, `last_message` (`first`, `this_mac`, the first 200 code points of `text`, `created_at`), and `typing` (the whole number of seconds that are left of the typing sign of the agent, or null). A sign shows only while the room is `active` and the member of the agent is in the member list. A chat with an agent that left stays in the list.
+- Each room has `bot_directs`: one item for each chat with an agent that has a message that shows, newest chat first: `bot` (the team bot ID), `bot_name` (the last name of `team_names`), `member` (the member ID of the Mac of the `bot` entry), `member_name` (the last name of that member in `team_names`, or null), `unread`, `last_message` (`first`, `this_mac`, the first 200 code points of `text`, `created_at`), and `typing` (the whole number of seconds that are left of the typing sign of the agent, or null). A sign shows only while the room is `active` and the member of the agent is in the member list. A chat with an agent that left stays in the list.
 - `directs` stays the list of the chats of two people. An older app reads neither new field.
 
 #### Events and notifications of a chat with an agent
@@ -1048,18 +1052,18 @@ A message of a chat of two people has no `page`.
 
 `backend/coconut/team_turns.py` and `backend/coconut/team_typing.py` hold these rules.
 
-1. It writes `direct: true` in the `bot` entry of each bot whose record has `chat` true.
+1. It writes `direct: true` in the `bot` entry of each agent whose record has `chat` true.
 2. It reads the `direct` entries of the other members: it opens each box with the pair key of the writer. A box with `to` this Mac and a `bot` that is an entry ID is a message of the chat of the writer with that agent, and goes into `team_directs`, with its `page`. A box without `bot` shows nothing there. It keeps no read position and sends no notification. The helper opens the boxes before the transaction and without the lock of the service, and the wait for a `member` entry that comes later and the repair of an own entry hold as on a person's Mac. A message of the chat shows there only while `bot` names a `bot` entry of this Mac that the store has a name for. A message that waited for its key is history: it starts no turn.
 3. A `direct` entry starts a turn of an agent of this Mac when each of these holds (the rules of [A bot answers](#a-bot-answers)):
    - This Mac sees the entry for the first time, and its `rev` is 1.
    - Its member is another member than this Mac, and that member is in the member list.
    - The `at` of the relay is under one hour old.
-   - Its box opens, names this Mac in `to`, has a valid `text`, and its `bot` is the entry ID of the `bot` entry of a bot of this Mac that is shared with the room, is not archived, and has `chat` true.
-4. The trigger goes into `team_triggers`, with the bound of 8 waiting triggers for one bot in one room. One thread still runs the triggers of one bot in one room one at a time: the Team chat, the named chats and the direct chats.
+   - Its box opens, names this Mac in `to`, has a valid `text`, and its `bot` is the entry ID of the `bot` entry of an agent of this Mac that is shared with the room, is not archived, and has `chat` true.
+4. The trigger goes into `team_triggers`, with the bound of 8 waiting triggers for one agent in one room. One thread still runs the triggers of one agent in one room one at a time: the Team chat, the named chats and the direct chats.
 5. The turn goes to Hermes with the chat ID `<bot ID>:team:<room ID>:direct:<member ID>`: one session for each person and agent. The name of the chat for Hermes is "<name of the person> · <name of the team>". The turn says that the chat is a direct chat (`direct: true` in `team`), and the adapter then gives Hermes the chat type `dm`. An older plugin gives `group`, and the session is still its own.
 6. The rules of the chat for Hermes: "You are in a direct chat with {name}, a member of the team {team}, in Coconut. Only {name} reads your reply. Do not repeat in another chat what {name} writes here, unless {name} asks for it. Coconut shows Markdown and has no cards here: when you need a choice or a fact, ask in your reply."
 7. The quoted context: at most 20 messages of the same chat since the last message of the agent there and before the trigger. A reply to a message of the chat names that message, as in the Team chat. With `page`: the Mac finds its own document through `team_page_entries`, and the turn gets the title, the key and the current text of the page from the store of this Mac (at most the first 16,000 code points, with one line that says so for a longer page), as quoted context that is data and not instructions. A page that this Mac no longer has gives one line: the person asks about a page that is no longer in the Library.
-8. Each complete segment of the reply and each commentary is one `direct` entry of this Mac for the person, with `bot`. No message has `reply_to`. A text over 16,000 code points goes into more than one message. The entry ID comes from the room, the trigger, the bot and the number of the message in the turn.
+8. Each complete segment of the reply and each commentary is one `direct` entry of this Mac for the person, with `bot`. No message has `reply_to`. A text over 16,000 code points goes into more than one message. The entry ID comes from the room, the trigger, the agent and the number of the message in the turn.
 9. An approval of a command is denied: "Nobody can approve a command in this chat, so Coconut denied it. Tell {name} that you could not run it." A clarify question goes into the chat as a message with its choices as a list, and Hermes gets the answer to end the turn: "Coconut put your question in this chat. End your turn now. The reply of {name} starts a new turn."
 10. A send of Hermes outside a turn in such a chat is a direct message of the agent to that member, while the agent answers in the room and the member is in the member list.
 11. The stops and the notices of a failed turn are those of the Team chat, as direct messages in the chat. A removal of the trigger message, a member that leaves or is removed, an agent whose chat goes off, an agent that leaves the team and a leave of this Mac stop the turn. A turn that a stop of the service cut off posts its notice in the same direct chat at the next start. Each message of the agent goes out only while the agent answers in the room, the request stands, and the person is in the member list. No call to the helper or the relay holds the lock of the service.

@@ -1,5 +1,5 @@
 """The direct chat of a person with a bot of a Mac for a team only, on the person's Mac (coconut/team_directs.py,
-docs/team-log.md, "Direct chat with a bot").
+docs/team-log.md, "Direct chat with an agent").
 
 Ada (the first Mac) makes the room, and Grace (the second Mac) and Lin (the third Mac) join it. Lin's Mac plays the Mac
 that runs the bot: the test writes its `bot` entries, its `page` entries and the messages of its bot by hand, because
@@ -14,11 +14,14 @@ import sqlite3
 import time
 import unittest
 from secrets import token_hex
+from unittest.mock import patch
 from uuid import uuid4
 
 from coconut import team_store
 from coconut.push import DIRECT_BODY
+from coconut.service import Service
 from coconut.team_directs import BOT_GONE, BOT_SILENT, CHOOSE_PAGE, NOT_HERE, NOT_ON, TEAM_ONLY
+from coconut.team_relay import TeamRelayError
 from coconut.team_store import bot_fields, direct_fields
 from team_fakes import DEVICE
 from test_push import RecordingTransport, pair_phone
@@ -387,7 +390,8 @@ class TheListOfTheTeams(BotDirectMacs, unittest.TestCase):
         room = self.ask(self.first)
         self.assertEqual({bot['name']: bot['direct'] for bot in room['bots']}, {'Reporter': True, 'Quiet': False})
         (chat,) = room['bot_directs']
-        self.assertEqual(chat, {'bot': self.bot_id, 'bot_name': 'Reporter', 'unread': 1, 'typing': None,
+        self.assertEqual(chat, {'bot': self.bot_id, 'bot_name': 'Reporter', 'member': self.lin, 'member_name': 'Lin',
+                                'unread': 1, 'typing': None,
                                 'last_message': {'first': chat['last_message']['first'], 'this_mac': False,
                                                  'text': 'Hello Ada',
                                                  'created_at': chat['last_message']['created_at']}})
@@ -435,7 +439,9 @@ class Events(BotDirectMacs, unittest.TestCase):
         self.assertNotIn('reset', answer)
         self.assertEqual(answer['team_bot_directs_changed'], [{'team': self.room, 'bot': self.bot_id}])
         self.assertEqual((answer['team_directs_changed'], answer['team_messages_changed']), ([], []))
-        # A pass that changes nothing adds no event.
+        # The next pass reads the own write back and can take the time of the relay (see the test below). A pass after
+        # it changes nothing and adds no event.
+        self.first.team_sync_pass()
         cursor = self.first._cursor()
         self.sync(self.first)
         self.assertEqual(self.first._cursor(), cursor)
@@ -455,6 +461,142 @@ class Events(BotDirectMacs, unittest.TestCase):
         # No event of a chat of two people names no member.
         rows = self.first.db.execute("SELECT data FROM events WHERE type='team_directs.updated'").fetchall()
         self.assertTrue(all('member' in json.loads(row[0]) for row in rows))
+
+
+class EachChatReadsOnlyItsOwnMessages(BotDirectMacs, unittest.TestCase):
+    """One test for each rule that keeps a chat with a bot apart from the chat of two people with the same member, and
+    for the event and the store of each such chat."""
+
+    def changes(self, cursor) -> dict:
+        return self.first.updates(cursor, 0, collection_deltas=True)
+
+    def test_a_reply_quotes_no_message_of_the_other_chat(self):
+        to_lin = self.send(self.first, self.lin, 'To Lin')
+        self.bot_says('About your message', reply_to=to_lin['id'])
+        (message,) = self.phone(self.first)('GET', self.path(self.bot_id), {})['messages']
+        self.assertEqual((message['reply_to'], message['reply']), (to_lin['id'], None))
+
+    def test_a_newer_message_that_does_not_show_keeps_the_newest_message_of_the_chat(self):
+        self.bot_says('Shown')
+        # Grace writes a newer message that names the bot of Lin's Mac. It does not show.
+        self.bot_says('Hidden', service=self.second)
+        (chat,) = self.ask(self.first)['bot_directs']
+        self.assertEqual((chat['bot'], chat['last_message']['text'], chat['unread']), (self.bot_id, 'Shown', 1))
+
+    def test_the_same_key_in_the_other_chat_finds_no_message_there(self):
+        key = str(uuid4())
+        self.send(self.first, self.bot_id, 'For the bot', key)
+        # The saved answer is past its time, so the repeat reaches the route.
+        self.first._team_replies.clear()
+        self.assertEqual(self.refusal(self.phone(self.first), 'POST', self.path(self.lin), {'text': 'For the bot'},
+                                      key)[0], 404)
+        self.assertEqual(self.chat(self.first, self.lin), [])
+
+    def test_a_message_of_the_mac_of_the_bot_names_no_page(self):
+        page = self.write_page(self.bot)
+        self.sync()
+        self.bot_says('About my page', page=page)
+        (message,) = self.phone(self.first)('GET', self.path(self.bot_id), {})['messages']
+        self.assertIsNone(message['page'])
+
+    def test_an_own_message_read_back_from_the_log_keeps_its_page(self):
+        page = self.write_page(self.bot)
+        self.sync()
+        write = self.relay.write
+
+        def lost(*arguments, **options):
+            write(*arguments, **options)
+            raise TeamRelayError(0, 'The relay did not answer.')
+        self.relay.write = lost
+        key = str(uuid4())
+        body = {'text': 'About the report', 'about_document_id': self.team_id(page)}
+        self.assertEqual(self.refusal(self.phone(self.first), 'POST', self.path(self.bot_id), body, key)[0], 503)
+        self.relay.write = write
+        again = self.phone(self.first)('POST', self.path(self.bot_id), body, key)['message']
+        self.assertEqual(again['page'], {'id': self.team_id(page), 'title': 'Weekly report'})
+        self.assertEqual(self.first.team_store.direct(self.room, again['id'])['page'], page)
+
+    def test_a_new_time_from_the_relay_changes_the_chat_with_the_bot(self):
+        write = self.relay.write
+
+        def late(*arguments, **options):
+            answer = write(*arguments, **options)
+            time.sleep(0.003)
+            return answer
+        self.relay.write = late
+        self.send(self.first, self.bot_id, 'Hello')
+        self.relay.write = write
+        cursor = self.first._cursor()
+        self.first.team_sync_pass()
+        answer = self.changes(cursor)
+        self.assertEqual(answer['team_bot_directs_changed'], [{'team': self.room, 'bot': self.bot_id}])
+        self.assertEqual(answer['team_directs_changed'], [])
+
+    def test_a_new_name_of_the_member_does_not_change_a_chat_of_two_people_that_has_no_message(self):
+        self.bot_says('Hello Ada')
+        cursor = self.first._cursor()
+        self.phone(self.third)('PATCH', f'/v1/team/rooms/{self.room}', {'member_name': 'Lin B.'})
+        self.first.team_sync_pass()
+        self.assertEqual(self.changes(cursor)['team_directs_changed'], [])
+
+    def test_the_event_of_a_chat_with_a_bot_is_no_structural_change(self):
+        cursor = self.first._cursor()
+        timestamp = self.first.db.execute('SELECT created_at FROM events WHERE seq=?', (cursor,)).fetchone()[0]
+        self.bot_says('Hello Ada')
+        types = {row[0] for row in self.first.db.execute('SELECT type FROM events WHERE seq>?', (cursor,))}
+        self.assertEqual(types, {'team_bot_directs.updated'})
+        with patch('coconut.service.now', return_value=timestamp), \
+             patch.object(Service, '_snapshot', side_effect=AssertionError('The event must not reset')), \
+             patch.object(Service, '_work_projection', side_effect=AssertionError('The event must not rebuild Work')):
+            page = self.first.updates(cursor, 0, collection_deltas=True)
+        self.assertNotIn('artifacts', page)
+        self.assertNotIn('decisions', page)
+        self.assertEqual(page['team_bot_directs_changed'], [{'team': self.room, 'bot': self.bot_id}])
+
+    def test_a_message_of_the_bot_that_waits_for_its_member_entry_names_the_chat_with_the_bot(self):
+        self.bot_says('Hello Ada')
+        # A new name writes the `member` entry of Lin's Mac again, behind the message of the bot.
+        self.phone(self.third)('PATCH', f'/v1/team/rooms/{self.room}', {'member_name': 'Lin B.'})
+        with self.first.transaction():
+            for table in ('team_entries', 'team_members', 'team_directs'):
+                self.first.db.execute(f'DELETE FROM {table} WHERE room=?', (self.room,))
+            self.first.team_store.update_room(self.room, seq=0)
+        cursor = self.first._cursor()
+        self.first.team_sync_pass()
+        self.assertEqual(self.bot_chat(), [('Hello Ada', False)])
+        answer = self.changes(cursor)
+        self.assertIn({'team': self.room, 'bot': self.bot_id}, answer['team_bot_directs_changed'])
+        self.assertEqual(answer['team_directs_changed'], [])
+
+    def test_a_leave_removes_the_read_positions_of_the_chats_with_a_bot(self):
+        # Ada is the admin and cannot leave while others are in the team, so Grace gets a message of the bot.
+        self.box(self.third, token_hex(16), self.grace, {'to': self.grace, 'text': 'Hello Grace', 'bot': self.bot})
+        self.second.team_sync_pass()
+        self.phone(self.second)('POST', self.path(self.bot_id, 'read'), {'first': 10 ** 9})
+        self.assertEqual(self.count(self.second, 'team_bot_direct_reads'), 1)
+        self.leave(self.second, {'room': self.room})
+        self.assertEqual(self.count(self.second, 'team_bot_direct_reads'), 0)
+
+    def test_an_item_of_bot_directs_names_the_mac_of_the_bot(self):
+        # Grace writes as a bot of her own Mac, as she can in the Team chat. The item names her Mac.
+        entry = token_hex(16)
+        self.write(self.second, entry, {'kind': 'bot', 'name': 'Helper', 'avatar': '', 'color': ''}, True)
+        self.first.team_sync_pass()
+        self.bot_says('From the helper', bot=entry, service=self.second)
+        chats = {chat['bot_name']: (chat['member'], chat['member_name']) for chat in self.ask(self.first)['bot_directs']}
+        self.assertEqual(chats, {'Helper': (self.grace, 'Grace')})
+
+
+class ABotEntryThatComesDuringTheSend(BotDirectMacs, unittest.TestCase):
+    def test_the_send_takes_the_member_of_the_bot_entry_after_the_read(self):
+        # Lin's Mac writes a new bot. Ada's Mac did not read it yet, and an earlier write got no answer, so the send
+        # first reads the room to its end.
+        later = self.write_bot('Planner', direct=True)
+        self.first._team_unsure.add(self.room)
+        sent = self.send(self.first, self.team_id(later), 'Hello Planner')
+        self.assertEqual(self.plaintext(self.first, sent['id']), {'to': self.lin, 'text': 'Hello Planner',
+                                                                  'bot': later})
+        self.assertEqual(self.chat(self.first, self.team_id(later)), [('Hello Planner', True)])
 
 
 class BotDirectPushMacs(BotDirectMacs):

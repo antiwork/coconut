@@ -107,6 +107,10 @@ class TeamDirects:
         with team_errors(), self._team_room_lock(room_id):
             room = self._team_writable(room_id)
             with self.lock:
+                if bot is not None:
+                    # The read of _team_writable can bring the `bot` entry, so the member of the chat comes again from
+                    # the store under the lock.
+                    member = self.team_store.bot_member(room_id, bot)
                 if self.team_store.entry(room_id, entry) is not None:
                     return self._team_direct_answer(room_id, member, bot, entry)
                 agreement = self._team_direct_reachable(room, member, bot)
@@ -337,9 +341,10 @@ class TeamDirects:
 
     def _team_bot_direct_summary(self, room: dict) -> list[dict]:
         """The direct chats with a bot of a room for GET /v1/team/rooms: one item for each chat with a message that
-        shows, newest chat first. A chat with a bot that left stays. `typing` is the whole number of seconds that are
-        left of the typing sign of the bot, or null. A sign shows only while the room is active and the member of the
-        bot is in the member list. The caller holds the service lock."""
+        shows, newest chat first. A chat with a bot that left stays. `member` and `member_name` name the Mac of the
+        `bot` entry: a reader does not check that this Mac runs Coconut for a team only. `typing` is the whole number
+        of seconds that are left of the typing sign of the bot, or null. A sign shows only while the room is active and
+        the member of the bot is in the member list. The caller holds the service lock."""
         from .team_pages import team_id
 
         def typing(row) -> int | None:
@@ -347,7 +352,8 @@ class TeamDirects:
                 return None
             seconds = self.team_store.direct_typing_now(room['room'], row['member'], row['bot'])
             return None if seconds is None else math.ceil(seconds)
-        return [{'bot': team_id(room['room'], row['bot']), 'bot_name': row['bot_name'],
+        return [{'bot': team_id(room['room'], row['bot']), 'bot_name': row['bot_name'], 'member': row['member'],
+                 'member_name': row['member_name'],
                  'unread': self.team_store.direct_unread(room['room'], row['member'], row['bot']),
                  'last_message': {'first': row['first'], 'this_mac': row['writer'] == room['member'],
                                   'text': row['text'][:PREVIEW], 'created_at': row['created_at']},

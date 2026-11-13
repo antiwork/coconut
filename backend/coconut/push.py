@@ -53,7 +53,9 @@ PHONES = 'SELECT id FROM devices WHERE peer_key IS NOT NULL'
 
 def team_thread(room, chat):
     """The thread of the alerts of one chat of a team: the room ID for the Team chat, and the room ID, a colon and the
-    chat ID for a named chat. A direct chat has the 64 characters of a member ID after the colon, a named chat 32."""
+    chat ID for a named chat. A direct chat of two people has the 64 characters of a member ID after the colon (see
+    direct_thread). A named chat and a direct chat with a bot have 32: the entry ID of the `chat` or `bot` entry. No
+    code tells a chat by this length."""
     return f'{room}:{chat}' if chat else room
 
 
