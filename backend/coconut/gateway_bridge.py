@@ -474,20 +474,19 @@ class TurnEvents:
     a silence marker, the turn ends without a message, as the worker ends it (silent_responses.is_silence_reply). A turn
     without `commentary`, such as a reaction, shows no commentary.
 
-    A `quiet` end is the closing text of the plugin, which the chat does not show. When the turn sent no other text, it
-    ends without a message too.
+    A `quiet` end is the closing text of the plugin, which the chat does not show. When no segment is the reply of the
+    turn, the turn ends without a message too. A commentary is no reply.
     """
 
     def __init__(self, emit, turn_id=None, silent=False, commentary=True):
         self.emit = emit
         self.turn_id = turn_id
         self.silent, self.commentary = silent, commentary
-        # The message ID and the text of the newest segment, whether the gateway sent a reply, and whether it sent any
-        # text, a commentary included.
+        # The message ID and the text of the newest segment, and whether the gateway sent a reply.
         self.segment = None
         self.text = ''
         self.phase = None
-        self.sent = self.wrote = False
+        self.sent = False
 
     def apply(self, event: dict) -> bool:
         """Apply one event. Return True at the end of the turn."""
@@ -499,7 +498,6 @@ class TurnEvents:
                 'question_id', 'question_kind', 'text', 'detail', 'choices')} | {'turn_id': self.turn_id})
         elif kind == 'send' and text.strip():
             self._phase('writing')
-            self.wrote = True
             if event.get('interim') and not self.commentary:
                 # A reaction turn shows no commentary, as in the worker.
                 return False
@@ -531,9 +529,10 @@ class TurnEvents:
                     # Take back a reply that is a silence marker.
                     self.emit('text_delta', {'text': '', 'replace': True})
                 self.emit('completed', {'summary': 'Complete.', 'silent_response': True, 'reaction_silent': True})
-            elif event.get('outcome') == 'success' and event.get('quiet') and not self.wrote:
+            elif event.get('outcome') == 'success' and event.get('quiet') and self.segment is None:
                 # The plugin ended the turn with its closing text, because the model chose to write none
-                # (hermes_plugin/coconut/hooks.py, end_turn_text). The chat shows no message for it.
+                # (hermes_plugin/coconut/hooks.py, end_turn_text). No segment is the reply of the turn, so the chat
+                # shows no message for its end. A commentary of the turn stays in the chat.
                 self.emit('completed', {'summary': 'Complete.', 'silent_response': True})
             elif event.get('outcome') == 'success':
                 self.emit('completed', {'summary': 'Complete.'})

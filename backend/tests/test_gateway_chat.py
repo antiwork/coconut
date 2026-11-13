@@ -227,10 +227,16 @@ class TurnEventTests(unittest.TestCase):
         emitted, _ = self.translate({'kind': 'typing'}, done, commentary=True)
         self.assertEqual(emitted, [('phase', {'phase': 'thinking'}),
                                    ('completed', {'summary': 'Complete.', 'silent_response': True})])
-        # Text that the turn sent before, a reply or a commentary, is its result, as without the closing text.
-        for send in ({'kind': 'send', 'message_id': 'm:1', 'text': 'Shipped.'},
-                     {'kind': 'send', 'message_id': 'c:1', 'text': 'Let me look.', 'interim': True}):
-            emitted, _ = self.translate(send, done, commentary=True)
+        # A commentary is no reply. A turn that sent only commentary ends without a message too, also when the commentary
+        # made an earlier segment an interim message.
+        reply = {'kind': 'send', 'message_id': 'm:1', 'text': 'Shipped.'}
+        commentary = {'kind': 'send', 'message_id': 'c:1', 'text': 'Let me look.', 'interim': True}
+        for sends in ((commentary,), (reply, commentary)):
+            emitted, _ = self.translate(*sends, done, commentary=True)
+            self.assertEqual(emitted[-1], ('completed', {'summary': 'Complete.', 'silent_response': True}))
+        # A reply that the turn sent before is its result, as without the closing text.
+        for sends in ((reply,), (commentary, reply)):
+            emitted, _ = self.translate(*sends, done, commentary=True)
             self.assertEqual(emitted[-1], ('completed', {'summary': 'Complete.'}))
         emitted, _ = self.translate(dict(done, outcome='failure'), commentary=True)
         self.assertEqual(emitted[-1][0], 'failed')
