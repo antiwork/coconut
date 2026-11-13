@@ -161,7 +161,6 @@ struct LibraryView: View {
         }
         .background(BoardStyle.paper)
         .refreshable { await store.loadDocuments() }
-        .modifier(DeletePageDialog(page: $deleting))
         // A load without a connection does nothing, so the Library loads again when the Mac connects.
         .task(id: store.connection) { await store.loadDocuments() }
     }
@@ -192,6 +191,9 @@ struct LibraryView: View {
                 Button(role: .destructive) { deleting = document } label: { Label("Delete…", systemImage: "trash") }
             }
         }
+        // The question hangs on the row that the person pressed, so iOS shows it next to that row.
+        .modifier(DeletePageDialog(page: Binding(get: { deleting?.id == document.id ? deleting : nil },
+                                                 set: { deleting = $0 })))
         .accessibilityIdentifier("library-document-\(document.key)")
         .padding(.horizontal, BoardStyle.Space.l)
     }
@@ -322,7 +324,14 @@ private struct DocumentRow: View {
                 .frame(width: 36, height: 36)
                 .background(BoardStyle.surface, in: RoundedRectangle(cornerRadius: BoardStyle.Radius.small, style: .continuous))
             VStack(alignment: .leading, spacing: 2) {
-                Text(document.title).font(.body).foregroundStyle(.primary).lineLimit(1)
+                // The pin mark follows the title on its line. A long title is cut before the mark.
+                HStack(spacing: BoardStyle.Space.xs) {
+                    Text(document.title).font(.body).foregroundStyle(.primary).lineLimit(1)
+                    if pinMark {
+                        Image(systemName: "pin.fill").font(.footnote).foregroundStyle(.secondary)
+                            .accessibilityLabel("Pinned")
+                    }
+                }
                 Text(document.detail).font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
             }
             Spacer(minLength: 0)
@@ -332,9 +341,6 @@ private struct DocumentRow: View {
             if let shared = document.sharedLine {
                 Image(systemName: "person.2.fill").font(.footnote).foregroundStyle(.secondary)
                     .accessibilityLabel(shared)
-            }
-            if pinMark {
-                Image(systemName: "pin.fill").font(.footnote).foregroundStyle(.secondary).accessibilityLabel("Pinned")
             }
         }
         .padding(.vertical, BoardStyle.Space.m)
@@ -457,10 +463,11 @@ struct DocumentView: View {
                         }
                     } label: { Image(systemName: "ellipsis") }
                         .accessibilityLabel("Page actions")
+                        // The question hangs on the button of the menu, so iOS shows it next to the button.
+                        .modifier(DeletePageDialog(page: $deleting) { dismiss() })
                 }
             }
         }
-        .modifier(DeletePageDialog(page: $deleting) { dismiss() })
         .confirmationDialog("Open \(link?.host() ?? "this link")?", isPresented: Binding(
             get: { link != nil }, set: { if !$0 { link = nil } }), titleVisibility: .visible) {
             Button("Open in browser") { if let link { openURL(link) } }
