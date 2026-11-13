@@ -286,10 +286,13 @@ enum ChatRowText {
     }
 }
 
-/// The layout of one row of the Chats list and of the Mac sidebar, for a bot and a team, as the chat list of WhatsApp:
-/// the face, the name alone, one line under it, and on the right the age of the newest message with the unread badge
-/// under it. No line is empty, so a row of one line has its text centered on the face. A team whose unread message
-/// names this person has the round "@" mark before the badge, as in WhatsApp and Telegram.
+/// The layout of one row of the Chats list and of the Mac sidebar, for a bot and a team, as the chat list of WhatsApp.
+/// The face comes first. A grid of two lines follows. The name and the age of the newest message share the first line.
+/// The line under the name and the badges share the second line. The badges are the round "@" mark of a team whose
+/// unread message names this person, and then the unread count. WhatsApp and Telegram have the same mark. The age
+/// and the badges end at one right edge. No line is empty, so a row of one line has its text centered on the face.
+/// At the accessibility text sizes the name, the age with the badges, and the line under the name each have their
+/// own line.
 struct ChatRowLayout<Face: View, Subtitle: View>: View {
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     let name: String
@@ -306,7 +309,7 @@ struct ChatRowLayout<Face: View, Subtitle: View>: View {
                 // The badge grows with the text and stands on its own line, so it covers no name.
                 VStack(alignment: .leading, spacing: BoardStyle.Space.line) {
                     nameText
-                    if date != nil || unread > 0 || mentioned {
+                    if date != nil || hasBadges {
                         HStack(spacing: BoardStyle.Space.s) {
                             if let date { ageText(date) }
                             badges
@@ -315,25 +318,32 @@ struct ChatRowLayout<Face: View, Subtitle: View>: View {
                     subtitle()
                 }
             } else {
-                // The name and the age share their first baseline.
-                HStack(alignment: .firstTextBaseline, spacing: BoardStyle.Space.s) {
-                    VStack(alignment: .leading, spacing: BoardStyle.Space.line) {
-                        nameText
-                        subtitle()
-                    }
-                    Spacer(minLength: 0)
-                    if date != nil || unread > 0 || mentioned {
-                        VStack(alignment: .trailing, spacing: BoardStyle.Space.xs) {
-                            if let date { ageText(date) }
-                            badges
+                // The name and the age share the first baseline. The badges fill the second line: a badge is as high
+                // as the line under the name. The gap between the columns keeps the text clear of the wider of the
+                // age and the badges.
+                Grid(alignment: .leadingFirstTextBaseline, horizontalSpacing: BoardStyle.Space.l,
+                     verticalSpacing: BoardStyle.Space.line) {
+                    GridRow {
+                        nameText.frame(maxWidth: .infinity, alignment: .leading)
+                        if let date {
+                            ageText(date).fixedSize().gridColumnAlignment(.trailing)
                         }
-                        .fixedSize()
+                    }
+                    GridRow(alignment: .center) {
+                        subtitle()
+                        if hasBadges {
+                            // The row centers its cells. A frame of no height adds no height to the line. A badge thus
+                            // does not move the text and does not make the row taller.
+                            badges.fixedSize().frame(height: 0).gridColumnAlignment(.trailing)
+                        }
                     }
                 }
             }
         }
         .frame(minHeight: 52)
     }
+
+    private var hasBadges: Bool { unread > 0 || mentioned }
 
     private var nameText: some View {
         Text(name).font(.body.weight(unread > 0 ? .semibold : .regular)).lineLimit(1)
@@ -355,7 +365,7 @@ struct ChatRowLayout<Face: View, Subtitle: View>: View {
 /// The mark of a team whose unread message names this person: an "@" in a circle of the size and the fill of the
 /// unread badge. The label of the row says it to VoiceOver (TeamRowSpeech), so the mark itself is silent.
 struct MentionBadge: View {
-    @ScaledMetric(relativeTo: .caption2) private var size = 20
+    @ScaledMetric(relativeTo: .subheadline) private var size = BoardStyle.badge
 
     var body: some View {
         Text("@")
@@ -368,18 +378,20 @@ struct MentionBadge: View {
 }
 
 /// The unread count of a chat: a filled round badge in the ink of the app with digits in the paper color, as the
-/// round send button of the composer. One digit gives a circle, more digits a capsule, and over 99 shows "99+".
+/// round send button of the composer. One digit gives a circle, more digits a capsule of the same height, and over 99
+/// shows "99+".
 struct UnreadBadge: View {
     let count: Int
-    @ScaledMetric(relativeTo: .caption2) private var size = 20
+    @ScaledMetric(relativeTo: .subheadline) private var size = BoardStyle.badge
 
     var body: some View {
-        Text(Self.text(count))
+        let text = Self.text(count)
+        Text(text)
             .font(.caption2.weight(.semibold).monospacedDigit())
             .foregroundStyle(BoardStyle.controlLabel)
             .lineLimit(1)
             .fixedSize()
-            .padding(.horizontal, 6)
+            .padding(.horizontal, Self.sidePadding(text))
             .frame(minWidth: size, minHeight: size)
             // The ink as a plain color: a Mac sidebar draws `Color.primary` with the vibrancy of its material, which
             // would make the fill of the badge pale.
@@ -394,6 +406,10 @@ struct UnreadBadge: View {
 
     /// The digits of the badge. Over 99 shows "99+".
     nonisolated static func text(_ count: Int) -> String { count > 99 ? "99+" : "\(count)" }
+
+    /// The space at each side of the digits. One character has none, so the badge is a circle of its height. More
+    /// characters give a capsule.
+    nonisolated static func sidePadding(_ text: String) -> CGFloat { text.count > 1 ? BoardStyle.Space.s : 0 }
 
     /// What VoiceOver says for the count of a row, a tile and the badge.
     nonisolated static func spoken(_ count: Int) -> String { count == 1 ? "1 unread message" : "\(count) unread messages" }
