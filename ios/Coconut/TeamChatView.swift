@@ -112,7 +112,7 @@ struct TeamChatView: View {
                     }
                     // The last row: who types, under the newest message and above the composer, then the anchor of
                     // the bottom. The row is always there, so the list never adds or removes a row for typing while it
-                    // scrolls to its bottom. A direct chat shows nobody. The row inset and the padding keep 14 points
+                    // scrolls to its bottom. A direct chat shows nobody. The row inset and the padding keep 13 points
                     // below the last message.
                     VStack(alignment: .leading, spacing: 0) {
                         if !typing.isEmpty {
@@ -122,9 +122,10 @@ struct TeamChatView: View {
                         }
                         Color.clear.frame(height: 1)
                     }
-                    .padding(.bottom, 9).id(Self.bottom)
+                    .padding(.bottom, BoardStyle.Space.s).id(Self.bottom)
                 }
-                .listRowInsets(EdgeInsets(top: 5, leading: 16, bottom: 5, trailing: 16))
+                .listRowInsets(EdgeInsets(top: BoardStyle.Space.xs, leading: BoardStyle.Space.l,
+                                          bottom: BoardStyle.Space.xs, trailing: BoardStyle.Space.l))
                 .listRowSeparator(.hidden)
                 .listRowBackground(Color.clear)
             }
@@ -502,7 +503,7 @@ struct TeamMessageRow: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 5) {
+        VStack(alignment: .leading, spacing: BoardStyle.Space.xs) {
             if row.startsRun && !own && peer == nil { writerLabel }
             bubbleRow.modifier(MessageTimestamp(createdAt: row.createdAt))
             // Under the bubble, on its side, in the style of the name above it. The bubble keeps the width of its text.
@@ -529,7 +530,7 @@ struct TeamMessageRow: View {
     }
 
     private var writerContent: some View {
-        HStack(spacing: 5) {
+        HStack(spacing: BoardStyle.Space.xs) {
             if message?.bot != nil {
                 // The face and the color of the team bot, or a neutral face for a bot that the team no longer has.
                 BotAvatar(symbol: teamBot?.avatar ?? "", color: teamBot?.color ?? "", size: 18,
@@ -541,8 +542,9 @@ struct TeamMessageRow: View {
             }
             Text(writerName)
         }
-        .font(.caption).foregroundStyle(.secondary).lineLimit(1)
-        .padding(.horizontal, 10)
+        .font(.footnote).foregroundStyle(.secondary).lineLimit(1)
+        // The name starts at the edge of the text in the bubble.
+        .padding(.horizontal, BoardStyle.Space.m)
         .contentShape(Rectangle())
     }
 
@@ -714,8 +716,8 @@ struct TeamChatComposer: View {
                                        label: editing == nil ? "Send message" : "Save edit", action: send)
                 }
             }
-            .padding(.leading, 14).padding(.trailing, 4)
-            .modifier(ComposerSurface(shape: RoundedRectangle(cornerRadius: 23, style: .continuous)))
+            .padding(.leading, BoardStyle.Space.m).padding(.trailing, BoardStyle.Space.xs)
+            .modifier(ComposerSurface(shape: RoundedRectangle(cornerRadius: BoardStyle.Radius.large, style: .continuous)))
             .modifier(ComposerGlassGroup())
         }
         .padding(.horizontal, 16)
