@@ -122,7 +122,7 @@ final class PageShareFlowTests: XCTestCase {
     }
 
     private func openActions() {
-        let actions = app.buttons["Document actions"]
+        let actions = app.buttons["Page actions"]
         XCTAssertTrue(actions.waitForExistence(timeout: 10))
         actions.tap()
     }

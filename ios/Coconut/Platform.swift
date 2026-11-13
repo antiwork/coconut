@@ -245,6 +245,18 @@ extension TranscriptWindow {
     }
 }
 
+extension LibrarySections {
+    /// The iPhone Library has a section "Pinned". A Mac sidebar shows the pinned pages, so the Library of a Mac keeps
+    /// each pinned page in the group of its bot, with a pin mark.
+    static var platformShowsPinned: Bool {
+        #if os(macOS)
+        false
+        #else
+        true
+        #endif
+    }
+}
+
 enum Haptics {
     /// The light tick of a choice. A Mac has no tick for it.
     @MainActor static func selection() {
