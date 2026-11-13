@@ -128,6 +128,7 @@ struct LibraryView: View {
     @Environment(AppStore.self) private var store
     /// Shows the documents of this bot only, as the inspector of a Mac chat does.
     var botId: String? = nil
+    @State private var deleting: BotDocument?
 
     var body: some View {
         let sections = LibrarySections(documents: store.documents ?? [], bots: store.bots, teamBots: store.teamBots,
@@ -160,6 +161,7 @@ struct LibraryView: View {
         }
         .background(BoardStyle.paper)
         .refreshable { await store.loadDocuments() }
+        .modifier(DeletePageDialog(page: $deleting))
         // A load without a connection does nothing, so the Library loads again when the Mac connects.
         .task(id: store.connection) { await store.loadDocuments() }
     }
@@ -187,9 +189,7 @@ struct LibraryView: View {
         .contextMenu {
             PinDocumentButton(document: document)
             if document.canDelete {
-                Button(role: .destructive) { Task { await store.deleteDocument(document) } } label: {
-                    Label("Delete", systemImage: "trash")
-                }
+                Button(role: .destructive) { deleting = document } label: { Label("Delete…", systemImage: "trash") }
             }
         }
         .accessibilityIdentifier("library-document-\(document.key)")
@@ -276,6 +276,26 @@ enum MacPagePlace: Equatable {
     }
 }
 
+/// Asks before a page is deleted, as the dialog of a bot does. The Mac keeps no copy of a deleted page, and a page that
+/// the person shares with a team goes for each member. `deleted` runs after the Mac confirmed the delete.
+struct DeletePageDialog: ViewModifier {
+    @Environment(AppStore.self) private var store
+    @Binding var page: BotDocument?
+    var deleted: () -> Void = {}
+
+    func body(content: Content) -> some View {
+        content.confirmationDialog("Delete this page?",
+                                   isPresented: Binding(get: { page != nil }, set: { if !$0 { page = nil } }),
+                                   titleVisibility: .visible, presenting: page) { page in
+            Button("Delete", role: .destructive) { Task { if await store.deleteDocument(page) { deleted() } } }
+                .accessibilityIdentifier("confirm-delete-page")
+            Button("Cancel", role: .cancel) {}
+        } message: { page in
+            Text(page.deleteMessage)
+        }
+    }
+}
+
 /// Pins a document in the Library, or removes its pin.
 private struct PinDocumentButton: View {
     @Environment(AppStore.self) private var store
@@ -325,6 +345,12 @@ private struct DocumentRow: View {
 }
 
 extension BotDocument {
+    /// The message of the question before a delete. A page that the person shares with a team goes for the team too.
+    var deleteMessage: String {
+        isSharedWithTeam ? "Coconut removes each version, also for your team. You cannot undo this."
+                         : "Coconut removes each version. You cannot undo this."
+    }
+
     /// The symbol of the kind: a chart for an HTML page, a sheet of text for Markdown.
     var symbol: String { isPage ? "chart.bar.xaxis" : "doc.text" }
 
@@ -368,6 +394,7 @@ struct DocumentView: View {
     @State private var document: BotDocument?
     @State private var failed = false
     @State private var link: URL?
+    @State private var deleting: BotDocument?
 
     private var listed: BotDocument? { store.documents?.first { $0.id == documentId } }
     /// A bot of this Mac. A team page has none, so the actions that need one are not there.
@@ -424,15 +451,16 @@ struct DocumentView: View {
                             Label("Share", systemImage: "square.and.arrow.up")
                         }
                         if document.canDelete {
-                            Button(role: .destructive) {
-                                Task { if await store.deleteDocument(document) { dismiss() } }
-                            } label: { Label("Delete", systemImage: "trash") }
+                            Button(role: .destructive) { deleting = listed ?? document } label: {
+                                Label("Delete…", systemImage: "trash")
+                            }
                         }
                     } label: { Image(systemName: "ellipsis") }
                         .accessibilityLabel("Page actions")
                 }
             }
         }
+        .modifier(DeletePageDialog(page: $deleting) { dismiss() })
         .confirmationDialog("Open \(link?.host() ?? "this link")?", isPresented: Binding(
             get: { link != nil }, set: { if !$0 { link = nil } }), titleVisibility: .visible) {
             Button("Open in browser") { if let link { openURL(link) } }

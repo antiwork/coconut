@@ -128,6 +128,18 @@ final class LibraryDocumentTests: XCTestCase {
         XCTAssertEqual(MacPagePlace.afterChange(open: "page", documents: [other]), .libraryList)
     }
 
+    /// The question before a delete says that the page goes for the team too when the person shares it with a team.
+    func testTheQuestionBeforeADeleteNamesTheTeamOfASharedPage() {
+        var page = Self.pinPage("notes", bot: "tuner", day: 2)
+        XCTAssertEqual(page.deleteMessage, "Coconut removes each version. You cannot undo this.")
+        page.audience = "team"
+        page.teams = [DocumentTeam(room: "r1", name: "Example Team")]
+        XCTAssertEqual(page.deleteMessage, "Coconut removes each version, also for your team. You cannot undo this.")
+        // A team page of another Mac cannot be deleted here, so it has no question.
+        page.team = DocumentTeam(room: "r1", name: "Example Team")
+        XCTAssertFalse(page.canDelete)
+    }
+
     /// The Mac sends no pin value for a document that never had a pin, and a service from before pins sends none.
     func testADocumentWithoutAPinValueIsNotPinned() throws {
         let row = #"{"id": "1", "bot_id": "b", "key": "signups", "title": "Signups", "format": "markdown", "version": 2, "#
