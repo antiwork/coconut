@@ -808,7 +808,7 @@ struct DirectTitle: View {
 struct TeamContactRow: View {
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     let room: TeamRoom
-    var avatarSize: CGFloat = 46
+    var avatarSize: CGFloat = BoardStyle.rowFace
 
     var body: some View {
         let unread = room.unread ?? 0
@@ -835,7 +835,7 @@ struct DirectContactRow: View {
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     let room: TeamRoom
     let direct: TeamDirect
-    var avatarSize: CGFloat = 46
+    var avatarSize: CGFloat = BoardStyle.rowFace
 
     var body: some View {
         let peer = room.directPeer(direct.member)
@@ -857,7 +857,7 @@ struct DirectContactRow: View {
 /// The row of a chat of a team in the Chats list and the Mac sidebar: a team or a direct chat.
 struct PeopleRow: View {
     let item: ChatListItem
-    var avatarSize: CGFloat = 46
+    var avatarSize: CGFloat = BoardStyle.rowFace
 
     var body: some View {
         switch item {

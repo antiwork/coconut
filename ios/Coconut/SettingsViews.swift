@@ -114,10 +114,10 @@ struct SettingsNavigationLabel: View {
     let subtitle: String
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
+        VStack(alignment: .leading, spacing: BoardStyle.Space.line) {
             Text(title).foregroundStyle(.primary)
             Text(subtitle).font(.subheadline).foregroundStyle(.secondary)
-        }.padding(.vertical, 5)
+        }.padding(.vertical, BoardStyle.Space.xs)
     }
 }
 
