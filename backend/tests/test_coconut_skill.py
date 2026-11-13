@@ -68,6 +68,25 @@ class SkillAuthoringTests(unittest.TestCase):
         # The hub routes routine questions to it.
         self.assertIn('`references/routines.md`', self.body.split('## When to Use')[1])
 
+    def test_the_pages_reference_gives_the_recipe_the_rules_and_an_example_without_notes(self):
+        from coconut.documents import LONGEST_HEADER, page_notes
+        text = (SKILL / 'references/pages.md').read_text(encoding='utf-8')
+        self.assertLessEqual(len(text.splitlines()), 120)
+        self.assertTrue(text.startswith('# '))
+        for heading in ('## The recipe of a report page', '## The blocks', '## What the phone and the Mac do with a table',
+                        '## The rules for content', '## The notes of a save', '## Example: the weekly report of a shop'):
+            with self.subTest(heading=heading):
+                self.assertIn('\n' + heading + '\n', text)
+        self.assertIn(f'A column header has at most {LONGEST_HEADER} characters.', text)
+        self.assertIn('Follow the notes in the next save of the same key.', text)
+        # The example is one fenced block. test_page_notes.py and the app tests (LibraryDocumentTests) read it too.
+        example = text.split('````markdown\n', 1)[1].split('\n````', 1)[0]
+        self.assertEqual(page_notes('markdown', example), [])
+        # The hub routes page questions to it, and the save tool names it.
+        self.assertIn('`references/pages.md`', self.body.split('## When to Use')[1])
+        from coconut.documents import BLOCKS
+        self.assertIn('references/pages.md', BLOCKS)
+
     def test_the_skill_names_hermes_tools_and_no_wrapped_shell_utilities(self):
         for path in SKILL.rglob('*.md'):
             text = path.read_text(encoding='utf-8')
