@@ -43,10 +43,27 @@ class PageRuleTests(unittest.TestCase):
     def test_the_save_tool_names_the_metrics_and_the_record_form_of_a_table(self):
         # page.js makes metrics only of a row of numbers, and names a record by the first cell of its row.
         description = documents.SAVE_SCHEMA['description']
-        self.assertIn('A table with one row of numbers shows them large', description)
-        self.assertIn('with the first cell of each row as its name and a short last cell at its end', description)
+        self.assertIn('a table with one row of numbers shows them large', description)
+        self.assertIn('with the first cell as its name and a short last cell at its end', description)
         # The two content rules that the real pages broke most: long headers and a list in a callout.
-        self.assertIn('Keep each column header short. A callout holds one or two sentences, not a list.', description)
+        self.assertIn('a header of at most 16 characters', description)
+        self.assertIn('A callout is only for one decision or one warning, in one or two sentences', description)
+        # The recipe in its order, the reference of the skill, and the notes of a save.
+        recipe = ['First, one or two sentences', 'Then the key numbers', 'Then sections', 'A callout is only']
+        self.assertEqual(sorted(recipe, key=description.index), recipe)
+        self.assertIn('references/pages.md', description)
+        self.assertIn('The answer of a save can have notes', description)
+
+    def test_the_texts_of_each_session_stay_short(self):
+        # Each bot session pays for these texts. BLOCKS had 197 words before the recipe, and may have 20 more.
+        # LIBRARY_INSTRUCTIONS had 368, and may have 10 more.
+        from coconut.card_tools import LIBRARY_INSTRUCTIONS
+        self.assertLessEqual(len(documents.BLOCKS.split()), 217)
+        self.assertLessEqual(len(LIBRARY_INSTRUCTIONS.split()), 378)
+        # The texts teach the four rules of the notes: no list in a callout, no facts joined by dashes.
+        self.assertIn('in one or two sentences without a list', documents.BLOCKS)
+        self.assertIn('not facts joined by dashes', documents.BLOCKS)
+        self.assertIn('Follow the notes in the answer of a save.', LIBRARY_INSTRUCTIONS)
 
     def test_a_page_with_tokens_and_the_given_libraries_passes(self):
         self.assertEqual(page_problems(TREEMAP), [])
@@ -189,6 +206,16 @@ class DocumentServiceTests(unittest.TestCase):
         self.assertEqual(self.service.document(listed[0]['id'])['content'], '# Signups\n\n430 today.')
         self.assertEqual(self.tool('read_document', {'key': 'signups-daily'})['content'], '# Signups\n\n430 today.')
         self.assertEqual([d['key'] for d in self.tool('read_document', {})['documents']], ['signups-daily'])
+
+    def test_a_save_answers_with_the_notes_of_the_page_and_saves_it(self):
+        weak = 'The products of the week.\n\n| Product | Orders of the week |\n|---|---|\n| Ink | 131 |\n| Paint | 168 |'
+        note = documents.NOTE_HEADER
+        self.assertEqual(self.save(content=weak), {'status': 'saved', 'key': 'signups-daily', 'version': 1,
+                                                   'expires_at': None, 'notes': [note]})
+        self.assertEqual(self.tool('read_document', {'key': 'signups-daily'})['content'], weak)
+        # A page without a note has no key "notes", and an HTML page gets no notes.
+        self.assertNotIn('notes', self.save())
+        self.assertNotIn('notes', self.save(format='html', content='<p>412 orders and 3 refunds.</p><table></table>'))
 
     def test_a_bot_keeps_only_its_latest_versions(self):
         for number in range(KEPT_VERSIONS + 3):
@@ -711,6 +738,22 @@ class GatewayPageTests(unittest.TestCase):
         self.assertEqual(self.publish(), {'status': 'saved', 'key': 'weekly-report', 'version': 2,
                                           'expires_at': None})
         self.assertEqual([d['key'] for d in self.service.documents()['documents']], ['weekly-report'])
+
+    def test_a_save_of_the_tooling_answers_with_the_notes_of_the_page(self):
+        weak = 'The products of the week.\n\n| Product | Orders of the week |\n|---|---|\n| Ink | 131 |\n| Paint | 168 |'
+        expected = {'key': 'weekly-report', 'version': 1, 'expires_at': None,
+                    'notes': [documents.NOTE_HEADER]}
+        self.assertEqual(self.publish(content=weak), dict(expected, status='saved'))
+        # A script on a timer saves the same page again. The answer still names what to improve.
+        self.assertEqual(self.publish(content=weak), dict(expected, status='unchanged'))
+        # A delete answers with no notes.
+        self.assertEqual(self.service.unpublish_page(self.bot['id'], {'key': 'weekly-report'}),
+                         {'status': 'deleted', 'key': 'weekly-report'})
+        self.assertEqual(self.publish(content=weak), dict(expected, status='saved'))
+        self.assertEqual(self.publish(), {'status': 'saved', 'key': 'weekly-report', 'version': 2,
+                                          'expires_at': None})
+        self.assertEqual(self.publish(), {'status': 'unchanged', 'key': 'weekly-report', 'version': 2,
+                                          'expires_at': None})
 
     def test_a_home_that_is_not_the_profile_of_a_bot_keeps_no_page(self):
         with self.assertRaisesRegex(ServiceError, 'not the profile of a bot'):

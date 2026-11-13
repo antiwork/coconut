@@ -18,11 +18,15 @@ import unittest
 from unittest.mock import patch
 from uuid import uuid4
 
+from coconut.documents import NOTE_HEADER
 from coconut.server import APIServer
 from coconut.service import Service
 from test_gateway_chat import Provider
 
 PLUGIN = Path(__file__).resolve().parents[2] / 'hermes_plugin/coconut'
+# A page whose save answers with one note: the header of its second column has 18 characters.
+WEAK_PAGE = 'The products of the week.\n\n| Product | Orders of the week |\n|---|---|\n| Ink sketching | 131 |'
+NOTE = NOTE_HEADER
 STUBS = {
     'gateway/__init__.py': '',
     'gateway/platforms/__init__.py': '',
@@ -1093,6 +1097,11 @@ class GatewayAdapterTests(unittest.TestCase):
         self.assertEqual(call('delete_document', {'key': 'weekly-report'}, self.home),
                          {'status': 'deleted', 'key': 'weekly-report'})
         self.assertEqual(self.service.documents()['documents'], [])
+        # A save outside a turn has the notes of the page too, also a save that changes nothing.
+        for status in ('saved', 'unchanged'):
+            self.assertEqual(call('save_document', dict(page, content=WEAK_PAGE), self.home),
+                             {'status': status, 'key': 'weekly-report', 'version': 1, 'expires_at': None,
+                              'notes': [NOTE], 'note': OUTSIDE_SAVE_NOTE})
         # A home that is not the profile of a bot gets a clear refusal.
         for name, arguments in (('save_document', page), ('read_document', {})):
             self.assertIn('not the profile of a bot', call(name, arguments, Path(self.temp.name) / 'elsewhere')['error'])
@@ -1120,6 +1129,9 @@ class GatewayAdapterTests(unittest.TestCase):
                 try:
                     results.append(json.loads(tools._service_tool('save_document')(dict(
                         key='weekly-report', title='Weekly report', format='markdown', content='3 tasks are open.'))))
+                    # The model reads the answer of the tool as JSON text, with the notes of the save.
+                    results.append(tools._service_tool('save_document')(dict(
+                        key='weekly-report', title='Weekly report', format='markdown', content=WEAK_PAGE)))
                 finally:
                     from gateway.session_context import SESSION
                     SESSION.reset(token)
@@ -1128,9 +1140,11 @@ class GatewayAdapterTests(unittest.TestCase):
         self.connect(runner)
         task = self.write('POST', f'/v1/bots/{self.bot["id"]}/messages', {'text': 'Write the weekly report.'})
         self.service._run_task(task['id'])
-        self.assertEqual(results, [{'status': 'saved', 'key': 'weekly-report', 'version': 1, 'expires_at': None}])
+        self.assertEqual(results[0], {'status': 'saved', 'key': 'weekly-report', 'version': 1, 'expires_at': None})
+        self.assertEqual(results[1], '{"status": "saved", "key": "weekly-report", "version": 2, "expires_at": null, '
+                                     '"notes": ["' + NOTE + '"]}')
         cards = [m for m in self.service._task_messages(task['id']) if m['kind'] == 'document']
-        self.assertEqual([card['bot_id'] for card in cards], [self.bot['id']])
+        self.assertEqual({card['bot_id'] for card in cards}, {self.bot['id']})
 
     def test_a_dismissed_card_of_coconut_ask_continues_nothing(self):
         tools = sys.modules['hermes_plugins.coconut.tools']
