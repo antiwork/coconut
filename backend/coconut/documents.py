@@ -304,10 +304,31 @@ def _indent(line: str) -> int:
 
 
 def _opens_code(line: str) -> bool:
-    """Whether a line can open code: a fence after optional spaces and quote marks, a tab or four spaces first."""
+    """Whether a line can open code that the reader cannot skip: a tab or four spaces first, or a fence with an
+    indent, as in a list item, or after quote marks, as in a callout."""
     if line.startswith('\t') or _indent(line) >= 4:
         return True
-    return line.lstrip(' >').startswith(('```', '~~~'))
+    text = line.lstrip(' >')
+    return len(text) < len(line) and _fence(text) is not None
+
+
+def _fence(line: str) -> str | None:
+    """The marks of an opening fence of CommonMark at the start of a line, or None: three backticks or more, with no
+    backtick in the rest of the line, or three tildes or more. "```x``` draws a graph" is inline code, no fence."""
+    mark = line[:1]
+    if mark not in ('`', '~'):
+        return None
+    marks = line[:len(line) - len(line.lstrip(mark))]
+    if len(marks) < 3 or mark == '`' and '`' in line[len(marks):]:
+        return None
+    return marks
+
+
+def _closes(line: str, marks: str) -> bool:
+    """Whether a line is the closing fence of an opening fence: after at most three spaces, only its mark, at least as
+    many as the opening fence, then only spaces."""
+    text = line.lstrip(' ')
+    return len(line) - len(text) <= 3 and text.startswith(marks) and not text.rstrip(' ').strip(marks[0])
 
 
 def _shown(cell: str) -> int:
@@ -398,12 +419,21 @@ def _notes(content: str) -> list[str]:
     lines, cut = _cut(content)
     found = set()
     index = 0
+    after_code = False
     while index < len(lines):  # At most MOST_LINES lines; each line is read in one step below.
         line = lines[index]
         if _opens_code(line):
-            # The reader stops at the first line that can open code, and reads nothing after it. Errs toward no note.
+            # The reader stops at code that it cannot skip, and reads nothing after it. Errs toward no note.
             break
-        start = index == 0 or not lines[index - 1].strip()
+        marks = _fence(line)
+        if marks is not None:
+            # A complete fenced block, such as a chart, is skipped. A fence without its closing fence in the cut hides
+            # the rest of the page. The line after the closing fence starts as after a blank line.
+            end = next((number for number in range(index + 1, len(lines)) if _closes(lines[number], marks)), len(lines))
+            index, after_code = end + 1, True
+            continue
+        start = index == 0 or after_code or not lines[index - 1].strip()
+        after_code = False
         if _indent(line) <= 3 and line.lstrip(' ').startswith('>'):
             # A quote: a run of lines that start with ">", which ends at the first other line. It is a callout only
             # when it starts the page or follows a blank line, and its first line starts with a mark.

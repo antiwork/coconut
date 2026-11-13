@@ -57,7 +57,7 @@ So put the column that names each row first, and a short status last.
 
 ## The notes of a save
 
-A save of a Markdown page always works. When the page breaks one of four rules, the answer of the save has `notes`: at most three fixed sentences, each with one thing to do. The four rules are a callout with a list or with more than 300 characters, a column header of more than 16 characters, the same first cell in each row of a table of four columns and three rows or more, and a table cell or a list item with two em dashes or more. A note names no place: look for the fault on the page. The notes read only the part of the page above its first code block, and the other rules of this page have no note. The person already sees the page. Follow the notes in the next save of the same key.
+A save of a Markdown page always works. When the page breaks one of four rules, the answer of the save has `notes`: at most three fixed sentences, each with one thing to do. The four rules are a callout with a list or with more than 300 characters, a column header of more than 16 characters, the same first cell in each row of a table of four columns and three rows or more, and a table cell or a list item with two em dashes or more. A note names no place: look for the fault on the page. The notes skip a complete fenced block, such as a chart, and read on after it. They stop at code in a callout or in a list item, and at a fence without its end. The other rules of this page have no note. The person already sees the page. Follow the notes in the next save of the same key.
 
 ## Example: the weekly report of a shop
 

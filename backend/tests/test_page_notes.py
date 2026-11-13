@@ -158,15 +158,36 @@ class ReaderTests(unittest.TestCase):
     """Each rule of the reader for a kind of doubt, with the probe of the review that showed the doubt. Each can only
     remove a note."""
 
-    def test_the_reader_stops_at_the_first_line_that_can_open_code(self):
-        for code in ('```\n', '~~~md\n', '```chart``` draws a graph.\n', '    code\n', '\tcode\n', '> ```\n',
-                     '  ```sh\n'):
+    def test_the_reader_skips_a_complete_fenced_block_and_reads_on(self):
+        chart = '```chart\n{"type": "bar", "data": []}\n```\n'
+        self.assertEqual(notes('Lead.\n\n' + chart + '\n' + LONG), [NOTE_HEADER])
+        self.assertEqual(notes('Lead.\n\n' + chart + LONG), [NOTE_HEADER])
+        self.assertEqual(notes('Lead.\n\n~~~\n| a — b — c |\n~~~\n\n' + LONG), [NOTE_HEADER])
+        self.assertEqual(notes('Lead.\n\n' + chart + '\n```mermaid\nflowchart LR\n```\n\n' + LONG), [NOTE_HEADER])
+        # A longer closing fence closes, a shorter one or one with text does not, and an info string is allowed.
+        self.assertEqual(notes('```\n' + LONG + '`````\n\n' + named()), [NOTE_NAME])
+        self.assertEqual(notes('````\n```\n' + LONG + '````\n\n' + named()), [NOTE_NAME])
+        self.assertEqual(notes('```js\n' + LONG + '```js\n```\n\n' + named()), [NOTE_NAME])
+        self.assertEqual(notes('~~~~ text with `ticks`\n' + LONG + '~~~~  \n\n' + named()), [NOTE_NAME])
+        self.assertEqual(notes('```\ncode\n    ```\n\n' + LONG), [])
+        # The line after a closing fence starts as after a blank line, so a callout can start there.
+        self.assertEqual(notes('```\ncode\n```\n> [!NOTE]\n> - a\n'), [NOTE_CALLOUT])
+        # A paragraph that starts with inline code of three backticks is no fence, and the table after it is read.
+        self.assertEqual(notes('```chart``` draws a graph.\n\n' + LONG), [NOTE_HEADER])
+
+    def test_the_reader_stops_at_code_that_it_cannot_skip(self):
+        # A fence without its closing fence, a fence in a callout or in a list item (with an indent), a tab and four
+        # spaces: the reader stops and reads nothing after it. Errs toward no note.
+        for code in ('```\n', '~~~md\n', '```\n~~~\n', '> ```\n> code\n> ```\n', '  ```sh\n  code\n  ```\n',
+                     '    code\n', '\tcode\n'):
             with self.subTest(code=code):
                 self.assertEqual(notes(LONG + '\n' + code + '\n' + named()), [NOTE_HEADER])
                 self.assertEqual(notes('Lead.\n\n' + code + '\n' + LONG), [])
-        # Code right under a callout, and code inside a callout, end the reading too.
+        # Code right under a callout ends the callout, and code inside a callout stops the reader.
         self.assertEqual(notes('> [!NOTE]\n> Short note.\n```\ncode\n```\n> - Ada said yes.\n> - Grace said no.\n'), [])
         self.assertEqual(notes('> [!NOTE]\n> Short note.\n> ```\n> - a\n'), [])
+        # The fence of a list item stops the reader, as in a how-to page.
+        self.assertEqual(notes('1. Run:\n\n   ```sh\n   coconut pair\n   ```\n\n' + LONG), [])
 
     def test_a_callout_starts_only_at_the_start_of_the_page_or_after_a_blank_line(self):
         self.assertEqual(notes('> Ada wrote this\nin the chat:\n> [!NOTE]\n> - Fix the checkout.\n> - Call Grace.\n'), [])
@@ -204,7 +225,8 @@ class ReaderTests(unittest.TestCase):
 
     def test_the_reader_reads_each_line_at_most_twice(self):
         # A bound of the work without a clock: the reader asks at most twice for each line whether it opens code.
-        for page in ('> x\n' * 1999, '| a |\n|---|\n' + '| b |\n' * 1997, '- a\n' * 1999, 'text\n' * 1999):
+        for page in ('> x\n' * 1999, '| a |\n|---|\n' + '| b |\n' * 1997, '- a\n' * 1999, 'text\n' * 1999,
+                     '```\n' * 1999, '```\nx\n```\n' * 666):
             calls = []
             check = documents._opens_code
             with patch.object(documents, '_opens_code', lambda line: calls.append(line) or check(line)):
