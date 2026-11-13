@@ -70,7 +70,7 @@ struct OnboardingView: View {
             .padding(.top, 4)
             #endif
             ScrollView {
-                VStack(spacing: 14) {
+                VStack(spacing: BoardStyle.Space.m) {
                     #if os(macOS)
                     // A Mac window centers a narrow column, as the setup pages of macOS do.
                     Image(nsImage: NSApplication.shared.applicationIconImage)
@@ -78,7 +78,7 @@ struct OnboardingView: View {
                         .accessibilityHidden(true)
                     #endif
                     Text("Connect your Mac")
-                        .font(.system(.title, design: .serif).weight(.medium))
+                        .font(.system(.title, design: .serif).weight(.bold))
                         .multilineTextAlignment(.center)
                         .accessibilityAddTraits(.isHeader)
                     Text("Send this message to your Hermes, for example in Telegram.")
@@ -89,9 +89,9 @@ struct OnboardingView: View {
                             .font(.footnote).foregroundStyle(.secondary)
                             .multilineTextAlignment(.center)
                     }
-                    message.padding(.top, 14)
+                    message.padding(.top, BoardStyle.Space.m)
                     actions
-                    status.padding(.top, 10)
+                    status.padding(.top, BoardStyle.Space.m)
                 }
                 #if os(macOS)
                 .frame(maxWidth: 440)
@@ -99,7 +99,7 @@ struct OnboardingView: View {
                 .frame(maxWidth: .infinity)
                 .containerRelativeFrame(.vertical, alignment: .center)
                 #else
-                .padding(.top, 20)
+                .padding(.top, BoardStyle.Space.xl)
                 .frame(maxWidth: .infinity)
                 #endif
             }
@@ -110,8 +110,8 @@ struct OnboardingView: View {
                 .frame(minHeight: 44)
                 .accessibilityIdentifier("onboarding-help")
         }
-        .padding(.horizontal, 24)
-        .padding(.bottom, 8)
+        .padding(.horizontal, BoardStyle.Space.l)
+        .padding(.bottom, BoardStyle.Space.s)
         .background(BoardStyle.paper.ignoresSafeArea())
         .animation(reduceMotion ? nil : .easeInOut(duration: 0.25), value: phase)
         .task(id: attempt) { await rendezvous() }
@@ -154,11 +154,11 @@ struct OnboardingView: View {
 
     private var message: some View {
         Text(messageText)
-            .font(.callout)
+            .font(.body)
             .textSelection(.enabled)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(16)
-            .background(Color.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+            .padding(BoardStyle.Space.l)
+            .background(Color.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: BoardStyle.Radius.medium, style: .continuous))
             .redacted(reason: pending == nil ? .placeholder : [])
             .privacySensitive()
             .accessibilityIdentifier("hermes-message")
@@ -233,7 +233,7 @@ struct OnboardingView: View {
             .accessibilityElement(children: .combine)
             .accessibilityIdentifier("onboarding-status")
         case .failed(let text):
-            VStack(spacing: 6) {
+            VStack(spacing: BoardStyle.Space.s) {
                 InlineError(text).multilineTextAlignment(.center)
                 Button("Try again") { attempt += 1 }
                     .font(.subheadline.weight(.semibold))
