@@ -341,9 +341,10 @@ class CoconutAdapter(BasePlatformAdapter):
                 # hooks.add_records adds the records that the session of the chat does not hold yet.
                 RECORDS[str(turn['id'])] = records
         elif records:
-            # Hermes saves the whole text in each turn, so each turn gets every record.
+            # Hermes saves the whole text in each turn, so each turn gets every record. The note about changed
+            # instructions would repeat in each turn, so it stays out (hooks.add_records).
             from .hooks import records_text
-            text += records_text(records)
+            text += records_text([record for record in records if record.get('kind') != 'instructions'])
         # A turn that may stay silent, such as a reaction, needs no reply. Hermes then keeps a silence marker silent
         # instead of a notice (gateway.response_filters.silence_allowed).
         return MessageEvent(text=text, message_type=MessageType.TEXT, source=source,

@@ -53,7 +53,8 @@ struct MacMainWindow: View {
                             }
                         }
                 } detail: {
-                    detail
+                    // The notice of the window shows each error, so the pages of the detail area show no inline copy.
+                    detail.environment(\.windowShowsError, true)
                 }
             } else {
                 MacPairingView(model: model)
@@ -77,6 +78,7 @@ struct MacMainWindow: View {
         }
         .frame(minWidth: 920, minHeight: 480)
         .background(BoardStyle.paper)
+        .announcesErrors(store.error)
         .sheet(isPresented: $createOpen) { BotEditorView() }
         .sheet(isPresented: $pairingOpen) { MacPairingView(model: model).frame(width: 520, height: 600) }
         .onChange(of: store.setupLink) { _, link in if link != nil { pairingOpen = true } }
@@ -93,23 +95,19 @@ struct MacMainWindow: View {
             // The Library row of the sidebar opens the list. A document card sets the page first and then the row.
             if selected != .library { libraryPath = NavigationPath() }
         }
-        .overlay(alignment: .top) {
-            if let error = store.error {
-                ErrorBanner(message: error) { store.error = nil }.padding(.horizontal, 16).padding(.top, 8)
-            }
-        }
     }
 
     @ViewBuilder private var detail: some View {
         switch selection {
         case .inbox, nil:
-            MacInboxView(selection: $selection)
+            MacInboxView(selection: $selection).modifier(MacNoticeArea())
         case .library:
             NavigationStack(path: $libraryPath) {
                 LibraryView()
                     .navigationTitle("Library")
                     .navigationDestination(for: DocumentRoute.self) { DocumentView(documentId: $0.id) }
             }
+            .modifier(MacNoticeArea())
         case .bot(let botId):
             // The details are a column of fixed width next to the chat, not an inspector. Next to a chat, the
             // inspector's split view did not settle on a layout and stopped the app, below about 1,300 points of
@@ -128,6 +126,8 @@ struct MacMainWindow: View {
                         .navigationDestination(for: BotSettingsRoute.self) { BotSettingsView(botId: $0.botId) }
                 }
                 .environment(\.pushRoute) { route in chatPath.append(route) }
+                // The notice stands in the chat column, not under the details next to it.
+                .modifier(MacNoticeArea())
                 .frame(minWidth: 300, maxWidth: .infinity)
                 if inspectorShown {
                     Divider()
@@ -149,10 +149,29 @@ struct MacMainWindow: View {
                 TeamChatView(chatKey: chat)
                     .id(chat)
             }
+            .modifier(MacNoticeArea())
             .ignoresSafeArea(.container, edges: .top)
             .toolbarBackgroundVisibility(.hidden, for: .windowToolbar)
             .toolbar(removing: .title)
         }
+    }
+}
+
+/// The notice of an action that failed, at the bottom center of the detail area. It takes its own space at the bottom,
+/// so the page above it gets shorter and covers nothing. A chat on the screen shows the notice above its composer
+/// instead (ChatHoldsNoticePreference).
+struct MacNoticeArea: ViewModifier {
+    @State private var chatHoldsNotice = false
+    @State private var area: CGFloat?
+
+    func body(content: Content) -> some View {
+        content
+            .onPreferenceChange(ChatHoldsNoticePreference.self) { chatHoldsNotice = $0 }
+            .safeAreaInset(edge: .bottom, spacing: 0) {
+                if !chatHoldsNotice { WindowErrorNotice() }
+            }
+            .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { area = $0 }
+            .environment(\.noticeArea, area)
     }
 }
 

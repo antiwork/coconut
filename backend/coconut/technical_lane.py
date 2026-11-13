@@ -220,7 +220,7 @@ def held_merge(decision, lane):
               and decision.get('inbox_kind', 'decision') == 'decision' and decision.get('_native')
               and url.lower() == lane['held_merge_pr_url'].lower()
               and decision.get('draft') is None and not decision.get('_receipt_id') and not decision.get('_action')
-              and not decision.get('_proposal_action') and not decision.get('_source_recheck')
+              and not decision.get('_proposal_action')
               and not decision.get('_hidden') and not decision.get('_deleted')
               and decision.get('decided_by') and decision['decided_by'] not in SYSTEM_DECIDERS
               and not (decision.get('correction') or '').strip()
@@ -247,7 +247,7 @@ def declined_merge(decision, lane):
                 and decision.get('inbox_kind', 'decision') == 'decision' and decision.get('_native')
                 and isinstance(url, str) and url.lower() == lane['declined_merge_pr_url'].lower()
                 and decision.get('draft') is None and not decision.get('_receipt_id')
-                and not decision.get('_source_recheck') and not decision.get('_hidden') and not decision.get('_deleted')
+                and not decision.get('_hidden') and not decision.get('_deleted')
                 and decision.get('decided_by') and decision['decided_by'] not in SYSTEM_DECIDERS
                 and decision.get('selected_option_id') is None and not (decision.get('correction') or '').strip()
                 and len(answers) == 1 and answers[0].get('choice') == 'reject' and answers[0].get('option_id') is None
@@ -455,7 +455,7 @@ class TechnicalLane:
             raise ServiceError(409, 'The pending decision changed. Read it and retry with its exact ID and revision.')
         if (gate.get('action_type') != 'question' or gate.get('inbox_kind', 'decision') != 'decision'
                 or gate.get('_receipt_id') or gate.get('merge_pr_url') or gate.get('draft') is not None
-                or gate.get('_source_recheck') or gate.get('decided_by') or gate.get('selected_option_id')
+                or gate.get('decided_by') or gate.get('selected_option_id')
                 or any(answer.get('decided_by') for answer in gate.get('_answers', []))):
             raise ServiceError(409, 'This decision holds a tool, a merge, a draft, or a recorded answer. Wait for it.')
         if any(d['status'] == 'rejected' for d in decisions):

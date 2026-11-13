@@ -116,6 +116,14 @@ def require_recommended_first(options, recommended_id):
         raise ServiceError(400, RECOMMENDED_FIRST.format(recommended=recommended_id))
 
 
+def closed_reason(decision, text):
+    """The text of a refusal for a card that is no longer pending. For a card that Coconut closed because its GitHub
+    source ended, the outcome follows, so that the bot and the person learn why. The first sentence stays as it is."""
+    if decision.get('status') == 'resolved' and decision.get('resolution') == 'source_changed' and decision.get('outcome'):
+        return text + ' ' + decision['outcome']
+    return text
+
+
 class DecisionInbox:
     def edit_message_draft(self, decision, task, data, device):
         from .service import ServiceError, now, digest, encoded
@@ -197,7 +205,7 @@ class DecisionInbox:
             if not data.get('swipe_id') or data['swipe_id'] != decision.get('inbox_swipe_id'):
                 raise ServiceError(409, 'Another swipe changed this decision.')
             if decision['status'] not in ('pending', 'dismissed'):
-                raise ServiceError(409, 'This decision is no longer pending.')
+                raise ServiceError(409, closed_reason(decision, 'This decision is no longer pending.'))
             # A required card gets a new revision, so an answer sent before the swipe cannot land after Undo.
             # A dismissal saved before this release also kept the device that would reject it.
             legacy = decision.pop('_inbox_reject_device', None) is not None
@@ -206,7 +214,7 @@ class DecisionInbox:
             decision.pop('_inbox_dismissed_at', None)
             decision.update(status='pending', inbox_deferred_at=None, inbox_undo_until=None, inbox_swipe_id=None)
         elif decision['status'] != 'pending':
-            raise ServiceError(409, 'This decision is no longer pending.')
+            raise ServiceError(409, closed_reason(decision, 'This decision is no longer pending.'))
         elif action in ('keep', 'later', 'dismiss'):
             decision['inbox_swipe_id'] = uid()
             decision['inbox_undo_until'] = (datetime.now(timezone.utc) + timedelta(seconds=10)).isoformat()
@@ -254,7 +262,6 @@ class DecisionInbox:
         A dismissed card about a source covers that source until the source changes (work_sources.coverage).
         """
         from .service import now, encoded
-        decision.pop('_source_recheck', None)
         decision['outcome'] = DISMISSED_OUTCOME
         if decision.get('_gateway_question'):
             self.dismiss_gateway_question(decision)
@@ -334,7 +341,7 @@ class DecisionInbox:
             task = self._get('tasks', decision['task_id'])
             if (not self._decision_visible_to_task(decision, source_task)
                     or type(payload.get('decision_revision')) is not int or payload['decision_revision'] != decision['revision']):
-                raise ServiceError(409, 'Use a current decision from this conversation.')
+                raise ServiceError(409, closed_reason(decision, 'Use a current decision from this conversation.'))
             context = dict(id=uid(), task_id=task['id'], bot_id=task['bot_id'], decision_id=decision['id'],
                            question=source['text'], status='working', _reply_device=source['_human_device_id'],
                            _decision_revision=decision['revision'], _source_message_id=source_id)
@@ -362,7 +369,7 @@ class DecisionInbox:
         if (not context.get('_reply_device') or context['status'] != 'working'
                 or decision['status'] != 'pending' or task['status'] == 'cancelled'
                 or decision['revision'] != context['_decision_revision']):
-            raise ServiceError(409, 'The reply no longer matches a pending decision.')
+            raise ServiceError(409, closed_reason(decision, 'The reply no longer matches a pending decision.'))
         if context.get('_background_completion') and payload.get('choice') != 'modify':
             return {'status': 'pending', 'error': 'Background results can update the card but cannot answer it for the person.'}
         quote = payload.get('quote')

@@ -1627,6 +1627,67 @@ final class LibraryDocumentTests: XCTestCase {
         XCTAssertEqual(broken, "")
     }
 
+    /// The example page of the skill and the weak page of the notes tests (backend/tests/test_page_notes.py), read
+    /// from the repository. The weak page has each fault of the real pages: the renderer keeps it readable too.
+    private static func pageFixtures() throws -> [(String, String)] {
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let reference = try String(contentsOf: root.appendingPathComponent("skills/coconut/references/pages.md"),
+                                   encoding: .utf8)
+        let example = try XCTUnwrap(reference.components(separatedBy: "````markdown\n").dropFirst().first?
+            .components(separatedBy: "\n````").first)
+        let weak = try String(contentsOf: root.appendingPathComponent("backend/tests/fixtures/weak_page.md"),
+                              encoding: .utf8)
+        return [("example", example), ("weak", weak)]
+    }
+
+    /// At the width of a phone and of a wide column, the page does not scroll sideways, no two labels of a chart meet,
+    /// and no word breaks into letters.
+    @MainActor
+    func testTheExamplePageAndAWeakPageStayReadable() async throws {
+        for (name, page) in try Self.pageFixtures() {
+            for width: CGFloat in [390, 680] {
+                let (view, window) = try await loadPage(page, width: width)
+                defer { close(window) }
+                let result = try await probe(view, """
+                    const charts = [...document.querySelectorAll("figure.chart svg")];
+                    const meet = charts.map((svg) => {
+                      const boxes = [...svg.querySelectorAll("[aria-label='x-axis tick label'] text")]
+                        .map((text) => text.getBoundingClientRect()).sort((a, b) => a.left - b.left);
+                      return boxes.slice(1).filter((box, index) => box.left - boxes[index].right < 8).length;
+                    });
+                    // A word that breaks at its hyphen, as "2026-11-" and "07", breaks between two parts and not into
+                    // letters, so each part on one line is no broken word. A part that ends at the end of a line also
+                    // has an empty box on the next line, which does not count.
+                    const broken = [];
+                    const walker = document.createTreeWalker(document.querySelector("main"), NodeFilter.SHOW_TEXT);
+                    const lines = (node, start, end) => {
+                      const range = document.createRange();
+                      range.setStart(node, start);
+                      range.setEnd(node, end);
+                      return new Set([...range.getClientRects()].filter((rect) => rect.width > 0)
+                        .map((rect) => Math.round(rect.top))).size;
+                    };
+                    while (walker.nextNode()) {
+                      const node = walker.currentNode;
+                      for (const match of node.textContent.matchAll(/\\S+/g)) {
+                        if (match[0].length > 30 || lines(node, match.index, match.index + match[0].length) < 2) continue;
+                        const parts = [...match[0].matchAll(/[^-]+-?|-/g)];
+                        const start = match.index;
+                        if (parts.some((part) => lines(node, start + part.index, start + part.index + part[0].length) > 1)) {
+                          broken.push(match[0]);
+                        }
+                      }
+                    }
+                    return [scrolls(), charts.length, meet.join(","), broken.join(" "),
+                      document.querySelectorAll(".metrics").length].join(" | ");
+                    """)
+                // The example has a row of tiles. The weak page has none: its numbers are in its text.
+                XCTAssertEqual(result, "0 | 1 | 0 |  | \(name == "example" ? 1 : 0)", "\(name) at \(Int(width)) px")
+            }
+        }
+    }
+
     /// Loads a Markdown or HTML page with the scripts of the app in a web view of this width, in a window, as the app
     /// does.
     @MainActor

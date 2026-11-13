@@ -1,6 +1,55 @@
 import SwiftUI
 import QuickLook
 
+/// The words of the receipt of a card that is not pending.
+enum DecisionSelection {
+    /// A draft says "Approved for sending" only when the person approved it. Coconut can close a card without an answer,
+    /// for example when its GitHub source closed; then the card shows its outcome. The receipt shows no other outcome
+    /// text, except the line under a failed card, which never repeats this label.
+    static func label(status: String, hasDraft: Bool, dismissed: Bool, choosingLabel: String?,
+                      selectedOptionLabel: String?, outcome: String?) -> String {
+        if dismissed { return "Dismissed" }
+        // A row shows an outcome only when it is one short line. A check that withdrew a card leaves its whole evidence
+        // as the outcome; such a card says "Closed".
+        let said = outcome.flatMap { text in
+            text.isEmpty ? nil : text.count <= 80 && !text.contains(where: \.isNewline) ? text : "Closed"
+        }
+        if hasDraft {
+            switch status {
+            case "pending", "approved", "executed": return "Approved for sending"
+            case "rejected": return "Discarded"
+            case "failed": return "Could not finish"
+            default: return said ?? "Closed"
+            }
+        }
+        if let choosingLabel { return choosingLabel }
+        if let selectedOptionLabel { return selectedOptionLabel }
+        if status == "resolved", let said { return said }
+        return status.capitalized
+    }
+
+    /// The statuses that record a choice of a person on the card: an option, Send, a discard or a reply.
+    private static let choices: Set<String> = ["approved", "executed", "rejected", "modified", "replied"]
+
+    /// A receipt shows the check only for a choice of a person. A card that closed without a choice, for example
+    /// `resolved` or `cancelled`, shows its words as a state: no check, in the secondary color. A pending card, a
+    /// failed card and a dismissed card keep their own marks.
+    static func showsCheck(status: String) -> Bool { choices.contains(status) }
+
+    /// True for a card that closed without a choice of a person (see showsCheck). Its words use the secondary color.
+    static func closedWithoutChoice(status: String, dismissed: Bool) -> Bool {
+        !dismissed && !["pending", "failed"].contains(status) && !showsCheck(status: status)
+    }
+
+    /// The mark at the end of the receipt row, as the name of a symbol. A card that closed without a choice has none.
+    static func mark(status: String, pending: Bool, dismissed: Bool) -> String? {
+        if dismissed { return "xmark" }
+        if status == "failed" { return "exclamationmark.circle" }
+        if pending { return "arrow.up" }
+        return showsCheck(status: status) ? "checkmark" : nil
+    }
+}
+
 struct DecisionCard: View {
     @Environment(AppStore.self) private var store
     let decision: Decision
@@ -34,14 +83,12 @@ struct DecisionCard: View {
         #endif
     }
     private var selectionLabel: String {
-        if isDismissed { return "Dismissed" }
-        if decision.draft != nil {
-            return decision.status == "rejected" ? "Discarded" : decision.status == "failed" ? "Could not finish" : "Approved for sending"
-        }
-        if let id = submittingOptionId, let option = decision.options.first(where: { $0.id == id }) {
-            return option.label
-        }
-        return decision.selectedOptionLabel ?? decision.status.capitalized
+        DecisionSelection.label(status: decision.status, hasDraft: decision.draft != nil, dismissed: isDismissed,
+                                choosingLabel: submittingOptionId.flatMap { id in decision.options.first { $0.id == id }?.label },
+                                selectedOptionLabel: decision.selectedOptionLabel, outcome: decision.outcome)
+    }
+    private var closedWithoutChoice: Bool {
+        DecisionSelection.closedWithoutChoice(status: decision.status, dismissed: isDismissed)
     }
     var body: some View {
         Group {
@@ -199,15 +246,18 @@ struct DecisionCard: View {
         VStack(alignment: .leading, spacing: BoardStyle.Space.m) {
             HStack(alignment: .firstTextBaseline, spacing: 12) {
                 Text(selectionLabel).font(.subheadline)
+                    .foregroundStyle(closedWithoutChoice ? .secondary : .primary)
                     .fixedSize(horizontal: false, vertical: true)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .accessibilityIdentifier("decision-selection-\(decision.id)")
-                Image(systemName: isDismissed ? "xmark" : decision.status == "failed" ? "exclamationmark.circle" : decision.isPending ? "arrow.up" : "checkmark")
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(isDismissed ? .secondary : decision.status == "failed" ? BoardStyle.attention :
-                                        decision.isPending ? .secondary : BoardStyle.positive)
-                    .accessibilityLabel(isDismissed ? "Dismissed" : decision.isPending ? "Sending choice" :
-                                            decision.status == "failed" ? "Action failed" : "Choice recorded")
+                if let mark = DecisionSelection.mark(status: decision.status, pending: decision.isPending, dismissed: isDismissed) {
+                    Image(systemName: mark)
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(isDismissed ? .secondary : decision.status == "failed" ? BoardStyle.attention :
+                                            decision.isPending ? .secondary : BoardStyle.positive)
+                        .accessibilityLabel(isDismissed ? "Dismissed" : decision.isPending ? "Sending choice" :
+                                                decision.status == "failed" ? "Action failed" : "Choice recorded")
+                }
             }
             .padding(.horizontal, 12).padding(.vertical, 12)
             .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)

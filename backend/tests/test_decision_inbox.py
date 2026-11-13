@@ -566,6 +566,17 @@ class DecisionInboxTests(unittest.TestCase):
         with self.assertRaises(ServiceError):
             self.service.resolve_decision_reply(context['id'], response)
 
+    def test_a_chat_reply_answers_a_card_with_an_old_instruction_revision(self):
+        decision = self.question()
+        saved = self.service._get('decisions', decision['id'])
+        saved['_profile_revision'] = 'an-older-revision'
+        self.service._put('decisions', saved)
+        context = self.reply(decision, 'Check references')
+        result = self.service.resolve_decision_reply(context['id'], dict(choice='approve', option_id='check',
+                                                                         quote='Check references'))
+        self.assertEqual(result['decision']['status'], 'approved')
+        self.assertEqual(self.service._get('tasks', self.task['id'])['status'], 'queued')
+
     def test_scope_change_revises_one_card_and_invalidates_old_choices(self):
         decision = self.question()
         context = self.reply(decision, 'Check only the export folder')
@@ -717,14 +728,14 @@ class DecisionInboxTests(unittest.TestCase):
         self.assertEqual(delivered['attachments'][0]['content_base64'], content)
 
     def refreshing_question(self):
-        from dataclasses import replace
-        from test_service_pr import URL, observation
+        """A card with the lock of a service before this release. That service locked a card whose linked PR ended."""
+        from test_service_pr import URL
         decision = self.question()
         saved = self.service._get('decisions', decision['id'])
-        saved['sources'] = [dict(kind='pull_request', title='Synthetic PR', url=URL)]
+        saved.update(sources=[dict(kind='pull_request', title='Synthetic PR', url=URL)], _source_recheck=True,
+                     revision=saved['revision'] + 1)
         self.service._put('decisions', saved)
-        self.service._invalidate_terminal_pr_cards(self.bot['id'], replace(observation('merged'), pr_state='merged'))
-        return self.service._get('decisions', decision['id'])
+        return saved
 
     def test_refreshing_required_dismissal_records_no_answer(self):
         decision = self.refreshing_question()
@@ -734,7 +745,7 @@ class DecisionInboxTests(unittest.TestCase):
         self.expire_swipe(decision)
         self.service.finish_inbox_swipes()
         saved = self.assert_dismissed_without_answer(decision)
-        self.assertFalse(saved.get('_source_recheck'))
+        self.assertNotIn('source_refreshing', self.service._public(saved))
 
     def test_preexisting_refreshing_dismissal_does_not_block_dispatch(self):
         import threading
@@ -762,21 +773,23 @@ class DecisionInboxTests(unittest.TestCase):
         # A dismissal saved before this release closes as a dismissal too. It rejects nothing.
         self.assert_dismissed_without_answer(decision)
 
-    def test_refreshing_dismissal_undo_retains_refresh_and_answer_fence(self):
+    def test_refreshing_dismissal_undo_gives_a_card_that_accepts_an_answer(self):
         decision = self.refreshing_question()
         path = f"/v1/decisions/{decision['id']}/inbox"
         dismissed = self.write('POST', path, dict(action='dismiss', revision=decision['revision']))
         restored = self.write('POST', path, dict(action='restore', revision=decision['revision'], swipe_id=dismissed['inbox_swipe_id']))
         saved = self.service._get('decisions', decision['id'])
-        self.assertTrue(saved.get('_source_recheck'))
+        self.assertNotIn('source_refreshing', restored)
         self.assertEqual(saved['status'], 'pending')
         self.assertEqual(saved['_answers'], [])
         self.assertEqual(restored['revision'], decision['revision'] + 1)
         self.assertFalse(saved.get('_inbox_reject_device'))
         self.service.finish_inbox_swipes()
-        for revision in (decision['revision'], restored['revision']):
-            for choice in ('approve', 'reject'):
-                with self.subTest(revision=revision, choice=choice), self.assertRaises(ServiceError):
-                    self.write('POST', f"/v1/decisions/{decision['id']}/answer", dict(
-                        choice=choice, option_id='check' if choice == 'approve' else None, revision=revision))
+        # Nothing locks a card now. An answer to the revision before the Undo fails; the current revision is answerable.
+        with self.assertRaises(ServiceError):
+            self.write('POST', f"/v1/decisions/{decision['id']}/answer", dict(
+                choice='approve', option_id='check', revision=decision['revision']))
         self.assertEqual(self.service._get('tasks', self.task['id'])['status'], 'needs_you')
+        answered = self.write('POST', f"/v1/decisions/{decision['id']}/answer", dict(
+            choice='approve', option_id='check', revision=restored['revision']))
+        self.assertEqual(answered['status'], 'approved')

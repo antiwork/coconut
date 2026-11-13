@@ -61,10 +61,12 @@
     }
   }
 
-  // A number: a sign, a currency sign, digits with separators, then a percent sign or one letter such as k or M. A unit
-  // can follow after a space: at most 16 characters and no digit. "1,552 steps", "$41,200", "87%", "-3", "27.6 in".
+  // A number: a sign, a currency sign, the digits 0 to 9 with separators, then a percent sign or one letter such as k
+  // or M. A unit can follow after a space: at most 16 characters and no digit. "1,552 steps", "$41,200", "87%", "-3",
+  // "27.6 in". The space before a unit can also be a no-break, thin or narrow no-break space, as in "12 %". The flag
+  // u counts characters, not UTF-16 units.
   const number = (text) => text
-    .match(/^([+\-−]?\u2060?[$€£¥]?\d(?:[\d,.]*\d)?(?:%|[A-Za-z](?![A-Za-z]))?)(?:\s+(\D{1,16}))?$/s);
+    .match(/^([+\-−]?\u2060?[$€£¥]?[0-9](?:[0-9,.]*[0-9])?(?:%|[A-Za-z](?![A-Za-z]))?)(?:[ \t\u00a0\u2009\u202f]+([^0-9]{1,16}))?$/su);
   const text = (cell) => cell.textContent.trim();
   // A cell has content when it has text, a photo, a drawing or a check box. A plain cell has only text.
   const filled = (cell) => text(cell) || cell.querySelector("img, svg, input, figure.chart");
