@@ -133,7 +133,7 @@ class PersonTests(TypingMacs, unittest.TestCase):
         self.assertEqual(self.refusal(self.second.team_request, 'POST', path, {}),
                          (403, 'Only the person can do this in the team. Use the Coconut app.'))
         # The handler itself refuses a call without a device too, also when a later change opens the route.
-        self.assertEqual(self.refusal(self.second.team_typing, self.room, '')[0], 403)
+        self.assertEqual(self.refusal(self.second.team_typing, self.room, {}, '')[0], 403)
         self.assertEqual(self.refusal(self.phone(self.second), 'POST', f'/v1/team/rooms/{"d" * 64}/typing', {}),
                          (404, 'This Mac is not in this team.'))
         self.assertEqual(self.own_typing(self.second), [])

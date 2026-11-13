@@ -1400,6 +1400,90 @@ class TeamRemovalTests(unittest.TestCase):
 
 @unittest.skipUnless(sys.platform == 'darwin' and shutil.which('xcrun') and shutil.which('node')
                      and (ROOT / 'relay/node_modules/miniflare').is_dir(),
+                     'The named chat test needs macOS, the Xcode Command Line Tools, Node, and npm ci in relay/.')
+class TeamChatsTests(unittest.TestCase):
+    """Ada, the admin, makes the chat "Design" through the real relay and the real helper. Grace writes there, and Ada
+    and Lin see the message in "Design" and not in the Team chat. Ada removes the chat, and it goes from Grace and Lin.
+    The services run in this process."""
+
+    @classmethod
+    def setUpClass(cls):
+        TeamPushTests.setUpClass.__func__(cls)
+
+    @classmethod
+    def tearDownClass(cls):
+        TeamPushTests.tearDownClass.__func__(cls)
+
+    def test_the_admin_makes_a_chat_a_member_writes_there_and_the_admin_removes_it(self):
+        import logging
+        from coconut.providers import FixtureProvider
+        from coconut.service import Service
+        os.environ['COCONUT_TEAM_HELPER'] = str(self.helper_path)
+        self.addCleanup(os.environ.pop, 'COCONUT_TEAM_HELPER', None)
+        records = []
+        handler = logging.Handler(logging.DEBUG)
+        handler.emit = records.append
+        root_logger = logging.getLogger()
+        root_logger.addHandler(handler)
+        self.addCleanup(root_logger.setLevel, root_logger.level)
+        root_logger.setLevel(logging.DEBUG)
+        self.addCleanup(root_logger.removeHandler, handler)
+        macs = []
+        for name in ('ada', 'grace', 'lin'):
+            root = Path(self.temp.name) / f'chats-{name}'
+            service = Service(root, FixtureProvider(root), start_workers=False)
+            self.addCleanup(service.close)
+            macs.append(service)
+        ada, grace, lin = macs
+
+        def call(service, method, path, data=None):
+            return service.team_request(method, path, data or {}, '', 'test-device')
+
+        def sync():
+            for _ in range(2):
+                for service in macs:
+                    service.team_sync_pass()
+
+        def view(service):
+            (room,) = call(service, 'GET', '/v1/team/rooms')['rooms']
+            return room
+
+        def texts(service, chat=None):
+            data = {'chat': chat} if chat else {}
+            return [message['text'] for message in
+                    call(service, 'GET', f'/v1/team/rooms/{room_id}/messages', data)['messages']]
+
+        room_id = call(ada, 'POST', '/v1/team/rooms', {'name': 'Example Team', 'member_name': 'Ada',
+                                                       'relay': self.url})['room']['room']
+        for service, name in ((grace, 'Grace'), (lin, 'Lin')):
+            link = call(ada, 'POST', f'/v1/team/rooms/{room_id}/invites', {})['link']
+            call(service, 'POST', '/v1/team/join', {'link': link, 'member_name': name})
+        design = call(ada, 'POST', f'/v1/team/rooms/{room_id}/chats', {'name': 'Design'})['chat']
+        sync()
+        self.assertEqual([[(chat['id'], chat['name']) for chat in view(service)['chats']] for service in macs],
+                         [[(design, 'Design')]] * 3)
+        self.assertEqual([view(service)['can_manage_chats'] for service in macs], [True, False, False])
+
+        call(grace, 'POST', f'/v1/team/rooms/{room_id}/messages', {'text': 'Hello Design', 'chat': design})
+        sync()
+        for service in (ada, lin):
+            self.assertEqual(texts(service, design), ['Hello Design'])
+            self.assertEqual(texts(service), [])
+            self.assertEqual(view(service)['chats'][0]['unread'], 1)
+
+        call(ada, 'DELETE', f'/v1/team/rooms/{room_id}/chats/{design}')
+        sync()
+        for service in macs:
+            self.assertEqual(view(service)['chats'], [])
+            self.assertEqual(service.db.execute('SELECT COUNT(*) FROM team_messages').fetchone()[0], 0)
+        # No log line has the name of the chat, a name of a person or the text of a message.
+        output = '\n'.join(logging.Formatter().format(record) for record in records)
+        for text in ('Design', 'Grace', 'Example Team', 'Hello'):
+            self.assertNotIn(text, output)
+
+
+@unittest.skipUnless(sys.platform == 'darwin' and shutil.which('xcrun') and shutil.which('node')
+                     and (ROOT / 'relay/node_modules/miniflare').is_dir(),
                      'The message erase test needs macOS, the Xcode Command Line Tools, Node, and npm ci in relay/.')
 class TeamEraseTests(unittest.TestCase):
     """Ada, the admin, deletes a message of Grace through the real relay and the real helper. The message goes from

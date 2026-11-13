@@ -27,7 +27,9 @@ for a person, because the app shows them.
 - The routes of the Team chat under `/v1/team/rooms/<room>/messages` and `/v1/team/rooms/<room>/read`
   (team_messages.py).
 - `POST /v1/team/rooms/<room>/typing`: the person types in the Team chat (team_typing.py). Only a paired device calls
-  it, and the Mac writes at most one `typing` entry in 4 seconds for a room.
+  it, and the Mac writes at most one `typing` entry in 4 seconds for a room and chat.
+- `POST /v1/team/rooms/<room>/chats`, `PATCH` and `DELETE /v1/team/rooms/<room>/chats/<id>`: the admin makes, renames
+  and removes a named chat (team_chats.py). The routes of the Team chat take a named chat in `chat`.
 - `PUT /v1/team/rooms/<room>/notifications` with `{enabled}`: the person turns the notifications of the room on or off
   for the phones of this Mac. Only a person's Mac has phones, so a Mac for a team only answers 409.
 - The routes of the direct messages under `/v1/team/rooms/<room>/directs/<member>` (team_directs.py). A `GET
@@ -57,6 +59,7 @@ from uuid import UUID
 from . import team_keys
 from .push_relay import RELAY_URL
 from .team_helper import TeamFormatError, TeamHelper, TeamHelperError
+from .team_chats import TeamChats
 from .team_directs import TeamDirects
 from .team_epochs import TeamEpochs
 from .team_keys import ROOM_ID, TeamKeysError
@@ -97,7 +100,7 @@ clock = time.monotonic
 log = logging.getLogger(__name__)
 
 
-def checked_name(value, noun: str, *, person: bool) -> str:
+def checked_name(value, noun: str, *, person: bool, limit: int = MAX_NAME) -> str:
     """Check a name, with one text for each problem. `noun` names the name in the text, for example "your name".
 
     The name of a team follows the rule of a link (docs/team-log.md, "Invite and join"). The helper counts the
@@ -108,13 +111,13 @@ def checked_name(value, noun: str, *, person: bool) -> str:
     The name of a person (`person`) goes only into a sealed `member` entry, so no rule of the helper applies. It can
     have an emoji with a joiner. It has no control character, no line break, no lone surrogate, no format character
     outside EMOJI_FORMAT, and no space at its start or end. A name with a character that this Python does not know
-    yet, for example a new emoji, is valid.
+    yet, for example a new emoji, is valid. The name of a chat follows the rule of a person, with its own `limit`.
     """
     from .service_base import ServiceError
     if not isinstance(value, str) or not value:
         raise ServiceError(400, f'Give {noun}.')
-    if len(value) > MAX_NAME:
-        raise ServiceError(400, f'Use at most {MAX_NAME} characters for {noun}.')
+    if len(value) > limit:
+        raise ServiceError(400, f'Use at most {limit} characters for {noun}.')
     if not unicode_text(value):
         raise ServiceError(400, f'Use only valid text for {noun}.')
     for character in value:
@@ -199,7 +202,7 @@ def team_errors():
         raise ServiceError(status, room_error(error)) from None
 
 
-class Team(TeamSync, TeamSocket, TeamPages, TeamMessages, TeamDirects, TeamEpochs, TeamTyping):
+class Team(TeamSync, TeamSocket, TeamPages, TeamMessages, TeamChats, TeamDirects, TeamEpochs, TeamTyping):
     """The team rooms of this Mac: the routes of the tools, and the thread that copies each log."""
 
     def _init_team(self):
@@ -342,7 +345,13 @@ class Team(TeamSync, TeamSocket, TeamPages, TeamMessages, TeamDirects, TeamEpoch
         if len(parts) == 3 and parts[0] == 'rooms' and parts[2] == 'read' and method == 'POST':
             return self.team_mark_read(parts[1], data)
         if len(parts) == 3 and parts[0] == 'rooms' and parts[2] == 'typing' and method == 'POST':
-            return self.team_typing(parts[1], device)
+            return self.team_typing(parts[1], data, device)
+        if len(parts) == 3 and parts[0] == 'rooms' and parts[2] == 'chats' and method == 'POST':
+            return self.team_chat_create(parts[1], data, device, repeat)
+        if len(parts) == 4 and parts[0] == 'rooms' and parts[2] == 'chats' and method == 'PATCH':
+            return self.team_chat_rename(parts[1], parts[3], data, device)
+        if len(parts) == 4 and parts[0] == 'rooms' and parts[2] == 'chats' and method == 'DELETE':
+            return self.team_chat_delete(parts[1], parts[3], device)
         if len(parts) == 3 and parts[0] == 'rooms' and parts[2] == 'notifications' and method == 'PUT':
             return self.team_notifications(parts[1], data)
         raise ServiceError(404, 'This route was not found.')
@@ -386,6 +395,9 @@ class Team(TeamSync, TeamSocket, TeamPages, TeamMessages, TeamDirects, TeamEpoch
                 'can_delete_messages': removes,
                 'created_at': room['created_at'], 'members': members, 'bots': self._team_bots(room, members),
                 **self._team_chat_summary(room), 'typing': self._team_typing_view(room, members),
+                # The named chats. The fields above stay the fields of the Team chat, so an older app works. Only the
+                # admin of an active room changes the chats, and the app shows the actions only with this field.
+                'chats': self._team_chats_view(room, members), 'can_manage_chats': removes,
                 'sync': {'seq': room['seq'], 'entries': entries, 'waiting': waiting,
                          'synced_at': status.get('synced_at'), 'error': status.get('error'), 'refused': refused,
                          'socket': self.team_socket_open(room['room'])}}
