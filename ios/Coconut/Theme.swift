@@ -134,7 +134,7 @@ struct QuietEmptyState: View {
     @ScaledMetric(relativeTo: .subheadline) private var messageWidth = 280
 
     var body: some View {
-        VStack(spacing: 14) {
+        VStack(spacing: BoardStyle.Space.m) {
             Image(systemName: symbol)
                 .font(.largeTitle.weight(.light))
                 .foregroundStyle(.secondary)

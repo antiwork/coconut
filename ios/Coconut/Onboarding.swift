@@ -60,7 +60,7 @@ struct OnboardingView: View {
             HStack {
                 Spacer()
                 Button { close() } label: {
-                    Image(systemName: "xmark").font(.subheadline.weight(.medium)).frame(minWidth: 44, minHeight: 44)
+                    Image(systemName: "xmark").font(.subheadline.weight(.semibold)).frame(minWidth: 44, minHeight: 44)
                 }
                 .foregroundStyle(.primary)
                 .opacity(firstRun ? 0 : 1)
@@ -78,7 +78,7 @@ struct OnboardingView: View {
                         .accessibilityHidden(true)
                     #endif
                     Text("Connect your Mac")
-                        .font(.system(.title, design: .serif).weight(.bold))
+                        .font(.system(.title, design: .serif).weight(.medium))
                         .multilineTextAlignment(.center)
                         .accessibilityAddTraits(.isHeader)
                     Text("Send this message to your Hermes, for example in Telegram.")
@@ -167,7 +167,7 @@ struct OnboardingView: View {
     @ViewBuilder private var actions: some View {
         #if os(macOS)
         // Standard Mac buttons at their own size. Return copies the message.
-        HStack(spacing: 10) {
+        HStack(spacing: BoardStyle.Space.s) {
             ShareLink(item: messageText) { Label("Share…", systemImage: "square.and.arrow.up") }
                 .accessibilityIdentifier("share-hermes-message")
             Button {
@@ -229,7 +229,7 @@ struct OnboardingView: View {
                 ProgressView().controlSize(.small)
                 Text("Pairing with \(name)…")
             }
-            .font(.subheadline.weight(.medium))
+            .font(.subheadline.weight(.semibold))
             .accessibilityElement(children: .combine)
             .accessibilityIdentifier("onboarding-status")
         case .failed(let text):
