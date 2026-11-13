@@ -5,7 +5,7 @@ A bot saves a page with `coconut_save_document`. The person reads it in the Libr
 ## The recipe of a report page
 
 1. The first paragraph states the point in one or two sentences. The page shows it large.
-2. Then the key numbers: one table with one row of numbers. Each number becomes a large tile with its header as the label.
+2. Then the key numbers: one table with one row of numbers. Each number becomes a large tile with its header as the label. 2 to 4 key numbers work best. The tiles sit in even rows.
 3. Then sections. Each section has a short heading and one table or one chart.
 4. A callout only for one decision or one warning, in one or two sentences.
 
@@ -51,7 +51,8 @@ So put the column that names each row first, and a short status last.
 - Write an age as "6 days", not as a date.
 - Write the days of a chart as dates.
 - A heading does not repeat the title of the page.
-- A heading has no number. The numbers go in the tiles, the tables and the charts.
+- A heading has no count in it. The counts go in the tiles, the tables and the charts. A time window is fine, for example "Closed in 24 hours".
+- A chart has a heading above it or a title under it, not both with the same words. Give the title the window of the data, for example "Nov 2 to Nov 8".
 - A callout holds no list. Put a list of items in a table.
 
 ## The notes of a save
@@ -72,7 +73,7 @@ Sales of the shop rose 9% this week, and refunds fell. Grace must approve one ne
 ## Orders by day
 
 ```chart
-{"type": "bar", "x": "day", "y": "orders", "y_label": "Orders", "title": "Orders per day", "data": [
+{"type": "bar", "x": "day", "y": "orders", "y_label": "Orders", "title": "Nov 2 to Nov 8", "data": [
   {"day": "2026-11-02", "orders": 52}, {"day": "2026-11-03", "orders": 61}, {"day": "2026-11-04", "orders": 58},
   {"day": "2026-11-05", "orders": 64}, {"day": "2026-11-06", "orders": 70}, {"day": "2026-11-07", "orders": 55},
   {"day": "2026-11-08", "orders": 52}]}
