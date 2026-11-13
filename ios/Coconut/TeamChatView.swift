@@ -35,7 +35,7 @@ struct TeamChatView: View {
     @State private var typingClock = Date()
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @FocusState private var composerFocused: Bool
-    @ScaledMetric(relativeTo: .headline) private var nameWidth = 150
+    @ScaledMetric(relativeTo: .body) private var nameWidth = 150
     #if os(macOS)
     @Environment(\.openSettings) private var openSettings
     /// The title of the team floats over the top of the chat. It has two lines (the name and who is in the chat), so it
@@ -89,7 +89,7 @@ struct TeamChatView: View {
                             Task { await loadEarlier(anchor: anchor, proxy: proxy) }
                         } label: {
                             if chat.loadingEarlier || growingAbove { ProgressView() }
-                            else { Text("Load earlier messages").font(.caption) }
+                            else { Text("Load earlier messages").font(.footnote) }
                         }
                         .frame(maxWidth: .infinity, minHeight: 44)
                         .disabled(chat.loadingEarlier || growingAbove)
@@ -225,7 +225,7 @@ struct TeamChatView: View {
                     DirectTitle(peer: peer, team: room.name, faceSize: 28)
                         .frame(maxWidth: nameWidth + 36, alignment: .leading)
                         .fixedSize(horizontal: true, vertical: false)
-                        .padding(.leading, 4).padding(.trailing, 10)
+                        .padding(.leading, 4).padding(.trailing, BoardStyle.Space.m)
                         .frame(minHeight: 44)
                         .accessibilityElement(children: .combine)
                         .accessibilityIdentifier("direct-chat-title")
@@ -235,7 +235,7 @@ struct TeamChatView: View {
                         TeamTitle(room: room, faceSize: 28)
                             .frame(maxWidth: nameWidth + 36, alignment: .leading)
                             .fixedSize(horizontal: true, vertical: false)
-                        .padding(.leading, 4).padding(.trailing, 10)
+                        .padding(.leading, 4).padding(.trailing, BoardStyle.Space.m)
                         .frame(minHeight: 44).contentShape(Capsule())
                     }
                     .buttonStyle(.plain)
@@ -251,7 +251,7 @@ struct TeamChatView: View {
         .overlay(alignment: .top) {
             if let peer = peer(room) {
                 DirectTitle(peer: peer, team: room.name, faceSize: 24)
-                    .padding(.leading, 6).padding(.trailing, 12)
+                    .padding(.leading, BoardStyle.Space.xs).padding(.trailing, 12)
                     .frame(height: Self.titlePillHeight)
                     .modifier(FloatingCapsule())
                     .padding(.top, 8)
@@ -260,7 +260,7 @@ struct TeamChatView: View {
             } else {
                 Button { openSettings() } label: {
                     TeamTitle(room: room, faceSize: 24)
-                    .padding(.leading, 6).padding(.trailing, 12)
+                    .padding(.leading, BoardStyle.Space.xs).padding(.trailing, 12)
                     .frame(height: Self.titlePillHeight)
                     .modifier(FloatingCapsule())
                     .contentShape(Capsule())
@@ -297,13 +297,13 @@ struct TeamChatView: View {
             .frame(maxWidth: .infinity).padding(.vertical, 45)
         } else if empty && chat.before == nil {
             // The structure of the empty bot chat (ConversationView.conversationHeader): face, title, one line.
-            VStack(spacing: 10) {
+            VStack(spacing: BoardStyle.Space.m) {
                 if let peer = peer(room) {
                     PersonFace(member: peer.entry, memberId: peer.member, name: peer.name, size: 68)
-                    Text(peer.name).font(.title2.weight(.semibold)).multilineTextAlignment(.center)
+                    Text(peer.name).font(.title3.weight(.semibold)).multilineTextAlignment(.center)
                 } else {
                     TeamFace(room: room, size: 68)
-                    Text(room.name).font(.title2.weight(.semibold)).multilineTextAlignment(.center)
+                    Text(room.name).font(.title3.weight(.semibold)).multilineTextAlignment(.center)
                 }
                 Text(TeamChatEmptyLine.text(for: room, peer: peer(room)))
                     .font(.subheadline).foregroundStyle(.secondary).multilineTextAlignment(.center)
@@ -321,7 +321,7 @@ struct TeamChatView: View {
             Text(reason)
                 .font(.subheadline).foregroundStyle(.secondary).multilineTextAlignment(.center)
                 .frame(maxWidth: .infinity)
-                .padding(.horizontal, 24).padding(.vertical, 14)
+                .padding(.horizontal, 24).padding(.vertical, BoardStyle.Space.m)
                 .modifier(ComposerBackdrop())
                 .accessibilityIdentifier("team-chat-closed")
         } else {
@@ -508,9 +508,9 @@ struct TeamMessageRow: View {
             bubbleRow.modifier(MessageTimestamp(createdAt: row.createdAt))
             // Under the bubble, on its side, in the style of the name above it. The bubble keeps the width of its text.
             if message?.isEdited == true || editedText != nil {
-                Text("Edited").font(.caption).foregroundStyle(.secondary)
+                Text("Edited").font(.footnote).foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: own ? .trailing : .leading)
-                    .padding(.horizontal, 10)
+                    .padding(.horizontal, BoardStyle.Space.m)
                     .accessibilityHidden(true)
             }
         }
@@ -802,9 +802,9 @@ struct TeamTitle: View {
         HStack(spacing: 8) {
             TeamFace(room: room, size: faceSize)
             VStack(alignment: .leading, spacing: 0) {
-                Text(room.name).font(.headline).lineLimit(1).truncationMode(.tail)
+                Text(room.name).font(.body.weight(.semibold)).lineLimit(1).truncationMode(.tail)
                 if let line = room.whoLine {
-                    Text(line).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+                    Text(line).font(.footnote).foregroundStyle(.secondary).lineLimit(1)
                         .accessibilityIdentifier("team-chat-who")
                 }
             }
@@ -823,8 +823,8 @@ struct DirectTitle: View {
         HStack(spacing: 8) {
             PersonFace(member: peer.entry, memberId: peer.member, name: peer.name, size: faceSize)
             VStack(alignment: .leading, spacing: 0) {
-                Text(peer.name).font(.headline).lineLimit(1).truncationMode(.tail)
-                Text(team).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+                Text(peer.name).font(.body.weight(.semibold)).lineLimit(1).truncationMode(.tail)
+                Text(team).font(.footnote).foregroundStyle(.secondary).lineLimit(1)
             }
         }
     }
