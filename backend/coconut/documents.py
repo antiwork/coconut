@@ -6,8 +6,9 @@ the phone draws natively, or HTML, which the phone shows in a closed web view wi
 
 Coconut owns the style of a page and the bot owns its structure. A save of HTML fails when the code of the page sets
 its own font, writes a color as a value and not as a token, or loads something from the network. The reason goes back
-to the bot, which then fixes the page. A document can end on a date. After that date the Library no longer shows it.
-The person can pin a document, and the Library shows the pinned documents first.
+to the bot, which then fixes the page. A save of Markdown always works, and its answer can have notes: what the page
+can do better, for the rules that Coconut can check exactly (page_notes). A document can end on a date. After that
+date the Library no longer shows it. The person can pin a document, and the Library shows the pinned documents first.
 
 This module imports only the standard library at its top, so the gateway plugin can load its schemas
 (hermes_plugin/coconut/tools.py).
@@ -141,19 +142,20 @@ def _declarations(css: str) -> str:
     return ''.join('' if index + 1 < len(parts) and parts[index + 1] == '{' else part
                    for index, part in enumerate(parts))
 
-# The blocks of a page (page.js in the app). The save tool and the Library rule name them, so each bot knows them.
-BLOCKS = ('Write a page like a short article: its first paragraph is the lead, one or two sentences that state the '
-          'point. Markdown pages have blocks: a callout is a quote that starts with [!NOTE], [!TIP], [!IMPORTANT], '
-          '[!WARNING] or [!CAUTION], with an optional title on the same line; a ```mermaid block draws a diagram '
-          '(flowchart, sequence, timeline, gantt, pie); a ```chart block draws a graph from JSON {"type": "bar", '
-          '"line", "area" or "dot", "data": [...], "x": "field", "y": "field", "series": "field", "title": "..."}; '
-          'tables, task lists and photos work too. A table with one row of numbers shows them large: use it for key '
-          'numbers, with labels in the header. A wide table shows on a phone as a list with the first cell of each '
-          'row as its name and a short last cell at its end, so put the name column first and the status '
-          'last. Keep each column header short. A callout holds one or two sentences, not a list. Show a process '
-          'as a diagram, numbers as a chart, a decision as a callout and a comparison as a table. HTML pages have '
-          'the same blocks: <pre class="mermaid">, '
-          '<aside class="callout tip"> and <p class="lead">.')
+# The recipe of a page and its blocks (page.js in the app). The save tool names them, so each bot knows them. The
+# coconut skill has the full recipe with an example (skills/coconut/references/pages.md).
+BLOCKS = ('Write a page like a short report. First, one or two sentences that state the point. Then the key '
+          'numbers: a table with one row of numbers shows them large, with a label in each header. Then sections, '
+          'each with a short heading and one table or one chart. A callout is only for one decision or one warning, '
+          'in one or two sentences: a quote that starts with [!NOTE], [!TIP], [!IMPORTANT], [!WARNING] or '
+          '[!CAUTION], with an optional title on the same line. A table that does not fit a phone shows each row as '
+          'a record with the first cell as its name and a short last cell at its end, so put the name column first '
+          'and the status last. Give each column one fact and a header of at most 16 characters. A ```chart block '
+          'draws a graph from JSON {"type": "bar", "line", "area" or "dot", "data": [...], "x": "field", "y": '
+          '"field", "series": "field", "title": "..."}: give days as dates (YYYY-MM-DD). A ```mermaid block draws a '
+          'diagram (flowchart, sequence, timeline, gantt, pie). Task lists and photos work too. HTML pages have the '
+          'same blocks: <pre class="mermaid">, <aside class="callout tip"> and <p class="lead">. The coconut skill '
+          'has the recipe with an example: references/pages.md.')
 SAVE_SCHEMA = {'name': 'coconut_save_document', 'description': (
     'Save a document in the Library of Coconut, where the person reads it on the phone. A save with an existing key '
     'replaces that document and adds a version. Use a document for content that outlives the chat: something to '
@@ -162,7 +164,8 @@ SAVE_SCHEMA = {'name': 'coconut_save_document', 'description': (
     'each page: in HTML use only these tokens for color: var(--c1) to var(--c6), var(--text), var(--text-2), '
     'var(--bg), var(--surface), var(--line), or coconut.palette (an array of the six colors) in a script. A page has '
     'd3 and Plot (Observable Plot) and has no network access. Coconut refuses a page that sets a font, writes a '
-    'color as a value or loads something, and names the reason. The tool also works outside a Coconut chat, for '
+    'color as a value or loads something, and names the reason. The answer of a save can have notes: apply them in '
+    'the next save of the page. The tool also works outside a Coconut chat, for '
     'example in another messaging app: there no chat shows a card, so tell the person that the page is in the '
     'Library of Coconut.'),
     'parameters': {'type': 'object', 'properties': {
@@ -254,6 +257,207 @@ def page_problems(content: str) -> list[str]:
     return problems
 
 
+# The notes of a save: what a Markdown page can do better, for the rules that Coconut can check exactly. A note never
+# blocks a save. The texts are in the order of the rules, and a save answers with at most MAX_NOTES of them.
+MAX_NOTES = 3
+NOTE_METRICS = ('Show the key numbers large: put a table with one row of numbers under the first paragraph, with a '
+                'label in each header.')
+NOTE_CALLOUT = ('A callout holds one or two sentences. Put its list in a table, with the name first and a short status '
+                'last.')
+NOTE_HEADER = 'The column header "{}" is long. Use at most 16 characters.'
+NOTE_NAME = 'Put the column that names each row first. Now each row starts with "{}".'
+NOTE_DASHES = 'Give each fact its own column. One cell packs several facts with dashes.'
+LONGEST_HEADER = 16
+LONGEST_CALLOUT = 300
+# A number has the meaning of `number` in page.js (ios/Coconut/Resources/Library/page.js): a sign, a currency sign,
+# digits with separators, then a percent sign or one letter such as k or M. A unit can follow after a space: at most
+# 16 characters and no digit. The pattern has the same text as the one of page.js, and test_page_notes.py keeps it so.
+_NUMBER = re.compile(r'^([+\-−]?\u2060?[$€£¥]?\d(?:[\d,.]*\d)?(?:%|[A-Za-z](?![A-Za-z]))?)(?:\s+(\D{1,16}))?$', re.S)
+_QUOTE = re.compile(r' {0,3}> ?')
+_FENCE = re.compile(r' {0,3}(`{3,}|~{3,})\s*([^\s`]*)')
+_CALLOUT_START = re.compile(r'\[!(?:NOTE|TIP|IMPORTANT|WARNING|CAUTION)\]', re.I)
+_LIST_ITEM = re.compile(r'\s*(?:[-*+]|\d{1,9}[.)])(?:\s+(.*)|$)')
+_DELIMITER = re.compile(r'\|?\s*:?-+:?\s*(?:\|\s*:?-+:?\s*)*\|?')
+_HEADING = re.compile(r' {0,3}#{1,6}(?:\s|$)')
+_UNDERLINE = re.compile(r'(?:=+|-+)\s*')
+_BREAK = re.compile(r' {0,3}(?:(?:\*\s*){3,}|(?:-\s*){3,}|(?:_\s*){3,})')
+_CELL_SPLIT = re.compile(r'(?<!\\)\|')
+_LINK = re.compile(r'!?\[([^\]]*)\]\([^)]*\)')
+_MARKUP = re.compile(r'\*\*|__|~~|[*`]|\\(?=[^\w\s])')
+_DASH = re.compile(r'(?<= )[—–](?= )')
+_WORD_EDGES = '()[]{}*`_"\'.,;:!?'
+
+
+def _plain(text: str) -> str:
+    """The text of inline Markdown, near the text that the page shows: a link is its text, and the marks of
+    emphasis, code and escapes go."""
+    return ' '.join(_MARKUP.sub('', _LINK.sub(r'\1', text)).split())
+
+
+def _cells(line: str) -> list[str]:
+    """The cells of a table row. An escaped pipe stays in its cell."""
+    text = line.strip()
+    if text.startswith('|'):
+        text = text[1:]
+    if text.endswith('|') and not text.endswith('\\|'):
+        text = text[:-1]
+    return [_plain(cell) for cell in _CELL_SPLIT.split(text)]
+
+
+def _quoted(text: str) -> str:
+    """A text of the page in a note: at most 40 characters."""
+    return text if len(text) <= 40 else text[:39] + '…'
+
+
+class _PageShape:
+    """The facts of a Markdown page that the notes need, in one pass over its lines.
+
+    The reader knows the blocks of GitHub Markdown that the notes need: fenced code, quotes, headings, lists, tables and
+    paragraphs. A line in a quote counts as a line of its block too, so a table in a callout is a table. A fence that
+    does not end runs to the end of its quote or of the page, as in marked.
+    """
+
+    def __init__(self):
+        self.tables = []      # [header cells, body rows]
+        self.charts = 0
+        self.first = None     # The text of the first paragraph outside a quote.
+        self.callouts = []    # [has a list, characters of text]
+        self.items = []       # The text of each list item.
+        self._paragraph = []
+        self._table = None
+        self._callout = None
+        self._fence = None
+        self._quoted = False
+        self._quote_start = False
+        self._in_list = False
+        self._blank = True
+
+    def read(self, content: str):
+        for line in content.splitlines():
+            self._line(line)
+        self._end_blocks()
+        return self
+
+    def _end_blocks(self):
+        if self._paragraph and self.first is None and not self._quoted:
+            self.first = ' '.join(self._paragraph)
+        self._paragraph = []
+        self._table = None
+
+    def _line(self, line: str):
+        quoted = False
+        while match := _QUOTE.match(line):
+            quoted, line = True, line[match.end():]
+        if quoted != self._quoted:
+            self._end_blocks()
+            self._fence = None
+            self._in_list = False
+            self._quoted, self._quote_start, self._callout = quoted, quoted, None
+        if self._fence:
+            match = _FENCE.match(line)
+            if match and match[1][0] == self._fence[0] and len(match[1]) >= len(self._fence) and not match[2]:
+                self._fence = None
+            return
+        text = line.strip()
+        blank = not text
+        if self._quote_start and not blank:
+            self._quote_start = False
+            if match := _CALLOUT_START.match(text):
+                # The rest of the first line is the title of the callout.
+                self._callout = [False, 0]
+                self.callouts.append(self._callout)
+                return
+        if self._callout is not None and not blank:
+            self._callout[1] += len(_plain(text))
+        self._block(line, text, blank)
+        self._blank = blank
+
+    def _block(self, line: str, text: str, blank: bool):
+        if blank:
+            self._end_blocks()
+            return
+        if match := _FENCE.match(line):
+            self._end_blocks()
+            self._in_list = False
+            self._fence = match[1]
+            if match[2].lower() == 'chart':
+                self.charts += 1
+            return
+        if self._table is not None:
+            if '|' in text:
+                self._table[1].append(_cells(text))
+                return
+            self._table = None
+        if self._paragraph and '|' in self._paragraph[-1] + text and _DELIMITER.fullmatch(text):
+            header = _cells(self._paragraph[-1])
+            if len(header) == len(_cells(text)):
+                self._paragraph.pop()
+                self._end_blocks()
+                self._table = [header, []]
+                self.tables.append(self._table)
+                return
+        if self._paragraph and _UNDERLINE.fullmatch(text):
+            # A line of = or - under a paragraph makes it a heading.
+            self._paragraph = []
+            return
+        if _HEADING.match(line) or _BREAK.fullmatch(line):
+            self._end_blocks()
+            self._in_list = False
+            return
+        if match := _LIST_ITEM.fullmatch(line):
+            self._end_blocks()
+            self._in_list = True
+            self.items.append(match[1] or '')
+            if self._callout is not None:
+                self._callout[0] = True
+            return
+        if self._in_list and (not self._blank or line[:1].isspace()):
+            # A line that continues the item before it.
+            self.items[-1] += ' ' + text
+            return
+        self._in_list = False
+        self._paragraph.append(text)
+
+
+def _numbers(text: str) -> int:
+    """The count of the words of a text that are numbers."""
+    return sum(1 for word in _plain(text).split() if _NUMBER.match(word.strip(_WORD_EDGES)))
+
+
+def page_notes(document_format: str, content: str) -> list[str]:
+    """What a Markdown page can do better, at most MAX_NOTES notes in the order of the rules. An HTML page gets no
+    notes. The function never raises: a note never stops a save."""
+    if document_format != 'markdown' or not isinstance(content, str):
+        return []
+    try:
+        page = _PageShape().read(content)
+        notes = []
+        metrics = any(len(rows) == 1 and rows[0] and all(_NUMBER.match(cell) for cell in rows[0])
+                      for _, rows in page.tables)
+        if (page.tables or page.charts) and not metrics and page.first and _numbers(page.first) >= 2:
+            notes.append(NOTE_METRICS)
+        if any(has_list or size > LONGEST_CALLOUT for has_list, size in page.callouts):
+            notes.append(NOTE_CALLOUT)
+        long = next((cell for header, _ in page.tables for cell in header if len(cell) > LONGEST_HEADER), None)
+        if long is not None:
+            notes.append(NOTE_HEADER.format(_quoted(long)))
+        same = next((rows[0][0] for header, rows in page.tables if len(header) >= 4 and len(rows) >= 3
+                     and rows[0][0] and all(row[0] == rows[0][0] for row in rows)), None)
+        if same is not None:
+            notes.append(NOTE_NAME.format(_quoted(same)))
+        if any(len(_DASH.findall(text)) >= 2
+               for text in [cell for _, rows in page.tables for row in rows for cell in row] + page.items):
+            notes.append(NOTE_DASHES)
+        return notes[:MAX_NOTES]
+    except Exception:
+        return []
+
+
+def _with_notes(answer: dict, notes: list[str]) -> dict:
+    """The answer of a save, with its notes when it has some."""
+    return dict(answer, notes=notes) if notes else answer
+
+
 def end_time(value: str, current: datetime) -> str:
     """The end of a temporary document as UTC text. A date without a time ends at the end of that day on the Mac,
     and a time without a zone is the time of the Mac. Raise ValueError with the reason for the bot."""
@@ -334,6 +538,7 @@ class Documents:
         from .service_base import ServiceError
         key, title, document_format, content, summary = page_to_save(arguments)
         ends = page_end(arguments, datetime.now(timezone.utc))
+        notes = page_notes(document_format, content)
         with self.transaction():
             task = self._running_task(task_id)
             bot = self._get('bots', task['bot_id'])
@@ -343,8 +548,8 @@ class Documents:
                                            (key, title, document_format, content, summary))
             document = self._write_document(task, bot, key, title, document_format, content, summary, expires=ends,
                                             audience=audience)
-        return {'status': 'saved', 'key': key, 'version': document['version'],
-                'expires_at': document.get('expires_at')}
+        return _with_notes({'status': 'saved', 'key': key, 'version': document['version'],
+                            'expires_at': document.get('expires_at')}, notes)
 
     def publish_page(self, bot_id: str, arguments: dict) -> dict:
         """A page that the tooling of the Mac keeps for a bot, without a turn.
@@ -356,6 +561,7 @@ class Documents:
         from .service_base import ServiceError
         key, title, document_format, content, summary = page_to_save(arguments)
         ends = page_end(arguments, datetime.now(timezone.utc))
+        notes = page_notes(document_format, content)
         with self.transaction():
             bot = self._get('bots', bot_id)
             if bot['archived'] or bot.get('_deleted'):
@@ -364,11 +570,11 @@ class Documents:
             audience = self._page_audience(arguments, document, (key, title, document_format, content, summary))
             if (document is not None and not expired(document, self._now())
                     and self._page_is_like(document, title, document_format, content, summary, ends, audience)):
-                return {'status': 'unchanged', 'key': key, 'version': document['version'],
-                        'expires_at': document.get('expires_at')}
+                return _with_notes({'status': 'unchanged', 'key': key, 'version': document['version'],
+                                    'expires_at': document.get('expires_at')}, notes)
             document, _ = self._store_page(bot, key, title, document_format, content, summary, ends, audience)
-        return {'status': 'saved', 'key': key, 'version': document['version'],
-                'expires_at': document.get('expires_at')}
+        return _with_notes({'status': 'saved', 'key': key, 'version': document['version'],
+                            'expires_at': document.get('expires_at')}, notes)
 
     def _page_audience(self, arguments: dict, document: dict | None, page: tuple) -> str | None:
         """The audience of a save on a Mac that runs Coconut for a team only: the one of the arguments, else the one
