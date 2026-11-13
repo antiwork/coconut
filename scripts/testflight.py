@@ -9,6 +9,7 @@ with a cloud-managed distribution certificate through the App Store Connect API 
   testflight.py sign --archive Coconut.xcarchive --build 42
   testflight.py export-options --output ExportOptions.plist
   testflight.py wait --key AuthKey.p8 --key-id KEY --issuer ISSUER --build 42
+  testflight.py notes --key AuthKey.p8 --key-id KEY --issuer ISSUER --build 42 --apply
 
 The script uses only the standard library and the openssl command.
 """
@@ -18,12 +19,14 @@ from pathlib import Path
 import argparse
 import base64
 import json
+import os
 import plistlib
 import re
 import subprocess
 import sys
 import tempfile
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 
@@ -45,6 +48,16 @@ SETTINGS = {'APS_ENVIRONMENT': 'production', 'AppIdentifierPrefix': TEAM + '.'}
 # Each bundle then asks the keychain for a group that its entitlements do not have, and iOS refuses the request.
 KEYCHAIN_GROUP_KEY = 'CoconutPushKeychainGroup'
 KEYCHAIN_GROUP = '$(AppIdentifierPrefix)com.gumroad.coconut.push'
+# TestFlight shows the "whatsNew" text of a beta build localization as "What to Test". Apple cuts the field off
+# without complaint far past this size, but a person reads it on a phone, so keep it short.
+NOTES_LOCALE = 'en-US'
+NOTES_LIMIT = 1800
+# The newest changes whose own line a tester should act on first.
+TRY_FIRST = 5
+# A commit that only touches these never changes what a tester sees.
+NOT_USER_FACING = ('docs/', '.github/', 'scripts/test_', '.gitignore', 'qa-media/', 'ios/CoconutTests/',
+                   'ios/CoconutUITests/', 'CONTRIBUTING.md', 'README.md', 'AGENTS.md', 'CLAUDE.md')
+NOT_USER_FACING_SUFFIXES = ('.md',)
 
 
 def base64url(data: bytes) -> str:
@@ -176,6 +189,180 @@ def wait(key: Path, key_id: str, issuer: str, build: int, minutes: int) -> None:
         time.sleep(30)
 
 
+def request(method: str, path: str, bearer: str, body: dict | None = None) -> dict:
+    data = json.dumps(body).encode() if body is not None else None
+    headers = {'Authorization': 'Bearer ' + bearer, 'Content-Type': 'application/json'}
+    call = urllib.request.Request(API + path, data=data, headers=headers, method=method)
+    with urllib.request.urlopen(call, timeout=60) as response:
+        text = response.read()
+    return json.loads(text) if text else {}
+
+
+def builds(bearer: str) -> list[dict]:
+    """The newest builds of the app in App Store Connect, newest first."""
+    query = urllib.parse.urlencode({'filter[app]': APP_ID, 'fields[builds]': 'version,uploadedDate,processingState',
+                                    'limit': 20, 'sort': '-uploadedDate'})
+    return get('/builds?' + query, bearer).get('data', [])
+
+
+def previous_upload(bearer: str, build: int | None) -> str | None:
+    """When the build before this one reached App Store Connect, so its commits are the ones a tester has not seen."""
+    for item in builds(bearer):
+        if build and str(item['attributes'].get('version')) == str(build):
+            continue
+        return item['attributes'].get('uploadedDate')
+    return None
+
+
+def git(*arguments: str) -> str:
+    result = subprocess.run(['git', *arguments], cwd=ROOT, capture_output=True, text=True, check=True)
+    return result.stdout
+
+
+def is_moment(text: str) -> bool:
+    return bool(re.match(r'^\d{4}-\d{2}-\d{2}', text))
+
+
+def commits(window: str | None, limit: int = 40) -> list[tuple[str, str]]:
+    """The commits after a moment or a ref, newest first, as (sha, subject). Without one: the last `limit` commits."""
+    if not window:
+        revision = [f'-{limit}']
+    elif is_moment(window):
+        revision = [f'--since={window}']
+    else:
+        revision = [f'{window}..HEAD']
+    log = git('log', '--no-merges', '--format=%h %s', 'HEAD', *revision)
+    entries = []
+    for line in log.splitlines():
+        sha, _, subject = line.partition(' ')
+        if sha and subject:
+            entries.append((sha, subject.strip()))
+    return entries
+
+
+def changed_paths(sha: str) -> list[str]:
+    return [line.strip() for line in git('show', '--name-only', '--format=', sha).splitlines() if line.strip()]
+
+
+def user_facing(paths: list[str]) -> bool:
+    """True when a commit touches something a tester can see; docs, CI and test files never count."""
+    for path in paths:
+        if path.startswith(NOT_USER_FACING) or path.endswith(NOT_USER_FACING_SUFFIXES):
+            continue
+        return True
+    return False
+
+
+def compose(entries: list[str]) -> str:
+    """The text TestFlight shows as "What to Test": the newest changes to try, then the full list of what is new."""
+    if not entries:
+        return 'Bug fixes and improvements.'
+    try_first = entries[:TRY_FIRST]
+    listed, dropped = entries, 0
+    while True:
+        notes = ('What to test\n' + '\n'.join(f'• {subject}' for subject in try_first)
+                 + "\n\nWhat's new\n" + '\n'.join(f'• {subject}' for subject in listed))
+        if dropped:
+            notes += f'\n• …and {dropped} more in the changelog.'
+        if len(notes) <= NOTES_LIMIT or len(listed) == 1:
+            return notes
+        listed, dropped = listed[:-1], dropped + 1
+
+
+def user_facing_since(window: str) -> list[str]:
+    """The subjects of the commits a tester has not seen: those after `window`, a git moment or a ref."""
+    if not is_moment(window):
+        # A ref the checkout does not have would silently turn the range into the whole history.
+        subprocess.run(['git', 'rev-parse', '--verify', '--quiet', window + '^{commit}'], cwd=ROOT, check=True,
+                       capture_output=True)
+    return [subject for sha, subject in commits(window) if user_facing(changed_paths(sha))]
+
+
+def notes_for(bearer: str, build: int | None, since: str | None) -> tuple[str, list[str]]:
+    """The preview text for a build, and the commits behind it.
+
+    The baseline is the commit the previous build was made from when the caller knows it. Otherwise App Store
+    Connect only says when the previous build arrived, so a run that started before the one before it leaves no
+    commits in that window; walk back over the earlier builds until a window holds a change a tester can see.
+    """
+    if since:
+        entries = user_facing_since(since)
+        return compose(entries), entries
+    earlier = [item['attributes'].get('uploadedDate') for item in builds(bearer)
+               if not build or str(item['attributes'].get('version')) != str(build)]
+    for moment in earlier[:6]:
+        if not moment:
+            continue
+        entries = user_facing_since(moment)
+        if entries:
+            return compose(entries), entries
+    return compose([]), []
+
+
+def build_id(bearer: str, build: int) -> str | None:
+    query = urllib.parse.urlencode({'filter[app]': APP_ID, 'filter[version]': str(build), 'limit': 1})
+    document = get('/builds?' + query, bearer)
+    for item in document.get('data', []):
+        return item['id']
+    return None
+
+
+def set_notes(bearer: str, build: int, text: str, minutes: int = 30) -> str | None:
+    """Write the notes onto the build. Apple refuses a build that is still processing, so retry until it is listed."""
+    deadline = time.time() + minutes * 60
+    identifier = None
+    while identifier is None:
+        identifier = build_id(bearer, build)
+        if identifier:
+            break
+        if time.time() > deadline:
+            raise SystemExit(f'App Store Connect does not list build {build} after {minutes} minutes, so its notes are not set.')
+        time.sleep(30)
+    localizations = get(f'/builds/{identifier}/betaBuildLocalizations', bearer).get('data', [])
+    current = next((item for item in localizations if item['attributes'].get('locale') == NOTES_LOCALE), None)
+    while True:
+        try:
+            if current:
+                request('PATCH', f'/betaBuildLocalizations/{current["id"]}', bearer,
+                        {'data': {'type': 'betaBuildLocalizations', 'id': current['id'],
+                                  'attributes': {'whatsNew': text}}})
+            else:
+                request('POST', '/betaBuildLocalizations', bearer,
+                        {'data': {'type': 'betaBuildLocalizations',
+                                  'attributes': {'locale': NOTES_LOCALE, 'whatsNew': text},
+                                  'relationships': {'build': {'data': {'type': 'builds', 'id': identifier}}}}})
+            break
+        except urllib.error.HTTPError as error:
+            # 409 means the build is still processing; anything else is a real refusal.
+            if error.code != 409 or time.time() > deadline:
+                raise
+            time.sleep(30)
+    written = get(f'/builds/{identifier}/betaBuildLocalizations', bearer).get('data', [])
+    saved = next((item['attributes'].get('whatsNew') for item in written
+                  if item['attributes'].get('locale') == NOTES_LOCALE), None)
+    if saved != text:
+        raise SystemExit('App Store Connect did not keep the notes it was given, so they are not set.')
+    return saved
+
+
+def notes(bearer: str, build: int | None, since: str | None, apply: bool) -> None:
+    text, entries = notes_for(bearer, build, since)
+    if not entries:
+        print('No commit since the previous build changes something a tester can see.\n')
+    else:
+        print(f'{len(entries)} change(s) for the notes.\n')
+    print(text)
+    if apply:
+        if not build:
+            raise SystemExit('Pass --build with --apply so the notes land on the right build.')
+        set_notes(bearer, build, text)
+        print(f'\nApp Store Connect keeps these notes for build {build}.')
+    summary = os.environ.get('GITHUB_STEP_SUMMARY')
+    if summary:
+        with open(summary, 'a') as file:
+            file.write(f'### What to Test for build {build or "the next build"}\n\n{text}\n\n')
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     commands = parser.add_subparsers(dest='command', required=True)
@@ -192,6 +379,13 @@ def main() -> None:
     signing.add_argument('--build', type=int, required=True)
     options = commands.add_parser('export-options')
     options.add_argument('--output', type=Path, required=True)
+    notes_command = commands.add_parser('notes', help='Preview the release notes and what to test, or write them to a build.')
+    notes_command.add_argument('--key', type=Path, required=True)
+    notes_command.add_argument('--key-id', required=True)
+    notes_command.add_argument('--issuer', required=True)
+    notes_command.add_argument('--build', type=int, help='The build the notes belong to. Default: the next build.')
+    notes_command.add_argument('--since', help='A git moment to baseline on, instead of the previous upload.')
+    notes_command.add_argument('--apply', action='store_true', help='Write the notes to App Store Connect.')
     args = parser.parse_args()
     if args.command == 'next-build':
         print(next_build(token(args.key, args.key_id, args.issuer)))
@@ -199,6 +393,8 @@ def main() -> None:
         wait(args.key, args.key_id, args.issuer, args.build, args.minutes)
     elif args.command == 'sign':
         sign(args.archive, args.build)
+    elif args.command == 'notes':
+        notes(token(args.key, args.key_id, args.issuer), args.build, args.since, args.apply)
     else:
         args.output.write_bytes(export_options())
 

@@ -156,5 +156,71 @@ class ArchiveTests(unittest.TestCase):
         self.assertTrue(options['testFlightInternalTestingOnly'])
 
 
+class NotesTests(unittest.TestCase):
+    def test_a_moment_is_a_date_and_a_sha_is_a_ref(self):
+        self.assertTrue(testflight.is_moment('2026-11-13T04:40:33-08:00'))
+        self.assertFalse(testflight.is_moment('86b3cffe'))
+
+    def test_a_ref_windows_the_log_and_a_moment_uses_since(self):
+        seen = []
+        with mock.patch.object(testflight, 'git', side_effect=lambda *arguments: seen.append(arguments) or ''):
+            testflight.commits('86b3cffe')
+            testflight.commits('2026-11-13T04:40:33-08:00')
+            testflight.commits(None)
+        self.assertIn('86b3cffe..HEAD', seen[0])
+        self.assertIn('--since=2026-11-13T04:40:33-08:00', seen[1])
+        self.assertIn('-40', seen[2])
+
+    def test_docs_ci_and_tests_never_reach_the_notes(self):
+        self.assertFalse(testflight.user_facing(['docs/iphone-install.md']))
+        self.assertFalse(testflight.user_facing(['.github/workflows/testflight.yml']))
+        self.assertFalse(testflight.user_facing(['scripts/test_testflight.py']))
+        self.assertFalse(testflight.user_facing(['ios/CoconutTests/AChatTests.swift']))
+        self.assertTrue(testflight.user_facing(['ios/Coconut/ChatView.swift', 'README.md']))
+
+    def test_the_notes_lead_with_the_newest_changes_to_try(self):
+        text = testflight.compose(['Newest change', 'Older change'])
+        self.assertTrue(text.startswith('What to test\n• Newest change'))
+        self.assertIn("What's new", text)
+        self.assertLessEqual(text.index('Newest change'), text.index('Older change'))
+
+    def test_a_long_list_is_cut_with_a_count_of_what_is_left(self):
+        text = testflight.compose([f'Change number {number} with a sentence after it' for number in range(80)])
+        self.assertLessEqual(len(text), testflight.NOTES_LIMIT)
+        self.assertIn('more in the changelog', text)
+
+    def test_no_change_says_so_instead_of_showing_an_empty_box(self):
+        self.assertEqual(testflight.compose([]), 'Bug fixes and improvements.')
+
+
+class SetNotesTests(unittest.TestCase):
+    def test_an_existing_localization_is_patched(self):
+        before = {'data': [{'id': 'LOC', 'attributes': {'locale': 'en-US', 'whatsNew': 'old notes'}}]}
+        after = {'data': [{'id': 'LOC', 'attributes': {'locale': 'en-US', 'whatsNew': 'notes'}}]}
+        with mock.patch.object(testflight, 'build_id', return_value='BUILD'), \
+                mock.patch.object(testflight, 'get', side_effect=[before, after]), \
+                mock.patch.object(testflight, 'request') as request:
+            saved = testflight.set_notes('bearer', 42, 'notes')
+        self.assertEqual(saved, 'notes')
+        self.assertEqual(request.call_args[0][0], 'PATCH')
+        self.assertEqual(request.call_args[0][1], '/betaBuildLocalizations/LOC')
+        self.assertEqual(request.call_args[0][3]['data']['attributes']['whatsNew'], 'notes')
+
+    def test_a_missing_localization_is_created(self):
+        requests = []
+        def respond(method, path, bearer, body=None):
+            requests.append((method, path, body))
+            return {}
+        documents = [{'data': []}, {'data': [{'id': 'LOC', 'attributes': {'locale': 'en-US', 'whatsNew': 'notes'}}]}]
+        with mock.patch.object(testflight, 'build_id', return_value='BUILD'), \
+                mock.patch.object(testflight, 'get', side_effect=lambda *arguments: documents.pop(0)), \
+                mock.patch.object(testflight, 'request', side_effect=respond):
+            testflight.set_notes('bearer', 42, 'notes')
+        method, path, body = requests[0]
+        self.assertEqual((method, path), ('POST', '/betaBuildLocalizations'))
+        self.assertEqual(body['data']['relationships']['build']['data']['id'], 'BUILD')
+        self.assertEqual(body['data']['attributes']['whatsNew'], 'notes')
+
+
 if __name__ == '__main__':
     unittest.main()
