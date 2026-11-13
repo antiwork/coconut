@@ -33,6 +33,25 @@ final class DecisionSelectionTests: XCTestCase {
         XCTAssertEqual(label("approved", draft: false, outcome: "Answer recorded. Hermes will continue."), "Approved")
     }
 
+    func testOnlyAChoiceOfAPersonShowsTheCheck() {
+        for status in ["approved", "executed", "rejected", "modified", "replied"] {
+            XCTAssertTrue(DecisionSelection.showsCheck(status: status), status)
+            XCTAssertFalse(DecisionSelection.closedWithoutChoice(status: status, dismissed: false), status)
+        }
+        for status in ["resolved", "cancelled", "a-later-status"] {
+            XCTAssertFalse(DecisionSelection.showsCheck(status: status), status)
+            XCTAssertTrue(DecisionSelection.closedWithoutChoice(status: status, dismissed: false), status)
+        }
+        // A pending card, a failed card and a dismissed card keep their own marks.
+        for status in ["pending", "failed", "dismissed"] {
+            XCTAssertFalse(DecisionSelection.showsCheck(status: status), status)
+        }
+        XCTAssertFalse(DecisionSelection.closedWithoutChoice(status: "pending", dismissed: false))
+        XCTAssertFalse(DecisionSelection.closedWithoutChoice(status: "failed", dismissed: false))
+        XCTAssertFalse(DecisionSelection.closedWithoutChoice(status: "dismissed", dismissed: true))
+        XCTAssertFalse(DecisionSelection.closedWithoutChoice(status: "resolved", dismissed: true))
+    }
+
     func testADismissalAndAChoiceInFlightKeepTheirWords() {
         XCTAssertEqual(label("resolved", draft: true, dismissed: true, outcome: "Issue #12 closed on GitHub."), "Dismissed")
         XCTAssertEqual(label("pending", draft: false, choosing: "Install", selected: "Leave"), "Install")

@@ -23,6 +23,19 @@ enum DecisionSelection {
         if status == "resolved", let said { return said }
         return status.capitalized
     }
+
+    /// The statuses that record a choice of a person on the card: an option, Send, a discard or a reply.
+    private static let choices: Set<String> = ["approved", "executed", "rejected", "modified", "replied"]
+
+    /// A receipt shows the check only for a choice of a person. A card that closed without a choice, for example
+    /// `resolved` or `cancelled`, shows its words as a state: no check, in the secondary color. A pending card, a
+    /// failed card and a dismissed card keep their own marks.
+    static func showsCheck(status: String) -> Bool { choices.contains(status) }
+
+    /// True for a card that closed without a choice of a person (see showsCheck).
+    static func closedWithoutChoice(status: String, dismissed: Bool) -> Bool {
+        !dismissed && !["pending", "failed"].contains(status) && !showsCheck(status: status)
+    }
 }
 
 struct DecisionCard: View {
@@ -61,6 +74,9 @@ struct DecisionCard: View {
         DecisionSelection.label(status: decision.status, hasDraft: decision.draft != nil, dismissed: isDismissed,
                                 choosingLabel: submittingOptionId.flatMap { id in decision.options.first { $0.id == id }?.label },
                                 selectedOptionLabel: decision.selectedOptionLabel, outcome: decision.outcome)
+    }
+    private var closedWithoutChoice: Bool {
+        DecisionSelection.closedWithoutChoice(status: decision.status, dismissed: isDismissed)
     }
     var body: some View {
         Group {
@@ -218,15 +234,18 @@ struct DecisionCard: View {
         VStack(alignment: .leading, spacing: BoardStyle.Space.m) {
             HStack(alignment: .firstTextBaseline, spacing: 12) {
                 Text(selectionLabel).font(.subheadline)
+                    .foregroundStyle(closedWithoutChoice ? .secondary : .primary)
                     .fixedSize(horizontal: false, vertical: true)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .accessibilityIdentifier("decision-selection-\(decision.id)")
-                Image(systemName: isDismissed ? "xmark" : decision.status == "failed" ? "exclamationmark.circle" : decision.isPending ? "arrow.up" : "checkmark")
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(isDismissed ? .secondary : decision.status == "failed" ? BoardStyle.attention :
-                                        decision.isPending ? .secondary : BoardStyle.positive)
-                    .accessibilityLabel(isDismissed ? "Dismissed" : decision.isPending ? "Sending choice" :
-                                            decision.status == "failed" ? "Action failed" : "Choice recorded")
+                if !closedWithoutChoice {
+                    Image(systemName: isDismissed ? "xmark" : decision.status == "failed" ? "exclamationmark.circle" : decision.isPending ? "arrow.up" : "checkmark")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(isDismissed ? .secondary : decision.status == "failed" ? BoardStyle.attention :
+                                            decision.isPending ? .secondary : BoardStyle.positive)
+                        .accessibilityLabel(isDismissed ? "Dismissed" : decision.isPending ? "Sending choice" :
+                                                decision.status == "failed" ? "Action failed" : "Choice recorded")
+                }
             }
             .padding(.horizontal, 12).padding(.vertical, 12)
             .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
