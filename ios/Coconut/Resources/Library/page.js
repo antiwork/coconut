@@ -231,73 +231,39 @@
   new Set(tables.map((table) => table.parentElement)).forEach((box) => observer.observe(box));
 
   // Charts: {"type": "bar" | "line" | "area" | "dot", "data": [...], "x": "field", "y": "field", "series": "field",
-  // "title": "...", "y_label": "..."}. The chart follows Apple Health: one line of series names above the plot, bars
-  // with round tops, at most four light lines with their numbers at the right end, few labels under the plot, and no
-  // axis line or tick mark. No two labels overlap.
-  const svgNS = "http://www.w3.org/2000/svg";
+  // "title": "...", "y_label": "..."}. Observable Plot draws the scales, the stack, the marks and missing values. This
+  // code sets the look of Apple Health: no tick mark, no axis label, at most four hairlines with short numbers at the
+  // right edge, and labels under the plot that never meet and never repeat.
   // A value is a finite number. A null, an empty text, a missing field or a text such as "1,234" is no value.
   const amount = (value) => value === null || value === undefined || (typeof value === "string" && !value.trim())
     ? NaN : Number(value);
-  // An x value is a date only when each x value is an ISO date. A date without a time is that calendar day in each
-  // time zone.
+  // An x value is a date only when each x value is an ISO date. A date shows as written: the time zone of the page
+  // does not move it to another day.
   const isoDate = /^\d{4}-\d{2}-\d{2}([T ]\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:?\d{2})?)?$/;
-  const dayOnly = /^(\d{4})-(\d{2})-(\d{2})$/;
-  const toDate = (text) => {
-    const day = text.match(dayOnly);
-    return day ? new Date(Number(day[1]), Number(day[2]) - 1, Number(day[3])) : new Date(text);
-  };
-  // The form of a date label comes from the span of the values: a time inside one day, a day inside one year, else a
-  // year or a month and a year. It is the shortest form that gives each value its own text.
+  const toDate = (text) => new Date(/[T ]\d{2}:\d{2}[^Z+-]*$/.test(text) ? text + "Z" : text);
+  // The form of a date label comes from the values: a time when one has a time (with the day when they cover more
+  // than one day), else a day inside one year, else a year or a month and a year. It is the shortest form that gives
+  // each value its own text.
   const dateFormat = (dates) => {
     const times = [...new Set(dates.map((date) => date.getTime()))];
-    const oneDay = times.length > 1 && new Set(dates.map((date) => date.toDateString())).size === 1;
-    const oneYear = new Set(dates.map((date) => date.getFullYear())).size === 1;
-    const forms = oneDay ? ["%-I %p", "%-I:%M %p", "%H:%M:%S"]
-      : oneYear ? ["%b %-d", "%b %-d, %-I %p", "%b %-d, %H:%M"] : ["%Y", "%b %Y", "%b %-d, %Y", "%b %-d, %Y %H:%M"];
+    const span = Math.max(...times) - Math.min(...times);
+    const day = 864e5;
+    const timed = times.some((time) => time % day);
+    const forms = timed ? (span <= day ? ["%-I %p", "%-I:%M %p", "%b %-d, %-I %p"] : ["%b %-d, %-I %p", "%b %-d, %H:%M"])
+      : span < 365 * day ? ["%b %-d", "%b %-d, %Y"] : ["%Y", "%b %Y", "%b %-d, %Y"];
     for (const form of forms) {
-      const format = d3.timeFormat(form);
+      const format = d3.utcFormat(form);
       if (new Set(times.map((time) => format(new Date(time)))).size === times.length) return format;
     }
-    return d3.timeFormat("%Y-%m-%d %H:%M:%S");
+    return d3.utcFormat("%Y-%m-%d %H:%M:%S");
   };
   // The numbers of the y axis: "1,000", "0.5", and short from 10,000 up ("12k", "1.5M", "3B").
   const yFormat = (ticks) => Math.max(...ticks.map(Math.abs)) >= 10000
     ? (value) => d3.format(".2~s")(value).replace("G", "B") : (value) => d3.format(",~r")(value);
-  const svgElement = (parent, name, attributes) => {
-    const element = document.createElementNS(svgNS, name);
-    for (const [key, value] of Object.entries(attributes)) element.setAttribute(key, value);
-    parent.append(element);
-    return element;
-  };
-  const drawChart = (figure, spec, data, kind) => {
-    figure.querySelector("svg")?.remove();
-    const width = figure.clientWidth;
-    if (!width) return;
-    const palette = coconut.palette;
-    const names = [...new Set(data.map((row) => row.series))];
-    const color = (name) => palette[names.indexOf(name) % palette.length];
-    const svg = svgElement(figure, "svg", { width, height: 200, viewBox: `0 0 ${width} 200` });
-    const label = (text, x, y, anchor, baseline) => {
-      const element = svgElement(svg, "text", { x, y, "text-anchor": anchor, "dominant-baseline": baseline });
-      element.textContent = text;
-      return element;
-    };
-    // Bars and areas stack the rows of one x: the positive parts up from zero and the negative parts down, apart.
-    const key = (x) => x instanceof Date ? x.getTime() : x;
-    const stacked = spec.type === "bar" || spec.type === "area";
-    const ups = new Map(), downs = new Map();
-    const parts = data.filter((row) => Number.isFinite(row.y)).map((row) => {
-      if (!stacked) return { ...row, y0: 0, y1: row.y };
-      const sums = row.y >= 0 ? ups : downs;
-      const from = sums.get(key(row.x)) || 0;
-      sums.set(key(row.x), from + row.y);
-      return { ...row, y0: from, y1: from + row.y };
-    });
-    const ends = parts.flatMap((part) => [part.y0, part.y1]);
-    const bottom = Math.min(0, ...ends);
-    const top = Math.max(0, ...ends) > bottom ? Math.max(0, ...ends) : bottom + 1;
-    // The y axis: at most four lines in even steps from zero, so the zero line always shows.
-    const plotTop = 8, plotBottom = 168;
+  // At most four lines in even steps from zero, so the zero line always shows.
+  const yAxis = ([bottom, top]) => {
+    bottom = Math.min(0, bottom);
+    top = Math.max(0, top) > bottom ? Math.max(0, top) : bottom + 1;
     let step = 1, low = 0, high = 1;
     for (const count of [3, 2, 1]) {
       step = d3.tickStep(bottom, top, count);
@@ -307,102 +273,131 @@
     }
     const ticks = d3.range(Math.round((high - low) / step) + 1)
       .map((index) => Number((low + index * step).toPrecision(12)));
-    const y = d3.scaleLinear().domain([low, high]).range([plotBottom, plotTop]);
-    const yText = yFormat(ticks);
-    const numbers = ticks.map((tick) => label(yText(tick), width, y(tick), "end", "middle"));
-    const right = width - Math.ceil(Math.max(0, ...numbers.map((text) => text.getComputedTextLength()))) - 8;
-    for (const tick of ticks) svgElement(svg, "line", { x1: 0, x2: right, y1: y(tick), y2: y(tick) });
-    // The x axis: a band for bars in the order of the data, else a scale of dates, of numbers or of the order of the
-    // data.
-    const xs = [...new Map(data.map((row) => [key(row.x), row.x])).values()];
-    if (spec.type !== "bar" && kind !== "text") xs.sort((a, b) => a - b);
-    let position, band;
-    if (spec.type === "bar") {
-      band = d3.scaleBand().domain(xs.map(key)).range([0, right]).paddingInner(0.25);
-      position = (value) => band(key(value));
-    } else {
-      const scale = kind === "date" ? d3.scaleTime().domain(d3.extent(xs))
-        : kind === "number" ? d3.scaleLinear().domain(d3.extent(xs)) : d3.scalePoint().domain(xs);
-      scale.range([0, right]);
-      position = (value) => scale(value);
-    }
-    // The labels under the plot. A band of names keeps each name and cuts it to its step. A band of days or numbers
-    // shows the first and each k-th label. On a scale of dates or numbers, a label shows when it has 8 px to the label
-    // before it. A label that would pass the end of the plot ends there, or goes.
-    const format = kind === "date" ? dateFormat(xs) : (value) => String(value);
-    const below = plotBottom + 10;
-    let named = false;
-    if (band && kind === "text") {
-      const sample = label("Mmm…", 0, 0, "start", "hanging");
-      named = band.step() >= sample.getComputedTextLength() + 8;
-      sample.remove();
-    }
-    if (named) {
-      for (const value of xs) {
-        const text = label(format(value), position(value), below, "start", "hanging");
-        let words = format(value);
-        while (text.getComputedTextLength() > band.step() - 8 && words.length > 1) {
-          words = words.slice(0, -1);
-          text.textContent = words.trimEnd() + "…";
-        }
-      }
-    } else {
-      const probe = xs.map((value) => label(format(value), 0, 0, "start", "hanging"));
-      const widest = Math.max(0, ...probe.map((text) => text.getComputedTextLength()));
-      probe.forEach((text) => text.remove());
-      const every = band ? Math.max(1, Math.ceil((widest + 8) / Math.max(band.step(), 0.01))) : 1;
-      let end = -Infinity;
-      xs.forEach((value, index) => {
-        if (index % every) return;
-        const text = label(format(value), 0, below, "start", "hanging");
-        const length = text.getComputedTextLength();
-        const x = Math.max(0, Math.min(position(value), right - length));
-        if (x < end + 8) return text.remove();
-        text.setAttribute("x", x);
-        end = x + length;
+    return { domain: [low, high], ticks };
+  };
+  const textWidth = (figure, texts) => {
+    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    figure.append(svg);
+    const widths = texts.map((text) => {
+      const element = document.createElementNS("http://www.w3.org/2000/svg", "text");
+      element.textContent = text;
+      svg.append(element);
+      return element.getComputedTextLength();
+    });
+    svg.remove();
+    return widths;
+  };
+  const drawChart = (figure, spec, data, kind) => {
+    figure.querySelector("svg")?.remove();
+    const width = figure.clientWidth;
+    if (!width) return;
+    const palette = coconut.palette;
+    const names = [...new Set(data.map((row) => row.series))];
+    const type = ["bar", "line", "area", "dot"].includes(spec.type) ? spec.type : "bar";
+    const band = type === "bar";
+    const xs = [...new Map(data.map((row) => [+row.x === +row.x ? +row.x : row.x, row.x])).values()];
+    const tone = spec.series ? "series" : palette[0];
+    const line = { strokeWidth: 2, strokeLinejoin: "round", strokeLinecap: "round" };
+    const valid = data.filter((row) => Number.isFinite(row.y));
+    const dots = names.every((name) => valid.filter((row) => row.series === name).length <= 12);
+    const z = spec.series ? "series" : undefined;
+    const marks = {
+      // Only a bar without a stack has round top corners: Plot rounds each part of a stack.
+      bar: () => [Plot.barY(valid, { x: "x", y: "y", fill: tone, ...(spec.series ? {} : { ry2: 2 }) })],
+      area: () => [Plot.areaY(data, { x: "x", y: "y", fill: tone, fillOpacity: 0.15 }),
+        Plot.lineY(data, Plot.stackY2({ x: "x", y: "y", z, stroke: tone, ...line }))],
+      line: () => [Plot.lineY(data, { x: "x", y: "y", z, stroke: tone, ...line }),
+        ...(dots ? [Plot.dot(valid, { x: "x", y: "y", fill: tone, r: 3 })] : [])],
+      dot: () => [Plot.dot(valid, { x: "x", y: "y", fill: tone, r: 3 })],
+    }[type];
+    const x = band ? { type: "band", domain: xs, paddingInner: 0.25, paddingOuter: 0 }
+      : kind === "text" ? { type: "point", domain: xs } : { type: kind === "date" ? "utc" : "linear" };
+    const look = { background: "transparent", color: "var(--text-2)", fontSize: "var(--size-1)", overflow: "visible",
+      fontFamily: "-apple-system, system-ui, sans-serif", fontVariantNumeric: "tabular-nums" };
+    // The domain of y from Plot, with its stack, then the lines and the room for their numbers.
+    const probe = Plot.plot({ width, height: 200, x: { ...x, axis: null }, y: { axis: null }, marks: marks() });
+    const y = yAxis(probe.scale("y").domain);
+    const yText = yFormat(y.ticks);
+    const right = Math.ceil(Math.max(...textWidth(figure, y.ticks.map(yText)))) + 8;
+    const plotWidth = width - right;
+    const draw = (axis) => {
+      figure.querySelector("svg")?.remove();
+      const svg = Plot.plot({
+        width, height: 200, marginTop: 8, marginBottom: 24, marginLeft: 0, marginRight: right, style: look,
+        x: { ...x, axis: null }, y: { domain: y.domain, axis: null }, color: { domain: names, range: palette },
+        marks: [
+          Plot.gridY(y.ticks, { stroke: "var(--line)", strokeOpacity: 1 }),
+          ...marks(),
+          Plot.axisY(y.ticks, { anchor: "right", tickSize: 0, tickPadding: 0, textAnchor: "end", dx: right,
+            tickFormat: yText, label: null }),
+          Plot.axisX({ tickSize: 0, tickPadding: 6, label: null, ...axis }),
+        ],
       });
-    }
-    // The marks in the colors of the series.
-    if (spec.type === "bar") {
-      const tops = new Map();
-      for (const part of parts) if (part.y > 0) tops.set(key(part.x), part);
-      for (const part of parts) {
-        const x = position(part.x), w = band.bandwidth();
-        const y1 = y(Math.max(part.y0, part.y1)), y2 = y(Math.min(part.y0, part.y1));
-        // Only the top of a bar is round: the last positive part of a stack.
-        const r = tops.get(key(part.x)) === part ? Math.min(2, (y2 - y1) / 2, w / 2) : 0;
-        svgElement(svg, "path", {
-          d: `M${x},${y2}V${y1 + r}Q${x},${y1} ${x + r},${y1}H${x + w - r}Q${x + w},${y1} ${x + w},${y1 + r}V${y2}Z`,
-          fill: color(part.series),
-        });
+      svg.setAttribute("class", "plot");
+      figure.querySelector(".legend") ? figure.querySelector(".legend").after(svg) : figure.prepend(svg);
+      return svg;
+    };
+    // The labels under the plot never meet, never repeat and never pass the end of the column. On a scale, the first
+    // and the last label start or end at the edge of the plot when they would pass it.
+    const clean = (svg) => {
+      const texts = [...svg.querySelectorAll('[aria-label="x-axis tick label"] text')];
+      if (!band && texts.length) {
+        const frame = svg.getBoundingClientRect();
+        if (texts[0].getBoundingClientRect().left < frame.left) texts[0].setAttribute("text-anchor", "start");
+        const last = texts[texts.length - 1];
+        if (last.getBoundingClientRect().right > frame.left + plotWidth) last.setAttribute("text-anchor", "end");
       }
-    } else {
-      for (const name of names) {
-        const tone = color(name);
-        const order = (a, b) => kind === "text" ? 0 : a.x - b.x;
-        if (spec.type === "area") {
-          const points = parts.filter((part) => part.series === name).sort(order);
-          svgElement(svg, "path", { d: d3.area().x((part) => position(part.x)).y0((part) => y(part.y0))
-            .y1((part) => y(part.y1))(points), fill: tone, "fill-opacity": 0.15 });
-          svgElement(svg, "path", { d: d3.line().x((part) => position(part.x)).y((part) => y(part.y1))(points),
-            fill: "none", stroke: tone, "stroke-width": 2, "stroke-linejoin": "round", "stroke-linecap": "round" });
-          continue;
+      const boxes = texts.map((text) => text.getBoundingClientRect()).sort((a, b) => a.left - b.left);
+      const end = svg.getBoundingClientRect().right;
+      return new Set(texts.map((text) => text.textContent)).size === texts.length
+        && boxes.every((box, index) => box.right <= end + 0.5 && (!index || box.left - boxes[index - 1].right >= 8));
+    };
+    if (!band) {
+      // A scale of dates or numbers: the ticks of Plot (d3), with their count bounded by the width. A date tick has
+      // one line in the form of the span of the ticks.
+      if (kind === "text") {
+        for (let every = 1; every <= xs.length; every += 1) {
+          if (clean(draw({ ticks: xs.filter((_, index) => index % every === 0) }))) return;
         }
-        // A row without a value breaks the line.
-        const rows = data.filter((row) => row.series === name).sort(order);
-        const shown = rows.filter((row) => Number.isFinite(row.y));
-        if (spec.type === "line") {
-          svgElement(svg, "path", {
-            d: d3.line().defined((row) => Number.isFinite(row.y)).x((row) => position(row.x))
-              .y((row) => y(row.y))(rows),
-            fill: "none", stroke: tone, "stroke-width": 2, "stroke-linejoin": "round", "stroke-linecap": "round" });
+        return;
+      }
+      // Whole numbers keep whole ticks.
+      const whole = kind === "number" && xs.every(Number.isInteger);
+      for (let count = Math.max(2, Math.floor(plotWidth / 56)); count >= 1; count -= 1) {
+        const ticks = kind === "date" ? d3.utcTicks(...d3.extent(xs), count)
+          : d3.ticks(...d3.extent(xs), count).filter((tick) => !whole || Number.isInteger(tick));
+        if (clean(draw({ ticks, tickFormat: kind === "date" ? dateFormat(ticks) : d3.format("~r") }))) return;
+      }
+      draw({ ticks: [] });
+      return;
+    }
+    // A band: names keep each label, cut to its step. Days and runs of numbers show the first and each k-th label.
+    const step = plotWidth / Math.max(1, xs.length - 0.25);
+    const shift = { textAnchor: "start", dx: -(step * 0.75) / 2 };
+    const format = kind === "date" ? dateFormat(xs) : (value) => String(value);
+    if (kind === "text") {
+      // A label ends 8 px before the next step, and the last one at the end of the plot.
+      const cut = (value, index) => {
+        const room = Math.min(step - 8, plotWidth - index * step);
+        let words = format(value);
+        while (words.length > 1 && textWidth(figure, [words === format(value) ? words : words + "…"])[0] > room) {
+          words = words.slice(0, -1).trimEnd();
         }
-        if (spec.type === "dot" || shown.length <= 12) {
-          for (const row of shown) svgElement(svg, "circle", { cx: position(row.x), cy: y(row.y), r: 3, fill: tone });
-        }
+        return words === format(value) ? words : words + "…";
+      };
+      const labels = xs.map(cut);
+      if (step >= textWidth(figure, ["Mm…"])[0] + 8 && new Set(labels).size === labels.length) {
+        const text = new Map(xs.map((value, index) => [value, labels[index]]));
+        if (clean(draw({ ticks: xs, tickFormat: (value) => text.get(value), ...shift }))) return;
       }
     }
-    figure.querySelector(".legend") ? figure.querySelector(".legend").after(svg) : figure.prepend(svg);
+    const widest = Math.max(...textWidth(figure, xs.map(format)));
+    for (let every = Math.max(1, Math.ceil((widest + 8) / step)); every <= xs.length; every += 1) {
+      const ticks = xs.filter((_, index) => index % every === 0);
+      if (clean(draw({ ticks, tickFormat: format, ...shift }))) return;
+      if (clean(draw({ ticks: ticks.slice(0, -1), tickFormat: format, ...shift }))) return;
+    }
+    draw({ ticks: [] });
   };
   for (const figure of main.querySelectorAll("figure.chart[data-spec]")) {
     try {
@@ -416,6 +411,8 @@
         y: amount(row[spec.y]),
         series: spec.series ? String(row[spec.series]) : "",
       }));
+      // A line and an area go in the order of x.
+      if (spec.type !== "bar" && spec.type && kind !== "text") data.sort((a, b) => a.x - b.x);
       // One line above the plot: a round dot in the color of each series and its name.
       if (spec.series) {
         const legend = document.createElement("div");
@@ -438,6 +435,9 @@
         element.textContent = caption;
         figure.append(element);
       }
+      // In a row of a flex box, the charts share the width. In a column, a chart keeps its own height.
+      const box = getComputedStyle(figure.parentElement);
+      if (box.display.endsWith("flex") && box.flexDirection.startsWith("row")) figure.style.flex = "1 1 0";
       drawChart(figure, spec, data, kind);
       // A new width of the column draws the chart again, with the rule of the tables.
       let drawn = figure.clientWidth;

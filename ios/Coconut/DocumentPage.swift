@@ -265,10 +265,12 @@ struct DocumentPage {
     figure.chart.broken { color: var(--text-2); font-size: var(--size-2); }
     /* A chart: a line of series names, the plot with hairlines and quiet numbers, then a quiet caption. */
     /* Only the chart block of page.js: a chart that a bot draws by hand in an HTML page keeps its own look. */
-    figure.chart[data-spec] { flex: 1 1 160px; min-width: min(100%, 160px); }
+    figure.chart[data-spec] { min-width: 0; }
     figure.chart[data-spec] svg { direction: ltr; }
     figure.chart[data-spec] svg text { font-variant-numeric: tabular-nums; }
-    figure.chart[data-spec] line { stroke: var(--line); stroke-width: 1; shape-rendering: crispEdges; }
+    figure.chart[data-spec] svg { max-width: 100%; }
+    figure.chart[data-spec] [aria-label="y-grid"] line { stroke: var(--line); stroke-opacity: 1; stroke-width: 1;
+                                                         shape-rendering: crispEdges; }
     figure.chart[data-spec] figcaption { font-size: var(--size-1); }
     figure.chart[data-spec] .legend { display: flex; flex-wrap: wrap; gap: 4px 16px; margin: 0 0 8px;
                                       font-size: var(--size-1); color: var(--text-2); }

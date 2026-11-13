@@ -867,17 +867,17 @@ final class LibraryDocumentTests: XCTestCase {
         defer { close(window) }
         let result = try await probe(view, """
             const svg = document.querySelector("figure.chart svg");
-            const texts = [...svg.querySelectorAll("text")];
-            const below = texts.filter((text) => text.getAttribute("dominant-baseline") === "hanging")
+            const below = [...svg.querySelectorAll("[aria-label='x-axis tick label'] text")]
               .map((text) => text.getBoundingClientRect()).sort((a, b) => a.left - b.left);
             const meet = below.slice(1).filter((box, index) => box.left - below[index].right < 8).length;
-            const numbers = texts.filter((text) => text.getAttribute("text-anchor") === "end");
+            const numbers = [...svg.querySelectorAll("[aria-label='y-axis tick label'] text")];
             const edge = Math.round(svg.getBoundingClientRect().right);
             const ends = numbers.every((text) => Math.abs(text.getBoundingClientRect().right - edge) <= 1);
             const lines = [...svg.querySelectorAll("line")];
             const flat = lines.every((line) => line.getAttribute("y1") === line.getAttribute("y2"));
             return [below.length > 2 && below.length < 30, meet, ends, flat, lines.length <= 4,
-              svg.querySelectorAll("path").length, document.querySelector("figure.chart figcaption").textContent,
+              svg.querySelectorAll("[aria-label=bar] > *").length,
+              document.querySelector("figure.chart figcaption").textContent,
               Math.round(svg.getBoundingClientRect().left - document.querySelector("main").getBoundingClientRect().left),
               scrolls()].join(" | ");
             """)
@@ -899,7 +899,8 @@ final class LibraryDocumentTests: XCTestCase {
             return [figure.querySelector(".legend").textContent, dots.length,
               dots.every((dot) => getComputedStyle(dot).borderRadius === "50%"
                 && dot.getBoundingClientRect().width === 8),
-              figure.querySelectorAll("rect").length, figure.querySelector(".legend").nextElementSibling.tagName]
+              figure.querySelectorAll(".legend rect, .legend svg").length,
+              figure.querySelector(".legend").nextElementSibling.tagName]
               .join(" | ");
             """)
         XCTAssertEqual(result, "shopdocs | 2 | true | 0 | svg")
@@ -939,12 +940,14 @@ final class LibraryDocumentTests: XCTestCase {
         defer { close(window) }
         let result = try await probe(view, """
             const figures = [...document.querySelectorAll("figure.chart")];
-            const labels = (figure) => [...figure.querySelectorAll("text[dominant-baseline=hanging]")]
+            const labels = (figure) => [...figure.querySelectorAll("[aria-label='x-axis tick label'] text")]
               .map((text) => text.textContent).join(",");
             return figures.map((figure) => figure.classList.contains("broken") ? "broken"
-              : figure.querySelectorAll("svg path, svg circle").length + ":" + labels(figure)).join(" | ");
+              : figure.querySelectorAll("[aria-label=bar] > *, [aria-label=line] path, [aria-label=area] path, circle")
+                .length
+                + ":" + labels(figure)).join(" | ");
             """)
-        XCTAssertEqual(result, "4:Oct 13,Oct 20,Oct 27 | 2:1,2 | 2:A,B | 4:Oct 13,Oct 20,Oct 27,Nov 3 | broken")
+        XCTAssertEqual(result, "4:Oct 18,Oct 25 | 2:1,2 | 2:A,B | 4:Oct 13,Oct 20,Oct 27,Nov 3 | broken")
     }
 
     /// The chart draws again when the width of its column changes.
@@ -1098,10 +1101,11 @@ final class LibraryDocumentTests: XCTestCase {
         defer { close(window) }
         let result = try await probe(view, """
             const svg = document.querySelector("figure.chart svg");
-            const bars = [...svg.querySelectorAll("path")].map((bar) => bar.getBBox());
+            const bars = [...svg.querySelectorAll("[aria-label=bar] > *")].map((bar) => bar.getBBox());
             const ordered = bars.every((box, index) => index === 0 || box.x > bars[index - 1].x);
             const tallest = bars.reduce((best, box, index) => box.height > bars[best].height ? index : best, 0);
-            const labels = [...svg.querySelectorAll("text[dominant-baseline=hanging]")].map((text) => text.textContent);
+            const labels = [...svg.querySelectorAll("[aria-label='x-axis tick label'] text")]
+              .map((text) => text.textContent);
             return [bars.length, ordered, tallest, labels[0], labels.length < 8].join(" | ");
             """)
         XCTAssertEqual(result, "17 | true | 16 | Oct 17 | true")
@@ -1112,13 +1116,13 @@ final class LibraryDocumentTests: XCTestCase {
     private static let chartFacts = """
         const facts = (figure) => {
           const svg = figure.querySelector("svg");
-          const axis = [...svg.querySelectorAll("text[text-anchor=end]")].map((text) => text.textContent);
-          const under = [...svg.querySelectorAll("text[dominant-baseline=hanging]")].map((text) => text.textContent);
-          const paths = [...svg.querySelectorAll("path")];
+          const axis = [...svg.querySelectorAll("[aria-label='y-axis tick label'] text")].map((text) => text.textContent);
+          const under = [...svg.querySelectorAll("[aria-label='x-axis tick label'] text")].map((text) => text.textContent);
+          const paths = [...svg.querySelectorAll("[aria-label=bar] > *, [aria-label=line] path, [aria-label=area] path")];
           const box = svg.getBoundingClientRect();
           const inside = paths.every((path) => {
             const rect = path.getBoundingClientRect();
-            return rect.top >= box.top - 1 && rect.bottom <= box.top + 170;
+            return rect.top >= box.top - 1 && rect.bottom <= box.top + 177;
           });
           return [axis.join(","), under.join(","), paths.length, svg.querySelectorAll("circle").length, inside,
             paths.some((path) => (path.getAttribute("d") || "").includes("NaN"))].join(" ");
@@ -1198,7 +1202,8 @@ final class LibraryDocumentTests: XCTestCase {
         XCTAssertTrue(facts[0].hasPrefix("0,1,2,3 9 AM,12 PM,3 PM "), facts[0])
         XCTAssertTrue(facts[1].contains(" 2022,2023,2024,2025 "), facts[1])
         XCTAssertTrue(facts[2].contains(" 2026-10-13,2026-10-14,Total "), facts[2])
-        XCTAssertTrue(facts[3].contains(" Oct 13,Oct 14 "), facts[3])
+        // The first tick is midnight of Oct 13 as written, not the evening before.
+        XCTAssertTrue(facts[3].contains(" Oct 13, 12 AM,"), facts[3])
     }
 
     /// Labels on a scale of dates go by position: uneven dates keep each label that has room. A band of names keeps
@@ -1215,7 +1220,7 @@ final class LibraryDocumentTests: XCTestCase {
         defer { close(window) }
         let result = try await probe(view, """
             const figures = [...document.querySelectorAll("figure.chart[data-spec]")];
-            const labels = (figure) => [...figure.querySelectorAll("text[dominant-baseline=hanging]")];
+            const labels = (figure) => [...figure.querySelectorAll("[aria-label='x-axis tick label'] text")];
             const boxes = labels(figures[1]).map((text) => text.getBoundingClientRect())
               .sort((a, b) => a.left - b.left);
             const meet = boxes.slice(1).filter((box, index) => box.left - boxes[index].right < 8).length;
@@ -1223,7 +1228,7 @@ final class LibraryDocumentTests: XCTestCase {
               labels(figures[1]).length, labels(figures[1]).some((text) => text.textContent.endsWith("…")), meet,
               scrolls()].join(" | ");
             """)
-        XCTAssertEqual(result, "Jan 5,Mar 1,Jun 15,Oct 1 | 5 | true | 0 | 0")
+        XCTAssertEqual(result, "Apr 1,Jul 1,Oct 1 | 5 | true | 0 | 0")
     }
 
     /// The numbers of the y axis: commas under 10,000, short from 10,000 up, and decimals. A line of more than 12
@@ -1266,7 +1271,7 @@ final class LibraryDocumentTests: XCTestCase {
             const hand = document.querySelector("figure.chart:not([data-spec])");
             const charts = [...document.querySelectorAll("figure.chart[data-spec] svg")];
             const right = charts[0].getBoundingClientRect().right;
-            const inside = [...charts[0].querySelectorAll("text[text-anchor=end]")]
+            const inside = [...charts[0].querySelectorAll("[aria-label='y-axis tick label'] text")]
               .every((text) => text.getBoundingClientRect().right <= right + 1);
             return [getComputedStyle(hand.querySelector("line")).stroke,
               getComputedStyle(hand.querySelector("figcaption")).fontSize,
@@ -1298,6 +1303,85 @@ final class LibraryDocumentTests: XCTestCase {
         defer { close(wideWindow) }
         let onWide = try await probe(wide, script)
         XCTAssertEqual(onWide, "1 2 3+3")
+    }
+
+    /// The nine cases of the second review: a UTC date stays its day, names with the same start, three charts in a
+    /// row, even steps of days, a year change, a column with a height, eight names, one long name, and an area with a
+    /// missing x.
+    @MainActor
+    func testTheCasesOfTheSecondChartReview() async throws {
+        let weeks = (1...6).map { #"{"x": "Week of the launch of the course \#($0)", "y": \#($0)}"# }
+            .joined(separator: ", ")
+        let eight = ["Courses", "Ebooks", "Memberships", "Bundles", "Physical", "Templates", "Presets", "Other"]
+            .enumerated().map { #"{"x": "\#($1)", "y": \#($0 + 1)}"# }.joined(separator: ", ")
+        let days = (1...30).map { #"{"x": "2026-10-\#(String(format: "%02d", $0))", "y": \#($0)}"# }
+            .joined(separator: ", ")
+        let long = String(repeating: "A long name of a product ", count: 3).prefix(60)
+        let facts = try await chartFacts("Lead." + Self.chart("""
+            {"type": "bar", "x": "x", "y": "y", "data": [{"x": "2026-01-01T00:00:00Z", "y": 1},
+            {"x": "2026-01-02T00:00:00Z", "y": 2}]}
+            """) + Self.chart("""
+            {"type": "bar", "x": "x", "y": "y", "data": [\(weeks)]}
+            """) + Self.chart("""
+            {"type": "line", "x": "x", "y": "y", "data": [\(days)]}
+            """) + Self.chart("""
+            {"type": "bar", "x": "x", "y": "y", "data": [{"x": "2025-12-29", "y": 1}, {"x": "2026-01-05", "y": 2}]}
+            """) + Self.chart("""
+            {"type": "bar", "x": "x", "y": "y", "data": [\(eight)]}
+            """) + Self.chart("""
+            {"type": "bar", "x": "x", "y": "y", "data": [{"x": "\(long)", "y": 3}]}
+            """) + Self.chart("""
+            {"type": "area", "x": "x", "y": "y", "series": "s", "data": [{"x": 1, "y": 2, "s": "a"},
+            {"x": 2, "y": 2, "s": "a"}, {"x": 3, "y": 2, "s": "a"}, {"x": 1, "y": 3, "s": "b"}, {"x": 3, "y": 3, "s": "b"}]}
+            """))
+        XCTAssertTrue(facts[0].contains(" Jan 1,Jan 2 "), facts[0])
+        // The labels of 30 days: the words between the numbers of the y axis and the last four facts.
+        let words = facts[2].components(separatedBy: " ")
+        let steps = words[1..<(words.count - 4)].joined(separator: " ").components(separatedBy: ",")
+            .compactMap { Int($0.components(separatedBy: " ").last ?? "") }
+        XCTAssertGreaterThan(steps.count, 2, facts[2])
+        XCTAssertEqual(Set(zip(steps.dropFirst(), steps).map { $0 - $1 }).count, 1, facts[2])
+        XCTAssertTrue(facts[3].contains(" Dec 29,Jan 5 "), facts[3])
+        XCTAssertEqual(facts[4].components(separatedBy: " ")[1].components(separatedBy: ",").count, 8, facts[4])
+        XCTAssertTrue(facts[6].hasPrefix("0,2,4,6 "), facts[6])
+        let (view, window) = try await loadPage("Lead." + Self.chart("""
+            {"type": "bar", "x": "x", "y": "y", "data": [\(weeks)]}
+            """) + Self.chart("""
+            {"type": "bar", "x": "x", "y": "y", "data": [{"x": "\(long)", "y": 3}]}
+            """), width: 390)
+        defer { close(window) }
+        let result = try await probe(view, """
+            const figures = [...document.querySelectorAll("figure.chart[data-spec]")];
+            const texts = (figure) => [...figure.querySelectorAll("[aria-label='x-axis tick label'] text")];
+            const names = texts(figures[0]).map((text) => text.textContent);
+            const svg = figures[1].querySelector("svg").getBoundingClientRect();
+            return [new Set(names).size === names.length, names.length >= 1,
+              texts(figures[1]).every((text) => text.getBoundingClientRect().right <= svg.right + 0.5)].join(" | ");
+            """)
+        XCTAssertEqual(result, "true | true | true")
+    }
+
+    /// Charts in a flex box: three in a row never make the page scroll sideways, and a chart in a column with a height
+    /// keeps its own height.
+    @MainActor
+    func testChartsInAFlexBoxKeepTheirSize() async throws {
+        let spec = #"{"type": "bar", "x": "x", "y": "y", "data": [{"x": "A", "y": 12}, {"x": "B", "y": 30}]}"#
+            .replacingOccurrences(of: "\"", with: "&quot;")
+        let html = """
+            <p>Lead.</p>
+            <div style="display: flex; gap: 8px"><figure class="chart" data-spec="\(spec)"></figure>
+            <figure class="chart" data-spec="\(spec)"></figure><figure class="chart" data-spec="\(spec)"></figure></div>
+            <div style="display: flex; flex-direction: column; height: 600px">
+            <figure class="chart" data-spec="\(spec)"></figure></div>
+            """
+        let (view, window) = try await loadPage(html, width: 320, markdown: false)
+        defer { close(window) }
+        let result = try await probe(view, """
+            const figures = [...document.querySelectorAll("figure.chart[data-spec]")];
+            return [scrolls(), figures[3].getBoundingClientRect().height < 260,
+              figures.slice(0, 3).every((figure) => figure.querySelector("svg"))].join(" | ");
+            """)
+        XCTAssertEqual(result, "0 | true | true")
     }
 
     /// The answer of a script of statements after the probes.
