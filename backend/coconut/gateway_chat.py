@@ -768,6 +768,8 @@ class GatewayChat:
         # records that the session does not hold yet to the text that Hermes saves (hooks.add_records).
         from .native_conversation import turn_records
         records = turn_records(task) if own is not None else []
+        if own is not None:
+            records += self._instructions_record(bot, own)
         try:
             while True:
                 with self.lock:
@@ -814,6 +816,26 @@ class GatewayChat:
             self._gateway_wait_summary(task['id'], None)
             if context_id is None:
                 self._close_gateway_questions(task['id'])
+
+    def _instructions_record(self, bot: dict, own: str) -> list[dict]:
+        """The record of the bot's SOUL.md, as a list of one record, or none without a readable SOUL.md. A continuing
+        Hermes session keeps its first system prompt, which holds SOUL.md. The plugin gives a running session the note
+        once for each change of `revision` (hooks.add_records). A session without a revision on record gets it only
+        when it started before `changed_at`. Hermes freezes the memory of a session by design, so memory gives no note."""
+        from .native_conversation import INSTRUCTIONS_CHANGED, SESSION_INSTRUCTIONS_CHANGED
+        from .profiles import ProfileError
+        try:
+            soul = self.profiles.soul_revision(bot)
+        except (OSError, ProfileError):
+            return []
+        if soul is None:
+            return []
+        record = {'id': 'instructions:' + soul[0], 'kind': 'instructions', 'revision': soul[0], 'changed_at': soul[1],
+                  'text': SESSION_INSTRUCTIONS_CHANGED.strip()}
+        if INSTRUCTIONS_CHANGED.strip() in own:
+            # The answer to a card already tells the bot to read its files again (resume_prompt).
+            record['noted'] = True
+        return [record]
 
     def gateway_wait(self, turn_id: str, task_id: str, arguments: dict) -> dict:
         """coconut_wait of a gateway turn. A recorded wait (a registered wait for a task or a card, or no_card in an
