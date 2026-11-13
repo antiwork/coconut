@@ -305,7 +305,8 @@
   const drawChart = (figure, spec, data, kind) => {
     figure.querySelector("svg")?.remove();
     // The whole pixels of the width of the figure. clientWidth rounds up: a wider svg shrinks, and its texts change.
-    const width = Math.floor(parseFloat(getComputedStyle(figure).width));
+    // A figure that does not show has no width.
+    const width = Math.floor(figure.getBoundingClientRect().width);
     if (!width) return;
     const palette = coconut.palette;
     const names = [...new Set(data.map((row) => row.series))];
@@ -367,9 +368,12 @@
       }
       return low ? parts.slice(0, low).join("").trimEnd() + "…" : "";
     };
+    // The points are in the order of the x axis: a band and a scale of names keep the order of the data, and the data
+    // of a scale of numbers or dates is in the order of x. A value without a place (an x that is not finite) has no
+    // point.
     const scale = svg.scale("x");
     const points = xs.map((value, index) => ({ at: scale.apply(value), text: texts[index], size: widths[index] }))
-      .filter((point) => Number.isFinite(point.at)).sort((a, b) => a.at - b.at);
+      .filter((point) => Number.isFinite(point.at));
     const labels = document.createElementNS("http://www.w3.org/2000/svg", "g");
     labels.setAttribute("aria-label", "x-axis tick label");
     // The svg of Plot centers each text (text-anchor middle). A label starts at its x.
@@ -383,6 +387,8 @@
       }
       const left = band ? point.at : Math.min(Math.max(point.at - size / 2, 0), end - size);
       if (!text || left < edge + 8 || left + size > end) continue;
+      // A label has the place of a tick label of Plot, 6 px under the plot: the height of 200 px less the bottom
+      // margin of 24 px, plus 6.
       const label = document.createElementNS("http://www.w3.org/2000/svg", "text");
       label.setAttribute("x", left);
       label.setAttribute("y", 182);
