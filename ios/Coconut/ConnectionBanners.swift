@@ -9,26 +9,25 @@ struct ErrorBanner: View {
     /// the largest height of the notice in this area. A longer text scrolls inside the notice.
     var area: CGFloat?
     let dismiss: () -> Void
-    #if os(macOS)
-    @ScaledMetric(relativeTo: .body) private var line: CGFloat = 16
-    #else
-    @ScaledMetric(relativeTo: .body) private var line: CGFloat = 22
-    #endif
 
     var body: some View {
         // The icon and the X sit on the baseline of the first text line, so a long message grows below them.
         HStack(alignment: .firstTextBaseline, spacing: BoardStyle.Space.s) {
             Image(systemName: "exclamationmark.circle").foregroundStyle(BoardStyle.attention)
-            // A hidden copy of the text gives the size and the first baseline. The visible text scrolls over it when
+            // A hidden copy of the text gives the size and the first baseline. Hidden texts of one and of two lines
+            // give the real line height and the space between two lines. The visible text scrolls over the copy when
             // the largest height cuts it.
-            text.hidden()
-                .frame(maxHeight: area.map { NoticeHeight.limit(area: $0, line: line, padding: BoardStyle.Space.m) },
-                       alignment: .top)
-                // The notice is as high as its text, up to the largest height, not as high as the area.
-                .fixedSize(horizontal: false, vertical: true)
-                .overlay(alignment: .top) {
-                    ScrollView { text }.scrollBounceBehavior(.basedOnSize)
-                }
+            NoticeTextFrame(area: area) {
+                text.padding(.vertical, BoardStyle.Space.m).hidden()
+                Text(oneLine).hidden()
+                Text(oneLine + "\n" + oneLine).hidden()
+            }
+            .overlay(alignment: .top) {
+                ScrollView { text }.scrollBounceBehavior(.basedOnSize)
+                    // The padding is outside the scroll view, so the scroll view is as high as its whole lines and
+                    // shows no part of a next line.
+                    .padding(.vertical, BoardStyle.Space.m)
+            }
             if fillsWidth { Spacer(minLength: 0) }
             Button(action: dismiss) {
                 // The X is 44 points high, so a message of one line has the height of ConnectionBanner.
@@ -58,38 +57,179 @@ struct ErrorBanner: View {
     }
 
     private var text: some View {
-        Text(message).textSelection(.enabled).padding(.vertical, BoardStyle.Space.m)
-            .fixedSize(horizontal: false, vertical: true)
+        Text(message).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+    }
+
+    /// The message on one line, so the fonts of its characters set the line height.
+    private var oneLine: String { message.split(whereSeparator: \.isNewline).joined(separator: " ") }
+}
+
+/// The frame of the text of a notice. The first subview is the text with its padding. The second and the third are
+/// one line and two lines of the same text. The frame is as high as the text, but at most NoticeHeight.limit with
+/// the line height and the space between two lines that they give. The layout measures them in the same pass, so the
+/// notice never shows a height from an earlier measure.
+private struct NoticeTextFrame: Layout {
+    let area: CGFloat?
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let size = subviews[0].sizeThatFits(ProposedViewSize(width: proposal.width, height: nil))
+        guard let area else { return size }
+        // The lines get no width limit, so they do not wrap and nothing shortens them. On a Mac, two lines that
+        // lineLimit shortened measured half a point lower than two lines of the text.
+        let line = subviews[1].sizeThatFits(.unspecified).height
+        let spacing = subviews[2].sizeThatFits(.unspecified).height - 2 * line
+        let limit = NoticeHeight.limit(area: area, line: line, spacing: spacing, padding: BoardStyle.Space.m)
+        return CGSize(width: size.width, height: min(size.height, limit))
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        // The text starts at the top. When the frame cuts it, the hidden rest goes below the frame.
+        subviews[0].place(at: bounds.origin, proposal: ProposedViewSize(width: bounds.width, height: nil))
+        for line in subviews.dropFirst() { line.place(at: bounds.origin, proposal: .unspecified) }
+    }
+
+    /// The first baseline of the text, for the icon and the X. The hidden lines have baselines too, so the layout
+    /// gives this one.
+    func explicitAlignment(of guide: VerticalAlignment, in bounds: CGRect, proposal: ProposedViewSize,
+                           subviews: Subviews, cache: inout ()) -> CGFloat? {
+        guard guide == .firstTextBaseline else { return nil }
+        return bounds.minY + subviews[0].dimensions(in: ProposedViewSize(width: bounds.width, height: nil))[guide]
     }
 }
 
-/// The largest height of a notice: the smaller of 5 lines of its text and 40 percent of the area that holds it. When
-/// 40 percent is less than one line, the notice gets one line, or the whole area when the area is lower than one line.
-/// The controls under the area (the composer, the keyboard) keep their space.
+/// The largest height of a notice: its padding and a whole number of lines of its text, so the last line that shows is
+/// complete. A text of n lines is n line heights and the space between each two lines. The notice holds at most 5
+/// lines, and at most the lines that fit in 40 percent of the area that holds it, but at least one line. When the area
+/// is lower than one line, the notice gets the whole area. The controls under the area (the composer, the keyboard)
+/// keep their space.
 enum NoticeHeight {
-    static func limit(area: CGFloat, line: CGFloat, padding: CGFloat) -> CGFloat {
+    static func limit(area: CGFloat, line: CGFloat, spacing: CGFloat, padding: CGFloat) -> CGFloat {
         let one = line + 2 * padding
-        let five = 5 * line + 2 * padding
-        return max(0, min(five, max(0.4 * area, min(one, area))))
+        guard area >= one, line > 0, line + spacing > 0 else { return max(0, min(area, one)) }
+        let fit = ((0.4 * area - 2 * padding + spacing) / (line + spacing)).rounded(.down)
+        let lines = min(5, max(1, fit))
+        return lines * line + (lines - 1) * spacing + 2 * padding
     }
 }
 
 extension EnvironmentValues {
-    /// True in the main window of the Mac: its notice shows the error, so a page there shows no inline copy.
+    /// True in the detail column of the main window of the Mac: its notice shows the error, so a page there shows no
+    /// inline copy. A sheet sets it to false, because it has no notice over it.
     @Entry var windowShowsError = false
     /// The height of the area that holds the notice of the Mac window.
     @Entry var noticeArea: CGFloat?
+    /// The chats of the main window of the Mac that can hold its notice. Nil outside the detail column of that window.
+    @Entry var windowNotice: WindowNotice?
 }
 
-/// True while a chat of the Mac window is on the screen: the chat shows the notice above its composer, so the area
-/// around it shows none.
-struct ChatHoldsNoticePreference: PreferenceKey {
-    static let defaultValue = false
-    static func reduce(value: inout Bool, nextValue: () -> Bool) { value = value || nextValue() }
+/// The place of the notice in the main window of the Mac. A chat on the screen shows the notice above its composer.
+/// When no chat is on the screen, the detail column shows it at its bottom. Exactly one place shows it.
+struct NoticeHolders: Equatable {
+    /// The chats on the screen, in the order that they came on the screen.
+    private(set) var chats: [UUID] = []
+
+    /// The chat that shows the notice: the chat that came on the screen last. Nil when no chat is on the screen.
+    var holder: UUID? { chats.last }
+    /// True when no chat is on the screen, so the detail column shows the notice.
+    var columnShowsNotice: Bool { chats.isEmpty }
+
+    /// A chat comes on the screen.
+    mutating func add(_ chat: UUID) {
+        chats.removeAll { $0 == chat }
+        chats.append(chat)
+    }
+
+    /// A chat leaves the screen, for example because a pushed page covers it.
+    mutating func remove(_ chat: UUID) {
+        chats.removeAll { $0 == chat }
+    }
 }
+
+/// The chats of the main window of the Mac that are on the screen. The window puts it in the environment of its split
+/// view, above each stack of the detail column, so a pushed page gets it too. A preference cannot do this: it does
+/// not cross the stack of the column.
+@MainActor @Observable
+final class WindowNotice {
+    var holders = NoticeHolders()
+}
+
+#if os(macOS)
+/// The notice of the Mac window above the composer of a chat. Put it first in the bottom inset of the chat, above the
+/// composer. While the chat is on the screen, the chat can hold the notice (NoticeHolders).
+///
+/// The notice adds no safe area: a Mac list does not report a new safe area in its scroll geometry, so a chat at its
+/// newest message did not stay there when the notice came. The chat keeps the space of the notice in the last row of
+/// its transcript instead (`height`). A new content size is in the scroll geometry, so the rule of new content keeps
+/// the chat at its newest message.
+struct ChatWindowNotice: View {
+    /// The height of the notice: 0 when it shows no error, or when another place shows the notice.
+    @Binding var height: CGFloat
+    @Environment(\.windowNotice) private var windowNotice
+    @State private var chat = UUID()
+
+    var body: some View {
+        Color.clear.frame(height: 0)
+            .overlay(alignment: .bottom) {
+                if let windowNotice, windowNotice.holders.holder == chat {
+                    WindowErrorNotice()
+                        .fixedSize(horizontal: false, vertical: true)
+                        .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { height = $0 }
+                        .onDisappear { height = 0 }
+                }
+            }
+            .background(OnScreenProbe { [windowNotice, chat] onScreen in
+                if onScreen { windowNotice?.holders.add(chat) } else { windowNotice?.holders.remove(chat) }
+            })
+            .onDisappear { windowNotice?.holders.remove(chat) }
+    }
+}
+
+/// Tells whether its view is on the screen. A page that a stack of the Mac detail column pushes covers the whole
+/// column. The page hides the views under it, but they get no onDisappear, for example a chat under the Model page of
+/// the details next to it. AppKit hides their views, so this view learns it.
+private struct OnScreenProbe: NSViewRepresentable {
+    let changed: @MainActor (Bool) -> Void
+
+    func makeNSView(context: Context) -> ProbeView { ProbeView() }
+
+    func updateNSView(_ view: ProbeView, context: Context) { view.changed = changed }
+
+    final class ProbeView: NSView {
+        var changed: (@MainActor (Bool) -> Void)?
+        private var reported: Bool?
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            report()
+        }
+
+        override func viewDidHide() {
+            super.viewDidHide()
+            report()
+        }
+
+        override func viewDidUnhide() {
+            super.viewDidUnhide()
+            report()
+        }
+
+        // The view takes no click and no wheel event.
+        override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+        private func report() {
+            let onScreen = window != nil && !isHiddenOrHasHiddenAncestor
+            guard onScreen != reported else { return }
+            reported = onScreen
+            // AppKit calls this during an update of SwiftUI, which must not change state. The change waits for it.
+            let changed = changed
+            DispatchQueue.main.async { changed?(onScreen) }
+        }
+    }
+}
+#endif
 
 /// The notice of the Mac window: bottom center, at most 480 points wide, 16 points above what is below it. It takes
-/// its own space, so it covers no control and no message.
+/// its own space, so it covers no control and no message. MacNoticeArea and each chat show it (NoticeHolders).
 struct WindowErrorNotice: View {
     @Environment(AppStore.self) private var store
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -137,7 +277,26 @@ struct ChatErrorNotice: ViewModifier {
     }
 }
 
+/// The banners at the top of a page. They take their own space, so the page starts below them and they cover no row.
+/// They get the height of the page, the area of the error notice among them, so a long notice leaves most of the page.
+private struct TopBanners<Banners: View>: ViewModifier {
+    @ViewBuilder let banners: (_ area: CGFloat?) -> Banners
+    @State private var area: CGFloat?
+
+    func body(content: Content) -> some View {
+        content
+            .safeAreaInset(edge: .top, spacing: 0) { banners(area) }
+            // The page together with its banners, so the height does not change when a banner comes or goes.
+            .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { area = $0 }
+    }
+}
+
 extension View {
+    /// Puts the banners above the page, in their own space. The closure gets the height of the page.
+    func topBanners<Banners: View>(@ViewBuilder _ banners: @escaping (_ area: CGFloat?) -> Banners) -> some View {
+        modifier(TopBanners(banners: banners))
+    }
+
     /// VoiceOver reads each new error of an action when it shows.
     func announcesErrors(_ error: String?) -> some View {
         onChange(of: error) { _, error in
