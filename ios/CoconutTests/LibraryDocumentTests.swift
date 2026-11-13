@@ -1405,13 +1405,15 @@ final class LibraryDocumentTests: XCTestCase {
     }
 
     /// Hostile chart specs never hang the page: each one draws its marks, its zero line or its reason within a bound
-    /// of time. Each case has its own web view, and each answer of the web view has a deadline, so a hang fails the case
-    /// and does not hang the test run. The bounds tell a hang (minutes) from a slow draw on a slow runner (seconds): 30
-    /// seconds for one case, and 240 seconds for the whole test, after which each case left fails at once.
+    /// of time. The small cases are the figures of one page in one web view, with one bound of 60 seconds: correct code
+    /// needs a few seconds, and a hang needs minutes. Only when that page does not finish in time does each small case
+    /// draw in its own web view with its own bound, to name the case that hangs. Each large case has its own web view
+    /// and bound, so its slow draw on a slow runner cannot hide a hang of another case. A web view that does not answer
+    /// (a page that hangs) never hangs the test: each answer has a deadline.
     @MainActor
     func testAHostileChartNeverHangsThePage() async throws {
         let many = (1...10_000).map { #"{"x": \#($0), "y": \#($0 % 97)}"# }.joined(separator: ", ")
-        let cases: [(String, String)] = [
+        let small: [(String, String)] = [
             ("values as text", #"{"type": "line", "x": "d", "y": "n", "data": [{"d": "2026-10-13", "n": "1,200"}, {"d": "2026-10-20", "n": "2,450"}]}"#),
             ("a wrong y name", #"{"type": "line", "x": "d", "y": "nope", "data": [{"d": "2026-10-13", "n": 1}, {"d": "2026-10-20", "n": 2}]}"#),
             ("a wrong y name, dots", #"{"type": "dot", "x": "d", "y": "nope", "data": [{"d": "2026-10-13", "n": 1}, {"d": "2026-10-20", "n": 2}]}"#),
@@ -1422,46 +1424,52 @@ final class LibraryDocumentTests: XCTestCase {
             ("empty data", #"{"type": "line", "x": "d", "y": "n", "data": []}"#),
             ("data that is no list", #"{"type": "bar", "x": "d", "y": "n", "data": 5}"#),
             ("one row", #"{"type": "line", "x": "d", "y": "n", "data": [{"d": "2026-10-13", "n": 3}]}"#),
-            ("10,000 rows", #"{"type": "line", "x": "x", "y": "y", "data": [\#(many)]}"#),
-            ("10,000 bars", #"{"type": "bar", "x": "x", "y": "y", "data": [\#(many)]}"#),
             ("a name of 60 characters", #"{"type": "bar", "x": "x", "y": "y", "data": [{"x": "Coursessssssssssssssssssssssssssssssssssssssssssssssssssssss", "y": 3}]}"#),
             ("a series name of 60 characters", #"{"type": "line", "x": "x", "y": "y", "series": "s", "data": [{"x": 1, "y": 2, "s": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"}]}"#),
         ]
-        let budget = ContinuousClock.now + .seconds(240)
-        for (name, spec) in cases {
-            guard ContinuousClock.now < budget else {
-                XCTFail("The chart with \(name) did not start: the test passed its time of 240 seconds.")
-                continue
+        let large: [(String, String)] = [
+            ("10,000 rows", #"{"type": "line", "x": "x", "y": "y", "data": [\#(many)]}"#),
+            ("10,000 bars", #"{"type": "bar", "x": "x", "y": "y", "data": [\#(many)]}"#),
+        ]
+        let together = try await Self.drawHostileCharts(small.map(\.1), within: .seconds(60))
+        if together.contains(false) {
+            // The slow path: each small case alone, to name the case that hangs. 240 seconds for all of them, after
+            // which each case left fails at once.
+            let budget = ContinuousClock.now + .seconds(240)
+            for (name, spec) in small {
+                guard ContinuousClock.now < budget else {
+                    XCTFail("The chart with \(name) did not start: the test passed its time of 240 seconds.")
+                    continue
+                }
+                let shown = try await Self.drawHostileCharts([spec], within: min(.seconds(20), budget - .now))
+                XCTAssertEqual(shown, [true], "The chart with \(name) did not draw in 20 seconds.")
             }
-            let configuration = WKWebViewConfiguration()
-            DocumentPage.scripts(diagrams: false).forEach(configuration.userContentController.addUserScript)
-            let view = WKWebView(frame: CGRect(x: 0, y: 0, width: 390, height: 800), configuration: configuration)
-            #if os(iOS)
-            let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
-            let window = UIWindow(windowScene: scene)
-            window.addSubview(view)
-            window.makeKeyAndVisible()
-            #else
-            let window = NSWindow(contentRect: CGRect(x: -20000, y: 0, width: 1200, height: 800), styleMask: [.borderless],
-                                  backing: .buffered, defer: false)
-            window.contentView?.addSubview(view)
-            #endif
-            view.loadHTMLString(DocumentPage.html(title: "T", meta: "M", content: "Lead.\n\n```chart\n\(spec)\n```",
-                                                  markdown: true), baseURL: nil)
-            let deadline = min(ContinuousClock.now + .seconds(30), budget)
-            var shown: String?
-            while shown == nil && ContinuousClock.now < deadline {
-                shown = await Self.evaluate(view, """
-                    (() => {
-                      const figure = document.querySelector("figure.chart");
-                      if (document.readyState !== "complete" || !figure) return null;
-                      if (figure.classList.contains("broken")) return "reason";
-                      return figure.querySelector("svg [aria-label=y-grid] line") ? "chart" : null;
-                    })()
-                    """, within: .seconds(10))
-                if shown == nil { try await Task.sleep(for: .milliseconds(100)) }
-            }
-            XCTAssertNotNil(shown, "The chart with \(name) did not draw in 30 seconds.")
+        }
+        for (name, spec) in large {
+            let shown = try await Self.drawHostileCharts([spec], within: .seconds(60))
+            XCTAssertEqual(shown, [true], "The chart with \(name) did not draw in 60 seconds.")
+        }
+    }
+
+    /// Draws each spec as a figure of one page in its own web view. The answer tells for each figure whether it shows
+    /// its marks, its zero line or its reason before the time ends.
+    @MainActor
+    private static func drawHostileCharts(_ specs: [String], within time: Duration) async throws -> [Bool] {
+        let deadline = ContinuousClock.now + time
+        let configuration = WKWebViewConfiguration()
+        DocumentPage.scripts(diagrams: false).forEach(configuration.userContentController.addUserScript)
+        let view = WKWebView(frame: CGRect(x: 0, y: 0, width: 390, height: 800), configuration: configuration)
+        #if os(iOS)
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
+        let window = UIWindow(windowScene: scene)
+        window.addSubview(view)
+        window.makeKeyAndVisible()
+        #else
+        let window = NSWindow(contentRect: CGRect(x: -20000, y: 0, width: 1200, height: 800), styleMask: [.borderless],
+                              backing: .buffered, defer: false)
+        window.contentView?.addSubview(view)
+        #endif
+        defer {
             #if os(iOS)
             window.isHidden = true
             #else
@@ -1469,6 +1477,27 @@ final class LibraryDocumentTests: XCTestCase {
             #endif
             view.removeFromSuperview()
         }
+        view.loadHTMLString(DocumentPage.html(title: "T", meta: "M",
+                                              content: "Lead." + specs.map { chart($0) }.joined(), markdown: true),
+                            baseURL: nil)
+        // The page reports each figure that is done: "1" for a figure with its zero line or its reason, else "0".
+        var done = Array(repeating: false, count: specs.count)
+        while ContinuousClock.now < deadline {
+            let left = deadline - .now
+            if let answer = await evaluate(view, """
+                (() => {
+                  const figures = [...document.querySelectorAll("figure.chart")];
+                  if (document.readyState !== "complete" || figures.length !== \(specs.count)) return null;
+                  return figures.map((figure) => figure.classList.contains("broken")
+                    || figure.querySelector("svg [aria-label=y-grid] line") ? "1" : "0").join("");
+                })()
+                """, within: min(.seconds(10), left)) {
+                done = answer.map { $0 == "1" }
+                if !done.contains(false) { break }
+            }
+            try await Task.sleep(for: .milliseconds(100))
+        }
+        return done
     }
 
     /// The answer of a script as text, or nil when the web view does not answer within the time.
