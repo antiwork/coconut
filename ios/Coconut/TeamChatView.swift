@@ -6,10 +6,12 @@ import SwiftUI
 /// (TeamMessageDeletion).
 ///
 /// The same view is the direct chat with one person of the team ("Direct messages"): its title is the person, no name
-/// shows above a message, and the composer has no list for `@`.
+/// shows above a message, and the composer has no list for `@`. It is also each named chat of the team ("Chats of a
+/// team"): its title is the name of the chat, with the name of the team under it (TeamRoom.inChat).
 struct TeamChatView: View {
     @Environment(AppStore.self) private var store
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.dismiss) private var dismiss
     let chatKey: TeamChatKey
     @State private var draft = ""
     @State private var replyTo: TeamMessage?
@@ -48,7 +50,8 @@ struct TeamChatView: View {
     private static let titleHeight: CGFloat = 0
     #endif
 
-    private var room: TeamRoom? { store.team?.rooms.first { $0.room == chatKey.room } }
+    /// The room as this chat shows it. Nil when the team, or the named chat, is no longer in the list.
+    private var room: TeamRoom? { store.team?.rooms.first { $0.room == chatKey.room }?.inChat(chatKey.chat) }
     private var chat: TeamChat { store.teamChats[chatKey] ?? TeamChat() }
     /// The other person of a direct chat. Nil for the Team chat.
     private func peer(_ room: TeamRoom) -> TeamDirectPeer? { chatKey.member.map(room.directPeer) }
@@ -64,6 +67,12 @@ struct TeamChatView: View {
             }
         }
         .inlineNavigationTitle()
+        #if os(iOS)
+        // A named chat that the admin deleted closes, as the pushed Team screen of a team that goes does. On a Mac the
+        // chat is the root of the detail of the window, where a dismiss would close the window: the sidebar selects
+        // the Inbox in its place (MacSidebar, TeamRooms.has).
+        .onChange(of: room == nil) { _, gone in if gone && chatKey.chat != nil { dismiss() } }
+        #endif
     }
 
     @ViewBuilder
@@ -238,7 +247,7 @@ struct TeamChatView: View {
                         .frame(minHeight: 44).contentShape(Capsule())
                     }
                     .buttonStyle(.plain)
-                    .accessibilityLabel([room.name + " team", room.whoLine].compactMap { $0 }.joined(separator: ", "))
+                    .accessibilityLabel(TeamTitle.spoken(room))
                     .accessibilityIdentifier("team-chat-title")
                     .simultaneousGesture(TapGesture().onEnded { composerFocused = false })
                 }
@@ -267,7 +276,7 @@ struct TeamChatView: View {
                 .buttonStyle(.plain)
                 .padding(.top, 8)
                 .help("Team settings")
-                .accessibilityLabel([room.name + " team", room.whoLine].compactMap { $0 }.joined(separator: ", "))
+                .accessibilityLabel(TeamTitle.spoken(room))
                 .accessibilityIdentifier("team-chat-title")
             }
         }
@@ -302,7 +311,7 @@ struct TeamChatView: View {
                     Text(peer.name).font(.title2.weight(.semibold)).multilineTextAlignment(.center)
                 } else {
                     TeamFace(room: room, size: 68)
-                    Text(room.name).font(.title2.weight(.semibold)).multilineTextAlignment(.center)
+                    Text(room.title).font(.title2.weight(.semibold)).multilineTextAlignment(.center)
                 }
                 Text(TeamChatEmptyLine.text(for: room, peer: peer(room)))
                     .font(.subheadline).foregroundStyle(.secondary).multilineTextAlignment(.center)
@@ -324,7 +333,7 @@ struct TeamChatView: View {
                 .modifier(ComposerBackdrop())
                 .accessibilityIdentifier("team-chat-closed")
         } else {
-            TeamChatComposer(placeholder: "Message " + (peer(room)?.name ?? room.name), targets: mentionTargets(room),
+            TeamChatComposer(placeholder: "Message " + (peer(room)?.name ?? room.title), targets: mentionTargets(room),
                              peer: peer(room)?.name, text: $draft, mentions: $mentions, replyTo: $replyTo,
                              editing: $editing, focused: $composerFocused, enabled: canWrite(room), send: send)
                 .fixedSize(horizontal: false, vertical: true)
@@ -791,17 +800,27 @@ struct PersonFace: View {
     }
 }
 
-/// The title of a team chat: its face, its name, and one quiet line that says who is in the chat.
+/// The title of a team chat: its face, its name, and one quiet line that says who is in the chat. A named chat has its
+/// name and the name of the team under it.
 struct TeamTitle: View {
     let room: TeamRoom
     let faceSize: CGFloat
+
+    /// What VoiceOver reads for the title: "Example Team team, 3 people", or "Design, Example Team" for a named chat.
+    static func spoken(_ room: TeamRoom) -> String {
+        if let chat = room.shownChat { return chat.name + ", " + room.name }
+        return [room.name + " team", room.whoLine].compactMap { $0 }.joined(separator: ", ")
+    }
 
     var body: some View {
         HStack(spacing: 8) {
             TeamFace(room: room, size: faceSize)
             VStack(alignment: .leading, spacing: 0) {
-                Text(room.name).font(.headline).lineLimit(1).truncationMode(.tail)
-                if let line = room.whoLine {
+                Text(room.title).font(.headline).lineLimit(1).truncationMode(.tail)
+                if room.shownChat != nil {
+                    Text(room.name).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+                        .accessibilityIdentifier("team-chat-who")
+                } else if let line = room.whoLine {
                     Text(line).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
                         .accessibilityIdentifier("team-chat-who")
                 }
@@ -908,7 +927,7 @@ struct TeamContactRow: View {
         let unread = room.unread ?? 0
         let date = room.lastMessage?.createdAt?.apiDate
         // An older service sends no chat. The row then has the name only, centered on the face.
-        return ChatRowLayout(name: room.name, unread: unread, date: date, mentioned: room.showsMentionMark) {
+        return ChatRowLayout(name: room.title, unread: unread, date: date, mentioned: room.showsMentionMark) {
             TeamFace(room: room, size: avatarSize)
         } subtitle: {
             Group {
@@ -924,7 +943,7 @@ struct TeamContactRow: View {
                     }
                     .font(.subheadline)
                     .transition(.opacity)
-                    .accessibilityIdentifier("team-row-typing-\(room.room)")
+                    .accessibilityIdentifier("team-row-typing-\(room.room)" + (room.shownChat.map { "-" + $0.id } ?? ""))
                 } else if let line {
                     Text(line.text)
                         .font(.subheadline).foregroundStyle(.secondary)

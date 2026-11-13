@@ -261,7 +261,7 @@ final class DirectMessageTests: XCTestCase {
         XCTAssertEqual(target.chat, TeamChatKey(room: roomId, member: graceId))
         XCTAssertFalse(target.group)
         XCTAssertEqual(target.destination(pendingDecisionIds: [], snapshotReady: false),
-                       .direct(TeamChatKey(room: roomId, member: graceId)))
+                       .chat(TeamChatKey(room: roomId, member: graceId)))
     }
 
     func testAGroupOfOneDirectChatOpensThatChat() throws {
@@ -270,7 +270,7 @@ final class DirectMessageTests: XCTestCase {
             "direct": ["team": roomId, "member": graceId]]]))
         XCTAssertTrue(target.group)
         XCTAssertEqual(target.destination(pendingDecisionIds: [], snapshotReady: false),
-                       .direct(TeamChatKey(room: roomId, member: graceId)))
+                       .chat(TeamChatKey(room: roomId, member: graceId)))
     }
 
     func testADirectTargetNeedsTheIDsOfARoomAndAMember() {
@@ -289,14 +289,14 @@ final class DirectMessageTests: XCTestCase {
     func testADirectChatOfATeamThatTheAppNoLongerHasOpensTheChatsList() {
         let store = AppStore(demo: true)
         let chat = TeamChatKey(room: roomId, member: graceId)
-        XCTAssertEqual(store.teamNotificationPlace(roomId, member: graceId), .direct(chat),
+        XCTAssertEqual(store.teamNotificationPlace(roomId, member: graceId), .chat(chat),
                        "A list that is not loaded keeps each chat.")
         store.team = TeamRooms(rooms: [TeamRoom(room: roomId, name: "Example Team", state: "active")], helper: true)
-        XCTAssertEqual(store.teamNotificationPlace(roomId, member: graceId), .direct(chat),
+        XCTAssertEqual(store.teamNotificationPlace(roomId, member: graceId), .chat(chat),
                        "A chat with a member that left stays while the team stays.")
         store.team = TeamRooms(rooms: [], helper: true)
         XCTAssertEqual(store.teamNotificationPlace(roomId, member: graceId), .chatList)
-        XCTAssertEqual(NotificationDestination.direct(chat).teamChat, chat)
+        XCTAssertEqual(NotificationDestination.chat(chat).teamChat, chat)
         XCTAssertEqual(NotificationDestination.team(roomId).teamChat, TeamChatKey(room: roomId))
         XCTAssertNil(NotificationDestination.chatList.teamChat)
     }

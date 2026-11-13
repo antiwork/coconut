@@ -151,10 +151,13 @@ def notification_alert(service, job, bot, task, decision):
 
 def team_alert(store, room, entry):
     """The alert of a team message, in the pattern of a group chat: the writer in the title, the team in the
-    subtitle, the text in the body. A message of a bot names the bot. When the store has no name for the writer, the
-    title is the name of the team, and the alert has no subtitle."""
+    subtitle, the text in the body. A message of a bot names the bot. A message of a named chat has the name of the chat
+    and the name of the team in the subtitle, for example "Design · Example Team". When the store has no name for the
+    writer, the title is that subtitle, and the alert has no subtitle."""
     message = store.message(room, entry)
-    team = notification_text(store.room(room)['name'], limit=80, byte_limit=256)
+    chat = store.chat(room, message['chat']) if message['chat'] else None
+    team = store.room(room)['name']
+    team = notification_text(f'{chat["name"]} · {team}' if chat else team, limit=140, byte_limit=512)
     writer = notification_text(message['bot_name'] if message['bot'] else message['member_name'], limit=80, byte_limit=256)
     body = notification_text(message['text'])
     if not writer:

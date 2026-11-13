@@ -342,7 +342,7 @@ class TeamOnlyService(TeamTurns, Documents, Team):
         home, chat, message_id = data.get('home'), parse_chat(data.get('chat_id')), data.get('message_id')
         if not isinstance(home, str) or chat is None or not isinstance(message_id, str):
             raise ServiceError(400, 'Name the home, the chat and the message.')
-        room, bot_id = chat
+        room, bot_id, named = chat
         with self.lock:
             bot = self._team_bot(bot_id) if unicode_text(bot_id) else None
         if bot is None or bot['home'] != os.path.realpath(home):
@@ -353,9 +353,11 @@ class TeamOnlyService(TeamTurns, Documents, Team):
         with self.lock:
             room_row = self.team_store.room(room)
             answers = room_row is not None and bot_id in dict(self.team_store.answering(room))
-        if not answers or room_row['state'] != ACTIVE:
+            # A send into a named chat that the team removed goes nowhere.
+            gone = named is not None and self.team_store.chat(room, named) is None
+        if not answers or room_row['state'] != ACTIVE or gone:
             return {'recorded': False, 'reason': 'The bot does not answer in this team chat.'}
         for number, piece in enumerate(parts(text)):
             # A send outside a turn answers no message, so no request must still stand: only the bot must answer.
-            self._team_say(room, bot_id, message_id, number, piece, request=False)
+            self._team_say(room, bot_id, message_id, number, piece, request=False, chat=named)
         return {'recorded': True}

@@ -317,7 +317,7 @@ class TurnTests(TeamTurnMacs, unittest.TestCase):
                           ('xxxxx', None)])
         # A second run of the same turn adds no message: each entry ID comes from the trigger and the part.
         before = len(self.chat())
-        turn = {'room': self.room, 'bot': self.bot['id'], 'entry': named['id']}
+        turn = {'room': self.room, 'bot': self.bot['id'], 'entry': named['id'], 'chat': None}
         team_turns.Reply(self.only, turn).say('I look at it.')
         self.sync()
         self.assertEqual(len(self.chat()), before)
@@ -824,10 +824,10 @@ class FailureTests(TeamTurnMacs, unittest.TestCase):
             return team_turns.TeamTurns._team_turn(self.only, turn)
         say = self.only._team_say
 
-        def notice_fails(room, bot, trigger, part, text, reply_to=None):
+        def notice_fails(room, bot, trigger, part, text, reply_to=None, **options):
             if part == 'fault':
                 raise RuntimeError('relay down')
-            return say(room, bot, trigger, part, text, reply_to)
+            return say(room, bot, trigger, part, text, reply_to, **options)
         with mock.patch.object(self.only, '_team_turn', side_effect=first_fails), \
                 mock.patch.object(self.only, '_team_say', side_effect=notice_fails), \
                 self.assertLogs('coconut.team_turns', logging.ERROR):

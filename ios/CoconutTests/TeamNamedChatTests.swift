@@ -1,0 +1,141 @@
+import XCTest
+@testable import Coconut
+
+/// The pure rules of the named chats of a team (docs/team-log.md, "Chats of a team"): the decode, the rows of the list
+/// and their order, the title and the words for VoiceOver, who makes and changes a chat, the route of a notification
+/// and the banner of the Mac.
+final class TeamNamedChatTests: XCTestCase {
+    private let room = String(repeating: "a", count: 64)
+    private let design = String(repeating: "d", count: 32)
+    private let launch = String(repeating: "e", count: 32)
+
+    private func rooms(admin: Bool = true) throws -> TeamRooms {
+        let json = """
+        {"rooms": [{"room": "\(room)", "name": "Example Team", "state": "active", "created_at": "2026-11-01T09:00:00Z",
+          "unread": 0, "mentioned": false, "typing": [], "notifications": true, "can_manage_chats": \(admin),
+          "last_message": {"first": 4, "member": "m-lin", "member_name": "Lin", "text": "Thanks",
+                           "created_at": "2026-11-12T08:00:00Z"},
+          "chats": [
+            {"id": "\(design)", "name": "Design", "created_at": "2026-11-10T09:00:00Z", "unread": 2, "mentioned": true,
+             "mention_first": 9, "typing": [],
+             "last_message": {"first": 9, "member": "m-grace", "member_name": "Grace", "text": "@Ada the logo",
+                              "created_at": "2026-11-12T10:00:00Z"}},
+            {"id": "\(launch)", "name": "Launch", "created_at": "2026-11-11T09:00:00Z", "unread": 0,
+             "mentioned": false, "typing": [], "last_message": null}]}]}
+        """
+        return try APIJSON.decoder().decode(TeamRooms.self, from: Data(json.utf8))
+    }
+
+    func testARoomDecodesItsChatsAndAnOlderServiceHasNone() throws {
+        let room = try XCTUnwrap(try rooms().rooms.first)
+        XCTAssertEqual(room.namedChats.map(\.name), ["Design", "Launch"])
+        XCTAssertEqual(room.canManageChats, true)
+        let old = try APIJSON.decoder().decode(TeamRooms.self, from: Data(#"{"rooms": [{"room": "r", "name": "T", "state": "active"}]}"#.utf8))
+        XCTAssertEqual(old.rooms[0].namedChats, [])
+        XCTAssertFalse(TeamChatManagement.showsSection(old.rooms[0]))
+        XCTAssertEqual(ChatList.people(old.rooms).count, 1)
+    }
+
+    func testAChatShowsTheFieldsOfItsChatAndKeepsTheTeam() throws {
+        let room = try XCTUnwrap(try rooms().rooms.first)
+        let shown = try XCTUnwrap(room.inChat(design))
+        XCTAssertEqual(shown.title, "Design")
+        XCTAssertEqual(shown.name, "Example Team")
+        XCTAssertEqual(shown.chatAndTeam, "Design · Example Team")
+        XCTAssertEqual(shown.unread, 2)
+        XCTAssertEqual(shown.showsMentionMark, true)
+        XCTAssertEqual(shown.chatKey, TeamChatKey(room: self.room, chat: design))
+        XCTAssertEqual(room.inChat(nil), room)
+        XCTAssertNil(room.inChat(String(repeating: "f", count: 32)), "A chat that went shows nothing.")
+        XCTAssertEqual(room.chatAndTeam, "Example Team")
+    }
+
+    func testTheRowsOfTheListAndTheirOrder() throws {
+        let items = ChatList.people(try rooms().rooms)
+        // Design has the newest message, then the Team chat, then Launch without a message, by the time of the chat.
+        XCTAssertEqual(items.map(\.id), ["team-\(room)-\(design)", "team-\(room)", "team-\(room)-\(launch)"])
+        XCTAssertEqual(items.map(\.chat), [TeamChatKey(room: room, chat: design), TeamChatKey(room: room),
+                                           TeamChatKey(room: room, chat: launch)])
+        guard case .team(let empty) = items[2] else { return XCTFail("No row of Launch.") }
+        XCTAssertEqual(TeamChatPreview.line(empty, at: .now)?.text, TeamChatPreview.empty)
+    }
+
+    func testTheWordsOfVoiceOverNameTheChatAndTheTeam() throws {
+        let room = try XCTUnwrap(try rooms().rooms.first)
+        let shown = try XCTUnwrap(room.inChat(design))
+        XCTAssertEqual(TeamRowSpeech.label(shown, preview: "Grace: @Ada the logo"),
+                       "Design, Example Team, Grace: @Ada the logo, \(UnreadBadge.spoken(2)), You are named")
+        XCTAssertEqual(TeamTitle.spoken(shown), "Design, Example Team")
+        XCTAssertTrue(TeamTitle.spoken(room).hasPrefix("Example Team team"))
+    }
+
+    func testOnlyTheAdminOfAnActiveTeamMakesAndChangesAChat() throws {
+        let admin = try XCTUnwrap(try rooms().rooms.first)
+        XCTAssertTrue(TeamChatManagement.allows(admin))
+        let member = try XCTUnwrap(try rooms(admin: false).rooms.first)
+        XCTAssertFalse(TeamChatManagement.allows(member))
+        XCTAssertTrue(TeamChatManagement.showsSection(member), "A member sees the rows without the button.")
+        var gone = admin
+        gone.state = "gone"
+        XCTAssertFalse(TeamChatManagement.allows(gone))
+        var none = member
+        none.chats = []
+        XCTAssertFalse(TeamChatManagement.showsSection(none), "No section for a member of a team without a chat.")
+        XCTAssertEqual(TeamChatManagement.deleteTitle, "Delete this chat for everyone?")
+        XCTAssertEqual(TeamChatManagement.deleteMessage, "Its messages go from the app of each member.")
+    }
+
+    func testANotificationOfANamedChatOpensThatChat() throws {
+        let device = UUID().uuidString
+        let one = try XCTUnwrap(NotificationTarget(userInfo: ["coconut": [
+            "version": 1, "device_id": device, "kind": "team", "team": room, "chat": design]]))
+        XCTAssertEqual(one.chat, TeamChatKey(room: room, chat: design))
+        XCTAssertEqual(NotificationDestination(chat: try XCTUnwrap(one.chat)), .chat(TeamChatKey(room: room, chat: design)))
+        let group = try XCTUnwrap(NotificationTarget(userInfo: ["coconut": [
+            "version": 1, "device_id": device, "kind": "group", "count": 2, "team": room, "chat": design]]))
+        XCTAssertEqual(group.chat, TeamChatKey(room: room, chat: design))
+        // A value that is not the ID of an entry opens the Team chat, as an older Mac does.
+        let odd = try XCTUnwrap(NotificationTarget(userInfo: ["coconut": [
+            "version": 1, "device_id": device, "kind": "team", "team": room, "chat": "Design"]]))
+        XCTAssertEqual(odd.chat, TeamChatKey(room: room))
+        XCTAssertEqual(NotificationDestination(chat: TeamChatKey(room: room)), .team(room))
+    }
+
+    /// The one rule of a chat that goes while it is open: the iPhone closes the chat view, and the Mac sidebar selects
+    /// the Inbox. A direct chat stays while its team stays.
+    func testTheListHasAChatWhileItsTeamAndItsNamedChatShow() throws {
+        var list = try rooms()
+        XCTAssertTrue(list.has(TeamChatKey(room: room, chat: design)))
+        XCTAssertTrue(list.has(TeamChatKey(room: room)))
+        XCTAssertTrue(list.has(TeamChatKey(room: room, member: "m-left")))
+        list.rooms[0].chats = []
+        XCTAssertFalse(list.has(TeamChatKey(room: room, chat: design)), "The admin deleted the chat.")
+        XCTAssertTrue(list.has(TeamChatKey(room: room)))
+        list.rooms = []
+        XCTAssertFalse(list.has(TeamChatKey(room: room)), "The team goes.")
+        XCTAssertFalse(list.has(TeamChatKey(room: room, member: "m-left")))
+    }
+
+    func testTheRequestsOfANamedChatNameIt() {
+        XCTAssertEqual(TeamChatKey(room: room, chat: design).path, "team/rooms/\(room)")
+        XCTAssertEqual(TeamChatKey(room: room, chat: design).query, "&chat=\(design)")
+        XCTAssertEqual(TeamChatKey(room: room).query, "")
+    }
+
+    func testTheMacBannerOfANamedChat() throws {
+        var before = try rooms()
+        before.rooms[0].chats?[0].lastMessage?.first = 8
+        before.rooms[0].chats?[0].unread = 1
+        before.rooms[0].chats?[0].mentionFirst = 8
+        let plan = MessageBanners.plan(before: before, after: try rooms())
+        let key = TeamChatKey(room: room, chat: design)
+        XCTAssertEqual(plan.post, [MessageBanner(chat: key, title: "Grace", subtitle: "Design · Example Team",
+                                                 body: "@Ada the logo")])
+        XCTAssertEqual(MessageBanners.thread(key), room + ":" + design)
+        XCTAssertEqual(MessageBanners.chat(userInfo: MessageBanners.userInfo(key)), key)
+        XCTAssertEqual(MessageBanners.shownChat(key, rooms: try rooms()), key)
+        var without = try rooms()
+        without.rooms[0].chats = []
+        XCTAssertNil(MessageBanners.shownChat(key, rooms: without), "A deleted chat opens nothing.")
+    }
+}

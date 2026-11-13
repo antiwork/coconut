@@ -4,12 +4,15 @@ A message is a `message` entry of the log, not kept: the relay holds it for its 
 history in `team_messages` (team_store.py). An edit is a new write of the same entry ID with the next `rev`, and a
 removal is a `delete` entry over it. The routes are for the chat of the app:
 
-- `GET /v1/team/rooms/<room>/messages?before=<first>&limit=<n>`: one page of messages, newest first.
-- `POST /v1/team/rooms/<room>/messages` with `{text, reply_to?, mentions?}`: send a message.
+- `GET /v1/team/rooms/<room>/messages?before=<first>&limit=<n>&chat=<id>`: one page of messages, newest first.
+- `POST /v1/team/rooms/<room>/messages` with `{text, reply_to?, mentions?, chat?}`: send a message.
 - `PATCH /v1/team/rooms/<room>/messages/<id>` with `{text}`: change a message of this Mac's person.
 - `DELETE /v1/team/rooms/<room>/messages/<id>`: remove a message of this Mac's person. On the admin's Mac, also a
   message of another member or of a bot: an `erase` entry takes it out of the chat on each Mac.
-- `POST /v1/team/rooms/<room>/read` with `{first}`: move the read position of this Mac.
+- `POST /v1/team/rooms/<room>/read` with `{first, chat?}`: move the read position of this Mac.
+
+`chat` names a named chat of the team (team_chats.py). Without it, a route means the Team chat. A message has its chat,
+so an edit and a removal need none.
 
 A write goes to the relay inside the request, as the other team writes do, and a failure is an error for the person.
 The text of a message is private, so no log line of this module has it.
@@ -81,7 +84,8 @@ class TeamMessages:
         before = query_number(data, 'before', None, 1, MAX_NUMBER, 'Use a whole number for before.')
         limit = query_number(data, 'limit', PAGE, 1, MAX_PAGE, f'Ask for 1 to {MAX_PAGE} messages.')
         with self.lock:
-            rows = self.team_store.messages(room_id, before, limit + 1)
+            chat = self._team_chat_named(room_id, data.get('chat'))
+            rows = self.team_store.messages(room_id, before, limit + 1, chat)
             messages = self._team_message_views(room, rows[:limit])
         older = rows[limit - 1]['first'] if len(rows) > limit else None
         return {'room': room_id, 'messages': messages, 'before': older}
@@ -110,8 +114,12 @@ class TeamMessages:
             with self.lock:
                 if self.team_store.entry(room_id, entry) is not None:
                     return self._team_message_answer(room_id, entry)
+                chat = self._team_chat_named(room_id, data.get('chat'))
+                if chat is not None:
+                    fields['chat'] = chat
                 if reply_to is not None:
-                    if self.team_store.message(room_id, reply_to) is None:
+                    answered = self.team_store.message(room_id, reply_to)
+                    if answered is None or answered['chat'] != chat:
                         raise ServiceError(409, 'The message that you answer is no longer in the chat.')
                     fields['reply_to'] = reply_to
                 if mentions:
@@ -167,8 +175,8 @@ class TeamMessages:
         return {'room': room_id, 'id': entry, 'deleted': True}
 
     def team_mark_read(self, room_id: str, data: dict) -> dict:
-        """Move the read position of this Mac to `first`, the `first` of the newest message that the person read.
-        The position only moves forward, and never past the newest message. A move tells the other devices."""
+        """Move the read position of this Mac in one chat to `first`, the `first` of the newest message that the person
+        read. The position only moves forward, and never past the newest message. A move tells the other devices."""
         from .service_base import ServiceError
         first = data.get('first')
         if not number(first):
@@ -178,10 +186,11 @@ class TeamMessages:
             room = self.team_store.room(room_id)
             if room is None:
                 raise ServiceError(404, 'This Mac is not in this team.')
-            if self.team_store.mark_read(room_id, first) is not None:
+            chat = self._team_chat_named(room_id, data.get('chat'))
+            if self.team_store.mark_read(room_id, first, chat) is not None:
                 self._event(MESSAGES_EVENT, {'team': room_id})
-            return {'room': room_id, 'read': self.team_store.read_position(room_id),
-                    'unread': self.team_store.unread(room_id, room['member'])}
+            return {'room': room_id, 'read': self.team_store.read_position(room_id, chat),
+                    'unread': self.team_store.unread(room_id, room['member'], chat)}
 
     # Steps
 
@@ -206,9 +215,9 @@ class TeamMessages:
         room, existing = self._team_message_entry(room_id, entry, ('message',))
         if not self._team_person_wrote(room, existing):
             raise ServiceError(403, OWN_MESSAGE)
-        # The admin erased the message, so a new write of it shows nothing on any Mac.
+        # The admin erased the message, or removed its chat, so a new write of it shows nothing on any Mac.
         with self.lock:
-            if self.team_store.erased(room_id, entry):
+            if self.team_store.erased(room_id, entry) or self.team_store.message(room_id, entry) is None:
                 raise ServiceError(404, GONE_MESSAGE)
         return room, existing
 
@@ -270,8 +279,8 @@ class TeamMessages:
         bot as in GET /v1/team/rooms. A mention that the store cannot name stays out.
 
         `reply` quotes the message that `reply_to` names, because that message is often not in the page of the app.
-        It is null when the chat does not show that message: removed, not valid, or never seen. One query reads the
-        answered messages of the whole page. The caller holds the service lock.
+        It is null when the chat does not show that message: removed, not valid, never seen, or in another chat. One
+        query reads the answered messages of the whole page. The caller holds the service lock.
         """
         mentions = [json.loads(row['mentions']) for row in rows]
         names = self.team_store.names(room['room'], [entry for entries in mentions for entry in entries])
@@ -281,25 +290,26 @@ class TeamMessages:
             kind, member = names[entry]
             return member if kind == 'member' else team_id(room['room'], entry)
 
-        def quote(entry):
+        def quote(entry, chat):
             row = answered.get(entry)
-            return row and {'id': row['entry'], 'member': row['member'], 'member_name': row['member_name'],
+            return None if row is None or row['chat'] != chat else {'id': row['entry'], 'member': row['member'], 'member_name': row['member_name'],
                             'bot': team_id(room['room'], row['bot']) if row['bot'] else None,
                             'bot_name': row['bot_name'], 'text': row['text'][:PREVIEW]}
         return [{'id': row['entry'], 'first': row['first'], 'member': row['member'], 'member_name': row['member_name'],
                  'this_mac': row['member'] == room['member'],
                  'bot': team_id(room['room'], row['bot']) if row['bot'] else None, 'bot_name': row['bot_name'],
-                 'text': row['text'], 'reply_to': row['reply_to'], 'reply': quote(row['reply_to']),
+                 'text': row['text'], 'reply_to': row['reply_to'], 'reply': quote(row['reply_to'], row['chat']),
+                 'chat': row['chat'],
                  'mentions': [phone_id(entry) for entry in entries if entry in names],
                  'created_at': row['created_at'], 'edited_at': row['updated_at'] if row['edited'] else None}
                 for row, entries in zip(rows, mentions)]
 
-    def _team_chat_summary(self, room: dict) -> dict:
-        """The unread count and the newest message of a room, for GET /v1/team/rooms. `mentioned` is true while an
-        unread message names this Mac's person, and `mention_first` is the `first` of the newest such message. The
-        caller holds the service lock."""
+    def _team_chat_summary(self, room: dict, chat: str | None = None) -> dict:
+        """The unread count and the newest message of one chat of a room (None for the Team chat), for GET
+        /v1/team/rooms. `mentioned` is true while an unread message names this Mac's person, and `mention_first` is the
+        `first` of the newest such message. The caller holds the service lock."""
         store = self.team_store
-        newest = store.messages(room['room'], None, 1)
+        newest = store.messages(room['room'], None, 1, chat)
         last = None
         if newest:
             row = newest[0]
@@ -309,6 +319,6 @@ class TeamMessages:
                     'bot': team_id(room['room'], row['bot']) if row['bot'] else None, 'bot_name': row['bot_name'],
                     'text': row['text'][:PREVIEW],
                     'created_at': row['created_at']}
-        mention = store.mention_first(room['room'], room['member'])
-        return {'unread': store.unread(room['room'], room['member']), 'last_message': last,
+        mention = store.mention_first(room['room'], room['member'], chat)
+        return {'unread': store.unread(room['room'], room['member'], chat), 'last_message': last,
                 'mentioned': mention is not None, **({'mention_first': mention} if mention is not None else {})}

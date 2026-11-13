@@ -127,9 +127,10 @@ struct HomeLaunchView: View {
         }.padding(.horizontal, 24)
     }
 
-    /// "team-chat-<room>" for a team, "direct-chat-<member>" for a direct chat.
+    /// "team-chat-<room>" for a team, "team-chat-<room>-<chat>" for a named chat, "direct-chat-<member>" for a direct
+    /// chat.
     static func identifier(_ chat: TeamChatKey) -> String {
-        chat.member.map { "direct-chat-" + $0 } ?? "team-chat-" + chat.room
+        chat.member.map { "direct-chat-" + $0 } ?? "team-chat-" + chat.room + (chat.chat.map { "-" + $0 } ?? "")
     }
 
     @ViewBuilder
