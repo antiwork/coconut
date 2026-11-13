@@ -438,7 +438,7 @@ struct DocumentCard: View {
                 Image(systemName: document?.isPage == true ? "chart.bar.xaxis" : "doc.text")
                     .font(.body).foregroundStyle(.secondary)
                     .frame(width: 36, height: 36)
-                    .background(BoardStyle.paper, in: RoundedRectangle(cornerRadius: BoardStyle.Radius.small, style: .continuous))
+                    .background(BoardStyle.paper, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
                 VStack(alignment: .leading, spacing: 2) {
                     Text(document?.title ?? title).font(.subheadline.weight(.semibold)).foregroundStyle(.primary)
                         .lineLimit(2).multilineTextAlignment(.leading)

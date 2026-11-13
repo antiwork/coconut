@@ -612,7 +612,7 @@ struct TeamJoinView: View {
                 }
             } else if let teamName {
                 Section {
-                    Text("Join \(teamName)?").font(.title3.weight(.semibold))
+                    Text("Join \(teamName)?").font(.title2.weight(.semibold))
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .accessibilityAddTraits(.isHeader)
                         .accessibilityIdentifier("team-join-title")

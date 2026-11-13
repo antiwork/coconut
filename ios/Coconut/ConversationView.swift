@@ -158,7 +158,7 @@ struct ConversationView: View {
                                     Task { await loadEarlier(anchor: anchor, proxy: proxy) }
                                 } label: {
                                     if store.historyLoading.contains(botId) || growingAbove { ProgressView() }
-                                    else { Text("Load earlier messages").font(.footnote) }
+                                    else { Text("Load earlier messages").font(.caption) }
                                 }
                                 .frame(maxWidth: .infinity, minHeight: 44)
                                 .disabled(store.historyLoading.contains(botId) || growingAbove)
@@ -168,7 +168,7 @@ struct ConversationView: View {
                                 if let origin = store.bots.first(where: { $0.id == task.conversationBotId }) {
                                     NavigationLink(value: ConversationRoute(botId: origin.id)) {
                                         Label("In \(origin.name)", systemImage: "arrow.up.left")
-                                            .font(.footnote).foregroundStyle(.secondary)
+                                            .font(.caption).foregroundStyle(.secondary)
                                             .frame(maxWidth: .infinity, minHeight: 44)
                                     }.buttonStyle(.plain)
                                 }
@@ -318,7 +318,7 @@ struct ConversationView: View {
                                     .shadow(color: .black.opacity(0.12), radius: 6, y: 2)
                             }
                             .buttonStyle(.plain)
-                            .padding(.trailing, 16).padding(.bottom, BoardStyle.Space.s)
+                            .padding(.trailing, 16).padding(.bottom, 10)
                             .transition(.opacity)
                             .accessibilityLabel("Latest messages")
                             .accessibilityIdentifier("conversation-latest")
@@ -530,12 +530,12 @@ struct TranscriptMessageRow: View {
     var onReply: ((Message) -> Void)? = nil
 
     var body: some View {
-        VStack(alignment: .leading, spacing: BoardStyle.Space.xs) {
+        VStack(alignment: .leading, spacing: 5) {
         if let senderId = message.senderBotId, let sender = store.bots.first(where: { $0.id == senderId }),
            senderId != message.botId || !(message.recipientBotIds ?? []).isEmpty {
-            HStack(spacing: BoardStyle.Space.s) {
+            HStack(spacing: 6) {
                 NavigationLink(value: ConversationRoute(botId: sender.id)) {
-                    HStack(spacing: BoardStyle.Space.xs) {
+                    HStack(spacing: 5) {
                         BotAvatar(bot: sender, size: 18)
                         Text(sender.name)
                     }.frame(minHeight: 44)
@@ -544,12 +544,12 @@ struct TranscriptMessageRow: View {
                     Image(systemName: "arrow.right").imageScale(.small)
                     Text(names).lineLimit(1)
                 }
-            }.font(.footnote).foregroundStyle(.secondary).padding(.horizontal, BoardStyle.Space.m)
+            }.font(.caption).foregroundStyle(.secondary).padding(.horizontal, 10)
         } else if let senderId = message.senderBotId, senderId != message.botId {
-            Text("Deleted bot").font(.footnote).foregroundStyle(.secondary).padding(.horizontal, BoardStyle.Space.m)
+            Text("Deleted bot").font(.caption).foregroundStyle(.secondary).padding(.horizontal, 10)
         } else if message.role == "user", let names = recipientNames, !names.isEmpty {
-            Text("To \(names)").font(.footnote).foregroundStyle(.secondary)
-                .frame(maxWidth: .infinity, alignment: .trailing).padding(.horizontal, BoardStyle.Space.m)
+            Text("To \(names)").font(.caption).foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, alignment: .trailing).padding(.horizontal, 14)
         }
         Group {
         if !photos.isEmpty {
@@ -605,7 +605,7 @@ struct MessageBubble: View {
             VStack(alignment: isUser ? .trailing : .leading, spacing: BoardStyle.Space.xs) {
             VStack(alignment: .leading, spacing: 4) {
                 if let work = message.workContext {
-                    Label(work.title, systemImage: "checklist").font(.footnote).foregroundStyle(.secondary)
+                    Label(work.title, systemImage: "checklist").font(.caption).foregroundStyle(.secondary)
                         .accessibilityIdentifier("message-work-context")
                 }
                 if let reference = cardReference {
@@ -627,7 +627,7 @@ struct MessageBubble: View {
                    store.decisions.first(where: { $0.id == decisionId })?.status != "replied" {
                     Button { scrollToDecision(decisionId) } label: {
                         Label("View decision", systemImage: "arrow.turn.up.left")
-                            .font(.footnote.weight(.semibold)).foregroundStyle(.secondary)
+                            .font(.caption.weight(.medium)).foregroundStyle(.secondary)
                             .frame(minHeight: 44)
                     }.buttonStyle(.plain)
                 }
@@ -635,7 +635,7 @@ struct MessageBubble: View {
                     .accessibilityIdentifier("message-text-\(message.id)")
                 if let requestId = message.clientRequestId,
                    store.outgoingAnswers.contains(where: { $0.id == requestId }) {
-                    Text("Sending…").font(.footnote).foregroundStyle(.secondary)
+                    Text("Sending…").font(.caption).foregroundStyle(.secondary)
                 }
                 if let requestId = message.clientRequestId,
                    let outgoing = store.outgoingMessages.first(where: { $0.id == requestId }) {
@@ -645,7 +645,7 @@ struct MessageBubble: View {
                                         delete: { store.deleteUnsent(requestId) })
                     } else if outgoing.status == .rejected {
                         Button("Not sent · Edit", systemImage: "pencil") { editingOutgoing = outgoing }
-                            .font(.footnote).foregroundStyle(.secondary)
+                            .font(.caption).foregroundStyle(.secondary)
                             .frame(minHeight: 44).accessibilityIdentifier("edit-message-\(requestId)")
                     }
                 }
@@ -712,14 +712,14 @@ struct MessageReactionList: View {
     var body: some View {
         let reactions = store.reactions(for: message)
         if !reactions.isEmpty {
-            HStack(spacing: BoardStyle.Space.xs) {
+            HStack(spacing: 3) {
                 ForEach(MessageReactions.all.filter { reactions.contains($0) }, id: \.self) { emoji in
                     Button { Task { await store.react(to: message, emoji: emoji) } } label: {
-                        Text(emoji).font(.footnote).frame(minWidth: 44, minHeight: 44)
+                        Text(emoji).font(.caption).frame(minWidth: 44, minHeight: 44)
                     }.buttonStyle(.plain).accessibilityLabel("Remove \(emoji) reaction")
                         .disabled(!enabled)
                 }
-            }.padding(.horizontal, BoardStyle.Space.xs)
+            }.padding(.horizontal, 5)
                 .background(BoardStyle.surface, in: Capsule()).overlay(Capsule().stroke(BoardStyle.line))
                 .accessibilityIdentifier("message-reactions-\(message.id)")
         }
@@ -814,7 +814,7 @@ struct ConversationComposer: View {
                     }.accessibilityLabel("Remove work context")
                 }.padding(.leading, 16).padding(.trailing, 4)
                     .background(BoardStyle.surface, in: RoundedRectangle(cornerRadius: BoardStyle.Radius.medium))
-                    .padding(.horizontal, BoardStyle.Space.m).padding(.bottom, BoardStyle.Space.s)
+                    .padding(.horizontal, 12).padding(.bottom, 6)
                     .accessibilityIdentifier("work-context-preview")
             }
             if let reference = replyTo {
@@ -829,7 +829,7 @@ struct ConversationComposer: View {
                         ForEach(attachments) { artifact in
                             Button { attachments.removeAll { $0.id == artifact.id } } label: {
                                 Label(artifact.title, systemImage: "xmark.circle.fill")
-                                    .font(.footnote).padding(BoardStyle.Space.s).frame(minHeight: 44)
+                                    .font(.caption).padding(9).frame(minHeight: 44)
                                     .background(BoardStyle.surface, in: Capsule())
                             }.accessibilityLabel("Remove attachment \(artifact.title)")
                         }

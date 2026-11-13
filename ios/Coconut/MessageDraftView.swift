@@ -26,7 +26,7 @@ struct MessageDraftContent: View {
     }
 
     private func field(_ label: String, _ value: String) -> some View {
-        HStack(alignment: .firstTextBaseline, spacing: BoardStyle.Space.m) {
+        HStack(alignment: .firstTextBaseline, spacing: 10) {
             Text(label).foregroundStyle(.secondary).frame(width: labelWidth, alignment: .leading)
             Text(value).fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
         }
@@ -116,11 +116,11 @@ struct MessageDraftActions: View {
 
     @ViewBuilder private var buttons: some View {
         Button(action: send) {
-            HStack(spacing: BoardStyle.Space.s) {
+            HStack(spacing: 6) {
                 if selected { Image(systemName: "checkmark") }
                 Text("Send").fontWeight(.semibold)
             }
-            .padding(.horizontal, BoardStyle.Space.l).frame(minHeight: 44)
+            .padding(.horizontal, 18).frame(minHeight: 44)
             .foregroundStyle(BoardStyle.controlLabel)
             .background(BoardStyle.control, in: Capsule())
         }

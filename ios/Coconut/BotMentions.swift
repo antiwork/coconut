@@ -206,16 +206,16 @@ struct BotMentionRecipients: View {
     var body: some View {
         if !recipients.isEmpty {
             ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: BoardStyle.Space.s) {
-                    Text("Mentioned").font(.footnote).foregroundStyle(.secondary)
+                HStack(spacing: 6) {
+                    Text("Mentioned").font(.caption).foregroundStyle(.secondary)
                     ForEach(recipients) { recipient in
                         Button { remove(recipient) } label: {
-                            HStack(spacing: BoardStyle.Space.xs) {
+                            HStack(spacing: 5) {
                                 Text(recipient.name)
                                 Image(systemName: "xmark").imageScale(.small).fontWeight(.semibold)
                             }
-                            .font(.footnote.weight(.semibold)).padding(.horizontal, BoardStyle.Space.m)
-                            .padding(.vertical, BoardStyle.Space.s).background(BoardStyle.surface, in: Capsule())
+                            .font(.caption.weight(.medium)).padding(.horizontal, 10)
+                            .padding(.vertical, 7).background(BoardStyle.surface, in: Capsule())
                             .frame(minHeight: 44)
                         }
                         .buttonStyle(.plain)

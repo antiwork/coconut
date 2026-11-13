@@ -22,7 +22,7 @@ private extension EnvironmentValues {
 struct ConversationTimestamps: ViewModifier {
     @State private var reveal = TimestampReveal()
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @ScaledMetric(relativeTo: .footnote) private var width = 88.0
+    @ScaledMetric(relativeTo: .caption) private var width = 88.0
 
     func body(content: Content) -> some View {
         #if os(iOS)
@@ -46,7 +46,7 @@ struct ConversationTimestamps: ViewModifier {
 struct MessageTimestamp: ViewModifier {
     let createdAt: String
     @Environment(\.timestampReveal) private var reveal
-    @ScaledMetric(relativeTo: .footnote) private var width = 88.0
+    @ScaledMetric(relativeTo: .caption) private var width = 88.0
 
     func body(content: Content) -> some View {
         if let reveal, let date = createdAt.apiDate {
@@ -54,7 +54,7 @@ struct MessageTimestamp: ViewModifier {
                 .offset(x: -reveal.distance)
                 .overlay(alignment: .trailing) {
                     Text(date.formatted(date: .omitted, time: .shortened))
-                        .font(.footnote).monospacedDigit().foregroundStyle(.secondary)
+                        .font(.caption).monospacedDigit().foregroundStyle(.secondary)
                         .fixedSize()
                         .frame(width: width - 12, alignment: .trailing)
                         .offset(x: width - reveal.distance)
