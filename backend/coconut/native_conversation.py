@@ -115,6 +115,13 @@ def decision_context(request, decision):
 
 WORK_RESUME = ('Continue the unfinished assignment from its saved task list. Do not repeat verified work. '
                'Record a real dependency or decision if blocked.\n')
+# The person answered a card after the bot's instructions changed (native_execution.answer_native). The answer stands,
+# and the bot checks it against its current instructions. A continuing Hermes session keeps its first system prompt,
+# so the note tells the bot to read the files again.
+INSTRUCTIONS_CHANGED = ('Your instructions or your saved memory changed after you made this card. This conversation can '
+                        'still show the earlier text. Read SOUL.md, memories/MEMORY.md and memories/USER.md in your '
+                        'Hermes home again. Check this answer against them before you act. If it no longer fits them, '
+                        'say so and ask again.\n')
 
 
 def recent_work_note(task):
@@ -416,6 +423,8 @@ def resume_prompt(request):
     if decision.get('status') in ('approved', 'replied') and request['task'].get('_source_answer_steps'):
         # The resumed session can lack the audit prompt, so repeat what to do with the answer.
         prompt += 'This card asks about a source that waits for the person. ' + request['task']['_source_answer_steps'] + '\n'
+    if request.get('instructions_changed'):
+        prompt += INSTRUCTIONS_CHANGED
     prompt += json.dumps(decision_context(request, decision))
     return prompt
 

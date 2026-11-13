@@ -201,9 +201,10 @@ class NativeExecution:
         choice = option['answer'] if option else data.get('choice')
         if choice not in ('approve', 'reject', 'modify', 'reply') or (choice == 'approve' and not option):
             raise ServiceError(400, 'Choose one of the current options.')
-        # Hermes owns exact command approvals; profile checks apply to model questions and drafts.
-        if choice == 'approve' and decision['action_type'] in ('question', 'draft_message'):
-            self._require_current_decision_profile(decision)
+        # Hermes owns exact command approvals; profile checks apply to model questions and drafts. The answer stands
+        # when the instructions changed, and the bot checks it against them when it continues (run_gateway_resume).
+        instructions_changed = (choice == 'approve' and decision['action_type'] in ('question', 'draft_message')
+                                and self._decision_profile_changed(decision))
         if decision.get('previews') and choice == 'approve' and data.get('previews_hash') != decision.get('previews_hash'):
             raise ServiceError(409, 'Review the images in the latest app before choosing this option.')
         if decision.get('draft') is not None and choice == 'approve' and data.get('draft_hash') != decision.get('draft_hash'):
@@ -219,6 +220,8 @@ class NativeExecution:
                         outcome='Answer recorded. Hermes will continue.')
         decision['_answers'].append(dict(choice=choice, option_id=option_id, correction=correction,
                                           predicted_option_id=decision.get('_predicted_option_id'), decided_by=device))
+        if instructions_changed:
+            decision['_answers'][-1]['instructions_changed'] = True
         if choice == 'reply':
             decision['outcome'] = 'Reply received. The bot will continue.'
             reply_message_id = self._record_decision_correction(task, decision, correction)

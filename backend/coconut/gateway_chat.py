@@ -678,7 +678,8 @@ class GatewayChat:
             return False
         from .native_conversation import resume_prompt
         card = self._public(decision) | {'action': decision.get('_action')}
-        request = dict(operation='resume', task=task, history=history, decision=card, bot=self._public(bot))
+        request = dict(operation='resume', task=task, history=history, decision=card, bot=self._public(bot),
+                       instructions_changed=(decision.get('_answers') or [{}])[-1].get('instructions_changed'))
         # The recorded answer is the turn's own text. The notes and the live cards are context of this turn only.
         own = resume_prompt(request)
         with self.lock:
