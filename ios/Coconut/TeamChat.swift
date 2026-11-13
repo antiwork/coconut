@@ -85,6 +85,15 @@ extension TeamRoom {
     var chatAndTeam: String { shownChat.map { $0.name + " · " + name } ?? name }
 }
 
+extension TeamRooms {
+    /// True while the list has the chat: its team, and for a named chat that chat. A direct chat stays while its team
+    /// stays, also after the other member left. This is the one rule of a chat that goes: the store drops it, the
+    /// iPhone closes its view, and the Mac sidebar selects the Inbox.
+    func has(_ chat: TeamChatKey) -> Bool {
+        rooms.contains { $0.room == chat.room && $0.inChat(chat.chat) != nil }
+    }
+}
+
 /// Which person makes, renames and deletes the named chats of a team: the admin of an active team, as the service says
 /// in `can_manage_chats`. An older service sends none, and the app then shows no "New chat" and no action.
 enum TeamChatManagement {

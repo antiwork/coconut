@@ -212,11 +212,8 @@ struct MacSidebar: View {
             if case .bot(let id) = selection, !ids.contains(id) { selection = .inbox }
         }
         // A team that this Mac removed leaves the list too, and so does a named chat that the admin deleted.
-        .onChange(of: store.team?.rooms.map { [$0.room] + $0.namedChats.map(\.id) }) { _, rooms in
-            guard case .team(let chat) = selection, let rooms else { return }
-            if !rooms.contains(where: { $0[0] == chat.room && (chat.chat.map($0.dropFirst().contains) ?? true) }) {
-                selection = .inbox
-            }
+        .onChange(of: store.team) { _, team in
+            if case .team(let chat) = selection, let team, !team.has(chat) { selection = .inbox }
         }
         .safeAreaInset(edge: .bottom) { MacConnectionFooter() }
     }

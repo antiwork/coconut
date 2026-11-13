@@ -1834,7 +1834,7 @@ final class AppStore {
     /// True while the list of the teams has the chat: its room, and for a named chat that chat. A list that the app has
     /// not loaded yet keeps every chat. A direct chat stays while its room stays, also after the other member left.
     private func teamListHas(_ chat: TeamChatKey) -> Bool {
-        team.map { list in list.rooms.contains { $0.room == chat.room && $0.inChat(chat.chat) != nil } } ?? true
+        team.map { $0.has(chat) } ?? true
     }
 
     // MARK: Team chat
@@ -2793,11 +2793,12 @@ final class AppStore {
     }
 
     /// The chat of the team of a notification, or the Chats list when the app no longer has the team, for example
-    /// after a leave. The app reads the list of the teams first when the list does not have the team. Nil when the
+    /// after a leave. The app reads the list of the teams first when the list does not have the chat. Nil when the
     /// pairing changed during that read, as for a card.
     func teamNotificationDestination(_ target: NotificationTarget) async -> NotificationDestination? {
         guard let chat = target.chat else { return nil }
-        if team?.rooms.contains(where: { $0.room == chat.room }) != true { await loadTeam() }
+        // The list can lack the team, or a named chat that the admin made while the app was in the background.
+        if team?.has(chat) != true { await loadTeam() }
         guard acceptsNotification(target) else { return nil }
         return teamNotificationPlace(chat.room, member: chat.member, chat: chat.chat)
     }

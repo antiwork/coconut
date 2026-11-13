@@ -101,6 +101,21 @@ final class TeamNamedChatTests: XCTestCase {
         XCTAssertEqual(NotificationDestination(chat: TeamChatKey(room: room)), .team(room))
     }
 
+    /// The one rule of a chat that goes while it is open: the iPhone closes the chat view, and the Mac sidebar selects
+    /// the Inbox. A direct chat stays while its team stays.
+    func testTheListHasAChatWhileItsTeamAndItsNamedChatShow() throws {
+        var list = try rooms()
+        XCTAssertTrue(list.has(TeamChatKey(room: room, chat: design)))
+        XCTAssertTrue(list.has(TeamChatKey(room: room)))
+        XCTAssertTrue(list.has(TeamChatKey(room: room, member: "m-left")))
+        list.rooms[0].chats = []
+        XCTAssertFalse(list.has(TeamChatKey(room: room, chat: design)), "The admin deleted the chat.")
+        XCTAssertTrue(list.has(TeamChatKey(room: room)))
+        list.rooms = []
+        XCTAssertFalse(list.has(TeamChatKey(room: room)), "The team goes.")
+        XCTAssertFalse(list.has(TeamChatKey(room: room, member: "m-left")))
+    }
+
     func testTheRequestsOfANamedChatNameIt() {
         XCTAssertEqual(TeamChatKey(room: room, chat: design).path, "team/rooms/\(room)")
         XCTAssertEqual(TeamChatKey(room: room, chat: design).query, "&chat=\(design)")

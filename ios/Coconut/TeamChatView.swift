@@ -67,9 +67,12 @@ struct TeamChatView: View {
             }
         }
         .inlineNavigationTitle()
-        // A named chat that the admin deleted closes, as the Team screen of a team that goes does. The Mac window
-        // shows the Inbox in its place (MacSidebar).
+        #if os(iOS)
+        // A named chat that the admin deleted closes, as the pushed Team screen of a team that goes does. On a Mac the
+        // chat is the root of the detail of the window, where a dismiss would close the window: the sidebar selects
+        // the Inbox in its place (MacSidebar, TeamRooms.has).
         .onChange(of: room == nil) { _, gone in if gone && chatKey.chat != nil { dismiss() } }
+        #endif
     }
 
     @ViewBuilder
