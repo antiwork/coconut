@@ -70,12 +70,25 @@ final class ConversationFooterScrollTests: XCTestCase {
         XCTAssertFalse(scroll.allowsMinimization)
     }
 
-    // A chat that is not on the screen reports 0. The notice of the Mac window uses the composer that is on the screen.
-    func testComposerHeightKeepsTheTallestComposer() {
-        var height = ComposerHeightPreference.defaultValue
-        XCTAssertEqual(height, 0)
-        ComposerHeightPreference.reduce(value: &height) { 64 }
-        ComposerHeightPreference.reduce(value: &height) { 0 }
-        XCTAssertEqual(height, 64)
+    // The largest height of a notice: 5 lines in a tall area, 40 percent of a middle area, one line when 40 percent is
+    // less, and the whole area when the area is lower than one line.
+    func testNoticeHeightLimit() {
+        let line: CGFloat = 20, padding: CGFloat = 12
+        XCTAssertEqual(NoticeHeight.limit(area: 1_000, line: line, padding: padding), 124)
+        XCTAssertEqual(NoticeHeight.limit(area: 200, line: line, padding: padding), 80)
+        XCTAssertEqual(NoticeHeight.limit(area: 80, line: line, padding: padding), 44)
+        XCTAssertEqual(NoticeHeight.limit(area: 30, line: line, padding: padding), 30)
+        XCTAssertEqual(NoticeHeight.limit(area: 0, line: line, padding: padding), 0)
+    }
+
+    // A chat on the screen holds the notice of the Mac window. A chat off the screen does not.
+    func testChatHoldsNoticeWhenAnyChatOnTheScreenHoldsIt() {
+        var holds = ChatHoldsNoticePreference.defaultValue
+        XCTAssertFalse(holds)
+        ChatHoldsNoticePreference.reduce(value: &holds) { false }
+        XCTAssertFalse(holds)
+        ChatHoldsNoticePreference.reduce(value: &holds) { true }
+        ChatHoldsNoticePreference.reduce(value: &holds) { false }
+        XCTAssertTrue(holds)
     }
 }

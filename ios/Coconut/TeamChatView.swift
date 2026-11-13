@@ -36,6 +36,7 @@ struct TeamChatView: View {
     /// The time of the last look at who types: the arrival of a list, or the end of a subject.
     @State private var typingClock = Date()
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.windowShowsError) private var windowShowsError
     @FocusState private var composerFocused: Bool
     @ScaledMetric(relativeTo: .body) private var nameWidth = 150
     #if os(macOS)
@@ -196,13 +197,20 @@ struct TeamChatView: View {
                 Task { await store.markTeamRead(chatKey, first: first) }
             }
         }
+        #if os(iOS)
+        // The notice stays below the header at each scroll position, over the messages only.
+        .modifier(ChatErrorNotice())
+        #endif
         .safeAreaInset(edge: .bottom, spacing: 0) {
-            footer(room)
+            VStack(spacing: 0) {
                 #if os(macOS)
-                // The notice of the Mac window stands above the composer of the chat on the screen.
-                .composerHeight(visible: isVisible)
+                // In the Mac window the notice takes its own space above the composer.
+                if windowShowsError { WindowErrorNotice() }
                 #endif
+                footer(room)
+            }
         }
+        .preference(key: ChatHoldsNoticePreference.self, value: windowShowsError && isVisible)
         .task(id: store.connection) {
             // A load without a connection does nothing, so the chat loads again when the Mac connects.
             guard room.hasChat, store.connection == .connected || store.isDemo else { return }

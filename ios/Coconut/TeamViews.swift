@@ -843,7 +843,7 @@ private struct TeamBanners: ViewModifier {
             if above {
                 VStack(spacing: 0) {
                     banners
-                    content.modifier(ChatErrorNotice())
+                    content
                 }
             } else {
                 content.safeAreaInset(edge: .top, spacing: 0) { banners }

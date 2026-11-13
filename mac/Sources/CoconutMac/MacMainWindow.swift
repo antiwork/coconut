@@ -53,7 +53,8 @@ struct MacMainWindow: View {
                             }
                         }
                 } detail: {
-                    detail
+                    // The notice of the window shows each error, so the pages of the detail area show no inline copy.
+                    detail.environment(\.windowShowsError, true)
                 }
             } else {
                 MacPairingView(model: model)
@@ -77,6 +78,7 @@ struct MacMainWindow: View {
         }
         .frame(minWidth: 920, minHeight: 480)
         .background(BoardStyle.paper)
+        .announcesErrors(store.error)
         .sheet(isPresented: $createOpen) { BotEditorView() }
         .sheet(isPresented: $pairingOpen) { MacPairingView(model: model).frame(width: 520, height: 600) }
         .onChange(of: store.setupLink) { _, link in if link != nil { pairingOpen = true } }
@@ -121,10 +123,10 @@ struct MacMainWindow: View {
                                              focusMessageId: route.messageId, attachedWork: route.workContext)
                         }
                         .navigationDestination(for: BotExchangeRoute.self) { BotExchangeView(route: $0) }
-                        .navigationDestination(for: BotSettingsRoute.self) { BotSettingsView(botId: $0.botId, showsError: false) }
+                        .navigationDestination(for: BotSettingsRoute.self) { BotSettingsView(botId: $0.botId) }
                 }
                 .environment(\.pushRoute) { route in chatPath.append(route) }
-                // The notice stands over the chat, not over the details next to it.
+                // The notice stands in the chat column, not under the details next to it.
                 .modifier(MacNoticeArea())
                 .frame(minWidth: 300, maxWidth: .infinity)
                 if inspectorShown {
@@ -155,32 +157,21 @@ struct MacMainWindow: View {
     }
 }
 
-/// The notice of an action that failed, at the bottom center of the detail area. It stands above the composer of a
-/// chat, so it never covers the field. It is at most 480 points wide, so a long text wraps to a few short lines.
+/// The notice of an action that failed, at the bottom center of the detail area. It takes its own space at the bottom,
+/// so the page above it gets shorter and covers nothing. A chat on the screen shows the notice above its composer
+/// instead (ChatHoldsNoticePreference).
 struct MacNoticeArea: ViewModifier {
-    @Environment(AppStore.self) private var store
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var composerHeight: CGFloat = 0
+    @State private var chatHoldsNotice = false
+    @State private var area: CGFloat?
 
     func body(content: Content) -> some View {
         content
-            .onPreferenceChange(ComposerHeightPreference.self) { composerHeight = $0 }
-            .overlay(alignment: .bottom) {
-                VStack {
-                    if let error = store.error {
-                        ErrorBanner(message: error, fillsWidth: false) { store.error = nil }
-                            .frame(maxWidth: 480)
-                            .padding(.horizontal, BoardStyle.Space.l)
-                            .padding(.bottom, composerHeight + BoardStyle.Space.l)
-                            .transition(.opacity)
-                    }
-                }
-                .animation(BoardStyle.fade(reduceMotion: reduceMotion), value: store.error)
+            .onPreferenceChange(ChatHoldsNoticePreference.self) { chatHoldsNotice = $0 }
+            .safeAreaInset(edge: .bottom, spacing: 0) {
+                if !chatHoldsNotice { WindowErrorNotice() }
             }
-            // VoiceOver reads a new notice when it shows.
-            .onChange(of: store.error) { _, error in
-                if let error { AccessibilityNotification.Announcement(error).post() }
-            }
+            .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { area = $0 }
+            .environment(\.noticeArea, area)
     }
 }
 
@@ -299,7 +290,7 @@ private struct MacBotDetails: View {
                 // Each bot gets its own settings view. Leaving it saves its edits to that bot, so an unsaved edit
                 // never moves to the next bot.
                 switch tab {
-                case .details: BotSettingsView(botId: botId, showsError: false).id(botId)
+                case .details: BotSettingsView(botId: botId).id(botId)
                 case .library:
                     LibraryView(botId: botId)
                         .navigationDestination(for: DocumentRoute.self) { DocumentView(documentId: $0.id) }

@@ -48,6 +48,7 @@ struct ConversationView: View {
     @FocusState private var composerFocused: Bool
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.toggleBotDetails) private var toggleBotDetails
+    @Environment(\.windowShowsError) private var windowShowsError
     @ScaledMetric(relativeTo: .body) private var nameWidth = 150
 
     init(botId: String, focusDecisionId: String? = nil, focusMessageId: String? = nil, attachedWork: WorkReference? = nil) {
@@ -344,17 +345,23 @@ struct ConversationView: View {
                         didFocusDecision = true
                     }
                 }
+                #if os(iOS)
+                // The notice stays below the header at each scroll position, over the messages only.
+                .modifier(ChatErrorNotice())
+                #endif
                 .safeAreaInset(edge: .bottom, spacing: 0) {
-                    ConversationComposer(bot: bot, task: activeTask, text: $messageDraft,
-                                         attachments: $messageAttachments, scheduling: $messageScheduling,
-                                         scheduledAt: $messageScheduledAt, mentions: $messageMentions,
-                                         focused: $composerFocused, replyTo: $replyTo, workContext: $workContext,
-                                         onStop: requestStop)
-                        .fixedSize(horizontal: false, vertical: true)
+                    VStack(spacing: 0) {
                         #if os(macOS)
-                        // The notice of the Mac window stands above the composer of the chat on the screen.
-                        .composerHeight(visible: isVisible)
+                        // In the Mac window the notice takes its own space above the composer.
+                        if windowShowsError { WindowErrorNotice() }
                         #endif
+                        ConversationComposer(bot: bot, task: activeTask, text: $messageDraft,
+                                             attachments: $messageAttachments, scheduling: $messageScheduling,
+                                             scheduledAt: $messageScheduledAt, mentions: $messageMentions,
+                                             focused: $composerFocused, replyTo: $replyTo, workContext: $workContext,
+                                             onStop: requestStop)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
                 }
                 .onAppear { isVisible = true; footerScroll.reset() }
                 .onReceive(DaySeparator.changes) { _ in dayReference = Date() }
@@ -401,10 +408,6 @@ struct ConversationView: View {
                     }
                     #endif
                 }
-                #if os(iOS)
-                // The notice stays below the header at each scroll position. A Mac shows it at the bottom of the window.
-                .modifier(ChatErrorNotice())
-                #endif
                 #if os(macOS)
                 // A Mac toolbar groups its items into one glass bar. The bot gets a pill of its own over the top of the
                 // chat instead. Next to an inspector it shows and hides the details; elsewhere it opens the settings.
@@ -439,6 +442,7 @@ struct ConversationView: View {
         .inlineNavigationTitle()
         .preference(key: ConversationFooterPreference.self,
                     value: isVisible ? (!composerFocused && footerScroll.allowsMinimization) : nil)
+        .preference(key: ChatHoldsNoticePreference.self, value: windowShowsError && isVisible)
     }
 
     #if os(macOS)
