@@ -45,6 +45,8 @@ class PageRuleTests(unittest.TestCase):
         description = documents.SAVE_SCHEMA['description']
         self.assertIn('A table with one row of numbers shows them large', description)
         self.assertIn('with the first cell of each row as its name and a short last cell at its end', description)
+        # The two content rules that the real pages broke most: long headers and a list in a callout.
+        self.assertIn('Keep each column header short. A callout holds one or two sentences, not a list.', description)
 
     def test_a_page_with_tokens_and_the_given_libraries_passes(self):
         self.assertEqual(page_problems(TREEMAP), [])
