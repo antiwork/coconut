@@ -181,9 +181,10 @@
     const width = box.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
     measured.set(box, box.clientWidth);
     table.classList.remove("records");
-    table.classList.toggle("records", table.offsetWidth > width + 0.5 || [...table.rows]
-      .filter((row) => !row.classList.contains("head") && row.parentElement !== table.tHead)
-      .some((row) => [...row.cells].some((cell) => lines(cell) > 2)));
+    // A table with a chart in a cell lays out charts: it never becomes a list of records, which would hide them.
+    table.classList.toggle("records", !table.querySelector("figure.chart") && (table.offsetWidth > width + 0.5
+      || [...table.rows].filter((row) => !row.classList.contains("head") && row.parentElement !== table.tHead)
+        .some((row) => [...row.cells].some((cell) => lines(cell) > 2))));
     const trails = [...table.querySelectorAll(".trail")];
     if (!table.classList.contains("records") || !trails.length) return;
     table.style.removeProperty("--trail");
@@ -282,22 +283,35 @@
       .map((index) => Number((low + index * step).toPrecision(12)));
     return { domain: [low, high], ticks };
   };
-  const textWidth = (figure, texts) => {
-    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
-    figure.append(svg);
-    const widths = texts.map((text) => {
-      const element = document.createElementNS("http://www.w3.org/2000/svg", "text");
-      element.textContent = text;
-      svg.append(element);
-      return element.getComputedTextLength();
-    });
-    svg.remove();
-    return widths;
-  };
-  const drawChart = (figure, spec, data, kind) => {
-    figure.querySelector("svg")?.remove();
-    const width = figure.clientWidth;
+  // A text in parts that a cut keeps whole: an emoji, a flag or a letter with its marks is one part.
+  const segmenter = typeof Intl !== "undefined" && Intl.Segmenter ? new Intl.Segmenter(undefined, { granularity: "grapheme" })
+    : null;
+  const characters = (text) => (segmenter ? [...segmenter.segment(text)].map((part) => part.segment) : Array.from(text));
+  const drawChart = (figure, spec, data, kind, width = figure.clientWidth) => {
+    figure.querySelector("svg.plot")?.remove();
     if (!width) return;
+    // One hidden svg measures each text in the font of the labels, once.
+    const ruler = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    ruler.setAttribute("style", "position: absolute; width: 0; height: 0; overflow: hidden; visibility: hidden");
+    figure.append(ruler);
+    const widths = new Map();
+    const measure = (text) => {
+      if (!widths.has(text)) {
+        const element = document.createElementNS("http://www.w3.org/2000/svg", "text");
+        element.textContent = text;
+        ruler.append(element);
+        widths.set(text, element.getComputedTextLength());
+        element.remove();
+      }
+      return widths.get(text);
+    };
+    try {
+      drawPlot(figure, spec, data, kind, width, measure);
+    } finally {
+      ruler.remove();
+    }
+  };
+  const drawPlot = (figure, spec, data, kind, width, measure) => {
     const palette = coconut.palette;
     const names = [...new Set(data.map((row) => row.series))];
     const type = ["bar", "line", "area", "dot"].includes(spec.type) ? spec.type : "bar";
@@ -328,10 +342,11 @@
     const probe = Plot.plot({ width, height: 200, x: { ...x, axis: null }, y: { axis: null }, marks: marks() });
     const y = yAxis(probe.scale("y").domain);
     const yText = yFormat(y.ticks);
-    const right = Math.ceil(Math.max(0, ...textWidth(figure, y.ticks.map(yText)))) + 8;
+    const right = Math.ceil(Math.max(0, ...y.ticks.map((tick) => measure(yText(tick))))) + 8;
     const plotWidth = width - right;
+    let drawn = null;
     const draw = (axis) => {
-      figure.querySelector("svg")?.remove();
+      figure.querySelector("svg.plot")?.remove();
       const svg = Plot.plot({
         width, height: 200, marginTop: 8, marginBottom: 24, marginLeft: 0, marginRight: right, style: look,
         x: { ...x, axis: null }, y: { domain: y.domain, axis: null }, color: { domain: names, range: palette },
@@ -345,82 +360,161 @@
       });
       svg.setAttribute("class", "plot");
       figure.querySelector(".legend") ? figure.querySelector(".legend").after(svg) : figure.prepend(svg);
+      drawn = axis;
       return svg;
     };
-    // A text cut with an ellipsis to the room that it has.
-    const cutTo = (text, room) => {
-      let words = String(text);
-      while (words.length > 1 && textWidth(figure, [words === String(text) ? words : words + "…"])[0] > room) {
-        words = words.slice(0, -1).trimEnd();
-      }
-      return words === String(text) ? words : words + "…";
-    };
-    // The labels under the plot never meet, never repeat and never pass the end of the column. On a scale, the first
-    // and the last label start or end at the edge of the plot when they would pass it.
-    const clean = (svg) => {
-      const texts = [...svg.querySelectorAll('[aria-label="x-axis tick label"] text')];
-      if (!band && texts.length) {
-        const frame = svg.getBoundingClientRect();
-        if (texts[0].getBoundingClientRect().left < frame.left) texts[0].setAttribute("text-anchor", "start");
-        const last = texts[texts.length - 1];
-        if (last.getBoundingClientRect().right > frame.left + plotWidth) last.setAttribute("text-anchor", "end");
-      }
-      const boxes = texts.map((text) => text.getBoundingClientRect()).sort((a, b) => a.left - b.left);
-      const { left, right: end } = svg.getBoundingClientRect();
-      return new Set(texts.map((text) => text.textContent)).size === texts.length && boxes.every((box, index) =>
-        box.left >= left - 0.5 && box.right <= end + 0.5 && (!index || box.left - boxes[index - 1].right >= 8));
-    };
-    if (!band) {
-      // A scale of dates or numbers: the ticks of Plot (d3), with their count bounded by the width. A date tick has
-      // one line in the form of the span of the ticks.
-      if (kind === "text") {
-        // Names on a line keep each label, cut to the room between two points, or each k-th one.
-        const room = (xs.length > 1 ? plotWidth / (xs.length - 1) : plotWidth) - 8;
-        const short = new Map(xs.map((value) => [value, cutTo(value, room)]));
-        for (let every = 1; every <= xs.length; every += 1) {
-          const ticks = xs.filter((_, index) => index % every === 0);
-          if (clean(draw({ ticks, tickFormat: (value) => short.get(value) }))) return;
-        }
-        return void draw({ ticks: [] });
-      }
-      // Whole numbers keep whole ticks.
-      const whole = kind === "number" && xs.every(Number.isInteger);
-      const [first, last] = d3.extent(xs);
-      if (!Number.isFinite(+first) || !Number.isFinite(+last)) return void draw({ ticks: [] });
-      for (let count = tickCount(plotWidth / 56); count >= 1; count -= 1) {
-        const all = kind === "date" ? d3.utcTicks(first, last, count)
-          : d3.ticks(first, last, count).filter((tick) => !whole || Number.isInteger(tick));
-        // d3 has no step between a week and a month: each second tick comes before a lower count.
-        for (const every of [1, 2]) {
-          const ticks = all.filter((_, index) => index % every === 0);
-          if (clean(draw({ ticks, tickFormat: kind === "date" ? dateFormat(ticks) : d3.format("~r") }))) return;
-        }
-      }
-      draw({ ticks: [] });
-      return;
-    }
-    // A band: names keep each label, cut to its step. Days and runs of numbers show the first and each k-th label.
+
+    // The labels under the plot (the x labels). The whole rule:
+    // - A set of labels fits when each label has its own text, each label is inside its bounds, and two labels are at
+    //   least 8 px apart. On a band, the bounds are the edges of the svg. On a line, an area or dots, they are the left
+    //   edge of the svg and its right edge less the width of the lowest y number and 8 px, because that number stands
+    //   at the height of the labels.
+    // - On a band, a label starts at the start of its band. On a line, an area or dots, a label is centered on its
+    //   point, and a label that would pass a bound moves in until it touches the bound.
+    // - Names (the x values are texts), on a band or on a line: the first name and each k-th name, with the lowest k
+    //   that fits, also without the last label. A name that has no room is cut with "…" to its room: the k steps to
+    //   the next label less 8 px, shared with the label at each side. A cut keeps whole characters (an emoji, a flag
+    //   or a letter with its marks) and keeps at least the width of "Mm…".
+    // - Dates and runs of numbers on a band: the first value and each k-th value, in full, with the lowest k that
+    //   fits, also without the last label.
+    // - Dates and numbers on a line, an area or dots: the ticks of d3 with the largest count that fits, at most one
+    //   for each 56 px. When the dates come in even steps (each hour, each day, each week), the first date and each
+    //   k-th date with the lowest k that fits are a second choice. The choice with more labels shows; on a tie, the
+    //   dates of the data. When each choice gives at most one label, each second tick of d3 is a third choice.
+    // - When no set fits, no label shows.
     const scale = draw({ ticks: [] }).scale("x");
-    const step = scale.step;
-    const shift = { textAnchor: "start", dx: -scale.bandwidth / 2 };
-    const format = kind === "date" ? dateFormat(xs) : (value) => String(value);
+    const bound = band ? width : width - measure(yText(y.ticks[0])) - 8;
+    const place = (svg) => {
+      const texts = [...svg.querySelectorAll('[aria-label="x-axis tick label"] text')];
+      if (band) return texts;
+      const left = svg.getBoundingClientRect().left;
+      for (const text of texts) {
+        const box = text.getBoundingClientRect();
+        const move = box.left < left ? left - box.left : box.right > left + bound ? left + bound - box.right : 0;
+        if (move) text.setAttribute("transform", (text.getAttribute("transform") || "") + ` translate(${move},0)`);
+      }
+      return texts;
+    };
+    const fits = (svg) => {
+      const texts = place(svg);
+      const boxes = texts.map((text) => text.getBoundingClientRect()).sort((a, b) => a.left - b.left);
+      const left = svg.getBoundingClientRect().left;
+      return new Set(texts.map((text) => text.textContent)).size === texts.length && boxes.every((box, index) =>
+        box.left >= left - 0.5 && box.right <= left + bound + 0.5 && (!index || box.left - boxes[index - 1].right >= 8));
+    };
+    const shift = band ? { textAnchor: "start", dx: -scale.bandwidth / 2 } : {};
+    const tryLabels = (ticks, tickFormat) => ticks.length > 0 && fits(draw({ ticks, tickFormat, ...shift }));
+    // A text cut with "…" to its room, at a whole character.
+    const cutTo = (text, room) => {
+      const parts = characters(text);
+      let low = 1, high = parts.length - 1;
+      while (low < high) {
+        const middle = Math.ceil((low + high) / 2);
+        if (measure(parts.slice(0, middle).join("").trimEnd() + "…") <= room) low = middle; else high = middle - 1;
+      }
+      return parts.slice(0, low).join("").trimEnd() + "…";
+    };
     if (kind === "text") {
-      // A label ends 8 px before the next step, and the last one at the end of the plot.
-      const cut = (value) => cutTo(format(value), Math.min(step - 8, plotWidth - scale.apply(value)));
-      const labels = xs.map(cut);
-      if (step >= textWidth(figure, ["Mm…"])[0] + 8 && new Set(labels).size === labels.length) {
-        const text = new Map(xs.map((value, index) => [value, labels[index]]));
-        if (clean(draw({ ticks: xs, tickFormat: (value) => text.get(value), ...shift }))) return;
+      const least = measure("Mm…");
+      const at = (value) => scale.apply(value);
+      // The labels of a set of names, each cut to its room; null when a name has no room or two labels are the same.
+      // A band label has the k steps to the next label less 8 px (its span), and the last one ends at the end of the
+      // plot. A name is cut only when its span has room for "Mm…".
+      const labelsOf = (shown, every, slack) => {
+        const full = shown.map((value) => measure(value));
+        let rooms, spans;
+        if (band) {
+          spans = shown.map((value, index) => (index + 1 < shown.length ? at(shown[index + 1]) - at(value)
+            : scale.step * every) - 8);
+          rooms = shown.map((value, index) => Math.min(spans[index], plotWidth - at(value)) - 0.5);
+        } else if (shown.length === 1) {
+          rooms = [bound - 0.5];
+        } else {
+          // Each gap between two labels is shared: each label has half, and more when the label at the other side
+          // needs less. The first and the last label can also use the room up to their bound.
+          const last = shown.length - 1;
+          const edge = (index) => (index === 0 ? at(shown[0]) : index === last ? bound - at(shown[last]) : Infinity);
+          const need = (index) => full[index] - Math.min(full[index] / 2, edge(index));
+          const gaps = shown.slice(1).map((value, index) => at(value) - at(shown[index]) - 8);
+          const leftOf = (gap) => Math.max(gaps[gap] / 2, gaps[gap] - (gap + 1 === last ? need(last) : full[gap + 1] / 2));
+          const rightOf = (gap) => Math.max(gaps[gap] / 2, gaps[gap] - (gap === 0 ? need(0) : full[gap] / 2));
+          rooms = shown.map((_, index) => {
+            if (index === 0) return leftOf(0) + Math.min(edge(0), leftOf(0)) - 0.5;
+            if (index === last) return rightOf(last - 1) + Math.min(edge(last), rightOf(last - 1)) - 0.5;
+            return 2 * Math.min(rightOf(index - 1), leftOf(index)) - 0.5;
+          });
+        }
+        spans = spans || rooms.map((room) => room + 0.5);
+        // A cut ends half a pixel before the room, as the box of a text can be a little wider than its measure. A
+        // full name that passes its room by less than that half pixel first gets a try in full.
+        const labels = shown.map((value, index) => (full[index] <= rooms[index] + slack ? value
+          : spans[index] >= least ? cutTo(value, rooms[index]) : null));
+        return labels.includes(null) || new Set(labels).size < labels.length ? null
+          : new Map(shown.map((value, index) => [value, labels[index]]));
+      };
+      for (let every = 1; every <= xs.length; every += 1) {
+        const shown = xs.filter((_, index) => index % every === 0);
+        for (const ticks of [shown, shown.slice(0, -1)]) {
+          if (!ticks.length) continue;
+          const loose = labelsOf(ticks, every, 0.5);
+          if (loose && tryLabels(ticks, (value) => loose.get(value))) return;
+          const strict = labelsOf(ticks, every, 0);
+          if (strict && [...strict].some(([value, label]) => loose?.get(value) !== label)
+            && tryLabels(ticks, (value) => strict.get(value))) return;
+        }
+      }
+      return void draw({ ticks: [] });
+    }
+    if (band) {
+      const format = kind === "date" ? dateFormat(xs) : (value) => String(value);
+      const widest = Math.max(...xs.map((value) => measure(format(value))));
+      for (let every = Math.max(1, Math.ceil((widest + 8) / scale.step)); every <= xs.length; every += 1) {
+        const shown = xs.filter((_, index) => index % every === 0);
+        if (tryLabels(shown, format) || tryLabels(shown.slice(0, -1), format)) return;
+      }
+      return void draw({ ticks: [] });
+    }
+    // Whole numbers keep whole ticks.
+    const whole = kind === "number" && xs.every(Number.isInteger);
+    const [first, last] = d3.extent(xs);
+    if (!Number.isFinite(+first) || !Number.isFinite(+last)) return void draw({ ticks: [] });
+    const formatOf = (ticks) => (kind === "date" ? dateFormat(ticks) : d3.format("~r"));
+    const counts = d3.range(tickCount(plotWidth / 56), 0, -1);
+    const tickSets = counts.map((count) => (kind === "date" ? d3.utcTicks(first, last, count)
+      : d3.ticks(first, last, count).filter((tick) => !whole || Number.isInteger(tick))));
+    let best = tickSets.flatMap((ticks) => [ticks, ticks.slice(0, -1)])
+      .find((ticks) => tryLabels(ticks, formatOf(ticks))) || [];
+    let chosen = drawn;
+    const times = kind === "date" ? [...new Set(xs.map(Number))].sort((a, b) => a - b) : [];
+    const steps = new Set(times.slice(1).map((time, index) => time - times[index]));
+    if (times.length >= 3 && times.length <= 500 && steps.size === 1) {
+      const dates = times.map((time) => new Date(time));
+      const narrowest = Math.min(...dates.map((date) => measure(dateFormat(dates)(date))));
+      const step = scale.apply(dates[1]) - scale.apply(dates[0]);
+      for (let every = Math.max(1, Math.ceil((narrowest + 8) / step)); every <= dates.length; every += 1) {
+        const shown = dates.filter((_, index) => index % every === 0);
+        if (shown.length < best.length) break;
+        if (tryLabels(shown, formatOf(shown))) {
+          best = shown;
+          chosen = drawn;
+          break;
+        }
       }
     }
-    const widest = Math.max(...textWidth(figure, xs.map(format)));
-    for (let every = Math.max(1, Math.ceil((widest + 8) / step)); every <= xs.length; every += 1) {
-      const ticks = xs.filter((_, index) => index % every === 0);
-      if (clean(draw({ ticks, tickFormat: format, ...shift }))) return;
-      if (clean(draw({ ticks: ticks.slice(0, -1), tickFormat: format, ...shift }))) return;
+    if (best.length <= 1) {
+      for (const ticks of tickSets) {
+        const half = ticks.filter((_, index) => index % 2 === 0);
+        if (half.length > best.length && tryLabels(half, formatOf(half))) {
+          best = half;
+          chosen = drawn;
+          break;
+        }
+      }
     }
-    draw({ ticks: [] });
+    if (!best.length) return void draw({ ticks: [] });
+    if (drawn !== chosen) place(draw(chosen));
   };
+  const charts = [];
   for (const figure of main.querySelectorAll("figure.chart[data-spec]")) {
     try {
       const spec = JSON.parse(figure.dataset.spec);
@@ -459,9 +553,51 @@
         element.textContent = caption;
         figure.append(element);
       }
-      drawChart(figure, spec, data, kind);
+      charts.push({ figure, spec, data, kind });
+    } catch (error) {
+      figure.textContent = "This chart could not be drawn: " + error.message;
+      figure.classList.add("broken");
+    }
+  }
+  // In a table, the cells of a row share the width of the box of the table, and a chart keeps the share of its cell:
+  // else a chart that draws first takes the width of the cells after it. A new width of the box shares again.
+  const shared = new Map();
+  const share = (table) => {
+    const box = table.parentElement;
+    const style = getComputedStyle(box);
+    const width = box.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
+    shared.set(box, box.clientWidth);
+    for (const row of table.rows) {
+      for (const cell of row.cells) {
+        const figure = cell.querySelector(":scope > figure.chart[data-spec]");
+        const part = Math.floor((width - 16 * (row.cells.length - 1)) / row.cells.length);
+        if (figure) figure.style.minWidth = Math.max(0, part) + "px";
+      }
+    }
+  };
+  const tablesOfCharts = [...new Set(charts.map(({ figure }) => figure.parentElement.closest(":is(td, th)")?.closest("table"))
+    .filter(Boolean))];
+  tablesOfCharts.forEach(share);
+  const boxes = new ResizeObserver((entries) => entries.forEach((entry) => {
+    if (shared.get(entry.target) === entry.target.clientWidth) return;
+    tablesOfCharts.filter((table) => table.parentElement === entry.target).forEach(share);
+  }));
+  new Set(tablesOfCharts.map((table) => table.parentElement)).forEach((box) => boxes.observe(box));
+  // In a flex row with an item that grows (a text with flex: 1), a chart grows as much: it starts from no width, as
+  // that item does, so the two share the row.
+  const grow = (element) => parseFloat(getComputedStyle(element).flexGrow) > 0;
+  charts.filter(({ figure }) => figure.parentElement
+    && getComputedStyle(figure.parentElement).flexDirection.startsWith("row")
+    && [...figure.parentElement.children].some((item) => item !== figure && grow(item)))
+    .forEach(({ figure }) => { figure.style.flex = "1 1 0"; });
+  // Each chart takes the width that its box gives before any chart draws: in a table, a drawn chart would take the
+  // width of the cells that come after it.
+  const sizes = charts.map(({ figure }) => figure.clientWidth);
+  charts.forEach(({ figure, spec, data, kind }, index) => {
+    try {
+      drawChart(figure, spec, data, kind, sizes[index]);
       // A new width of the column draws the chart again, with the rule of the tables.
-      let drawn = figure.clientWidth;
+      let drawn = sizes[index];
       new ResizeObserver(() => {
         if (figure.clientWidth === drawn) return;
         drawn = figure.clientWidth;
@@ -471,7 +607,7 @@
       figure.textContent = "This chart could not be drawn: " + error.message;
       figure.classList.add("broken");
     }
-  }
+  });
 
   // Photos that a bot saved on the Mac load through the app. One that failed loads again when the Mac connects
   // (DocumentPage calls coconutRetryPhotos).
