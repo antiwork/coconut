@@ -373,16 +373,6 @@ class DecisionFreshness:
         decision['_freshness'] = dict(fingerprint=fingerprint, checked_at=decision['created_at'])
         self._put('decisions', decision)
 
-    def _require_current_decision_profile(self, decision):
-        from .profiles import ProfileError
-        from .service import ServiceError
-        try:
-            current = self.profiles.prompt_revision(self._get('bots', decision['bot_id']))
-        except (OSError, ProfileError) as error:
-            raise ServiceError(409, 'Coconut cannot read the current bot instructions. This answer must wait for a new check.') from error
-        if decision.get('_profile_revision') != current:
-            raise ServiceError(409, 'The bot instructions changed. Coconut must check this decision before accepting this choice.')
-
     def _decision_refresh_prompt(self, decision, task, work, decisions):
         tasks = self._task_map()
         identities, _ = self._decision_scope(decision, tasks, self._shared_pending_receipts(), work)
