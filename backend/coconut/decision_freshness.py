@@ -374,15 +374,15 @@ class DecisionFreshness:
         self._put('decisions', decision)
 
     def _decision_profile_changed(self, decision):
-        """Whether the bot's instructions changed after the bot made this card. A card without a saved revision and an
-        unreadable profile give False: Coconut then cannot say that they changed."""
+        """Whether the bot's instructions changed after the bot made this card. A card without a saved revision gives
+        False. An unreadable profile gives True: Coconut cannot rule out a change, so the bot reads its files again."""
         from .profiles import ProfileError
         if not decision.get('_profile_revision'):
             return False
         try:
             return decision['_profile_revision'] != self.profiles.prompt_revision(self._get('bots', decision['bot_id']))
         except (OSError, ProfileError):
-            return False
+            return True
 
     def _decision_refresh_prompt(self, decision, task, work, decisions):
         tasks = self._task_map()

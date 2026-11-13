@@ -463,11 +463,12 @@ class DecisionProfileFreshnessTests(unittest.TestCase):
         self.write('POST', '/v1/decisions/' + decision['id'] + '/answer', dict(revision=1, option_id='install'))
         self.assert_note(decision, False)
 
-    def test_an_answer_with_an_unreadable_profile_carries_no_note(self):
+    def test_an_answer_with_an_unreadable_profile_carries_the_note(self):
+        # Coconut cannot rule out a change, so the answer stands and the bot reads its files again.
         decision = self.question(old=False)
         with patch.object(self.service.profiles, 'prompt_revision', side_effect=PermissionError('The native instructions are unreadable.')):
             self.write('POST', '/v1/decisions/' + decision['id'] + '/answer', dict(revision=1, option_id='install'))
-        self.assert_note(decision, False)
+        self.assert_note(decision, True)
 
 
 if __name__ == '__main__':
