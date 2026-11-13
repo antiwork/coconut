@@ -566,6 +566,17 @@ class DecisionInboxTests(unittest.TestCase):
         with self.assertRaises(ServiceError):
             self.service.resolve_decision_reply(context['id'], response)
 
+    def test_a_chat_reply_answers_a_card_with_an_old_instruction_revision(self):
+        decision = self.question()
+        saved = self.service._get('decisions', decision['id'])
+        saved['_profile_revision'] = 'an-older-revision'
+        self.service._put('decisions', saved)
+        context = self.reply(decision, 'Check references')
+        result = self.service.resolve_decision_reply(context['id'], dict(choice='approve', option_id='check',
+                                                                         quote='Check references'))
+        self.assertEqual(result['decision']['status'], 'approved')
+        self.assertEqual(self.service._get('tasks', self.task['id'])['status'], 'queued')
+
     def test_scope_change_revises_one_card_and_invalidates_old_choices(self):
         decision = self.question()
         context = self.reply(decision, 'Check only the export folder')
