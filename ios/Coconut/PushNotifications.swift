@@ -422,12 +422,14 @@ struct NotificationTarget: Equatable, Sendable {
     var team: String? = nil
     /// The other member of a direct chat, for a direct message or a group of the messages of one direct chat.
     var member: String? = nil
+    /// The team bot ID of a direct chat with a bot, for a direct message or a group of the messages of one such chat.
+    var bot: String? = nil
     /// The named chat of a team message, or of a group of the messages of one named chat. An older Mac sends none.
     var named: String? = nil
 
     var conversationRoute: ConversationRoute { ConversationRoute(botId: botId, decisionId: decisionId, messageId: messageId) }
     /// The chat of a team that the notification opens: a Team chat, a named chat or a direct chat.
-    var chat: TeamChatKey? { team.map { TeamChatKey(room: $0, member: member, chat: named) } }
+    var chat: TeamChatKey? { team.map { TeamChatKey(room: $0, member: member, chat: named, bot: bot) } }
 
     func destination(pendingDecisionIds: Set<String>, snapshotReady: Bool) -> NotificationDestination? {
         if let chat { return NotificationDestination(chat: chat) }
@@ -449,18 +451,24 @@ struct NotificationTarget: Equatable, Sendable {
         guard room == nil || isLowercaseHex64(room!) else { return nil }
         // A message of a named chat names the chat too. A value that is not the ID of an entry opens the Team chat.
         let named = (data["chat"] as? String).flatMap { isEntryId($0) ? $0 : nil }
-        // A direct message names the room and the other member of its chat. A group of one direct chat names both too.
-        var direct: (room: String, member: String)?
+        // A direct message names the room and the other member of its chat, or the team bot ID of a chat with a bot.
+        // A group of one direct chat names them too.
+        var direct: (room: String, member: String?, bot: String?)?
         if let value = data["direct"], !(value is NSNull) {
-            guard let fields = value as? [String: Any], let room = fields["team"] as? String,
-                  let member = fields["member"] as? String, isLowercaseHex64(room), isLowercaseHex64(member) else {
+            guard let fields = value as? [String: Any], let room = fields["team"] as? String, isLowercaseHex64(room)
+            else { return nil }
+            if let member = fields["member"] as? String, isLowercaseHex64(member) {
+                direct = (room, member, nil)
+            } else if fields["member"] == nil, let bot = fields["bot"] as? String, isTeamBotId(bot, room: room) {
+                direct = (room, nil, bot)
+            } else {
                 return nil
             }
-            direct = (room, member)
         }
         if data["kind"] as? String == "group" {
             deviceId = device; botId = ""; taskId = ""; decisionId = nil; messageId = nil; group = true
-            team = direct?.room ?? room; member = direct?.member; self.named = direct == nil && room != nil ? named : nil
+            team = direct?.room ?? room; member = direct?.member; bot = direct?.bot
+            self.named = direct == nil && room != nil ? named : nil
             return
         }
         if data["kind"] as? String == "team" {
@@ -472,7 +480,7 @@ struct NotificationTarget: Equatable, Sendable {
         if data["kind"] as? String == "direct" {
             guard let direct else { return nil }
             deviceId = device; botId = ""; taskId = ""; decisionId = nil; messageId = nil
-            team = direct.room; member = direct.member
+            team = direct.room; member = direct.member; bot = direct.bot
             return
         }
         guard let bot = data["bot_id"] as? String, UUID(uuidString: bot) != nil,
@@ -483,6 +491,12 @@ struct NotificationTarget: Equatable, Sendable {
         guard message == nil || UUID(uuidString: message!) != nil else { return nil }
         deviceId = device; botId = bot; taskId = task; decisionId = decision; messageId = message
     }
+}
+
+/// True for a team bot ID of the room: "t-", the room ID, "-", and the entry ID of the `bot` entry.
+private func isTeamBotId(_ text: String, room: String) -> Bool {
+    let prefix = "t-" + room + "-"
+    return text.hasPrefix(prefix) && isEntryId(String(text.dropFirst(prefix.count)))
 }
 
 /// True for the ID of an entry of a team log: 32 lowercase hex characters, as a named chat has.

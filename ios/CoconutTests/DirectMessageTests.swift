@@ -218,7 +218,7 @@ final class DirectMessageTests: XCTestCase {
         let sections = ChatSections.make(bots: [bot("planner", pinned: true), bot("writer")], messages: [], rooms: rooms)
         XCTAssertEqual(sections.people.map(\.id), ["direct-r1-m-grace", "team-r2", "team-r1"])
         XCTAssertEqual(sections.pinned.map(\.id), ["planner"])
-        XCTAssertEqual(sections.bots.map(\.id), ["writer"])
+        XCTAssertEqual(sections.bots.map(\.id), ["bot-writer"])
     }
 
     func testThePreviewOfADirectChatNamesOnlyYou() {
@@ -567,4 +567,309 @@ private final class DirectServer: @unchecked Sendable {
     }
 
     func stop() { listener.cancel() }
+}
+
+/// The direct chat of this person with a bot of the team (docs/team-log.md, "Direct chat with an agent"): the key and
+/// its path, the new fields of the list with and without them, the arrow of the Team screen, the closed lines, the rows
+/// of the Chats list and of the Mac sidebar, the updates, the notifications, the banners and the cache.
+final class BotDirectChatTests: XCTestCase {
+    private let roomId = String(repeating: "ab", count: 32)
+    private let entry = String(repeating: "ef", count: 16)
+    private let device = "00000000-0000-4000-8000-0000000000d1"
+    private var botId: String { "t-\(roomId)-\(entry)" }
+
+    private func reporter(direct: Bool? = true, open: Bool? = true, thisMac: Bool? = nil) -> TeamRoomBot {
+        TeamRoomBot(id: "t-r1-e1", name: "Reporter", avatar: "sparkle", color: "777777", member: "m-mac",
+                    thisMac: thisMac, open: open, direct: direct)
+    }
+
+    private func room(_ id: String = "r1", bots: [TeamRoomBot] = [], botDirects: [TeamBotDirect]? = nil,
+                      directs: [TeamDirect]? = [], state: String = "active", last: String? = nil) -> TeamRoom {
+        TeamRoom(room: id, name: "Example Team", state: state,
+                 members: [TeamMember(member: "m-ada", name: "Ada", thisMac: true),
+                           TeamMember(member: "m-mac", name: "Reporter Mac", botOnly: true)],
+                 bots: bots, createdAt: "2026-11-02T00:00:00Z", unread: 0,
+                 lastMessage: last.map { TeamLastMessage(text: "Hi", createdAt: $0) }, directs: directs,
+                 botDirects: botDirects)
+    }
+
+    private func chat(_ bot: String = "t-r1-e1", name: String? = "Reporter", at: String?, own: Bool = false,
+                      unread: Int = 0, typing: Double? = nil) -> TeamBotDirect {
+        TeamBotDirect(bot: bot, botName: name, unread: unread,
+                      lastMessage: at.map { TeamLastMessage(first: 1, thisMac: own, text: "4 pull requests wait.", createdAt: $0) },
+                      typing: typing.map { TeamTypingList(items: [TeamTyping(member: "", bot: bot, botName: name, seconds: $0)]) })
+    }
+
+    private func bot(_ id: String, pinned: Bool = false) -> Bot {
+        Bot(id: id, sessionId: "session-\(id)", name: id, role: "", avatar: "sparkle", color: "777777",
+            instructions: "", status: "idle", lastMessage: "", unreadCount: 0, archived: false,
+            createdAt: "2026-11-01T00:00:00Z", pinned: pinned)
+    }
+
+    // MARK: The key and the path
+
+    func testTheKeyOfAChatWithABotNamesThePathOfADirectChat() {
+        let key = TeamChatKey(room: "r1", bot: "t-r1-e1")
+        XCTAssertTrue(key.isDirect)
+        XCTAssertEqual(key.path, "team/rooms/r1/directs/t-r1-e1")
+        XCTAssertEqual(key.query, "", "A direct chat names no named chat.")
+        XCTAssertEqual(key.botEntry, "e1")
+        XCTAssertNotEqual(key, TeamChatKey(room: "r1", member: "t-r1-e1"), "A chat with a bot is not a chat with a person.")
+        XCTAssertNotEqual(key, "r1")
+        XCTAssertNil(TeamChatKey(room: "r1", member: "m-grace").botEntry)
+    }
+
+    // MARK: Decode and an older service
+
+    func testTheListDecodesTheMarkOfEachBotAndTheChatsWithABot() throws {
+        let answer = #"{"rooms": [{"room": "r1", "name": "Example Team", "state": "active", "unread": 0,"#
+            + #" "bots": [{"id": "t-r1-e1", "name": "Reporter", "open": true, "direct": true},"#
+            + #" {"id": "t-r1-e2", "name": "Scribe", "direct": false}],"#
+            + #" "directs": [],"#
+            + #" "bot_directs": [{"bot": "t-r1-e1", "bot_name": "Reporter", "unread": 2, "typing": 12, "last_message":"#
+            + #" {"first": 7, "this_mac": false, "text": "4 pull requests wait.", "created_at": "2026-11-10T12:00:00Z"}},"#
+            + #" {"bot": "t-r1-e3", "bot_name": "Former", "unread": 0, "typing": null, "last_message": null},"#
+            + #" {"bot": "t-r1-e4", "typing": "soon"}]}]}"#
+        let rooms = try APIJSON.decoder().decode(TeamRooms.self, from: Data(answer.utf8))
+        let room = try XCTUnwrap(rooms.rooms.first)
+        XCTAssertEqual(room.botList.map(\.direct), [true, false])
+        XCTAssertEqual(room.botDirectList.map(\.bot), ["t-r1-e1", "t-r1-e3", "t-r1-e4"])
+        XCTAssertEqual(room.botDirectList.first?.unread, 2)
+        XCTAssertEqual(room.botDirectList.first?.lastMessage?.text, "4 pull requests wait.")
+        XCTAssertEqual(room.botDirectList.first?.typing?.items.first?.seconds, 12)
+        XCTAssertNil(room.botDirectList[1].typing)
+        XCTAssertNil(room.botDirectList[2].typing, "A value that is not a number shows nobody.")
+        XCTAssertEqual(room.directBot("t-r1-e1")?.name, "Reporter")
+        XCTAssertNil(room.directBot("t-r1-e2"))
+    }
+
+    func testAnOlderServiceShowsNothingOfAChatWithABot() throws {
+        let older = #"{"rooms": [{"room": "r1", "name": "Example Team", "state": "active", "unread": 0,"#
+            + #" "bots": [{"id": "t-r1-e1", "name": "Reporter", "open": true}], "directs": []}]}"#
+        let rooms = try APIJSON.decoder().decode(TeamRooms.self, from: Data(older.utf8))
+        let room = try XCTUnwrap(rooms.rooms.first)
+        XCTAssertNil(room.botDirects)
+        XCTAssertNil(room.directBot("t-r1-e1"), "No arrow and no action on the name.")
+        XCTAssertEqual(TeamBotSection.rows(of: room).compactMap { TeamBotSection.directBot(of: $0, in: room) }, [])
+        let local = [TeamChatKey(room: "r1", bot: "t-r1-e1"): TeamLastMessage(thisMac: true, text: "Hi", createdAt: "2026-11-09T00:00:00Z")]
+        XCTAssertEqual(ChatList.items(bots: [], latest: [:], rooms: [room], local: local).map(\.id), ["team-r1"],
+                       "No row, also with an unsent message in the cache.")
+    }
+
+    func testAMessageKeepsItsPage() throws {
+        let page = #"{"messages": [{"id": "e3", "first": 3, "this_mac": true, "text": "Why?", "created_at": "2026-11-10T12:00:00Z","#
+            + #" "page": {"id": "t-r1-p1", "title": "Sales"}},"#
+            + #" {"id": "e2", "first": 2, "this_mac": true, "text": "And this?", "created_at": "2026-11-10T11:00:00Z","#
+            + #" "page": {"id": null, "title": null}},"#
+            + #" {"id": "e1", "first": 1, "this_mac": false, "text": "Hello", "created_at": "2026-11-10T10:00:00Z", "page": null}],"#
+            + #" "before": null}"#
+        let decoded = try APIJSON.decoder().decode(TeamMessagePage.self, from: Data(page.utf8))
+        XCTAssertEqual(decoded.messages.map(\.page), [TeamAboutPage(id: "t-r1-p1", title: "Sales"), TeamAboutPage(), nil])
+    }
+
+    // MARK: The Team screen and the name in the Team chat
+
+    func testOnlyABotThatAnswersAndHasTheMarkHasTheArrow() {
+        let room = room(bots: [reporter(),
+                               TeamRoomBot(id: "t-r1-e2", name: "Scribe", member: "m-mac", open: true),
+                               TeamRoomBot(id: "t-r1-e3", name: "Pages", member: "m-mac", open: false, direct: true),
+                               TeamRoomBot(id: "t-r1-e4", name: "Mine", member: "m-ada", thisMac: true, open: true,
+                                           direct: true)])
+        let rows = TeamBotSection.rows(of: room)
+        XCTAssertEqual(rows.compactMap { TeamBotSection.directBot(of: $0, in: room)?.name }, ["Reporter"],
+                       "A bot without the mark, a bot of pages only, and a bot of this Mac keep the plain row.")
+        XCTAssertEqual(room.directBot("t-r1-e1")?.id, "t-r1-e1", "The name above a message of the bot opens the chat.")
+        XCTAssertNil(room.directBot("t-r1-e4"))
+        XCTAssertNil(room.directBot(nil))
+        XCTAssertNil(room.directBot("t-r1-gone"))
+        XCTAssertEqual(TeamDirectText.message("Reporter"), "Message Reporter")
+        XCTAssertEqual(TeamDirectText.opens, "Opens a direct chat")
+    }
+
+    // MARK: The chat view
+
+    func testTheChatNamesTheBotAndClosesWhenTheBotCannotAnswer() throws {
+        let open = room(bots: [reporter()])
+        let key = TeamChatKey(room: "r1", bot: "t-r1-e1")
+        let peer = try XCTUnwrap(open.peer(of: key))
+        XCTAssertEqual(peer.name, "Reporter")
+        XCTAssertTrue(peer.isBot)
+        XCTAssertTrue(peer.canReceive)
+        XCTAssertEqual(peer.botEntry?.avatar, "sparkle", "The face comes from the bot.")
+        XCTAssertEqual(TeamChatEmptyLine.text(for: open, peer: peer), "Messages here go only to Reporter.")
+
+        let silent = room(bots: [reporter(direct: false)])
+        XCTAssertEqual(silent.peer(of: key)?.canReceive, false)
+        XCTAssertEqual(silent.peer(of: key)?.closedLine, "Reporter does not answer now.")
+
+        let gone = room(bots: [], botDirects: [chat(at: "2026-11-10T09:00:00Z")])
+        XCTAssertEqual(gone.peer(of: key)?.canReceive, false)
+        XCTAssertEqual(gone.peer(of: key)?.closedLine, "Reporter is no longer in this team.",
+                       "The last name of the list of the chats stays.")
+        XCTAssertEqual(room().peer(of: key)?.name, "Former agent")
+        XCTAssertNil(open.peer(of: "r1"), "The Team chat has no other side.")
+        XCTAssertEqual(open.peer(of: TeamChatKey(room: "r1", member: "m-grace"))?.isBot, false)
+    }
+
+    func testTheChatShowsWhileTheBotTypes() {
+        let now = Date()
+        var room = room(bots: [reporter()], botDirects: [chat(at: "2026-11-10T09:00:00Z", typing: 20)])
+        room.botDirects?[0].typing?.received = now
+        let key = TeamChatKey(room: "r1", bot: "t-r1-e1")
+        let typing = room.typingNow(in: key, at: now.addingTimeInterval(5))
+        XCTAssertEqual(TeamTypingText.text(typing), "Reporter is typing")
+        XCTAssertEqual(room.typingNow(in: key, at: now.addingTimeInterval(21)), [], "The seconds end.")
+        XCTAssertEqual(room.typingNow(in: TeamChatKey(room: "r1", bot: "t-r1-e9"), at: now), [])
+        XCTAssertEqual(room.typingNow(in: TeamChatKey(room: "r1", member: "m-grace"), at: now), [],
+                       "A direct chat with a person shows nobody.")
+        room.state = "removed"
+        XCTAssertEqual(room.typingNow(in: key, at: now.addingTimeInterval(5)), [], "A team that is not active shows nobody.")
+    }
+
+    // MARK: The Chats list and the Mac sidebar
+
+    func testAChatWithABotSortsWithTheOtherRowsAndShowsUnderAllAndBots() {
+        let rooms = [room(bots: [reporter()], botDirects: [chat(at: "2026-11-10T09:00:00Z", unread: 1)],
+                          directs: [TeamDirect(member: "m-grace", memberName: "Grace",
+                                               lastMessage: TeamLastMessage(text: "Hi", createdAt: "2026-11-08T00:00:00Z"))],
+                          last: "2026-11-05T00:00:00Z")]
+        let latest = ["planner": "2026-11-07T00:00:00Z".apiDate!]
+        let items = ChatList.items(bots: [bot("planner"), bot("writer")], latest: latest, rooms: rooms)
+        XCTAssertEqual(items.map(\.id), ["bot-direct-r1-t-r1-e1", "direct-r1-m-grace", "bot-planner", "team-r1", "bot-writer"])
+        XCTAssertEqual(items.first?.chat, TeamChatKey(room: "r1", bot: "t-r1-e1"))
+        XCTAssertEqual(ChatFilter.all.items(items).map(\.id), items.map(\.id))
+        XCTAssertEqual(ChatFilter.bots.items(items).map(\.id), ["bot-direct-r1-t-r1-e1", "bot-planner", "bot-writer"])
+        XCTAssertEqual(ChatFilter.people.items(items).map(\.id), ["direct-r1-m-grace", "team-r1"], "A bot is not a person.")
+        XCTAssertEqual(HomeLaunchView.identifier(TeamChatKey(room: "r1", bot: "t-r1-e1")), "bot-direct-chat-t-r1-e1")
+    }
+
+    func testAChatWithABotWithOnlyAnUnsentMessageHasARow() throws {
+        let key = TeamChatKey(room: "r1", bot: "t-r1-e1")
+        var draft = TeamChat()
+        draft.pending = [TeamPendingMessage(id: "p1", text: "Which pull requests wait?", replyTo: nil, reply: nil,
+                                            createdAt: "2026-11-09T00:00:00Z", failed: true)]
+        let local = [key: try XCTUnwrap(draft.newestLocal)]
+        let room = room(bots: [reporter()], botDirects: [])
+        let listed = room.listedBotDirects(local: local)
+        XCTAssertEqual(listed.map(\.bot), ["t-r1-e1"])
+        XCTAssertNil(listed.first?.unread, "No unread count.")
+        XCTAssertEqual(TeamChatPreview.text(listed.first?.lastMessage, direct: true), "You: Which pull requests wait?")
+        XCTAssertEqual(room.listedDirects(local: local).count, 0, "A chat with a bot is no direct chat with a person.")
+        let listedOnce = self.room(botDirects: [chat(at: "2026-11-10T09:00:00Z", unread: 2)]).listedBotDirects(local: local)
+        XCTAssertEqual(listedOnce.map(\.unread), [2], "A chat of the Mac and of the app shows one time.")
+        XCTAssertEqual(self.room("r2", botDirects: []).listedBotDirects(local: local).count, 0)
+    }
+
+    func testTheSectionBotsOfTheMacListsTheChatsWithABot() {
+        let rooms = [room(bots: [reporter()], botDirects: [chat(at: "2026-11-10T09:00:00Z")], last: "2026-11-11T00:00:00Z")]
+        let messages = [Message(id: "m1", botId: "writer", role: "assistant", kind: "text", text: "Hi",
+                                createdAt: "2026-11-12T00:00:00Z", streaming: false)]
+        let sections = ChatSections.make(bots: [bot("planner", pinned: true), bot("writer"), bot("quiet")],
+                                         messages: messages, rooms: rooms)
+        XCTAssertEqual(sections.pinned.map(\.id), ["planner"])
+        XCTAssertEqual(sections.people.map(\.id), ["team-r1"], "The section People has no chat with a bot.")
+        XCTAssertEqual(sections.bots.map(\.id), ["bot-writer", "bot-direct-r1-t-r1-e1", "bot-quiet"],
+                       "Newest activity first, with the other bots.")
+    }
+
+    @MainActor
+    func testTheStoreGivesTheNewestMessageOfAChatWithABot() {
+        let store = AppStore(demo: true)
+        let key = TeamChatKey(room: "r1", bot: "t-r1-e1")
+        store.teamChats[key] = TeamChat(pending: [TeamPendingMessage(id: "p1", text: "Hello", replyTo: nil, reply: nil,
+                                                                     createdAt: "2026-11-09T00:00:00Z")])
+        XCTAssertEqual(store.newestLocalMessages.mapValues(\.text), [key: "Hello"])
+    }
+
+    // MARK: A chat that goes
+
+    func testAChatWithABotStaysWhileItsTeamStays() {
+        let key = TeamChatKey(room: "r1", bot: "t-r1-e1")
+        XCTAssertTrue(TeamRooms(rooms: [room(bots: [])], helper: true).has(key), "The bot left, and the history stays.")
+        XCTAssertFalse(TeamRooms(rooms: [room("r2")], helper: true).has(key), "The team left: the Mac selects the Inbox.")
+    }
+
+    // MARK: Updates
+
+    func testUpdatesNameTheChatsWithABotThatChanged() throws {
+        let page = #"{"after": 4, "cursor": 5, "server_time": "2026-11-09T00:00:00Z","#
+            + #" "team_directs_changed": [{"team": "r1", "member": "m-grace"}],"#
+            + #" "team_bot_directs_changed": [{"team": "r1", "bot": "t-r1-e1"}]}"#
+        let updates = try APIJSON.decoder().decode(StateUpdates.self, from: Data(page.utf8))
+        XCTAssertEqual(updates.changedTeamChats, [TeamChatKey(room: "r1", member: "m-grace"),
+                                                  TeamChatKey(room: "r1", bot: "t-r1-e1")])
+    }
+
+    // MARK: Notifications
+
+    func testADirectMessageOfABotOpensItsChat() throws {
+        let target = try XCTUnwrap(NotificationTarget(userInfo: ["coconut": [
+            "version": 1, "device_id": device, "kind": "direct", "direct": ["team": roomId, "bot": botId]]]))
+        XCTAssertEqual(target.chat, TeamChatKey(room: roomId, bot: botId))
+        XCTAssertEqual(target.destination(pendingDecisionIds: [], snapshotReady: false),
+                       .chat(TeamChatKey(room: roomId, bot: botId)))
+        let group = try XCTUnwrap(NotificationTarget(userInfo: ["coconut": [
+            "version": 1, "device_id": device, "kind": "group", "count": 3, "direct": ["team": roomId, "bot": botId]]]))
+        XCTAssertTrue(group.group)
+        XCTAssertEqual(group.destination(pendingDecisionIds: [], snapshotReady: false),
+                       .chat(TeamChatKey(room: roomId, bot: botId)))
+    }
+
+    func testADirectTargetOfABotNeedsATeamBotIDOfItsRoom() {
+        let other = String(repeating: "12", count: 32)
+        let bad: [Any] = [["team": roomId, "bot": "t-\(other)-\(entry)"], ["team": roomId, "bot": "t-\(roomId)-short"],
+                          ["team": roomId, "bot": "\(roomId)-\(entry)"], ["team": roomId, "bot": botId.uppercased()],
+                          ["team": roomId, "bot": 7], ["bot": botId]]
+        for value in bad {
+            for kind in ["direct", "group"] {
+                XCTAssertNil(NotificationTarget(userInfo: ["coconut": [
+                    "version": 1, "device_id": device, "kind": kind, "direct": value]]), "\(kind) \(value)")
+            }
+        }
+    }
+
+    @MainActor
+    func testAChatWithABotOfATeamThatTheAppNoLongerHasOpensTheChatsList() {
+        let store = AppStore(demo: true)
+        let key = TeamChatKey(room: roomId, bot: botId)
+        XCTAssertEqual(store.teamNotificationPlace(roomId, bot: botId), .chat(key))
+        store.team = TeamRooms(rooms: [TeamRoom(room: roomId, name: "Example Team", state: "active")], helper: true)
+        XCTAssertEqual(store.teamNotificationPlace(roomId, bot: botId), .chat(key))
+        store.team = TeamRooms(rooms: [], helper: true)
+        XCTAssertEqual(store.teamNotificationPlace(roomId, bot: botId), .chatList)
+    }
+
+    // MARK: The banners of the Mac
+
+    func testANewMessageOfABotInItsDirectChatMakesABannerWithItsName() {
+        let key = TeamChatKey(room: "r1", bot: "t-r1-e1")
+        let before = TeamRooms(rooms: [room(bots: [reporter()], botDirects: [chat(at: "2026-11-10T09:00:00Z")])], helper: true)
+        var newer = chat(at: "2026-11-10T10:00:00Z", unread: 1)
+        newer.lastMessage?.first = 2
+        let after = TeamRooms(rooms: [room(bots: [reporter()], botDirects: [newer])], helper: true)
+        let plan = MessageBanners.plan(before: before, after: after)
+        XCTAssertEqual(plan.post, [MessageBanner(chat: key, title: "Reporter", subtitle: nil, body: "4 pull requests wait.")])
+        XCTAssertEqual(MessageBanners.thread(key), "r1:e1", "The thread of the push of the iPhone.")
+        XCTAssertEqual(MessageBanners.chat(userInfo: MessageBanners.userInfo(key)), key)
+        XCTAssertEqual(MessageBanners.shownChat(key, rooms: after), key)
+        XCTAssertNil(MessageBanners.shownChat(TeamChatKey(room: "r1", bot: "t-r1-e9"), rooms: after))
+        var own = newer
+        own.lastMessage?.thisMac = true
+        XCTAssertEqual(MessageBanners.plan(before: before, after: TeamRooms(rooms: [room(botDirects: [own])], helper: true)).post, [])
+    }
+
+    // MARK: The cache of unsent messages
+
+    func testTheCacheKeepsTheUnsentMessagesOfAChatWithABot() throws {
+        let key = TeamChatKey(room: "r1", bot: "t-r1-e1")
+        let pending = TeamPendingMessage(id: "p1", text: "Only for Reporter", replyTo: nil, reply: nil,
+                                         createdAt: "2026-11-10T09:00:00Z")
+        var cache = OutgoingCache(deviceId: "d1", messages: [])
+        cache.pendingTeamMessages = [key: [pending], TeamChatKey(room: "r1", member: "m-grace"): [pending]]
+        let decoded = try JSONDecoder().decode(OutgoingCache.self, from: JSONEncoder().encode(cache))
+        XCTAssertEqual(decoded.pendingTeamMessages[key], [pending])
+        XCTAssertEqual(decoded.directMessages?["r1"]?.keys.sorted(), ["m-grace"], "A chat with a bot is not a chat with a person.")
+        cache.pendingTeamMessages = [:]
+        XCTAssertNil(cache.botDirectMessages)
+    }
 }

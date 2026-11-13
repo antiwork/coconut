@@ -6,8 +6,10 @@ import SwiftUI
 /// (TeamMessageDeletion).
 ///
 /// The same view is the direct chat with one person of the team ("Direct messages"): its title is the person, no name
-/// shows above a message, and the composer has no list for `@`. It is also each named chat of the team ("Chats of a
-/// team"): its title is the name of the chat, with the name of the team under it (TeamRoom.inChat).
+/// shows above a message, and the composer has no list for `@`. A direct chat with a bot of the team ("Direct chat
+/// with an agent") is the same chat with the bot as the other side, and it shows while the bot types. It is also each
+/// named chat of the team ("Chats of a team"): its title is the name of the chat, with the name of the team under it
+/// (TeamRoom.inChat).
 struct TeamChatView: View {
     @Environment(AppStore.self) private var store
     @Environment(\.scenePhase) private var scenePhase
@@ -54,8 +56,8 @@ struct TeamChatView: View {
     /// The room as this chat shows it. Nil when the team, or the named chat, is no longer in the list.
     private var room: TeamRoom? { store.team?.rooms.first { $0.room == chatKey.room }?.inChat(chatKey.chat) }
     private var chat: TeamChat { store.teamChats[chatKey] ?? TeamChat() }
-    /// The other person of a direct chat. Nil for the Team chat.
-    private func peer(_ room: TeamRoom) -> TeamDirectPeer? { chatKey.member.map(room.directPeer) }
+    /// The other side of a direct chat: a person or a bot. Nil for the Team chat and a named chat.
+    private func peer(_ room: TeamRoom) -> TeamDirectPeer? { room.peer(of: chatKey) }
     private func currentRows() -> [TeamChatRow] { rows.current(chat, calendar: .current) }
 
     var body: some View {
@@ -122,8 +124,8 @@ struct TeamChatView: View {
                     }
                     // The last row: who types, under the newest message and above the composer, then the anchor of
                     // the bottom. The row is always there, so the list never adds or removes a row for typing while it
-                    // scrolls to its bottom. A direct chat shows nobody. The row inset and the padding keep 12 points
-                    // below the last message.
+                    // scrolls to its bottom. A direct chat with a person shows nobody. The row inset and the padding
+                    // keep 12 points below the last message.
                     VStack(alignment: .leading, spacing: 0) {
                         if !typing.isEmpty {
                             TeamTypingRow(room: room, subjects: typing)
@@ -220,10 +222,10 @@ struct TeamChatView: View {
         // A chat that closes keeps its newest page only, so it opens again without stale older pages.
         .onDisappear { isVisible = false; composerFocused = false; store.closeTeamChat(chatKey) }
         .onReceive(DaySeparator.changes) { _ in dayReference = Date() }
-        .onChange(of: chatKey.isDirect ? [] : room.typingNow(at: typingClock), initial: true) { _, value in
+        .onChange(of: room.typingNow(in: chatKey, at: typingClock), initial: true) { _, value in
             withAnimation(BoardStyle.fade(reduceMotion: reduceMotion)) { typing = value }
         }
-        .typingClock(room.typing, $typingClock)
+        .typingClock(room.typingList(of: chatKey), $typingClock)
         .onChange(of: draft) { _, value in
             // The person types: the Mac tells the team. Not for an edit of a sent message, and not in a direct chat.
             guard editing == nil, canWrite(room) else { return }
@@ -322,7 +324,7 @@ struct TeamChatView: View {
             // The structure of the empty bot chat (ConversationView.conversationHeader): face, title, one line.
             VStack(spacing: BoardStyle.Space.m) {
                 if let peer = peer(room) {
-                    PersonFace(member: peer.entry, memberId: peer.member, name: peer.name, size: 68)
+                    DirectPeerFace(peer: peer, size: 68)
                     Text(peer.name).font(.title3.weight(.semibold)).multilineTextAlignment(.center)
                 } else {
                     TeamFace(room: room, size: 68)
@@ -348,15 +350,16 @@ struct TeamChatView: View {
                 .modifier(ComposerBackdrop())
                 .accessibilityIdentifier("team-chat-closed")
         } else {
-            TeamChatComposer(placeholder: "Message " + (peer(room)?.name ?? room.title), targets: mentionTargets(room),
-                             peer: peer(room)?.name, text: $draft, mentions: $mentions, replyTo: $replyTo,
-                             editing: $editing, focused: $composerFocused, enabled: canWrite(room), send: send)
+            TeamChatComposer(placeholder: TeamDirectText.message(peer(room)?.name ?? room.title),
+                             targets: mentionTargets(room), peer: peer(room)?.name, text: $draft,
+                             mentions: $mentions, replyTo: $replyTo, editing: $editing, focused: $composerFocused,
+                             enabled: canWrite(room), send: send)
                 .fixedSize(horizontal: false, vertical: true)
         }
     }
 
-    /// Why the person cannot write: the reason of the team, else for a direct chat a member that can no longer get a
-    /// direct message. The chat then shows its history only.
+    /// Why the person cannot write: the reason of the team, else for a direct chat a member or a bot that can no longer
+    /// get a direct message. The chat then shows its history only.
     private func closedReason(_ room: TeamRoom) -> String? {
         if let reason = room.chatClosedReason { return reason }
         guard let peer = peer(room), !peer.canReceive else { return nil }
@@ -498,7 +501,7 @@ struct TeamMessageRow: View {
     @Environment(\.showTeamChat) private var showTeamChat
     let row: TeamChatRow
     let room: TeamRoom
-    /// The other person of a direct chat. Nil for the Team chat.
+    /// The other side of a direct chat. Nil for the Team chat.
     let peer: TeamDirectPeer?
     /// The new text of an edit on its way.
     let editedText: String?
@@ -539,14 +542,19 @@ struct TeamMessageRow: View {
         }
     }
 
-    /// One form for a bot and a person: a small face, then the name. The name of a person that can get a direct
-    /// message opens the direct chat with that person.
+    /// One form for a bot and a person: a small face, then the name. The name of a person or of a bot that can get a
+    /// direct message opens the direct chat with it.
     @ViewBuilder private var writerLabel: some View {
         if let message, message.bot == nil, let member = room.directMember(message.member), let showTeamChat {
             Button { showTeamChat(TeamChatKey(room: room.room, member: member.member)) } label: { writerContent }
                 .buttonStyle(.plain)
-                .accessibilityLabel("Message " + member.name)
+                .accessibilityLabel(TeamDirectText.message(member.name))
                 .accessibilityIdentifier("team-writer-\(member.member)")
+        } else if let bot = room.directBot(message?.bot), let showTeamChat {
+            Button { showTeamChat(TeamChatKey(room: room.room, bot: bot.id)) } label: { writerContent }
+                .buttonStyle(.plain)
+                .accessibilityLabel(TeamDirectText.message(bot.name))
+                .accessibilityIdentifier("team-writer-\(bot.id)")
         } else {
             writerContent.accessibilityHidden(true)
         }
@@ -845,8 +853,8 @@ struct TeamTitle: View {
     }
 }
 
-/// The title of a direct chat: the face and the name of the person, and the name of the team under it, in the place
-/// and the form of the title of a team.
+/// The title of a direct chat: the face and the name of the person or the bot, and the name of the team under it, in
+/// the place and the form of the title of a team. It never names the Mac of a bot.
 struct DirectTitle: View {
     let peer: TeamDirectPeer
     let team: String
@@ -854,7 +862,7 @@ struct DirectTitle: View {
 
     var body: some View {
         HStack(spacing: 8) {
-            PersonFace(member: peer.entry, memberId: peer.member, name: peer.name, size: faceSize)
+            DirectPeerFace(peer: peer, size: faceSize)
             VStack(alignment: .leading, spacing: 0) {
                 Text(peer.name).font(.body.weight(.semibold)).lineLimit(1).truncationMode(.tail)
                 Text(team).font(.footnote).foregroundStyle(.secondary).lineLimit(1)
@@ -978,20 +986,20 @@ struct TeamContactRow: View {
     }
 }
 
-/// The row of a direct chat in the Chats list, in the layout of a team row: the face and the name of the person, the
-/// age and one line of the newest message, and the unread count. A member that left keeps the last name of the Mac.
+/// The row of a direct chat in the Chats list, in the layout of a team row: the face and the name of the person or the
+/// bot, the age and one line of the newest message, and the unread count. A member or a bot that left keeps the last
+/// name of the Mac.
 struct DirectContactRow: View {
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
-    let room: TeamRoom
-    let direct: TeamDirect
+    let peer: TeamDirectPeer
+    let unread: Int
+    let lastMessage: TeamLastMessage?
     var avatarSize: CGFloat = BoardStyle.rowFace
 
     var body: some View {
-        let peer = room.directPeer(direct.member)
-        let unread = direct.unread ?? 0
-        let preview = TeamChatPreview.text(direct.lastMessage, direct: true)
-        ChatRowLayout(name: peer.name, unread: unread, date: direct.lastMessage?.createdAt?.apiDate) {
-            PersonFace(member: peer.entry, memberId: peer.member, name: peer.name, size: avatarSize)
+        let preview = TeamChatPreview.text(lastMessage, direct: true)
+        ChatRowLayout(name: peer.name, unread: unread, date: lastMessage?.createdAt?.apiDate) {
+            DirectPeerFace(peer: peer, size: avatarSize)
         } subtitle: {
             Text(preview)
                 .font(.subheadline).foregroundStyle(.secondary)
@@ -1003,7 +1011,24 @@ struct DirectContactRow: View {
     }
 }
 
-/// The row of a chat of a team in the Chats list and the Mac sidebar: a team or a direct chat.
+/// The face of the other side of a direct chat: the face of the bot, or the face of the person (PersonFace).
+struct DirectPeerFace: View {
+    let peer: TeamDirectPeer
+    let size: CGFloat
+
+    var body: some View {
+        if peer.isBot {
+            // A bot that left has the neutral face, as above its message in the Team chat.
+            BotAvatar(symbol: peer.botEntry?.avatar ?? "", color: peer.botEntry?.color ?? "", size: size,
+                      identity: peer.member, animated: false)
+        } else {
+            PersonFace(member: peer.entry, memberId: peer.member, name: peer.name, size: size)
+        }
+    }
+}
+
+/// The row of a chat of a team in the Chats list and the Mac sidebar: a team, a direct chat, or a direct chat with a
+/// bot.
 struct PeopleRow: View {
     let item: ChatListItem
     var avatarSize: CGFloat = BoardStyle.rowFace
@@ -1011,7 +1036,12 @@ struct PeopleRow: View {
     var body: some View {
         switch item {
         case .team(let room): TeamContactRow(room: room, avatarSize: avatarSize)
-        case .direct(let room, let direct): DirectContactRow(room: room, direct: direct, avatarSize: avatarSize)
+        case .direct(let room, let direct):
+            DirectContactRow(peer: room.directPeer(direct.member), unread: direct.unread ?? 0,
+                             lastMessage: direct.lastMessage, avatarSize: avatarSize)
+        case .botDirect(let room, let direct):
+            DirectContactRow(peer: room.botPeer(direct.bot), unread: direct.unread ?? 0,
+                             lastMessage: direct.lastMessage, avatarSize: avatarSize)
         case .bot: EmptyView()
         }
     }

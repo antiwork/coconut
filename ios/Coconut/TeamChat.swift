@@ -5,32 +5,41 @@ import Foundation
 // that it cannot read instead of the whole page.
 
 /// The key of one chat of a team: the Team chat of a room, a named chat of the room (docs/team-log.md, "Chats of a
-/// team"), or the direct chat of this person with one other member of the room ("Direct messages"). The view, the
-/// route, the store and the paths of the requests use it, so each chat has one code path. A room ID alone names the
-/// Team chat of the room.
+/// team"), the direct chat of this person with one other member of the room ("Direct messages"), or the direct chat
+/// of this person with one bot of the team ("Direct chat with an agent"). The view, the route, the store and the paths
+/// of the requests use it, so each chat has one code path. A room ID alone names the Team chat of the room.
 struct TeamChatKey: Hashable, Sendable, ExpressibleByStringLiteral {
     let room: String
-    /// The member ID of the other person of a direct chat. Nil for the Team chat and a named chat.
+    /// The member ID of the other person of a direct chat. Nil for each other chat.
     var member: String? = nil
-    /// The ID of a named chat. Nil for the Team chat and a direct chat.
+    /// The ID of a named chat. Nil for each other chat.
     var chat: String? = nil
+    /// The team bot ID (`t-<room>-<entry>`) of a direct chat with a bot. Nil for each other chat.
+    var bot: String? = nil
 
-    init(room: String, member: String? = nil, chat: String? = nil) {
+    init(room: String, member: String? = nil, chat: String? = nil, bot: String? = nil) {
         self.room = room
         self.member = member
         self.chat = chat
+        self.bot = bot
     }
 
     init(stringLiteral room: String) { self.init(room: room) }
 
-    var isDirect: Bool { member != nil }
+    /// A direct chat: with a person or with a bot.
+    var isDirect: Bool { member != nil || bot != nil }
 
-    /// The path of the chat on the Mac. The messages and the read position are under it. A named chat has the path of
-    /// the Team chat, and each request names the chat (`query`, and `chat` in a body).
+    /// The path of the chat on the Mac. The messages and the read position are under it. A direct chat with a bot has
+    /// the path of a direct chat with the team bot ID in the place of the member ID. A named chat has the path of the
+    /// Team chat, and each request names the chat (`query`, and `chat` in a body).
     var path: String {
-        guard let member else { return "team/rooms/\(room)" }
-        return "team/rooms/\(room)/directs/\(member)"
+        guard let other = member ?? bot else { return "team/rooms/\(room)" }
+        return "team/rooms/\(room)/directs/\(other)"
     }
+
+    /// The entry ID of the `bot` entry of a direct chat with a bot: the last part of the team bot ID. The thread of a
+    /// notification of the chat has it.
+    var botEntry: String? { bot.flatMap { $0.split(separator: "-").last.map(String.init) } }
 
     /// The part of a query that names a named chat ("&chat=<ID>"), or nothing for another chat.
     var query: String { chat.map { "&chat=" + $0 } ?? "" }
@@ -120,17 +129,72 @@ struct TeamDirect: Decodable, Identifiable, Equatable, Sendable {
     var id: String { member }
 }
 
-/// The other person of a direct chat, as the chat and its row show it.
+/// One direct chat of this person with a bot of the room, from `bot_directs` of the list of the teams: the team bot
+/// ID, its last name, the unread count, the newest message, and who types. A chat with a bot that left stays. An
+/// older service sends no `bot_directs`.
+struct TeamBotDirect: Decodable, Identifiable, Equatable, Sendable {
+    var bot: String
+    var botName: String? = nil
+    var unread: Int? = nil
+    var lastMessage: TeamLastMessage? = nil
+    /// The bot types in the chat (docs/team-log.md, "The Mac for a team only", rule 12): the seconds that were left
+    /// when the Mac sent the list, as one subject of the form of the Team chat. Nil while the bot does not type.
+    var typing: TeamTypingList? = nil
+
+    var id: String { bot }
+
+    init(bot: String, botName: String? = nil, unread: Int? = nil, lastMessage: TeamLastMessage? = nil,
+         typing: TeamTypingList? = nil) {
+        self.bot = bot
+        self.botName = botName
+        self.unread = unread
+        self.lastMessage = lastMessage
+        self.typing = typing
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        bot = try container.decode(String.self, forKey: .bot)
+        botName = try? container.decodeIfPresent(String.self, forKey: .botName)
+        unread = try? container.decodeIfPresent(Int.self, forKey: .unread)
+        lastMessage = try? container.decodeIfPresent(TeamLastMessage.self, forKey: .lastMessage)
+        // A value that is not a number of seconds shows nobody.
+        typing = (try? container.decodeIfPresent(Double.self, forKey: .typing)).flatMap { seconds in
+            seconds.map { TeamTypingList(items: [TeamTyping(member: "", bot: bot, botName: botName, seconds: $0)]) }
+        }
+    }
+
+    private enum CodingKeys: String, CodingKey { case bot, botName, unread, lastMessage, typing }
+}
+
+/// The other side of a direct chat, as the chat and its row show it: a person of the team, or a bot of the team.
 struct TeamDirectPeer: Equatable, Sendable {
+    /// The member ID of a person, or the team bot ID of a bot.
     let member: String
-    /// The member entry while the member is in the team. Its face comes from it.
+    /// The member entry while the person is in the team. Its face comes from it. Nil for a bot.
     let entry: TeamMember?
     let name: String
-    /// The Mac can send a direct message to the member now.
+    /// The Mac can send a direct message to the person or the bot now.
     let canReceive: Bool
+    /// The other side is a bot. `botEntry` is its item of `bots` while the team has the bot: its face comes from it.
+    var isBot = false
+    var botEntry: TeamRoomBot? = nil
 
-    /// The line that takes the place of the composer when the person cannot write to the member.
-    var closedLine: String { name + " is no longer in this team." }
+    /// The line that takes the place of the composer when the person cannot write to the other side. A bot that is
+    /// still in the team does not answer now.
+    var closedLine: String {
+        isBot && botEntry != nil ? TeamDirectText.silent(name) : TeamDirectText.gone(name)
+    }
+}
+
+/// The texts of a direct chat that a person reads, in one place.
+enum TeamDirectText {
+    static func gone(_ name: String) -> String { name + " is no longer in this team." }
+    static func silent(_ name: String) -> String { name + " does not answer now." }
+    static func message(_ name: String) -> String { "Message " + name }
+    static let opens = "Opens a direct chat"
+    /// The name of a bot that the Mac never named, in a chat that the app has without the list.
+    static let formerBot = "Former agent"
 }
 
 extension TeamRoom {
@@ -151,6 +215,52 @@ extension TeamRoom {
     }
 
     var directList: [TeamDirect] { directs ?? [] }
+    var botDirectList: [TeamBotDirect] { botDirects ?? [] }
+
+    /// The bot that this person can send a direct message to now: a bot of another Mac whose `direct` is true. The
+    /// service sets `direct` only for a bot that can get one, in an active team. Nil for each other bot, for an older
+    /// service, and for a bot that is not in the list. This is the one place of that rule: the arrow of the Team
+    /// screen, the name above a message and the composer of a direct chat with a bot read it.
+    func directBot(_ id: String?) -> TeamRoomBot? {
+        botList.first { $0.id == id && $0.direct == true && $0.thisMac != true }
+    }
+
+    /// The bot of a direct chat. The name comes from the list of the bots, else from the list of the direct chats with
+    /// a bot, which keeps the last name of a bot that left.
+    func botPeer(_ id: String) -> TeamDirectPeer {
+        let entry = botList.first { $0.id == id }
+        let name = entry?.name ?? botDirectList.first { $0.bot == id }?.botName ?? TeamDirectText.formerBot
+        return TeamDirectPeer(member: id, entry: nil, name: name, canReceive: directBot(id) != nil, isBot: true,
+                              botEntry: entry)
+    }
+
+    /// The other side of a direct chat of this room, or nil for the Team chat and a named chat.
+    func peer(of chat: TeamChatKey) -> TeamDirectPeer? {
+        if let member = chat.member { return directPeer(member) }
+        return chat.bot.map(botPeer)
+    }
+
+    /// The direct chats with a bot of this room that the Chats list and the Mac section "Bots" show, by the rule of
+    /// `listedDirects`: each chat of `botDirects`, and each direct chat with a bot of this room that the app has with
+    /// a message that `botDirects` does not have yet. An older service sends no `bot_directs`, so its room has none.
+    func listedBotDirects(local: [TeamChatKey: TeamLastMessage]) -> [TeamBotDirect] {
+        guard let botDirects else { return [] }
+        let listed = Set(botDirects.map(\.bot))
+        let added = local.compactMap { chat, last -> TeamBotDirect? in
+            guard chat.room == room, let bot = chat.bot, !listed.contains(bot) else { return nil }
+            return TeamBotDirect(bot: bot, lastMessage: last)
+        }
+        return botDirects + added.sorted { $0.bot < $1.bot }
+    }
+
+    /// Who types in the chat at `date`: the Team chat or a named chat (`typing` of the room), or a direct chat with a
+    /// bot (`typing` of its item). A direct chat with a person shows nobody, and a team that is not active shows
+    /// nobody.
+    func typingList(of chat: TeamChatKey) -> TeamTypingList? {
+        if chat.member != nil { return nil }
+        if let bot = chat.bot { return botDirectList.first { $0.bot == bot }?.typing }
+        return typing
+    }
 
     /// The direct chats of this room that the Chats list and the Mac section "People" show. This is the one place of
     /// that rule: each chat of `directs`, and each direct chat of this room that the app has with a message that
@@ -216,6 +326,8 @@ struct TeamMessage: Decodable, Identifiable, Equatable, Sendable {
     var mentions: [String]? = nil
     var createdAt: String
     var editedAt: String? = nil
+    /// The page that a message of a direct chat with a bot is about. The chat does not show it yet.
+    var page: TeamAboutPage? = nil
 
     /// A message of this Mac's person. A bot of this Mac writes as itself, not as the person.
     var isOwn: Bool { thisMac == true && bot == nil }
@@ -235,6 +347,13 @@ enum TeamMessageDeletion {
         if message.isOwn { return true }
         return !direct && room.status == .active && room.canDeleteMessages == true
     }
+}
+
+/// The page that a message is about, from `page` of a message of a direct chat with a bot: the Library ID and the title
+/// while the Library of the Mac shows the page, and both nil for a page that no longer shows.
+struct TeamAboutPage: Codable, Equatable, Sendable {
+    var id: String? = nil
+    var title: String? = nil
 }
 
 /// One page of the chat, newest first. `before` is the `first` to ask for the next older page, or nil.
@@ -586,8 +705,11 @@ struct TeamTypingList: Decodable, Equatable, Sendable {
 
 extension TeamRoom {
     /// Who types in the Team chat at `date`. A team that is not active shows nobody.
-    func typingNow(at date: Date) -> [TeamTyping] {
-        status == .active ? typing?.active(at: date) ?? [] : []
+    func typingNow(at date: Date) -> [TeamTyping] { typingNow(in: chatKey, at: date) }
+
+    /// Who types in a chat of this room at `date` (typingList). A team that is not active shows nobody.
+    func typingNow(in chat: TeamChatKey, at date: Date) -> [TeamTyping] {
+        status == .active ? typingList(of: chat)?.active(at: date) ?? [] : []
     }
 }
 
@@ -624,18 +746,20 @@ struct TeamTypingAnswer: Decodable, Sendable {
     var room: String
 }
 
-/// One row of the Chats list: a bot, the Team chat or a named chat of a team (TeamRoom.inChat), or a direct chat with
-/// one person of a team.
+/// One row of the Chats list: a bot, the Team chat or a named chat of a team (TeamRoom.inChat), a direct chat with
+/// one person of a team, or a direct chat with one bot of a team.
 enum ChatListItem: Identifiable, Equatable {
     case bot(Bot)
     case team(TeamRoom)
     case direct(TeamRoom, TeamDirect)
+    case botDirect(TeamRoom, TeamBotDirect)
 
     var id: String {
         switch self {
         case .bot(let bot): "bot-" + bot.id
         case .team(let room): "team-" + room.room + (room.shownChat.map { "-" + $0.id } ?? "")
         case .direct(let room, let direct): "direct-" + room.room + "-" + direct.member
+        case .botDirect(let room, let direct): "bot-direct-" + room.room + "-" + direct.bot
         }
     }
 
@@ -645,22 +769,29 @@ enum ChatListItem: Identifiable, Equatable {
         case .bot: nil
         case .team(let room): room.chatKey
         case .direct(let room, let direct): TeamChatKey(room: room.room, member: direct.member)
+        case .botDirect(let room, let direct): TeamChatKey(room: room.room, bot: direct.bot)
         }
     }
 
     /// The room of a team or a direct chat. Nil for a bot.
     var room: String? { chat?.room }
 
-    /// A row of "People": a team or a direct chat.
-    var isPeople: Bool { chat != nil }
+    /// A row of "People": a team or a direct chat with a person. A direct chat with a bot is a row of "Bots".
+    var isPeople: Bool {
+        switch self {
+        case .team, .direct: true
+        case .bot, .botDirect: false
+        }
+    }
 
-    /// The newest activity of a team or a direct chat: its newest message, or for a team the time when this Mac made
-    /// or joined it.
-    fileprivate var peopleActivity: Date {
+    /// The newest activity of a chat of a team: its newest message, or for a team the time when this Mac made or
+    /// joined it.
+    fileprivate var teamActivity: Date {
         switch self {
         case .bot: .distantPast
         case .team(let room): room.lastActivity
         case .direct(_, let direct): direct.lastMessage?.createdAt?.apiDate ?? .distantPast
+        case .botDirect(_, let direct): direct.lastMessage?.createdAt?.apiDate ?? .distantPast
         }
     }
 }
@@ -682,35 +813,57 @@ enum ChatList {
     /// keep the bot first.
     static func items(bots: [Bot], latest: [String: Date], rooms: [TeamRoom],
                       local: [TeamChatKey: TeamLastMessage] = [:]) -> [ChatListItem] {
+        merge(bots: bots, latest: latest,
+              chats: sorted(peopleItems(rooms, local: local) + botDirectItems(rooms, local: local)))
+    }
+
+    /// The bots and the chats of the teams in one list, newest activity first. Both are in that order already.
+    fileprivate static func merge(bots: [Bot], latest: [String: Date], chats: [ChatListItem]) -> [ChatListItem] {
         func activity(_ bot: Bot) -> Date { latest[bot.id] ?? bot.createdAt.apiDate ?? .distantPast }
-        let people = people(rooms, local: local)
         var items: [ChatListItem] = []
-        items.reserveCapacity(bots.count + people.count)
-        var next = people.startIndex
+        items.reserveCapacity(bots.count + chats.count)
+        var next = chats.startIndex
         for bot in bots {
-            while next < people.endIndex, people[next].peopleActivity > activity(bot) {
-                items.append(people[next])
+            while next < chats.endIndex, chats[next].teamActivity > activity(bot) {
+                items.append(chats[next])
                 next += 1
             }
             items.append(.bot(bot))
         }
-        items += people[next...]
+        items += chats[next...]
         return items
     }
 
-    /// The teams, their named chats and the direct chats of the rooms (TeamRoom.listedDirects), newest activity first.
-    /// A named chat is a row of a team (TeamRoom.inChat). An older service sends no `chats` and no `directs`, so its
-    /// rooms bring the teams only.
+    /// The teams, their named chats and the direct chats with a person of the rooms (TeamRoom.listedDirects), newest
+    /// activity first. A named chat is a row of a team (TeamRoom.inChat). An older service sends no `chats` and no
+    /// `directs`, so its rooms bring the teams only.
     static func people(_ rooms: [TeamRoom], local: [TeamChatKey: TeamLastMessage] = [:]) -> [ChatListItem] {
-        let items = rooms.flatMap { room in
+        sorted(peopleItems(rooms, local: local))
+    }
+
+    /// The direct chats with a bot of the rooms (TeamRoom.listedBotDirects), newest activity first.
+    static func botDirects(_ rooms: [TeamRoom], local: [TeamChatKey: TeamLastMessage] = [:]) -> [ChatListItem] {
+        sorted(botDirectItems(rooms, local: local))
+    }
+
+    private static func peopleItems(_ rooms: [TeamRoom], local: [TeamChatKey: TeamLastMessage]) -> [ChatListItem] {
+        rooms.flatMap { room in
             [.team(room)] + room.namedChatRooms.map(ChatListItem.team)
                 + room.listedDirects(local: local).map { ChatListItem.direct(room, $0) }
         }
-        return items.sorted { ($0.peopleActivity, $1.id) > ($1.peopleActivity, $0.id) }
+    }
+
+    private static func botDirectItems(_ rooms: [TeamRoom], local: [TeamChatKey: TeamLastMessage]) -> [ChatListItem] {
+        rooms.flatMap { room in room.listedBotDirects(local: local).map { ChatListItem.botDirect(room, $0) } }
+    }
+
+    private static func sorted(_ items: [ChatListItem]) -> [ChatListItem] {
+        items.sorted { ($0.teamActivity, $1.id) > ($1.teamActivity, $0.id) }
     }
 }
 
-/// The filter of the Chats list on an iPhone. "People" has the teams and the direct chats.
+/// The filter of the Chats list on an iPhone. "People" has the teams and the direct chats with a person. "Bots" has
+/// the bots and the direct chats with a bot of a team.
 enum ChatFilter: String, CaseIterable, Identifiable, Sendable {
     case all, people, bots
 
@@ -750,12 +903,13 @@ enum ChatFilter: String, CaseIterable, Identifiable, Sendable {
     }
 }
 
-/// The sections of the Mac sidebar: the pinned bots, the people (the teams and the direct chats), and the other bots.
-/// Each one newest activity first.
+/// The sections of the Mac sidebar: the pinned bots, the people (the teams and the direct chats with a person), and
+/// the other bots with the direct chats with a bot of a team. Each one newest activity first.
 struct ChatSections: Equatable {
     var pinned: [Bot]
     var people: [ChatListItem]
-    var bots: [Bot]
+    /// The bots that are not pinned (`.bot`) and the direct chats with a bot of a team (`.botDirect`).
+    var bots: [ChatListItem]
 
     /// One pass over the messages. A section without rows does not show.
     static func make(bots: [Bot], messages: [Message], rooms: [TeamRoom],
@@ -764,7 +918,8 @@ struct ChatSections: Equatable {
         func activity(_ bot: Bot) -> Date { latest[bot.id] ?? bot.createdAt.apiDate ?? .distantPast }
         let active = bots.filter { !$0.archived }.sorted { activity($0) > activity($1) }
         return ChatSections(pinned: active.filter(\.pinned), people: ChatList.people(rooms, local: local),
-                            bots: active.filter { !$0.pinned })
+                            bots: ChatList.merge(bots: active.filter { !$0.pinned }, latest: latest,
+                                                 chats: ChatList.botDirects(rooms, local: local)))
     }
 }
 
@@ -1047,6 +1202,13 @@ enum TeamBotSection {
             case .orderedSame: $0.id < $1.id
             }
         }
+    }
+
+    /// The bot whose direct chat the row opens: a bot that answers in the chat, and that this person can send a direct
+    /// message to now (TeamRoom.directBot). Nil for each other row, which keeps its plain form.
+    static func directBot(of row: TeamBotRow, in room: TeamRoom) -> TeamRoomBot? {
+        guard case .answers(let bot) = row else { return nil }
+        return room.directBot(bot.id)
     }
 
     /// The line under the section: only while a row is a bot that a teammate can ask.

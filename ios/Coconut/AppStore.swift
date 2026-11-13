@@ -2117,6 +2117,11 @@ final class AppStore {
                team?.rooms[index].directs?[direct].unread != unread {
                 team?.rooms[index].directs?[direct].unread = unread
             }
+        } else if let bot = chat.bot {
+            if let direct = team?.rooms[index].botDirects?.firstIndex(where: { $0.bot == bot }),
+               team?.rooms[index].botDirects?[direct].unread != unread {
+                team?.rooms[index].botDirects?[direct].unread = unread
+            }
         } else if let id = chat.chat {
             if let named = team?.rooms[index].chats?.firstIndex(where: { $0.id == id }),
                team?.rooms[index].chats?[named].unread != unread {
@@ -2800,14 +2805,15 @@ final class AppStore {
         // The list can lack the team, or a named chat that the admin made while the app was in the background.
         if team?.has(chat) != true { await loadTeam() }
         guard acceptsNotification(target) else { return nil }
-        return teamNotificationPlace(chat.room, member: chat.member, chat: chat.chat)
+        return teamNotificationPlace(chat.room, member: chat.member, chat: chat.chat, bot: chat.bot)
     }
 
     /// The place of a team notification with the list that the app has now: the Team chat, or the direct chat with
-    /// `member`. A list that the app has not loaded, or cannot read, keeps each chat (`teamListHas`), so a tap in a
-    /// terminated app opens the chat at once.
-    func teamNotificationPlace(_ room: String, member: String? = nil, chat named: String? = nil) -> NotificationDestination {
-        let chat = TeamChatKey(room: room, member: member, chat: named)
+    /// `member` or with `bot`. A list that the app has not loaded, or cannot read, keeps each chat (`teamListHas`), so
+    /// a tap in a terminated app opens the chat at once.
+    func teamNotificationPlace(_ room: String, member: String? = nil, chat named: String? = nil,
+                               bot: String? = nil) -> NotificationDestination {
+        let chat = TeamChatKey(room: room, member: member, chat: named, bot: bot)
         return teamListHas(chat) ? NotificationDestination(chat: chat) : .chatList
     }
 
@@ -2981,6 +2987,9 @@ struct OutgoingCache: Codable {
     var directMessages: [String: [String: [TeamPendingMessage]]]? = nil
     /// The messages of the named chats that the Mac did not confirm, by room and chat. An older app has none.
     var namedMessages: [String: [String: [TeamPendingMessage]]]? = nil
+    /// The messages of the direct chats with a bot that the Mac did not confirm, by room and team bot ID. An older app
+    /// has none.
+    var botDirectMessages: [String: [String: [TeamPendingMessage]]]? = nil
 
     /// The unsent messages of each chat of a team. Each part is nil when it has no message.
     var pendingTeamMessages: [TeamChatKey: [TeamPendingMessage]] {
@@ -2993,20 +3002,26 @@ struct OutgoingCache: Codable {
             for (room, named) in namedMessages ?? [:] {
                 for (chat, pending) in named { chats[TeamChatKey(room: room, chat: chat)] = pending }
             }
+            for (room, bots) in botDirectMessages ?? [:] {
+                for (bot, pending) in bots { chats[TeamChatKey(room: room, bot: bot)] = pending }
+            }
             return chats
         }
         set {
             var team: [String: [TeamPendingMessage]] = [:]
             var direct: [String: [String: [TeamPendingMessage]]] = [:]
             var named: [String: [String: [TeamPendingMessage]]] = [:]
+            var bots: [String: [String: [TeamPendingMessage]]] = [:]
             for (chat, pending) in newValue {
                 if let member = chat.member { direct[chat.room, default: [:]][member] = pending }
+                else if let bot = chat.bot { bots[chat.room, default: [:]][bot] = pending }
                 else if let id = chat.chat { named[chat.room, default: [:]][id] = pending }
                 else { team[chat.room] = pending }
             }
             teamMessages = team.isEmpty ? nil : team
             directMessages = direct.isEmpty ? nil : direct
             namedMessages = named.isEmpty ? nil : named
+            botDirectMessages = bots.isEmpty ? nil : bots
         }
     }
 }

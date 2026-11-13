@@ -63,6 +63,10 @@ struct TeamRoom: Decodable, Identifiable, Equatable, Sendable {
     /// True when this person can make, rename and delete the named chats: the Mac is the admin of an active team
     /// (TeamChatManagement). An older service sends none, and none is false.
     var canManageChats: Bool? = nil
+    /// The direct chats of this person with a bot of the team, newest first (docs/team-log.md, "Direct chat with an
+    /// agent"). Only a service that serves them sends it, for an app that asks with the header
+    /// `X-Coconut-Team: direct`.
+    var botDirects: [TeamBotDirect]? = nil
     /// The named chat that this copy of the room shows (TeamRoom.inChat). Nil for the room itself: the Team chat. The
     /// Mac never sends it.
     var shownChat: TeamNamedChat? = nil
@@ -175,6 +179,9 @@ struct TeamRoomBot: Decodable, Identifiable, Equatable, Sendable {
     /// True for a bot that answers each member of the team: a bot of a Mac without a person. A bot of a person
     /// answers only that person. An older service sends none, and none is false.
     var open: Bool? = nil
+    /// True when this person can send the bot a direct message now (TeamRoom.directBot). An older service sends none,
+    /// and none is false.
+    var direct: Bool? = nil
 
     var isOpen: Bool { open == true }
 }
