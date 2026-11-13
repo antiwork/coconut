@@ -65,7 +65,8 @@ struct MacInboxView: View {
                                          onDismissed: { dismissed = Dismissal(receipt: $0) })
                                 .id(chosen.id)
                                 .frame(maxWidth: 560)
-                                .padding(24)
+                                // The content margin of each pane of the window.
+                                .padding(BoardStyle.Space.l)
                                 .frame(maxWidth: .infinity)
                         }
                         .toolbar {
@@ -141,20 +142,20 @@ private struct MacInboxRow: View {
     private var bot: Bot? { store.bots.first { $0.id == decision.botId } }
 
     var body: some View {
-        HStack(alignment: .top, spacing: 10) {
+        HStack(alignment: .top, spacing: BoardStyle.Space.m) {
             if let bot { LiveBotAvatar(bot: bot, size: 22) }
-            VStack(alignment: .leading, spacing: 2) {
-                Text(decision.title).font(.body.weight(.medium)).lineLimit(2)
-                HStack(spacing: 4) {
+            VStack(alignment: .leading, spacing: BoardStyle.Space.line) {
+                Text(decision.title).font(.body).lineLimit(2)
+                HStack(spacing: BoardStyle.Space.xs) {
                     Text(bot?.name ?? "Bot")
                     if let date = decision.createdAt.apiDate {
                         Text("·")
                         CompactAgeLabel(date: date)
                     }
                 }
-                .font(.caption).foregroundStyle(.secondary)
+                .font(.subheadline.monospacedDigit()).foregroundStyle(.secondary)
             }
         }
-        .padding(.vertical, 4)
+        .padding(.vertical, BoardStyle.Space.xs)
     }
 }

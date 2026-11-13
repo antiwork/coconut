@@ -244,8 +244,8 @@ private struct MacConnectionFooter: View {
                 .frame(width: 7, height: 7)
                 .accessibilityLabel(store.connection == .connected ? "Connected" : "Not connected")
         }
-        .font(.caption).foregroundStyle(.secondary)
-        .padding(.horizontal, 12).padding(.vertical, 10)
+        .font(.footnote).foregroundStyle(.secondary)
+        .padding(.horizontal, BoardStyle.Space.m).padding(.vertical, BoardStyle.Space.s)
     }
 }
 
@@ -258,7 +258,7 @@ private struct MacBotDetails: View {
         VStack(spacing: 0) {
             // Text tabs. The current one sits on a soft capsule. The same height and top space as the bot's title over
             // the chat, so both sit in one row.
-            HStack(spacing: 2) {
+            HStack(spacing: BoardStyle.Space.xs) {
                 tabButton("Details", .details)
                 tabButton("Library", .library)
             }

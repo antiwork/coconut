@@ -439,7 +439,7 @@ struct ConversationView: View {
             LiveBotAvatar(bot: bot, size: 24)
             Text(bot.name).font(.headline).lineLimit(1).truncationMode(.tail)
         }
-        .padding(.leading, 6).padding(.trailing, 12)
+        .padding(.leading, BoardStyle.Space.xs).padding(.trailing, BoardStyle.Space.m)
         .frame(height: 34)
         .modifier(FloatingCapsule())
         .contentShape(Capsule())
