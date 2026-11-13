@@ -338,7 +338,7 @@ class GatewayBridge:
                  session_root: str | None = None, silent: bool = False, commentary: bool = True,
                  context_id: str | None = None, mode: str | None = None, own: str | None = None,
                  folder: str | None = None, command: str | None = None, records: list | None = None,
-                 team: dict | None = None, deadline: float | None = None) -> str:
+                 team: dict | None = None, deadline: float | None = None, images: list | None = None) -> str:
         """Register a turn for the adapter of `home`, and return its ID for follow(). From then on, cancel() of its
         task stops it, also before an adapter takes it.
 
@@ -351,7 +351,8 @@ class GatewayBridge:
         records that the session of the chat keeps once (native_conversation.turn_records, hooks.add_records).
         `team` makes a turn of the team chat of a team-only Mac (team_turns.py): the sender, the context and the rules
         of the chat, which the adapter of the team mode reads. It has no task and no session root. `deadline` stops
-        the turn at that monotonic time."""
+        the turn at that monotonic time. `images` are the attached images of the turn (native_conversation.turn_images):
+        the adapter gives them to Hermes as images of the message, so the model sees them."""
         turn = _Turn(task_id, os.path.realpath(home), chat_id, text, chat_name, session_root)
         if own is not None:
             turn.request['own'] = own
@@ -361,6 +362,8 @@ class GatewayBridge:
             turn.request['command'] = command
         if records:
             turn.request['records'] = records
+        if images:
+            turn.request['images'] = images
         if team is not None:
             turn.request['team'] = team
             turn.team = True
