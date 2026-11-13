@@ -154,7 +154,7 @@ struct LibraryView: View {
                     ForEach(group.documents) { row($0) }
                 }
             }
-            .padding(.bottom, 20)
+            .padding(.bottom, BoardStyle.Space.xl)
             // A document moves between the pinned documents and its bot.
             .animation(.snappy, value: sections.pinned.map(\.id))
         }
@@ -168,13 +168,13 @@ struct LibraryView: View {
     private func header(_ title: String, detail: String? = nil, @ViewBuilder icon: () -> some View) -> some View {
         HStack(spacing: 8) {
             icon()
-            Text(title).font(.subheadline.weight(.medium)).foregroundStyle(.secondary).layoutPriority(1)
+            Text(title).font(.subheadline.weight(.semibold)).foregroundStyle(.secondary).layoutPriority(1)
             if let detail {
                 Text(detail).font(.subheadline).foregroundStyle(.tertiary)
             }
         }
         .lineLimit(1)
-        .padding(.horizontal, 24).padding(.top, 22).padding(.bottom, 4)
+        .padding(.horizontal, BoardStyle.Space.l).padding(.top, BoardStyle.Space.xl).padding(.bottom, BoardStyle.Space.xs)
         .accessibilityAddTraits(.isHeader)
     }
 
@@ -192,7 +192,7 @@ struct LibraryView: View {
             }
         }
         .accessibilityIdentifier("library-document-\(document.key)")
-        .padding(.horizontal, 24)
+        .padding(.horizontal, BoardStyle.Space.l)
     }
 
     private var emptyLibrary: some View {
@@ -252,21 +252,21 @@ private struct DocumentRow: View {
             Image(systemName: document.isPage ? "chart.bar.xaxis" : "doc.text")
                 .font(.body).foregroundStyle(.secondary)
                 .frame(width: 36, height: 36)
-                .background(BoardStyle.surface, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+                .background(BoardStyle.surface, in: RoundedRectangle(cornerRadius: BoardStyle.Radius.small, style: .continuous))
             VStack(alignment: .leading, spacing: 2) {
                 Text(document.title).font(.body).foregroundStyle(.primary).lineLimit(1)
                 Text(document.detail).font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
             }
             Spacer(minLength: 0)
             if let ends = document.endText {
-                Text(ends).font(.caption).foregroundStyle(.secondary)
+                Text(ends).font(.footnote.monospacedDigit()).foregroundStyle(.secondary)
             }
             if let shared = document.sharedLine {
-                Image(systemName: "person.2.fill").font(.caption).foregroundStyle(.secondary)
+                Image(systemName: "person.2.fill").font(.footnote).foregroundStyle(.secondary)
                     .accessibilityLabel(shared)
             }
         }
-        .padding(.vertical, 10)
+        .padding(.vertical, BoardStyle.Space.m)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(BoardStyle.paper)
         .contentShape(Rectangle())
