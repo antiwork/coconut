@@ -540,7 +540,7 @@ final class LibraryDocumentTests: XCTestCase {
     /// A page with each table form of page.js: metrics, a table with one row of text, a table with one long cell, a
     /// short table, a wide table with a short last column, a wide table with a long last column, and a wide table of
     /// two columns.
-    private static let tablePage = """
+    static let tablePage = """
     Lead.
 
     | Steps | Revenue | Refund rate | Change | Visits |
@@ -2875,4 +2875,63 @@ private extension String {
 @MainActor
 private final class Once {
     var done = false
+}
+
+/// TEMPORARY, to remove before a merge: how long the tables of a page need for a new width on this runner. The name
+/// of the class sorts last, so the last lines of the test log show its output.
+final class ZzTableFactsOfThisRunnerTests: XCTestCase {
+    @MainActor
+    func testFacts() async throws {
+        let configuration = WKWebViewConfiguration()
+        DocumentPage.scripts(diagrams: false).forEach(configuration.userContentController.addUserScript)
+        let view = WKWebView(frame: CGRect(x: 0, y: 0, width: 390, height: 800), configuration: configuration)
+        #if os(iOS)
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
+        let window = UIWindow(windowScene: scene)
+        window.addSubview(view)
+        window.makeKeyAndVisible()
+        #else
+        let window = NSWindow(contentRect: CGRect(x: -20000, y: 0, width: 1200, height: 800), styleMask: [.borderless],
+                              backing: .buffered, defer: false)
+        window.contentView?.addSubview(view)
+        window.orderFrontRegardless()
+        #endif
+        view.loadHTMLString(DocumentPage.html(title: "T", meta: "M", content: LibraryDocumentTests.tablePage,
+                                              markdown: true), baseURL: nil)
+        let facts = """
+            [[...document.querySelectorAll("main table")].map((table) => table.classList.contains("records") ? "R" : "T").join(""),
+             innerWidth, document.documentElement.clientWidth, Math.round(document.querySelector("main").getBoundingClientRect().width),
+             document.readyState].join(" ")
+            """
+        let read = { () async -> String in
+            ((try? await view.evaluateJavaScript("String(" + facts + ")")) as? String) ?? "nil"
+        }
+        // The state at each tenth of a second, as one line of the changes with their times.
+        let watch = { (name: String, seconds: Double) async in
+            let clock = ContinuousClock()
+            let start = clock.now
+            var last = ""
+            var line = "ZZ \(name):"
+            while clock.now - start < .seconds(seconds) {
+                let state = await read()
+                if state != last {
+                    let passed = clock.now - start
+                    line += " [\(passed.components.seconds).\(passed.components.attoseconds / 100_000_000_000_000_000) s: \(state)]"
+                    last = state
+                }
+                try? await Task.sleep(for: .milliseconds(100))
+            }
+            print(line)
+        }
+        await watch("load at 390", 6)
+        view.frame.size.width = 1100
+        await watch("then 1100", 12)
+        view.frame.size.width = 390
+        await watch("then 390", 12)
+        #if os(iOS)
+        window.isHidden = true
+        #else
+        window.orderOut(nil)
+        #endif
+    }
 }
