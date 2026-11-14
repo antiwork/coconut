@@ -427,10 +427,8 @@ struct TeamChatView: View {
             composer.cancelEdit()
             Task {
                 // A failure gives the edit back to the composer, unless the person typed something new.
-                if await !store.editTeamMessage(chatKey, message, text: text), composer.draft.isEmpty,
-                   composer.editing == nil {
-                    composer.edit(message)
-                    composer.draft = text
+                if await !store.editTeamMessage(chatKey, message, text: text) {
+                    composer.restore(edit: message, text: text)
                 }
             }
         } else {

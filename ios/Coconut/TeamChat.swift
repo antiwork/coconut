@@ -427,6 +427,14 @@ struct TeamComposerState: Equatable {
         quote = .page(page)
     }
 
+    /// An edit that the Mac did not take comes back with its text, unless the person typed something new or started
+    /// another edit. Only the edit comes back: a reply or a page that the person set in the meantime stays.
+    mutating func restore(edit message: TeamMessage, text: String) {
+        guard draft.isEmpty, editing == nil else { return }
+        editing = message
+        draft = text
+    }
+
     mutating func cancelEdit() {
         editing = nil
         draft = ""
