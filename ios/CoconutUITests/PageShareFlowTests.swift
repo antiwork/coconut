@@ -137,3 +137,96 @@ final class PageShareFlowTests: XCTestCase {
         add(attachment)
     }
 }
+
+/// "Chat about this page" on a page that a team agent shares, against real Coconut services. The test world has the
+/// person's Mac in a team with a Mac for a team only, whose agent answers direct messages (`direct`) and shares the page
+/// "Sales" (key `sales`). COCONUT_AGENT_BOT is the team bot ID of the agent. The world reads one command from the file
+/// COCONUT_AGENT_COMMANDS: "silent" takes the mark `direct` from the agent.
+final class AgentPageChatFlowTests: XCTestCase {
+    private var app: XCUIApplication!
+    private var preview: XCUIElement { app.descendants(matching: .any).matching(identifier: "reply-preview").firstMatch }
+    private var field: XCUIElement { app.descendants(matching: .any).matching(identifier: "message-input").firstMatch }
+
+    /// The item, the quote in the chat of the agent only, the cross, the send, the quote in the message, a tap on the
+    /// quote, and the closed line that takes the place of the quote.
+    @MainActor
+    func testChatAboutAPageOfATeamAgent() throws {
+        let env = ProcessInfo.processInfo.environment
+        guard let url = env["COCONUT_AGENT_URL"], let code = env["COCONUT_AGENT_CODE"], let bot = env["COCONUT_AGENT_BOT"],
+              let commands = env["COCONUT_AGENT_COMMANDS"] else {
+            throw XCTSkip("Run with the test world of a direct chat with an agent.")
+        }
+        continueAfterFailure = false
+        app = XCUIApplication()
+        app.launchEnvironment = ["COCONUT_SERVER_URL": url, "COCONUT_PAIR_CODE": code]
+        app.launch()
+        XCTAssertTrue(app.tabBars.buttons["Library"].waitForExistence(timeout: 30))
+
+        // The item opens the chat of the agent with the page above the text field.
+        openPage()
+        ask()
+        XCTAssertTrue(app.staticTexts["Sales"].exists, "The quote names the page.")
+        XCTAssertTrue(app.buttons["Remove the page"].exists)
+
+        // The page went with the chat: the chat opens again without it.
+        app.navigationBars.buttons.element(boundBy: 0).tap()
+        let row = app.buttons["bot-direct-chat-\(bot)"]
+        XCTAssertTrue(row.waitForExistence(timeout: 15))
+        row.tap()
+        XCTAssertTrue(field.waitForExistence(timeout: 15))
+        XCTAssertFalse(preview.waitForExistence(timeout: 3), "A new open of the chat shows no page.")
+
+        // The cross removes the page.
+        toLibrary()
+        ask()
+        app.buttons["Remove the page"].tap()
+        XCTAssertTrue(preview.waitForNonExistence(timeout: 5))
+
+        // The send: the message shows the page as a quote, and the composer is empty again.
+        toLibrary()
+        ask()
+        field.tap()
+        field.typeText("Why are the refunds higher this week?")
+        app.buttons["Send message"].tap()
+        XCTAssertTrue(preview.waitForNonExistence(timeout: 10))
+        let quote = app.buttons["Open the page Sales"]
+        XCTAssertTrue(quote.waitForExistence(timeout: 15), "The message shows its page.")
+
+        // A tap on the quote opens the page.
+        quote.tap()
+        XCTAssertTrue(app.buttons["Page actions"].waitForExistence(timeout: 15), "The quote opens the page.")
+
+        // The agent stops to answer while the page waits: the closed line takes the place of the composer and the page.
+        ask()
+        try "silent".write(toFile: commands, atomically: true, encoding: .utf8)
+        XCTAssertTrue(app.descendants(matching: .any)["team-chat-closed"].waitForExistence(timeout: 60))
+        XCTAssertFalse(preview.exists, "The page goes with the composer.")
+    }
+
+    /// The page "Sales" in the Library.
+    private func openPage() {
+        app.tabBars.buttons["Library"].tap()
+        let page = app.buttons["library-document-sales"]
+        XCTAssertTrue(page.waitForExistence(timeout: 15))
+        page.tap()
+    }
+
+    /// Back from the chat to the Chats list, where the tab bar shows, and then the Library tab with its open page.
+    private func toLibrary() {
+        app.navigationBars.buttons.element(boundBy: 0).tap()
+        let library = app.tabBars.buttons["Library"]
+        XCTAssertTrue(library.waitForExistence(timeout: 10))
+        library.tap()
+    }
+
+    /// "Chat about this page" on the open page.
+    private func ask() {
+        let actions = app.buttons["Page actions"]
+        XCTAssertTrue(actions.waitForExistence(timeout: 15))
+        actions.tap()
+        let item = app.buttons["document-ask"]
+        XCTAssertTrue(item.waitForExistence(timeout: 10), "A page of an agent with the mark has the item.")
+        item.tap()
+        XCTAssertTrue(preview.waitForExistence(timeout: 15), "The chat shows the page above the text field.")
+    }
+}
