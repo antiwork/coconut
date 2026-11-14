@@ -141,11 +141,13 @@ final class PageShareFlowTests: XCTestCase {
 /// "Chat about this page" on a page that a team agent shares, against real Coconut services. The test world has the
 /// person's Mac in a team with a Mac for a team only, whose agent answers direct messages (`direct`) and shares the page
 /// "Sales" (key `sales`). COCONUT_AGENT_BOT is the team bot ID of the agent. The world reads one command from the file
-/// COCONUT_AGENT_COMMANDS: "silent" takes the mark `direct` from the agent.
+/// COCONUT_AGENT_COMMANDS: "silent" takes the mark `direct` from the agent, and "back" gives it back.
 final class AgentPageChatFlowTests: XCTestCase {
     private var app: XCUIApplication!
     private var preview: XCUIElement { app.descendants(matching: .any).matching(identifier: "reply-preview").firstMatch }
     private var field: XCUIElement { app.descendants(matching: .any).matching(identifier: "message-input").firstMatch }
+    /// The quotes of the page "Sales" in the messages of the chat.
+    private var quotes: XCUIElementQuery { app.buttons.matching(NSPredicate(format: "label == %@", "Open the page Sales")) }
 
     /// The item, the quote in the chat of the agent only, the cross, the send, the quote in the message, a tap on the
     /// quote, and the closed line that takes the place of the quote.
@@ -182,25 +184,32 @@ final class AgentPageChatFlowTests: XCTestCase {
         app.buttons["Remove the page"].tap()
         XCTAssertTrue(preview.waitForNonExistence(timeout: 5))
 
-        // The send: the message shows the page as a quote, and the composer is empty again.
+        // The send: the new message shows the page as a quote, and the composer is empty again.
         toLibrary()
         ask()
+        let earlier = quotes.count
         field.tap()
         field.typeText("Why are the refunds higher this week?")
         app.buttons["Send message"].tap()
         XCTAssertTrue(preview.waitForNonExistence(timeout: 10))
-        let quote = app.buttons["Open the page Sales"]
-        XCTAssertTrue(quote.waitForExistence(timeout: 15), "The message shows its page.")
+        let quote = quotes.element(boundBy: earlier)
+        XCTAssertTrue(quote.waitForExistence(timeout: 15), "The new message shows its page.")
+        XCTAssertEqual(quotes.count, earlier + 1)
 
         // A tap on the quote opens the page.
         quote.tap()
         XCTAssertTrue(app.buttons["Page actions"].waitForExistence(timeout: 15), "The quote opens the page.")
 
-        // The agent stops to answer while the page waits: the closed line takes the place of the composer and the page.
+        // The agent stops to answer while the page waits: the closed line takes the place of the composer, and the page
+        // goes. When the agent answers again, the composer comes back without the page.
         ask()
         try "silent".write(toFile: commands, atomically: true, encoding: .utf8)
-        XCTAssertTrue(app.descendants(matching: .any)["team-chat-closed"].waitForExistence(timeout: 60))
-        XCTAssertFalse(preview.exists, "The page goes with the composer.")
+        let closed = app.descendants(matching: .any)["team-chat-closed"]
+        XCTAssertTrue(closed.waitForExistence(timeout: 60))
+        try "back".write(toFile: commands, atomically: true, encoding: .utf8)
+        XCTAssertTrue(closed.waitForNonExistence(timeout: 60))
+        XCTAssertTrue(field.waitForExistence(timeout: 10), "The composer comes back.")
+        XCTAssertFalse(preview.waitForExistence(timeout: 3), "The page went with the closed line.")
     }
 
     /// The page "Sales" in the Library.

@@ -497,6 +497,47 @@ final class DirectMessageTests: XCTestCase {
         #endif
     }
 
+    /// An update that says that a document changed reads a chat that quotes a page again, also without a Library list:
+    /// one read for one update. When the page went, the quote has no ID, and the next update reads nothing.
+    @MainActor
+    func testAChangeOfTheDocumentsReadsAChatThatQuotesAPageWithoutALibraryList() async throws {
+        #if !(DEBUG && targetEnvironment(simulator))
+        throw XCTSkip("This HTTP fixture requires a debug simulator build.")
+        #else
+        var state = try PreviewStateFixture.load()
+        state.cursor = 10; state.syncVersion = 1
+        let server = try DirectServer(state: APIJSON.encoder().encode(state), cursor: state.cursor, bot: true)
+        let address = try await server.start()
+        defer { server.stop() }
+        try await withPairedStore(address: address) { store in
+            let chat = TeamChatKey(room: "r1", bot: "t-r1-e1")
+            let path = "GET /v1/team/rooms/r1/directs/t-r1-e1/messages"
+            await store.loadTeamChat(chat)
+            XCTAssertTrue(store.sendTeamMessage(chat, text: "Why are the refunds higher?", replyingTo: nil,
+                                                page: TeamAboutPage(id: "t-r1-p1", title: "Sales")))
+            try await waitUntil { store.teamChats[chat]?.messages.last?.page?.id == "t-r1-p1" }
+            XCTAssertEqual(store.teamChats[chat]?.messages.last?.page?.id, "t-r1-p1")
+            XCTAssertNil(store.documents, "The app has no Library list.")
+            let reads = server.routes.filter { $0 == path }.count
+
+            server.removePages()
+            store.setForeground(true)
+            try await waitUntil { store.teamChats[chat]?.messages.last?.page == TeamAboutPage() }
+            XCTAssertEqual(store.teamChats[chat]?.messages.last?.page, TeamAboutPage(),
+                           "The quote says that the page is gone.")
+            try await Task.sleep(for: .seconds(1))
+            XCTAssertEqual(server.routes.filter { $0 == path }.count, reads + 1, "One read for one update.")
+
+            server.changeDocuments()
+            try await waitUntil { server.pendingUpdate == false }
+            try await Task.sleep(for: .seconds(1))
+            XCTAssertEqual(server.routes.filter { $0 == path }.count, reads + 1,
+                           "A chat whose pages went does not read again.")
+            store.setForeground(false)
+        }
+        #endif
+    }
+
     #if DEBUG && targetEnvironment(simulator)
     @MainActor
     private func withPairedStore(address: String, _ body: (AppStore) async throws -> Void) async throws {
@@ -561,6 +602,24 @@ private final class DirectServer: @unchecked Sendable {
     /// Each send gets a 409 with this sentence, or nil to accept each send again.
     func refuse(_ sentence: String?) { lock.withLock { refusal = sentence } }
 
+    /// The pages of the messages went: each page has no ID and no title. The next updates answer says that a
+    /// document changed.
+    func removePages() {
+        lock.withLock {
+            pagesGone = true
+            documentsChanged = true
+            pending = true
+        }
+    }
+
+    /// The next updates answer says that a document changed.
+    func changeDocuments() { lock.withLock { documentsChanged = true; pending = true } }
+
+    /// An updates answer waits for the app.
+    var pendingUpdate: Bool { lock.withLock { pending } }
+    private var pagesGone = false
+    private var documentsChanged = false
+
     /// Grace writes a message. The next updates answer names the direct chat.
     func addMessage(_ text: String) {
         lock.withLock {
@@ -576,7 +635,13 @@ private final class DirectServer: @unchecked Sendable {
         return #"{"id": "e\#(message.first)", "first": \#(message.first), "this_mac": \#(message.own), "#
             + #""text": "\#(message.text)", "reply_to": \#(message.replyTo.map { #""e\#($0)""# } ?? "null"), "#
             + #""reply": \#(reply), "created_at": "2026-11-10T12:0\#(message.first):00Z", "edited_at": null"#
-            + (bot ? #", "page": \#(message.page.map { #"{"id": "\#($0)", "title": "Sales"}"# } ?? "null")}"# : "}")
+            + (bot ? #", "page": \#(pageJSON(message.page))}"# : "}")
+    }
+
+    /// The caller holds the lock.
+    private func pageJSON(_ page: String?) -> String {
+        guard let page else { return "null" }
+        return pagesGone ? #"{"id": null, "title": null}"# : #"{"id": "\#(page)", "title": "Sales"}"#
     }
 
     /// The caller holds the lock.
@@ -659,6 +724,11 @@ private final class DirectServer: @unchecked Sendable {
                             return #"{"after": \#(after), "cursor": \#(after), "server_time": "2026-11-09T00:00:00Z"}"#
                         }
                         pending = false; cursor += 1
+                        if documentsChanged {
+                            documentsChanged = false
+                            return #"{"after": \#(after), "cursor": \#(cursor), "server_time": "2026-11-09T00:00:00Z", "#
+                                + #""documents_changed": true}"#
+                        }
                         let changed = bot ? #""team_bot_directs_changed": [{"team": "r1", "bot": "t-r1-e1"}]"#
                             : #""team_directs_changed": [{"team": "r1", "member": "m1"}]"#
                         return #"{"after": \#(after), "cursor": \#(cursor), "server_time": "2026-11-09T00:00:00Z", "#
@@ -1174,6 +1244,12 @@ final class BotDirectChatTests: XCTestCase {
                        "A page takes the place of an edit, and the edit takes its draft with it.")
         composer.edit(answered)
         XCTAssertNil(composer.quote, "An edit takes the place of a page.")
+        composer.reply(to: answered)
+        XCTAssertNil(composer.editing, "A reply takes the place of an edit.")
+        composer.edit(answered)
+        composer.ask(about: sales)
+        XCTAssertNil(composer.editing, "A page takes the place of an edit.")
+        composer.edit(answered)
         composer.cancelEdit()
         XCTAssertEqual(composer, TeamComposerState())
 
@@ -1197,6 +1273,32 @@ final class BotDirectChatTests: XCTestCase {
         composer.ask(about: sales)
         composer.sent()
         XCTAssertEqual(composer, TeamComposerState(), "A send clears the draft and the page.")
+    }
+
+    /// An edit that the Mac did not take comes back, and a reply or a page that the person set in the meantime stays.
+    /// A new draft or a new edit wins over the failed edit.
+    func testAFailedEditComesBackAndKeepsAReplyOrAPage() {
+        var composer = TeamComposerState()
+        composer.edit(answered)
+        composer.cancelEdit()
+        composer.ask(about: sales)
+        composer.restore(edit: answered, text: "Hello again")
+        XCTAssertEqual(composer, TeamComposerState(draft: "Hello again", quote: .page(sales), editing: answered),
+                       "The edit comes back with its text, and the page stays.")
+
+        composer = TeamComposerState(quote: .reply(answered))
+        composer.restore(edit: answered, text: "Hello again")
+        XCTAssertEqual(composer.quote, .reply(answered), "The reply stays.")
+        XCTAssertEqual(composer.editing, answered)
+
+        composer = TeamComposerState(draft: "Something new")
+        composer.restore(edit: answered, text: "Hello again")
+        XCTAssertEqual(composer, TeamComposerState(draft: "Something new"), "A new draft wins.")
+        var other = answered
+        other.id = "e2"
+        composer = TeamComposerState(draft: "Other", editing: other)
+        composer.restore(edit: answered, text: "Hello again")
+        XCTAssertEqual(composer.editing, other, "A new edit wins.")
     }
 
     @MainActor
@@ -1316,22 +1418,25 @@ final class BotDirectChatTests: XCTestCase {
     }
 
     /// A fresh Library list without a page that a loaded chat with a bot quotes reads that chat again.
-    func testAChatThatQuotesAPageThatWentReadsAgain() {
+    /// After an update that says that a document changed, each loaded chat with a bot that quotes a page with an ID
+    /// reads again, one time. A chat whose pages all went has no page with an ID, so it does not read again.
+    func testAChatThatQuotesAPageReadsAgainAfterAChangeOfTheDocuments() {
         var message = answered
         message.page = sales
+        var second = message
+        second.id = "e2"
         var gone = message
         gone.page = TeamAboutPage()
         let bot = TeamChatKey(room: "r1", bot: "t-r1-e1")
-        let other = TeamChatKey(room: "r1", bot: "t-r1-e2")
         let chats: [TeamChatKey: TeamChat] = [
-            bot: TeamChat(messages: [message], loaded: true),
-            other: TeamChat(messages: [gone], loaded: true),
-            TeamChatKey(room: "r1", bot: "t-r1-e3"): TeamChat(messages: [message], loaded: false),
+            bot: TeamChat(messages: [message, second, gone], loaded: true),
+            TeamChatKey(room: "r1", bot: "t-r1-e2"): TeamChat(messages: [gone], loaded: true),
+            TeamChatKey(room: "r1", bot: "t-r1-e3"): TeamChat(messages: [answered], loaded: true),
+            TeamChatKey(room: "r1", bot: "t-r1-e4"): TeamChat(messages: [message], loaded: false),
             "r1": TeamChat(messages: [message], loaded: true)]
-        XCTAssertEqual(AppStore.teamChatsQuotingGonePages(chats, documents: []), [bot],
-                       "Not a chat whose page is gone already, not a chat that did not load, and not the Team chat.")
-        XCTAssertEqual(AppStore.teamChatsQuotingGonePages(chats, documents: [teamPage("t-r1-e1")]), [],
-                       "The page is still in the Library.")
+        XCTAssertEqual(AppStore.teamChatsQuotingPages(chats), [bot],
+                       "One time for a chat with two pages. Not a chat whose pages went, not a chat without a page, "
+                       + "not a chat that did not load, and not the Team chat.")
     }
 
     /// A send with a page keeps the page and no reply. A page goes only into a direct chat with a bot.
