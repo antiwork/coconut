@@ -110,11 +110,12 @@ enum MessageBanners {
         return chat.room + ":" + other
     }
 
-    /// The chat in the `userInfo` of a banner. The push of the iPhone names a direct chat with the same keys.
+    /// The chat in the `userInfo` of a banner. The push of the iPhone names a direct chat with a person with the same
+    /// keys. The key `team_bot` names the team bot ID of a direct chat with an agent; only the banners of the Mac use it.
     static func userInfo(_ chat: TeamChatKey) -> [String: String] {
         var info = ["team": chat.room]
         if let member = chat.member { info["member"] = member }
-        if let bot = chat.bot { info["bot"] = bot }
+        if let bot = chat.bot { info["team_bot"] = bot }
         if let named = chat.chat { info["chat"] = named }
         return info
     }
@@ -123,7 +124,7 @@ enum MessageBanners {
     static func chat(userInfo: [AnyHashable: Any]) -> TeamChatKey? {
         guard let room = userInfo["team"] as? String, !room.isEmpty else { return nil }
         return TeamChatKey(room: room, member: userInfo["member"] as? String, chat: userInfo["chat"] as? String,
-                           bot: userInfo["bot"] as? String)
+                           bot: userInfo["team_bot"] as? String)
     }
 
     /// The chat that a click on a banner shows: the chat while the list of the teams has it. Nil when the app has no

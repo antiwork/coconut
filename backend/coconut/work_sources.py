@@ -542,7 +542,7 @@ PROVIDER_ERRORS = frozenset('native_' + reason for reason in (
     'auth', 'auth_permanent', 'billing', 'billing_unverified', 'model_not_found'))
 
 
-FAILURE_HINT = "Run the source command by hand in the bot's environment to see its output."
+FAILURE_HINT = "Run the source command by hand in the agent's environment to see its output."
 
 
 def failure_detail(error):

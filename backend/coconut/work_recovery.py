@@ -10,7 +10,7 @@ _RECOVERY_START = (
     'Continue unfinished work within the recorded approval. Reuse existing processes, conversations, and decisions. '
     'Use coconut_wait when another task or process owns the next step. '
     'Call coconut_wait without arguments to find owners from this Work item. '
-    'For a process owned by another bot, wait for its owning task instead of its process. '
+    'For a process owned by another agent, wait for its owning task instead of its process. '
     'If an external source has no native task or process, schedule a bounded read-only recheck with native Hermes scheduling. '
     'Reuse an existing scheduled check and preserve rejected contact or escalation requests. '
     'Do not ask permission to retry, recover, plan tests, or repair routine local setup. '

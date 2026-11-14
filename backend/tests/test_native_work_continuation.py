@@ -341,7 +341,7 @@ class NativeWorkContinuationTests(unittest.TestCase):
             self.resume(source)
         other = self.write('/v1/bots', {'name': 'Unrelated'})
         self.service._put('tasks', dict(source, bot_id=other['id']))
-        with self.assertRaisesRegex(ServiceError, 'owner or its requesting bot'):
+        with self.assertRaisesRegex(ServiceError, 'owner or its requesting agent'):
             self.resume(source)
         self.assertEqual(self.service._get('tasks', owner['id']), owner)
 
@@ -696,7 +696,7 @@ class NativeWorkContinuationTests(unittest.TestCase):
         owner, source = self.native()
         other = self.write('/v1/bots', {'name': 'Unrelated'})
         self.service._put('tasks', dict(source, bot_id=other['id']))
-        with self.assertRaisesRegex(ServiceError, 'owner or its requesting bot'):
+        with self.assertRaisesRegex(ServiceError, 'owner or its requesting agent'):
             self.resume(source)
         self.assertEqual(self.service._get('tasks', owner['id']), owner)
 
@@ -2130,7 +2130,7 @@ class NativeWorkContinuationTests(unittest.TestCase):
         owner, source = self.scheduled_native()
         other = self.write('/v1/bots', {'name': 'Unrelated'})
         self.service._put('tasks', dict(source, bot_id=other['id']))
-        with self.assertRaisesRegex(ServiceError, 'owner or its requesting bot'):
+        with self.assertRaisesRegex(ServiceError, 'owner or its requesting agent'):
             self.resume(source)
         self.assertEqual(self.service._get('tasks', owner['id']), owner)
 

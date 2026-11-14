@@ -422,7 +422,7 @@ class RegisteredDelegationTests(unittest.TestCase):
         caller = self.write(f'/v1/bots/{stranger["id"]}/messages', {'text': 'Continue that PR.'})
         caller = dict(self.service._get('tasks', caller['id']), status='working')
         self.service._put('tasks', caller)
-        self.assert_rejected(owner, caller, 'Only the owner or its requesting bot')
+        self.assert_rejected(owner, caller, 'Only the owner or its requesting agent')
         # A Work of another bot cannot present this owner's PR, even with the same registration.
         for item in (work, requester_pr):
             self.service._put('artifacts', dict(item, bot_id=stranger['id']))

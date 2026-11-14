@@ -192,7 +192,7 @@ class ArchivedFailedRequestAdmissionTests(ArchivedRequest, unittest.TestCase):
     def test_only_the_owner_or_its_requester_can_continue(self):
         owner = self.archived()
         other = self.store.mutate('POST', '/v1/bots', {'name': 'Other'}, str(uuid4()), 'test-phone')
-        self.assertRejected(owner, 'Only the owner or its requesting bot', caller=self.working(other, 'Continue it.'))
+        self.assertRejected(owner, 'Only the owner or its requesting agent', caller=self.working(other, 'Continue it.'))
 
     def test_stop_and_cancellation_stay_final(self):
         for name in ('cancelled', 'stopped_before'):

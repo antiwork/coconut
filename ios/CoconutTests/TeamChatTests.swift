@@ -395,7 +395,7 @@ final class TeamChatTests: XCTestCase {
         XCTAssertTrue(ChatFilter.showsChips(rooms: [room("r1")]))
         XCTAssertEqual(ChatFilter.effective(.bots, rooms: [room("r1")]), .bots)
         XCTAssertEqual(ChatFilter.effective(.people, rooms: []), .all, "A Mac that left its last team is back at All.")
-        XCTAssertEqual(ChatFilter.allCases.map(\.title), ["All", "People", "Bots"])
+        XCTAssertEqual(ChatFilter.allCases.map(\.title), ["All", "People", "Agents"])
     }
 
     /// A team that the Mac left keeps its row and its history, but brings no chips. A team that the Mac joins does.
@@ -527,7 +527,7 @@ final class TeamChatTests: XCTestCase {
             + #"{"id": "t-r-1", "name": "Planner", "open": true}, {"id": "t-r-2", "name": "Scribe", "open": true}]}"#
         let room = try APIJSON.decoder().decode(TeamRoom.self, from: Data(json.utf8))
         XCTAssertEqual(room.memberList.map(\.isBotOnly), [false, false, true], "A missing mark is false.")
-        XCTAssertEqual(room.whoLine, "2 people, 2 bots")
+        XCTAssertEqual(room.whoLine, "2 people, 2 agents")
     }
 
     func testTheEmptyChatTellsOfTheAtOnlyWhenABotCanAnswer() {
@@ -537,7 +537,7 @@ final class TeamChatTests: XCTestCase {
             TeamRoom(room: "r", name: "Example Team", state: "active", bots: bots)
         }
         XCTAssertEqual(TeamChatEmptyLine.text(for: room([open, own])),
-                       "Messages here go to each person in Example Team. Type @ to ask a bot.")
+                       "Messages here go to each person in Example Team. Type @ to ask an agent.")
         XCTAssertEqual(TeamChatEmptyLine.text(for: room([own])), "Messages here go to each person in Example Team.",
                        "A bot of a person answers no teammate, so the line tells of no @.")
         XCTAssertEqual(TeamChatEmptyLine.text(for: room([])), "Messages here go to each person in Example Team.")
@@ -613,7 +613,7 @@ final class TeamChatTests: XCTestCase {
         let twice = TeamMentions.ids(in: "@Bot1 and again @Bot1", selected: [], room: room)
         XCTAssertEqual(twice, ["t-r1-1"], "The same bot named twice counts once.")
         XCTAssertFalse(TeamMentions.fits(ids(16) + ["t-r1-1"]), "The Mac counts each item, also a second copy of an ID.")
-        XCTAssertEqual(TeamMentions.overLimit, "Name at most 16 people and bots in one message.")
+        XCTAssertEqual(TeamMentions.overLimit, "Name at most 16 people and agents in one message.")
     }
 
     @MainActor
@@ -624,7 +624,7 @@ final class TeamChatTests: XCTestCase {
         let mentions = (1...17).map { "t-r1-\($0)" }
         XCTAssertFalse(store.sendTeamMessage("r1", text: "Hello", replyingTo: nil, mentions: mentions))
         XCTAssertEqual(store.teamChats["r1"]?.pending ?? [], [], "Nothing is saved, so nothing waits for a retry.")
-        XCTAssertEqual(store.error, "Name at most 16 people and bots in one message.")
+        XCTAssertEqual(store.error, "Name at most 16 people and agents in one message.")
         store.error = nil
         XCTAssertTrue(store.sendTeamMessage("r1", text: "Hello", replyingTo: nil, mentions: Array(mentions.prefix(16))))
         XCTAssertNil(store.error)
@@ -691,7 +691,7 @@ final class TeamChatTests: XCTestCase {
                                             typing("Noor")]), "4 people are typing")
         // A subject without a name.
         XCTAssertEqual(TeamTypingText.text([TeamTyping(member: "m-x", seconds: 10)]), "Former member is typing")
-        XCTAssertEqual(TeamTypingText.text([TeamTyping(member: "m-x", bot: "t-r1-b9", seconds: 30)]), "Bot is typing")
+        XCTAssertEqual(TeamTypingText.text([TeamTyping(member: "m-x", bot: "t-r1-b9", seconds: 30)]), "Agent is typing")
     }
 
     /// Each subject ends `seconds` after the list came, without a request. A team that is not active shows nobody.

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Verify routines and bot collaboration through an isolated local service."""
+"""Verify routines and agent collaboration through an isolated local service."""
 
 from __future__ import annotations
 
@@ -175,11 +175,11 @@ def main() -> None:
         })["token"]
         bot_a = request("POST", "/v1/bots", {
             "name": "Ada", "role": "Coordinates a brief check", "avatar": "pencil.line",
-            "color": "#BA5D3B", "instructions": "Keep replies under two short sentences. Use Coconut tools for requests to another bot.",
+            "color": "#BA5D3B", "instructions": "Keep replies under two short sentences. Use Coconut tools for requests to another agent.",
         })
         bot_b = request("POST", "/v1/bots", {
             "name": "Lin", "role": "Checks arithmetic", "avatar": "checkmark.seal",
-            "color": "#517568", "instructions": "Answer briefly. When another bot requests a check, send the result to that bot once.",
+            "color": "#517568", "instructions": "Answer briefly. When another agent requests a check, send the result to that agent once.",
         })
         assert bot_a["id"] != bot_b["id"]
         assert bot_a["session_id"] != bot_b["session_id"]
@@ -206,7 +206,7 @@ def main() -> None:
 
         stage = "mention_dispatch"
         mention_key = str(uuid4())
-        mention_body = {"text": "Lin, check that 17 multiplied by 19 equals 323. Reply here in one short sentence. Do not message another bot.",
+        mention_body = {"text": "Lin, check that 17 multiplied by 19 equals 323. Reply here in one short sentence. Do not message another agent.",
                         "mode": "queue", "recipient_bot_ids": [bot_b["id"], bot_b["id"]]}
         mention = request("POST", f'/v1/bots/{bot_a["id"]}/messages', mention_body, mention_key)
         repeated_mention = request("POST", f'/v1/bots/{bot_a["id"]}/messages', mention_body, mention_key)
@@ -219,7 +219,7 @@ def main() -> None:
         handoff = request("POST", f'/v1/bots/{bot_a["id"]}/messages', {
             "text": "TEAM_MILESTONE_HANDOFF: Use coconut_message_bot to ask Lin for the result of 17 multiplied by 19. "
                     "Ask Lin to use coconut_message_bot to send that result back to you once. "
-                    "When Lin returns the result, report it here without sending another bot message. Do not create a file.",
+                    "When Lin returns the result, report it here without sending another agent message. Do not create a file.",
             "mode": "queue", })
 
         stage = "queued_cancellation"

@@ -1,6 +1,6 @@
 # Pages of the Library
 
-A bot saves a page with `coconut_save_document`. The person reads it in the Library of the Coconut app, on the iPhone and on the Mac. Coconut sets the look of each page. The bot writes the structure. This reference gives the recipe of a good page, the Markdown of each block, and one complete example.
+An agent saves a page with `coconut_save_document`. The person reads it in the Library of the Coconut app, on the iPhone and on the Mac. Coconut sets the look of each page. The agent writes the structure. This reference gives the recipe of a good page, the Markdown of each block, and one complete example.
 
 ## The recipe of a report page
 

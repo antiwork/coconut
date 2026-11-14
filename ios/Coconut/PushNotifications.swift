@@ -63,16 +63,16 @@ struct NotificationSettingsView: View {
             }
             Section {
                 Toggle(isOn: $push.messageNotifications) {
-                    Text("Also notify me when a bot replies").frame(maxWidth: .infinity, alignment: .leading)
+                    Text("Also notify me when an agent replies").frame(maxWidth: .infinity, alignment: .leading)
                         .contentShape(Rectangle()).onTapGesture { push.messageNotifications.toggle() }
                 }
                 .disabled(push.notificationLevel == .urgentOnly)
                 .accessibilityIdentifier("message-notifications")
             } header: {
-                Text("Bot replies")
+                Text("Agent replies")
             } footer: {
-                Text(push.notificationLevel == .urgentOnly ? "With Only urgent, bot replies do not notify you."
-                                                           : "This includes a task that a bot could not finish.")
+                Text(push.notificationLevel == .urgentOnly ? "With Only urgent, agent replies do not notify you."
+                                                           : "This includes a task that an agent could not finish.")
             }
             Section {
                 NavigationLink {
@@ -249,7 +249,7 @@ enum NotificationLevel: String, Codable, CaseIterable, Sendable {
     var detail: String {
         switch self {
         case .every: "Each card notifies you at once, in its own notification."
-        case .grouped: "After a new card, Coconut waits 30 seconds, so that cards from the same bot run come together. "
+        case .grouped: "After a new card, Coconut waits 30 seconds, so that cards from the same agent run come together. "
             + "Then one notification shows the card, or counts the cards. The next notification waits at least 10 minutes. "
             + "Urgent cards do not wait."
         case .urgentOnly: "Only urgent cards notify you. Other cards wait in Inbox without a notification."

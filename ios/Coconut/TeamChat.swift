@@ -612,7 +612,7 @@ enum TeamNames {
     /// The writer of a quoted message. `ownMember` is the member ID of this Mac. `peer` is the name of the other
     /// person of a direct chat, whose messages have no name of their own.
     static func author(of quote: TeamMessageQuote, ownMember: String?, peer: String? = nil) -> String {
-        if let bot = quote.botName ?? quote.bot.map({ _ in "Bot" }) { return bot }
+        if let bot = quote.botName ?? quote.bot.map({ _ in "Agent" }) { return bot }
         if quote.thisMac == true { return "You" }
         if let member = quote.member, member == ownMember { return "You" }
         return peer ?? quote.memberName ?? formerMember
@@ -623,7 +623,7 @@ enum TeamNames {
 
     /// The writer of a message of a chat. `peer` as above.
     static func author(of message: TeamMessage, peer: String?) -> String {
-        if message.bot != nil { return message.botName ?? "Bot" }
+        if message.bot != nil { return message.botName ?? "Agent" }
         if message.isOwn { return "You" }
         return peer ?? message.memberName ?? formerMember
     }
@@ -639,7 +639,7 @@ enum TeamChatPreview {
     static func text(_ last: TeamLastMessage?, direct: Bool = false) -> String {
         guard let last, let text = last.text else { return empty }
         let body = TranscriptPresentation.previewText(text)
-        if last.isBot { return (last.writerName ?? "Bot") + ": " + body }
+        if last.isBot { return (last.writerName ?? "Agent") + ": " + body }
         if last.thisMac == true { return "You: " + body }
         if direct { return body }
         return (last.writerName ?? TeamNames.formerMember) + ": " + body
@@ -673,7 +673,7 @@ struct TeamTyping: Decodable, Identifiable, Equatable, Sendable {
 
     /// The name that the row shows: the bot for a bot, else the person.
     var shownName: String {
-        if bot != nil { return botName ?? "Bot" }
+        if bot != nil { return botName ?? "Agent" }
         return name ?? TeamNames.formerMember
     }
 }
@@ -881,7 +881,7 @@ enum ChatFilter: String, CaseIterable, Identifiable, Sendable {
         switch self {
         case .all: "All"
         case .people: "People"
-        case .bots: "Bots"
+        case .bots: "Agents"
         }
     }
 
@@ -967,7 +967,7 @@ extension TeamRoom {
         let line = count == 1 ? "1 person" : "\(count) people"
         let bots = TeamMentions.bots(of: self).count
         guard bots > 0 else { return line }
-        return line + (bots == 1 ? ", 1 bot" : ", \(bots) bots")
+        return line + (bots == 1 ? ", 1 agent" : ", \(bots) agents")
     }
 }
 
@@ -1016,7 +1016,7 @@ enum TeamMentions {
     /// The most mentions that the Mac takes in one message (`MAX_MENTIONS` in backend/coconut/team_store.py). A send
     /// with more saves nothing, so a message that the Mac refuses for its mentions never waits for a retry.
     static let limit = 16
-    static let overLimit = "Name at most \(limit) people and bots in one message."
+    static let overLimit = "Name at most \(limit) people and agents in one message."
 
     /// The rows of the `@` list: the bots that a teammate can ask, then the people of the team, each group in the order
     /// of the names. This is the one place of that rule. A person is each member that is not a Mac for a team only and
@@ -1044,7 +1044,7 @@ enum TeamMentions {
 
     /// The bots that a teammate can ask: the bots of the team that answer each member (`open`). A bot of a person,
     /// also of this person, answers no teammate: it is only the author of the pages that the person shares. This is
-    /// the one place of that rule. The `@` list, the line of who is in the chat and the section "Bots" of the Team
+    /// the one place of that rule. The `@` list, the line of who is in the chat and the section "Agents" of the Team
     /// screen (TeamBotSection) read it.
     static func bots(of room: TeamRoom) -> [TeamRoomBot] {
         var seen = Set<String>()
@@ -1124,7 +1124,7 @@ enum TeamNotificationFooter {
     }
 }
 
-/// One row of the section "Bots" of the Team screen.
+/// One row of the section "Agents" of the Team screen.
 enum TeamBotRow: Identifiable, Equatable, Sendable {
     /// A bot that a teammate can ask (TeamMentions.bots).
     case answers(TeamRoomBot)
@@ -1169,25 +1169,25 @@ enum TeamBotRow: Identifiable, Equatable, Sendable {
         switch self {
         case .answers: nil
         case .pagesOnly: "Pages only"
-        case .noBot: "No bot yet"
+        case .noBot: "No agent yet"
         }
     }
 
     /// What VoiceOver reads for the row: one sentence.
     var spoken: String {
         switch self {
-        case .answers: name + ", bot"
-        case .pagesOnly: name + ", bot, pages only"
-        case .noBot: name + ", no bot yet"
+        case .answers: name + ", agent"
+        case .pagesOnly: name + ", agent, pages only"
+        case .noBot: name + ", no agent yet"
         }
     }
 }
 
-/// The section "Bots" of the Team screen: what the Macs for a team only bring to the team. A bot of a person is only
+/// The section "Agents" of the Team screen: what the Macs for a team only bring to the team. A bot of a person is only
 /// the author of the pages that the person shares, so it never shows. A Mac for a team only is no person, so the
 /// section "Members" does not show it (TeamRoom.people), and this section does.
 enum TeamBotSection {
-    static let askLine = "Type @ in the team chat to ask a bot."
+    static let askLine = "Type @ in the team chat to ask an agent."
 
     /// The bots that a teammate can ask, the other bots of the Macs for a team only, and one row for each such Mac
     /// without a bot, in the order of their names. An older service sends no `open` and no `bot_only`, so the
@@ -1232,6 +1232,6 @@ enum TeamChatEmptyLine {
     static func text(for room: TeamRoom, peer: TeamDirectPeer? = nil) -> String {
         if let peer { return "Messages here go only to \(peer.name)." }
         let line = "Messages here go to each person in \(room.name)."
-        return TeamMentions.bots(of: room).isEmpty ? line : line + " Type @ to ask a bot."
+        return TeamMentions.bots(of: room).isEmpty ? line : line + " Type @ to ask an agent."
     }
 }

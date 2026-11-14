@@ -142,7 +142,7 @@ struct DocumentPage {
     /// The design tokens of a page. The colors match the app: BoardStyle for the surfaces and the text, and a
     /// palette of six chart colors with a lighter set for dark mode.
     private static let stylesheet = """
-    /* The rules of a page. A bot writes the structure, and this stylesheet sets the look.
+    /* The rules of a page. An agent writes the structure, and this stylesheet sets the look.
        1. One column. It is at most 680 px wide and sits in the center of a wide window. On a phone the side margin
           is 16 px, the margin of the app: the text of the page then starts under the left edge of the back button.
        2. One typeface: the system font. Five sizes: 13, 15, 17, 20 and 28 px (--size-1 to --size-5), the iOS text
@@ -264,7 +264,7 @@ struct DocumentPage {
     figure { margin: 0 0 16px; }
     figure.chart.broken { color: var(--text-2); font-size: var(--size-2); }
     /* A chart: a line of series names, the plot with hairlines and quiet numbers, then a quiet caption. */
-    /* Only the chart block of page.js: a chart that a bot draws by hand in an HTML page keeps its own look. */
+    /* Only the chart block of page.js: a chart that an agent draws by hand in an HTML page keeps its own look. */
     /* A chart takes the full width of its box, also in a flex row or column, and never more. */
     figure.chart[data-spec] { min-width: 0; width: 100%; }
     figure.chart[data-spec] svg { direction: ltr; }

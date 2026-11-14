@@ -236,6 +236,30 @@ class GatewayCronTests(unittest.TestCase):
             claim.assert_not_called()
             self.assertIsNone(self.read('routines', routine['id'])['error'])
 
+    def test_a_pause_reason_of_an_earlier_version_ends_when_the_gateway_serves_the_profile(self):
+        # Earlier versions wrote the reasons with "bot" in place of "agent". The routine keeps such a reason until the
+        # gateway serves its profile again.
+        due = (datetime.now(timezone.utc) - timedelta(minutes=1)).isoformat()
+        # The exact texts that the routines of those versions keep.
+        earlier = ('No Hermes gateway serves the profile of this bot now, so its routines are paused. They run again on '
+                   'their schedule when the gateway serves the profile.',
+                   f'The Hermes profile of this bot is parked ({self.home / "gateway.parked"}), so no Hermes gateway runs '
+                   'its routines. Remove that file to run them again on their schedule.')
+        self.service.gateway_enabled = lambda: True
+        self.service.gateway_bridge.poll({'home': str(self.home), 'wait': 0})
+        for reason in earlier:
+            with self.subTest(reason=reason):
+                routine = dict(id=str(uuid5(UUID(self.bot['id']), 'cron:intake')), bot_id=self.bot['id'],
+                               name='Intake', enabled=True, error=reason, next_run_at=due)
+                with self.service.transaction():
+                    self.service._put('routines', routine)
+                with patch.object(self.service, 'refresh_native_routines'), \
+                        patch.object(self.service, 'run_native_routine') as claim:
+                    self.service._native_cron_next = 0
+                    self.service.tick_native_routines()
+                claim.assert_not_called()
+                self.assertIsNone(self.read('routines', routine['id'])['error'])
+
     def test_a_parked_profile_pauses_its_routines_and_its_chat_says_why(self):
         due = (datetime.now(timezone.utc) - timedelta(minutes=1)).isoformat()
         routine = dict(id=str(uuid5(UUID(self.bot['id']), 'cron:intake')), bot_id=self.bot['id'], name='Intake',

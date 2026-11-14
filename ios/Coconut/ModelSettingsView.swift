@@ -109,7 +109,7 @@ struct ModelSettingsView: View {
                     } header: {
                         Text(isBot ? "Custom model" : "Default model")
                     } footer: {
-                        if !isBot { Text("Hermes default. Shared by bots using the default model. Changes save when you make them.") }
+                        if !isBot { Text("Hermes default. Shared by agents using the default model. Changes save when you make them.") }
                     }
                     .disabled(saving || !canEdit)
                 }

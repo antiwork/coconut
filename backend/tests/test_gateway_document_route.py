@@ -130,7 +130,7 @@ class GatewayPageRouteTests(unittest.TestCase):
     def test_a_home_that_is_not_a_profile_of_a_bot_keeps_no_page(self):
         status, answer = self.post('/v1/gateway/document', dict(PAGE, home=self.temp.name), self.token)
         self.assertEqual(status, 404)
-        self.assertIn('not the profile of a bot', answer['error'])
+        self.assertIn('not the profile of an agent', answer['error'])
         self.assertEqual(self.service.documents()['documents'], [])
 
     def test_a_document_tool_without_a_turn_reads_and_deletes_the_pages_of_the_bot_of_a_hermes_home(self):
@@ -162,12 +162,12 @@ class GatewayPageRouteTests(unittest.TestCase):
             self.service.mutate(method, f'/v1/bots/{self.bot["id"]}', data or {}, str(uuid4()), 'phone')
         write('PATCH', {'archived': True})
         status, answer = self.post('/v1/gateway/document', dict(PAGE, home=self.home), self.token)
-        self.assertEqual((status, answer['error']), (409, 'The bot is archived or deleted.'))
+        self.assertEqual((status, answer['error']), (409, 'The agent is archived or deleted.'))
         # The profile of a deleted bot goes with it, so its Hermes home is no longer the profile of a bot.
         write('DELETE')
         status, answer = self.post('/v1/gateway/document', dict(PAGE, home=self.home), self.token)
         self.assertEqual(status, 404)
-        self.assertIn('not the profile of a bot', answer['error'])
+        self.assertIn('not the profile of an agent', answer['error'])
         self.assertEqual(self.service.db.execute('SELECT count(*) FROM documents').fetchone()[0], 0)
 
     # The delete of the tooling
@@ -225,7 +225,7 @@ class GatewayPageRouteTests(unittest.TestCase):
         self.assertEqual(status, 400, answer)
         self.assertIn('home', answer['error'])
         status, answer = self.delete({'home': self.temp.name, 'key': 'weekly-report'}, self.token)
-        self.assertEqual((status, answer['error']), (404, 'This Hermes home is not the profile of a bot.'))
+        self.assertEqual((status, answer['error']), (404, 'This Hermes home is not the profile of an agent.'))
         self.assertEqual(self.saved()[0], [(self.bot['id'], 'weekly-report')])
 
     def test_a_delete_keeps_the_page_of_another_bot_with_the_same_key(self):
@@ -281,11 +281,11 @@ class GatewayPageRouteTests(unittest.TestCase):
         self.post('/v1/gateway/document', dict(PAGE, home=self.home), self.token)
         body = {'home': self.home, 'key': 'weekly-report'}
         self.service.mutate('PATCH', f'/v1/bots/{self.bot["id"]}', {'archived': True}, str(uuid4()), 'phone')
-        self.assertEqual(self.delete(body, self.token), (409, {'error': 'The bot is archived or deleted.'}))
+        self.assertEqual(self.delete(body, self.token), (409, {'error': 'The agent is archived or deleted.'}))
         self.assertEqual(self.saved()[0], [(self.bot['id'], 'weekly-report')])
         self.service.mutate('DELETE', f'/v1/bots/{self.bot["id"]}', {}, str(uuid4()), 'phone')
         status, answer = self.delete(body, self.token)
-        self.assertEqual((status, answer['error']), (404, 'This Hermes home is not the profile of a bot.'))
+        self.assertEqual((status, answer['error']), (404, 'This Hermes home is not the profile of an agent.'))
 
     def test_a_delete_removes_a_page_that_has_ended(self):
         ends = (datetime.now(timezone.utc) + timedelta(days=2)).isoformat()

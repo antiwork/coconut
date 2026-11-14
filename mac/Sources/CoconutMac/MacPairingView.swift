@@ -17,7 +17,7 @@ struct MacPairingView: View {
             if servesHere {
                 VStack(alignment: .leading, spacing: BoardStyle.Space.m) {
                     Text("This Mac runs Coconut").font(.body.weight(.semibold))
-                    Text("Use the bots of this Mac here. Coconut pairs this window with the service on this Mac.")
+                    Text("Use the agents of this Mac here. Coconut pairs this window with the service on this Mac.")
                         .foregroundStyle(.secondary)
                     HStack {
                         Button {
