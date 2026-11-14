@@ -240,7 +240,7 @@ struct TeamRoomView: View {
                 Section {
                     ForEach(botRows) { botRow($0, in: room) }
                 } header: {
-                    Text("Bots")
+                    Text("Agents")
                 } footer: {
                     if let line = TeamBotSection.footer(for: botRows) { Text(line) }
                 }

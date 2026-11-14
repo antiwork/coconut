@@ -49,9 +49,9 @@ struct MacMainWindow: View {
                         .navigationSplitViewColumnWidth(min: 220, ideal: 260, max: 300)
                         .toolbar {
                             ToolbarItem {
-                                Button { createOpen = true } label: { Label("New bot", systemImage: "plus") }
+                                Button { createOpen = true } label: { Label("New agent", systemImage: "plus") }
                                     .keyboardShortcut("n", modifiers: .command)
-                                    .help("Create a bot")
+                                    .help("Create an agent")
                             }
                         }
                 } detail: {
@@ -252,7 +252,7 @@ struct MacSidebar: View {
                 }
             }
             if !sections.bots.isEmpty {
-                Section("Bots") {
+                Section("Agents") {
                     ForEach(sections.bots) { bot in row(bot) }
                 }
             }
@@ -293,7 +293,7 @@ struct MacSidebar: View {
             .contextMenu {
                 Button(bot.pinned ? "Unpin" : "Pin") { Task { await store.pinBot(bot, pinned: !bot.pinned) } }
                 Divider()
-                Button("Delete Bot…", role: .destructive) { deleting = bot }
+                Button("Delete Agent…", role: .destructive) { deleting = bot }
             }
             .accessibilityIdentifier("sidebar-bot-\(bot.id)")
     }

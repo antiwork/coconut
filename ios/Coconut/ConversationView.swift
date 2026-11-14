@@ -436,7 +436,7 @@ struct ConversationView: View {
                     Text(StopCopy.message)
                 }
             } else {
-                QuietEmptyState(symbol: "bubble.left", title: "Conversation unavailable", message: "This bot may have been deleted. Return to your team to continue.")
+                QuietEmptyState(symbol: "bubble.left", title: "Conversation unavailable", message: "This agent may have been deleted. Return to your team to continue.")
             }
         }
         .inlineNavigationTitle()
@@ -555,7 +555,7 @@ struct TranscriptMessageRow: View {
                 }
             }.font(.footnote).foregroundStyle(.secondary).padding(.horizontal, BoardStyle.Space.m)
         } else if let senderId = message.senderBotId, senderId != message.botId {
-            Text("Deleted bot").font(.footnote).foregroundStyle(.secondary).padding(.horizontal, BoardStyle.Space.m)
+            Text("Deleted agent").font(.footnote).foregroundStyle(.secondary).padding(.horizontal, BoardStyle.Space.m)
         } else if message.role == "user", let names = recipientNames, !names.isEmpty {
             Text("To \(names)").font(.footnote).foregroundStyle(.secondary)
                 .frame(maxWidth: .infinity, alignment: .trailing).padding(.horizontal, BoardStyle.Space.m)
@@ -580,7 +580,7 @@ struct TranscriptMessageRow: View {
     }
 
     private var recipientNames: String? {
-        TranscriptPresentation.recipientIDs(for: message).map { id in store.bots.first { $0.id == id }?.name ?? "Deleted bot" }.joined(separator: ", ")
+        TranscriptPresentation.recipientIDs(for: message).map { id in store.bots.first { $0.id == id }?.name ?? "Deleted agent" }.joined(separator: ", ")
     }
 }
 
@@ -707,7 +707,7 @@ struct MessageBubble: View {
                 }
             }
         }
-        .accessibilityLabel("\(isUser ? "You" : store.bots.first { $0.id == (message.senderBotId ?? message.botId) }?.name ?? "Deleted bot")")
+        .accessibilityLabel("\(isUser ? "You" : store.bots.first { $0.id == (message.senderBotId ?? message.botId) }?.name ?? "Deleted agent")")
         .sheet(item: $editingOutgoing) { RejectedMessageEditor(outgoing: $0) }
     }
 }
@@ -851,7 +851,7 @@ struct ConversationComposer: View {
             }
             HStack(alignment: .bottom, spacing: 8) {
                 Menu {
-                    Button("Mention a bot", systemImage: "at") {
+                    Button("Mention an agent", systemImage: "at") {
                         text += text.isEmpty || text.last?.isWhitespace == true ? "@" : " @"
                         selection = TextSelection(insertionPoint: text.endIndex)
                         focused = true

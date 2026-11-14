@@ -220,7 +220,7 @@ struct CoconutHome: View {
             ToolbarItem(placement: .topBarTrailing) {
                 Button { createOpen = true } label: {
                     Image(systemName: "plus")
-                }.accessibilityLabel("Create bot").accessibilityIdentifier("create-bot")
+                }.accessibilityLabel("Create agent").accessibilityIdentifier("create-bot")
             }
         }
     }

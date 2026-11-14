@@ -33,7 +33,7 @@ def main() -> None:
         'code': create_pairing_code(data), 'device_name': 'Coconut local setup',
     })['token']
     if request('GET', '/v1/state')['bots']:
-        print('The host already has bots. Existing conversations remain unchanged.')
+        print('The host already has agents. Existing conversations remain unchanged.')
         return
     ada = request('POST', '/v1/bots', {
         'name': 'Ada', 'role': 'Plans and writes', 'avatar': 'pencil.line', 'color': '#BA5D3B',
@@ -42,7 +42,7 @@ def main() -> None:
     })
     lin = request('POST', '/v1/bots', {
         'name': 'Lin', 'role': 'Checks the details', 'avatar': 'checkmark.seal', 'color': '#517568',
-        'instructions': 'Be brief. Complete independent checks while another bot waits.',
+        'instructions': 'Be brief. Complete independent checks while another agent waits.',
     })
     first = request('POST', f'/v1/bots/{ada["id"]}/messages', {
         'text': 'Prepare morning-note.md with a short plan for testing Coconut. Offer a short checklist and a fuller note as choices. Ask before saving.',
@@ -63,7 +63,7 @@ def main() -> None:
             print('Ada has a pending choice in Inbox. Lin has completed its independent check in its conversation.')
             return
         time.sleep(.3)
-    raise SystemExit('The tasks still need time. Their current state remains visible in the bot conversations.')
+    raise SystemExit('The tasks still need time. Their current state remains visible in the agent conversations.')
 
 
 if __name__ == '__main__':

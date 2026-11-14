@@ -1,19 +1,19 @@
 #!/usr/bin/env python3
-"""Let a bot of a team-only Mac answer in the team chat, or stop it: `coconut team connect-chat` and `disconnect-chat`.
+"""Let an agent of a team-only Mac answer in the team chat, or stop it: `coconut team connect-chat` and `disconnect-chat`.
 
-    python3 scripts/team_chat.py connect <bot> [--confirm]
-    python3 scripts/team_chat.py disconnect <bot>
+    python3 scripts/team_chat.py connect <agent> [--confirm]
+    python3 scripts/team_chat.py disconnect <agent>
 
-Coconut changes nothing in Hermes by itself. Only these commands of the operator change the Hermes home of a bot.
+Coconut changes nothing in Hermes by itself. Only these commands of the operator change the Hermes home of an agent.
 `connect` without `--confirm` changes nothing: it prints each change that it would make and the command that makes
-them. With `--confirm` it sets `plugin` on the record of the bot in the service, makes the changes
+them. With `--confirm` it sets `plugin` on the record of the agent in the service, makes the changes
 (backend/coconut/team_chat_config.py, under the Python of Hermes, in a process of its own), then sets `chat`.
 `disconnect` first sets `chat` to false, so no new turn starts, then takes the changes away, then clears `plugin`.
-While `plugin` is set, the bot and Coconut cannot be removed. Both commands are safe to repeat, so a second run
+While `plugin` is set, the agent and Coconut cannot be removed. Both commands are safe to repeat, so a second run
 finishes a run that stopped in the middle. Neither command starts, stops or restarts a Hermes gateway: the operator
 restarts the gateway of the profile.
 
-A Mac with a person refuses both: its bots answer only that person.
+A Mac with a person refuses both: its agents answer only that person.
 """
 from __future__ import annotations
 
@@ -35,7 +35,7 @@ import host
 
 # A second command for the same Hermes home waits this long, then changes nothing.
 LOCK_SECONDS = 10
-FULL_MAC = ('This Mac has a person, so its bots answer only that person. A bot answers in the team chat only on a Mac '
+FULL_MAC = ('This Mac has a person, so its agents answer only that person. An agent answers in the team chat only on a Mac '
             'that runs Coconut for a team only.')
 # Requests go to loopback only, never through a proxy from the environment.
 OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
@@ -75,7 +75,7 @@ def find_bot(data: Path, argument: str) -> dict:
         bot for bot in bots if bot['name'].casefold() == argument.casefold()]
     if len(found) != 1:
         names = ', '.join(bot['name'] for bot in bots) or 'none'
-        raise Stop(f'This Mac has no bot with the name or ID "{argument}". The bots of this Mac: {names}.')
+        raise Stop(f'This Mac has no agent with the name or ID "{argument}". The agents of this Mac: {names}.')
     return found[0]
 
 
@@ -193,7 +193,7 @@ def home_lock(data: Path, home: str, name: str):
                 break
             except BlockingIOError:
                 if time.monotonic() >= deadline:
-                    raise Stop(f'Another command for the bot {name} runs now, so this one changed nothing. Run it '
+                    raise Stop(f'Another command for the agent {name} runs now, so this one changed nothing. Run it '
                                'again when the other one ends.') from None
                 time.sleep(0.2)
         try:
@@ -205,7 +205,7 @@ def home_lock(data: Path, home: str, name: str):
 def main(arguments=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('action', choices=['connect', 'disconnect'])
-    parser.add_argument('bot')
+    parser.add_argument('bot', metavar='agent')
     parser.add_argument('--confirm', action='store_true')
     parser.add_argument('--data-dir', type=Path, default=host.DEFAULT_DATA, help=argparse.SUPPRESS)
     args = parser.parse_args(arguments)

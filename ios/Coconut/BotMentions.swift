@@ -157,7 +157,7 @@ struct BotMentionPicker<B: MentionableBot>: View {
         let matching = bots.filter { $0.mentionedPerson == nil && $0.name.lowercased() == bot.name.lowercased() }
         guard matching.count > 1, let index = matching.firstIndex(where: { $0.id == bot.id }) else { return bot.name }
         let fruit = FruitArtwork.all[FruitArtwork.index(symbol: bot.faceSymbol, identity: bot.id)].name
-        return "\(bot.name), \(fruit), bot \(index + 1) of \(matching.count)"
+        return "\(bot.name), \(fruit), agent \(index + 1) of \(matching.count)"
     }
 
     var body: some View {

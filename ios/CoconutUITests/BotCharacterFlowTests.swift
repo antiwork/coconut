@@ -39,7 +39,7 @@ final class BotCharacterFlowTests: XCTestCase {
         XCTAssertTrue(row.waitForExistence(timeout: 10))
         capture("Working coconut in the bot list")
         row.press(forDuration: 1)
-        app.buttons["Pin bot"].tap()
+        app.buttons["Pin agent"].tap()
         let pin = app.buttons["pinned-bot-\(id)"]
         XCTAssertTrue(pin.waitForExistence(timeout: 5))
         capture("Working coconut pinned")

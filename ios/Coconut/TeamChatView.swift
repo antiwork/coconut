@@ -514,7 +514,7 @@ struct TeamMessageRow: View {
     private var shownText: String { TeamMentionEmphasis.text(text, message: message, room: room) }
     private var teamBot: TeamRoomBot? { message?.bot.flatMap { id in room.botList.first { $0.id == id } } }
     private var writerName: String {
-        if let message, message.bot != nil { return teamBot?.name ?? message.botName ?? "Bot" }
+        if let message, message.bot != nil { return teamBot?.name ?? message.botName ?? "Agent" }
         return message.map { TeamNames.author(of: $0, peer: peer?.name) } ?? "You"
     }
     /// Only a saved message of this person can change. A message of a bot of this Mac belongs to the bot.

@@ -27,7 +27,7 @@ class ProfileError(ValueError):
     pass
 
 
-NO_PROFILE = 'This bot has no Hermes profile.'
+NO_PROFILE = 'This agent has no Hermes profile.'
 
 
 MAX_PROMPT_FILE_BYTES = 1024 * 1024
@@ -38,7 +38,7 @@ SKILLS = Path(__file__).resolve().parents[2] / 'skills'
 def profile_id(bot: dict) -> str:
     value = bot['id']
     if str(UUID(value)) != value or bot.get('profile_id', value) != value:
-        raise ProfileError('The Hermes profile identity does not match this bot.')
+        raise ProfileError('The Hermes profile identity does not match this agent.')
     return value
 
 
@@ -131,7 +131,7 @@ def bot_folder(home: str | Path) -> Path:
         return home.parent
     bot_id = profile_registry.bot_for_home(data_dir, home)
     if bot_id is None:
-        raise ProfileError('Coconut cannot find the bot of this Hermes profile.')
+        raise ProfileError('Coconut cannot find the agent of this Hermes profile.')
     return Path(data_dir) / 'bots' / bot_id
 
 
@@ -167,7 +167,7 @@ class HermesProfiles:
         """The profile folder, for a write. A missing folder stays missing: only Hermes creates profiles."""
         home = self.home(bot)
         if not home.is_dir():
-            raise ProfileError(f'The Hermes profile folder {home} is missing. Restore it, or remove the bot from Coconut.')
+            raise ProfileError(f'The Hermes profile folder {home} is missing. Restore it, or remove the agent from Coconut.')
         return home
 
     def read_instructions(self, bot: dict) -> str:

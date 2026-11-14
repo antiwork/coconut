@@ -35,7 +35,7 @@ The command prints `Sending the setup to the iPhone.`, then `Waiting for the iPh
 
 - The code has 26 letters and digits. A different text is not a Coconut code.
 - The code works once, for ten minutes, and only for the iPhone that made it.
-- Telegram does not encrypt bot chats end to end. After the iPhone pairs, the code is useless.
+- Telegram does not encrypt a chat with a Telegram bot end to end. After the iPhone pairs, the code is useless.
 - If the code expired, the command says so. Ask the person to make a new code on the iPhone.
 
 ## Pair with a setup link or a QR code

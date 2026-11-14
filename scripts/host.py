@@ -148,7 +148,7 @@ def start(args: argparse.Namespace) -> None:
         status = hermes_runtime().status(args.data_dir, environ=environment)
         environment["COCONUT_HERMES_STATUS"] = json.dumps(status)
         if status["status"] != "ok":
-            print(f"Coconut runs no bots until Hermes works: {status['reason']}")
+            print(f"Coconut runs no agents until Hermes works: {status['reason']}")
     with (args.data_dir / "service.log").open('ab') as log:
         process = subprocess.Popen(command, cwd=ROOT, stdin=subprocess.DEVNULL, env=environment,
                                    stdout=log, stderr=log, start_new_session=True)
