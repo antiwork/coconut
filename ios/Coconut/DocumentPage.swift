@@ -269,6 +269,9 @@ struct DocumentPage {
        drawing of 680 px in the chart (page.js) asks for its room. The text of a chart wraps, also in a table cell of
        one line. */
     figure.chart[data-spec] { min-width: 0; width: 100%; white-space: normal; }
+    /* A chart outside a table gives its box no width: it takes the width of its box. Else a drawn chart changes the
+       width of a grid column with the width auto, and the chart draws again and again. */
+    figure.chart[data-spec]:not(:is(td, th) *) { contain: inline-size; }
     figure.chart[data-spec] svg { direction: ltr; }
     figure.chart[data-spec] svg text { font-variant-numeric: tabular-nums; }
     figure.chart[data-spec] svg { max-width: 100%; }
