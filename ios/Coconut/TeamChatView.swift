@@ -36,7 +36,10 @@ struct TeamChatView: View {
     /// The time of the last look at who types: the arrival of a list, or the end of a subject.
     @State private var typingClock = Date()
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @Environment(\.windowShowsError) private var windowShowsError
+    #if os(macOS)
+    /// The height of the notice of the window above the composer (ChatWindowNotice).
+    @State private var noticeHeight: CGFloat = 0
+    #endif
     @FocusState private var composerFocused: Bool
     @ScaledMetric(relativeTo: .body) private var nameWidth = 150
     #if os(macOS)
@@ -57,6 +60,14 @@ struct TeamChatView: View {
     /// The other person of a direct chat. Nil for the Team chat.
     private func peer(_ room: TeamRoom) -> TeamDirectPeer? { chatKey.member.map(room.directPeer) }
     private func currentRows() -> [TeamChatRow] { rows.current(chat, calendar: .current) }
+    /// The space that the last row of the chat keeps for the notice of the Mac window.
+    private var noticeSpace: CGFloat {
+        #if os(macOS)
+        noticeHeight
+        #else
+        0
+        #endif
+    }
 
     var body: some View {
         Group {
@@ -123,7 +134,7 @@ struct TeamChatView: View {
                     // The last row: who types, under the newest message and above the composer, then the anchor of
                     // the bottom. The row is always there, so the list never adds or removes a row for typing while it
                     // scrolls to its bottom. A direct chat shows nobody. The row inset and the padding keep 12 points
-                    // below the last message.
+                    // below the last message, and the space of the notice of the Mac window.
                     VStack(alignment: .leading, spacing: 0) {
                         if !typing.isEmpty {
                             TeamTypingRow(room: room, subjects: typing)
@@ -132,7 +143,7 @@ struct TeamChatView: View {
                         }
                         Color.clear.frame(height: 1)
                     }
-                    .padding(.bottom, BoardStyle.Space.s).id(Self.bottom)
+                    .padding(.bottom, BoardStyle.Space.s + noticeSpace).id(Self.bottom)
                 }
                 .listRowInsets(EdgeInsets(top: BoardStyle.Space.xs, leading: BoardStyle.Space.l,
                                           bottom: BoardStyle.Space.xs, trailing: BoardStyle.Space.l))
@@ -204,13 +215,12 @@ struct TeamChatView: View {
         .safeAreaInset(edge: .bottom, spacing: 0) {
             VStack(spacing: 0) {
                 #if os(macOS)
-                // In the Mac window the notice takes its own space above the composer.
-                if windowShowsError { WindowErrorNotice() }
+                // In the Mac window the notice stands above the composer. The last row keeps its space (noticeSpace).
+                ChatWindowNotice(height: $noticeHeight)
                 #endif
                 footer(room)
             }
         }
-        .preference(key: ChatHoldsNoticePreference.self, value: windowShowsError && isVisible)
         .task(id: store.connection) {
             // A load without a connection does nothing, so the chat loads again when the Mac connects.
             guard room.hasChat, store.connection == .connected || store.isDemo else { return }
@@ -514,7 +524,7 @@ struct TeamMessageRow: View {
     private var shownText: String { TeamMentionEmphasis.text(text, message: message, room: room) }
     private var teamBot: TeamRoomBot? { message?.bot.flatMap { id in room.botList.first { $0.id == id } } }
     private var writerName: String {
-        if let message, message.bot != nil { return teamBot?.name ?? message.botName ?? "Bot" }
+        if let message, message.bot != nil { return teamBot?.name ?? message.botName ?? "Agent" }
         return message.map { TeamNames.author(of: $0, peer: peer?.name) } ?? "You"
     }
     /// Only a saved message of this person can change. A message of a bot of this Mac belongs to the bot.

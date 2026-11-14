@@ -368,7 +368,7 @@ class RemoveAndSetUpTests(unittest.TestCase):
                 self.assertRaises(SystemExit) as stopped:
             desktop.uninstall(confirmed=True)
         self.assertEqual(str(stopped.exception), 'The Hermes home of Reporter has the team chat of Coconut. For each '
-                                                 'bot, run coconut team disconnect-chat <bot>, then remove Coconut.')
+                                                 'agent, run coconut team disconnect-chat <agent>, then remove Coconut.')
         run.assert_not_called()
 
     def test_the_uninstaller_waits_until_the_login_item_is_off(self):

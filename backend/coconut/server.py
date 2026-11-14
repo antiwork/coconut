@@ -471,7 +471,7 @@ def main(argv=None):
     parser.add_argument('--tunnel', action='store_true',
                         help='With --pair: print the secret for a version 2 pairing link and its expiry in Unix seconds.')
     parser.add_argument('--team-only', action='store_true',
-                        help='Keep only the team rooms and the pages of the bots that this Mac declares (team_only.py). '
+                        help='Keep only the team rooms and the pages of the agents that this Mac declares (team_only.py). '
                              'COCONUT_MODE=team in the environment does the same.')
     args = parser.parse_args(sys.argv[1:] if argv is None else argv)
     mode = os.environ.get('COCONUT_MODE', '')
@@ -540,7 +540,7 @@ def main(argv=None):
         service.watch_hermes(hermes)
     service.start()
     if team_only:
-        print(f'Coconut is listening on 127.0.0.1:{args.port} for a team only. It runs no bot and changes no Hermes.',
+        print(f'Coconut is listening on 127.0.0.1:{args.port} for a team only. It runs no agent and changes no Hermes.',
               flush=True)
         if args.tunnel_port:
             print('A team-only service has no phone, so it opens no tunnel listener.', flush=True)
@@ -553,7 +553,7 @@ def main(argv=None):
         if args.provider == 'fixture':
             print('Fixture mode uses scripted responses. It does not execute Hermes.', flush=True)
         elif isinstance(service, UnavailableService):
-            print(f'Coconut runs no bots, because Hermes is {hermes["status"]}: {hermes["reason"]}', flush=True)
+            print(f'Coconut runs no agents, because Hermes is {hermes["status"]}: {hermes["reason"]}', flush=True)
         else:
             print(f'Coconut uses Hermes {hermes["version"] or "of unknown version"} in {hermes["root"]}.', flush=True)
             warning = hermes_runtime.untested_warning(hermes['version'])

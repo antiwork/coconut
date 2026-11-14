@@ -138,7 +138,7 @@ final class NativeDecisionFlowTests: XCTestCase {
         let forge = app.buttons["bot-conversation-00000000-0000-4000-8000-000000000001"]
         XCTAssertTrue(forge.waitForExistence(timeout: 5))
         forge.press(forDuration: 1.1)
-        let pinAction = app.buttons["Pin bot"]
+        let pinAction = app.buttons["Pin agent"]
         XCTAssertTrue(pinAction.waitForExistence(timeout: 5), "A long press must show bot actions before navigation.")
         pinAction.tap()
         let pinnedForge = app.buttons["pinned-bot-00000000-0000-4000-8000-000000000001"]

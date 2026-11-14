@@ -93,7 +93,7 @@ struct BotExchangeRow: View {
                 }
             }
             .buttonStyle(ExchangeChipStyle())
-            .accessibilityLabel("\(prefix) \(peer?.name ?? "Deleted bot")")
+            .accessibilityLabel("\(prefix) \(peer?.name ?? "Deleted agent")")
             .accessibilityIdentifier("bot-exchange-\(message.id)")
         }
         .font(.footnote)
@@ -103,7 +103,7 @@ struct BotExchangeRow: View {
     private var chip: some View {
         HStack(spacing: BoardStyle.Space.xs) {
             if let peer { BotAvatar(bot: peer, size: 17) }
-            Text(peer?.name ?? "Deleted bot").lineLimit(1)
+            Text(peer?.name ?? "Deleted agent").lineLimit(1)
         }
     }
 }
@@ -164,7 +164,7 @@ struct BotExchangeView: View {
                                 if let bot = store.bots.first(where: { $0.id == message.senderBotId }) {
                                     BotAvatar(bot: bot, size: 20)
                                     Text(bot.name)
-                                } else { Text("Deleted bot") }
+                                } else { Text("Deleted agent") }
                                 Spacer()
                                 if let date = message.createdAt.apiDate {
                                     Text(date.formatted(date: .abbreviated, time: .shortened))
@@ -212,7 +212,7 @@ struct BotExchangeView: View {
                             BotAvatar(bot: bot, size: 30)
                         }
                     }
-                }.accessibilityLabel(route.botIds.map { id in store.bots.first { $0.id == id }?.name ?? "Deleted bot" }.joined(separator: " and "))
+                }.accessibilityLabel(route.botIds.map { id in store.bots.first { $0.id == id }?.name ?? "Deleted agent" }.joined(separator: " and "))
             }
         }
         .inlineNavigationTitle()

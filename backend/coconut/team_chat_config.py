@@ -1,4 +1,4 @@
-"""Connect the team chat of a bot of a team-only Mac to its Hermes home, or take it away (scripts/team_chat.py).
+"""Connect the team chat of an agent of a team-only Mac to its Hermes home, or take it away (scripts/team_chat.py).
 
 Run this file under the Python of the installed Hermes, in a process of its own. The team-only service imports no
 Hermes, so it never runs this.
@@ -18,7 +18,7 @@ each change that the command makes or made, and `problems`, or `error`.
 A disconnect judges each of the three parts by itself (`without_team`). A part is done when Coconut removed it, or
 when the home proves that it has nothing of Coconut there. A part whose form cannot be read is not proved: the
 disconnect removes what it can, and `problems` has one line for each part that the operator must correct. The caller
-then keeps the guard of the bot, and a second run after the correction finishes the job.
+then keeps the guard of the agent, and a second run after the correction finishes the job.
 
 The edit uses the config reader and the round-trip writer of Hermes (`save`), so comments, key order, the layout and
 the other keys stay. A plan reads the file with the safe YAML loader of Hermes's dependencies instead: an import of the

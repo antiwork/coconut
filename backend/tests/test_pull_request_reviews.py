@@ -316,7 +316,7 @@ class PRReviewTests(unittest.TestCase):
         self.assertIn('not permission to merge',prompt)
         self.assertIn('required checks',prompt)
         from coconut.pull_request_reviews import PR_MERGE_INSTRUCTIONS
-        self.assertIn('requesting bot', PR_MERGE_INSTRUCTIONS)
+        self.assertIn('requesting agent', PR_MERGE_INSTRUCTIONS)
         self.assertIn(URL,prompt)
 
 

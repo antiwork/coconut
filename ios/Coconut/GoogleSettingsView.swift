@@ -123,7 +123,7 @@ struct GoogleConnectionSection: View {
                 }
                 Button("Disconnect Google", role: .destructive) { confirmingDisconnect = true }
                     .disabled(busy || !canConnect).accessibilityIdentifier("google-disconnect")
-                    .confirmationDialog("Disconnect Google from all bots?", isPresented: $confirmingDisconnect, titleVisibility: .visible) {
+                    .confirmationDialog("Disconnect Google from all agents?", isPresented: $confirmingDisconnect, titleVisibility: .visible) {
                         Button("Disconnect", role: .destructive) { disconnect() }
                     }
             } else {
@@ -135,8 +135,8 @@ struct GoogleConnectionSection: View {
         } header: {
             Text("Google")
         } footer: {
-            Text(canConnect ? "All bots can read Gmail and Calendar. This connection cannot send email or change events."
-                 : "Connect to your Mac first. All bots can read Gmail and Calendar. This connection cannot send email or change events.")
+            Text(canConnect ? "All agents can read Gmail and Calendar. This connection cannot send email or change events."
+                 : "Connect to your Mac first. All agents can read Gmail and Calendar. This connection cannot send email or change events.")
         }
         .task(id: canConnect) { if canConnect { await refresh() } }
         .onDisappear { connectionTask?.cancel(); signIn.cancel() }

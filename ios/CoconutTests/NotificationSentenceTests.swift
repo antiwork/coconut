@@ -15,28 +15,28 @@ final class NotificationSentenceTests: XCTestCase {
         let expected: [(NotificationLevel, OutsideWorkHours, Bool, String)] = [
             (.every, .urgent, false, "From 9:00 to 18:00, Coconut notifies you about every card." + urgentOutside
                 + " Other cards wait in Inbox until 9:00, then one notification tells you about them."),
-            (.every, .urgent, true, "From 9:00 to 18:00, Coconut notifies you about every card and every bot reply." + urgentOutside
-                + " Other cards and bot replies wait in Inbox until 9:00, then one notification tells you about them."),
+            (.every, .urgent, true, "From 9:00 to 18:00, Coconut notifies you about every card and every agent reply." + urgentOutside
+                + " Other cards and agent replies wait in Inbox until 9:00, then one notification tells you about them."),
             (.every, .nothing, false, "From 9:00 to 18:00, Coconut notifies you about every card." + nothingOutside
                 + " Cards wait in Inbox until 9:00, then one notification tells you about them."),
-            (.every, .nothing, true, "From 9:00 to 18:00, Coconut notifies you about every card and every bot reply." + nothingOutside
-                + " Cards and bot replies wait in Inbox until 9:00, then one notification tells you about them."),
+            (.every, .nothing, true, "From 9:00 to 18:00, Coconut notifies you about every card and every agent reply." + nothingOutside
+                + " Cards and agent replies wait in Inbox until 9:00, then one notification tells you about them."),
             (.every, .same, false, "At any time, Coconut notifies you about every card."),
-            (.every, .same, true, "At any time, Coconut notifies you about every card and every bot reply."),
+            (.every, .same, true, "At any time, Coconut notifies you about every card and every agent reply."),
             (.grouped, .urgent, false, "From 9:00 to 18:00, Coconut sends one summary at a time about new cards. "
                 + "Urgent cards notify you at once." + urgentOutside
                 + " Other cards wait in Inbox until 9:00, then one notification tells you about them."),
-            (.grouped, .urgent, true, "From 9:00 to 18:00, Coconut sends one summary at a time about new cards and bot replies. "
+            (.grouped, .urgent, true, "From 9:00 to 18:00, Coconut sends one summary at a time about new cards and agent replies. "
                 + "Urgent cards notify you at once." + urgentOutside
-                + " Other cards and bot replies wait in Inbox until 9:00, then one notification tells you about them."),
+                + " Other cards and agent replies wait in Inbox until 9:00, then one notification tells you about them."),
             (.grouped, .nothing, false, "From 9:00 to 18:00, Coconut sends one summary at a time about new cards. "
                 + "Urgent cards notify you at once." + nothingOutside
                 + " Cards wait in Inbox until 9:00, then one notification tells you about them."),
-            (.grouped, .nothing, true, "From 9:00 to 18:00, Coconut sends one summary at a time about new cards and bot replies. "
+            (.grouped, .nothing, true, "From 9:00 to 18:00, Coconut sends one summary at a time about new cards and agent replies. "
                 + "Urgent cards notify you at once." + nothingOutside
-                + " Cards and bot replies wait in Inbox until 9:00, then one notification tells you about them."),
+                + " Cards and agent replies wait in Inbox until 9:00, then one notification tells you about them."),
             (.grouped, .same, false, "At any time, Coconut sends one summary at a time about new cards. Urgent cards notify you at once."),
-            (.grouped, .same, true, "At any time, Coconut sends one summary at a time about new cards and bot replies. "
+            (.grouped, .same, true, "At any time, Coconut sends one summary at a time about new cards and agent replies. "
                 + "Urgent cards notify you at once."),
         ]
         for (level, outside, replies, sentence) in expected {
@@ -60,29 +60,29 @@ final class NotificationSentenceTests: XCTestCase {
         let urgentOutside = " Outside those hours, only urgent cards notify you."
         let nothingOutside = " Outside those hours, nothing notifies you."
         let expected: [(NotificationLevel, OutsideWorkHours, Bool, String)] = [
-            (.every, .urgent, true, "From 9:00 to 18:00, Coconut notifies you about every card, every bot reply and every team message."
-                + urgentOutside + " Other cards, bot replies and team messages wait until 9:00, then one notification tells you about them."),
+            (.every, .urgent, true, "From 9:00 to 18:00, Coconut notifies you about every card, every agent reply and every team message."
+                + urgentOutside + " Other cards, agent replies and team messages wait until 9:00, then one notification tells you about them."),
             (.every, .urgent, false, "From 9:00 to 18:00, Coconut notifies you about every card and every team message."
                 + urgentOutside + " Other cards and team messages wait until 9:00, then one notification tells you about them."),
-            (.every, .nothing, true, "From 9:00 to 18:00, Coconut notifies you about every card, every bot reply and every team message."
-                + nothingOutside + " Cards, bot replies and team messages wait until 9:00, then one notification tells you about them."),
+            (.every, .nothing, true, "From 9:00 to 18:00, Coconut notifies you about every card, every agent reply and every team message."
+                + nothingOutside + " Cards, agent replies and team messages wait until 9:00, then one notification tells you about them."),
             (.every, .nothing, false, "From 9:00 to 18:00, Coconut notifies you about every card and every team message."
                 + nothingOutside + " Cards and team messages wait until 9:00, then one notification tells you about them."),
-            (.every, .same, true, "At any time, Coconut notifies you about every card, every bot reply and every team message."),
+            (.every, .same, true, "At any time, Coconut notifies you about every card, every agent reply and every team message."),
             (.every, .same, false, "At any time, Coconut notifies you about every card and every team message."),
-            (.grouped, .urgent, true, "From 9:00 to 18:00, Coconut sends one summary at a time about new cards, bot replies and team messages. "
+            (.grouped, .urgent, true, "From 9:00 to 18:00, Coconut sends one summary at a time about new cards, agent replies and team messages. "
                 + "Urgent cards notify you at once." + urgentOutside
-                + " Other cards, bot replies and team messages wait until 9:00, then one notification tells you about them."),
+                + " Other cards, agent replies and team messages wait until 9:00, then one notification tells you about them."),
             (.grouped, .urgent, false, "From 9:00 to 18:00, Coconut sends one summary at a time about new cards and team messages. "
                 + "Urgent cards notify you at once." + urgentOutside
                 + " Other cards and team messages wait until 9:00, then one notification tells you about them."),
-            (.grouped, .nothing, true, "From 9:00 to 18:00, Coconut sends one summary at a time about new cards, bot replies and team messages. "
+            (.grouped, .nothing, true, "From 9:00 to 18:00, Coconut sends one summary at a time about new cards, agent replies and team messages. "
                 + "Urgent cards notify you at once." + nothingOutside
-                + " Cards, bot replies and team messages wait until 9:00, then one notification tells you about them."),
+                + " Cards, agent replies and team messages wait until 9:00, then one notification tells you about them."),
             (.grouped, .nothing, false, "From 9:00 to 18:00, Coconut sends one summary at a time about new cards and team messages. "
                 + "Urgent cards notify you at once." + nothingOutside
                 + " Cards and team messages wait until 9:00, then one notification tells you about them."),
-            (.grouped, .same, true, "At any time, Coconut sends one summary at a time about new cards, bot replies and team messages. "
+            (.grouped, .same, true, "At any time, Coconut sends one summary at a time about new cards, agent replies and team messages. "
                 + "Urgent cards notify you at once."),
             (.grouped, .same, false, "At any time, Coconut sends one summary at a time about new cards and team messages. "
                 + "Urgent cards notify you at once."),
@@ -99,7 +99,7 @@ final class NotificationSentenceTests: XCTestCase {
         // The next work day stays in the sentence with a team.
         XCTAssertTrue(NotificationSentence.text(level: .grouped, outside: .urgent, replies: true, team: true,
                                                 schedule: NotificationSchedule(weekdays: [1, 2, 3, 4, 5]))
-            .hasSuffix(" Other cards, bot replies and team messages wait until 9:00 on the next work day, "
+            .hasSuffix(" Other cards, agent replies and team messages wait until 9:00 on the next work day, "
                        + "then one notification tells you about them."))
     }
 

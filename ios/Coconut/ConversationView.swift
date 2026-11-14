@@ -48,8 +48,19 @@ struct ConversationView: View {
     @FocusState private var composerFocused: Bool
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.toggleBotDetails) private var toggleBotDetails
-    @Environment(\.windowShowsError) private var windowShowsError
+    #if os(macOS)
+    /// The height of the notice of the window above the composer (ChatWindowNotice).
+    @State private var noticeHeight: CGFloat = 0
+    #endif
     @ScaledMetric(relativeTo: .body) private var nameWidth = 150
+    /// The space that the last row of the transcript keeps for the notice of the Mac window.
+    private var noticeSpace: CGFloat {
+        #if os(macOS)
+        noticeHeight
+        #else
+        0
+        #endif
+    }
 
     init(botId: String, focusDecisionId: String? = nil, focusMessageId: String? = nil, attachedWork: WorkReference? = nil) {
         self.botId = botId
@@ -199,8 +210,10 @@ struct ConversationView: View {
                                 BotStatusRow(bot: bot, activity: activity)
                                     .transition(.opacity.animation(BoardStyle.fade(reduceMotion: reduceMotion)))
                             }
-                            // The row inset and this padding keep 12 points below the last row.
-                            Color.clear.frame(height: 1).padding(.bottom, BoardStyle.Space.s).id("conversation-bottom")
+                            // The row inset and this padding keep 12 points below the last row, and the space of
+                            // the notice of the Mac window.
+                            Color.clear.frame(height: 1).padding(.bottom, BoardStyle.Space.s + noticeSpace)
+                                .id("conversation-bottom")
                         }
                         .listRowInsets(EdgeInsets(top: BoardStyle.Space.xs, leading: BoardStyle.Space.l,
                                                   bottom: BoardStyle.Space.xs, trailing: BoardStyle.Space.l))
@@ -319,7 +332,8 @@ struct ConversationView: View {
                                     .shadow(color: .black.opacity(0.12), radius: 6, y: 2)
                             }
                             .buttonStyle(.plain)
-                            .padding(.trailing, 16).padding(.bottom, BoardStyle.Space.s)
+                            // Above the notice of the Mac window, which stands at the bottom of the transcript.
+                            .padding(.trailing, 16).padding(.bottom, BoardStyle.Space.s + noticeSpace)
                             .transition(.opacity)
                             .accessibilityLabel("Latest messages")
                             .accessibilityIdentifier("conversation-latest")
@@ -352,8 +366,9 @@ struct ConversationView: View {
                 .safeAreaInset(edge: .bottom, spacing: 0) {
                     VStack(spacing: 0) {
                         #if os(macOS)
-                        // In the Mac window the notice takes its own space above the composer.
-                        if windowShowsError { WindowErrorNotice() }
+                        // In the Mac window the notice stands above the composer. The last row of the transcript
+                        // keeps its space (noticeSpace).
+                        ChatWindowNotice(height: $noticeHeight)
                         #endif
                         ConversationComposer(bot: bot, task: activeTask, text: $messageDraft,
                                              attachments: $messageAttachments, scheduling: $messageScheduling,
@@ -436,13 +451,12 @@ struct ConversationView: View {
                     Text(StopCopy.message)
                 }
             } else {
-                QuietEmptyState(symbol: "bubble.left", title: "Conversation unavailable", message: "This bot may have been deleted. Return to your team to continue.")
+                QuietEmptyState(symbol: "bubble.left", title: "Conversation unavailable", message: "This agent may have been deleted. Return to your team to continue.")
             }
         }
         .inlineNavigationTitle()
         .preference(key: ConversationFooterPreference.self,
                     value: isVisible ? (!composerFocused && footerScroll.allowsMinimization) : nil)
-        .preference(key: ChatHoldsNoticePreference.self, value: windowShowsError && isVisible)
     }
 
     #if os(macOS)
@@ -555,7 +569,7 @@ struct TranscriptMessageRow: View {
                 }
             }.font(.footnote).foregroundStyle(.secondary).padding(.horizontal, BoardStyle.Space.m)
         } else if let senderId = message.senderBotId, senderId != message.botId {
-            Text("Deleted bot").font(.footnote).foregroundStyle(.secondary).padding(.horizontal, BoardStyle.Space.m)
+            Text("Deleted agent").font(.footnote).foregroundStyle(.secondary).padding(.horizontal, BoardStyle.Space.m)
         } else if message.role == "user", let names = recipientNames, !names.isEmpty {
             Text("To \(names)").font(.footnote).foregroundStyle(.secondary)
                 .frame(maxWidth: .infinity, alignment: .trailing).padding(.horizontal, BoardStyle.Space.m)
@@ -580,7 +594,7 @@ struct TranscriptMessageRow: View {
     }
 
     private var recipientNames: String? {
-        TranscriptPresentation.recipientIDs(for: message).map { id in store.bots.first { $0.id == id }?.name ?? "Deleted bot" }.joined(separator: ", ")
+        TranscriptPresentation.recipientIDs(for: message).map { id in store.bots.first { $0.id == id }?.name ?? "Deleted agent" }.joined(separator: ", ")
     }
 }
 
@@ -707,7 +721,7 @@ struct MessageBubble: View {
                 }
             }
         }
-        .accessibilityLabel("\(isUser ? "You" : store.bots.first { $0.id == (message.senderBotId ?? message.botId) }?.name ?? "Deleted bot")")
+        .accessibilityLabel("\(isUser ? "You" : store.bots.first { $0.id == (message.senderBotId ?? message.botId) }?.name ?? "Deleted agent")")
         .sheet(item: $editingOutgoing) { RejectedMessageEditor(outgoing: $0) }
     }
 }
@@ -851,7 +865,7 @@ struct ConversationComposer: View {
             }
             HStack(alignment: .bottom, spacing: 8) {
                 Menu {
-                    Button("Mention a bot", systemImage: "at") {
+                    Button("Mention an agent", systemImage: "at") {
                         text += text.isEmpty || text.last?.isWhitespace == true ? "@" : " @"
                         selection = TextSelection(insertionPoint: text.endIndex)
                         focused = true
