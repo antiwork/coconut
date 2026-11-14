@@ -381,9 +381,9 @@
     figure.querySelector(".legend") ? figure.querySelector(".legend").after(svg) : figure.prepend(svg);
     // The points are in the order of the x axis: a band and a scale of names keep the order of the data, and the data
     // of a scale of numbers or dates is in the order of x. A value without a place (an x that is not finite) has no
-    // point. Each point has one text in the place where a label shows, so its measure is the measure of the drawn
-    // label. A text of more than 128 characters has no measure: WebKit measures one long word in a time that grows
-    // with the square of its length.
+    // point. Each point has one text in the place where a label shows, and its measure is the width of its box: the
+    // drawn label has that width, also with a style of the page such as a letter spacing. A text of more than 128
+    // characters has no measure: WebKit measures one long word in a time that grows with the square of its length.
     const scale = svg.scale("x");
     const points = xs.map((value) => ({ at: scale.apply(value), text: format(value) }))
       .filter((point) => Number.isFinite(point.at));
@@ -397,7 +397,7 @@
       labels.append(node);
       return node;
     });
-    const sizes = nodes.map((node, index) => points[index].text.length > 128 ? Infinity : node.getComputedTextLength());
+    const sizes = nodes.map((node, index) => points[index].text.length > 128 ? Infinity : node.getBBox().width);
     // A text cut to the room that it has: the most whole characters that end inside its first 128, then an ellipsis.
     // The cut never keeps the last of these characters. A binary search measures it.
     const cut = (node, text, room) => {
@@ -411,10 +411,10 @@
       while (low < high) {
         const middle = Math.ceil((low + high) / 2);
         node.textContent = kept(middle) + "…";
-        if (node.getComputedTextLength() <= room) low = middle; else high = middle - 1;
+        if (node.getBBox().width <= room) low = middle; else high = middle - 1;
       }
       node.textContent = kept(low) ? kept(low) + "…" : "";
-      return node.getComputedTextLength();
+      return node.getBBox().width;
     };
     const shown = [];
     let edge = -Infinity;
