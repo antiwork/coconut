@@ -1556,13 +1556,11 @@ final class AppStore {
 
     /// The updates carry no documents. They say that a document or a team page changed, so a Library that the app
     /// loaded before loads its list again. A reset skips the events between the cursors, also the changes of
-    /// documents. A Library that never loaded loads when it opens. Each loaded chat with a team bot that quotes a page
-    /// reads its messages again, also without a Library list: the Mac gives a page that went with no ID.
+    /// documents. A Library that never loaded loads when it opens. The chats that quote a page read again with the
+    /// changed chats (reloadChangedTeam, AppStore.teamChatsToRead).
     private func reloadChangedDocuments(_ page: StateUpdates) {
-        guard page.documentsChanged == true || page.reset != nil else { return }
-        for chat in Self.teamChatsQuotingPages(teamChats) { Task { await loadTeamChat(chat) } }
         // A Library whose first request runs also loads again: that request can be older than the change.
-        guard documents != nil || latestDocumentLoad != nil else { return }
+        guard page.documentsChanged == true || page.reset != nil, documents != nil || latestDocumentLoad != nil else { return }
         Task { await loadDocuments() }
     }
 
@@ -1622,7 +1620,7 @@ final class AppStore {
     /// between the cursors, also the team changes. A screen that never loaded loads when it opens.
     private func reloadChangedTeam(_ page: StateUpdates) {
         let chats = page.changedTeamChats
-        reloadTeamChats(page.reset != nil ? nil : chats)
+        reloadTeamChats(Self.teamChatsToRead(after: page, chats: teamChats))
         // The row of a team or a direct chat shows its newest message and its unread count, so a change of the chat
         // loads the list too. The list also says who types.
         let typing = !(page.teamTypingChanged ?? []).isEmpty
@@ -1630,17 +1628,25 @@ final class AppStore {
         Task { await loadTeam() }
     }
 
-    /// Reads the newest page again of each changed chat that the app has, or of each chat for nil. A change of the
-    /// messages of a room names the room only, so it reads the Team chat and each named chat of the room.
-    private func reloadTeamChats(_ chats: [TeamChatKey]?) {
-        let changed = chats.map { chats in
-            teamChats.keys.filter { key in
-                chats.contains(key) || (key.chat != nil && chats.contains(TeamChatKey(room: key.room)))
-            }
-        }
-        for chat in changed ?? Array(teamChats.keys) where teamChats[chat] != nil {
+    /// Reads the newest page again of each of these chats that the app has, one time each.
+    private func reloadTeamChats(_ chats: Set<TeamChatKey>) {
+        for chat in chats where teamChats[chat] != nil {
             Task { await loadTeamChat(chat) }
         }
+    }
+
+    /// The chats that read their newest page again for one update, each one time: each chat of a reset; else each
+    /// changed chat that the app has, and after a change of the documents each chat with a team bot that quotes a
+    /// page (teamChatsQuotingPages). A change of the messages of a room names the room only, so it reads the Team chat
+    /// and each named chat of the room.
+    static func teamChatsToRead(after page: StateUpdates, chats: [TeamChatKey: TeamChat]) -> Set<TeamChatKey> {
+        if page.reset != nil { return Set(chats.keys) }
+        let changed = page.changedTeamChats
+        var read = Set(chats.keys.filter { key in
+            changed.contains(key) || (key.chat != nil && changed.contains(TeamChatKey(room: key.room)))
+        })
+        if page.documentsChanged == true { read.formUnion(teamChatsQuotingPages(chats)) }
+        return read
     }
 
     /// The Team screen asked for the list: it has one, or its first request runs. A change during that first request
@@ -1963,6 +1969,9 @@ final class AppStore {
     func openTeamChat(_ chat: TeamChatKey) {
         teamChatsOnScreen.insert(chat)
     }
+
+    /// The chat is on the screen: it appeared and did not disappear since.
+    func isTeamChatOnScreen(_ chat: TeamChatKey) -> Bool { teamChatsOnScreen.contains(chat) }
 
     /// The chat of a room leaves the screen. It keeps its newest page only, so it opens again without stale history.
     func closeTeamChat(_ chat: TeamChatKey) {
@@ -2490,7 +2499,7 @@ final class AppStore {
         if replaced { apply(snapshot, persist: true) }
         // A full state skips the events between the cursors, also the team changes, so a loaded Team screen loads again.
         if replaced, teamAsked { Task { await loadTeam() } }
-        if replaced { reloadTeamChats(nil) }
+        if replaced { reloadTeamChats(Set(teamChats.keys)) }
         markConnected()
         Task { await syncPushRegistration() }
         refreshNativeSettings(using: client)

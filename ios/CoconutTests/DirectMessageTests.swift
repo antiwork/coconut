@@ -519,19 +519,27 @@ final class DirectMessageTests: XCTestCase {
             XCTAssertEqual(store.teamChats[chat]?.messages.last?.page?.id, "t-r1-p1")
             XCTAssertNil(store.documents, "The app has no Library list.")
             let reads = server.routes.filter { $0 == path }.count
-
-            server.removePages()
             store.setForeground(true)
+
+            // One update that names the documents and this chat, which quotes a page: one read.
+            server.changeDocuments(andChat: true)
+            try await waitUntil { server.pendingUpdate == false && server.routes.filter { $0 == path }.count > reads }
+            try await Task.sleep(for: .seconds(1))
+            XCTAssertEqual(server.routes.filter { $0 == path }.count, reads + 1,
+                           "One update that names the documents and the chat reads the chat one time.")
+
+            // The page goes: one read, and the quote says that the page is gone.
+            server.removePages()
             try await waitUntil { store.teamChats[chat]?.messages.last?.page == TeamAboutPage() }
             XCTAssertEqual(store.teamChats[chat]?.messages.last?.page, TeamAboutPage(),
                            "The quote says that the page is gone.")
             try await Task.sleep(for: .seconds(1))
-            XCTAssertEqual(server.routes.filter { $0 == path }.count, reads + 1, "One read for one update.")
+            XCTAssertEqual(server.routes.filter { $0 == path }.count, reads + 2, "One read for one update.")
 
             server.changeDocuments()
             try await waitUntil { server.pendingUpdate == false }
             try await Task.sleep(for: .seconds(1))
-            XCTAssertEqual(server.routes.filter { $0 == path }.count, reads + 1,
+            XCTAssertEqual(server.routes.filter { $0 == path }.count, reads + 2,
                            "A chat whose pages went does not read again.")
             store.setForeground(false)
         }
@@ -612,8 +620,12 @@ private final class DirectServer: @unchecked Sendable {
         }
     }
 
-    /// The next updates answer says that a document changed.
-    func changeDocuments() { lock.withLock { documentsChanged = true; pending = true } }
+    /// The next updates answer says that a document changed, and with `andChat` also that the chat changed.
+    func changeDocuments(andChat: Bool = false) {
+        lock.withLock { documentsChanged = true; chatChangedToo = andChat; pending = true }
+    }
+
+    private var chatChangedToo = false
 
     /// An updates answer waits for the app.
     var pendingUpdate: Bool { lock.withLock { pending } }
@@ -724,13 +736,15 @@ private final class DirectServer: @unchecked Sendable {
                             return #"{"after": \#(after), "cursor": \#(after), "server_time": "2026-11-09T00:00:00Z"}"#
                         }
                         pending = false; cursor += 1
-                        if documentsChanged {
-                            documentsChanged = false
-                            return #"{"after": \#(after), "cursor": \#(cursor), "server_time": "2026-11-09T00:00:00Z", "#
-                                + #""documents_changed": true}"#
-                        }
                         let changed = bot ? #""team_bot_directs_changed": [{"team": "r1", "bot": "t-r1-e1"}]"#
                             : #""team_directs_changed": [{"team": "r1", "member": "m1"}]"#
+                        if documentsChanged {
+                            documentsChanged = false
+                            let also = chatChangedToo ? ", " + changed : ""
+                            chatChangedToo = false
+                            return #"{"after": \#(after), "cursor": \#(cursor), "server_time": "2026-11-09T00:00:00Z", "#
+                                + #""documents_changed": true"# + also + "}"
+                        }
                         return #"{"after": \#(after), "cursor": \#(cursor), "server_time": "2026-11-09T00:00:00Z", "#
                             + changed + "}"
                     default: return "{}"
@@ -1119,10 +1133,12 @@ final class BotDirectChatTests: XCTestCase {
         try await waitUntil(timeout: .seconds(5)) { store.teamPageQuotes[chat] == nil }
         XCTAssertNil(store.teamPageQuotes[chat], "The chat takes the page when it opens.")
 
+        // The page comes only after the chat disappeared: a slow machine ends the push of the cover late.
         stack.path.append("Cover")
-        try await Task.sleep(for: .seconds(1))
+        try await waitUntil(timeout: .seconds(10)) { !store.isTeamChatOnScreen(chat) }
+        XCTAssertFalse(store.isTeamChatOnScreen(chat), "The cover hides the chat.")
         store.teamPageQuotes[chat] = sales
-        try await Task.sleep(for: .seconds(1))
+        try await settle(window)
         XCTAssertEqual(store.teamPageQuotes[chat], sales, "A chat under another page leaves the page.")
 
         stack.path.removeLast()
@@ -1132,6 +1148,17 @@ final class BotDirectChatTests: XCTestCase {
         store.teamPageQuotes[chat] = sales
         try await waitUntil(timeout: .seconds(5)) { store.teamPageQuotes[chat] == nil }
         XCTAssertNil(store.teamPageQuotes[chat], "The chat on the screen takes a page that comes while it shows.")
+    }
+
+    /// Gives the hosted views their turn after a change of the store: one layout pass of the window, which runs the
+    /// pending updates of the views and their onChange, and then a short time for a task that a view starts. A view
+    /// that takes a page takes it here, so the assert after it sees the result.
+    @MainActor
+    private func settle(_ window: UIWindow) async throws {
+        await Task.yield()
+        window.rootViewController?.view.setNeedsLayout()
+        window.rootViewController?.view.layoutIfNeeded()
+        try await Task.sleep(for: .milliseconds(300))
     }
 
     /// The chat on the Chats tab stays while the Library tab shows. It leaves a page that comes then, and takes it
@@ -1148,13 +1175,15 @@ final class BotDirectChatTests: XCTestCase {
         window.rootViewController = UIHostingController(rootView: ChatTabsHost(tabs: tabs, chat: chat).environment(store))
         window.makeKeyAndVisible()
         defer { window.isHidden = true }
-        try await waitUntil(timeout: .seconds(5)) { store.teamChats[chat] != nil }
-        XCTAssertNotNil(store.teamChats[chat], "The chat shows.")
+        try await waitUntil(timeout: .seconds(10)) { store.isTeamChatOnScreen(chat) }
+        XCTAssertTrue(store.isTeamChatOnScreen(chat), "The chat shows.")
 
+        // The page comes only after the chat disappeared with its tab.
         tabs.selected = 1
-        try await Task.sleep(for: .seconds(1))
+        try await waitUntil(timeout: .seconds(10)) { !store.isTeamChatOnScreen(chat) }
+        XCTAssertFalse(store.isTeamChatOnScreen(chat), "The other tab hides the chat.")
         store.teamPageQuotes[chat] = sales
-        try await Task.sleep(for: .seconds(1))
+        try await settle(window)
         XCTAssertEqual(store.teamPageQuotes[chat], sales, "A chat on another tab leaves the page.")
 
         tabs.selected = 0
@@ -1299,6 +1328,9 @@ final class BotDirectChatTests: XCTestCase {
         composer = TeamComposerState(draft: "Other", editing: other)
         composer.restore(edit: answered, text: "Hello again")
         XCTAssertEqual(composer.editing, other, "A new edit wins.")
+        composer = TeamComposerState(draft: "", editing: other)
+        composer.restore(edit: answered, text: "Hello again")
+        XCTAssertEqual(composer, TeamComposerState(draft: "", editing: other), "A new edit wins, also with no text.")
     }
 
     @MainActor
@@ -1437,6 +1469,33 @@ final class BotDirectChatTests: XCTestCase {
         XCTAssertEqual(AppStore.teamChatsQuotingPages(chats), [bot],
                        "One time for a chat with two pages. Not a chat whose pages went, not a chat without a page, "
                        + "not a chat that did not load, and not the Team chat.")
+    }
+
+    /// One update reads each chat one time: a chat that the update names and that quotes a page reads one time after a
+    /// change of the documents. A reset reads each chat.
+    @MainActor
+    func testOneUpdateReadsEachChatOneTime() throws {
+        var message = answered
+        message.page = sales
+        let bot = TeamChatKey(room: "r1", bot: "t-r1-e1")
+        let named = TeamChatKey(room: "r1", chat: "c1")
+        let chats: [TeamChatKey: TeamChat] = [
+            bot: TeamChat(messages: [message], loaded: true),
+            TeamChatKey(room: "r1", bot: "t-r1-e2"): TeamChat(messages: [message], loaded: true),
+            named: TeamChat(messages: [answered], loaded: true),
+            TeamChatKey(room: "r1", member: "m-grace"): TeamChat(messages: [answered], loaded: true)]
+        func page(_ fields: String) throws -> StateUpdates {
+            try APIJSON.decoder().decode(StateUpdates.self, from: Data(
+                (#"{"after": 1, "cursor": 2, "server_time": "2026-11-10T00:00:00Z""# + fields + "}").utf8))
+        }
+        let both = try page(#", "documents_changed": true, "team_bot_directs_changed": [{"team": "r1", "bot": "t-r1-e1"}]"#)
+        XCTAssertEqual(AppStore.teamChatsToRead(after: both, chats: chats),
+                       [bot, TeamChatKey(room: "r1", bot: "t-r1-e2")], "Each chat that quotes a page, one time.")
+        let chat = try page(#", "team_bot_directs_changed": [{"team": "r1", "bot": "t-r1-e1"}]"#)
+        XCTAssertEqual(AppStore.teamChatsToRead(after: chat, chats: chats), [bot])
+        let room = try page(#", "team_messages_changed": ["r1"]"#)
+        XCTAssertEqual(AppStore.teamChatsToRead(after: room, chats: chats), [named], "A room names its named chats.")
+        XCTAssertEqual(AppStore.teamChatsToRead(after: try page(""), chats: chats), [])
     }
 
     /// A send with a page keeps the page and no reply. A page goes only into a direct chat with a bot.
