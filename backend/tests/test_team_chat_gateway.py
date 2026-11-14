@@ -128,6 +128,13 @@ class RegistrationTests(unittest.TestCase):
         (options,) = context.platforms
         self.assertEqual((options['name'], options['trusted_inbound'], options['platform_hint']),
                          ('coconut', True, plugin.TEAM_HINT))
+        # The hint holds for each chat of a team, a direct chat too. The rules of each chat say who reads.
+        from coconut import team_turns
+        self.assertEqual(plugin.TEAM_HINT, 'You are in a chat of a team in Coconut. The rules of the chat say who can '
+                                           'write to you and who reads your reply.')
+        self.assertIn('Each member of the team can write to you, and the whole team reads your reply.',
+                      team_turns.RULES)
+        self.assertNotIn('whole team', team_turns.RULES_DIRECT)
         self.assertIs(options['adapter_factory'], team.TeamAdapter)
         self.assertEqual(options['display_overrides'], plugin.DISPLAY)
         self.assertIsNone(team.TeamAdapter.lacking)

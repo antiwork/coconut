@@ -231,6 +231,9 @@ class NativeTeamChatTests(AsThePerson, TeamOnlyMacs, unittest.TestCase):
         call = next(request for request in Model.requests if 'open for me' in json.dumps(request['messages']))
         self.assertIn('Ada', json.dumps(call['messages']))
         self.assertNotIn('DM with', json.dumps(call['messages']))
+        # The hint of the platform and the rules of the chat agree: only Ada reads the reply.
+        self.assertNotIn('the whole team reads your reply', json.dumps(call))
+        self.assertIn('Only Ada reads your reply.', json.dumps(call))
         self.assertNotIn('profile_build_offered', (self.hermes_home / 'config.yaml').read_text())
         log = self.log.read_text(errors='replace')
         self.assertNotIn('Traceback', log)

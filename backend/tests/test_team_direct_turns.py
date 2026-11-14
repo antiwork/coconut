@@ -732,6 +732,40 @@ class SeparationTests(DirectTurnMacs, unittest.TestCase):
         self.assertEqual([row for row in self.chat() if row[0] == 'Reporter'], [])
         self.assertEqual([row for row in self.stored() if row[0] == self.mac], [])
 
+    def checked(self) -> str:
+        """Start the waiting turn, run the check of the turn loop with nothing changed, and return the state of the
+        turn in the bridge after the check. Then let the turn end."""
+        released = threading.Event()
+        self.serve(lambda turn: (released.wait(5), reply('Answer.')(turn))[1])
+        runner = threading.Thread(target=self.only._turns_run, args=(self.room, self.bot['id']), daemon=True)
+        with self.only._turns_lock:
+            self.only._turns_running[(self.room, self.bot['id'])] = runner
+        runner.start()
+        deadline = time.monotonic() + 5
+        while not self.gateway.turns and time.monotonic() < deadline:
+            time.sleep(.05)
+        self.assertTrue(self.gateway.turns)
+        self.only.team_sync_pass()
+        self.only._turns_check()
+        state = self.only.gateway_bridge.turns[self.gateway.turns[0]['id']].state
+        released.set()
+        runner.join(5)
+        return state
+
+    def test_the_check_of_the_loop_keeps_a_turn_of_a_direct_chat_whose_request_stands(self):
+        self.dm('Hello')
+        self.assertNotEqual(self.checked(), 'stopping')
+        self.assertEqual(self.bot_replies(), ['Answer.'])
+        self.assertEqual(self.chat(), [])
+
+    def test_the_check_of_the_loop_keeps_a_turn_of_the_team_chat_whose_request_stands(self):
+        named = self.send('@Reporter status?', mentions=[self.mention])
+        self.sync()
+        self.assertNotEqual(self.checked(), 'stopping')
+        self.sync()
+        self.assertEqual(self.chat()[-1], ('Reporter', 'Answer.', named['id']))
+        self.assertEqual(self.bot_replies(), [])
+
     def test_a_reply_in_a_direct_chat_has_three_tries(self):
         seen, write = {}, self.relay.write
 
