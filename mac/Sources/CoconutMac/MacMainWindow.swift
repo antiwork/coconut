@@ -32,6 +32,9 @@ struct MacMainWindow: View {
     @State private var chatPath = NavigationPath()
     // The pages of the Library. A document card in a chat opens its document here.
     @State private var libraryPath = NavigationPath()
+    // The right edge of the sidebar in the window. The notice centers right of it while the sidebar shows.
+    @State private var sidebarRight: CGFloat = 0
+    @State private var sidebarShown = true
 
     var body: some View {
         if model.mode == .team {
@@ -46,6 +49,10 @@ struct MacMainWindow: View {
             if store.hasPairing || store.isDemo {
                 NavigationSplitView {
                     MacSidebar(selection: $selection)
+                        .onGeometryChange(for: CGFloat.self) { $0.frame(in: .global).maxX } action: { sidebarRight = max(0, $0) }
+                        // AppKit hides a collapsed sidebar but keeps its frame, also when the window opens with the
+                        // sidebar that the person hid. So the right edge counts only while AppKit shows the sidebar.
+                        .background(OnScreenProbe { sidebarShown = $0 })
                         .navigationSplitViewColumnWidth(min: 220, ideal: 260, max: 300)
                         .toolbar {
                             ToolbarItem {
@@ -55,9 +62,11 @@ struct MacMainWindow: View {
                             }
                         }
                 } detail: {
-                    // The notice of the window shows each error, so the pages of the detail area show no inline copy.
-                    detail.environment(\.windowShowsError, true)
+                    detail
                 }
+                // Each page of the detail column gets the notice from here, also a page that a stack pushes: a push
+                // replaces the whole content of the column, with each modifier inside the detail closure.
+                .modifier(MacNoticeArea(sidebarEdge: sidebarShown ? sidebarRight : 0))
             } else {
                 MacPairingView(model: model)
             }
@@ -122,21 +131,20 @@ struct MacMainWindow: View {
         }
     }
 
+    // A new case, with or without a stack of its own, needs no code for the notice of the window (MacNoticeArea).
     @ViewBuilder private var detail: some View {
         switch selection {
         case .inbox, nil:
-            MacInboxView(selection: $selection).modifier(MacNoticeArea())
+            MacInboxView(selection: $selection)
         case .library:
             NavigationStack(path: $libraryPath) {
                 LibraryView()
                     .navigationTitle("Library")
                     .navigationDestination(for: DocumentRoute.self) { DocumentView(documentId: $0.id) }
             }
-            .modifier(MacNoticeArea())
         case .document(let documentId):
             // A page has no links to other pages, so its stack has only the page.
             NavigationStack { DocumentView(documentId: documentId).id(documentId) }
-                .modifier(MacNoticeArea())
         case .bot(let botId):
             // The details are a column of fixed width next to the chat, not an inspector. Next to a chat, the
             // inspector's split view did not settle on a layout and stopped the app, below about 1,300 points of
@@ -155,8 +163,6 @@ struct MacMainWindow: View {
                         .navigationDestination(for: BotSettingsRoute.self) { BotSettingsView(botId: $0.botId) }
                 }
                 .environment(\.pushRoute) { route in chatPath.append(route) }
-                // The notice stands in the chat column, not under the details next to it.
-                .modifier(MacNoticeArea())
                 .frame(minWidth: 300, maxWidth: .infinity)
                 if inspectorShown {
                     Divider()
@@ -178,7 +184,6 @@ struct MacMainWindow: View {
                 TeamChatView(chatKey: chat)
                     .id(chat)
             }
-            .modifier(MacNoticeArea())
             .ignoresSafeArea(.container, edges: .top)
             .toolbarBackgroundVisibility(.hidden, for: .windowToolbar)
             .toolbar(removing: .title)
@@ -186,21 +191,82 @@ struct MacMainWindow: View {
     }
 }
 
-/// The notice of an action that failed, at the bottom center of the detail area. It takes its own space at the bottom,
-/// so the page above it gets shorter and covers nothing. A chat on the screen shows the notice above its composer
-/// instead (ChatHoldsNoticePreference).
+/// The notice of an action that failed, at the bottom center of the detail column. It takes its own space at the
+/// bottom of the column, so the page above it gets shorter and covers nothing. A chat on the screen shows the notice
+/// above its composer instead (NoticeHolders), and the column shows none.
+///
+/// The area sits on the split view, above each stack of the column, so no pushed page covers it. A new case of the
+/// detail column and a new pushed page need no code for the notice. A new chat with a composer puts ChatWindowNotice
+/// above its composer, as ConversationView does.
 struct MacNoticeArea: ViewModifier {
-    @State private var chatHoldsNotice = false
+    /// The right edge of the sidebar in the window, or 0 when the sidebar is hidden.
+    let sidebarEdge: CGFloat
+    @State private var notice = WindowNotice()
     @State private var area: CGFloat?
+    @State private var band: CGFloat = 0
 
     func body(content: Content) -> some View {
         content
-            .onPreferenceChange(ChatHoldsNoticePreference.self) { chatHoldsNotice = $0 }
-            .safeAreaInset(edge: .bottom, spacing: 0) {
-                if !chatHoldsNotice { WindowErrorNotice() }
+            .overlay(alignment: .bottom) {
+                Group {
+                    if notice.holders.columnShowsNotice {
+                        WindowErrorNotice().padding(.leading, sidebarEdge)
+                    }
+                }
+                .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { band = $0 }
+                .background(DetailColumnBottomInset(height: band))
             }
             .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { area = $0 }
             .environment(\.noticeArea, area)
+            // The notice of the window shows each error, so the pages of the detail column show no inline copy.
+            .environment(\.windowShowsError, true)
+            .environment(\.windowNotice, notice)
+    }
+}
+
+/// Gives the detail column of the split view in this window a bottom safe area as high as the notice, so each page of
+/// the column gets shorter, also a page that a stack pushes. AppKit hosts the column in a view of its own. A safe area
+/// inset of SwiftUI on the split view does not reach that view, but the safe area of AppKit does: AppKit gives the same
+/// view its left inset next to the sidebar.
+struct DetailColumnBottomInset: NSViewRepresentable {
+    let height: CGFloat
+
+    func makeNSView(context: Context) -> InsetView { InsetView() }
+
+    func updateNSView(_ view: InsetView, context: Context) {
+        view.height = height
+        view.apply()
+    }
+
+    final class InsetView: NSView {
+        var height: CGFloat = 0
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            apply()
+        }
+
+        // The view only finds the column. It takes no click and no wheel event.
+        override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+        func apply() {
+            guard let column = Self.detailColumn(in: window), column.additionalSafeAreaInsets.bottom != height else { return }
+            column.additionalSafeAreaInsets.bottom = height
+        }
+
+        /// The view that hosts the detail column: the view that fills the last item of the first split view of the
+        /// window. Nil when the window has no split view.
+        static func detailColumn(in window: NSWindow?) -> NSView? {
+            var queue = window?.contentView.map { [$0] } ?? []
+            while !queue.isEmpty {
+                let view = queue.removeFirst()
+                if let split = view as? NSSplitView, split.arrangedSubviews.count > 1, let item = split.arrangedSubviews.last {
+                    return item.subviews.first { $0.frame == item.bounds } ?? item
+                }
+                queue += view.subviews
+            }
+            return nil
+        }
     }
 }
 
