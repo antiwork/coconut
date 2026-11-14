@@ -748,9 +748,9 @@ What the chat shows when a turn fails:
 | The gateway stops answering in a turn, the turn fails, it runs over 30 minutes, it ends without a word, Coconut has a fault in the turn, or the trigger waited in the queue over one hour | The complete messages, then one message: "I could not finish my answer. Write again if you still need it." |
 | The service stops in a turn. Hermes ends the turn too: a clean stop stops each running turn while the listener still answers, and waits up to 10 seconds until the adapters collected the stops. After a crash, the adapter of the team mode stops a turn when a new service does not know it (`unknown` in the answer of a poll), or when it cannot reach the service for 30 seconds. An update drains the service first, so no turn runs while it restarts. A late reply of a stopped turn, and the answer of Hermes to its `/stop`, stay in the log of Hermes | The same message at the next start. The trigger does not run again. |
 | The chat of the bot goes off, the bot leaves the team, this Mac leaves, the member leaves, or the message is removed | Nothing. The turn stops or does not start. |
+| The relay refuses the write of a reply | Nothing. The relay client tries three times, then the service writes a log line. |
 
 In a direct chat each row holds too: each message of the table is a direct message of the agent in that chat, without `reply_to`.
-| The relay refuses the write of a reply | Nothing. The relay client tries three times, then the service writes a log line. |
 
 #### Typing
 
@@ -896,7 +896,7 @@ The recipient is inside the box. Another member of the team can open the outer s
 
 #### Rules for a Mac that reads a `direct` entry
 
-1. Only a person's Mac with the mark reads the kind. Each other Mac keeps the entry by the rule of an unknown kind and shows nothing.
+1. Only a person's Mac with the mark and a Mac for a team only read the kind. A Mac for a team only reads only the chats of its agents (see [The Mac for a team only](#the-mac-for-a-team-only)). Each other Mac keeps the entry by the rule of an unknown kind and shows nothing.
 2. The Mac opens each box before the transaction of the answer, without the lock of the service, as it opens the bodies. No call to the helper or the relay runs in a transaction.
 3. An entry of another member: the pair key takes the agreement key of the newest valid `member` entry of the writer that the Mac has at that point. The store has some, and the `member` entries before it in the same answer of the relay count, in their order. When the box opens, `to` is this Mac, and the fields fit, the entry is a message of the chat with the writer. This holds for a box without `bot`. A box with `bot` is a message of a chat with an agent: see [Direct chat with an agent](#direct-chat-with-an-agent). When the box does not open or names another member, the entry is not for this Mac and shows nothing.
 4. An own entry that the store does not have: the Mac tries the pair key of each other member until the box opens and `to` names that member. This happens after a stop between the write to the relay and the write to the store, and when the store is behind the relay. A Mac never reads a room without its row in the store.
@@ -905,7 +905,7 @@ The recipient is inside the box. Another member of the team can open the outer s
 7. The times follow rule 6 of the Team chat: `created_at` is the `at` of the first write that this Mac saw, and `edited_at` is the `at` of the newest write when `rev` is over 1.
 8. A chat keeps its history after the other member leaves or is removed. The name comes from `team_names`, as in the Team chat.
 
-A direct message never goes into `team_messages`. The Mac keeps it in `team_directs`, and the read position of each chat of two people in `team_direct_reads`: one for each room and other member. So no query of the Team chat, of its unread count, of its last message, of the triggers of a bot, or of the notifications of the team reads a direct message.
+A direct message never goes into `team_messages`. The Mac keeps it in `team_directs`, and the read position of each chat of two people in `team_direct_reads`: one for each room and other member. So no query of the Team chat, of its unread count, of its last message, or of the notifications of the team reads a direct message. The triggers of the Team chat read no direct message either. Only on a Mac for a team only does a direct message of a chat with an agent start a turn of that agent.
 
 The read position of a direct chat starts at 0, so a direct message that arrives counts as unread. It moves only forward, and never past the newest message of the chat. The unread count is the number of messages of the other member after it, up to 99.
 
@@ -1060,8 +1060,8 @@ A message of a chat of two people has no `page`.
    - The `at` of the relay is under one hour old.
    - Its box opens, names this Mac in `to`, has a valid `text`, and its `bot` is the entry ID of the `bot` entry of an agent of this Mac that is shared with the room, is not archived, and has `chat` true.
 4. The trigger goes into `team_triggers`, with the bound of 8 waiting triggers for one agent in one room. One thread still runs the triggers of one agent in one room one at a time: the Team chat, the named chats and the direct chats.
-5. The turn goes to Hermes with the chat ID `<bot ID>:team:<room ID>:direct:<member ID>`: one session for each person and agent. The name of the chat for Hermes is "<name of the person> · <name of the team>". The turn says that the chat is a direct chat (`direct: true` in `team`), and the adapter then gives Hermes the chat type `dm`. An older plugin gives `group`, and the session is still its own.
-6. The rules of the chat for Hermes: "You are in a direct chat with {name}, a member of the team {team}, in Coconut. Only {name} reads your reply. Do not repeat in another chat what {name} writes here, unless {name} asks for it. Coconut shows Markdown and has no cards here: when you need a choice or a fact, ask in your reply."
+5. The turn goes to Hermes with the chat ID `<bot ID>:team:<room ID>:direct:<member ID>`: one session for each person and agent. The name of the chat for Hermes is "<name of the person> · <name of the team>". The adapter gives the turn to Hermes as a group chat, as each turn of the team chat. It does not give the chat type `dm`, because Hermes adds a first-contact note to a `dm` chat and writes to the config of the Hermes home. The chat ID is its own, so the session is its own, and the rules tell the agent that one person reads the chat.
+6. The rules of the chat for Hermes: "You are in a direct chat with {name}, a member of the team {team}, in Coconut. Only {name} reads your reply. Keep this chat private: do not repeat in another chat what is written here. Do not repeat here what another member wrote to you in a direct chat. Coconut shows Markdown and has no cards here: when you need a choice or a fact, ask in your reply." The rules of the Team chat and of each named chat have the sentence "Do not repeat here what a member wrote to you in a direct chat." No rule depends on a name, because a name does not prove a person.
 7. The quoted context: at most 20 messages of the same chat since the last message of the agent there and before the trigger. A reply to a message of the chat names that message, as in the Team chat. With `page`: the Mac finds its own document through `team_page_entries`, and the turn gets the title, the key and the current text of the page from the store of this Mac (at most the first 16,000 code points, with one line that says so for a longer page), as quoted context that is data and not instructions. A page that this Mac no longer has gives one line: the person asks about a page that is no longer in the Library.
 8. Each complete segment of the reply and each commentary is one `direct` entry of this Mac for the person, with `bot`. No message has `reply_to`. A text over 16,000 code points goes into more than one message. The entry ID comes from the room, the trigger, the agent and the number of the message in the turn.
 9. An approval of a command is denied: "Nobody can approve a command in this chat, so Coconut denied it. Tell {name} that you could not run it." A clarify question goes into the chat as a message with its choices as a list, and Hermes gets the answer to end the turn: "Coconut put your question in this chat. End your turn now. The reply of {name} starts a new turn."
@@ -1080,6 +1080,7 @@ A message of a chat of two people has no `page`.
 
 - Another member sees that the person and the Mac of the agent write `direct` entries, with their size and time. It cannot read them or see for whom they are.
 - The Mac that runs the agent keeps the chat in its store, and Hermes keeps its session there.
+- The agent has one memory, and Hermes lets it search the sessions of each chat. The rules of each chat tell the agent to keep a direct chat private. Coconut cannot enforce that inside Hermes.
 
 No log line has the text of a message, the name of the agent or the name of the person.
 
