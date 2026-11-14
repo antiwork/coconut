@@ -92,7 +92,7 @@ final class PageShareFlowTests: XCTestCase {
             row.tap()
             app.buttons["team-chat-title"].tap()
             XCTAssertTrue(app.buttons["team-leave"].waitForExistence(timeout: 10))
-            XCTAssertFalse(app.staticTexts["Bots"].exists, "A team without a bot to ask has no Bots section.")
+            XCTAssertFalse(app.staticTexts["Agents"].exists, "A team without a bot to ask has no Agents section.")
             XCTAssertFalse(app.staticTexts["Add one of your bots"].exists)
             shot("05-iphone-team-screen-without-bots\(suffix)")
         }
@@ -122,7 +122,7 @@ final class PageShareFlowTests: XCTestCase {
     }
 
     private func openActions() {
-        let actions = app.buttons["Document actions"]
+        let actions = app.buttons["Page actions"]
         XCTAssertTrue(actions.waitForExistence(timeout: 10))
         actions.tap()
     }

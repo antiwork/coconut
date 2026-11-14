@@ -105,7 +105,7 @@ class TeamMessages:
         if reply_to is not None and not entry_id(reply_to):
             raise ServiceError(400, GONE_MESSAGE)
         if mentions is not None and (not isinstance(mentions, list) or len(mentions) > MAX_MENTIONS):
-            raise ServiceError(400, f'Mention at most {MAX_MENTIONS} people and bots in one message.')
+            raise ServiceError(400, f'Mention at most {MAX_MENTIONS} people and agents in one message.')
         self._team_room(room_id)
         entry = hashlib.sha256(f'{room_id}:{repeat}'.encode()).hexdigest()[:32] if repeat else token_hex(16)
         with team_errors(), self._team_room_lock(room_id):
@@ -262,7 +262,7 @@ class TeamMessages:
             elif ids and ids[0] == room['room'] and ids[1] in bots:
                 entries.append(ids[1])
             else:
-                raise ServiceError(400, 'Mention only people and bots of this team.')
+                raise ServiceError(400, 'Mention only people and agents of this team.')
         return list(dict.fromkeys(entries))
 
     def _team_message_answer(self, room_id: str, entry: str) -> dict:

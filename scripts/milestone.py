@@ -107,7 +107,7 @@ def main() -> None:
         print('Both tasks started. The service works without a phone connection.', flush=True)
         before = until(lambda s: any(d['status'] == 'pending' for d in s['decisions']) and
                        any(t['id'] == second['id'] and t['status'] == 'completed' for t in s['tasks']),
-                       'The first bot did not request a decision while the second completed.')
+                       'The first agent did not request a decision while the second completed.')
         pending = next(d for d in before['decisions'] if d['status'] == 'pending')
         cursor = before['cursor']
         stop(crash=True)

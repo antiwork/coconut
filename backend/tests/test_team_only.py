@@ -161,7 +161,7 @@ class TeamOnlyFlowTests(TeamOnlyMacs, unittest.TestCase):
         # A home that is not the home of a declared bot, and a home that is not a full path.
         status, text = self.refusal(lambda: self.save(home=str(self.home / 'profiles' / 'reporter')))
         self.assertEqual(status, 404)
-        self.assertIn('coconut team new-bot', text)
+        self.assertIn('coconut team new-agent', text)
         for home in ('hermes', '~/.hermes', 'a\0b', '/a\ud800'):
             with self.subTest(home=home):
                 self.assertEqual(self.refusal(lambda: self.save(home=home))[0], 400)
@@ -329,12 +329,12 @@ class BotRecordTests(TeamOnlyMacs, unittest.TestCase):
         self.assertEqual(self.call('GET', '/v1/team/bots')['bots'], [bot])
 
     def test_a_bot_record_refuses_hostile_input(self):
-        cases = [({'name': 'R' * 81}, 'Use at most 80 characters for the name of the bot.'),
-                 ({'name': 'Re\ud800porter'}, 'Use only valid text for the name of the bot.'),
-                 ({'name': 'Two\nlines'}, 'Put the name of the bot on one line.'),
-                 ({'name': '‮Reporter'}, 'Remove the hidden characters from the name of the bot.'),
-                 ({'name': ' Reporter'}, 'Remove the space at the start or end of the name of the bot.'),
-                 ({'name': ''}, 'Give the name of the bot.'), ({'name': 7}, 'Give the name of the bot.'), ({}, 'Give the name of the bot.'),
+        cases = [({'name': 'R' * 81}, 'Use at most 80 characters for the name of the agent.'),
+                 ({'name': 'Re\ud800porter'}, 'Use only valid text for the name of the agent.'),
+                 ({'name': 'Two\nlines'}, 'Put the name of the agent on one line.'),
+                 ({'name': '‮Reporter'}, 'Remove the hidden characters from the name of the agent.'),
+                 ({'name': ' Reporter'}, 'Remove the space at the start or end of the name of the agent.'),
+                 ({'name': ''}, 'Give the name of the agent.'), ({'name': 7}, 'Give the name of the agent.'), ({}, 'Give the name of the agent.'),
                  ({'name': 'Reporter', 'avatar': 'a' * 81}, 'Use text of at most 80 characters for the avatar.'),
                  ({'name': 'Reporter', 'color': 'c' * 21}, 'Use text of at most 20 characters for the color.'),
                  ({'name': 'Reporter', 'color': '\udfff'}, 'Use text of at most 20 characters for the color.'),
@@ -357,11 +357,11 @@ class BotRecordTests(TeamOnlyMacs, unittest.TestCase):
         link = Path(self.temp.name) / 'link'
         link.symlink_to(self.home)
         status, text = self.refusal(lambda: self.declare('Helper', home=link))
-        self.assertEqual((status, text), (409, 'The bot Reporter already stands for this Hermes home. A Hermes home '
-                                               'has one bot.'))
+        self.assertEqual((status, text), (409, 'The agent Reporter already stands for this Hermes home. A Hermes home '
+                                               'has one agent.'))
         other = Path(self.temp.name) / 'other'
         self.assertEqual(self.refusal(lambda: self.declare('reporter', home=other)),
-                         (409, 'This Mac already has a bot with the name Reporter. Choose another name.'))
+                         (409, 'This Mac already has an agent with the name Reporter. Choose another name.'))
         self.assertEqual(self.declare('Helper', home=other)['home'], os.path.realpath(other))
 
     def test_the_default_home_is_the_home_of_the_process(self):
@@ -504,7 +504,7 @@ class BotRecordTests(TeamOnlyMacs, unittest.TestCase):
         self.assertEqual(self.refusal(self.call, 'PATCH', f'/v1/team/bots/{bot["id"]}', {'home': '/tmp'})[0], 400)
         self.assertEqual(self.refusal(self.call, 'PATCH', f'/v1/team/bots/{bot["id"]}', {'name': 'x' * 81})[0], 400)
         self.assertEqual(self.refusal(self.call, 'PATCH', '/v1/team/bots/missing', {'name': 'Other'}),
-                         (404, 'This Mac has no bot with this ID.'))
+                         (404, 'This Mac has no agent with this ID.'))
         self.declare('Helper', home=Path(self.temp.name) / 'other')
         self.assertEqual(self.refusal(self.call, 'PATCH', f'/v1/team/bots/{bot["id"]}', {'name': 'HELPER'})[0], 409)
         (stored,) = [row for row in self.call('GET', '/v1/team/bots')['bots'] if row['id'] == bot['id']]

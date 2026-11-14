@@ -218,7 +218,7 @@ final class AppStore {
         }
         return nil
     }
-    func botName(_ id: String?) -> String { bots.first { $0.id == id }?.name ?? "Bot" }
+    func botName(_ id: String?) -> String { bots.first { $0.id == id }?.name ?? "Agent" }
 
     // A card waits for an answer in this bot's chat.
     func botNeedsYou(_ bot: Bot) -> Bool {
@@ -722,7 +722,7 @@ final class AppStore {
             guard let index = routines.firstIndex(where: { $0.id == routine.id }) else { return nil }
             let routine = routines[index]
             guard let bot = bots.first(where: { $0.id == routine.botId }), !bot.archived else {
-                error = "Restore this bot before running its routine."
+                error = "Restore this agent before running its routine."
                 return nil
             }
             if let taskId = routine.lastTaskId,
@@ -899,7 +899,7 @@ final class AppStore {
     func decisionReference(for id: String) -> MessageReference? {
         guard let decision = decisions.first(where: { $0.id == id }) else { return nil }
         return MessageReference(messageId: id, text: decision.title,
-            author: bots.first { $0.id == decision.botId }?.name ?? "Bot", role: "assistant")
+            author: bots.first { $0.id == decision.botId }?.name ?? "Agent", role: "assistant")
     }
 
     func messageReference(for message: Message) -> MessageReference? {
@@ -908,7 +908,7 @@ final class AppStore {
               let saved = messageIndex.first(id: message.id, clientRequestId: message.clientRequestId).map({ messages[$0] }) else { return nil }
         // A photo message quotes as "Photo: <caption>", not as its address.
         return MessageReference(messageId: saved.id, text: saved.photo?.preview ?? saved.text,
-            author: saved.role == "user" ? "You" : bots.first { $0.id == (saved.senderBotId ?? saved.botId) }?.name ?? "Bot",
+            author: saved.role == "user" ? "You" : bots.first { $0.id == (saved.senderBotId ?? saved.botId) }?.name ?? "Agent",
             role: saved.role)
     }
 
@@ -1063,7 +1063,7 @@ final class AppStore {
             }
             decisions[index].decidedBy = "You (preview)"
             decisions[index].decidedAt = Self.now
-            decisions[index].outcome = choice == "reply" ? "Reply received. The bot will continue." : choice == "modify" ? "Preview: the bot would prepare a new proposal. No revised action is approved." : choice == "approve" ? "Preview result saved. No real action ran." : "You rejected the action."
+            decisions[index].outcome = choice == "reply" ? "Reply received. The agent will continue." : choice == "modify" ? "Preview: the agent would prepare a new proposal. No revised action is approved." : choice == "approve" ? "Preview result saved. No real action ran." : "You rejected the action."
             if let taskIndex = tasks.firstIndex(where: { $0.id == decision.taskId }) {
                 tasks[taskIndex].status = ["modify", "reply"].contains(choice) ? "queued" : "completed"
                 tasks[taskIndex].summary = decisions[index].outcome ?? ""
@@ -1510,9 +1510,10 @@ final class AppStore {
         return result?.ok == true
     }
 
-    /// Loads the Library list. True when the list is fresh from the Mac.
+    /// Loads the Library list. True when the list is fresh from the Mac. A quiet load shows no notice when it fails:
+    /// the person did not ask for it.
     @discardableResult
-    func loadDocuments() async -> Bool {
+    func loadDocuments(quiet: Bool = false) async -> Bool {
         if isDemo {
             // The demo keeps its pins and deletes. A new load must not bring the first documents back.
             if documents == nil { documents = BotDocument.previews(bots: bots) }
@@ -1522,7 +1523,7 @@ final class AppStore {
         documentRequests += 1
         let request = documentRequests
         // The store runs on the main actor, so the task starts only after `latestDocumentLoad` names it.
-        let load = Task { await fetchDocuments(client, request: request) }
+        let load = Task { await fetchDocuments(client, request: request, quiet: quiet) }
         latestDocumentLoad = load
         return await load.value
     }
@@ -1530,21 +1531,21 @@ final class AppStore {
     /// One list request. A later request asks for a newer list, so the answer of an earlier request does not replace
     /// the list. Its caller gets the result of the latest load. That load is always a later request, so no load waits
     /// for itself, and a failed load gives false to each caller that waits for it.
-    private func fetchDocuments(_ client: APIClient, request: Int) async -> Bool {
+    private func fetchDocuments(_ client: APIClient, request: Int, quiet: Bool) async -> Bool {
         let changes = documentChanges
         let response: DocumentList
         do { response = try await client.request("documents") } catch {
             // An error of a request of an earlier pairing has no message for the state of this pairing.
             guard self.client === client else { return false }
             if request != documentRequests { return await latestDocumentLoad?.value ?? false }
-            report(error)
+            if !quiet { report(error) }
             return false
         }
         // A list of the Mac of an earlier pairing is not the list of this pairing.
         guard self.client === client else { return false }
         if request != documentRequests { return await latestDocumentLoad?.value ?? false }
         // The Mac confirmed a pin or a delete during this request, so this list can be older. Ask again.
-        guard changes == documentChanges else { return await loadDocuments() }
+        guard changes == documentChanges else { return await loadDocuments(quiet: quiet) }
         teamBots = response.teamBots ?? []
         documents = response.documents
         return true

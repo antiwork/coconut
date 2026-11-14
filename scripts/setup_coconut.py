@@ -237,7 +237,7 @@ def restart_login_items(previous: Path) -> None:
     if not login_item_loaded(SERVICE_LABEL):
         return
     if (previous / "scripts/host.py").is_file():
-        print(f"Coconut restarts the service of {previous}. Its running bot turns finish first.", flush=True)
+        print(f"Coconut restarts the service of {previous}. Its running agent turns finish first.", flush=True)
         drain = "import sys; sys.path.insert(0, sys.argv[1]); import host; host.drain_for_update()"
         run([sys.executable, "-c", drain, str(previous / "scripts")], "Waiting for the earlier service")
     for label in (SERVICE_LABEL, RELAY_LABEL):
@@ -250,7 +250,7 @@ def leave_launch_agents() -> None:
     agents = Path.home() / "Library/LaunchAgents"
     if any((agents / f"{label}.plist").exists() for label in (host.LABEL, host.TUNNEL_LABEL)):
         # The running bot turns finish first, as in an update.
-        print("Moving Coconut from its earlier LaunchAgents to Coconut.app. Running bot turns finish first.", flush=True)
+        print("Moving Coconut from its earlier LaunchAgents to Coconut.app. Running agent turns finish first.", flush=True)
         run(script("host.py", "migrate-to-app"), "The move to Coconut.app")
     elif host.owned_process() is not None and not host.app_runs_service():
         run(script("host.py", "stop"), "Stopping Coconut")
