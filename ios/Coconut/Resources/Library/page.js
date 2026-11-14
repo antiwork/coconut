@@ -75,9 +75,19 @@
     return room;
   });
   // In a box that must not shrink (flex: none, a width of max-content), a table with such a drawing is wider than the
-  // page. Its charts then ask for no room, as a chart in each other box that takes its width from its content.
-  const edge = main.getBoundingClientRect().right + 0.5;
-  for (const room of rooms) if (room.closest("table").getBoundingClientRect().right > edge) room.remove();
+  // page. Its charts then ask for no room, as a chart in each other box that takes its width from its content. A new
+  // width of the page checks again: a chart that drew before goes with its room, because a drawn plot asks for its
+  // own width.
+  const tight = () => {
+    const edge = main.getBoundingClientRect().right + 0.5;
+    for (const room of rooms) {
+      if (!room.isConnected || room.closest("table").getBoundingClientRect().right <= edge) continue;
+      room.parentElement.querySelector("svg.plot")?.remove();
+      room.remove();
+    }
+  };
+  tight();
+  new ResizeObserver(tight).observe(main);
 
   // A number: a sign, a currency sign, the digits 0 to 9 with separators, then a percent sign or one letter such as k
   // or M. A unit can follow after a space: at most 16 characters and no digit. "1,552 steps", "$41,200", "87%", "-3",
