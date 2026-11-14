@@ -992,7 +992,7 @@ final class LibraryDocumentTests: XCTestCase {
     /// characters and "…". A text of more than 128 UTF-16 units counts as wider than each chart, and its cut keeps
     /// only whole characters that end inside its first 128 units, never the last of them. Each chart block ends with
     /// an empty drawing of no height, and its plot has the whole pixels of the layout width of the figure.
-    static let labelRule = #"""
+    private static let labelRule = #"""
         const labelRule = (formats) => {
           // A drawn box is up to 0.03 px wider than its measure. A scaled svg draws each text narrower than its measure,
           // and WebKit lays out a box in steps of 1/64 px: so the size of the svg has its own tolerance.
@@ -2739,75 +2739,4 @@ private extension String {
 @MainActor
 private final class Once {
     var done = false
-}
-
-/// TEMPORARY, to remove before a merge: the facts of the web view of this runner for two chart pages. The name of the
-/// class sorts last, so the last lines of the test log show its output.
-final class ZzChartFactsOfThisRunnerTests: XCTestCase {
-    @MainActor
-    func testFacts() async throws {
-        let chart = { (json: String) in "\n\n```chart\n" + json + "\n```" }
-        let dates = #"{"type": "line", "x": "x", "y": "y", "data": [{"x": "2026-01-05", "y": 1}, {"x": "2026-01-06", "y": 2}, {"x": "2026-03-01", "y": 3}, {"x": "2026-06-15", "y": 2}, {"x": "2026-10-01", "y": 4}]}"#
-        let names = #"{"type": "bar", "x": "x", "y": "y", "data": [{"x": "Courses", "y": 41}, {"x": "Ebooks", "y": 18}, {"x": "Memberships of the team", "y": 15}, {"x": "Bundles", "y": 9}, {"x": "Physical", "y": 6}]}"#
-        let pages: [(String, String, String)] = [
-            ("two", "Lead." + chart(dates) + chart(names), #"["%b %-d", null]"#),
-            ("six", "Lead." + chart(dates) + chart(names) + chart(dates) + chart(names) + chart(dates) + chart(names),
-             #"["%b %-d", null, "%b %-d", null, "%b %-d", null]"#),
-        ]
-        for (name, page, formats) in pages {
-            let configuration = WKWebViewConfiguration()
-            DocumentPage.scripts(diagrams: false).forEach(configuration.userContentController.addUserScript)
-            let rule = "(() => {\n" + LibraryDocumentTests.labelRule + "\nreturn JSON.stringify(labelRule(\(formats)));\n})()"
-            let facts = """
-                (() => {
-                  const r = (n) => Math.round(n * 1000) / 1000;
-                  return JSON.stringify([...document.querySelectorAll("figure.chart[data-spec]")].slice(0, 2).map((figure) => {
-                    const plot = figure.querySelector("svg.plot");
-                    if (!plot) return ["no plot", figure.clientWidth];
-                    const box = plot.getBoundingClientRect();
-                    const numbers = [...plot.querySelectorAll('[aria-label="y-axis tick label"] text')].map((t) => t.getBoundingClientRect());
-                    return { client: figure.clientWidth, style: getComputedStyle(figure).width, attr: plot.getAttribute("width"),
-                      box: [r(box.width), r(box.height)], room: r(figure.lastElementChild.getBoundingClientRect().height),
-                      low: numbers.length ? [r(numbers[0].left - box.left), r(numbers[0].right - box.left)] : null,
-                      labels: [...plot.querySelectorAll('[aria-label="x-axis tick label"] text')].map((t) => {
-                        const b = t.getBoundingClientRect();
-                        return [t.textContent, r(+t.getAttribute("x")), r(t.getBBox().width), r(t.getComputedTextLength()),
-                          r(b.left - box.left), r(b.width)];
-                      }) };
-                  }));
-                })()
-                """
-            configuration.userContentController.addUserScript(WKUserScript(
-                source: "window.__zzNow = \(rule); window.__zzFactsNow = \(facts);", injectionTime: .atDocumentEnd,
-                forMainFrameOnly: true))
-            let view = WKWebView(frame: CGRect(x: 0, y: 0, width: 390, height: 800), configuration: configuration)
-            #if os(iOS)
-            let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
-            let window = UIWindow(windowScene: scene)
-            window.addSubview(view)
-            window.makeKeyAndVisible()
-            #else
-            let window = NSWindow(contentRect: CGRect(x: -20000, y: 0, width: 1200, height: 800), styleMask: [.borderless],
-                                  backing: .buffered, defer: false)
-            window.contentView?.addSubview(view)
-            window.orderFrontRegardless()
-            #endif
-            view.loadHTMLString(DocumentPage.html(title: "T", meta: "M", content: page, markdown: true), baseURL: nil)
-            try await Task.sleep(for: .seconds(3))
-            let read = { (script: String) async -> String in
-                ((try? await view.evaluateJavaScript("String(" + script + ")")) as? String) ?? "nil"
-            }
-            let environment = await read("[navigator.userAgent.split(' ').slice(-3).join(' '), devicePixelRatio, innerWidth, document.documentElement.clientWidth, innerHeight, document.documentElement.scrollHeight].join(' | ')")
-            print("ZZ \(name) env: " + environment)
-            print("ZZ \(name) rule at the end of the script: " + String((await read("window.__zzNow")).prefix(900)))
-            print("ZZ \(name) rule after 3 s: " + String((await read(rule)).prefix(900)))
-            print("ZZ \(name) facts at the end of the script: " + String((await read("window.__zzFactsNow")).prefix(1400)))
-            print("ZZ \(name) facts after 3 s: " + String((await read(facts)).prefix(1400)))
-            #if os(iOS)
-            window.isHidden = true
-            #else
-            window.orderOut(nil)
-            #endif
-        }
-    }
 }
