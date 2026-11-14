@@ -1074,14 +1074,17 @@ final class LibraryDocumentTests: XCTestCase {
               const short = points.filter((point) => point.text.length <= bound);
               measure(short.map((point) => point.text)).forEach((size, at) => { short[at].size = size; });
               points.forEach((point) => { if (point.text.length > bound) point.size = Infinity; });
-              // The chart of the labels ends 8 px before the lowest y number. The labels stand under the lowest line.
+              // The chart of the labels ends 8 px before the lowest y number: the width of the svg, less the width
+              // of that number, less the gap. The drawn left edge of that number is no measure: on a display with
+              // one device pixel for each px, WebKit draws a text that ends at the right edge about 0.5 px to the
+              // right. The labels stand under the lowest line.
               const numberBoxes = [...svg.querySelectorAll('[aria-label="y-axis tick label"] text')]
                 .map((text) => text.getBoundingClientRect());
               const lines = [...svg.querySelectorAll('[aria-label="y-grid"] line')]
                 .map((line) => line.getBoundingClientRect().top - box.top);
               if (!numberBoxes.length || !lines.length) return faults.concat("no y number or no y line").join("; ");
               const lowest = numberBoxes.reduce((low, number) => number.top > low.top ? number : low);
-              const end = lowest.left - box.left - gap;
+              const end = box.width - (lowest.right - lowest.left) - gap;
               const bottom = Math.max(...lines);
               const place = (at, size) => band ? at : Math.min(Math.max(at - size / 2, 0), end - size);
               // The longest cut with a visible character that fits the chart, as [text, width], or null.
@@ -2198,8 +2201,10 @@ final class LibraryDocumentTests: XCTestCase {
             window.Plot = new Proxy(plot, { get: (target, key) => key === "plot"
               ? (...options) => { window.plotCalls += 1; return target.plot(...options); } : target[key] });
             """
+        // The view is higher than the page. A scroll bar that shows while the charts draw makes the page narrower,
+        // and the charts that drew before draw again: that is right, and it is not the subject of this test.
         for width: CGFloat in [390, 744] {
-            let (view, window) = try await loadPage(html, width: width, markdown: false, script: count)
+            let (view, window) = try await loadPage(html, width: width, height: 2000, markdown: false, script: count)
             defer { close(window) }
             try await Task.sleep(for: .seconds(1))
             let result = try await probe(view, """
@@ -2428,22 +2433,41 @@ final class LibraryDocumentTests: XCTestCase {
     /// Loads a Markdown or HTML page with the scripts of the app in a web view of this width, in a window, as the app
     /// does.
     @MainActor
-    private func loadPage(_ content: String, width: CGFloat, markdown: Bool = true, script: String? = nil) async throws
-        -> (WKWebView, AnyObject) {
+    private func loadPage(_ content: String, width: CGFloat, height: CGFloat = 800, markdown: Bool = true,
+                          script: String? = nil) async throws -> (WKWebView, AnyObject) {
         let configuration = Self.configuration()
         // A script of the test runs at the start of the page, after the libraries.
         if let script {
             configuration.userContentController.addUserScript(
                 WKUserScript(source: script, injectionTime: .atDocumentStart, forMainFrameOnly: true))
         }
-        let view = WKWebView(frame: CGRect(x: 0, y: 0, width: width, height: 800), configuration: configuration)
+        let view = WKWebView(frame: CGRect(x: 0, y: 0, width: width, height: height), configuration: configuration)
         let window = try Self.show(view)
         view.loadHTMLString(DocumentPage.html(title: "T", meta: "M", content: content, markdown: markdown),
                             baseURL: nil)
         let ready = try await answer(of: "document.readyState === 'complete' && !!document.querySelector('main p')",
                                      in: view, once: "true")
         XCTAssertEqual(ready, "true", "The page did not load.")
+        try await chartsAtRest(view)
         return (view, window)
+    }
+
+    /// Waits until each chart has the plot of its layout width, or 5 seconds. On a Mac where the scroll bars always
+    /// show, a tall page gets a scroll bar while its charts draw. The page is then narrower, and the charts that drew
+    /// before draw again in the next frame. A test reads the page after that.
+    @MainActor
+    private func chartsAtRest(_ view: WKWebView) async throws {
+        let rest = """
+            [...document.querySelectorAll("figure.chart[data-spec]")].every((figure) => {
+              const plot = figure.querySelector("svg.plot");
+              const width = figure.clientWidth && Math.floor(parseFloat(getComputedStyle(figure).width));
+              return plot ? +plot.getAttribute("width") === width : !width || figure.classList.contains("broken");
+            })
+            """
+        for _ in 0..<50 {
+            if (try? await string(view, rest)) == "true" { return }
+            try await Task.sleep(for: .milliseconds(100))
+        }
     }
 
     /// The scale of the font of the chart texts from the environment: xcodebuild passes
