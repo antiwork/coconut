@@ -342,8 +342,12 @@ class DocumentServiceTests(unittest.TestCase):
         self.assertEqual(keys(), ['launch-checklist', 'signups-daily', 'weekly-summary'])
         self.assertFalse(self.pin(oldest, False)['pinned'])
         self.assertEqual(keys(), ['launch-checklist', 'weekly-summary', 'signups-daily'])
-        # A pin adds no event, so no phone loads its state again.
-        self.assertEqual(self.service._cursor(), cursor)
+        # A change of a pin adds a document event, so each other app loads the Library list again. A pin that
+        # changes nothing adds none.
+        self.assertTrue(self.service.updates(cursor, collection_deltas=True)['documents_changed'])
+        after = self.service._cursor()
+        self.pin(self.listed('launch-checklist'))
+        self.assertEqual(self.service._cursor(), after)
 
     def test_a_save_and_a_restart_keep_the_pin(self):
         self.save()
