@@ -61,17 +61,23 @@
     }
   }
 
-  // A chart asks for the width of the page column, and takes less when its place gives less. An empty drawing of that
-  // width stands in each chart. So a table, a row or a box that takes its width from its content gives a chart its
-  // room before the chart draws, and the drawn chart does not change that room. The drawing has no height. Its height
-  // is a style: in a box with a zoom, WebKit gives an svg with the attribute height 0 a height of 150 px.
-  for (const figure of main.querySelectorAll("figure.chart[data-spec]")) {
+  // The width of a table column comes from its content, and a chart has no width before it draws. So a chart in a
+  // table cell asks for the width of the page column, and takes less when its cell gives less: an empty drawing of
+  // that width stands in the chart. The table then gives each chart its room before the chart draws, and the drawn
+  // chart does not change that room. The drawing has no height. Its height is a style: WebKit gives an svg with the
+  // attribute height 0 a height of 150 px.
+  const rooms = [...main.querySelectorAll(":is(td, th) figure.chart[data-spec]")].map((figure) => {
     const room = document.createElementNS("http://www.w3.org/2000/svg", "svg");
     room.setAttribute("width", 680);
     room.style.height = "0";
     room.setAttribute("aria-hidden", "true");
     figure.append(room);
-  }
+    return room;
+  });
+  // In a box that must not shrink (flex: none, a width of max-content), a table with such a drawing is wider than the
+  // page. Its charts then ask for no room, as a chart in each other box that takes its width from its content.
+  const edge = main.getBoundingClientRect().right + 0.5;
+  for (const room of rooms) if (room.closest("table").getBoundingClientRect().right > edge) room.remove();
 
   // A number: a sign, a currency sign, the digits 0 to 9 with separators, then a percent sign or one letter such as k
   // or M. A unit can follow after a space: at most 16 characters and no digit. "1,552 steps", "$41,200", "87%", "-3",
@@ -309,14 +315,14 @@
     svg.remove();
     return widths;
   };
-  // The labels under the plot. Each label is a value of the data: a name as it is, a number with at most 15 digits, a
-  // date in the form of dateFormat. The code measures each label in the place where it shows. The code goes through
-  // the points from left to right. A point gets its label only when the label has a visible character, stays in the
-  // chart and starts at least 8 px after the box of the last label that shows. The chart ends 8 px before the lowest
-  // y number. On a band, a label starts at the left edge of its bar. On each other scale, a label is centered on its
-  // point and stays inside the chart. A name is never cut, with one exception: when no label shows yet and the label
-  // is wider than the chart, the code cuts it to whole characters and an ellipsis. A text of more than 128 characters
-  // counts as wider than each chart.
+  // The labels under the plot. Each label is a value of the data: a name as it is, a number without the noise of its
+  // binary form, a date in the form of dateFormat. The code measures each label in the place where it shows. The code
+  // goes through the points from left to right. A point gets its label only when the label has a visible character,
+  // stays in the chart and starts at least 8 px after the box of the last label that shows. The chart ends 8 px before
+  // the lowest y number. On a band, a label starts at the left edge of its bar. On each other scale, a label is
+  // centered on its point and stays inside the chart. A name is never cut, with one exception: when no label shows
+  // yet and the label is wider than the chart, the code cuts it to whole characters and an ellipsis. A text of more
+  // than 128 characters counts as wider than each chart.
   const segmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" });
   // The width of a chart: the whole pixels of the layout width of its figure. clientWidth rounds to the nearest pixel:
   // an svg that is wider than its figure shrinks, and its texts change. A figure that does not show has no width.
@@ -359,9 +365,11 @@
     const right = Math.ceil(Math.max(0, ...yWidths)) + 8;
     // The chart of the labels ends 8 px before the lowest y number, at the right edge of the svg.
     const end = width - yWidths[0] - 8;
-    // A number shows without the noise of its binary form: 0.1 * 3 is "0.3". 15 digits keep each whole number.
+    // A number that is not whole shows without the noise of its binary form: 0.1 * 3 is "0.3". A whole number shows
+    // as it is.
     const format = kind === "date" ? dateFormat(xs)
-      : kind === "number" ? (value) => String(Number(value.toPrecision(15))) : (value) => String(value);
+      : kind === "number" ? (value) => String(Number.isInteger(value) ? value : Number(value.toPrecision(15)))
+      : (value) => String(value);
     const svg = Plot.plot({
       width, height: 200, marginTop: 8, marginBottom: 24, marginLeft: 0, marginRight: right, style: look,
       x: { ...x, axis: null }, y: { domain: y.domain, axis: null }, color: { domain: names, range: palette },
@@ -466,8 +474,7 @@
       if (caption) {
         const element = document.createElement("figcaption");
         element.textContent = caption;
-        // The empty drawing stays the last child of the figure.
-        figure.lastElementChild.before(element);
+        figure.append(element);
       }
       let drawn = chartWidth(figure);
       drawChart(figure, spec, data, kind, drawn);
