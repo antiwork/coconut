@@ -5,7 +5,7 @@
       "created_at": "2026-09-08T11:16:00Z",
       "id": "00000000-0000-4000-8000-000000000041",
       "kind": "file",
-      "preview": "The Mac keeps working while the phone is closed. Notifications tell you when a bot finishes or needs a decision.",
+      "preview": "The Mac keeps working while the phone is closed. Notifications tell you when an agent finishes or needs a decision.",
       "status": "ready",
       "task_id": "00000000-0000-4000-8000-000000000022",
       "title": "Local delivery notes.md"
@@ -39,7 +39,7 @@
       "color": "6B8F71",
       "created_at": "2026-09-07T12:00:00Z",
       "id": "00000000-0000-4000-8000-000000000002",
-      "instructions": "Check primary sources. Keep a short report with links. Continue independent work when another bot waits.",
+      "instructions": "Check primary sources. Keep a short report with links. Continue independent work when another agent waits.",
       "last_message": "The comparison is ready. Checking the remaining sources.",
       "name": "Scout",
       "pinned": false,

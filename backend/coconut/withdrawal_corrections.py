@@ -159,7 +159,7 @@ class WithdrawalCorrections:
         authority = self._correction_owners(caller).get(decision['task_id'])
         task = self._get('tasks', decision['task_id'])
         if authority is None or decision['bot_id'] != task['bot_id']:
-            raise ServiceError(403, 'Only the execution that owns this card, or a bot it delegated the outcome to, can reopen it.')
+            raise ServiceError(403, 'Only the execution that owns this card, or an agent it delegated the outcome to, can reopen it.')
         if task['status'] == 'cancelled' or self._task_paused(task):
             raise ServiceError(409, 'The card belongs to a cancelled or paused task.')
         if (not decision.get('_native') or decision.get('action_type') not in ('question', 'draft_message')
@@ -312,7 +312,7 @@ class WithdrawalCorrections:
             caller = self._get('tasks', task_id)
             decision = self._get('decisions', request['decision_id'])
             if self._correction_owners(caller).get(decision['task_id']) is None:
-                raise ServiceError(403, 'Only the execution that owns this card, or a bot it delegated the outcome to, can reopen it.')
+                raise ServiceError(403, 'Only the execution that owns this card, or an agent it delegated the outcome to, can reopen it.')
             previous = self._previous_correction(decision, request)
             if previous is not None:
                 return previous
@@ -342,7 +342,7 @@ class WithdrawalCorrections:
             try:
                 profile_revision = self.profiles.prompt_revision(self._get('bots', decision['bot_id']))
             except (OSError, ProfileError) as error:
-                raise ServiceError(409, 'Coconut cannot read the current bot instructions. Retry this correction after the profile is readable.') from error
+                raise ServiceError(409, 'Coconut cannot read the current agent instructions. Retry this correction after the profile is readable.') from error
             withdrawn = {key: decision.get(key) for key in (
                 'status', 'revision', 'resolution', 'resolution_context', 'outcome', 'resolved_at',
                 '_withdrawal', '_freshness', '_source_check')}

@@ -72,7 +72,7 @@ SCHEMA = {
         'scope': {'type': 'array', 'minItems': 1, 'uniqueItems': True, 'items': {'type': 'string', 'enum': list(SCOPES)}},
         'authorization_decision_id': {'type': 'string', 'description':
             'Required with local_fixes, and only then. The ID of the question in this execution that a person approved '
-            'with the option that authorizes these fixes. Coconut checks it and gives the bot that exact recorded choice. '
+            'with the option that authorizes these fixes. Coconut checks it and gives the agent that exact recorded choice. '
             'diagnosis and tests need no authorization and grant no fix permission.'},
     },
     'required': ['decision_id', 'decision_revision', 'scope'],
@@ -87,7 +87,7 @@ RETAINED_PR_URL_LIMIT = 500
 CONTINUE_SCHEMA = {
     'name': 'coconut_continue_work',
     'description': 'Continue a quiescent queued, scheduled, review, blocked, failed, or completed Hermes outcome with new facts. Use the native task ID from kanban_show. '
-        'You must own the work or be its requesting bot. This keeps its task, workspace, decisions, and result route. '
+        'You must own the work or be its requesting agent. This keeps its task, workspace, decisions, and result route. '
         'Hermes preserves completed results and creates a linked follow-up with the same workspace. '
         'This does not approve actions. The result goes to the original requester.',
     'parameters': {'type': 'object', 'additionalProperties': False,
@@ -128,7 +128,7 @@ def instructions(lane):
                 'Work only on this Mac. Do not push, publish, comment on or edit the PR or issue, mark it ready, merge, '
                 'deploy, create cards, or answer or change any decision. Your local tools keep full access, so these '
                 'limits are yours to keep. This lane grants no new permission. Coconut holds Kanban completion and board '
-                'changes, bot messages, routines, new cards, and decision answers until the person gives new direction. '
+                'changes, agent messages, routines, new cards, and decision answers until the person gives new direction. '
                 'Record verified findings with kanban_comment on your own task, then finish the turn. Coconut returns '
                 'this outcome to its hold.\n')
     if lane.get('declined_merge_pr_url'):
@@ -143,7 +143,7 @@ def instructions(lane):
             + ' '.join(SCOPE_INSTRUCTIONS[item] for item in scope) + ' ' + limit + approved
             + 'Work only on this Mac. Do not push, publish, comment on or edit the PR or issue, mark it ready, merge, '
               'deploy, or answer or change any decision. Your local tools keep full access, so these limits are yours to '
-              'keep. This lane grants no new permission. Coconut holds Kanban completion and board changes, bot messages, '
+              'keep. This lane grants no new permission. Coconut holds Kanban completion and board changes, agent messages, '
               'routines, new cards, and decision answers ' + until + '. Record verified progress with '
               'kanban_comment on your own task, then finish the turn. Coconut returns this outcome ' + back + '.\n')
 
@@ -567,7 +567,7 @@ class TechnicalLane:
         if self._technical_lane(task):
             # A refused question returns to the bot as a validation error, so the turn continues.
             raise ServiceError(400 if kind in ('native_question', 'native_proposal') else 403,
-                               'Independent technical work cannot answer or create decisions, contact other bots, '
+                               'Independent technical work cannot answer or create decisions, contact other agents, '
                                'or change work routes while its decision is pending.')
 
     def _refuse_technical_tool(self, task, action):

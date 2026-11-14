@@ -202,7 +202,7 @@ struct LibraryView: View {
         VStack(spacing: 8) {
             Image(systemName: "rectangle.3.group").font(.largeTitle.weight(.light)).foregroundStyle(.secondary)
             Text("Your Library").font(.title3.weight(.semibold))
-            Text("Bots keep pages here: notes, checklists, and charts that they update.")
+            Text("Agents keep pages here: notes, checklists, and charts that they update.")
                 .font(.subheadline).foregroundStyle(.secondary).multilineTextAlignment(.center)
         }
         .frame(maxWidth: .infinity).padding(.horizontal, 40).padding(.top, 120)

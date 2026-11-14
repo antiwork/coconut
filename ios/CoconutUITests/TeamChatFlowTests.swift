@@ -94,7 +94,7 @@ final class TeamChatFlowTests: XCTestCase {
             app.buttons["team-chat-\(crew)"].tap()
             XCTAssertTrue(element("team-chat-empty").waitForExistence(timeout: 10))
             // The bot of the Mac without a person can answer, so the empty chat tells of @.
-            XCTAssertTrue(element("team-chat-empty").label.contains("Type @ to ask a bot."),
+            XCTAssertTrue(element("team-chat-empty").label.contains("Type @ to ask an agent."),
                           element("team-chat-empty").label)
             shot("05a-iphone-empty-chat")
             back()
@@ -276,7 +276,7 @@ final class TeamChatFlowTests: XCTestCase {
 
     /// The Team screen of a team with Macs for a team only, in its own test world: Ada and Grace, Reporter Mac with
     /// the bots Reporter and Scribe, and Spare Mac without a bot. COCONUT_TEAM_BOTS names that team, and
-    /// COCONUT_TEAM_BOT_ROWS has what VoiceOver reads for each row of the section "Bots", in order, with "|" between
+    /// COCONUT_TEAM_BOT_ROWS has what VoiceOver reads for each row of the section "Agents", in order, with "|" between
     /// the rows. COCONUT_TEAM_PEOPLE names a team with people only. COCONUT_TEAM_LOOK "dark" or "large" sets the look.
     @MainActor
     func testTheTeamScreenShowsTheMacsForATeamOnlyAsBots() throws {
@@ -308,13 +308,13 @@ final class TeamChatFlowTests: XCTestCase {
         shot("team-\(look)-chat-title")
         title.tap()
 
-        // The rows of the section "Bots", found by their identifiers, each read as one sentence.
+        // The rows of the section "Agents", found by their identifiers, each read as one sentence.
         let rows = app.descendants(matching: .any)
             .matching(NSPredicate(format: "identifier BEGINSWITH 'team-bot-' OR identifier BEGINSWITH 'team-mac-'"))
         XCTAssertTrue(rows.firstMatch.waitForExistence(timeout: 15))
         XCTAssertTrue(app.staticTexts["Ada"].exists && app.staticTexts["Grace"].exists, "The people are members.")
         XCTAssertFalse(app.staticTexts["Reporter Mac"].exists, "A Mac with a bot shows as its bots, not as a person.")
-        let ask = app.staticTexts["Type @ in the team chat to ask a bot."]
+        let ask = app.staticTexts["Type @ in the team chat to ask an agent."]
         // With the largest text the screen scrolls down to Leave, its last row, and reads each row on the way.
         var labels: [String] = []
         var asked = false
@@ -329,7 +329,7 @@ final class TeamChatFlowTests: XCTestCase {
             app.swipeUp(velocity: .slow)
         }
         XCTAssertEqual(labels, expected)
-        XCTAssertEqual(asked, expected.contains { $0.hasSuffix(", bot") },
+        XCTAssertEqual(asked, expected.contains { $0.hasSuffix(", agent") },
                        "The line under the section shows only while a bot answers.")
 
         guard let people = env["COCONUT_TEAM_PEOPLE"] else { return }
@@ -344,7 +344,7 @@ final class TeamChatFlowTests: XCTestCase {
         title.tap()
         XCTAssertTrue(app.buttons["team-leave"].waitForExistence(timeout: 10))
         XCTAssertEqual(rows.count, 0)
-        XCTAssertFalse(app.staticTexts["Bots"].exists, "A team with people only has no section \"Bots\".")
+        XCTAssertFalse(app.staticTexts["Agents"].exists, "A team with people only has no section \"Agents\".")
         shot("team-\(look)-people-only")
     }
 
@@ -1027,7 +1027,7 @@ final class TeamChatFlowTests: XCTestCase {
         menu.tap()
         XCTAssertTrue(confirm.waitForExistence(timeout: 5))
         XCTAssertTrue(app.staticTexts["Remove Spare Mac from Example Team?"].exists)
-        XCTAssertTrue(app.staticTexts["Spare Mac can no longer read or write in this team. Its bots Reporter and Scribe leave the team with it."].exists)
+        XCTAssertTrue(app.staticTexts["Spare Mac can no longer read or write in this team. Its agents Reporter and Scribe leave the team with it."].exists)
         shot("remove-\(look)-3-confirm-spare-mac")
         cancelQuestion()
         XCTAssertTrue(confirm.waitForNonExistence(timeout: 5))

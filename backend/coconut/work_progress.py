@@ -377,7 +377,7 @@ class WorkProgress:
         if attempts >= 2:
             title = task['title']
             label = 'This follow-up' if re.search(r'(?:^|\s)(?:/|[A-Za-z]:[\\/])', title) else f'“{title}”'
-            return f'{label} is unfinished. The bot could not confirm the next step. Ask for an update to check the current work.'
+            return f'{label} is unfinished. The agent could not confirm the next step. Ask for an update to check the current work.'
         epoch = task.get('_conversation_epoch')
         self._advance_input(task)
         task.update(status='queued', summary='Continuing unfinished work.', updated_at=now(),

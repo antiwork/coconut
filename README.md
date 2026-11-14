@@ -1,11 +1,11 @@
 # Coconut
 
 A native iOS app for your [Hermes](https://github.com/NousResearch/hermes-agent) agents.
-Each bot is one of your Hermes profiles, with its own instructions, memory, skills, and routines.
+Each agent is one of your Hermes profiles, with its own instructions, memory, skills, and routines.
 Coconut keeps the Hermes source unchanged.
 
-- Chat with bots, attach files, and follow their progress.
-- Tag other bots with `@` and inspect their exchanges.
+- Chat with agents, attach files, and follow their progress.
+- Tag other agents with `@` and inspect their exchanges.
 - Answer pending decisions, approvals, and questions from one inbox.
 - Receive encrypted notifications with message previews and task links.
 
@@ -13,9 +13,9 @@ Your Mac runs Hermes and Coconut and stores the work. Your iPhone reaches the Ma
 
 ## How it works
 
-- **Bots are Hermes profiles.** `default` is your Hermes home, usually `~/.hermes`. Each other bot is `~/.hermes/profiles/<name>`. A bot in Coconut and `hermes -p <name>` in Terminal are the same agent.
+- **Agents are Hermes profiles.** `default` is your Hermes home, usually `~/.hermes`. Each other agent is `~/.hermes/profiles/<name>`. An agent in Coconut and `hermes -p <name>` in Terminal are the same agent.
 - **Turns run in your Hermes gateway.** Coconut runs `hermes gateway` for your Hermes home, and its `coconut` gateway plugin connects the gateway to the iPhone. Routines run in the gateway as Coconut turns. Some turn types still run in Coconut's own workers; [architecture](docs/architecture.md) lists them.
-- **Settings are native.** The app's default model is the default profile's model. A bot follows it, unless you give that bot its own model.
+- **Settings are native.** The app's default model is the default profile's model. An agent follows it, unless you give that agent its own model.
 - **Hermes knows Coconut.** Coconut ships a `coconut` skill, so your Hermes, for example in Telegram, can update, pair, and repair Coconut.
 
 ## Setup
@@ -29,7 +29,7 @@ curl -fsSL https://coconut-updates.gumroad.workers.dev/install | bash -s <code>
 The command installs the notarized Coconut.app on the agent's Mac, sets up Coconut, and pairs the iPhone by itself. You do not touch the Mac.
 See [Pair through Hermes](docs/install-and-update.md#pair-through-hermes), the [Mac setup and pairing guide](docs/install-and-update.md), and [install the iPhone app](docs/iphone-install.md).
 
-Coconut runs on the Hermes that you already use. It does not install its own copy. Without a usable Hermes, the service starts but runs no bots, and the phone shows why.
+Coconut runs on the Hermes that you already use. It does not install its own copy. Without a usable Hermes, the service starts but runs no agents, and the phone shows why.
 
 ## Updates
 
@@ -63,7 +63,7 @@ See [architecture](docs/architecture.md) for implementation details, [relay tran
 
 ## Parallel work
 
-Settings → Parallel work sets how many bots work at once. Automatic lets the Mac choose from its processors and memory. Lowering the limit lets running work finish before Coconut starts more.
+Settings → Parallel work sets how many agents work at once. Automatic lets the Mac choose from its processors and memory. Lowering the limit lets running work finish before Coconut starts more.
 
 ## Removal
 

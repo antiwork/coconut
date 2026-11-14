@@ -857,7 +857,7 @@ assert event.get('rekind_reason') == ('no_open_parent' if kind == 'dependency' e
     def test_aged_claim_still_requires_requester_or_owner(self):
         owner, source, identity, _ = self.prepare(caller='stranger')
         self.age_binding_and_restart(owner)
-        with self.assertRaisesRegex(ServiceError, 'owner or its requesting bot'):
+        with self.assertRaisesRegex(ServiceError, 'owner or its requesting agent'):
             self.resume(source, identity)
         self.assertEqual(self.service._get('tasks', owner['id']), owner)
         self.assertFalse(self.service._all('artifacts'))
@@ -906,7 +906,7 @@ assert event.get('rekind_reason') == ('no_open_parent' if kind == 'dependency' e
 
     def test_review_claim_rejects_wrong_owner(self):
         owner, source, identity, _ = self.prepare('review', 'stranger')
-        with self.assertRaisesRegex(ServiceError, 'owner or its requesting bot'):
+        with self.assertRaisesRegex(ServiceError, 'owner or its requesting agent'):
             self.resume(source, identity)
         self.assertEqual(self.service._get('tasks', owner['id']), owner)
 
@@ -946,7 +946,7 @@ board.kb.link_tasks(board.conn, parent, sys.argv[2])
 
     def test_ready_claim_rejects_wrong_owner(self):
         owner, source, identity, _ = self.prepare('ready', 'stranger')
-        with self.assertRaisesRegex(ServiceError, 'owner or its requesting bot'):
+        with self.assertRaisesRegex(ServiceError, 'owner or its requesting agent'):
             self.resume(source, identity)
         self.assertEqual(self.service._get('tasks', owner['id']), owner)
 
@@ -989,7 +989,7 @@ board.kb.link_tasks(board.conn, parent, sys.argv[2])
 
     def test_stranger_cannot_reconcile_claim(self):
         owner, source, identity, _ = self.prepare(caller='stranger')
-        with self.assertRaisesRegex(ServiceError, 'owner or its requesting bot'):
+        with self.assertRaisesRegex(ServiceError, 'owner or its requesting agent'):
             self.resume(source, identity)
         self.assertEqual(self.service._get('tasks', owner['id']), owner)
         self.assertFalse(self.service._all('artifacts'))

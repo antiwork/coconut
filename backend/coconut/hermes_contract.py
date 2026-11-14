@@ -314,7 +314,7 @@ def verify_parallel_work_contract():
             with patch.dict(os.environ, {'HERMES_HOME': str(home)}):
                 save(home, 3)
                 if _get_max_concurrent_children() != 3:
-                    raise ValueError('Hermes did not use the bot worker limit.')
+                    raise ValueError('Hermes did not use the agent worker limit.')
                 save(home, 8)
                 if _get_max_concurrent_children() != 8:
                     raise ValueError('Hermes did not apply the changed worker limit.')

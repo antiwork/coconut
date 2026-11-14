@@ -28,7 +28,7 @@ WORK_INSTRUCTIONS = (
     'A question about a decision does not complete its unfinished outcome. Answer it and retain the remaining work. '
     'If a decision is still needed, create an updated card with the concrete next action. '
     'Use coconut_ask when a human decision is required. Coconut connects the card to this same native task. '
-    'Use coconut_wait for an existing bot result. Finish the turn only after the wait succeeds. '
+    'Use coconut_wait for an existing agent result. Finish the turn only after the wait succeeds. '
     'Before repeating an action from an earlier attempt, check its receipt and destination. '
     'An absent result does not prove the action failed. Preserve approval limits and unresolved effects. '
     'Use a native dependency or scheduled check for a valid external wait. Do not create a recovery task. '
@@ -1033,7 +1033,7 @@ class NativeOutcomes:
             owner, native = self._native_continuation_owner(identity, snapshot_missing, snapshots)
             identity = native['id']
             if source['bot_id'] not in (owner['bot_id'], owner.get('source_bot_id')):
-                raise ServiceError(403, 'Only the owner or its requesting bot can continue this work.')
+                raise ServiceError(403, 'Only the owner or its requesting agent can continue this work.')
             if owner.get('_native_job') and not owner.get('_native_job_finished'):
                 raise ServiceError(409, 'Wait for the original routine occurrence to finish reconciling with Hermes.')
             bot = self._get('bots', owner['bot_id'])

@@ -208,7 +208,7 @@ class BotCreationTests(unittest.TestCase):
             self.create(task, self.payload(task) | {'name': f'Scout {index}'})
         self.restart()
         task = self.working(tasks[1])
-        with self.assertRaisesRegex(ServiceError, 'eight bots'):
+        with self.assertRaisesRegex(ServiceError, 'eight agents'):
             self.create(task, self.payload(task) | {'name': 'Ninth'})
         self.assertEqual(len(self.service._all('bot_creation_receipts')), 8)
 

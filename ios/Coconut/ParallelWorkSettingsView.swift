@@ -15,7 +15,7 @@ struct ParallelWorkSettingsView: View {
         Form {
             if let capacity = store.workCapacity {
                 Section {
-                    Picker("Bots working at once", selection: Binding(get: { capacity.limit }, set: { save($0) })) {
+                    Picker("Agents working at once", selection: Binding(get: { capacity.limit }, set: { save($0) })) {
                         Text("Automatic (\(capacity.automaticLimit))").tag(Int?.none)
                         ForEach(Array(1...max(64, capacity.effectiveLimit)), id: \.self) { value in
                             Text("\(value)").tag(Optional(value))
@@ -24,7 +24,7 @@ struct ParallelWorkSettingsView: View {
                     .pagePickerStyle()
                     .accessibilityIdentifier("work-item-limit")
                 } footer: {
-                    Text("Automatic lets up to \(capacity.automaticLimit) bots work at once. Your Mac chooses this number from its processors and memory. A lower number does not stop work that runs now.")
+                    Text("Automatic lets up to \(capacity.automaticLimit) agents work at once. Your Mac chooses this number from its processors and memory. A lower number does not stop work that runs now.")
                 }
             } else {
                 Section {} footer: {

@@ -251,7 +251,7 @@ struct DecisionInboxView: View {
                         overviewOpen = false
                     } label: {
                         VStack(alignment: .leading, spacing: BoardStyle.Space.xs) {
-                            Text(store.bots.first { $0.id == decision.botId }?.name ?? "Bot")
+                            Text(store.bots.first { $0.id == decision.botId }?.name ?? "Agent")
                                 .font(.footnote).foregroundStyle(.secondary)
                             Text(decision.title).font(.body).foregroundStyle(.primary)
                         }.padding(.vertical, 4)

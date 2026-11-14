@@ -60,7 +60,7 @@ class FixtureProvider:
         else:
             target = next((peer['id'] for peer in directory if peer['name'] == 'Lin'), None)
             if target is None:
-                raise ValueError('The fixture milestone needs an available bot named Lin.')
+                raise ValueError('The fixture milestone needs an available agent named Lin.')
             shared = 'TEAM_MILESTONE_REQUEST: What is 17 multiplied by 19? Send the result to this message sender once. Do not acknowledge the result.'
         receipt = emit('bot_message', {'target_bot_id': target, 'text': shared})
         status = receipt.get('status', 'unconfirmed') if isinstance(receipt, dict) else 'unconfirmed'
@@ -114,7 +114,7 @@ class FixtureProvider:
 
 
 # The Hermes gateway runs each turn of a service with a Hermes home (gateway_chat). Coconut has no worker of its own.
-GATEWAY_ONLY = 'The Hermes gateway runs each turn. Start Coconut with the Hermes home of its bots.'
+GATEWAY_ONLY = 'The Hermes gateway runs each turn. Start Coconut with the Hermes home of its agents.'
 
 
 class HermesProvider(FixtureProvider):
@@ -192,7 +192,7 @@ class HermesProvider(FixtureProvider):
         if operation not in ('read', 'routines_read', 'snapshot_read'):
             for home in homes.values():
                 if not Path(home).is_dir():
-                    raise RuntimeError(f'The Hermes profile folder {home} is missing. Restore it, or remove the bot from Coconut.')
+                    raise RuntimeError(f'The Hermes profile folder {home} is missing. Restore it, or remove the agent from Coconut.')
         return self.catalog._call('native', native_operation=operation, homes=homes, **payload)
 
     def maintain_sessions(self, bot, conversations, outcomes, retention_days, *, allow_vacuum=False):

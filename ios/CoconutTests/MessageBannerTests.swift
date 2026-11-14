@@ -213,7 +213,7 @@ final class MessageBannerTests: XCTestCase {
     }
 
     func testTheRowsOfTheChatsListKeepTheirNames() {
-        XCTAssertEqual(TeamChatPreview.text(last(2, bot: "t-r1-b1", botName: nil)), "Bot: See you at 3")
+        XCTAssertEqual(TeamChatPreview.text(last(2, bot: "t-r1-b1", botName: nil)), "Agent: See you at 3")
         XCTAssertEqual(TeamChatPreview.text(last(2, name: nil)), "Former member: See you at 3")
         XCTAssertEqual(TeamChatPreview.text(last(2)), "Grace: See you at 3")
     }
