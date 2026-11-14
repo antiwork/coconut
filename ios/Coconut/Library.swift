@@ -396,6 +396,7 @@ struct DocumentView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.openChat) private var openChat
     @Environment(\.pushRoute) private var pushRoute
+    @Environment(\.showTeamChat) private var showTeamChat
     let documentId: String
     @State private var document: BotDocument?
     @State private var failed = false
@@ -405,6 +406,9 @@ struct DocumentView: View {
     private var listed: BotDocument? { store.documents?.first { $0.id == documentId } }
     /// A bot of this Mac. A team page has none, so the actions that need one are not there.
     private var bot: Bot? { (document ?? listed).flatMap { item in store.bots.first { $0.id == item.botId } } }
+    /// The direct chat with the team bot of a team page, while this person can write to the bot. Nil for each other
+    /// page.
+    private var teamChat: TeamChatKey? { (listed ?? document).flatMap { store.team?.directChat(about: $0) } }
     private var botName: String? {
         guard let item = document ?? listed else { return nil }
         return bot?.name ?? store.teamBots.first { $0.id == item.botId }?.name
@@ -439,11 +443,9 @@ struct DocumentView: View {
             if let document, let content = document.content {
                 ToolbarItem(placement: .trailingBar) {
                     Menu {
-                        if let bot {
-                            Button { ask(bot, about: document) } label: {
-                                Label("Chat about this page", systemImage: "bubble.left")
-                            }
-                            .accessibilityIdentifier("document-ask")
+                        if let chat = chatAbout(document) {
+                            Button(action: chat) { Label("Chat about this page", systemImage: "bubble.left") }
+                                .accessibilityIdentifier("document-ask")
                         }
                         // The list has the current pin. The open document has the pin of the time it loaded.
                         PinDocumentButton(document: listed ?? document)
@@ -486,10 +488,25 @@ struct DocumentView: View {
         }
     }
 
+    /// What "Chat about this page" does: open the chat of a bot of this Mac, or the direct chat with the team bot of a
+    /// team page. Nil for a page that has neither.
+    private func chatAbout(_ document: BotDocument) -> (() -> Void)? {
+        if let bot { return { ask(bot, about: document) } }
+        if let teamChat { return { ask(teamChat, about: document) } }
+        return nil
+    }
+
     /// Opens the bot's chat with the page quoted in the composer, as a reply quotes a message.
     private func ask(_ bot: Bot, about document: BotDocument) {
         store.pageQuotes[bot.id] = .page(document)
         if let openChat { openChat(bot.id) } else { pushRoute?(ConversationRoute(botId: bot.id)) }
+    }
+
+    /// Opens the direct chat with the team bot of the page, with the page quoted in the composer. The chat opens where
+    /// each other way to it opens it: on the Chats tab of an iPhone, and in the sidebar of the Mac window.
+    private func ask(_ chat: TeamChatKey, about document: BotDocument) {
+        store.teamPageQuotes[chat] = TeamAboutPage(document)
+        showTeamChat?(chat)
     }
 
     private func load() async {

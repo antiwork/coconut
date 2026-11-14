@@ -3,7 +3,8 @@ import SwiftUI
 /// The page of a chat of a team on the stack of the Chats tab. A chat can take the place of another chat at the same
 /// depth (the name above a message, a tapped notification). The identity of the chat makes it a new page: it loads its
 /// own messages, and the draft, the reply quote and the edit of the first chat stay behind. The Mac window does the
-/// same with `.id(chat)`.
+/// same with `.id(chat)`. A page that "Chat about this page" quotes waits in the store under the key of its chat, so it
+/// shows only in that chat.
 struct TeamChatDestination: View {
     let route: TeamChatRoute
 
@@ -28,8 +29,12 @@ struct TeamChatView: View {
     @Environment(\.dismiss) private var dismiss
     let chatKey: TeamChatKey
     @State private var draft = ""
-    @State private var replyTo: TeamMessage?
+    /// The reply or the Library page that the composer quotes above its field.
+    @State private var quote: TeamComposerQuote?
     @State private var editing: TeamMessage?
+    /// The composer gets the keyboard a moment after "Chat about this page" opened the chat, as in the chat of an own
+    /// bot.
+    @State private var focusAfterOpen: UUID?
     /// The bots and the people that the person picked with `@` in the draft (see BotMentions).
     @State private var mentions: [SelectedBotMention] = []
     @State private var deleting: TeamMessage?
@@ -230,7 +235,21 @@ struct TeamChatView: View {
             guard room.hasChat, store.connection == .connected || store.isDemo else { return }
             await store.loadTeamChat(chatKey)
         }
-        .onAppear { isVisible = true; store.openTeamChat(chatKey) }
+        .onAppear { isVisible = true; store.openTeamChat(chatKey); takePageQuote() }
+        // "Chat about this page" opens the chat with the page quoted above the text field. A chat that is not on the
+        // screen leaves the page for the chat that the person sees.
+        .onChange(of: store.teamPageQuotes[chatKey]) { _, page in if page != nil && isVisible { takePageQuote() } }
+        // The view cancels this task when it leaves the screen, and a new ID when the request changes.
+        .task(id: focusAfterOpen) {
+            guard focusAfterOpen != nil else { return }
+            try? await Task.sleep(for: .milliseconds(450))
+            guard !Task.isCancelled, focusAfterOpen != nil else { return }
+            focusAfterOpen = nil
+            composerFocused = true
+        }
+        // The person can no longer write, for example because the bot left the team: the closed line takes the place
+        // of the composer, and the page goes with it.
+        .onChange(of: closedReason(room) != nil) { _, closed in if closed && quote?.page != nil { quote = nil } }
         // A chat that closes keeps its newest page only, so it opens again without stale older pages.
         .onDisappear { isVisible = false; composerFocused = false; store.closeTeamChat(chatKey) }
         .onReceive(DaySeparator.changes) { _ in dayReference = Date() }
@@ -364,7 +383,7 @@ struct TeamChatView: View {
         } else {
             TeamChatComposer(placeholder: TeamDirectText.message(peer(room)?.name ?? room.title),
                              targets: mentionTargets(room), peer: peer(room)?.name, text: $draft,
-                             mentions: $mentions, replyTo: $replyTo, editing: $editing, focused: $composerFocused,
+                             mentions: $mentions, quote: $quote, editing: $editing, focused: $composerFocused,
                              enabled: canWrite(room), send: send)
                 .fixedSize(horizontal: false, vertical: true)
         }
@@ -391,11 +410,11 @@ struct TeamChatView: View {
         TeamMessageActions(
             reply: { message in
                 editing = nil
-                replyTo = message
+                quote = .reply(message)
                 composerFocused = true
             },
             edit: { message in
-                replyTo = nil
+                quote = nil
                 editing = message
                 mentions = []
                 draft = message.text
@@ -424,16 +443,28 @@ struct TeamChatView: View {
             // The store saves the message first. When the save fails, the composer keeps the text.
             // The mentions count in the draft before the trim: their places are places in the draft.
             let named = BotMentions.recipients(in: draft, selected: mentions, bots: mentionTargets(room)).map(\.id)
-            guard store.sendTeamMessage(chatKey, text: text, replyingTo: replyTo, mentions: named) else { return }
+            guard store.sendTeamMessage(chatKey, text: text, replyingTo: quote?.reply, page: quote?.page,
+                                        mentions: named) else { return }
             draft = ""
             mentions = []
-            replyTo = nil
+            quote = nil
         }
+    }
+
+    /// Takes the page that "Chat about this page" left for this chat. The page takes the place of a reply and of an
+    /// edit. A chat where the person cannot write drops it.
+    private func takePageQuote() {
+        guard let page = store.takeTeamPageQuote(chatKey), let room, closedReason(room) == nil else { return }
+        if editing != nil { editing = nil; draft = "" }
+        quote = .page(page)
+        // The chat follows its newest message. The keyboard opens after the push, as in the chat of an own bot.
+        follows = true
+        focusAfterOpen = UUID()
     }
 
     private func delete(_ message: TeamMessage) {
         if editing?.id == message.id { editing = nil; draft = "" }
-        if replyTo?.id == message.id { replyTo = nil }
+        if quote?.reply?.id == message.id { quote = nil }
         Task { await store.deleteTeamMessage(chatKey, message) }
     }
 
@@ -511,6 +542,8 @@ struct TeamMessageActions {
 /// chat has one other writer, so it shows no name.
 struct TeamMessageRow: View {
     @Environment(\.showTeamChat) private var showTeamChat
+    @Environment(\.openDocument) private var openDocument
+    @Environment(\.pushRoute) private var pushRoute
     let row: TeamChatRow
     let room: TeamRoom
     /// The other side of a direct chat. Nil for the Team chat.
@@ -602,7 +635,9 @@ struct TeamMessageRow: View {
 
     private var bubble: some View {
         VStack(alignment: .leading, spacing: 4) {
-            if let reference = quote {
+            if let page = message?.page ?? pending?.page {
+                pageQuote(page)
+            } else if let reference = quote {
                 Button { if let id = message?.replyTo ?? pending?.replyTo { actions.showMessage(id) } } label: {
                     MessageQuote(reference: reference)
                 }
@@ -695,6 +730,23 @@ struct TeamMessageRow: View {
         return parts.joined(separator: ", ")
     }
 
+    /// The Library page that the message is about, as the chat of an own bot shows it. A tap opens the page in the
+    /// Library. A page that is gone says so and opens nothing.
+    @ViewBuilder private func pageQuote(_ page: TeamAboutPage) -> some View {
+        if let id = page.id {
+            Button { if let openDocument { openDocument(id) } else { pushRoute?(DocumentRoute(id: id)) } } label: {
+                MessageQuote(reference: page.quote)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(PageQuoteText.open(page.title ?? ""))
+            .accessibilityIdentifier("team-message-page-\(row.id)")
+        } else {
+            MessageQuote(reference: page.quote)
+                .accessibilityElement(children: .combine)
+                .accessibilityIdentifier("team-message-page-\(row.id)")
+        }
+    }
+
     /// The quote of an answered message. A removed message shows "Message removed".
     private var quote: MessageReference? {
         let replyTo = message?.replyTo ?? pending?.replyTo
@@ -709,6 +761,7 @@ struct TeamMessageRow: View {
 }
 
 /// The composer of the Team chat: text only. A reply or an edit shows its message above the field, with a way to cancel.
+/// In a direct chat with a bot, a Library page shows there in the same form.
 /// `@` opens the list of the team bots and the people, as in the composer of a bot chat. An edit changes only the text,
 /// so it has no list.
 struct TeamChatComposer: View {
@@ -721,7 +774,7 @@ struct TeamChatComposer: View {
     @Binding var text: String
     @Binding var mentions: [SelectedBotMention]
     @State private var selection: TextSelection?
-    @Binding var replyTo: TeamMessage?
+    @Binding var quote: TeamComposerQuote?
     @Binding var editing: TeamMessage?
     @FocusState.Binding var focused: Bool
     let enabled: Bool
@@ -739,10 +792,13 @@ struct TeamChatComposer: View {
                     text = ""
                 }
                 .accessibilityIdentifier("edit-preview")
-            } else if let replyTo {
+            } else if let replyTo = quote?.reply {
                 ComposerQuoteBar(reference: MessageReference(messageId: replyTo.id, text: replyTo.text,
                                                              author: TeamNames.author(of: replyTo, peer: peer), role: ""),
-                                 cancelLabel: "Cancel reply") { self.replyTo = nil }
+                                 cancelLabel: "Cancel reply") { quote = nil }
+                    .accessibilityIdentifier("reply-preview")
+            } else if let page = quote?.page {
+                ComposerQuoteBar(reference: page.quote, cancelLabel: PageQuoteText.remove) { quote = nil }
                     .accessibilityIdentifier("reply-preview")
             }
             if editing == nil && !targets.isEmpty {

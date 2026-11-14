@@ -624,7 +624,7 @@ struct MessageBubble: View {
                 } else if let reference = message.replyTo, let page = reference.documentId {
                     Button { openPage(page) } label: {
                         MessageQuote(reference: reference)
-                    }.buttonStyle(.plain).accessibilityLabel("Open the page \(reference.text)")
+                    }.buttonStyle(.plain).accessibilityLabel(PageQuoteText.open(reference.text))
                         .accessibilityIdentifier("message-page-\(message.id)")
                 } else if let reference = message.replyTo {
                     Button { scrollToDecision(reference.messageId) } label: {
@@ -741,7 +741,7 @@ struct MessageQuote: View {
         HStack(spacing: 8) {
             Capsule().fill(.secondary).frame(width: 3)
             VStack(alignment: .leading, spacing: BoardStyle.Space.line) {
-                if reference.documentId != nil {
+                if reference.isPage {
                     HStack(spacing: BoardStyle.Space.xs) {
                         Image(systemName: "doc.text").imageScale(.small)
                         Text("Library page")
@@ -828,7 +828,7 @@ struct ConversationComposer: View {
             }
             if let reference = replyTo {
                 ComposerQuoteBar(reference: reference,
-                                 cancelLabel: reference.documentId == nil ? "Cancel reply" : "Remove the page") { replyTo = nil }
+                                 cancelLabel: reference.documentId == nil ? "Cancel reply" : PageQuoteText.remove) { replyTo = nil }
                     .accessibilityIdentifier("reply-preview")
             }
             BotMentionControls(text: $text, selection: $selection, selected: $mentions, bots: store.bots, focused: focused) { focused = true }
