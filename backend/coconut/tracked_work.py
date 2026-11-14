@@ -16,7 +16,7 @@ TRACK_WORK_SCHEMA = {
         'Use coconut_track_pr for PRs. Do not track quick replies, routine checks, or every delegated step. '
         'Reuse the same key for updates. This reports progress; it does not start work or grant permission.',
     'parameters': {'type': 'object', 'additionalProperties': False, 'properties': {
-        'key': {'type': 'string', 'maxLength': RETAINED_WORK_KEY_LIMIT, 'description': 'A stable key for this bot, such as account-export. '
+        'key': {'type': 'string', 'maxLength': RETAINED_WORK_KEY_LIMIT, 'description': 'A stable key for this agent, such as account-export. '
             'New keys use up to 80 letters, digits, hyphens, or underscores. Reuse an existing key exactly across turns.'},
         'same_outcome_as': {'type': 'string', 'description': 'Existing parent Work ID when this delegated report tracks the same requested outcome. Keep distinct diagnostic outcomes separate.'},
         'title': {'type': 'string', 'maxLength': 120, 'description': 'The intended result in plain words.'},
@@ -26,7 +26,7 @@ TRACK_WORK_SCHEMA = {
         'completion_evidence': {'type': 'string', 'maxLength': 2000, 'description': 'Required for completed work. Name the verified result and its evidence. Finishing a reply is not completion.'},
         'paused_by_decision_id': {'type': 'string', 'description': 'With blocked: the answered human decision that pauses this outcome. Preserve this link until later human direction changes the scope.'},
         'external_wait': {'type': 'object', 'additionalProperties': False, 'properties': {
-            'job_id': {'type': 'string', 'description': 'Existing enabled Hermes routine in this bot that checks this source. Use its native job_id.'},
+            'job_id': {'type': 'string', 'description': 'Existing enabled Hermes routine in this agent that checks this source. Use its native job_id.'},
             'source': {'type': 'string', 'maxLength': 500, 'description': 'The exact issue, thread, or other source to check for the missing evidence. Read-only checks only.'},
         }, 'required': ['job_id', 'source'], 'description': 'Use with waiting when an external result is pending. Coconut includes this Work item in each run of the existing routine. This grants no new permission.'},
         'next_step': {'type': 'string', 'maxLength': 160, 'description': 'The next concrete step. This description does not queue work or grant permission.'},
@@ -139,14 +139,14 @@ class TrackedWork:
         if item.get('_activity_task_id'):
             owners.add(self._get('tasks', item['_activity_task_id'])['bot_id'])
         if bot['id'] not in owners:
-            raise ServiceError(400, 'Open this work item in its bot conversation.')
+            raise ServiceError(400, 'Open this work item in its agent conversation.')
         if data.get('mode') == 'steer' or data.get('scheduled_at') or data.get('recipient_bot_ids'):
             raise ServiceError(400, 'Send work questions now in the selected conversation.')
         if not isinstance(data.get('work_status_only', False), bool):
             raise ServiceError(400, 'Use a valid update request.')
         outcome = self._work_outcome_artifact(item)
         if outcome.get('_native_outcome_id') and outcome['bot_id'] != bot['id']:
-            raise ServiceError(400, 'Open this work item in its owning bot conversation.')
+            raise ServiceError(400, 'Open this work item in its owning agent conversation.')
         return outcome
 
     def work_context_input(self, item_id):
@@ -352,7 +352,7 @@ class TrackedWork:
                 external_wait = dict(job_id=require_text(external_wait, 'job_id', 100),
                                      source=require_text(external_wait, 'source', 500))
                 if not self._external_work_routine(dict(bot_id=bot['id'], status=state, external_wait=external_wait)):
-                    raise ServiceError(409, 'Choose an enabled, synchronized Hermes routine with a next run in this bot.')
+                    raise ServiceError(409, 'Choose an enabled, synchronized Hermes routine with a next run in this agent.')
             binding = item.get('external_wait') if item else None
             routine_report = bool(binding and
                 (self._assignment(task).get('_native_job') or {}).get('id') == binding['job_id'])

@@ -154,7 +154,7 @@ class BotDeletionTests(unittest.TestCase):
             self.service._put('messages', message)
             caller['_preference_source_ids'] = [message['id']]
             self.service._put('tasks', caller)
-        with self.assertRaisesRegex(ServiceError, 'depends on that bot'):
+        with self.assertRaisesRegex(ServiceError, 'depends on that agent'):
             self.delete(caller)
         self.assertEqual(self.provider.cancelled, [])
 
@@ -333,7 +333,7 @@ class BotDeletionTests(unittest.TestCase):
         for index in range(8):
             target = self.bot(f'Temporary {index}')
             self.delete(tasks[index % 2], self.payload(tasks[index % 2], target))
-        with self.assertRaisesRegex(ServiceError, 'eight bots'):
+        with self.assertRaisesRegex(ServiceError, 'eight agents'):
             self.delete(tasks[0])
         self.assertIn(self.target['id'], {bot['id'] for bot in self.service.snapshot()['bots']})
 

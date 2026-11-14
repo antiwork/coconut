@@ -681,7 +681,7 @@ class PushDelivery:
         bot = service._get('bots', item['bot_id'])
         conversation = service._get('bots', task.get('conversation_bot_id', bot['id']))
         decision = service._get('decisions', item['decision_id']) if item['decision_id'] else None
-        bodies = {'message': 'A bot sent you a message.', 'decision': 'A bot needs your decision.', 'completed': 'A bot finished its task.', 'failed': 'A bot could not finish its task.'}
+        bodies = {'message': 'An agent sent you a message.', 'decision': 'An agent needs your decision.', 'completed': 'An agent finished its task.', 'failed': 'An agent could not finish its task.'}
         payload = {'aps': {'alert': {'title': 'Coconut', 'body': bodies[item['kind']]}, 'sound': 'default',
                            'thread-id': task.get('thread_id', task['id'])},
                    'coconut': {'version': 1, 'device_id': device_id, 'bot_id': task['bot_id'] if task.get('source_bot_id') else conversation['id'],

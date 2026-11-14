@@ -1362,7 +1362,7 @@ class TeamStore:
     # The triggers of the bots of a team-only Mac
 
     def _queue_triggers(self, room: dict, entry: dict, message: dict) -> None:
-        """Queue a turn for each bot of this Mac that the message names or answers (docs/team-log.md, "A bot answers").
+        """Queue a turn for each bot of this Mac that the message names or answers (docs/team-log.md, "An agent answers").
 
         The message has no `bot`, is under TRIGGER_SECONDS old, and its member is in the member list. It names the
         `bot` entry of a bot in `mentions`, or its `reply_to` is a message of that bot. The bot is shared with the room,

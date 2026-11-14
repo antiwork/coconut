@@ -35,7 +35,7 @@ from .team_store import ACTIVE, BOT_DIRECTS_EVENT, DIRECTS_EVENT, entry_id
 NOT_HERE = 'This person is not in this team.'
 SELF = 'You cannot send a direct message to yourself.'
 LEFT = 'This person is no longer in the team.'
-BOT_ONLY = 'This Mac runs only bots for the team. Write to its bots in the team chat.'
+BOT_ONLY = 'This Mac runs only agents for the team. Write to its agents in the team chat.'
 NOT_YET = 'This person cannot get direct messages yet. Ask them to update the Coconut app.'
 NOT_ON = 'Direct messages are not on for this Mac yet. Open the Team screen of the Coconut app, then try again.'
 # The answers of a person's Mac when a bot cannot get a direct message now (docs/team-log.md, "Who can write to an

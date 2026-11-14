@@ -1,4 +1,4 @@
-"""The bots of a team-only Mac answer in the team chat and in a direct chat (docs/team-log.md, "A bot answers" and
+"""The bots of a team-only Mac answer in the team chat and in a direct chat (docs/team-log.md, "An agent answers" and
 "The Mac for a team only").
 
 A person of the team writes a message that names a bot of this Mac (`mentions`) or answers a message of that bot

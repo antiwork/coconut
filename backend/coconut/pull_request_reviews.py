@@ -161,7 +161,7 @@ class PullRequestReviews:
             raise ServiceError(400, 'Choose the task that owns this pull request.')
         task = tasks[task_id] if tasks is not None else self._get('tasks', task_id)
         if task['bot_id'] != bot_id:
-            raise ServiceError(400, 'The pull request and its task must belong to the same bot.')
+            raise ServiceError(400, 'The pull request and its task must belong to the same agent.')
         if tasks is None:
             # Inside _shared_reads this is the kept task map, which a full parse under the service lock would cost.
             tasks = self._task_map()

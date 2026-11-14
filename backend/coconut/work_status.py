@@ -200,7 +200,7 @@ class WorkStatus:
         if state not in ('working', 'waiting', 'ready', 'blocked') or '\n' in text:
             raise ServiceError(400, 'Use one short activity and a working, waiting, ready, or blocked state.')
         if not task.get('id'):
-            raise ServiceError(400, 'Only the bot doing this task can report its activity.')
+            raise ServiceError(400, 'Only the agent doing this task can report its activity.')
         self._apply_work_pause(artifact, task, payload, state)
         if state == 'working':
             self._bind_pr_progress(artifact, task)

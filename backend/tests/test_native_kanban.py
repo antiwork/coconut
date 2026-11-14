@@ -175,7 +175,7 @@ print(board.kb.create_task(board.conn, title='Other bot work', body='x', assigne
         with patch.object(self.service, 'gateway_enabled', return_value=True):
             self.assertNotIn(other, [task['id'] for task in
                                      self.service.gateway_kanban_tool(later['id'], 'kanban_list', {})['tasks']])
-            with self.assertRaisesRegex(ServiceError, 'another bot'):
+            with self.assertRaisesRegex(ServiceError, 'another agent'):
                 self.service.gateway_kanban_tool(later['id'], 'kanban_show', {'task_id': other})
 
     PR = 'https://github.com/example/mobile/pull/393'
@@ -1626,7 +1626,7 @@ for title in ('First defect', 'Second defect'):
                 self.service._put('tasks', stored)
         before = (self.service._get('tasks', review['id']), len(self.service._all('deliveries')))
         from coconut.service import ServiceError
-        with self.assertRaisesRegex(ServiceError, 'Only the owner or its requesting bot can continue this work.') as error:
+        with self.assertRaisesRegex(ServiceError, 'Only the owner or its requesting agent can continue this work.') as error:
             self.service.emit(foreign['id'], 'work_continue', dict(task_id=first, message='Check another head.'))
         self.assertEqual(error.exception.status, 403)
         self.assertEqual((self.service._get('tasks', review['id']), len(self.service._all('deliveries'))), before)

@@ -142,7 +142,7 @@ class StateSync:
         from .service import ServiceError
         bot = self._get('bots', bot_id)
         if bot.get('_deleted'):
-            raise ServiceError(404, 'This bot was removed.')
+            raise ServiceError(404, 'This agent was removed.')
         # Decision rows stay in their stored conversation. Exchange rows can appear for both bots.
         # Row IDs give pagination a stable boundary when timestamps are equal.
         # The bot's own rows come from the messages_chat index, and its exchange rows from message_exchange_audience.

@@ -130,7 +130,7 @@ class ContextBlockTests(unittest.TestCase):
         other = dict(item, id='w2', bot_id='b2', work_state='blocked', next_step='Ask Lin.')
         text = tracked_note({'bot_id': 'b1', '_tracked_work': [item, other]})
         self.assertIn('An absent field is empty or false.', text)
-        sent = json.loads(text[text.index('Existing work for this bot: ') + len('Existing work for this bot: '):])
+        sent = json.loads(text[text.index('Existing work for this agent: ') + len('Existing work for this agent: '):])
         self.assertEqual(sent[0], {'id': 'w1', 'key': 'k', 'title': 'Ship', 'status': 'waiting', 'task_id': 't1',
                                    'completion_condition': 'Ship', 'routine_check': True})
         # Another bot and a work state that differs from the status stay.
@@ -409,7 +409,7 @@ class ServiceRoutingTests(unittest.TestCase):
         self.assertEqual(adapter.turns[0]['chat_id'], self.bot['id'])
         # The message comes first. The context of the turn follows, as the worker gives it.
         self.assertTrue(adapter.turns[0]['text'].startswith('How are you?\n'))
-        self.assertIn('Direct human messages eligible to request bot creation', adapter.turns[0]['text'])
+        self.assertIn('Direct human messages eligible to request agent creation', adapter.turns[0]['text'])
         self.assertEqual(self.read('tasks', task['id'])['status'], 'completed')
         self.assertEqual(self.replies(task), [('Let me think.', False, True), ('I am well.', False, False)])
         self.assertEqual(self.read('bots', self.bot['id'])['last_message'], 'I am well.')
@@ -483,7 +483,7 @@ class ServiceRoutingTests(unittest.TestCase):
             self.service._run_task(task['id'])
             stored = self.read('tasks', task['id'])
             self.assertEqual(stored['status'], 'failed')
-            self.assertIn('The Hermes gateway did not connect for this bot', stored['summary'])
+            self.assertIn('The Hermes gateway did not connect for this agent', stored['summary'])
             self.assertNotIn('_gateway_waiting', stored)
             # An adapter that is connected but takes no turn: nothing ran, so the turn waits and then fails too.
             Adapter(self.service.gateway_bridge, self.home, [])
@@ -1669,7 +1669,7 @@ class ServiceRoutingTests(unittest.TestCase):
         text = adapter.turns[0]['text']
         source = self.read('tasks', task['id'])['_turn_message_ids'][0]
         # The turn lists the person's message that can ask for a bot, as the worker gives it.
-        self.assertIn('Direct human messages eligible to request bot creation', text)
+        self.assertIn('Direct human messages eligible to request agent creation', text)
         self.assertIn(source, text)
         turn = adapter.turns[0]['id']
         created = self.service.gateway_tool({'turn_id': turn, 'tool': 'create_bot', 'arguments': {
@@ -2091,7 +2091,7 @@ class ServiceRoutingTests(unittest.TestCase):
         # kanban_list and kanban_unblock route the board, so they run without the claim, and only for this bot.
         tool('kanban_list', tenant='other-bot')
         self.assertEqual((calls[-1]['claim'], calls[-1]['arguments']['tenant']), (None, bot))
-        with self.assertRaisesRegex(ServiceError, 'only a Hermes task of this bot'):
+        with self.assertRaisesRegex(ServiceError, 'only a Hermes task of this agent'):
             tool('kanban_unblock', task_id='t_other')
         self.assertTrue(tool('kanban_unblock', task_id='t_child')['ok'])
         self.assertEqual((calls[-1]['name'], calls[-1]['claim']), ('kanban_unblock', None))

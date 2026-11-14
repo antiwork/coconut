@@ -185,12 +185,12 @@ SAVE_SCHEMA = {'name': 'coconut_save_document', 'description': (
             'longer shows it. Omit it for a document that stays. Send an empty text to remove an end date.')}},
         'required': ['key', 'title', 'format', 'content']}}
 READ_SCHEMA = {'name': 'coconut_read_document', 'description': (
-    'Read a document of this bot from the Library of Coconut, with its content, to update it. Without a key, list '
-    'the documents of this bot.'),
+    'Read a document of this agent from the Library of Coconut, with its content, to update it. Without a key, list '
+    'the documents of this agent.'),
     'parameters': {'type': 'object', 'properties': {
         'key': {'type': 'string', 'description': 'The key of the document. Omit it to list the documents.'}}}}
 DELETE_SCHEMA = {'name': 'coconut_delete_document', 'description': (
-    'Delete a document of this bot from the Library of Coconut, with all its versions.'),
+    'Delete a document of this agent from the Library of Coconut, with all its versions.'),
     'parameters': {'type': 'object', 'properties': {
         'key': {'type': 'string', 'description': 'The key of the document.'}},
         'required': ['key']}}
@@ -574,7 +574,7 @@ class Documents:
             task = self._running_task(task_id)
             bot = self._get('bots', task['bot_id'])
             if bot['archived'] or bot.get('_deleted'):
-                raise ServiceError(409, 'The bot is archived or deleted.')
+                raise ServiceError(409, 'The agent is archived or deleted.')
             audience = self._page_audience(arguments, self._document_of_key(bot['id'], key),
                                            (key, title, document_format, content, summary))
             document = self._write_document(task, bot, key, title, document_format, content, summary, expires=ends,
@@ -596,7 +596,7 @@ class Documents:
         with self.transaction():
             bot = self._get('bots', bot_id)
             if bot['archived'] or bot.get('_deleted'):
-                raise ServiceError(409, 'The bot is archived or deleted.')
+                raise ServiceError(409, 'The agent is archived or deleted.')
             document = self._document_of_key(bot_id, key)
             audience = self._page_audience(arguments, document, (key, title, document_format, content, summary))
             if (document is not None and not expired(document, self._now())
@@ -668,7 +668,7 @@ class Documents:
             return {'documents': [self._page_summary(document) for document in self._bot_documents(bot_id)]}
         document = self._document_of_key(bot_id, key) if isinstance(key, str) else None
         if document is None or expired(document, self._now()):
-            raise ServiceError(404, 'This bot has no document with this key.')
+            raise ServiceError(404, 'This agent has no document with this key.')
         return dict(self._page_summary(document), content=self._document_content(document))
 
     def _page_summary(self, document: dict) -> dict:
@@ -693,7 +693,7 @@ class Documents:
         with self.transaction():
             bot = self._get('bots', bot_id)
             if bot['archived'] or bot.get('_deleted'):
-                raise ServiceError(409, 'The bot is archived or deleted.')
+                raise ServiceError(409, 'The agent is archived or deleted.')
             return self._delete_key(bot_id, arguments.get('key'), None)
 
     def unpublish_page(self, bot_id: str, arguments: dict) -> dict:
@@ -707,7 +707,7 @@ class Documents:
         with self.transaction():
             bot = self._get('bots', bot_id)
             if bot['archived'] or bot.get('_deleted'):
-                raise ServiceError(409, 'The bot is archived or deleted.')
+                raise ServiceError(409, 'The agent is archived or deleted.')
             document = self._document_of_key(bot_id, key)
             if document is None:
                 return {'status': 'absent', 'key': key}
@@ -719,7 +719,7 @@ class Documents:
         from .service_base import ServiceError
         document = self._document_of_key(bot_id, key) if isinstance(key, str) else None
         if document is None:
-            raise ServiceError(404, 'This bot has no document with this key.')
+            raise ServiceError(404, 'This agent has no document with this key.')
         self._remove_document(document, task_id)
         return {'status': 'deleted', 'key': key}
 
@@ -775,8 +775,9 @@ class Documents:
         """PATCH /v1/documents/<id> from the phone: pin the document in the Library, or remove its pin.
 
         A pin is how this Mac shows the Library to its person. It is not content of the page: it changes no version
-        and no update time, a bot does not read it, and a save of the page keeps it. A pin adds no event: the phone
-        reads the pin with the Library list.
+        and no update time, a bot does not read it, and a save of the page keeps it. A change of a pin adds one
+        document event, so that each other app of the person loads the Library list again: the Mac sidebar shows the
+        pinned pages.
         """
         from .service_base import ServiceError
         from .team_pages import team_ids, team_page
@@ -789,11 +790,13 @@ class Documents:
                 # The pin of a team page is of this Mac only. The other Macs of the team do not see it. A page that
                 # the Library does not show raises here, and the transaction takes the pin back.
                 self.team_store.pin(*ids, pinned)
+                self._event('document.updated', {'id': document_id})
                 return team_page(self.db, document_id, self._now())
             document = self._shown_document(document_id)
             if (document.get('pinned') is True) != pinned:
                 document['pinned'] = pinned
                 self._put('documents', document)
+                self._event('document.updated', {'id': document_id}, document['bot_id'])
             return self._team_shared_document(document)
 
     def _write_document(self, task: dict, bot: dict, key: str, title: str, document_format: str, content: str,

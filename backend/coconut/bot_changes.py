@@ -29,13 +29,13 @@ def bot_deletion_receipt(value, payload, current_bot=None):
             or value.get('source_message_id') != payload['source_message_id']
             or value.get('bot_id') != payload['target_bot_id']
             or value.get('name') != payload['expected_name']):
-        raise ValueError('The service did not confirm the requested bot deletion.')
+        raise ValueError('The service did not confirm the requested agent deletion.')
     for field in ('bot_id', 'profile_id'):
         identifier = value.get(field)
         if not isinstance(identifier, str) or str(UUID(identifier)) != identifier:
-            raise ValueError('The service returned an invalid bot identity.')
+            raise ValueError('The service returned an invalid agent identity.')
     if value['profile_id'] != value['bot_id'] or value['bot_id'] == (current_bot or {}).get('id'):
-        raise ValueError('The service did not confirm deletion of another bot.')
+        raise ValueError('The service did not confirm deletion of another agent.')
     cancelled = value.get('cancelled_task_ids')
     if (not isinstance(cancelled, list)
             or any(not isinstance(item, str) or str(UUID(item)) != item for item in cancelled)
@@ -106,21 +106,21 @@ def bot_creation_receipt(value, payload, current_bot=None):
             or not isinstance(value.get('name'), str)
             or bot_creation_name(value['name']) != bot_creation_name(payload['name'])
             or value.get('role') != payload['role']):
-        raise ValueError('The service did not confirm the requested bot creation.')
+        raise ValueError('The service did not confirm the requested agent creation.')
     for field in ('bot_id', 'profile_id', 'session_id'):
         identifier = value.get(field)
         if not isinstance(identifier, str) or str(UUID(identifier)) != identifier:
-            raise ValueError('The service returned an invalid bot identity.')
+            raise ValueError('The service returned an invalid agent identity.')
     current_bot = current_bot or {}
     if (value['profile_id'] != value['bot_id'] or value['session_id'] == value['bot_id']
             or value['bot_id'] == current_bot.get('id') or value['session_id'] == current_bot.get('session_id')):
-        raise ValueError('The service did not confirm a separate bot profile and session.')
+        raise ValueError('The service did not confirm a separate agent profile and session.')
     # The profile ID is the key of the profiles table: the new bot must have its own Hermes profile there.
     if os.environ.get('COCONUT_DATA_DIR') and (Path(os.environ['COCONUT_DATA_DIR']) / 'coconut.sqlite3').is_file():
         from . import profile_registry
         row = profile_registry.lookup(os.environ['COCONUT_DATA_DIR'], value['profile_id'])
         if row is None or row['state'] != 'active':
-            raise ValueError('The service did not confirm a Hermes profile for the new bot.')
+            raise ValueError('The service did not confirm a Hermes profile for the new agent.')
     return {key: value[key] for key in ('status', 'bot_id', 'profile_id', 'session_id', 'name', 'role', 'source_message_id')}
 
 
@@ -141,12 +141,12 @@ def bot_creation_context(request):
     sources = bot_creation_sources(request)
     text = ''
     if sources:
-        text += '\nDirect human messages eligible to request bot creation:\n' + json.dumps(sources)
+        text += '\nDirect human messages eligible to request agent creation:\n' + json.dumps(sources)
     else:
-        text += '\nNo direct human source authorizes bot creation in this turn.'
+        text += '\nNo direct human source authorizes agent creation in this turn.'
     receipts = prior_bot_creation_receipts(request)
     if receipts:
-        text += ('\nThe service already confirmed these bot creations. Use their IDs. '
+        text += ('\nThe service already confirmed these agent creations. Use their IDs. '
                  'Do not create replacements or rephrase a creation after a restart. '
                  'An exact retry must keep the same source, name, role, and instructions:\n' + json.dumps(receipts))
     return text

@@ -342,8 +342,12 @@ class DocumentServiceTests(unittest.TestCase):
         self.assertEqual(keys(), ['launch-checklist', 'signups-daily', 'weekly-summary'])
         self.assertFalse(self.pin(oldest, False)['pinned'])
         self.assertEqual(keys(), ['launch-checklist', 'weekly-summary', 'signups-daily'])
-        # A pin adds no event, so no phone loads its state again.
-        self.assertEqual(self.service._cursor(), cursor)
+        # A change of a pin adds a document event, so each other app loads the Library list again. A pin that
+        # changes nothing adds none.
+        self.assertTrue(self.service.updates(cursor, collection_deltas=True)['documents_changed'])
+        after = self.service._cursor()
+        self.pin(self.listed('launch-checklist'))
+        self.assertEqual(self.service._cursor(), after)
 
     def test_a_save_and_a_restart_keep_the_pin(self):
         self.save()
@@ -711,7 +715,7 @@ class GatewayPageTests(unittest.TestCase):
         self.write('DELETE', f'/v1/bots/{self.bot["id"]}')
         with self.assertRaisesRegex(ServiceError, 'archived or deleted'):
             self.service.publish_page(self.bot['id'], page)
-        with self.assertRaisesRegex(ServiceError, 'Bot was not found'):
+        with self.assertRaisesRegex(ServiceError, 'Agent was not found'):
             self.service.publish_page('no-such-bot', page)
         self.assertEqual(self.rows('documents'), 0)
 
@@ -726,7 +730,7 @@ class GatewayPageTests(unittest.TestCase):
         with self.assertRaisesRegex(ServiceError, 'lowercase') as refused:
             self.service.unpublish_page(self.bot['id'], {'key': 'Weekly Report'})
         self.assertEqual(refused.exception.status, 400)
-        with self.assertRaisesRegex(ServiceError, 'Bot was not found'):
+        with self.assertRaisesRegex(ServiceError, 'Agent was not found'):
             self.service.unpublish_page('no-such-bot', {'key': 'weekly-report'})
 
     def test_a_page_of_the_tooling_comes_back_when_it_has_ended(self):
@@ -756,7 +760,7 @@ class GatewayPageTests(unittest.TestCase):
                                           'expires_at': None})
 
     def test_a_home_that_is_not_the_profile_of_a_bot_keeps_no_page(self):
-        with self.assertRaisesRegex(ServiceError, 'not the profile of a bot'):
+        with self.assertRaisesRegex(ServiceError, 'not the profile of an agent'):
             self.publish(home=f'{self.temp.name}/somewhere-else')
 
     def test_a_page_that_the_tooling_keeps_follows_the_page_rules(self):
@@ -844,7 +848,7 @@ class OutsideTurnPageTests(unittest.TestCase):
 
     def test_a_home_that_is_not_the_profile_of_a_bot_gets_a_clear_refusal(self):
         for name, arguments in (('read_document', {}), ('delete_document', {'key': 'weekly-report'})):
-            with self.subTest(tool=name), self.assertRaisesRegex(ServiceError, 'not the profile of a bot') as refused:
+            with self.subTest(tool=name), self.assertRaisesRegex(ServiceError, 'not the profile of an agent') as refused:
                 self.tool(None, name, arguments, home=f'{self.temp.name}/somewhere-else')
             self.assertEqual(refused.exception.status, 404)
 
