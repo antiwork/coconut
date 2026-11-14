@@ -201,16 +201,16 @@ class HermesNoticeTests(unittest.TestCase):
         # The log line names the notice and the cure, and holds no other text of the message.
         self.assertEqual(len(logs.output), 1)
         self.assertIn('gateway.errors.no_credentials', logs.output[0])
-        self.assertIn('restart of the Hermes gateway', logs.output[0])
+        self.assertIn('restart of the Hermes gateway can load', logs.output[0])
         self.assertNotIn('processed', logs.output[0])
         self.assertEqual(SIGN_IN, "\u26a0\ufe0f I couldn't connect to the AI model service, so this message wasn't "
-                                  "processed. Use /login to sign in again, or /model to pick a different model. If it "
-                                  "keeps failing, run `hermes doctor` on the host.")
+                                  "processed. On the Mac of this agent, run `hermes doctor` to see the cause. The "
+                                  "agent can need a new sign-in for its model, or a different model.")
 
     def test_a_name_alone_or_with_spaces_around_it_becomes_the_text_of_hermes(self):
         background = NOTICES['gateway.background.no_credentials']
         self.assertEqual(background, "\u274c The background task couldn't start because no AI model sign-in is "
-                                     "configured. Use /login, or run `hermes setup` on the host.")
+                                     "configured. On the Mac of this agent, run `hermes doctor` to see the cause.")
         # The spaces and the line break around the name go with it. The break before the next paragraph stays.
         cases = {'gateway.errors.no_credentials': SIGN_IN,
                  '  gateway.errors.no_credentials\n': SIGN_IN,
@@ -226,6 +226,7 @@ class HermesNoticeTests(unittest.TestCase):
             'The log shows gateway.errors.no_credentials once.',
             '`gateway.errors.no_credentials`',
             '```\ngateway.errors.no_credentials\n```',
+            'gateway.errors.no_credentials.', '"gateway.errors.no_credentials"', 'Gateway.Errors.No_Credentials',
             'gateway.errors.generic_failed', 'gateway.streaming.enabled', 'platform.openai.com', 'report.pdf',
             FAILED_TURN_ROW, '']
         for text in texts:
@@ -345,6 +346,12 @@ class TurnEventTests(unittest.TestCase):
         self.assertEqual(emitted[1:3], [('text_delta', {'text': 'Working on it.'}),
                                         ('text_delta', {'text': shown, 'replace': True})])
         self.assertEqual(emitted[3][0], 'failed')
+
+    def test_an_interim_send_of_a_raw_name_shows_the_new_text_as_an_interim_message(self):
+        with self.assertLogs('coconut.hermes_notices', 'WARNING'):
+            emitted, _ = self.translate({'kind': 'send', 'message_id': 'c:1', 'text': 'gateway.errors.no_credentials',
+                                         'interim': True}, commentary=True)
+        self.assertEqual(emitted, [('phase', {'phase': 'writing'}), ('interim_message', {'text': SIGN_IN})])
 
     def test_a_question_event_asks_for_a_card(self):
         emitted, done = self.translate({'kind': 'question', 'question_id': 'q', 'question_kind': 'ask', 'text': 'Which?',
