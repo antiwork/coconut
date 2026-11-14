@@ -11,7 +11,7 @@ Coconut.app updates itself with Sparkle from the Coconut update feed. The app ca
 
 The second part is safe for running work:
 
-1. The service starts no new turn. The running bot turns finish. The update waits up to ten minutes for them, then it stops the service, its Hermes gateway, and its workers.
+1. The service starts no new turn. The running agent turns finish. The update waits up to ten minutes for them, then it stops the service, its Hermes gateway, and its workers.
 2. The update replaces the source files. It checks each hash first. It refuses to replace a file that somebody changed.
 3. It runs the Coconut contract check against the installed Hermes.
 4. It starts the service and waits for its health check.
@@ -26,12 +26,12 @@ To find why an update failed, read `.runtime/host/logs/install-source.log` in th
 Run `coconut update` with `terminal`. The command asks the app to check the update feed. It returns when the install starts, and prints one of these results:
 
 - `Coconut.app <version> is up to date.`
-- `Installing Coconut <version> now. ...` The service updates after its running bot work finishes, also the turn that ran the command.
+- `Installing Coconut <version> now. ...` The service updates after its running agent work finishes, also the turn that ran the command.
 - `The update check failed: <reason>`
 
 Later, run `coconut status`. The update is complete when `Last update result` says `installed`.
 
-Do not add `--wait` inside a bot turn or your own turn. The service update waits for all running turns, so the command would wait for itself. A person in Terminal can use `coconut update --wait`. It waits up to 30 minutes for the end.
+Do not add `--wait` inside an agent turn or your own turn. The service update waits for all running turns, so the command would wait for itself. A person in Terminal can use `coconut update --wait`. It waits up to 30 minutes for the end.
 
 ## Automatic updates
 
@@ -55,7 +55,7 @@ Every Mac gets the same builds. Coconut.app has no update channel.
 | `Automatic updates` | `on` or `off`. |
 | `Last update check` | The time of the last check, or `never`. |
 | `Last update result` | `up to date`, `installing <version>`, `installed <version>`, or `failed`, with a time. |
-| `Pending install` | Shows only while the app waits for the service update. The service updates after its running bot work. |
+| `Pending install` | Shows only while the app waits for the service update. The service updates after its running agent work. |
 | `Last update error` | The error of a failed update, or `none`. |
 
 ## How Hermes updates
@@ -71,4 +71,4 @@ After a Hermes change, the Coconut service restarts by itself:
 
 While the service waits, the iPhone shows that Coconut restarts for the new Hermes. You do not need to restart Coconut.
 
-If the new Hermes fails the check, Coconut runs without bots and tells the iPhone why. See `references/troubleshooting.md`, "Hermes is unavailable".
+If the new Hermes fails the check, Coconut runs without agents and tells the iPhone why. See `references/troubleshooting.md`, "Hermes is unavailable".

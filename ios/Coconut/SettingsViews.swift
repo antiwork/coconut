@@ -36,7 +36,7 @@ struct AppSettingsView: View {
                 }
                 let bots = store.bots.filter { !$0.archived }
                 if !bots.isEmpty {
-                    Section("Bots") {
+                    Section("Agents") {
                         ForEach(bots) { bot in
                             NavigationLink { BotSettingsView(botId: bot.id) } label: {
                                 HStack(spacing: 12) {
@@ -93,8 +93,8 @@ struct AppSettingsView: View {
     }
 
     private var parallelWorkSummary: String {
-        guard let capacity = store.workCapacity else { return "Bots working at once" }
-        return capacity.limit == nil ? "Automatic · up to \(capacity.effectiveLimit) bots at once" : "Up to \(capacity.effectiveLimit) bots at once"
+        guard let capacity = store.workCapacity else { return "Agents working at once" }
+        return capacity.limit == nil ? "Automatic · up to \(capacity.effectiveLimit) agents at once" : "Up to \(capacity.effectiveLimit) agents at once"
     }
 
     private var appVersion: String {
@@ -156,7 +156,7 @@ private struct MacConnectionSettingsView: View {
             }
             if store.hasPairing || store.isDemo {
                 Section {
-                    Button(restartRequested ? "Restart Requested" : "Restart Bots") {
+                    Button(restartRequested ? "Restart Requested" : "Restart Agents") {
                         restartingBots = true
                         Task {
                             restartRequested = await store.restartBots()
@@ -166,7 +166,7 @@ private struct MacConnectionSettingsView: View {
                     .disabled(restartingBots || restartRequested)
                     .accessibilityIdentifier("restart-bots")
                 } footer: {
-                    Text("All bots start fresh after current work finishes. Chats, memory, and routines stay.")
+                    Text("All agents start fresh after current work finishes. Chats, memory, and routines stay.")
                 }
             }
             Section("When the app closes") {
@@ -196,7 +196,7 @@ private struct MacConnectionSettingsView: View {
         .confirmationDialog("Unpair this iPhone?", isPresented: $disconnectOpen, titleVisibility: .visible) {
             Button("Unpair", role: .destructive) { store.disconnect() }
         } message: {
-            Text("Your Mac keeps the bots and their history. This iPhone needs a new pairing link to reconnect.")
+            Text("Your Mac keeps the agents and their history. This iPhone needs a new pairing link to reconnect.")
         }
     }
 }
@@ -242,7 +242,7 @@ struct BotIdentityFields: View {
                 .accessibilityIdentifier("bot-name")
         }
         Section("Description") {
-            TextField("What should this bot do?", text: $instructions, axis: .vertical)
+            TextField("What should this agent do?", text: $instructions, axis: .vertical)
                 .lineLimit(5...18)
                 .fieldUnderHeader()
                 .focused($focused, equals: .instructions)
@@ -281,7 +281,7 @@ struct BotEditorView: View {
             .formStyle(.grouped)
             .frame(width: 460, height: 460)
             #endif
-            .navigationTitle("New bot").inlineNavigationTitle()
+            .navigationTitle("New agent").inlineNavigationTitle()
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
                 ToolbarItem(placement: .confirmationAction) {

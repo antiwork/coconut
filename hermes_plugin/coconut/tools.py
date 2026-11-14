@@ -80,7 +80,7 @@ def reply_schema():
 
 TRACK_PR = {'name': 'coconut_track_pr', 'description': (
     'Track an existing GitHub pull request and its checks in Coconut Work. Call it when you create a PR or begin work '
-    'on one, or when the person asks to follow one. Coconut reads GitHub and resumes the bot when results change. This '
+    'on one, or when the person asks to follow one. Coconut reads GitHub and resumes the agent when results change. This '
     'does not create, edit, push or merge a PR.'),
     'parameters': {'type': 'object', 'properties': {
         'url': {'type': 'string', 'description': 'The exact https://github.com/owner/repo/pull/number URL.'},
@@ -90,10 +90,10 @@ TRACK_PR = {'name': 'coconut_track_pr', 'description': (
             'that outcome. Omit it for a separate PR.')}},
         'required': ['url']}}
 MESSAGE_BOT = {'name': 'coconut_message_bot', 'description': (
-    'Send a message to another Coconut bot. The bot works on it in its own chat and replies to this chat. Use it to '
-    'hand over work or to ask another bot.'),
+    'Send a message to another Coconut agent. The agent works on it in its own chat and replies to this chat. Use it to '
+    'hand over work or to ask another agent.'),
     'parameters': {'type': 'object', 'properties': {
-        'bot': {'type': 'string', 'description': 'The name or the ID of the other bot.'},
+        'bot': {'type': 'string', 'description': 'The name or the ID of the other agent.'},
         'text': {'type': 'string', 'maxLength': 20000, 'description': 'The message.'}},
         'required': ['bot', 'text']}}
 

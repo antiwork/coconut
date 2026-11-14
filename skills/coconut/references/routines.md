@@ -1,6 +1,6 @@
 # Routines that spend model tokens only when there is work
 
-A Coconut routine is a Hermes cron job of the bot's profile. The Hermes gateway of that profile runs it on its schedule, and each run that wakes the agent is a turn in the bot's chat in Coconut. A run that wakes the agent costs model tokens, also when it finds nothing to do. This reference tells you how to make a routine cheap and predictable.
+A Coconut routine is a Hermes cron job of the agent's profile. The Hermes gateway of that profile runs it on its schedule, and each run that wakes the agent is a turn in the agent's chat in Coconut. A run that wakes the agent costs model tokens, also when it finds nothing to do. This reference tells you how to make a routine cheap and predictable.
 
 ## Choose the kind of routine
 
@@ -26,7 +26,7 @@ A script ending in `.sh` or `.bash` runs with bash. Hermes runs any other script
 
 ## Attach a gate to a routine
 
-1. Put the script in the `scripts` folder of the bot's Hermes profile.
+1. Put the script in the `scripts` folder of the agent's Hermes profile.
 2. Find the job ID with `hermes cron list`.
 3. Run `hermes cron edit <id> --script <file>` with `terminal`. Name the file inside the `scripts` folder.
 4. Run the routine once with "Run now" in Coconut, or with `hermes cron run <id>`. Check that a quiet run ends without an agent turn, and that a run with work starts one.
@@ -35,6 +35,6 @@ To remove the gate, run `hermes cron edit <id> --script ""`.
 
 ## Wait for delegated work
 
-Do not create a cron job to poll for the result of a delegated task or of another bot, for example a one-time job "result pickup in 10 minutes". Each such run is a model turn, and it often finds no result yet.
+Do not create a cron job to poll for the result of a delegated task or of another agent, for example a one-time job "result pickup in 10 minutes". Each such run is a model turn, and it often finds no result yet.
 
 Call `coconut_wait` with the task ID, and finish your turn. Coconut continues your turn when the task finishes or fails, with its result. For an answer of the person, the card does the same: its answer continues the work.

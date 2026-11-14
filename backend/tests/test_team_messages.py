@@ -528,7 +528,7 @@ class TeamChatTests(TeamMacs, unittest.TestCase):
     def test_a_write_that_breaks_a_rule_is_refused_with_a_text_for_a_person(self):
         sent = self.send(self.first, 'Hello')
         self.second.team_sync_pass()
-        mention, gone, own = ((400, 'Mention only people and bots of this team.'),
+        mention, gone, own = ((400, 'Mention only people and agents of this team.'),
                               (404, 'This message is no longer in the chat.'), (403, 'You can change only your own messages.'))
         member_entry = self.first.team_store.members(self.room)[0]['entry']
         first, second = self.phone(self.first), self.phone(self.second)
@@ -539,7 +539,7 @@ class TeamChatTests(TeamMacs, unittest.TestCase):
             (lambda: self.send(self.first, 'Hello \ud800'), (400, 'Use only valid text in the message.')),
             (lambda: self.send(self.first, 'Hi', reply_to='x'), (400, gone[1])),
             (lambda: self.send(self.first, 'Hi', mentions=['a' * 64]), mention),
-            (lambda: self.send(self.first, 'Hi', mentions='a'), (400, 'Mention at most 16 people and bots in one message.')),
+            (lambda: self.send(self.first, 'Hi', mentions='a'), (400, 'Mention at most 16 people and agents in one message.')),
             (lambda: self.send(self.first, 'Hi', mentions=[{}]), mention),
             (lambda: self.send(self.first, 'Hi', mentions=['t-' + 'b' * 64 + '-' + 'c' * 32]), mention),
             (lambda: second('PATCH', self.path(f'messages/{sent["id"]}'), {'text': 'Mine now'}), own),

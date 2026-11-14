@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build the helper of the team log, make, join, leave and list the team rooms of this Mac, and share its bots.
+"""Build the helper of the team log, make, join, leave and list the team rooms of this Mac, and share its agents.
 
 A team is a set of Macs that share one sealed log on the relay (docs/team-log.md). The service does the work. This
 script calls its team routes on the main listener, with the token of <data>/gateway/bridge.json.
@@ -11,8 +11,8 @@ script calls its team routes on the main listener, with the token of <data>/gate
     python3 scripts/team.py rooms                          # the rooms with their members and their sync state
     python3 scripts/team.py sync                           # read each room from the relay now
     python3 scripts/team.py leave <room ID>
-    python3 scripts/team.py share <room ID> <bot ID>       # share a bot and its team pages with the room
-    python3 scripts/team.py unshare <room ID> <bot ID>
+    python3 scripts/team.py share <room ID> <agent ID>     # share an agent and its team pages with the room
+    python3 scripts/team.py unshare <room ID> <agent ID>
 
 The invite link lets a Mac into the room, so `join` reads it from standard input and not from an argument.
 
@@ -126,11 +126,11 @@ def main() -> None:
     invite.add_argument('--uses', type=int, help='How many Macs can join with the link. The default is 1.')
     leave = commands.add_parser('leave', help='Leave a room, and delete its copy and its keys on this Mac.')
     leave.add_argument('room')
-    share = commands.add_parser('share', help='Share a bot of this Mac and its team pages with a room.')
-    unshare = commands.add_parser('unshare', help='Stop sharing a bot with a room.')
+    share = commands.add_parser('share', help='Share an agent of this Mac and its team pages with a room.')
+    unshare = commands.add_parser('unshare', help='Stop sharing an agent with a room.')
     for command in (share, unshare):
         command.add_argument('room')
-        command.add_argument('bot')
+        command.add_argument('bot', metavar='agent')
     args = parser.parse_args()
     if args.command == 'build':
         try:

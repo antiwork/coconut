@@ -45,7 +45,7 @@ struct UrgentSummary: Decodable, Equatable, Sendable {
 
 /// The plain sentence at the top of the notification settings. It says when Coconut interrupts the person.
 enum NotificationSentence {
-    static let urgentExplanation = "A bot marks a card urgent when it needs your answer soon, for example when waiting "
+    static let urgentExplanation = "An agent marks a card urgent when it needs your answer soon, for example when waiting "
         + "until your next work hours would cause harm or a missed deadline."
 
     /// "9:00" for 540 minutes.
@@ -96,11 +96,11 @@ enum NotificationSentence {
             rest = "Outside those hours, nothing notifies you. Urgent cards wait \(until), then one notification tells you about them."
         case (.nothing, _):
             rest = "Outside those hours, nothing notifies you. "
-                + list(["Cards", replies ? "bot replies" : nil, team ? "team messages" : nil,
+                + list(["Cards", replies ? "agent replies" : nil, team ? "team messages" : nil,
                         direct ? "direct messages" : nil]) + " " + wait
         default:
             rest = "Outside those hours, only urgent cards notify you. "
-                + list(["Other cards", replies ? "bot replies" : nil, team ? "team messages" : nil,
+                + list(["Other cards", replies ? "agent replies" : nil, team ? "team messages" : nil,
                         direct ? "direct messages" : nil]) + " " + wait
         }
         return during(level, replies: replies, team: team, direct: direct, from: window) + " " + rest
@@ -118,11 +118,11 @@ enum NotificationSentence {
         switch level {
         case .every:
             "\(window), Coconut notifies you about "
-                + list(["every card", replies ? "every bot reply" : nil, team ? "every team message" : nil,
+                + list(["every card", replies ? "every agent reply" : nil, team ? "every team message" : nil,
                         direct ? "every direct message" : nil]) + "."
         case .grouped:
             "\(window), Coconut sends one summary at a time about "
-                + list(["new cards", replies ? "bot replies" : nil, team ? "team messages" : nil,
+                + list(["new cards", replies ? "agent replies" : nil, team ? "team messages" : nil,
                         direct ? "direct messages" : nil]) + ". "
                 + "Urgent cards notify you at once."
         case .urgentOnly:

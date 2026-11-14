@@ -51,7 +51,7 @@ struct MacInboxView: View {
             .overlay {
                 if pending.isEmpty {
                     QuietEmptyState(symbol: "tray", title: "Nothing waits for you",
-                                    message: "Cards from your bots show here.")
+                                    message: "Cards from your agents show here.")
                 }
             }
             Divider()
@@ -147,7 +147,7 @@ private struct MacInboxRow: View {
             VStack(alignment: .leading, spacing: BoardStyle.Space.line) {
                 Text(decision.title).font(.body).lineLimit(2)
                 HStack(spacing: BoardStyle.Space.xs) {
-                    Text(bot?.name ?? "Bot")
+                    Text(bot?.name ?? "Agent")
                     if let date = decision.createdAt.apiDate {
                         Text("·")
                         CompactAgeLabel(date: date)
