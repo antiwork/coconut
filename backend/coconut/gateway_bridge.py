@@ -38,6 +38,7 @@ import threading
 import time
 import uuid
 
+from .hermes_notices import readable_text
 from .silent_responses import is_silence_reply
 
 TAKE_SECONDS = 30
@@ -491,6 +492,9 @@ class TurnEvents:
     def apply(self, event: dict) -> bool:
         """Apply one event. Return True at the end of the turn."""
         kind, text = event['kind'], event.get('text') or ''
+        if kind in ('send', 'edit'):
+            # The compare of a repeated send and of an edit uses the text that the chat shows.
+            text = readable_text(text)
         if kind == 'typing':
             self._phase('thinking')
         elif kind == 'question':
