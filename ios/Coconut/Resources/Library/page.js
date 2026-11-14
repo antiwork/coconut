@@ -61,6 +61,18 @@
     }
   }
 
+  // A chart asks for the width of the page column, and takes less when its place gives less. An empty drawing of that
+  // width stands in each chart. So a table, a row or a box that takes its width from its content gives a chart its
+  // room before the chart draws, and the drawn chart does not change that room. The drawing has no height. Its height
+  // is a style: in a box with a zoom, WebKit gives an svg with the attribute height 0 a height of 150 px.
+  for (const figure of main.querySelectorAll("figure.chart[data-spec]")) {
+    const room = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    room.setAttribute("width", 680);
+    room.style.height = "0";
+    room.setAttribute("aria-hidden", "true");
+    figure.append(room);
+  }
+
   // A number: a sign, a currency sign, the digits 0 to 9 with separators, then a percent sign or one letter such as k
   // or M. A unit can follow after a space: at most 16 characters and no digit. "1,552 steps", "$41,200", "87%", "-3",
   // "27.6 in". The space before a unit can also be a no-break, thin or narrow no-break space, as in "12 %". The flag
@@ -69,7 +81,7 @@
     .match(/^([+\-−]?\u2060?[$€£¥]?[0-9](?:[0-9,.]*[0-9])?(?:%|[A-Za-z](?![A-Za-z]))?)(?:[ \t\u00a0\u2009\u202f]+([^0-9]{1,16}))?$/su);
   const text = (cell) => cell.textContent.trim();
   // A cell has content when it has text, a photo, a drawing or a check box. A plain cell has only text.
-  const filled = (cell) => text(cell) || cell.querySelector("img, svg, input, figure.chart");
+  const filled = (cell) => text(cell) || cell.querySelector("img, svg, input");
   const plain = (cell) => [...cell.childNodes].every((node) => node.nodeType === Node.TEXT_NODE);
   const tables = [];
   const grids = [];
@@ -297,18 +309,20 @@
     svg.remove();
     return widths;
   };
-  // The labels under the plot. Each label is a value of the data: a name as it is, a number as String(value), a date
-  // in the form of dateFormat. The code goes through the points from left to right. A point gets its label only when
-  // the box of the label stays in the chart and starts at least 8 px after the box of the last label that shows. The
-  // chart ends 8 px before the lowest y number. On a band, a label starts at the left edge of its bar. On each other
-  // scale, a label is centered on its point and stays inside the chart. A name is never cut, with one exception: when
-  // no label shows yet and the label is wider than the chart, the code cuts it to whole characters and an ellipsis.
+  // The labels under the plot. Each label is a value of the data: a name as it is, a number with at most 15 digits, a
+  // date in the form of dateFormat. The code measures each label in the place where it shows. The code goes through
+  // the points from left to right. A point gets its label only when the label has a visible character, stays in the
+  // chart and starts at least 8 px after the box of the last label that shows. The chart ends 8 px before the lowest
+  // y number. On a band, a label starts at the left edge of its bar. On each other scale, a label is centered on its
+  // point and stays inside the chart. A name is never cut, with one exception: when no label shows yet and the label
+  // is wider than the chart, the code cuts it to whole characters and an ellipsis. A text of more than 128 characters
+  // counts as wider than each chart.
   const segmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" });
-  const drawChart = (figure, spec, data, kind) => {
-    figure.querySelector("svg")?.remove();
-    // The whole pixels of the width of the figure. clientWidth rounds up: a wider svg shrinks, and its texts change.
-    // A figure that does not show has no width.
-    const width = Math.floor(figure.getBoundingClientRect().width);
+  // The width of a chart: the whole pixels of the layout width of its figure. clientWidth rounds to the nearest pixel:
+  // an svg that is wider than its figure shrinks, and its texts change. A figure that does not show has no width.
+  const chartWidth = (figure) => figure.clientWidth && Math.floor(parseFloat(getComputedStyle(figure).width));
+  const drawChart = (figure, spec, data, kind, width) => {
+    figure.querySelector("svg.plot")?.remove();
     if (!width) return;
     const palette = coconut.palette;
     const names = [...new Set(data.map((row) => row.series))];
@@ -345,9 +359,9 @@
     const right = Math.ceil(Math.max(0, ...yWidths)) + 8;
     // The chart of the labels ends 8 px before the lowest y number, at the right edge of the svg.
     const end = width - yWidths[0] - 8;
-    const format = kind === "date" ? dateFormat(xs) : (value) => String(value);
-    const texts = xs.map(format);
-    const widths = textWidth(figure, texts);
+    // A number shows without the noise of its binary form: 0.1 * 3 is "0.3". 15 digits keep each whole number.
+    const format = kind === "date" ? dateFormat(xs)
+      : kind === "number" ? (value) => String(Number(value.toPrecision(15))) : (value) => String(value);
     const svg = Plot.plot({
       width, height: 200, marginTop: 8, marginBottom: 24, marginLeft: 0, marginRight: right, style: look,
       x: { ...x, axis: null }, y: { domain: y.domain, axis: null }, color: { domain: names, range: palette },
@@ -359,48 +373,62 @@
       ],
     });
     svg.setAttribute("class", "plot");
-    // A text cut to the room that it has: the most whole characters, then an ellipsis. A binary search measures it.
-    const cut = (text, room) => {
-      const parts = [...segmenter.segment(text)].map((part) => part.segment);
-      let low = 0, high = parts.length - 1;
-      while (low < high) {
-        const middle = Math.ceil((low + high) / 2);
-        if (textWidth(figure, [parts.slice(0, middle).join("").trimEnd() + "…"])[0] <= room) low = middle;
-        else high = middle - 1;
-      }
-      return low ? parts.slice(0, low).join("").trimEnd() + "…" : "";
-    };
-    // The points are in the order of the x axis: a band and a scale of names keep the order of the data, and the data
-    // of a scale of numbers or dates is in the order of x. A value without a place (an x that is not finite) has no
-    // point.
-    const scale = svg.scale("x");
-    const points = xs.map((value, index) => ({ at: scale.apply(value), text: texts[index], size: widths[index] }))
-      .filter((point) => Number.isFinite(point.at));
     const labels = document.createElementNS("http://www.w3.org/2000/svg", "g");
     labels.setAttribute("aria-label", "x-axis tick label");
     // The svg of Plot centers each text (text-anchor middle). A label starts at its x.
     labels.setAttribute("text-anchor", "start");
-    let edge = -Infinity;
-    for (const point of points) {
-      let { text, size } = point;
-      if (edge === -Infinity && size > end) {
-        text = cut(text, end);
-        size = text ? textWidth(figure, [text])[0] : 0;
-      }
-      const left = band ? point.at : Math.min(Math.max(point.at - size / 2, 0), end - size);
-      if (!text || left < edge + 8 || left + size > end) continue;
-      // A label has the place of a tick label of Plot, 6 px under the plot: the height of 200 px less the bottom
-      // margin of 24 px, plus 6.
-      const label = document.createElementNS("http://www.w3.org/2000/svg", "text");
-      label.setAttribute("x", left);
-      label.setAttribute("y", 182);
-      label.setAttribute("dy", "0.71em");
-      label.textContent = text;
-      labels.append(label);
-      edge = left + size;
-    }
     svg.append(labels);
     figure.querySelector(".legend") ? figure.querySelector(".legend").after(svg) : figure.prepend(svg);
+    // The points are in the order of the x axis: a band and a scale of names keep the order of the data, and the data
+    // of a scale of numbers or dates is in the order of x. A value without a place (an x that is not finite) has no
+    // point. Each point has one text in the place where a label shows, so its measure is the measure of the drawn
+    // label. A text of more than 128 characters has no measure: WebKit measures one long word in a time that grows
+    // with the square of its length.
+    const scale = svg.scale("x");
+    const points = xs.map((value) => ({ at: scale.apply(value), text: format(value) }))
+      .filter((point) => Number.isFinite(point.at));
+    const nodes = points.map((point) => {
+      const node = document.createElementNS("http://www.w3.org/2000/svg", "text");
+      // A label has the place of a tick label of Plot, 6 px under the plot: the height of 200 px less the bottom
+      // margin of 24 px, plus 6.
+      node.setAttribute("y", 182);
+      node.setAttribute("dy", "0.71em");
+      node.textContent = point.text.length > 128 ? "" : point.text;
+      labels.append(node);
+      return node;
+    });
+    const sizes = nodes.map((node, index) => points[index].text.length > 128 ? Infinity : node.getComputedTextLength());
+    // A text cut to the room that it has: the most whole characters that end inside its first 128, then an ellipsis.
+    // The cut never keeps the last of these characters. A binary search measures it.
+    const cut = (node, text, room) => {
+      const parts = [];
+      for (const { segment, index } of segmenter.segment(text)) {
+        if (index + segment.length > 128) break;
+        parts.push(segment);
+      }
+      const kept = (count) => parts.slice(0, count).join("").trimEnd();
+      let low = 0, high = parts.length - 1;
+      while (low < high) {
+        const middle = Math.ceil((low + high) / 2);
+        node.textContent = kept(middle) + "…";
+        if (node.getComputedTextLength() <= room) low = middle; else high = middle - 1;
+      }
+      node.textContent = kept(low) ? kept(low) + "…" : "";
+      return node.getComputedTextLength();
+    };
+    const shown = [];
+    let edge = -Infinity;
+    points.forEach((point, index) => {
+      const node = nodes[index];
+      let size = sizes[index];
+      if (edge === -Infinity && size > end) size = cut(node, point.text, end);
+      const left = band ? point.at : Math.min(Math.max(point.at - size / 2, 0), end - size);
+      if (!node.textContent.trim() || left < edge + 8 || left + size > end) return;
+      node.setAttribute("x", left);
+      shown.push(node);
+      edge = left + size;
+    });
+    labels.replaceChildren(...shown);
   };
   for (const figure of main.querySelectorAll("figure.chart[data-spec]")) {
     try {
@@ -431,22 +459,24 @@
           key.append(dot, name);
           legend.append(key);
         });
-        figure.append(legend);
+        figure.prepend(legend);
       }
       // The caption under the chart: the label of the y axis first, then the title.
       const caption = [spec.y_label, spec.title].filter(Boolean).join(" · ");
       if (caption) {
         const element = document.createElement("figcaption");
         element.textContent = caption;
-        figure.append(element);
+        // The empty drawing stays the last child of the figure.
+        figure.lastElementChild.before(element);
       }
-      drawChart(figure, spec, data, kind);
+      let drawn = chartWidth(figure);
+      drawChart(figure, spec, data, kind, drawn);
       // A new width of the column draws the chart again, with the rule of the tables.
-      let drawn = figure.clientWidth;
       new ResizeObserver(() => {
-        if (figure.clientWidth === drawn) return;
-        drawn = figure.clientWidth;
-        try { drawChart(figure, spec, data, kind); } catch (error) { /* The first drawing showed it. */ }
+        const width = chartWidth(figure);
+        if (width === drawn) return;
+        drawn = width;
+        try { drawChart(figure, spec, data, kind, drawn); } catch (error) { /* The first drawing showed it. */ }
       }).observe(figure);
     } catch (error) {
       figure.textContent = "This chart could not be drawn: " + error.message;

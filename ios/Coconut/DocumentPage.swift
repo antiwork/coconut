@@ -265,10 +265,9 @@ struct DocumentPage {
     figure.chart.broken { color: var(--text-2); font-size: var(--size-2); }
     /* A chart: a line of series names, the plot with hairlines and quiet numbers, then a quiet caption. */
     /* Only the chart block of page.js: a chart that a bot draws by hand in an HTML page keeps its own look. */
-    /* A chart takes the full width of its box, also in a flex row or column, and never more. */
-    figure.chart[data-spec] { min-width: 0; width: 100%; }
-    /* In a table with a chart, the columns share the width of the table in equal parts: a chart never widens its cell. */
-    table:has(figure.chart[data-spec]) { table-layout: fixed; }
+    /* A chart takes the full width of its box, also in a flex row or column, and never more. An empty drawing of 680 px
+       in the chart (page.js) asks for its room. The text of a chart wraps, also in a table cell of one line. */
+    figure.chart[data-spec] { min-width: 0; width: 100%; white-space: normal; }
     figure.chart[data-spec] svg { direction: ltr; }
     figure.chart[data-spec] svg text { font-variant-numeric: tabular-nums; }
     figure.chart[data-spec] svg { max-width: 100%; }
@@ -277,7 +276,7 @@ struct DocumentPage {
     figure.chart[data-spec] svg.plot { height: 200px; }
     figure.chart[data-spec] [aria-label="y-grid"] line { stroke: var(--line); stroke-opacity: 1; stroke-width: 1;
                                                          shape-rendering: crispEdges; }
-    figure.chart[data-spec] figcaption { font-size: var(--size-1); }
+    figure.chart[data-spec] figcaption { font-size: var(--size-1); overflow-wrap: anywhere; }
     figure.chart[data-spec] .legend { display: flex; flex-wrap: wrap; gap: 4px 16px; margin: 0 0 8px;
                                       font-size: var(--size-1); color: var(--text-2); }
     figure.chart[data-spec] .legend > span { min-width: 0; overflow-wrap: anywhere; }
