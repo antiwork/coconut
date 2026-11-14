@@ -2439,11 +2439,12 @@ final class LibraryDocumentTests: XCTestCase {
         try await Self.run(view, "String(" + script + ")", within: time)
     }
 
-    /// The answer of a script, after it gives the expected answer or after 5 seconds.
+    /// The answer of a script, after it gives the expected answer or after 30 seconds. The wait is long for a runner
+    /// where the window of a test is on no screen: WebKit can then give a page its new width seconds late.
     @MainActor
     private func answer(of script: String, in view: WKWebView, once expected: String) async throws -> String? {
         var answer: String?
-        let deadline = ContinuousClock.now + .seconds(5)
+        let deadline = ContinuousClock.now + .seconds(30)
         while answer != expected && ContinuousClock.now < deadline {
             try await Task.sleep(for: .milliseconds(100))
             answer = try? await string(view, script, within: max(deadline - ContinuousClock.now, .milliseconds(100)))
@@ -2587,7 +2588,7 @@ final class LibraryDocumentTests: XCTestCase {
         return (view, window)
     }
 
-    /// Waits until each chart has the plot of its layout width, or 5 seconds. On a Mac where the scroll bars always
+    /// Waits until each chart has the plot of its layout width, or 15 seconds. On a Mac where the scroll bars always
     /// show, a tall page gets a scroll bar while its charts draw. The page is then narrower, and the charts that drew
     /// before draw again in the next frame. A test reads the page after that.
     @MainActor
@@ -2599,7 +2600,7 @@ final class LibraryDocumentTests: XCTestCase {
               return plot ? +plot.getAttribute("width") === width : !width || figure.classList.contains("broken");
             })
             """
-        let deadline = ContinuousClock.now + .seconds(5)
+        let deadline = ContinuousClock.now + .seconds(15)
         while ContinuousClock.now < deadline {
             if (try? await string(view, rest, within: deadline - ContinuousClock.now)) == "true" { return }
             try await Task.sleep(for: .milliseconds(100))
@@ -2900,34 +2901,36 @@ final class ZzTableFactsOfThisRunnerTests: XCTestCase {
                                               markdown: true), baseURL: nil)
         let facts = """
             [[...document.querySelectorAll("main table")].map((table) => table.classList.contains("records") ? "R" : "T").join(""),
-             innerWidth, document.documentElement.clientWidth, Math.round(document.querySelector("main").getBoundingClientRect().width),
-             document.readyState].join(" ")
+             innerWidth, document.documentElement.clientWidth, document.visibilityState].join(" ")
             """
         let read = { () async -> String in
             ((try? await view.evaluateJavaScript("String(" + facts + ")")) as? String) ?? "nil"
         }
-        // The state at each tenth of a second, as one line of the changes with their times.
-        let watch = { (name: String, seconds: Double) async in
-            let clock = ContinuousClock()
+        let clock = ContinuousClock()
+        var report = "ZZ"
+        // The changes of the state, each with its time since the start of the step.
+        let watch = { (name: String, seconds: Double) async -> String in
             let start = clock.now
             var last = ""
-            var line = "ZZ \(name):"
+            var line = " | \(name):"
             while clock.now - start < .seconds(seconds) {
                 let state = await read()
                 if state != last {
                     let passed = clock.now - start
-                    line += " [\(passed.components.seconds).\(passed.components.attoseconds / 100_000_000_000_000_000) s: \(state)]"
+                    line += " [\(passed.components.seconds).\(passed.components.attoseconds / 100_000_000_000_000_000) s \(state)]"
                     last = state
                 }
                 try? await Task.sleep(for: .milliseconds(100))
             }
-            print(line)
+            return line
         }
-        await watch("load at 390", 6)
+        // As the test of the wide table does: the page loads, then the view gets wider at once, then narrower.
+        report += await watch("load at 390", 1)
         view.frame.size.width = 1100
-        await watch("then 1100", 12)
+        report += await watch("then 1100", 25)
         view.frame.size.width = 390
-        await watch("then 390", 12)
+        report += await watch("then 390", 25)
+        print(report)
         #if os(iOS)
         window.isHidden = true
         #else
