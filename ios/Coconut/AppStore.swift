@@ -1551,18 +1551,18 @@ final class AppStore {
         guard changes == documentChanges else { return await loadDocuments(quiet: quiet) }
         teamBots = response.teamBots ?? []
         documents = response.documents
-        for chat in Self.teamChatsQuotingGonePages(teamChats, documents: response.documents) {
-            Task { await loadTeamChat(chat) }
-        }
         return true
     }
 
     /// The updates carry no documents. They say that a document or a team page changed, so a Library that the app
     /// loaded before loads its list again. A reset skips the events between the cursors, also the changes of
-    /// documents. A Library that never loaded loads when it opens.
+    /// documents. A Library that never loaded loads when it opens. Each loaded chat with a team bot that quotes a page
+    /// reads its messages again, also without a Library list: the Mac gives a page that went with no ID.
     private func reloadChangedDocuments(_ page: StateUpdates) {
+        guard page.documentsChanged == true || page.reset != nil else { return }
+        for chat in Self.teamChatsQuotingPages(teamChats) { Task { await loadTeamChat(chat) } }
         // A Library whose first request runs also loads again: that request can be older than the change.
-        guard page.documentsChanged == true || page.reset != nil, documents != nil || latestDocumentLoad != nil else { return }
+        guard documents != nil || latestDocumentLoad != nil else { return }
         Task { await loadDocuments() }
     }
 
@@ -1948,13 +1948,13 @@ final class AppStore {
                         mentions: mentions)
     }
 
-    /// The loaded direct chats with a team bot that quote a page that a fresh Library list no longer has. Each reads
-    /// its messages again, so its quote says that the page is gone and opens nothing.
-    nonisolated static func teamChatsQuotingGonePages(_ chats: [TeamChatKey: TeamChat], documents: [BotDocument]) -> [TeamChatKey] {
-        let listed = Set(documents.map(\.id))
-        return chats.compactMap { key, chat in
-            let quotesGonePage = chat.messages.contains { $0.page?.id.map { !listed.contains($0) } ?? false }
-            return key.bot != nil && chat.loaded && quotesGonePage ? key : nil
+    /// The loaded direct chats with a team bot that quote a page with an ID, each one time. After an update that
+    /// says that a document changed, each reads its messages again, so the quote of a page that went says so and
+    /// opens nothing. A chat whose pages all went already has no page with an ID, so it does not read again, and a
+    /// read gives no update: the reads cannot loop.
+    nonisolated static func teamChatsQuotingPages(_ chats: [TeamChatKey: TeamChat]) -> [TeamChatKey] {
+        chats.compactMap { key, chat in
+            key.bot != nil && chat.loaded && chat.messages.contains { $0.page?.id != nil } ? key : nil
         }
         .sorted { ($0.room, $0.bot ?? "") < ($1.room, $1.bot ?? "") }
     }
