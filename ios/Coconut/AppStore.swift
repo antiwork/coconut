@@ -1551,6 +1551,9 @@ final class AppStore {
         guard changes == documentChanges else { return await loadDocuments(quiet: quiet) }
         teamBots = response.teamBots ?? []
         documents = response.documents
+        for chat in Self.teamChatsQuotingGonePages(teamChats, documents: response.documents) {
+            Task { await loadTeamChat(chat) }
+        }
         return true
     }
 
@@ -1921,10 +1924,39 @@ final class AppStore {
         teamMessageChanges[chat]?[id] == change && teamListHas(chat)
     }
 
+    /// "Chat about this page": the page waits for the chat of the target, which takes it when it opens.
+    func ask(about document: BotDocument, in target: DocumentChatTarget) {
+        switch target {
+        case .bot(let id): pageQuotes[id] = .page(document)
+        case .team(let chat): teamPageQuotes[chat] = TeamAboutPage(document)
+        }
+    }
+
     /// Takes the page that the chat of `chat` quotes when it opens ("Chat about this page"). Only the chat of that key
-    /// gets it, and only one time.
-    func takeTeamPageQuote(_ chat: TeamChatKey) -> TeamAboutPage? {
-        teamPageQuotes.removeValue(forKey: chat)
+    /// gets it, only one time, and only while the chat is on the screen: a chat that the person does not see leaves it
+    /// for the chat that the person sees. A chat where the person cannot write takes the page and drops it.
+    func takeTeamPageQuote(_ chat: TeamChatKey, onScreen: Bool, canWrite: Bool) -> TeamAboutPage? {
+        guard onScreen, let page = teamPageQuotes.removeValue(forKey: chat) else { return nil }
+        return canWrite ? page : nil
+    }
+
+    /// Sends the draft of a composer with its reply or its page (sendTeamMessage). False when the store did not save
+    /// it, so the composer keeps the draft.
+    @discardableResult
+    func sendTeamMessage(_ chat: TeamChatKey, from composer: TeamComposerState, mentions: [String] = []) -> Bool {
+        sendTeamMessage(chat, text: composer.draft, replyingTo: composer.quote?.reply, page: composer.quote?.page,
+                        mentions: mentions)
+    }
+
+    /// The loaded direct chats with a team bot that quote a page that a fresh Library list no longer has. Each reads
+    /// its messages again, so its quote says that the page is gone and opens nothing.
+    nonisolated static func teamChatsQuotingGonePages(_ chats: [TeamChatKey: TeamChat], documents: [BotDocument]) -> [TeamChatKey] {
+        let listed = Set(documents.map(\.id))
+        return chats.compactMap { key, chat in
+            let quotesGonePage = chat.messages.contains { $0.page?.id.map { !listed.contains($0) } ?? false }
+            return key.bot != nil && chat.loaded && quotesGonePage ? key : nil
+        }
+        .sorted { ($0.room, $0.bot ?? "") < ($1.room, $1.bot ?? "") }
     }
 
     /// The chat of a room is on screen. It loads its newest page when it opens.

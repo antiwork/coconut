@@ -473,6 +473,9 @@ final class DirectMessageTests: XCTestCase {
             XCTAssertEqual(store.error, refusal, "The notice of a failed action shows the sentence of the Mac.")
             XCTAssertEqual(server.sentBodies.first?["about_document_id"] as? String, "t-r1-p1")
             XCTAssertNil(server.sentBodies.first?["reply_to"], "A page and a reply do not go together.")
+            // A refused message waits for the person. It does not try again by itself, also not after a delay.
+            try await Task.sleep(for: .seconds(1))
+            XCTAssertEqual(server.sentBodies.count, 1, "A refused message does not send again by itself.")
 
             let restarted = AppStore(demo: false)
             XCTAssertEqual(restarted.teamChats[chat]?.pending.first?.page, sales, "A restart keeps the page.")
@@ -1025,6 +1028,69 @@ final class BotDirectChatTests: XCTestCase {
             XCTAssertNotNil(store.teamChats[next], "The new page loads the messages of \(next).")
         }
     }
+
+    /// The real chat view takes the page that waits for it: when it opens, when it shows again, and when the page
+    /// comes while it shows. A chat under another page leaves the page.
+    @MainActor
+    func testTheChatOnTheScreenTakesThePageThatWaitsForIt() async throws {
+        let store = AppStore(demo: true)
+        store.team = TeamRooms(rooms: [room(bots: [reporter()], botDirects: [], directs: [])], helper: true)
+        let chat = TeamChatKey(room: "r1", bot: "t-r1-e1")
+        let sales = TeamAboutPage(id: "t-r1-p1", title: "Sales")
+        store.teamPageQuotes[chat] = sales
+        let stack = ChatStack()
+        stack.path.append(TeamChatRoute(chat: chat))
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
+        let window = UIWindow(windowScene: scene)
+        window.rootViewController = UIHostingController(rootView: ChatStackHost(stack: stack).environment(store))
+        window.makeKeyAndVisible()
+        defer { window.isHidden = true }
+
+        try await waitUntil(timeout: .seconds(5)) { store.teamPageQuotes[chat] == nil }
+        XCTAssertNil(store.teamPageQuotes[chat], "The chat takes the page when it opens.")
+
+        stack.path.append("Cover")
+        try await Task.sleep(for: .seconds(1))
+        store.teamPageQuotes[chat] = sales
+        try await Task.sleep(for: .seconds(1))
+        XCTAssertEqual(store.teamPageQuotes[chat], sales, "A chat under another page leaves the page.")
+
+        stack.path.removeLast()
+        try await waitUntil(timeout: .seconds(5)) { store.teamPageQuotes[chat] == nil }
+        XCTAssertNil(store.teamPageQuotes[chat], "The chat takes the page when it shows again.")
+
+        store.teamPageQuotes[chat] = sales
+        try await waitUntil(timeout: .seconds(5)) { store.teamPageQuotes[chat] == nil }
+        XCTAssertNil(store.teamPageQuotes[chat], "The chat on the screen takes a page that comes while it shows.")
+    }
+
+    /// The chat on the Chats tab stays while the Library tab shows. It leaves a page that comes then, and takes it
+    /// when its tab shows again.
+    @MainActor
+    func testAChatOnAnotherTabLeavesThePage() async throws {
+        let store = AppStore(demo: true)
+        store.team = TeamRooms(rooms: [room(bots: [reporter()], botDirects: [], directs: [])], helper: true)
+        let chat = TeamChatKey(room: "r1", bot: "t-r1-e1")
+        let sales = TeamAboutPage(id: "t-r1-p1", title: "Sales")
+        let tabs = ChatTabs()
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
+        let window = UIWindow(windowScene: scene)
+        window.rootViewController = UIHostingController(rootView: ChatTabsHost(tabs: tabs, chat: chat).environment(store))
+        window.makeKeyAndVisible()
+        defer { window.isHidden = true }
+        try await waitUntil(timeout: .seconds(5)) { store.teamChats[chat] != nil }
+        XCTAssertNotNil(store.teamChats[chat], "The chat shows.")
+
+        tabs.selected = 1
+        try await Task.sleep(for: .seconds(1))
+        store.teamPageQuotes[chat] = sales
+        try await Task.sleep(for: .seconds(1))
+        XCTAssertEqual(store.teamPageQuotes[chat], sales, "A chat on another tab leaves the page.")
+
+        tabs.selected = 0
+        try await waitUntil(timeout: .seconds(5)) { store.teamPageQuotes[chat] == nil }
+        XCTAssertNil(store.teamPageQuotes[chat], "The chat takes the page when its tab shows again.")
+    }
     #endif
 
     // MARK: The banners of the Mac
@@ -1087,14 +1153,50 @@ final class BotDirectChatTests: XCTestCase {
         XCTAssertFalse(MessageReference(messageId: "e1", text: "Hello", author: "Grace", role: "").isPage)
     }
 
-    func testAPageAndAReplyTakeThePlaceOfEachOther() {
-        let answered = TeamMessage(id: "e1", first: 1, text: "Hello", createdAt: "2026-11-10T10:00:00Z")
-        var quote = TeamComposerQuote.reply(answered)
-        XCTAssertEqual(quote.reply, answered)
-        XCTAssertNil(quote.page)
-        quote = .page(sales)
-        XCTAssertEqual(quote.page, sales)
-        XCTAssertNil(quote.reply, "The page takes the place of the reply.")
+    private let answered = TeamMessage(id: "e1", first: 1, text: "Hello", createdAt: "2026-11-10T10:00:00Z")
+
+    /// The composer of a team chat keeps one quote: a reply, a page or an edit. The newer one takes the place of the
+    /// other. A closed chat drops a page, and a removed message drops its reply or its edit.
+    func testTheComposerKeepsOneQuoteAndAClosedChatDropsThePage() {
+        var composer = TeamComposerState()
+        composer.reply(to: answered)
+        composer.ask(about: sales)
+        XCTAssertEqual(composer.quote, .page(sales), "A page takes the place of a reply.")
+        composer.reply(to: answered)
+        XCTAssertEqual(composer.quote, .reply(answered), "A reply takes the place of a page.")
+
+        composer.draft = "Why?"
+        composer.edit(answered)
+        XCTAssertNil(composer.quote, "An edit takes the place of a reply.")
+        XCTAssertEqual(composer.draft, "Hello", "The draft of an edit is the text of the message.")
+        composer.ask(about: sales)
+        XCTAssertEqual(composer, TeamComposerState(draft: "", quote: .page(sales), editing: nil),
+                       "A page takes the place of an edit, and the edit takes its draft with it.")
+        composer.edit(answered)
+        XCTAssertNil(composer.quote, "An edit takes the place of a page.")
+        composer.cancelEdit()
+        XCTAssertEqual(composer, TeamComposerState())
+
+        composer.ask(about: sales)
+        composer.removeQuote()
+        XCTAssertNil(composer.quote, "The cross removes the page.")
+
+        composer.ask(about: sales)
+        composer.close()
+        XCTAssertNil(composer.quote, "A chat where the person can no longer write drops the page.")
+        composer.reply(to: answered)
+        composer.close()
+        XCTAssertEqual(composer.quote, .reply(answered), "The closed line keeps a reply, as before.")
+        composer.removed("e1")
+        XCTAssertNil(composer.quote, "A removed message takes its reply with it.")
+        composer.edit(answered)
+        composer.removed("e1")
+        XCTAssertEqual(composer, TeamComposerState(), "A removed message takes its edit with it.")
+
+        composer.draft = "Why?"
+        composer.ask(about: sales)
+        composer.sent()
+        XCTAssertEqual(composer, TeamComposerState(), "A send clears the draft and the page.")
     }
 
     @MainActor
@@ -1102,12 +1204,134 @@ final class BotDirectChatTests: XCTestCase {
         let store = AppStore(demo: true)
         let chat = TeamChatKey(room: "r1", bot: "t-r1-e1")
         store.teamPageQuotes[chat] = sales
-        XCTAssertNil(store.takeTeamPageQuote(TeamChatKey(room: "r1", member: "t-r1-e1")), "Not the chat of a person.")
-        XCTAssertNil(store.takeTeamPageQuote("r1"), "Not the Team chat.")
-        XCTAssertNil(store.takeTeamPageQuote(TeamChatKey(room: "r1", bot: "t-r1-e2")), "Not the chat of another bot.")
-        XCTAssertNil(store.takeTeamPageQuote(TeamChatKey(room: "r2", bot: "t-r1-e1")), "Not a chat of another team.")
-        XCTAssertEqual(store.takeTeamPageQuote(chat), sales)
-        XCTAssertNil(store.takeTeamPageQuote(chat), "The chat takes the page one time.")
+        func take(_ key: TeamChatKey) -> TeamAboutPage? { store.takeTeamPageQuote(key, onScreen: true, canWrite: true) }
+        XCTAssertNil(take(TeamChatKey(room: "r1", member: "t-r1-e1")), "Not the chat of a person.")
+        XCTAssertNil(take("r1"), "Not the Team chat.")
+        XCTAssertNil(take(TeamChatKey(room: "r1", bot: "t-r1-e2")), "Not the chat of another bot.")
+        XCTAssertNil(take(TeamChatKey(room: "r2", bot: "t-r1-e1")), "Not a chat of another team.")
+        XCTAssertEqual(take(chat), sales)
+        XCTAssertNil(take(chat), "The chat takes the page one time.")
+    }
+
+    /// A chat that is not on the screen leaves the page for the chat that the person sees. A chat where the person
+    /// cannot write takes the page and drops it, so it never shows later.
+    @MainActor
+    func testOnlyAChatOnTheScreenWhereThePersonCanWriteTakesThePage() {
+        let store = AppStore(demo: true)
+        let chat = TeamChatKey(room: "r1", bot: "t-r1-e1")
+        store.teamPageQuotes[chat] = sales
+        XCTAssertNil(store.takeTeamPageQuote(chat, onScreen: false, canWrite: true))
+        XCTAssertEqual(store.teamPageQuotes[chat], sales, "The page still waits.")
+        XCTAssertNil(store.takeTeamPageQuote(chat, onScreen: true, canWrite: false))
+        XCTAssertNil(store.teamPageQuotes[chat], "A closed chat drops the page.")
+        store.teamPageQuotes[chat] = sales
+        XCTAssertEqual(store.takeTeamPageQuote(chat, onScreen: true, canWrite: true), sales)
+    }
+
+    /// The send of the composer gives the store the page and no reply, or the reply and no page.
+    @MainActor
+    func testTheSendOfTheComposerGivesThePageToTheStore() async throws {
+        let store = AppStore(demo: true)
+        store.team = TeamRooms(rooms: [room(bots: [reporter()])])
+        let chat = TeamChatKey(room: "r1", bot: "t-r1-e1")
+        var composer = TeamComposerState(draft: "Why are the refunds higher?")
+        composer.reply(to: answered)
+        composer.ask(about: sales)
+        XCTAssertTrue(store.sendTeamMessage(chat, from: composer))
+        try await waitUntil { store.teamChats[chat]?.messages.count == 1 }
+        XCTAssertEqual(store.teamChats[chat]?.messages.last?.page, sales)
+        XCTAssertNil(store.teamChats[chat]?.messages.last?.replyTo)
+
+        composer = TeamComposerState(draft: "And this?")
+        composer.reply(to: answered)
+        XCTAssertTrue(store.sendTeamMessage(chat, from: composer))
+        try await waitUntil { store.teamChats[chat]?.messages.count == 2 }
+        XCTAssertEqual(store.teamChats[chat]?.messages.last?.replyTo, "e1")
+        XCTAssertNil(store.teamChats[chat]?.messages.last?.page)
+    }
+
+    /// A row shows the page of its message, also of a message on its way, and else the message that it answers.
+    func testTheRowShowsThePageElseTheReply() {
+        var message = answered
+        XCTAssertNil(TeamRowQuote(message: message, pending: nil))
+        message.replyTo = "e0"
+        XCTAssertEqual(TeamRowQuote(message: message, pending: nil), .reply("e0"))
+        message.page = sales
+        XCTAssertEqual(TeamRowQuote(message: message, pending: nil), .page(sales))
+        message.page = TeamAboutPage()
+        XCTAssertEqual(TeamRowQuote(message: message, pending: nil), .page(TeamAboutPage()), "A page that is gone.")
+        let pending = TeamPendingMessage(id: "p1", text: "Why?", replyTo: nil, reply: nil,
+                                         createdAt: "2026-11-10T09:00:00Z", page: sales)
+        XCTAssertEqual(TeamRowQuote(message: nil, pending: pending), .page(sales))
+    }
+
+    /// A tap on the quote opens the page in the Library: in the window where it can, else with a push. A page that
+    /// is gone opens nothing.
+    func testATapOnTheQuoteOpensThePageAndAGonePageOpensNothing() throws {
+        var opened: [String] = []
+        var pushed: [AnyHashable] = []
+        let window: (String) -> Void = { opened.append($0) }
+        let push: (any Hashable) -> Void = { pushed.append(AnyHashable($0)) }
+        try XCTUnwrap(sales.open(openDocument: window, pushRoute: push))()
+        XCTAssertEqual(opened, ["t-r1-p1"])
+        XCTAssertTrue(pushed.isEmpty)
+        try XCTUnwrap(sales.open(openDocument: nil, pushRoute: push))()
+        XCTAssertEqual(pushed, [AnyHashable(DocumentRoute(id: "t-r1-p1"))])
+        XCTAssertNil(TeamAboutPage().open(openDocument: window, pushRoute: push), "A page that is gone is no button.")
+    }
+
+    /// The item of a page leads to the chat of a bot of this Mac, or to the direct chat with the team bot. The page
+    /// waits for that chat.
+    @MainActor
+    func testTheItemLeadsThePageToItsChat() {
+        let rooms = TeamRooms(rooms: [room(bots: [reporter()])])
+        let own = bot("bot-1")
+        XCTAssertEqual(DocumentChatTarget(teamPage("bot-1", room: nil), bots: [own], team: rooms), .bot("bot-1"))
+        let chat = TeamChatKey(room: "r1", bot: "t-r1-e1")
+        XCTAssertEqual(DocumentChatTarget(teamPage("t-r1-e1"), bots: [own], team: rooms), .team(chat))
+        XCTAssertNil(DocumentChatTarget(teamPage("t-r1-e2"), bots: [own], team: rooms), "No item for another page.")
+        XCTAssertNil(DocumentChatTarget(teamPage("t-r1-e1"), bots: [own], team: nil), "No item without the teams.")
+
+        let store = AppStore(demo: true)
+        store.ask(about: teamPage("t-r1-e1"), in: .team(chat))
+        XCTAssertEqual(store.teamPageQuotes, [chat: sales])
+        XCTAssertTrue(store.pageQuotes.isEmpty)
+        store.ask(about: teamPage("bot-1", room: nil), in: .bot("bot-1"))
+        XCTAssertEqual(store.pageQuotes["bot-1"]?.documentId, "t-r1-p1")
+    }
+
+    /// An edit of a message about a page keeps the page, also in the demo.
+    @MainActor
+    func testAnEditKeepsThePage() async throws {
+        let store = AppStore(demo: true)
+        let chat = TeamChatKey(room: "r1", bot: "t-r1-e1")
+        var message = answered
+        message.thisMac = true
+        message.page = sales
+        store.teamChats[chat] = TeamChat(messages: [message], loaded: true)
+        let edited = await store.editTeamMessage(chat, message, text: "Hello again")
+        XCTAssertTrue(edited)
+        XCTAssertEqual(store.teamChats[chat]?.messages.first?.text, "Hello again")
+        XCTAssertEqual(store.teamChats[chat]?.messages.first?.page, sales)
+    }
+
+    /// A fresh Library list without a page that a loaded chat with a bot quotes reads that chat again.
+    func testAChatThatQuotesAPageThatWentReadsAgain() {
+        var message = answered
+        message.page = sales
+        var gone = message
+        gone.page = TeamAboutPage()
+        let bot = TeamChatKey(room: "r1", bot: "t-r1-e1")
+        let other = TeamChatKey(room: "r1", bot: "t-r1-e2")
+        let chats: [TeamChatKey: TeamChat] = [
+            bot: TeamChat(messages: [message], loaded: true),
+            other: TeamChat(messages: [gone], loaded: true),
+            TeamChatKey(room: "r1", bot: "t-r1-e3"): TeamChat(messages: [message], loaded: false),
+            "r1": TeamChat(messages: [message], loaded: true)]
+        XCTAssertEqual(AppStore.teamChatsQuotingGonePages(chats, documents: []), [bot],
+                       "Not a chat whose page is gone already, not a chat that did not load, and not the Team chat.")
+        XCTAssertEqual(AppStore.teamChatsQuotingGonePages(chats, documents: [teamPage("t-r1-e1")]), [],
+                       "The page is still in the Library.")
     }
 
     /// A send with a page keeps the page and no reply. A page goes only into a direct chat with a bot.
@@ -1174,6 +1398,43 @@ private final class ShownRoute {
     var route: TeamChatRoute {
         get { path[0] }
         set { path = [newValue] }
+    }
+}
+
+/// Two tabs, as the iPhone app has: the chat on the first, and a plain page on the second.
+@MainActor @Observable
+private final class ChatTabs {
+    var selected = 0
+}
+
+private struct ChatTabsHost: View {
+    @Bindable var tabs: ChatTabs
+    let chat: TeamChatKey
+
+    var body: some View {
+        TabView(selection: $tabs.selected) {
+            NavigationStack { TeamChatDestination(route: TeamChatRoute(chat: chat)) }
+                .tabItem { Text("Chats") }.tag(0)
+            Text("Library").tabItem { Text("Library") }.tag(1)
+        }
+    }
+}
+
+/// A stack with a chat page, and a plain page that can cover the chat.
+@MainActor @Observable
+private final class ChatStack {
+    var path = NavigationPath()
+}
+
+private struct ChatStackHost: View {
+    @Bindable var stack: ChatStack
+
+    var body: some View {
+        NavigationStack(path: $stack.path) {
+            Color.clear
+                .navigationDestination(for: TeamChatRoute.self) { TeamChatDestination(route: $0) }
+                .navigationDestination(for: String.self) { Text($0) }
+        }
     }
 }
 

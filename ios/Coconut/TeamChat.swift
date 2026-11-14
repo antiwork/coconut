@@ -376,6 +376,81 @@ extension TeamAboutPage {
     init(_ document: BotDocument) {
         self.init(id: document.id, title: document.title)
     }
+
+    /// What a tap on the quote of the page does: it opens the page in the Library, with `openDocument` where the
+    /// window sets it, else with a push of the page. Nil for a page that is gone, so its quote is no button.
+    func open(openDocument: ((String) -> Void)?, pushRoute: ((any Hashable) -> Void)?) -> (() -> Void)? {
+        guard let id else { return nil }
+        return { if let openDocument { openDocument(id) } else { pushRoute?(DocumentRoute(id: id)) } }
+    }
+}
+
+/// What a message row of a chat of a team shows above its text: the Library page that the message is about, else the
+/// message that it answers. A page goes first, because a message with a page answers no other message.
+enum TeamRowQuote: Equatable {
+    case page(TeamAboutPage)
+    /// The ID of the answered message.
+    case reply(String)
+
+    init?(message: TeamMessage?, pending: TeamPendingMessage?) {
+        if let page = message?.page ?? pending?.page { self = .page(page) }
+        else if let id = message?.replyTo ?? pending?.replyTo { self = .reply(id) }
+        else { return nil }
+    }
+}
+
+/// The composer of a chat of a team: the draft, and the reply, the Library page or the edit above the field. The view
+/// shows it, and each change goes through a function here.
+struct TeamComposerState: Equatable {
+    var draft = ""
+    /// The reply or the Library page that the composer quotes above its field.
+    var quote: TeamComposerQuote?
+    /// The sent message that the person edits. An edit shows no quote.
+    var editing: TeamMessage?
+
+    /// A reply takes the place of a page and of an edit.
+    mutating func reply(to message: TeamMessage) {
+        editing = nil
+        quote = .reply(message)
+    }
+
+    /// An edit takes the place of a reply and of a page. The draft is the text of the message.
+    mutating func edit(_ message: TeamMessage) {
+        quote = nil
+        editing = message
+        draft = message.text
+    }
+
+    /// "Chat about this page": the page takes the place of a reply and of an edit. An edit takes its draft with it.
+    mutating func ask(about page: TeamAboutPage) {
+        if editing != nil { cancelEdit() }
+        quote = .page(page)
+    }
+
+    mutating func cancelEdit() {
+        editing = nil
+        draft = ""
+    }
+
+    /// The cross of the quote: "Cancel reply" or "Remove the page".
+    mutating func removeQuote() { quote = nil }
+
+    /// The person can no longer write in the chat: the closed line takes the place of the composer, and the page goes.
+    mutating func close() {
+        if quote?.page != nil { quote = nil }
+    }
+
+    /// The chat removed a message: an edit or a reply of it goes.
+    mutating func removed(_ id: String) {
+        if editing?.id == id { cancelEdit() }
+        if quote?.reply?.id == id { quote = nil }
+    }
+
+    /// The store saved the new message: the draft and the quote go.
+    mutating func sent() {
+        draft = ""
+        quote = nil
+    }
 }
 
 /// What the composer of a chat of a team quotes above its field: a message that the person answers, or a Library page
@@ -397,6 +472,20 @@ extension TeamRooms {
         guard let team = document.team, let room = rooms.first(where: { $0.room == team.room }),
               let bot = room.directBot(document.botId) else { return nil }
         return TeamChatKey(room: room.room, bot: bot.id)
+    }
+}
+
+/// The chat that "Chat about this page" opens for a page of the Library: the chat of a bot of this Mac, or the direct
+/// chat with the team bot of a team page (TeamRooms.directChat). Nil for each other page, so its menu has no item.
+enum DocumentChatTarget: Equatable {
+    /// The ID of a bot of this Mac.
+    case bot(String)
+    case team(TeamChatKey)
+
+    init?(_ document: BotDocument, bots: [Bot], team: TeamRooms?) {
+        if bots.contains(where: { $0.id == document.botId }) { self = .bot(document.botId) }
+        else if let chat = team?.directChat(about: document) { self = .team(chat) }
+        else { return nil }
     }
 }
 
