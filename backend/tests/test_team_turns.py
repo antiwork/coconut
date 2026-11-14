@@ -370,14 +370,15 @@ class OutsideTests(TeamTurnMacs, unittest.TestCase):
         self.assertFalse(self.message(kind='edit', text='Changed.')['recorded'])
         self.assertFalse(self.message(kind='delete')['recorded'])
 
-    def test_the_raw_name_of_a_notice_outside_a_turn_shows_as_clear_words(self):
-        from coconut.hermes_notices import FAILED_TURN_NOTICE, NO_CREDENTIALS_TEXT
+    def test_the_raw_name_of_a_notice_outside_a_turn_shows_as_the_text_of_hermes(self):
+        from coconut.hermes_notices import NOTICES
+        failed = 'Your request was not processed. Send it again if you still want me to carry it out.'
         with self.assertLogs('coconut.hermes_notices', 'WARNING'):
-            answer = self.message(text=f'gateway.errors.no_credentials\n\n{FAILED_TURN_NOTICE}')
+            answer = self.message(text=f'gateway.errors.no_credentials\n\n{failed}')
         self.assertEqual(answer, {'recorded': True})
         self.sync()
         self.assertEqual([row for row in self.chat() if row[0] == 'Reporter'],
-                         [('Reporter', NO_CREDENTIALS_TEXT, None)])
+                         [('Reporter', f'{NOTICES["gateway.errors.no_credentials"]}\n\n{failed}', None)])
 
     def test_a_send_for_another_home_or_chat_is_refused_and_a_bot_without_its_chat_writes_nothing(self):
         other = self.home.parent / 'other'
