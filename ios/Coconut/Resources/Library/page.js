@@ -77,30 +77,35 @@
   // In a box that must not shrink (flex: none, a width of max-content), such a drawing makes the page too wide: a box
   // around it leaves the page column, at its right or, in a text from right to left, at its left, or the page scrolls
   // sideways. That drawing goes, and its chart asks for no room, as a chart in each other box that takes its width
-  // from its content. The check takes, for a drawing, how far the page scrolls sideways and how far a box around the
-  // drawing leaves the column at most. It hides each drawing with a number above zero, then shows them again one at
-  // a time: a drawing that makes its number larger goes. A page that is too wide without a drawing keeps it: a text
-  // makes the page wide, as in a table that becomes a list of records. A scroll of 1 px is a rounded number. A new
-  // size of the page column checks again. A page without such a drawing has no check.
+  // from its content. The check takes, for a drawing, the width of all that the page can scroll to, and how far a
+  // box around the drawing leaves the column at most. It hides each drawing of a page that scrolls sideways or with
+  // a box outside the column, then shows them again one at a time: a drawing that makes its number larger by more
+  // than 1 px goes. A page that is as wide without a drawing keeps it: a text makes the page wide, as in a table
+  // that becomes a list of records. A difference of 1 px is a rounded number. The check keeps the vertical scroll
+  // position: a page without its drawings can be shorter. A new size of the page column checks again. A page without
+  // such a drawing has no check.
   const tight = () => {
     const column = main.getBoundingClientRect();
     const page = document.scrollingElement;
-    const excess = (room) => {
-      let out = 0;
+    const overhang = (room) => {
+      let most = 0;
       for (let box = room.parentElement; box && box !== main; box = box.parentElement) {
         const at = box.getBoundingClientRect();
-        out = Math.max(out, column.left - at.left, at.right - column.right);
+        most = Math.max(most, column.left - at.left, at.right - column.right);
       }
-      const scroll = page.scrollWidth - page.clientWidth;
-      return out + (scroll > 1 ? scroll : 0);
+      return most;
     };
-    const wide = rooms.filter((room) => room.isConnected && excess(room) > 0.5);
-    for (const room of wide) room.style.display = "none";
-    for (const room of wide) {
-      const without = excess(room);
+    const size = (room) => overhang(room) + page.scrollWidth;
+    const sideways = page.scrollWidth - page.clientWidth > 1;
+    const suspects = rooms.filter((room) => room.isConnected && (sideways || overhang(room) > 0.5));
+    const scrolled = page.scrollTop;
+    for (const room of suspects) room.style.display = "none";
+    for (const room of suspects) {
+      const without = size(room);
       room.style.display = "";
-      if (excess(room) > without + 0.5) room.remove();
+      if (size(room) > without + 1) room.remove();
     }
+    if (page.scrollTop !== scrolled) page.scrollTop = scrolled;
   };
   if (rooms.length) {
     tight();

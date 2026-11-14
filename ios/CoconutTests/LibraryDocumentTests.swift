@@ -993,7 +993,7 @@ final class LibraryDocumentTests: XCTestCase {
     /// characters and "…". A text of more than 128 UTF-16 units counts as wider than each chart, and its cut keeps
     /// only whole characters that end inside its first 128 units, never the last of them. A chart has one plot: the
     /// first svg, in its own box right after the legend and before the caption, at the place of its figure and not
-    /// moved to a side, with the whole pixels of the layout width of the
+    /// moved to a side, under the legend and above the caption, with the whole pixels of the layout width of the
     /// figure. Only a chart of a table cell has an empty drawing, with no height; when it draws, it has one. No chart
     /// leaves the page column, at the right or at the left: a part at the left of the page does not scroll, so the
     /// check of the sideways scroll does not see it.
@@ -1063,6 +1063,11 @@ final class LibraryDocumentTests: XCTestCase {
               if (inner.left < outer.left - 1 || inner.right > outer.right + 1) {
                 faults.push(`the plot is not at the place of its figure: ${(inner.left - outer.left).toFixed(1)} px`);
               }
+              // The box of the plot has the height of the plot: the legend ends above it, the caption starts under it.
+              const above = legend && legend.getBoundingClientRect().bottom;
+              const under = caption && caption.getBoundingClientRect().top;
+              if (legend && above > inner.top + 1) faults.push("the legend is on the plot");
+              if (caption && under < inner.bottom - 1) faults.push("the caption is on the plot");
               if (caption && !(svg.compareDocumentPosition(caption) & Node.DOCUMENT_POSITION_FOLLOWING)) {
                 faults.push("the caption comes before the plot");
               }
@@ -2252,8 +2257,10 @@ final class LibraryDocumentTests: XCTestCase {
         }
         // Each page has one box that must not shrink: two tables in it (each holds the box wide for the other one),
         // the same from right to left, the box in a table cell, a table in a table next to a note, the box next to
-        // a second box that must not shrink, and the box in a box that cuts its content (the page does not scroll
-        // there, but the table leaves the page column). No chart has a plot, and the page does not scroll sideways.
+        // a second box that must not shrink, the box in a box that cuts its content (the page does not scroll
+        // there, but the table leaves the page column), and the box in a table cell in a box that cuts its content
+        // (only the box leaves the column, the table does not). No chart has a plot, and the page does not scroll
+        // sideways.
         let only = "<table><tr><td>\(chart)</td></tr></table>"
         // A flex item that does not shrink, with more items after it.
         let fixed = { (content: String, more: String) in
@@ -2266,6 +2273,8 @@ final class LibraryDocumentTests: XCTestCase {
             fixed("<table><tr><td>\(only)</td><td>Note</td></tr></table>", ""),
             fixed(only, "<div style=\"flex: none; width: 120px\">Side</div>"),
             "<div style=\"overflow: hidden\">" + fixed(table, "") + "</div>",
+            "<div style=\"overflow: hidden\"><table><tr><td>North region</td><td>" + fixed(chart, "")
+                + "</td></tr></table></div>",
         ]
         for (index, box) in boxes.enumerated() {
             for width: CGFloat in [390, 744] {
@@ -2519,6 +2528,32 @@ final class LibraryDocumentTests: XCTestCase {
         }
     }
 
+    /// The box of the plot has no look of its own. A page with a style for each div, for each child of a figure or
+    /// for each div in a figure does not change the size or the place of a plot, in the page column and in a table.
+    @MainActor
+    func testAPageStyleForEachDivDoesNotChangeThePlot() async throws {
+        let rows = ["Mon", "Tue", "Wed"].enumerated().map { #"{"x": "\#($1)", "y": \#($0 + 3)}"# }
+            .joined(separator: ", ")
+        let chart = Self.figure(
+            #"{"type": "bar", "x": "x", "y": "y", "title": "Orders in each region", "data": [\#(rows)]}"#)
+        let styles = [
+            "div { padding: 8px; margin: 8px; border: 1px solid; }",
+            "div { max-width: 300px; height: 120px; float: left; }",
+            "figure > * { padding: 6px; max-width: 80%; }",
+            "figure div { padding: 4px 8px; margin: 0 auto; }",
+        ]
+        for style in styles {
+            let html = "<style>\(style)</style><p>Lead.</p>\(chart)"
+                + "<table><tr><td>North region</td><td>\(chart)</td></tr></table>"
+            for width: CGFloat in [390, 744] {
+                let (view, window) = try await loadPage(html, width: width, markdown: false)
+                defer { close(window) }
+                let faults = try await labelFaults(in: view, formats: [nil, nil])
+                XCTAssertEqual(faults, ["", ""], "\(style) at \(Int(width)) px")
+            }
+        }
+    }
+
     /// A chart stays at the place of its figure where a box aligns its content: in a column of numbers (the page
     /// aligns each cell of it at the right), next to a number in one cell, in a cell and in a box that center their
     /// content, and in a page that makes each figure a centered flex column. In a table cell the chart keeps its
@@ -2555,11 +2590,16 @@ final class LibraryDocumentTests: XCTestCase {
     @MainActor
     func testEachChartDrawsOneTime() async throws {
         let chart = Self.figure(Self.spec("bar", ["A", "B", "C"]))
+        // The chart of the flex row has series names above its plot. They are short, so the row fits a phone.
+        let series = ["Mon", "Tue", "Wed"].flatMap { day in
+            ["North", "South"].map { #"{"x": "\#(day)", "y": 3, "s": "\#($0)"}"# }
+        }.joined(separator: ", ")
+        let named = Self.figure(#"{"type": "bar", "x": "x", "y": "y", "series": "s", "data": [\#(series)]}"#)
         let html = """
             <p>Lead.</p>
             <table><tr><td>North region</td><td>\(chart)</td></tr></table>
             <div style="display: grid; grid-template-columns: auto auto">\(chart)\(chart)</div>
-            <div style="width: max-content; display: flex; gap: 8px">\(chart)<span>A note about the week</span></div>
+            <div style="width: max-content; display: flex; gap: 8px">\(named)<span>A note about the week</span></div>
             <div style="width: max-content"><table><tr><td>North region</td><td>\(chart)</td></tr></table></div>
             \(chart)
             """

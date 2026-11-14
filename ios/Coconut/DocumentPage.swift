@@ -271,8 +271,12 @@ struct DocumentPage {
     figure.chart[data-spec] { min-width: 0; width: 100%; white-space: normal; }
     /* The box of the plot has the width of its figure and no content width. So a drawn plot never changes the width
        of a box around its chart: a table column, a grid column with the width auto, a flex row of content width. The
-       caption and the series names still give their width to a box that takes its width from its content. */
-    figure.chart[data-spec] .plot-box { contain: inline-size; width: 100%; }
+       caption and the series names still give their width to a box that takes its width from its content. The box
+       has no look of its own (all: unset), also in a page with a style for each div or for each child of a figure.
+       The empty drawing of a table cell has no float, margin, border or padding from such a page. */
+    figure.chart[data-spec] .plot-box { all: unset; box-sizing: border-box; display: block; contain: inline-size;
+                                        width: 100%; }
+    figure.chart[data-spec] > svg[aria-hidden] { float: none; margin: 0; border: 0; padding: 0; }
     figure.chart[data-spec] svg { direction: ltr; }
     figure.chart[data-spec] svg text { font-variant-numeric: tabular-nums; }
     figure.chart[data-spec] svg { max-width: 100%; }
