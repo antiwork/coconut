@@ -13,6 +13,7 @@ from unittest.mock import patch
 from uuid import uuid4
 
 from coconut import gateway_bridge, gateway_chat, gateway_plugin
+from coconut.hermes_notices import NOTICES, readable_text
 from coconut.gateway_bridge import GatewayBridge, TurnEvents, plain_chat_turn
 from coconut.service import Service, ServiceError
 from test_service import ControlledProvider
@@ -185,6 +186,54 @@ class WorkTurnRuleTests(unittest.TestCase):
                 self.assertFalse(gateway_work_turn(dict(audit, **{key: 'x'})))
 
 
+# The row of Hermes that closes a failed turn (agent/turn_failure_copy.py, FAILED_TURN_NOTICE).
+FAILED_TURN_ROW = 'Your request was not processed. Send it again if you still want me to carry it out.'
+SIGN_IN = NOTICES['gateway.errors.no_credentials']
+BUBBLE = f'gateway.errors.no_credentials\n\n{FAILED_TURN_ROW}'
+
+
+class HermesNoticeTests(unittest.TestCase):
+    """The chat shows the text of Hermes in place of the raw name of a sign-in notice (hermes_notices.readable_text)."""
+
+    def test_the_bubble_of_the_report_shows_the_text_of_hermes_and_keeps_the_rest(self):
+        with self.assertLogs('coconut.hermes_notices', 'WARNING') as logs:
+            self.assertEqual(readable_text(BUBBLE), f'{SIGN_IN}\n\n{FAILED_TURN_ROW}')
+        # The log line names the notice and the cure, and holds no other text of the message.
+        self.assertEqual(len(logs.output), 1)
+        self.assertIn('gateway.errors.no_credentials', logs.output[0])
+        self.assertIn('restart of the Hermes gateway can load', logs.output[0])
+        self.assertNotIn('processed', logs.output[0])
+        self.assertEqual(SIGN_IN, "\u26a0\ufe0f I couldn't connect to the AI model service, so this message wasn't "
+                                  "processed. On the Mac of this agent, run `hermes doctor` to see the cause. The "
+                                  "agent can need a new sign-in for its model, or a different model.")
+
+    def test_a_name_alone_or_with_spaces_around_it_becomes_the_text_of_hermes(self):
+        background = NOTICES['gateway.background.no_credentials']
+        self.assertEqual(background, "\u274c The background task couldn't start because no AI model sign-in is "
+                                     "configured. On the Mac of this agent, run `hermes doctor` to see the cause.")
+        # The spaces and the line break around the name go with it. The break before the next paragraph stays.
+        cases = {'gateway.errors.no_credentials': SIGN_IN,
+                 '  gateway.errors.no_credentials\n': SIGN_IN,
+                 ' gateway.errors.no_credentials \n\nMore.\n': f'{SIGN_IN}\n\nMore.\n',
+                 'gateway.background.no_credentials': background}
+        for text, shown in cases.items():
+            with self.subTest(text=text), self.assertLogs('coconut.hermes_notices', 'WARNING'):
+                self.assertEqual(readable_text(text), shown)
+
+    def test_each_other_text_comes_back_as_the_same_object(self):
+        texts = [
+            'The chat showed:\n\ngateway.errors.no_credentials',
+            'The log shows gateway.errors.no_credentials once.',
+            '`gateway.errors.no_credentials`',
+            '```\ngateway.errors.no_credentials\n```',
+            'gateway.errors.no_credentials.', '"gateway.errors.no_credentials"', 'Gateway.Errors.No_Credentials',
+            'gateway.errors.generic_failed', 'gateway.streaming.enabled', 'platform.openai.com', 'report.pdf',
+            FAILED_TURN_ROW, '']
+        for text in texts:
+            with self.subTest(text=text):
+                self.assertIs(readable_text(text), text)
+
+
 class TurnEventTests(unittest.TestCase):
     def translate(self, *events, silent=False, commentary=None):
         emitted = []
@@ -278,6 +327,31 @@ class TurnEventTests(unittest.TestCase):
             ('interim_seal', {}), ('text_delta', {'text': segments[2]}),
             ('completed', {'summary': 'Complete.'})])
         self.assertEqual(done, [False] * 4 + [True])
+
+    def test_the_raw_name_of_a_notice_shows_as_the_text_of_hermes_in_a_send_and_an_edit(self):
+        shown = f'{SIGN_IN}\n\n{FAILED_TURN_ROW}'
+        with self.assertLogs('coconut.hermes_notices', 'WARNING'):
+            emitted, _ = self.translate({'kind': 'send', 'message_id': 't:1', 'text': BUBBLE},
+                                        {'kind': 'send', 'message_id': 't:2', 'text': BUBBLE},
+                                        {'kind': 'done', 'outcome': 'failure'}, commentary=True)
+        # A repeated send of the same notice adds no second message.
+        self.assertEqual(emitted, [('phase', {'phase': 'writing'}), ('text_delta', {'text': shown}),
+                                   ('failed', {'summary': 'The Hermes gateway could not finish this turn.'})])
+        with self.assertLogs('coconut.hermes_notices', 'WARNING'):
+            emitted, _ = self.translate({'kind': 'send', 'message_id': 't:1', 'text': 'Working on it.'},
+                                        {'kind': 'edit', 'message_id': 't:1', 'text': BUBBLE},
+                                        {'kind': 'edit', 'message_id': 't:1', 'text': ' ' + BUBBLE},
+                                        {'kind': 'done', 'outcome': 'failure'}, commentary=True)
+        # The second edit gives the same text in the chat, so it changes nothing.
+        self.assertEqual(emitted[1:3], [('text_delta', {'text': 'Working on it.'}),
+                                        ('text_delta', {'text': shown, 'replace': True})])
+        self.assertEqual(emitted[3][0], 'failed')
+
+    def test_an_interim_send_of_a_raw_name_shows_the_new_text_as_an_interim_message(self):
+        with self.assertLogs('coconut.hermes_notices', 'WARNING'):
+            emitted, _ = self.translate({'kind': 'send', 'message_id': 'c:1', 'text': 'gateway.errors.no_credentials',
+                                         'interim': True}, commentary=True)
+        self.assertEqual(emitted, [('phase', {'phase': 'writing'}), ('interim_message', {'text': SIGN_IN})])
 
     def test_a_question_event_asks_for_a_card(self):
         emitted, done = self.translate({'kind': 'question', 'question_id': 'q', 'question_kind': 'ask', 'text': 'Which?',
@@ -2654,6 +2728,20 @@ class OutsideTurnTests(unittest.TestCase):
         # The preview shows the message of the person, although the earlier reply has the same text.
         self.message('edit', 'outside:1', 'The build finished.')
         self.assertEqual(self.bot_row()[0], 'Done.')
+
+    def test_the_raw_name_of_a_notice_outside_a_turn_shows_as_the_text_of_hermes(self):
+        with self.assertLogs('coconut.hermes_notices', 'WARNING'):
+            answer = self.message(text='gateway.background.no_credentials')
+        self.assertTrue(answer['recorded'])
+        with self.service.lock:
+            task = self.service._get('tasks', answer['task_id'])
+        background = NOTICES['gateway.background.no_credentials']
+        self.assertEqual(self.chat(), [(background, task['id'], False)])
+        self.assertNotIn('no_credentials', task['title'])
+        # An edit to a raw name shows the text of Hermes too.
+        with self.assertLogs('coconut.hermes_notices', 'WARNING'):
+            self.message('edit', 'outside:1', BUBBLE)
+        self.assertEqual(self.chat()[0][0], f'{SIGN_IN}\n\n{FAILED_TURN_ROW}')
 
     def test_a_cron_delivery_of_a_run_that_the_chat_shows_is_dropped(self):
         self.assertTrue(self.message(job_id='intake')['recorded'])
