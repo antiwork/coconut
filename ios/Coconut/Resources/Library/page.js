@@ -74,20 +74,38 @@
     figure.append(room);
     return room;
   });
-  // In a box that must not shrink (flex: none, a width of max-content), a table with such a drawing is wider than the
-  // page. Its charts then ask for no room, as a chart in each other box that takes its width from its content. A new
-  // width of the page checks again: a chart that drew before goes with its room, because a drawn plot asks for its
-  // own width.
+  // In a box that must not shrink (flex: none, a width of max-content), such a drawing makes the page too wide: a box
+  // around it leaves the page column, at its right or, in a text from right to left, at its left, or the page scrolls
+  // sideways. That drawing goes, and its chart asks for no room, as a chart in each other box that takes its width
+  // from its content. The check takes, for a drawing, how far the page scrolls sideways and how far a box around the
+  // drawing leaves the column at most. It hides each drawing with a number above zero, then shows them again one at
+  // a time: a drawing that makes its number larger goes. A page that is too wide without a drawing keeps it: a text
+  // makes the page wide, as in a table that becomes a list of records. A scroll of 1 px is a rounded number. A new
+  // size of the page column checks again. A page without such a drawing has no check.
   const tight = () => {
-    const edge = main.getBoundingClientRect().right + 0.5;
-    for (const room of rooms) {
-      if (!room.isConnected || room.closest("table").getBoundingClientRect().right <= edge) continue;
-      room.parentElement.querySelector("svg.plot")?.remove();
-      room.remove();
+    const column = main.getBoundingClientRect();
+    const page = document.scrollingElement;
+    const excess = (room) => {
+      let out = 0;
+      for (let box = room.parentElement; box && box !== main; box = box.parentElement) {
+        const at = box.getBoundingClientRect();
+        out = Math.max(out, column.left - at.left, at.right - column.right);
+      }
+      const scroll = page.scrollWidth - page.clientWidth;
+      return out + (scroll > 1 ? scroll : 0);
+    };
+    const wide = rooms.filter((room) => room.isConnected && excess(room) > 0.5);
+    for (const room of wide) room.style.display = "none";
+    for (const room of wide) {
+      const without = excess(room);
+      room.style.display = "";
+      if (excess(room) > without + 0.5) room.remove();
     }
   };
-  tight();
-  new ResizeObserver(tight).observe(main);
+  if (rooms.length) {
+    tight();
+    new ResizeObserver(tight).observe(main);
+  }
 
   // A number: a sign, a currency sign, the digits 0 to 9 with separators, then a percent sign or one letter such as k
   // or M. A unit can follow after a space: at most 16 characters and no digit. "1,552 steps", "$41,200", "87%", "-3",
@@ -335,8 +353,13 @@
   // than 128 characters counts as wider than each chart.
   const segmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" });
   // The width of a chart: the whole pixels of the layout width of its figure. clientWidth rounds to the nearest pixel:
-  // an svg that is wider than its figure shrinks, and its texts change. A figure that does not show has no width.
-  const chartWidth = (figure) => figure.clientWidth && Math.floor(parseFloat(getComputedStyle(figure).width));
+  // an svg that is wider than its figure shrinks, and its texts change. A figure that does not show has no width. A
+  // figure in a vertical text has none too: its width there comes from its content, so a chart would make it wider
+  // with each draw.
+  const chartWidth = (figure) => {
+    const style = getComputedStyle(figure);
+    return figure.clientWidth && style.writingMode === "horizontal-tb" ? Math.floor(parseFloat(style.width)) : 0;
+  };
   const drawChart = (figure, spec, data, kind, width) => {
     figure.querySelector("svg.plot")?.remove();
     if (!width) return;
@@ -396,7 +419,7 @@
     // The svg of Plot centers each text (text-anchor middle). A label starts at its x.
     labels.setAttribute("text-anchor", "start");
     svg.append(labels);
-    figure.querySelector(".legend") ? figure.querySelector(".legend").after(svg) : figure.prepend(svg);
+    figure.querySelector(":scope > .plot-box").append(svg);
     // The points are in the order of the x axis: a band and a scale of names keep the order of the data, and the data
     // of a scale of numbers or dates is in the order of x. A value without a place (an x that is not finite) has no
     // point. Each point has one text in the place where a label shows, and its measure is the width of its box: the
@@ -464,6 +487,11 @@
       }));
       // A line and an area go in the order of x.
       if (spec.type !== "bar" && spec.type && kind !== "text") data.sort((a, b) => a.x - b.x);
+      // The box of the plot. It has no content width (the stylesheet): a drawn plot never changes the width of a box
+      // around its chart, so no chart draws again because it drew.
+      const box = document.createElement("div");
+      box.className = "plot-box";
+      figure.prepend(box);
       // One line above the plot: a round dot in the color of each series and its name.
       if (spec.series) {
         const legend = document.createElement("div");

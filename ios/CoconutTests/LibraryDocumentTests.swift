@@ -540,7 +540,7 @@ final class LibraryDocumentTests: XCTestCase {
     /// A page with each table form of page.js: metrics, a table with one row of text, a table with one long cell, a
     /// short table, a wide table with a short last column, a wide table with a long last column, and a wide table of
     /// two columns.
-    static let tablePage = """
+    private static let tablePage = """
     Lead.
 
     | Steps | Revenue | Refund rate | Change | Visits |
@@ -992,8 +992,11 @@ final class LibraryDocumentTests: XCTestCase {
     /// Only the first label can be cut: when its text is wider than the whole chart, it keeps the most whole
     /// characters and "…". A text of more than 128 UTF-16 units counts as wider than each chart, and its cut keeps
     /// only whole characters that end inside its first 128 units, never the last of them. A chart has one plot: the
-    /// first svg, right after the legend and before the caption, with the whole pixels of the layout width of the
-    /// figure. Only a chart of a table cell has an empty drawing, with no height; when it draws, it has one.
+    /// first svg, in its own box right after the legend and before the caption, at the place of its figure and not
+    /// moved to a side, with the whole pixels of the layout width of the
+    /// figure. Only a chart of a table cell has an empty drawing, with no height; when it draws, it has one. No chart
+    /// leaves the page column, at the right or at the left: a part at the left of the page does not scroll, so the
+    /// check of the sideways scroll does not see it.
     private static let labelRule = #"""
         const labelRule = (formats) => {
           // A drawn box is up to 0.03 px wider than its measure. A scaled svg draws each text narrower than its measure,
@@ -1020,9 +1023,14 @@ final class LibraryDocumentTests: XCTestCase {
           };
           const scroller = document.scrollingElement;
           const sideways = scroller.scrollWidth > scroller.clientWidth;
+          const column = document.querySelector("main").getBoundingClientRect();
           return [...document.querySelectorAll("figure.chart[data-spec]")].map((figure, index) => {
             if (figure.classList.contains("broken")) return "broken";
             const faults = sideways ? ["the page scrolls sideways"] : [];
+            const place = figure.getBoundingClientRect();
+            if (place.width && (place.left < column.left - tolerance || place.right > column.right + tolerance)) {
+              faults.push("the chart leaves the page column");
+            }
             // The empty drawing stands only in a chart of a table cell, and it has no height. A chart of a table cell
             // that draws has one.
             const rooms = [...figure.querySelectorAll(':scope > svg[aria-hidden="true"]')];
@@ -1044,7 +1052,17 @@ final class LibraryDocumentTests: XCTestCase {
               const legend = figure.querySelector(":scope > .legend");
               const caption = figure.querySelector(":scope > figcaption");
               if (figure.querySelector("svg") !== svg) faults.push("the plot is not the first svg");
-              if (legend && legend.nextElementSibling !== svg) faults.push("the plot is not right after the legend");
+              // The plot stands in its own box, a child of the figure, at the place of the figure: not moved to
+              // a side, also where a cell or a page style aligns its content.
+              const frame = svg.parentElement;
+              if (!frame.matches(".plot-box") || frame.parentElement !== figure) {
+                faults.push("the plot is not in its box");
+              }
+              if (legend && legend.nextElementSibling !== frame) faults.push("the plot is not right after the legend");
+              const outer = figure.getBoundingClientRect(), inner = svg.getBoundingClientRect();
+              if (inner.left < outer.left - 1 || inner.right > outer.right + 1) {
+                faults.push(`the plot is not at the place of its figure: ${(inner.left - outer.left).toFixed(1)} px`);
+              }
               if (caption && !(svg.compareDocumentPosition(caption) & Node.DOCUMENT_POSITION_FOLLOWING)) {
                 faults.push("the caption comes before the plot");
               }
@@ -1271,7 +1289,8 @@ final class LibraryDocumentTests: XCTestCase {
         // plot.
         let order = try await probe(view, """
             return [...document.querySelectorAll("figure.chart")].map((figure) => [...figure.children].map((child) =>
-              child.matches(".legend") ? "legend" : child.matches("svg.plot") ? "plot"
+              child.matches(".legend") ? "legend"
+                : child.matches(".plot-box") && child.querySelector("svg.plot") ? "plot"
                 : child.matches("svg[aria-hidden='true']") ? "room" : child.tagName.toLowerCase()).join(",")).join(" | ");
             """)
         XCTAssertEqual(order, "legend,plot,figcaption | legend,plot,room,figcaption")
@@ -2202,8 +2221,9 @@ final class LibraryDocumentTests: XCTestCase {
 
     /// A table with a name and a chart in a box that must not shrink is wider than the page with the room of its
     /// chart, so it loses that room: the chart has no plot, and the page does not scroll sideways. A table of only a
-    /// chart fits at 744 px and draws; at 390 px it loses its room and its plot. A table in an inline block and a table of auto width keep the room: the chart
-    /// draws, and the page does not scroll sideways.
+    /// chart fits at 744 px and draws; at 390 px it loses its room and its plot. The same holds in a text from right
+    /// to left, where the table is too wide at its left. A table in an inline block and a table of auto width keep
+    /// the room: the chart draws, and the page does not scroll sideways.
     @MainActor
     func testAChartInATableTakesTheRoomThatThePageGives() async throws {
         let chart = Self.figure(Self.spec("bar", (1...12).map(String.init), text: false))
@@ -2217,6 +2237,84 @@ final class LibraryDocumentTests: XCTestCase {
         defer { close(narrowWindow) }
         let rigidFaults = try await labelFaults(in: narrow, formats: [nil, nil])
         XCTAssertEqual(rigidFaults, ["no width", "no width"])
+        // In a text from right to left such a table is too wide at its left, where the page does not scroll.
+        let reversed = """
+            <p>Lead.</p>
+            <div dir="rtl" style="display: flex"><div style="flex: none">\(table)</div></div>
+            <div dir="rtl" style="width: max-content">\(table)</div>
+            <div dir="rtl"><table><tr><td>North region</td><td>\(chart)</td></tr></table></div>
+            """
+        for width: CGFloat in [390, 744] {
+            let (view, window) = try await loadPage(reversed, width: width, markdown: false)
+            defer { close(window) }
+            let faults = try await labelFaults(in: view, formats: [nil, nil, nil])
+            XCTAssertEqual(faults, ["no width", "no width", ""], "from right to left at \(Int(width)) px")
+        }
+        // Each page has one box that must not shrink: two tables in it (each holds the box wide for the other one),
+        // the same from right to left, the box in a table cell, a table in a table next to a note, the box next to
+        // a second box that must not shrink, and the box in a box that cuts its content (the page does not scroll
+        // there, but the table leaves the page column). No chart has a plot, and the page does not scroll sideways.
+        let only = "<table><tr><td>\(chart)</td></tr></table>"
+        // A flex item that does not shrink, with more items after it.
+        let fixed = { (content: String, more: String) in
+            "<div style=\"display: flex\"><div style=\"flex: none\">\(content)</div>\(more)</div>"
+        }
+        let boxes = [
+            fixed(table + table, ""),
+            "<div dir=\"rtl\">" + fixed(table + table, "") + "</div>",
+            "<table><tr><td>North region</td><td>" + fixed(chart, "") + "</td></tr></table>",
+            fixed("<table><tr><td>\(only)</td><td>Note</td></tr></table>", ""),
+            fixed(only, "<div style=\"flex: none; width: 120px\">Side</div>"),
+            "<div style=\"overflow: hidden\">" + fixed(table, "") + "</div>",
+        ]
+        for (index, box) in boxes.enumerated() {
+            for width: CGFloat in [390, 744] {
+                let (view, window) = try await loadPage("<p>Lead.</p>" + box, width: width, markdown: false)
+                defer { close(window) }
+                let faults = try await labelFaults(in: view, formats: index < 2 ? [nil, nil] : [nil])
+                XCTAssertEqual(faults, Array(repeating: "no width", count: index < 2 ? 2 : 1),
+                               "box \(index + 1) at \(Int(width)) px")
+            }
+        }
+        // A table in a box that must not shrink takes no room from a table next to it: the first chart has no plot,
+        // and the two charts of the second table draw with their empty drawings.
+        let rows = "<tr><td>North region</td><td>1,204</td><td>\(chart)</td></tr>"
+            + "<tr><td>South region</td><td>980</td><td>\(chart)</td></tr>"
+        let pair = "<p>Lead.</p><div>" + fixed(table, "") + "<table>\(rows)</table></div>"
+        // A thing that hangs 12 px over a chart cell is no reason to take the room of its chart away.
+        let badge = "<span style=\"position: absolute; top: 0; right: -12px\">new</span>"
+        let cells = "<tr><td>North region</td><td style=\"position: relative\">\(chart)\(badge)</td></tr>"
+        let hang = "<p>Lead.</p><table>\(cells)</table><table style=\"width: auto\">\(cells)</table>"
+        // A box without a box of its own (display: contents) around the box that must not shrink.
+        let bare = "<p>Lead.</p><div style=\"display: contents\">" + fixed(table, "") + "</div>"
+        for width: CGFloat in [390, 744] {
+            for (page, expected) in [(pair, ["no width", "", ""]), (hang, ["", ""]), (bare, ["no width"])] {
+                let (view, window) = try await loadPage(page, width: width, markdown: false)
+                defer { close(window) }
+                let faults = try await labelFaults(in: view, formats: Array(repeating: nil, count: expected.count))
+                XCTAssertEqual(faults, expected, "at \(Int(width)) px")
+            }
+        }
+        // A table with a width of 500 px from its page is wider than a phone with and without its chart: the chart
+        // keeps its empty drawing and draws.
+        let wideTable = "<p>Lead.</p><table style=\"width: 500px\"><tr><td>North region</td><td>\(chart)</td></tr></table>"
+        let (fixedView, fixedWindow) = try await loadPage(wideTable, width: 390, markdown: false)
+        defer { close(fixedWindow) }
+        let kept = try await string(fixedView, "[document.querySelectorAll('figure.chart svg.plot').length, "
+            + "document.querySelectorAll('figure.chart > svg[aria-hidden]').length].join(' ')")
+        XCTAssertEqual(kept, "1 1", "the plot and the empty drawing of a chart in a table of 500 px, at 390 px")
+        // A table and a chart outside a table in one box that must not shrink: at 744 px both charts draw, and at
+        // 390 px both go. The drawn plot outside the table does not hold the box wide.
+        let mixed = "<p>Lead.</p>" + fixed(only + chart, "")
+        let (both, bothWindow) = try await loadPage(mixed, width: 744, markdown: false)
+        defer { close(bothWindow) }
+        let bothFaults = try await labelFaults(in: both, formats: [nil, nil])
+        XCTAssertEqual(bothFaults, ["", ""], "a table and a chart in a flex item that does not shrink, at 744 px")
+        both.frame.size.width = 390
+        let gone = "[document.querySelectorAll('figure.chart svg.plot, figure.chart svg[aria-hidden]').length, "
+            + "document.scrollingElement.scrollWidth - document.scrollingElement.clientWidth].join(' ')"
+        let bothNarrow = try await answer(of: gone, in: both, once: "0 0")
+        XCTAssertEqual(bothNarrow, "0 0", "plots and empty drawings, and the sideways scroll, at 390 px")
         let alone = "<p>Lead.</p><div style=\"display: flex\"><div style=\"flex: none\"><table><tr><td>\(chart)</td></tr>"
             + "</table></div></div>"
         let (wide, wideWindow) = try await loadPage(alone, width: 744, markdown: false)
@@ -2248,6 +2346,148 @@ final class LibraryDocumentTests: XCTestCase {
         }
     }
 
+    /// A table that is too wide for a phone because of its text is a list of records, and its charts keep their
+    /// room. So a table with charts looks the same after a narrow page as after a fresh load: at 744 px, at 390 px
+    /// and at 744 px again, each chart has its empty drawing and the plot of its layout width, and the widths at
+    /// 744 px are the same both times.
+    @MainActor
+    func testAChartInATableKeepsItsRoomThroughAListOfRecords() async throws {
+        let chart = Self.figure(Self.spec("line", Self.days(from: "2026-10-01", count: 8, step: 7)))
+        let row = { (name: String) in
+            "<tr><td>\(name)</td><td>1,200</td><td>12</td><td>$41,200</td><td>18,400</td><td>\(chart)</td></tr>"
+        }
+        let html = """
+            <p>Lead.</p>
+            <table><tr><th>Region</th><th>Orders</th><th>Refunds</th><th>Revenue</th><th>Visits</th><th>Trend</th></tr>
+            \(row("North region"))\(row("South region"))</table>
+            <table><tr><td>https://example.com/reports/2026/october/weekly-summary-1</td><td>\(chart)</td></tr></table>
+            """
+        // The view is higher than the page, so no scroll bar changes the width of the page between the steps.
+        let (view, window) = try await loadPage(html, width: 744, height: 2000, markdown: false)
+        defer { close(window) }
+        let state = """
+            [...document.querySelectorAll("main table")].map((table) => table.classList.contains("records")
+              ? "records" : "table").join(" ") + " | " + [...document.querySelectorAll("figure.chart")].map((figure) =>
+              [figure.querySelector("svg.plot")?.getAttribute("width"),
+                figure.querySelectorAll(":scope > svg[aria-hidden='true']").length].join(",")).join(" ")
+            """
+        let formats: [String?] = ["%b %-d", "%b %-d", "%b %-d"]
+        let first = try await string(view, state)
+        XCTAssertEqual(first?.hasPrefix("table table | "), true, first ?? "")
+        let firstFaults = try await labelFaults(in: view, formats: formats)
+        XCTAssertEqual(firstFaults, ["", "", ""], "at 744 px")
+        view.frame.size.width = 390
+        let records = "document.querySelectorAll('main table.records').length"
+        let narrowForms = try await answer(of: records, in: view, once: "2")
+        XCTAssertEqual(narrowForms, "2", "tables that are a list of records at 390 px")
+        try await chartsAtRest(view)
+        let narrowFaults = try await labelFaults(in: view, formats: formats)
+        XCTAssertEqual(narrowFaults, ["", "", ""], "at 390 px")
+        view.frame.size.width = 744
+        let again = try await answer(of: state, in: view, once: first ?? "")
+        XCTAssertEqual(again, first, "at 744 px again")
+        let againFaults = try await labelFaults(in: view, formats: formats)
+        XCTAssertEqual(againFaults, ["", "", ""], "at 744 px again")
+    }
+
+    /// In a text from right to left a chart stays in its box: in the page column, in a table row with two charts, in
+    /// a flex row, and in a grid with columns of the width auto.
+    @MainActor
+    func testAChartInATextFromRightToLeftStaysInItsBox() async throws {
+        let chart = Self.figure(Self.spec("bar", ["A", "B", "C"]))
+        let html = """
+            <p>Lead.</p>
+            <div dir="rtl">\(chart)</div>
+            <div dir="rtl"><table><tr><td>\(chart)</td><td>\(chart)</td></tr></table></div>
+            <div dir="rtl" style="display: flex; gap: 8px">\(chart)\(chart)</div>
+            <div dir="rtl" style="display: grid; grid-template-columns: auto auto">\(chart)\(chart)</div>
+            """
+        for width: CGFloat in [390, 744] {
+            let (view, window) = try await loadPage(html, width: width, markdown: false)
+            defer { close(window) }
+            let faults = try await labelFaults(in: view, formats: Array(repeating: nil, count: 7))
+            XCTAssertEqual(faults, Array(repeating: "", count: 7), "at \(Int(width)) px")
+            // Each plot starts and ends where its figure does.
+            let inside = try await probe(view, """
+                return [...document.querySelectorAll("figure.chart")].every((figure) => {
+                  const box = figure.getBoundingClientRect();
+                  const plot = figure.querySelector("svg.plot").getBoundingClientRect();
+                  return plot.left >= box.left - 1 && plot.right <= box.right + 1;
+                });
+                """)
+            XCTAssertEqual(inside, "true", "at \(Int(width)) px")
+        }
+    }
+
+    /// In a text that runs from top to bottom the width of a figure comes from its content, so a chart there has no
+    /// plot: in a box, in a table in that box, and in a table cell. The page does not scroll sideways, and it is at
+    /// rest.
+    @MainActor
+    func testAChartInATextFromTopToBottomHasNoPlot() async throws {
+        let rows = ["Mon", "Tue", "Wed"].enumerated().map { #"{"x": "\#($1)", "y": \#($0 + 3)}"# }
+            .joined(separator: ", ")
+        let titled = Self.figure(
+            #"{"type": "bar", "x": "x", "y": "y", "title": "Orders in each region", "data": [\#(rows)]}"#)
+        let chart = Self.figure(Self.spec("bar", ["A", "B", "C"]))
+        let html = """
+            <p>Lead.</p>
+            <div style="writing-mode: vertical-rl">\(titled)</div>
+            <div style="writing-mode: vertical-rl"><table><tr><td>North region</td><td>\(titled)</td></tr></table></div>
+            <table><tr><td style="writing-mode: vertical-rl">\(chart)</td></tr></table>
+            """
+        let state = """
+            [document.querySelectorAll("figure.chart svg.plot").length,
+              document.scrollingElement.scrollWidth - document.scrollingElement.clientWidth,
+              Math.round(document.querySelector("main").getBoundingClientRect().height)].join(" ")
+            """
+        for width: CGFloat in [390, 744] {
+            let (view, window) = try await loadPage(html, width: width, markdown: false)
+            defer { close(window) }
+            let first = try await string(view, state)
+            XCTAssertEqual(first?.hasPrefix("0 0 "), true,
+                           "plots and the sideways scroll at \(Int(width)) px: \(first ?? "")")
+            try await Task.sleep(for: .seconds(1))
+            let later = try await string(view, state)
+            XCTAssertEqual(later, first, "the page is at rest at \(Int(width)) px")
+        }
+    }
+
+    /// A chart with a caption or a line of series names in a box that takes its width from its content has the
+    /// width of that text, and it draws: an inline block, a float, and a flex item that does not grow or shrink. The
+    /// text does not wrap into a column of letters.
+    @MainActor
+    func testAChartWithACaptionInABoxOfContentWidthDraws() async throws {
+        let rows = ["Mon", "Tue", "Wed"].enumerated().map { #"{"x": "\#($1)", "y": \#($0 + 3)}"# }
+            .joined(separator: ", ")
+        let titled = Self.figure(
+            #"{"type": "bar", "x": "x", "y": "y", "title": "Orders in each region", "data": [\#(rows)]}"#)
+        let series = ["Mon", "Tue", "Wed"].flatMap { day in
+            ["Online orders", "Store orders"].map { #"{"x": "\#(day)", "y": 3, "s": "\#($0)"}"# }
+        }.joined(separator: ", ")
+        let named = Self.figure(#"{"type": "bar", "x": "x", "y": "y", "series": "s", "data": [\#(series)]}"#)
+        let html = """
+            <p>Lead.</p>
+            <div><span style="display: inline-block">\(titled)</span></div>
+            <div><span style="display: inline-block">\(named)</span></div>
+            <div style="float: left">\(titled)</div><div style="clear: both"></div>
+            <div style="display: flex"><div style="flex: none">\(named)</div></div>
+            """
+        for width: CGFloat in [390, 744] {
+            let (view, window) = try await loadPage(html, width: width, markdown: false)
+            defer { close(window) }
+            let faults = try await labelFaults(in: view, formats: [nil, nil, nil, nil])
+            XCTAssertEqual(faults, ["", "", "", ""], "at \(Int(width)) px")
+            // Each figure is wider than a few letters, and not higher than a plot with two lines of text.
+            let sizes = try await probe(view, """
+                return [...document.querySelectorAll("figure.chart")].map((figure) => {
+                  const box = figure.getBoundingClientRect();
+                  return box.width >= 100 && box.height <= 280;
+                }).join(" ");
+                """)
+            XCTAssertEqual(sizes, "true true true true", "at \(Int(width)) px")
+        }
+    }
+
     /// A chart in a box with a transform or a zoom: the width of the plot is the whole pixels of the layout width of
     /// the figure. Only the chart in the table cell has an empty drawing, and in a box with a zoom it has no height,
     /// so the figure is not higher than its content.
@@ -2261,22 +2501,57 @@ final class LibraryDocumentTests: XCTestCase {
             <div style="zoom: 0.7">\(chart)</div>
             <div style="zoom: 1.5"><table><tr><td>North</td><td>\(chart)</td></tr></table></div>
             """
-        let (view, window) = try await loadPage(html, width: 390, markdown: false)
-        defer { close(window) }
-        let result = try await probe(view, """
-            return [...document.querySelectorAll("figure.chart")].map((figure) => {
-              const plot = figure.querySelector("svg.plot");
-              const width = Math.floor(parseFloat(getComputedStyle(figure).width));
-              const rooms = [...figure.querySelectorAll("svg[aria-hidden='true']")];
-              return [plot && +plot.getAttribute("width") === width, rooms.length,
-                rooms.map((room) => room.getBoundingClientRect().height).join("")].join(",");
-            }).join(" ") + " | " + scrolls();
-            """)
-        XCTAssertEqual(result, "true,0, true,0, true,0, true,1,0 | 0")
+        // In a box with a zoom, the rounded width of a cell can be 1 px less than the rounded width of its content.
+        // That is no reason to take the empty drawing away, at each of these widths.
+        for width: CGFloat in [390, 430, 500, 620, 744] {
+            let (view, window) = try await loadPage(html, width: width, markdown: false)
+            defer { close(window) }
+            let result = try await probe(view, """
+                return [...document.querySelectorAll("figure.chart")].map((figure) => {
+                  const plot = figure.querySelector("svg.plot");
+                  const width = Math.floor(parseFloat(getComputedStyle(figure).width));
+                  const rooms = [...figure.querySelectorAll("svg[aria-hidden='true']")];
+                  return [plot && +plot.getAttribute("width") === width, rooms.length,
+                    rooms.map((room) => room.getBoundingClientRect().height).join("")].join(",");
+                }).join(" ") + " | " + scrolls();
+                """)
+            XCTAssertEqual(result, "true,0, true,0, true,0, true,1,0 | 0", "at \(Int(width)) px")
+        }
+    }
+
+    /// A chart stays at the place of its figure where a box aligns its content: in a column of numbers (the page
+    /// aligns each cell of it at the right), next to a number in one cell, in a cell and in a box that center their
+    /// content, and in a page that makes each figure a centered flex column. In a table cell the chart keeps its
+    /// empty drawing.
+    @MainActor
+    func testAChartStaysAtItsPlaceWhereItsBoxAlignsItsContent() async throws {
+        let chart = Self.figure(Self.spec("bar", ["A", "B", "C"]))
+        let pages = [
+            "<table><tr><td>Orders</td><td>1,204</td></tr><tr><td>Refunds</td><td>12</td></tr>"
+                + "<tr><td>Trend</td><td>\(chart)</td></tr></table>",
+            "<table><tr><td>Orders</td><td>1,204 \(chart)</td></tr></table>",
+            "<table><tr><td>North region</td><td align=\"center\">\(chart)</td></tr></table>",
+            "<center>\(chart)</center>",
+            "<div align=\"right\">\(chart)</div>",
+            "<style>figure { display: flex; flex-direction: column; align-items: center }</style>\(chart)",
+            "<style>figure { display: grid; justify-items: center }</style>"
+                + "<table><tr><td>North region</td><td>\(chart)</td></tr></table>",
+        ]
+        for (index, page) in pages.enumerated() {
+            for width: CGFloat in [390, 744] {
+                let (view, window) = try await loadPage("<p>Lead.</p>" + page, width: width, markdown: false)
+                defer { close(window) }
+                let faults = try await labelFaults(in: view, formats: [nil])
+                XCTAssertEqual(faults, [""], "page \(index + 1) at \(Int(width)) px")
+            }
+        }
     }
 
     /// Each chart draws one time: Plot.plot runs two times for each chart (a probe for the y domain and the plot), in
-    /// a table, in a grid with auto columns and in the page column.
+    /// a table, in a grid with columns of the width auto, in a flex row of content width next to a text, and in the
+    /// page column. A drawn plot asks for no width, so it does not change the width of a box around it. The two charts
+    /// of the grid have the same width. A chart in a table in a box that must not shrink never draws: the check of
+    /// its room runs before the first draw.
     @MainActor
     func testEachChartDrawsOneTime() async throws {
         let chart = Self.figure(Self.spec("bar", ["A", "B", "C"]))
@@ -2284,6 +2559,8 @@ final class LibraryDocumentTests: XCTestCase {
             <p>Lead.</p>
             <table><tr><td>North region</td><td>\(chart)</td></tr></table>
             <div style="display: grid; grid-template-columns: auto auto">\(chart)\(chart)</div>
+            <div style="width: max-content; display: flex; gap: 8px">\(chart)<span>A note about the week</span></div>
+            <div style="width: max-content"><table><tr><td>North region</td><td>\(chart)</td></tr></table></div>
             \(chart)
             """
         // The test counts the calls of Plot.plot through a stand-in for the Plot of the page.
@@ -2300,11 +2577,13 @@ final class LibraryDocumentTests: XCTestCase {
             defer { close(window) }
             try await Task.sleep(for: .seconds(1))
             let result = try await probe(view, """
-                return [window.plotCalls, document.querySelectorAll("figure.chart svg.plot").length].join(" ");
+                const widths = [...document.querySelectorAll("figure.chart svg.plot")]
+                  .map((plot) => plot.getAttribute("width"));
+                return [window.plotCalls, widths.length, widths[1] === widths[2]].join(" ");
                 """)
-            XCTAssertEqual(result, "8 4", "at \(Int(width)) px")
-            let faults = try await labelFaults(in: view, formats: [nil, nil, nil, nil])
-            XCTAssertEqual(faults, ["", "", "", ""], "at \(Int(width)) px")
+            XCTAssertEqual(result, "10 5 true", "at \(Int(width)) px")
+            let faults = try await labelFaults(in: view, formats: [nil, nil, nil, nil, nil, nil])
+            XCTAssertEqual(faults, ["", "", "", "", "no width", ""], "at \(Int(width)) px")
         }
     }
 
@@ -2346,8 +2625,9 @@ final class LibraryDocumentTests: XCTestCase {
             XCTAssertEqual(faults, ["", "", ""], "at \(Int(width)) px")
         }
         // Fixed texts: a whole number shows as it is, also with 16 digits, and each other number with at most 15
-        // digits. Each chart has one point, so its label always shows.
-        let fixed = ["1234567", "1234567890123456", "9007199254740991", "0.30000000000000004", "1.5"]
+        // digits, so also with 8 or 10 of them. Each chart has one point, so its label always shows.
+        let fixed = ["1234567", "1234567890123456", "9007199254740991", "0.30000000000000004", "1.5", "1234567.5",
+                     "2.123456789"]
         let (view, window) = try await loadPage("Lead." + fixed.map {
             Self.chart(#"{"type": "bar", "x": "x", "y": "y", "data": [{"x": \#($0), "y": 1}]}"#)
         }.joined(), width: 744)
@@ -2357,7 +2637,7 @@ final class LibraryDocumentTests: XCTestCase {
               [...figure.querySelectorAll("[aria-label='x-axis tick label'] text")].map((text) => text.textContent)
                 .join(",")).join(" | ");
             """)
-        XCTAssertEqual(texts, "1234567 | 1234567890123456 | 9007199254740991 | 0.3 | 1.5")
+        XCTAssertEqual(texts, "1234567 | 1234567890123456 | 9007199254740991 | 0.3 | 1.5 | 1234567.5 | 2.123456789")
     }
 
     /// A text of more than 128 UTF-16 units has no measure: as a later point it has no label, also when it fits, and
@@ -2590,13 +2870,16 @@ final class LibraryDocumentTests: XCTestCase {
 
     /// Waits until each chart has the plot of its layout width, or 15 seconds. On a Mac where the scroll bars always
     /// show, a tall page gets a scroll bar while its charts draw. The page is then narrower, and the charts that drew
-    /// before draw again in the next frame. A test reads the page after that.
+    /// before draw again in the next frame. A test reads the page after that. A chart in a text that runs from top
+    /// to bottom has no plot.
     @MainActor
     private func chartsAtRest(_ view: WKWebView) async throws {
         let rest = """
             [...document.querySelectorAll("figure.chart[data-spec]")].every((figure) => {
               const plot = figure.querySelector("svg.plot");
-              const width = figure.clientWidth && Math.floor(parseFloat(getComputedStyle(figure).width));
+              const style = getComputedStyle(figure);
+              const width = figure.clientWidth && style.writingMode === "horizontal-tb"
+                ? Math.floor(parseFloat(style.width)) : 0;
               return plot ? +plot.getAttribute("width") === width : !width || figure.classList.contains("broken");
             })
             """
@@ -2876,65 +3159,4 @@ private extension String {
 @MainActor
 private final class Once {
     var done = false
-}
-
-/// TEMPORARY, to remove before a merge: how long the tables of a page need for a new width on this runner. The name
-/// of the class sorts last, so the last lines of the test log show its output.
-final class ZzTableFactsOfThisRunnerTests: XCTestCase {
-    @MainActor
-    func testFacts() async throws {
-        let configuration = WKWebViewConfiguration()
-        DocumentPage.scripts(diagrams: false).forEach(configuration.userContentController.addUserScript)
-        let view = WKWebView(frame: CGRect(x: 0, y: 0, width: 390, height: 800), configuration: configuration)
-        #if os(iOS)
-        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
-        let window = UIWindow(windowScene: scene)
-        window.addSubview(view)
-        window.makeKeyAndVisible()
-        #else
-        let window = NSWindow(contentRect: CGRect(x: -20000, y: 0, width: 1200, height: 800), styleMask: [.borderless],
-                              backing: .buffered, defer: false)
-        window.contentView?.addSubview(view)
-        window.orderFrontRegardless()
-        #endif
-        view.loadHTMLString(DocumentPage.html(title: "T", meta: "M", content: LibraryDocumentTests.tablePage,
-                                              markdown: true), baseURL: nil)
-        let facts = """
-            [[...document.querySelectorAll("main table")].map((table) => table.classList.contains("records") ? "R" : "T").join(""),
-             innerWidth, document.documentElement.clientWidth, document.visibilityState].join(" ")
-            """
-        let read = { () async -> String in
-            ((try? await view.evaluateJavaScript("String(" + facts + ")")) as? String) ?? "nil"
-        }
-        let clock = ContinuousClock()
-        var report = "ZZ"
-        // The changes of the state, each with its time since the start of the step.
-        let watch = { (name: String, seconds: Double) async -> String in
-            let start = clock.now
-            var last = ""
-            var line = " | \(name):"
-            while clock.now - start < .seconds(seconds) {
-                let state = await read()
-                if state != last {
-                    let passed = clock.now - start
-                    line += " [\(passed.components.seconds).\(passed.components.attoseconds / 100_000_000_000_000_000) s \(state)]"
-                    last = state
-                }
-                try? await Task.sleep(for: .milliseconds(100))
-            }
-            return line
-        }
-        // As the test of the wide table does: the page loads, then the view gets wider at once, then narrower.
-        report += await watch("load at 390", 1)
-        view.frame.size.width = 1100
-        report += await watch("then 1100", 25)
-        view.frame.size.width = 390
-        report += await watch("then 390", 25)
-        print(report)
-        #if os(iOS)
-        window.isHidden = true
-        #else
-        window.orderOut(nil)
-        #endif
-    }
 }
