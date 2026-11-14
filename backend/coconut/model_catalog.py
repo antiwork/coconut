@@ -73,7 +73,7 @@ def profile_contained(path, request):
         root = Path(root).absolute()
         if path == root or root in path.parents:
             return _contained(path, root)
-    raise ModelCatalogError('The Hermes profile must remain inside Coconut storage or a Hermes profile of a bot.')
+    raise ModelCatalogError('The Hermes profile must remain inside Coconut storage or a Hermes profile of an agent.')
 
 
 def _contained(path, root):
@@ -307,7 +307,7 @@ class HermesModelCatalog:
     def _profile_home(self, bot_id, *, write=False):
         """The Hermes profile folder of a bot. A write needs the folder: Coconut never creates a profile here."""
         if not isinstance(bot_id, str) or str(UUID(bot_id)) != bot_id:
-            raise ModelCatalogError('The Hermes bot profile ID is invalid.')
+            raise ModelCatalogError('The Hermes profile ID of the agent is invalid.')
         from .profiles import HermesProfiles, ProfileError
         profiles = HermesProfiles(self.data_dir, getattr(self, 'profile_rows', None))
         try:
@@ -426,7 +426,7 @@ class HermesModelCatalog:
         for bot_id in bot_ids:
             if rows is not None and (rows.get(bot_id) or {}).get('state') != 'active':
                 # A removed or missing profile belongs to the person. Coconut does not write into it.
-                result[bot_id] = {'skipped': 'The Hermes profile of this bot is not active in Coconut.'}
+                result[bot_id] = {'skipped': 'The Hermes profile of this agent is not active in Coconut.'}
                 continue
             try:
                 homes[bot_id] = str(self._profile_home(bot_id, write=True))

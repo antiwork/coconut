@@ -65,12 +65,12 @@ final class TeamScreenTests: XCTestCase {
         let room = Self.mixedTeam()
         XCTAssertEqual(room.people.map(\.name), ["Ada", "Grace"])
         XCTAssertEqual(room.summary, "2 members")
-        XCTAssertEqual(room.whoLine, "2 people, 2 bots")
+        XCTAssertEqual(room.whoLine, "2 people, 2 agents")
         var alone = room
         alone.members = [TeamMember(member: "m-ada", name: "Ada"), TeamMember(member: "m-spare", name: "Spare Mac",
                                                                                botOnly: true)]
         XCTAssertEqual(alone.summary, "1 member")
-        XCTAssertEqual(alone.whoLine, "1 person, 2 bots")
+        XCTAssertEqual(alone.whoLine, "1 person, 2 agents")
     }
 
     /// Each of the three kinds of row, in the order of the names. A bot of a person (Writer) never shows, and the `@`
@@ -79,14 +79,14 @@ final class TeamScreenTests: XCTestCase {
         let room = Self.mixedTeam()
         let rows = TeamBotSection.rows(of: room)
         XCTAssertEqual(rows.map(\.name), ["Planner", "Reporter", "Scribe", "Spare Mac"])
-        XCTAssertEqual(rows.map(\.note), [nil, nil, "Pages only", "No bot yet"])
+        XCTAssertEqual(rows.map(\.note), [nil, nil, "Pages only", "No agent yet"])
         XCTAssertEqual(rows.map(\.id), ["team-bot-t-r-4", "team-bot-t-r-3", "team-bot-t-r-2", "team-mac-m-spare"])
         XCTAssertEqual(rows.compactMap(\.bot?.id), ["t-r-4", "t-r-3", "t-r-2"], "A Mac without a bot has no bot face.")
         XCTAssertFalse(rows.contains { $0.name == "Writer" }, "A bot of a person never shows.")
         XCTAssertFalse(rows.contains { $0.name == "Reporter Mac" || $0.name == "Planner Mac" },
                        "A Mac with a bot shows as its bots.")
         XCTAssertEqual(TeamMentions.bots(of: room).map(\.name), ["Reporter", "Planner"])
-        XCTAssertEqual(TeamBotSection.footer(for: rows), "Type @ in the team chat to ask a bot.")
+        XCTAssertEqual(TeamBotSection.footer(for: rows), "Type @ in the team chat to ask an agent.")
     }
 
     /// A team with only the author entries of the bots of people has no section, and a bot that the service lists
@@ -115,13 +115,13 @@ final class TeamScreenTests: XCTestCase {
         }
         let rows = TeamBotSection.rows(of: room)
         XCTAssertEqual(rows.map(\.name), ["Planner", "Reporter", "Scribe", "Spare Mac"])
-        XCTAssertEqual(rows.map(\.note), ["Pages only", "Pages only", "Pages only", "No bot yet"])
+        XCTAssertEqual(rows.map(\.note), ["Pages only", "Pages only", "Pages only", "No agent yet"])
         XCTAssertNil(TeamBotSection.footer(for: rows))
         XCTAssertNil(TeamBotSection.footer(for: []))
         XCTAssertEqual(room.whoLine, "2 people")
     }
 
-    /// An older Mac sends no `bot_only` and no `open`: each member is a person, and the section "Bots" has no row, as
+    /// An older Mac sends no `bot_only` and no `open`: each member is a person, and the section "Agents" has no row, as
     /// before. A bot without its `member` cannot belong to a Mac for a team only, so it stays out unless it answers.
     func testAnOlderMacWithoutTheMarksShowsAsBefore() throws {
         let answer = #"""
@@ -141,8 +141,8 @@ final class TeamScreenTests: XCTestCase {
     /// VoiceOver reads each row as one sentence.
     func testVoiceOverReadsEachBotRowAsOneSentence() {
         let rows = TeamBotSection.rows(of: Self.mixedTeam())
-        XCTAssertEqual(rows.map(\.spoken), ["Planner, bot", "Reporter, bot", "Scribe, bot, pages only",
-                                            "Spare Mac, no bot yet"])
+        XCTAssertEqual(rows.map(\.spoken), ["Planner, agent", "Reporter, agent", "Scribe, agent, pages only",
+                                            "Spare Mac, no agent yet"])
     }
 
     // MARK: The removal of a member
@@ -210,10 +210,10 @@ final class TeamScreenTests: XCTestCase {
         let spare = try XCTUnwrap(TeamRemoval(member: "m-spare", in: room))
         XCTAssertEqual(spare.bots, ["Reporter", "Scribe"])
         XCTAssertEqual(spare.title, "Remove Spare Mac from Example Team?")
-        XCTAssertEqual(spare.message, "Spare Mac can no longer read or write in this team. Its bots Reporter and Scribe "
+        XCTAssertEqual(spare.message, "Spare Mac can no longer read or write in this team. Its agents Reporter and Scribe "
                        + "leave the team with it.")
         let planner = try XCTUnwrap(TeamRemoval(member: "m-planner", in: room))
-        XCTAssertEqual(planner.message, "Planner Mac can no longer read or write in this team. Its bot Planner leaves "
+        XCTAssertEqual(planner.message, "Planner Mac can no longer read or write in this team. Its agent Planner leaves "
                        + "the team with it.")
         let empty = try XCTUnwrap(TeamRemoval(member: "m-reporter", in: room))
         XCTAssertEqual(empty.message, "Reporter Mac can no longer read or write in this team.")

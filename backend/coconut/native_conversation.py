@@ -97,8 +97,8 @@ def message_content(message):
                 'Do not acknowledge the emoji or explain that it is feedback.\n'
                 + text)
     if message.get('bot_mentions'):
-        text += ('\n\n[Bot references: ' + json.dumps(message['bot_mentions'])
-                 + '. These mentions identify bots for you. The person is addressing this chat. '
+        text += ('\n\n[Agent references: ' + json.dumps(message['bot_mentions'])
+                 + '. These mentions identify agents for you. The person is addressing this chat. '
                  'A mention alone does not send a message, delegate work, or change the recipient.]')
     return text
 
@@ -191,14 +191,14 @@ def direct_reply_note(task):
     if not (task.get('_direct_reply_message_id') and task.get('source_bot_id')):
         return ''
     return ('\nThe person addressed you directly. Answer them in this conversation. '
-            'The original bot assignment remains context; sending its owner a message does not answer the person. '
+            'The original agent assignment remains context; sending its owner a message does not answer the person. '
             'Do not treat a question as permission to resume blocked actions.')
 
 
 def explicit_bot_messages(task):
     """The messages of other bots that the service delivered to this task, with the sender that the service knows."""
     return [
-        {'sender_bot_id': message['sender_bot_id'], 'sender_name': str(message.get('sender_name', 'Bot'))[:80], 'text': message['text']}
+        {'sender_bot_id': message['sender_bot_id'], 'sender_name': str(message.get('sender_name', 'Agent'))[:80], 'text': message['text']}
         for message in task.get('_bot_messages', [])
         if isinstance(message, dict) and isinstance(message.get('sender_bot_id'), str) and isinstance(message.get('text'), str)
     ]
@@ -261,7 +261,7 @@ def exchange_note(task, records=False):
     if task.get('_source_human_messages'):
         text += ('\nCurrent human messages on the task that returned this result:\n'
                  + json.dumps(task['_source_human_messages'])
-                 + '\nThese messages can update the scope in an earlier bot report. '
+                 + '\nThese messages can update the scope in an earlier agent report. '
                    'Before asking for a decision, check these messages and the current native task and source state. '
                    'Preserve explicit human limits and do not ask again for an action already authorized in this scope.')
     if isinstance(task.get('_continued_from'), dict):
@@ -279,7 +279,7 @@ def exchange_note(task, records=False):
         text += json.dumps(outgoing)
     if task.get('_is_return') is True:
         text += ('\nThis reply continues your original assignment. Use the result to finish the remaining authorized work. '
-                 'Do not send an acknowledgement back. Ask another bot question only when the task needs new information. '
+                 'Do not send an acknowledgement back. Ask another agent a question only when the task needs new information. '
                  'The service returns your final result to the original requester. A dependency result is not completion of your assignment. '
                  'Report a concrete blocker if you cannot continue. Describe work as running only when a tool or recorded task is active.')
     assignment = task.get('_handoff_assignment')
@@ -360,7 +360,7 @@ def tracked_note(task):
         text += ('\nRetain existing work and its owner, decisions, files, and saved waits. '
             'Use coconut_track_work only to update these retained items until Coconut migrates them. '
             'Do not create a native replacement or repeat completed steps. '
-            'Use native kanban tasks for new outcomes. An absent field is empty or false. Existing work for this bot: '
+            'Use native kanban tasks for new outcomes. An absent field is empty or false. Existing work for this agent: '
             + json.dumps([lean_work_item(item, task.get('bot_id')) for item in task['_tracked_work']]))
     if task.get('_native_outcome'):
         text += '\nNative kanban task:\n' + task['_native_outcome']['context']

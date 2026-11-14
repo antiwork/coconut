@@ -1104,7 +1104,7 @@ class GatewayAdapterTests(unittest.TestCase):
                               'notes': [NOTE], 'note': OUTSIDE_SAVE_NOTE})
         # A home that is not the profile of a bot gets a clear refusal.
         for name, arguments in (('save_document', page), ('read_document', {})):
-            self.assertIn('not the profile of a bot', call(name, arguments, Path(self.temp.name) / 'elsewhere')['error'])
+            self.assertIn('not the profile of an agent', call(name, arguments, Path(self.temp.name) / 'elsewhere')['error'])
         # The other tools still need a Coconut chat turn.
         for name, arguments in (('ask', {'title': 'Ship it?'}), ('track_pr', {'url': 'x'}), ('kanban_list', {})):
             self.assertEqual(call(name, arguments, self.home),

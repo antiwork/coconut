@@ -14,7 +14,7 @@ final class GoogleConnectionFlowTests: XCTestCase {
         for _ in 0..<3 where !connections.isHittable { app.swipeUp() }
         connections.tap()
         XCTAssertTrue(app.buttons["google-connect"].waitForExistence(timeout: 5))
-        XCTAssertTrue(app.staticTexts["All bots can read Gmail and Calendar. This connection cannot send email or change events."].exists)
+        XCTAssertTrue(app.staticTexts["All agents can read Gmail and Calendar. This connection cannot send email or change events."].exists)
         XCTAssertFalse(app.buttons["google-bot"].exists)
         XCTAssertFalse(app.textFields["Client ID"].exists)
         XCTAssertFalse(app.staticTexts["Terminal"].exists)

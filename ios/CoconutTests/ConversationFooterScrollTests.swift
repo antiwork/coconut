@@ -70,25 +70,104 @@ final class ConversationFooterScrollTests: XCTestCase {
         XCTAssertFalse(scroll.allowsMinimization)
     }
 
-    // The largest height of a notice: 5 lines in a tall area, 40 percent of a middle area, one line when 40 percent is
-    // less, and the whole area when the area is lower than one line.
-    func testNoticeHeightLimit() {
-        let line: CGFloat = 20, padding: CGFloat = 12
-        XCTAssertEqual(NoticeHeight.limit(area: 1_000, line: line, padding: padding), 124)
-        XCTAssertEqual(NoticeHeight.limit(area: 200, line: line, padding: padding), 80)
-        XCTAssertEqual(NoticeHeight.limit(area: 80, line: line, padding: padding), 44)
-        XCTAssertEqual(NoticeHeight.limit(area: 30, line: line, padding: padding), 30)
-        XCTAssertEqual(NoticeHeight.limit(area: 0, line: line, padding: padding), 0)
+    // The largest height of a notice is its padding and a whole number of lines. Here a line is 20 points, with no
+    // space between two lines, and the padding is 12 points above and below, so one line needs 44 points.
+    private func limit(_ area: CGFloat, line: CGFloat = 20, spacing: CGFloat = 0) -> CGFloat {
+        NoticeHeight.limit(area: area, line: line, spacing: spacing, padding: 12)
     }
 
-    // A chat on the screen holds the notice of the Mac window. A chat off the screen does not.
-    func testChatHoldsNoticeWhenAnyChatOnTheScreenHoldsIt() {
-        var holds = ChatHoldsNoticePreference.defaultValue
-        XCTAssertFalse(holds)
-        ChatHoldsNoticePreference.reduce(value: &holds) { false }
-        XCTAssertFalse(holds)
-        ChatHoldsNoticePreference.reduce(value: &holds) { true }
-        ChatHoldsNoticePreference.reduce(value: &holds) { false }
-        XCTAssertTrue(holds)
+    // A tall area gives 5 lines.
+    func testNoticeHeightGivesFiveLinesInATallArea() {
+        XCTAssertEqual(limit(1_000), 124)
+    }
+
+    // A middle area gives the whole lines that fit in 40 percent of it. 40 percent of 230 is 92, which holds 3.4
+    // lines after the padding, so the notice gets 3 lines.
+    func testNoticeHeightRoundsAMiddleAreaDownToWholeLines() {
+        XCTAssertEqual(limit(230), 84)
+        XCTAssertEqual(limit(200), 64)
+    }
+
+    // An area of exactly one line, and an area where 40 percent is less than one line, give one line.
+    func testNoticeHeightGivesOneLineWhenTheAreaHoldsOneLine() {
+        XCTAssertEqual(limit(44), 44)
+        XCTAssertEqual(limit(80), 44)
+    }
+
+    // An area lower than one line gives the whole area, and no area gives no height.
+    func testNoticeHeightGivesTheWholeAreaWhenItIsLowerThanOneLine() {
+        XCTAssertEqual(limit(30), 30)
+        XCTAssertEqual(limit(0), 0)
+        XCTAssertEqual(limit(-10), 0)
+    }
+
+    // A line height that is not a whole number gives whole lines of that height, not of a rounded height.
+    func testNoticeHeightUsesALineHeightThatIsNotAWholeNumber() {
+        XCTAssertEqual(limit(1_000, line: 20.5), 5 * 20.5 + 24, accuracy: 0.0001)
+        // 40 percent of 200 is 80, which holds 2.7 lines of 20.5 points after the padding.
+        XCTAssertEqual(limit(200, line: 20.5), 2 * 20.5 + 24, accuracy: 0.0001)
+    }
+
+    // The body text of an iPhone at the Large text size: one line is 20.33 points high, and each next line adds 22
+    // points. The space between two lines counts, but not after the last line.
+    func testNoticeHeightCountsTheSpaceBetweenLines() {
+        let line: CGFloat = 61 / 3, spacing: CGFloat = 5 / 3
+        XCTAssertEqual(limit(1_000, line: line, spacing: spacing), 5 * line + 4 * spacing + 24, accuracy: 0.0001)
+        // 40 percent of 200 is 80. Three lines need 88.33 points, so the notice gets two lines.
+        XCTAssertEqual(limit(200, line: line, spacing: spacing), 2 * line + spacing + 24, accuracy: 0.0001)
+        XCTAssertEqual(limit(30, line: line, spacing: spacing), 30)
+    }
+
+    // With no chat on the screen, the detail column of the Mac window shows the notice.
+    func testColumnShowsNoticeWhenNoChatHoldsIt() {
+        var holders = NoticeHolders()
+        XCTAssertTrue(holders.columnShowsNotice)
+        XCTAssertNil(holders.holder)
+        let chat = UUID()
+        holders.add(chat)
+        XCTAssertFalse(holders.columnShowsNotice)
+        holders.remove(chat)
+        XCTAssertTrue(holders.columnShowsNotice)
+        XCTAssertNil(holders.holder)
+    }
+
+    // A page that a stack pushes over a chat covers the chat, so the chat leaves the screen. The column shows the
+    // notice, and the covered chat does not hold it.
+    func testCoveredChatDoesNotHoldNotice() {
+        var holders = NoticeHolders()
+        let chat = UUID()
+        holders.add(chat)
+        holders.remove(chat)
+        XCTAssertTrue(holders.columnShowsNotice)
+        // The page goes back: the chat comes on the screen again and holds the notice again.
+        holders.add(chat)
+        XCTAssertEqual(holders.holder, chat)
+    }
+
+    // Exactly one chat shows the notice: the chat that came on the screen last. A push of a chat over a chat can
+    // show the new chat before the old chat leaves.
+    func testNewestChatOnTheScreenHoldsNotice() {
+        var holders = NoticeHolders()
+        let first = UUID(), second = UUID()
+        holders.add(first)
+        holders.add(second)
+        XCTAssertEqual(holders.holder, second)
+        holders.remove(first)
+        XCTAssertEqual(holders.holder, second)
+        // The order is the other way: the old chat leaves first.
+        holders = NoticeHolders()
+        holders.add(first)
+        holders.remove(first)
+        holders.add(second)
+        XCTAssertEqual(holders.holder, second)
+        // A chat that comes on the screen again is not counted two times.
+        holders.add(first)
+        holders.add(second)
+        XCTAssertEqual(holders.chats, [first, second])
+        holders.remove(second)
+        XCTAssertEqual(holders.holder, first)
+        // A chat that is not in the list changes nothing.
+        holders.remove(UUID())
+        XCTAssertEqual(holders.chats, [first])
     }
 }

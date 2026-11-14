@@ -30,7 +30,7 @@ struct BotSettingsView: View {
                     Toggle("Notifications", isOn: Binding(get: { edits?.bot.notifications ?? true }, set: { edits?.bot.notifications = $0 }))
                         .tint(BoardStyle.green)
                         .accessibilityIdentifier("bot-notifications")
-                } footer: { Text("Get notified when this bot needs a decision, finishes work, or fails.") }
+                } footer: { Text("Get notified when this agent needs a decision, finishes work, or fails.") }
                 let groups = RoutineGroups(store.routines.filter { $0.botId == botId })
                 Section("Routines") {
                     ForEach(groups.recurring) { routine in
@@ -49,7 +49,7 @@ struct BotSettingsView: View {
             if !windowShowsError, let error = store.error { Section { InlineError(error) } }
         }
         .settingsBackground()
-        .navigationTitle(draft?.name ?? "Bot").inlineNavigationTitle()
+        .navigationTitle(draft?.name ?? "Agent").inlineNavigationTitle()
         .onAppear {
             if edits == nil, let bot = store.bots.first(where: { $0.id == botId }) { edits = BotDraft(bot) }
         }
@@ -226,11 +226,11 @@ private struct RoutineEditorView: View {
                 Section {
                     Text(script).font(.footnote.monospaced()).textSelection(.enabled)
                 } header: { Text("Script") } footer: {
-                    Text("Runs on the Mac without model tokens. Ask this bot to change the script.")
+                    Text("Runs on the Mac without model tokens. Ask this agent to change the script.")
                 }
             } else {
                 Section("Instructions") {
-                    TextField("What should this bot do?", text: $prompt, axis: .vertical)
+                    TextField("What should this agent do?", text: $prompt, axis: .vertical)
                         .fieldUnderHeader()
                         .lineLimit(4...12).accessibilityIdentifier("routine-prompt")
                 }
@@ -238,7 +238,7 @@ private struct RoutineEditorView: View {
                     Section {
                         LabeledContent("Script check", value: check).accessibilityIdentifier("routine-script-check")
                     } footer: {
-                        Text("This script runs first, without model tokens. The bot runs only when the script finds work. An edit here keeps the script.")
+                        Text("This script runs first, without model tokens. The agent runs only when the script finds work. An edit here keeps the script.")
                     }
                 }
             }
@@ -248,7 +248,7 @@ private struct RoutineEditorView: View {
                     .accessibilityIdentifier("routine-schedule")
                 Toggle("Enabled", isOn: $enabled).tint(BoardStyle.green).accessibilityIdentifier("routine-enabled")
             } header: { Text("Schedule") } footer: {
-                Text("Use a Hermes schedule, such as ‘weekdays at 8am’, ‘every 30m’, or a cron expression. Times follow this bot’s Hermes time zone.")
+                Text("Use a Hermes schedule, such as ‘weekdays at 8am’, ‘every 30m’, or a cron expression. Times follow this agent’s Hermes time zone.")
             }
             if let current {
                 if let error = current.error { Section { InlineError(error) } }
@@ -314,13 +314,13 @@ struct DeleteBotDialog: ViewModifier {
     @Binding var bot: Bot?
 
     func body(content: Content) -> some View {
-        content.confirmationDialog("Delete \(bot?.name ?? "bot")?",
+        content.confirmationDialog("Delete \(bot?.name ?? "agent")?",
                                    isPresented: Binding(get: { bot != nil }, set: { if !$0 { bot = nil } }),
                                    titleVisibility: .visible, presenting: bot) { bot in
-            Button("Delete bot", role: .destructive) { Task { await store.deleteBot(bot) } }
+            Button("Delete agent", role: .destructive) { Task { await store.deleteBot(bot) } }
                 .accessibilityIdentifier("confirm-delete-bot")
         } message: { _ in
-            Text("The Mac cancels this bot's work and removes its conversation. The audit record remains on your Mac.")
+            Text("The Mac cancels this agent's work and removes its conversation. The audit record remains on your Mac.")
         }
     }
 }

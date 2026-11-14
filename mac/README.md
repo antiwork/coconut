@@ -1,6 +1,6 @@
 # Coconut.app
 
-Coconut.app runs Coconut on the person's Mac. It is a menu bar app with three login items: the app itself and two agents.
+Coconut.app runs Coconut on the person's Mac. It is a menu bar app with three login items: the app itself and two LaunchAgents.
 
 The app is the `CoconutMac` target of `ios/project.yml`. It compiles the views and state of the iPhone app (`ios/Coconut`) with the menu bar code in `mac/Sources/CoconutApp`, so the Mac can become a chat client too. The iPhone-only views, such as the QR scanner and the swipe gestures, stay behind `#if os(iOS)`. `ios/Coconut/Platform.swift` names the few UIKit and AppKit differences. This package (`mac/Package.swift`) has `CoconutKit` and the `coconut` tool.
 
@@ -29,12 +29,12 @@ The app carries the Coconut source: `Contents/Resources/coconut-source.tar.gz`, 
 - The hold ends after 30 minutes, also when an update stops halfway.
 - `scripts/tunnel.py` uses the sidecar of the app (`COCONUT_SIDECAR`). It registers a relay route once, then restarts the relay login item. It compiles nothing.
 - The service uses the team helper of the app (`Contents/Helpers/team-helper`), which `coconut service` and `coconut update` name in `COCONUT_TEAM_HELPER`. So `scripts/team.py build` in an update compiles nothing. See [team log](../docs/team-log.md#mac).
-- **Move Coconut to This App** in the menu runs `coconut migrate` (`host.py migrate-to-app`). The running turns finish first, then the earlier LaunchAgents stop, and their files move to `.runtime/legacy-agents`. The data stays in place, so bots and paired iPhones keep working. Then the app registers its login items and updates the source.
+- **Move Coconut to This App** in the menu runs `coconut migrate` (`host.py migrate-to-app`). The running turns finish first, then the earlier LaunchAgents stop, and their files move to `.runtime/legacy-agents`. The data stays in place, so agents and paired iPhones keep working. Then the app registers its login items and updates the source.
 
 The update still needs the Command Line Tools, because `push.py` compiles its notification helpers.
 
 The menu shows the state of the service, the relay and Hermes. **Pair iPhone…** shows a one-time setup link and its QR code.
-A Hermes agent can print the same link. This command does not need the Command Line Tools:
+An agent can print the same link. This command does not need the Command Line Tools:
 
 ```sh
 /Applications/Coconut.app/Contents/Helpers/coconut pair
@@ -66,7 +66,7 @@ Coconut.app updates itself with Sparkle 2.10.0. The feed is `https://coconut-upd
 - The feed has one channel. Its items have no `sparkle:channel`, so every app sees every build, and Sparkle takes the newest one.
 - Sparkle replaces only the app. The service runs from `~/Coconut`, so it keeps running. After the relaunch, the new app runs `coconut install-source --if-needed`, which lets the running turns finish before it changes the service.
 
-A Hermes agent manages the updates with the `coconut` tool (`/Applications/Coconut.app/Contents/Helpers/coconut`). The output is plain text:
+An agent manages the updates with the `coconut` tool (`/Applications/Coconut.app/Contents/Helpers/coconut`). The output is plain text:
 
 ```sh
 coconut status                              # version, automatic updates, last check, last error, service
@@ -75,7 +75,7 @@ coconut settings automatic-updates on|off
 ```
 
 `coconut update` installs a newer build also when automatic updates are off. It asks the menu bar app, and opens the app when it does not run.
-It returns when the install starts, because the service update waits for all running bot turns, also the one that ran the command. `coconut status` then shows "installing", and "installed" when the service runs the new version. `--wait` waits for the end; use it only outside a bot turn.
+It returns when the install starts, because the service update waits for all running agent turns, also the one that ran the command. `coconut status` then shows "installing", and "installed" when the service runs the new version. `--wait` waits for the end; use it only outside an agent turn.
 The menu shows the same settings, the version and the last update error.
 
 The Worker `coconut-updates` (`updates/`) serves the feed. See `updates/README.md`.

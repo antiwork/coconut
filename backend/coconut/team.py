@@ -360,7 +360,7 @@ class Team(TeamSync, TeamSocket, TeamPages, TeamMessages, TeamChats, TeamDirects
 
     def team_rooms(self, direct: bool = False) -> dict:
         """The rooms, `helper`, and `mac_bots`: the bots of this Mac that a room can take, so a tool can find a bot by
-        its name (`coconut team add-bot`). An archived or deleted bot is not in that list. With `direct`, each member
+        its name (`coconut team add-agent`). An archived or deleted bot is not in that list. With `direct`, each member
         has `direct` and each room has `directs` (TeamDirects)."""
         with self.lock:
             rooms = [self._team_view(room, direct) for room in self.team_store.rooms()]

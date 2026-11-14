@@ -26,12 +26,12 @@ REFRESH_INSTRUCTIONS = (
     'Read its exact recipient and body; never send or rewrite the draft during this check. '
     'Use withdraw only with evidence that the question is obsolete, duplicated, already resolved, '
     'or asks permission for routine development setup within the existing request. '
-    'Read-only source inspection and reviewer fallback already authorized in the bot instructions do not need a new decision. '
+    'Read-only source inspection and reviewer fallback already authorized in the agent instructions do not need a new decision. '
     'A newer pending question about the same work is not automatically equivalent; compare its exact scope. '
     'Do not select an option, approve a merge, repeat an external action, or treat withdrawal as human approval. '
-    'For a recovery card, inspect actual outcomes and current owners. A completed bot turn alone does not prove completion. '
+    'For a recovery card, inspect actual outcomes and current owners. A completed agent turn alone does not prove completion. '
     'If another task owns the work, identify that owner so the continuation can wait for it. '
-    "The bot's native profile says what routine local setup includes for the authorized change. "
+    "The agent's native profile says what routine local setup includes for the authorized change. "
     "A card's proposed limits are not a human prohibition; check the original human instruction. "
     'Preserve explicit human limits, production access boundaries, and native Hermes approval checks. '
     'Do not create another card for this check. Return no chat message when nothing needs to change.'
@@ -841,7 +841,7 @@ class DecisionFreshness:
                 records = self._decision_records(decision, tasks, artifacts)
                 profile_revision = self.profiles.prompt_revision(self._get('bots', decision['bot_id']))
                 if payload.get('_worker_profile_revision', profile_revision) != profile_revision:
-                    raise ServiceError(409, 'The native worker used different bot instructions. Stop this check; Coconut must check the current profile.')
+                    raise ServiceError(409, 'The native worker used different agent instructions. Stop this check; Coconut must check the current profile.')
                 fingerprint, _ = self._decision_evidence(decision, tasks, records, artifacts, ignore_context_id=context_id,
                                                        profile_revision=profile_revision)
                 if context['_evidence_fingerprint'] != fingerprint:

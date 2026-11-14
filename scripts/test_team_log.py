@@ -549,16 +549,16 @@ class TeamLogTests(unittest.TestCase):
         self.assertEqual(run(second, 'join', link)[0], 64)
 
         # The bots of a person's Mac stay the person's, so the tool says how to share a page.
-        personal = ['The bots of this Mac stay yours, so a team does not get them. To share a page with the team, '
+        personal = ['The agents of this Mac stay yours, so a team does not get them. To share a page with the team, '
                     'open it in the Library of the Coconut app.']
-        self.assertEqual(run(second, 'add-bot', 'night bot'), (1, personal))
-        self.assertEqual(run(second, 'remove-bot', bot['id']), (1, personal))
+        self.assertEqual(run(second, 'add-agent', 'night bot'), (1, personal))
+        self.assertEqual(run(second, 'remove-agent', bot['id']), (1, personal))
         second.rooms()
         first.rooms()
         code, lines = run(first)
         self.assertEqual(code, 0, lines)
         self.assertEqual(lines, ['Team: Example Team', f'ID: {room_id}', 'State: active', 'This Mac is the admin: yes',
-                                 'Member: Ada (admin, this Mac)', 'Member: Grace', 'Bots: none'])
+                                 'Member: Ada (admin, this Mac)', 'Member: Grace', 'Agents: none'])
         code, lines = run(second, '--json')
         self.assertEqual(json.loads('\n'.join(lines))['rooms'][0]['room'], room_id)
 
@@ -885,13 +885,13 @@ class TeamOnlyTests(unittest.TestCase):
         # The team-only Mac joins with the tool. The tool does not guess a bot that this Mac did not declare.
         code, lines = run('join', '--name', 'Reporter Mac', link_input=link + '\n')
         self.assertEqual((code, lines[0]), (0, 'This Mac joined the team Example Team.'), lines)
-        code, lines = run('add-bot', 'Reporter')
+        code, lines = run('add-agent', 'Reporter')
         self.assertEqual((code, len(lines)), (1, 1), lines)
-        self.assertIn('coconut team new-bot Reporter', lines[0])
-        code, lines = run('new-bot', 'Reporter', '--home', str(self.home))
-        self.assertEqual((code, lines[0]), (0, f'This Mac declared the bot Reporter for the Hermes home '
+        self.assertIn('coconut team new-agent Reporter', lines[0])
+        code, lines = run('new-agent', 'Reporter', '--home', str(self.home))
+        self.assertEqual((code, lines[0]), (0, f'This Mac declared the agent Reporter for the Hermes home '
                                                f'{os.path.realpath(self.home)}.'), lines)
-        self.assertEqual(run('add-bot', 'Reporter'), (0, ['The bot Reporter is in the team Example Team now.']))
+        self.assertEqual(run('add-agent', 'Reporter'), (0, ['The agent Reporter is in the team Example Team now.']))
 
         # The tooling of the agent saves a page for the team. Ada's Library lists it under the team bot.
         page = {'home': str(self.home), 'key': 'weekly-report', 'title': 'Weekly report', 'format': 'markdown',
@@ -980,8 +980,8 @@ class TeamOnlyTests(unittest.TestCase):
 
         home = Path(self.temp.name) / 'writer-home'
         self.assertEqual(run('join', '--name', 'Writer Mac', link_input=link + '\n')[0], 0)
-        self.assertEqual(run('new-bot', 'Writer', '--home', str(home))[0], 0)
-        self.assertEqual(run('add-bot', 'Writer')[0], 0)
+        self.assertEqual(run('new-agent', 'Writer', '--home', str(home))[0], 0)
+        self.assertEqual(run('add-agent', 'Writer')[0], 0)
         page = {'home': str(home), 'key': 'notes', 'title': 'Notes', 'format': 'markdown', 'content': 'A note.',
                 'audience': 'team'}
         self.assertEqual(self.reporter.call('POST', '/v1/gateway/document', page)[0], 200)

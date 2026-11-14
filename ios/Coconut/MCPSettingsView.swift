@@ -27,8 +27,8 @@ struct MCPSettingsView: View {
             } header: {
                 Text("Other tools (MCP)")
             } footer: {
-                Text(canEdit ? "All bots can use these tools. Hermes keeps their settings on your Mac."
-                     : "Connect to your Mac first. All bots can use these tools. Hermes keeps their settings on your Mac.")
+                Text(canEdit ? "All agents can use these tools. Hermes keeps their settings on your Mac."
+                     : "Connect to your Mac first. All agents can use these tools. Hermes keeps their settings on your Mac.")
             }
         }
         .navigationTitle("Connections").inlineNavigationTitle()

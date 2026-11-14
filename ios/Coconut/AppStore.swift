@@ -218,7 +218,7 @@ final class AppStore {
         }
         return nil
     }
-    func botName(_ id: String?) -> String { bots.first { $0.id == id }?.name ?? "Bot" }
+    func botName(_ id: String?) -> String { bots.first { $0.id == id }?.name ?? "Agent" }
 
     // A card waits for an answer in this bot's chat.
     func botNeedsYou(_ bot: Bot) -> Bool {
@@ -722,7 +722,7 @@ final class AppStore {
             guard let index = routines.firstIndex(where: { $0.id == routine.id }) else { return nil }
             let routine = routines[index]
             guard let bot = bots.first(where: { $0.id == routine.botId }), !bot.archived else {
-                error = "Restore this bot before running its routine."
+                error = "Restore this agent before running its routine."
                 return nil
             }
             if let taskId = routine.lastTaskId,
@@ -899,7 +899,7 @@ final class AppStore {
     func decisionReference(for id: String) -> MessageReference? {
         guard let decision = decisions.first(where: { $0.id == id }) else { return nil }
         return MessageReference(messageId: id, text: decision.title,
-            author: bots.first { $0.id == decision.botId }?.name ?? "Bot", role: "assistant")
+            author: bots.first { $0.id == decision.botId }?.name ?? "Agent", role: "assistant")
     }
 
     func messageReference(for message: Message) -> MessageReference? {
@@ -908,7 +908,7 @@ final class AppStore {
               let saved = messageIndex.first(id: message.id, clientRequestId: message.clientRequestId).map({ messages[$0] }) else { return nil }
         // A photo message quotes as "Photo: <caption>", not as its address.
         return MessageReference(messageId: saved.id, text: saved.photo?.preview ?? saved.text,
-            author: saved.role == "user" ? "You" : bots.first { $0.id == (saved.senderBotId ?? saved.botId) }?.name ?? "Bot",
+            author: saved.role == "user" ? "You" : bots.first { $0.id == (saved.senderBotId ?? saved.botId) }?.name ?? "Agent",
             role: saved.role)
     }
 
@@ -1063,7 +1063,7 @@ final class AppStore {
             }
             decisions[index].decidedBy = "You (preview)"
             decisions[index].decidedAt = Self.now
-            decisions[index].outcome = choice == "reply" ? "Reply received. The bot will continue." : choice == "modify" ? "Preview: the bot would prepare a new proposal. No revised action is approved." : choice == "approve" ? "Preview result saved. No real action ran." : "You rejected the action."
+            decisions[index].outcome = choice == "reply" ? "Reply received. The agent will continue." : choice == "modify" ? "Preview: the agent would prepare a new proposal. No revised action is approved." : choice == "approve" ? "Preview result saved. No real action ran." : "You rejected the action."
             if let taskIndex = tasks.firstIndex(where: { $0.id == decision.taskId }) {
                 tasks[taskIndex].status = ["modify", "reply"].contains(choice) ? "queued" : "completed"
                 tasks[taskIndex].summary = decisions[index].outcome ?? ""

@@ -1,4 +1,4 @@
-"""The bots of a team-only Mac answer in the team chat (docs/team-log.md, "A bot answers").
+"""The bots of a team-only Mac answer in the team chat (docs/team-log.md, "An agent answers").
 
 A person of the team writes a message that names a bot of this Mac (`mentions`) or answers a message of that bot
 (`reply_to`). TeamStore.accept queues the message as a trigger (`team_triggers`). The thread of this module gives each
