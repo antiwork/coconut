@@ -446,6 +446,54 @@ final class DirectMessageTests: XCTestCase {
         #endif
     }
 
+    /// A send with a page carries `about_document_id` and no `reply_to`. A refusal shows its sentence in the notice of
+    /// a failed action, and the message waits with its page, also after a restart. The retry sends the page again, and
+    /// the answer of the Mac gives the page with its title.
+    @MainActor
+    func testASendAboutAPageCarriesThePageAlsoInARetryAfterARestart() async throws {
+        #if !(DEBUG && targetEnvironment(simulator))
+        throw XCTSkip("This HTTP fixture requires a debug simulator build.")
+        #else
+        var state = try PreviewStateFixture.load()
+        state.cursor = 10; state.syncVersion = 1
+        let server = try DirectServer(state: APIJSON.encoder().encode(state), cursor: state.cursor, bot: true)
+        let address = try await server.start()
+        defer { server.stop() }
+        try await withPairedStore(address: address) { store in
+            let chat = TeamChatKey(room: "r1", bot: "t-r1-e1")
+            let sales = TeamAboutPage(id: "t-r1-p1", title: "Sales")
+            await store.loadTeamChat(chat)
+            let refusal = "Choose a page of this agent in the Library."
+            server.refuse(refusal)
+            XCTAssertTrue(store.sendTeamMessage(chat, text: "Why are the refunds higher?",
+                                                replyingTo: store.teamChats[chat]?.messages.first, page: sales))
+            try await waitUntil { store.teamChats[chat]?.pending.first?.failed == true }
+            XCTAssertEqual(store.teamChats[chat]?.pending.first?.failed, true)
+            XCTAssertEqual(store.teamChats[chat]?.pending.first?.page, sales)
+            XCTAssertEqual(store.error, refusal, "The notice of a failed action shows the sentence of the Mac.")
+            XCTAssertEqual(server.sentBodies.first?["about_document_id"] as? String, "t-r1-p1")
+            XCTAssertNil(server.sentBodies.first?["reply_to"], "A page and a reply do not go together.")
+
+            let restarted = AppStore(demo: false)
+            XCTAssertEqual(restarted.teamChats[chat]?.pending.first?.page, sales, "A restart keeps the page.")
+
+            server.refuse(nil)
+            let id = try XCTUnwrap(store.teamChats[chat]?.pending.first?.id)
+            store.retryTeamMessage(chat, id: id)
+            try await waitUntil { store.teamChats[chat]?.pending.isEmpty == true }
+            XCTAssertEqual(store.teamChats[chat]?.pending.isEmpty, true)
+            XCTAssertEqual(server.sentBodies.count, 2)
+            XCTAssertEqual(server.sentBodies.last?["about_document_id"] as? String, "t-r1-p1", "The retry sends the page.")
+            XCTAssertEqual(store.teamChats[chat]?.messages.last?.page, sales, "The Mac gives the page with its title.")
+
+            XCTAssertTrue(store.sendTeamMessage(chat, text: "Thanks", replyingTo: nil))
+            try await waitUntil { server.sentBodies.count == 3 }
+            XCTAssertEqual(server.sentBodies.count, 3)
+            XCTAssertNil(server.sentBodies.last?["about_document_id"], "A send without a page has no field.")
+        }
+        #endif
+    }
+
     #if DEBUG && targetEnvironment(simulator)
     @MainActor
     private func withPairedStore(address: String, _ body: (AppStore) async throws -> Void) async throws {
@@ -480,8 +528,10 @@ private final class DirectServer: @unchecked Sendable {
     private let listener: NWListener
     private let state: Data
     private var cursor: Int
-    private struct ChatMessage { let first: Int; let text: String; let own: Bool; let replyTo: Int? }
+    private struct ChatMessage { let first: Int; let text: String; let own: Bool; let replyTo: Int?; var page: String? = nil }
     private var messages = [ChatMessage(first: 1, text: "See you at 3", own: false, replyTo: nil)]
+    /// The sentence of a 409 that each send gets. Nil accepts each send.
+    private var refusal: String?
     private var read = 0
     private var pending = false
     private var recorded: [String] = []
@@ -505,6 +555,9 @@ private final class DirectServer: @unchecked Sendable {
         listener = try NWListener(using: .tcp, on: .any)
     }
 
+    /// Each send gets a 409 with this sentence, or nil to accept each send again.
+    func refuse(_ sentence: String?) { lock.withLock { refusal = sentence } }
+
     /// Grace writes a message. The next updates answer names the direct chat.
     func addMessage(_ text: String) {
         lock.withLock {
@@ -520,7 +573,7 @@ private final class DirectServer: @unchecked Sendable {
         return #"{"id": "e\#(message.first)", "first": \#(message.first), "this_mac": \#(message.own), "#
             + #""text": "\#(message.text)", "reply_to": \#(message.replyTo.map { #""e\#($0)""# } ?? "null"), "#
             + #""reply": \#(reply), "created_at": "2026-11-10T12:0\#(message.first):00Z", "edited_at": null"#
-            + (bot ? #", "page": null}"# : "}")
+            + (bot ? #", "page": \#(message.page.map { #"{"id": "\#($0)", "title": "Sales"}"# } ?? "null")}"# : "}")
     }
 
     /// The caller holds the lock.
@@ -571,6 +624,7 @@ private final class DirectServer: @unchecked Sendable {
                 let route = words[0] + " " + words[1].components(separatedBy: "?")[0]
                 let sent = request.components(separatedBy: "\r\n\r\n").last
                     .flatMap { try? JSONSerialization.jsonObject(with: Data($0.utf8)) as? [String: Any] }
+                var status = "200 OK"
                 let body: String? = lock.withLock {
                     if route.hasPrefix("GET /v1/team/") || route.hasPrefix("POST /v1/team/") { recorded.append(route) }
                     switch route {
@@ -586,9 +640,10 @@ private final class DirectServer: @unchecked Sendable {
                         return #"{"room": "r1", \#(key), "messages": [\#(shown)], "before": null}"#
                     case "POST /v1/team/rooms/r1/directs/\(other)/messages":
                         bodies.append(sent ?? [:])
+                        if let refusal { status = "409 Conflict"; return #"{"error": "\#(refusal)"}"# }
                         let reply = (sent?["reply_to"] as? String).flatMap { Int($0.dropFirst()) }
                         messages.append(ChatMessage(first: messages.count + 1, text: sent?["text"] as? String ?? "",
-                                                    own: true, replyTo: reply))
+                                                    own: true, replyTo: reply, page: sent?["about_document_id"] as? String))
                         return #"{"room": "r1", \#(key), "message": \#(json(messages[messages.count - 1]))}"#
                     case "POST /v1/team/rooms/r1/directs/\(other)/read":
                         read = max(read, sent?["first"] as? Int ?? 0)
@@ -609,7 +664,7 @@ private final class DirectServer: @unchecked Sendable {
                     }
                 }
                 let content = body.map { Data($0.utf8) } ?? state
-                var reply = Data(("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: "
+                var reply = Data(("HTTP/1.1 \(status)\r\nContent-Type: application/json\r\nContent-Length: "
                                   + "\(content.count)\r\nConnection: close\r\n\r\n").utf8)
                 reply.append(content)
                 let answer = reply
@@ -733,10 +788,12 @@ final class BotDirectChatTests: XCTestCase {
             + #" "page": {"id": "t-r1-p1", "title": "Sales"}},"#
             + #" {"id": "e2", "first": 2, "this_mac": true, "text": "And this?", "created_at": "2026-11-10T11:00:00Z","#
             + #" "page": {"id": null, "title": null}},"#
-            + #" {"id": "e1", "first": 1, "this_mac": false, "text": "Hello", "created_at": "2026-11-10T10:00:00Z", "page": null}],"#
+            + #" {"id": "e1", "first": 1, "this_mac": false, "text": "Hello", "created_at": "2026-11-10T10:00:00Z", "page": null},"#
+            + #" {"id": "e0", "first": 0, "this_mac": false, "text": "Older", "created_at": "2026-11-10T09:00:00Z"}],"#
             + #" "before": null}"#
         let decoded = try APIJSON.decoder().decode(TeamMessagePage.self, from: Data(page.utf8))
-        XCTAssertEqual(decoded.messages.map(\.page), [TeamAboutPage(id: "t-r1-p1", title: "Sales"), TeamAboutPage(), nil])
+        XCTAssertEqual(decoded.messages.map(\.page), [TeamAboutPage(id: "t-r1-p1", title: "Sales"), TeamAboutPage(), nil, nil],
+                       "A page with its title, a page that is gone, no page, and a message without the field.")
     }
 
     // MARK: The Team screen and the name in the Team chat
@@ -989,6 +1046,90 @@ final class BotDirectChatTests: XCTestCase {
         XCTAssertEqual(MessageBanners.plan(before: before, after: TeamRooms(rooms: [room(botDirects: [own])], helper: true)).post, [])
     }
 
+    // MARK: Chat about this page
+
+    private func teamPage(_ bot: String, room: String? = "r1") -> BotDocument {
+        BotDocument(id: "t-r1-p1", botId: bot, key: "sales", title: "Sales", format: "html", version: 1,
+                    createdAt: "2026-11-10T09:00:00Z", updatedAt: "2026-11-10T09:00:00Z",
+                    team: room.map { DocumentTeam(room: $0, name: "Example Team") })
+    }
+
+    private let sales = TeamAboutPage(id: "t-r1-p1", title: "Sales")
+
+    func testOnlyAPageOfATeamBotThatCanGetADirectMessageHasTheChatItem() {
+        let rooms = TeamRooms(rooms: [room(bots: [
+            reporter(),
+            TeamRoomBot(id: "t-r1-e2", name: "Scribe", member: "m-mac", open: true, direct: false),
+            TeamRoomBot(id: "t-r1-e3", name: "Older", member: "m-mac", open: true),
+            TeamRoomBot(id: "t-r1-e4", name: "Pages", member: "m-mac", open: false, direct: true),
+            TeamRoomBot(id: "t-r1-e5", name: "Mine", member: "m-ada", thisMac: true, open: true, direct: true)])])
+        XCTAssertEqual(rooms.directChat(about: teamPage("t-r1-e1")), TeamChatKey(room: "r1", bot: "t-r1-e1"))
+        XCTAssertNil(rooms.directChat(about: teamPage("t-r1-e2")), "A bot without the mark has no item.")
+        XCTAssertNil(rooms.directChat(about: teamPage("t-r1-e3")), "An older service sends no mark, so no item.")
+        XCTAssertNil(rooms.directChat(about: teamPage("t-r1-e4")), "A bot of pages only has no item.")
+        XCTAssertNil(rooms.directChat(about: teamPage("t-r1-e5")), "A bot of this Mac has no direct chat.")
+        XCTAssertNil(rooms.directChat(about: teamPage("t-r1-gone")), "A bot that left the team has no item.")
+        XCTAssertNil(rooms.directChat(about: teamPage("t-r1-e1", room: "r2")), "A team that the app does not have.")
+        XCTAssertNil(rooms.directChat(about: teamPage("bot-1", room: nil)),
+                     "A page of a bot of this Mac keeps the item of its own chat.")
+    }
+
+    func testThePageOfAMessageShowsAsAQuoteOfTheLibrary() {
+        XCTAssertEqual(TeamAboutPage(teamPage("t-r1-e1")), sales)
+        XCTAssertEqual(sales.quote, MessageReference.page(teamPage("t-r1-e1")),
+                       "The quote of a page of a team bot is the quote of a page of an own bot.")
+        let gone = TeamAboutPage().quote
+        XCTAssertTrue(gone.isPage)
+        XCTAssertNil(gone.documentId, "A page that is gone opens nothing.")
+        XCTAssertEqual(gone.text, "This page is no longer in the Library.")
+        XCTAssertEqual(PageQuoteText.remove, "Remove the page")
+        XCTAssertEqual(PageQuoteText.open("Sales"), "Open the page Sales")
+        XCTAssertFalse(MessageReference(messageId: "e1", text: "Hello", author: "Grace", role: "").isPage)
+    }
+
+    func testAPageAndAReplyTakeThePlaceOfEachOther() {
+        let answered = TeamMessage(id: "e1", first: 1, text: "Hello", createdAt: "2026-11-10T10:00:00Z")
+        var quote = TeamComposerQuote.reply(answered)
+        XCTAssertEqual(quote.reply, answered)
+        XCTAssertNil(quote.page)
+        quote = .page(sales)
+        XCTAssertEqual(quote.page, sales)
+        XCTAssertNil(quote.reply, "The page takes the place of the reply.")
+    }
+
+    @MainActor
+    func testAPageWaitsForTheChatOfItsKeyOnly() {
+        let store = AppStore(demo: true)
+        let chat = TeamChatKey(room: "r1", bot: "t-r1-e1")
+        store.teamPageQuotes[chat] = sales
+        XCTAssertNil(store.takeTeamPageQuote(TeamChatKey(room: "r1", member: "t-r1-e1")), "Not the chat of a person.")
+        XCTAssertNil(store.takeTeamPageQuote("r1"), "Not the Team chat.")
+        XCTAssertNil(store.takeTeamPageQuote(TeamChatKey(room: "r1", bot: "t-r1-e2")), "Not the chat of another bot.")
+        XCTAssertNil(store.takeTeamPageQuote(TeamChatKey(room: "r2", bot: "t-r1-e1")), "Not a chat of another team.")
+        XCTAssertEqual(store.takeTeamPageQuote(chat), sales)
+        XCTAssertNil(store.takeTeamPageQuote(chat), "The chat takes the page one time.")
+    }
+
+    /// A send with a page keeps the page and no reply. A page goes only into a direct chat with a bot.
+    @MainActor
+    func testASendWithAPageKeepsThePageAndNoReply() async throws {
+        let store = AppStore(demo: true)
+        store.team = TeamRooms(rooms: [room(bots: [reporter()])])
+        let chat = TeamChatKey(room: "r1", bot: "t-r1-e1")
+        let answered = TeamMessage(id: "e1", first: 1, text: "Hello", createdAt: "2026-11-10T10:00:00Z")
+        XCTAssertTrue(store.sendTeamMessage(chat, text: "Why are the refunds higher?", replyingTo: answered, page: sales))
+        try await waitUntil { store.teamChats[chat]?.messages.isEmpty == false }
+        let sent = try XCTUnwrap(store.teamChats[chat]?.messages.last)
+        XCTAssertEqual(sent.page, sales)
+        XCTAssertNil(sent.replyTo, "A page and a reply do not go together.")
+
+        let person = TeamChatKey(room: "r1", member: "m-mac")
+        XCTAssertTrue(store.sendTeamMessage(person, text: "Hi", replyingTo: nil, page: sales))
+        try await waitUntil { store.teamChats[person]?.messages.isEmpty == false }
+        XCTAssertEqual(store.teamChats[person]?.messages.map(\.text), ["Hi"])
+        XCTAssertNil(store.teamChats[person]?.messages.first?.page, "A chat of two people has no page.")
+    }
+
     // MARK: The cache of unsent messages
 
     func testTheCacheKeepsTheUnsentMessagesOfAChatWithABot() throws {
@@ -1002,6 +1143,24 @@ final class BotDirectChatTests: XCTestCase {
         XCTAssertEqual(decoded.directMessages?["r1"]?.keys.sorted(), ["m-grace"], "A chat with a bot is not a chat with a person.")
         cache.pendingTeamMessages = [:]
         XCTAssertNil(cache.botDirectMessages)
+    }
+
+    func testAnUnsentMessageKeepsItsPage() throws {
+        let key = TeamChatKey(room: "r1", bot: "t-r1-e1")
+        let pending = TeamPendingMessage(id: "p1", text: "Why?", replyTo: nil, reply: nil,
+                                         createdAt: "2026-11-10T09:00:00Z", page: sales)
+        var cache = OutgoingCache(deviceId: "d1", messages: [])
+        cache.pendingTeamMessages = [key: [pending]]
+        let decoded = try JSONDecoder().decode(OutgoingCache.self, from: JSONEncoder().encode(cache))
+        XCTAssertEqual(decoded.pendingTeamMessages[key]?.first?.page, sales)
+        XCTAssertEqual(pending.afterRestart.page, sales, "A restart keeps the page.")
+        XCTAssertEqual(pending.afterRestart.retried.page, sales, "A retry keeps the page.")
+
+        let older = #"{"deviceId": "d1", "messages": [], "botDirectMessages": {"r1": {"t-r1-e1": [{"id": "p2","#
+            + #" "text": "Hi", "replyTo": null, "reply": null, "createdAt": "2026-11-10T09:00:00Z", "failed": true}]}}}"#
+        let earlier = try JSONDecoder().decode(OutgoingCache.self, from: Data(older.utf8))
+        XCTAssertEqual(earlier.pendingTeamMessages[key]?.map(\.text), ["Hi"], "A message of an earlier app still loads.")
+        XCTAssertNil(earlier.pendingTeamMessages[key]?.first?.page)
     }
 }
 

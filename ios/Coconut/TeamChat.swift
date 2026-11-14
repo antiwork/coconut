@@ -334,7 +334,7 @@ struct TeamMessage: Decodable, Identifiable, Equatable, Sendable {
     var mentions: [String]? = nil
     var createdAt: String
     var editedAt: String? = nil
-    /// The page that a message of a direct chat with a bot is about. The chat does not show it yet.
+    /// The page that a message of a direct chat with a bot is about. The chat shows it as a quote above the text.
     var page: TeamAboutPage? = nil
 
     /// A message of this Mac's person. A bot of this Mac writes as itself, not as the person.
@@ -362,6 +362,42 @@ enum TeamMessageDeletion {
 struct TeamAboutPage: Codable, Equatable, Sendable {
     var id: String? = nil
     var title: String? = nil
+
+    /// The quote of the page, in the form of the quote of a page in the chat of an own bot. A page that is gone has no
+    /// ID, so its quote opens nothing.
+    var quote: MessageReference {
+        MessageReference(messageId: "", text: id == nil ? PageQuoteText.gone : title ?? "", author: "Library",
+                         role: "document", documentId: id)
+    }
+}
+
+extension TeamAboutPage {
+    /// A page of the Library as the subject of a message: "Chat about this page".
+    init(_ document: BotDocument) {
+        self.init(id: document.id, title: document.title)
+    }
+}
+
+/// What the composer of a chat of a team quotes above its field: a message that the person answers, or a Library page
+/// that the message is about. A reply and a page do not go together: the newer one takes the place of the other, as in
+/// the chat of an own bot.
+enum TeamComposerQuote: Equatable {
+    case reply(TeamMessage)
+    case page(TeamAboutPage)
+
+    var reply: TeamMessage? { if case .reply(let message) = self { message } else { nil } }
+    var page: TeamAboutPage? { if case .page(let page) = self { page } else { nil } }
+}
+
+extension TeamRooms {
+    /// The direct chat that "Chat about this page" opens for a page of a team bot: the chat with the bot of the page,
+    /// while this person can send the bot a direct message (TeamRoom.directBot). Nil for a page of a bot of this Mac,
+    /// which has the chat of its own bot.
+    func directChat(about document: BotDocument) -> TeamChatKey? {
+        guard let team = document.team, let room = rooms.first(where: { $0.room == team.room }),
+              let bot = room.directBot(document.botId) else { return nil }
+        return TeamChatKey(room: room.room, bot: bot.id)
+    }
 }
 
 /// One page of the chat, newest first. `before` is the `first` to ask for the next older page, or nil.
@@ -413,6 +449,9 @@ struct TeamPendingMessage: Codable, Identifiable, Equatable, Sendable {
     /// The ID of each team bot and each person that the text names. Nil for a message without a mention, and for a
     /// message that an older app saved.
     var mentions: [String]? = nil
+    /// The Library page that the message is about, in a direct chat with a bot. Nil for each other message, and for a
+    /// message that an older app saved.
+    var page: TeamAboutPage? = nil
 
     var idempotencyKey: String { id }
 

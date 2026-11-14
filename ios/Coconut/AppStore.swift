@@ -100,6 +100,9 @@ final class AppStore {
     @ObservationIgnored private var teamListVersion = 0
     /// A Library page that a chat quotes in its composer when it opens: "Ask the bot about this page". By bot ID.
     var pageQuotes: [String: MessageReference] = [:]
+    /// A Library page that a direct chat with a team bot quotes in its composer when it opens: "Chat about this page".
+    /// By chat key, so only the chat of that key shows it.
+    var teamPageQuotes: [TeamChatKey: TeamAboutPage] = [:]
     var connection: ConnectionState = .unconfigured {
         // A photo from the Mac that failed while the phone was offline loads again.
         didSet { if connection == .connected, oldValue != .connected { NotificationCenter.default.post(name: .coconutMacConnected, object: nil) } }
@@ -1918,6 +1921,12 @@ final class AppStore {
         teamMessageChanges[chat]?[id] == change && teamListHas(chat)
     }
 
+    /// Takes the page that the chat of `chat` quotes when it opens ("Chat about this page"). Only the chat of that key
+    /// gets it, and only one time.
+    func takeTeamPageQuote(_ chat: TeamChatKey) -> TeamAboutPage? {
+        teamPageQuotes.removeValue(forKey: chat)
+    }
+
     /// The chat of a room is on screen. It loads its newest page when it opens.
     func openTeamChat(_ chat: TeamChatKey) {
         teamChatsOnScreen.insert(chat)
@@ -1966,8 +1975,13 @@ final class AppStore {
     /// The message is saved before the composer clears, so a restart keeps it. False when the save failed.
     /// `mentions` are the IDs of the team bots and the people that the text names (TeamMentions.ids). More than the
     /// Mac takes is false too: the app saves nothing, the composer keeps the draft, and the error banner says why.
+    /// `page` is the Library page that the message is about. Only a direct chat with a bot takes it, and then the
+    /// message answers no other message.
     @discardableResult
-    func sendTeamMessage(_ chat: TeamChatKey, text: String, replyingTo answered: TeamMessage?, mentions: [String] = []) -> Bool {
+    func sendTeamMessage(_ chat: TeamChatKey, text: String, replyingTo answered: TeamMessage?, page: TeamAboutPage? = nil,
+                         mentions: [String] = []) -> Bool {
+        let page = chat.bot == nil ? nil : page
+        let answered = page == nil ? answered : nil
         let text = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty, teamListHas(chat) else { return false }
         guard TeamMentions.fits(mentions) else {
@@ -1979,7 +1993,7 @@ final class AppStore {
                              botName: $0.botName, text: String($0.text.prefix(200)))
         }
         let pending = TeamPendingMessage(id: UUID().uuidString, text: text, replyTo: answered?.id, reply: quote,
-                                         createdAt: Self.now, mentions: mentions.isEmpty ? nil : mentions)
+                                         createdAt: Self.now, mentions: mentions.isEmpty ? nil : mentions, page: page)
         teamChats[chat, default: TeamChat()].pending.append(pending)
         do { try saveOutgoing() } catch {
             teamChats[chat]?.pending.removeAll { $0.id == pending.id }
@@ -2017,13 +2031,14 @@ final class AppStore {
             let first = (teamChats[chat]?.newestFirst ?? 0) + 1
             teamChats[chat]?.put(TeamMessage(id: id, first: first, thisMac: true, text: pending.text, replyTo: pending.replyTo,
                                              reply: pending.reply, mentions: pending.mentions,
-                                             createdAt: pending.createdAt))
+                                             createdAt: pending.createdAt, page: pending.page))
             return
         }
         let change = startMessageChange(chat, id)
         let answer: TeamMessageAnswer? = await write("\(chat.path)/messages",
                                                      payload: TeamSendRequest(text: pending.text, replyTo: pending.replyTo,
-                                                                              mentions: pending.mentions, chat: chat.chat),
+                                                                              mentions: pending.mentions, chat: chat.chat,
+                                                                              aboutDocumentId: pending.page?.id),
                                                      as: TeamMessageAnswer.self, refreshInBackground: true,
                                                      idempotencyKey: pending.idempotencyKey)
         // A new pairing or a removal of the room removed the message, or a newer try of it runs.
@@ -2944,8 +2959,10 @@ private struct TeamNotificationsRequest: Encodable { let enabled: Bool }
 private struct TeamNotificationsAnswer: Decodable, Sendable { let room: String; let notifications: Bool }
 /// The answer of a share or a stop of a page: the document with its teams.
 private struct PageShareAnswer: Decodable, Sendable { let document: BotDocument }
-/// A nil `mentions` is not in the JSON: a message without a mention sends none.
-private struct TeamSendRequest: Encodable { let text: String; let replyTo: String?; let mentions: [String]?; let chat: String? }
+/// A nil `mentions` or `aboutDocumentId` is not in the JSON: a message without a mention or a page sends none.
+private struct TeamSendRequest: Encodable {
+    let text: String; let replyTo: String?; let mentions: [String]?; let chat: String?; let aboutDocumentId: String?
+}
 private struct TeamEditRequest: Encodable { let text: String }
 private struct TeamReadRequest: Encodable { let first: Int; let chat: String? }
 private struct TeamTypingRequest: Encodable { let chat: String? }
