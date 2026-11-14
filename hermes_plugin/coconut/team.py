@@ -5,14 +5,10 @@
 adapter, and nothing else: no tool, no hook, no skill and no change of cron. See backend/coconut/team_turns.py for the
 service side.
 
-The service gives a turn for each message of the team chat that names the bot, and for each direct message of a person
-to the bot. The adapter gives it to the gateway as a message of a group chat: the chat is the bot in one chat of a team
-(`<bot>:team:<room>` for the Team chat, and `<bot>:team:<room>:<chat>` for a named chat), the sender is the member of
-the team, and the earlier messages of the chat are `channel_context`. A turn with `direct` true in `team` is a direct
-chat (`<bot>:team:<room>:direct:<member>`), and the adapter gives it the chat type `dm`. The registration has
-`trusted_inbound`, so Hermes asks no pairing question in a `dm` chat either, and the session key of a `dm` chat is its
-chat ID. The adapter does not read the chat ID: it gives it back to the service with each send. Each reply goes back
-to the service.
+The service gives a turn for each message of the team chat that names the bot. The adapter gives it to the gateway
+as a message of a group chat: the chat is the bot in one chat of a team (`<bot>:team:<room>` for the Team chat, and
+`<bot>:team:<room>:<chat>` for a named chat), the sender is the member of the team, and the earlier messages of the
+chat are `channel_context`. The adapter does not read the chat ID: it gives it back to the service with each send. Each reply goes back to the service.
 
 A production agent runs in this gateway. Each entry point of the adapter catches its own faults, so a fault of Coconut
 never stops the gateway or its other channels. A Hermes without the fields that the adapter needs gets one log line
@@ -92,9 +88,8 @@ class TeamAdapter(CoconutAdapter):
 
     def __init__(self, config):
         super().__init__(config)
-        # The name and the chat type of each team chat, for get_chat_info.
+        # The name of each team chat, for get_chat_info.
         self._names: dict[str, str] = {}
-        self._types: dict[str, str] = {}
         # The source of each running turn: its member is the user of its session key, when Hermes keeps a session for
         # each member of a group (group_sessions_per_user). A `/stop` with that source finds that session.
         self._sources: dict[str, object] = {}
@@ -119,10 +114,9 @@ class TeamAdapter(CoconutAdapter):
             team = turn['team']
             chat = str(turn['chat_id'])
             self._names[chat] = str(turn.get('chat_name') or 'Coconut')
-            self._types[chat] = 'dm' if team.get('direct') is True else 'group'
             member, name = str(team['member']), str(team['member_name'])
-            source = self.build_source(chat_id=chat, chat_name=self._names[chat], chat_type=self._types[chat],
-                                       user_id=member, user_name=name)
+            source = self.build_source(chat_id=chat, chat_name=self._names[chat], chat_type='group', user_id=member,
+                                       user_name=name)
             answered = team.get('reply_to') or {}
             self._sources[str(turn['id'])] = source
             return MessageEvent(text=str(turn['text']), message_type=MessageType.TEXT, source=source,
@@ -258,5 +252,4 @@ class TeamAdapter(CoconutAdapter):
         return await super()._send_exec_approval_prompt(prompt)
 
     async def get_chat_info(self, chat_id: str) -> dict:
-        return {'name': self._names.get(str(chat_id), 'Coconut'), 'type': self._types.get(str(chat_id), 'group'),
-                'chat_id': chat_id}
+        return {'name': self._names.get(str(chat_id), 'Coconut'), 'type': 'group', 'chat_id': chat_id}

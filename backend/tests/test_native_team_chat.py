@@ -226,9 +226,12 @@ class NativeTeamChatTests(AsThePerson, TeamOnlyMacs, unittest.TestCase):
         (first,) = self.wait_until(lambda: replies()[:1])
         self.assertEqual((first['text'], first['reply_to']), (FIRST, None))
         self.assertEqual(self.bot_messages(), [], 'The Team chat gets no reply.')
-        # Hermes takes the chat as a DM of Ada: no pairing question, and the reply reached the model call.
+        # Hermes takes the chat as a group chat of its own: no pairing question, no first-contact note of a `dm`
+        # chat, and no change of the config of the home.
         call = next(request for request in Model.requests if 'open for me' in json.dumps(request['messages']))
         self.assertIn('Ada', json.dumps(call['messages']))
+        self.assertNotIn('DM with', json.dumps(call['messages']))
+        self.assertNotIn('profile_build_offered', (self.hermes_home / 'config.yaml').read_text())
         log = self.log.read_text(errors='replace')
         self.assertNotIn('Traceback', log)
         self.assertNotIn('Unauthorized user', log)

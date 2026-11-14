@@ -22,6 +22,7 @@ from coconut.team_turns import (ASKED_DIRECT, DENIED_DIRECT, OUTDATED, PAGE_GONE
 from team_fakes import DEVICE
 from test_push import RecordingTransport, pair_phone
 from test_team_push import flush, register
+from test_team_only import PAGE, make_hermes_home
 from test_team_turns import FakeGateway, TeamTurnMacs, reply
 
 
@@ -91,6 +92,44 @@ class DirectTurnMacs(TeamTurnMacs):
 
     def direct_chat_id(self, member: str | None = None) -> str:
         return team_turns.chat_id(self.room, self.bot['id'], direct=member or self.ada)
+
+    def second_bot(self) -> tuple[dict, object, str]:
+        """The bot Planner of the Mac for a team only, shared and connected: its record, its home and its entry ID."""
+        home = self.home.parent / 'planner'
+        make_hermes_home(home)
+        planner = self.declare('Planner', home=home)
+        self.share(self.room, planner)
+        self.connect(bot=planner)
+        self.passes()
+        return planner, home, self.only.team_store.shares(self.room)[planner['id']]
+
+    def recorded(self, home=None, text='ok') -> list[dict]:
+        """A gateway for the home of Reporter, or for `home`, that answers `text`. The list of its turns."""
+        turns = []
+
+        def script(turn):
+            return (turns.append(turn), reply(text)(turn))[1]
+        if home is None:
+            self.serve(script)
+        else:
+            gateway = FakeGateway(self.only.gateway_bridge, home, script)
+            gateway.start()
+            self.addCleanup(gateway.stop)
+        return turns
+
+    def as_history(self, *calls) -> None:
+        """Run the calls, then a pass of the Mac for a team only that reads what they wrote as history: no turn."""
+        for call in calls:
+            call()
+        self.only.team_store.clock = lambda: time.time() + team_store.TRIGGER_SECONDS + 1
+        self.only.team_sync_pass()
+        self.only.team_store.clock = time.time
+
+    def write_to_mac(self, text: str, entry: str | None = None, **fields) -> str:
+        """A direct entry of Ada's Mac for the Mac for a team only, written by hand. Return its entry ID."""
+        entry = entry or token_hex(16)
+        self.box(self.first, entry, self.mac, dict({'to': self.mac, 'text': text, 'bot': self.entry}, **fields))
+        return entry
 
 
 class TheMarkOfABot(DirectTurnMacs, unittest.TestCase):
@@ -246,16 +285,23 @@ class TurnTests(DirectTurnMacs, unittest.TestCase):
         self.send('@Reporter team', mentions=[self.mention])
         self.sync()
         self.run_turns()
-        chats = {turn['text']: (turn['chat_id'], turn['chat_name'], turn['team'].get('direct')) for turn in turns}
+        chats = {turn['text']: (turn['chat_id'], turn['chat_name']) for turn in turns}
         self.assertEqual(chats, {
-            'From Ada': (self.direct_chat_id(self.ada), 'Ada · Example Team', True),
-            'From Grace': (self.direct_chat_id(self.grace), 'Grace · Example Team', True),
-            '@Reporter team': (team_turns.chat_id(self.room, self.bot['id']), 'Example Team', None)})
+            'From Ada': (self.direct_chat_id(self.ada), 'Ada · Example Team'),
+            'From Grace': (self.direct_chat_id(self.grace), 'Grace · Example Team'),
+            '@Reporter team': (team_turns.chat_id(self.room, self.bot['id']), 'Example Team')})
         self.assertEqual(self.direct_chat_id(self.ada), f'{self.bot["id"]}:team:{self.room}:direct:{self.ada}')
         (ada,) = [turn for turn in turns if turn['text'] == 'From Ada']
         self.assertEqual((ada['team']['member'], ada['team']['member_name']), (self.ada, 'Ada'))
+        self.assertNotIn('direct', ada['team'])
+        # The rules keep a direct chat private in each chat, and no rule depends on a name.
         self.assertEqual(ada['team']['rules'], RULES_DIRECT.format(name='Ada', team='Example Team'))
-        self.assertIn('Only Ada reads your reply.', ada['team']['rules'])
+        self.assertIn('Keep this chat private: do not repeat in another chat what is written here.',
+                      ada['team']['rules'])
+        self.assertNotIn('asks for it', ada['team']['rules'])
+        (team,) = [turn for turn in turns if turn['text'] == '@Reporter team']
+        self.assertEqual(team['team']['rules'], team_turns.RULES.format(where='the team chat of Example Team'))
+        self.assertIn('Do not repeat here what a member wrote to you in a direct chat.', team['team']['rules'])
 
     def test_the_context_has_the_chat_since_the_last_message_of_the_bot(self):
         turns = self.capture('Noted.')
@@ -549,6 +595,223 @@ class TypingTests(DirectTurnMacs, unittest.TestCase):
             kinds = {row[0] for row in self.only.db.execute('SELECT kind FROM team_entries WHERE member=?',
                                                             (self.mac,))}
         self.assertNotIn('typing', kinds)
+
+
+class SeparationTests(DirectTurnMacs, unittest.TestCase):
+    """Each rule that keeps the chat of one person with one bot apart from each other chat."""
+
+    stopped = FailureTests.stopped
+
+    def test_a_send_to_a_member_that_left_writes_into_no_chat(self):
+        self.leave(self.second, {'room': self.room})
+        self.only.team_sync_pass()
+        self.only._team_say(self.room, self.bot['id'], 'outside:9', 0, 'A private text.', request=False,
+                            direct=self.grace)
+        self.sync()
+        self.assertEqual(self.chat(), [])
+        self.assertEqual([row for row in self.stored() if row[0] == self.mac], [])
+
+    def test_the_context_of_two_people_and_two_bots_has_only_its_own_chat(self):
+        planner, home, entry = self.second_bot()
+        planner_chat = f't-{self.room}-{entry}'
+        self.as_history(lambda: self.phone(self.first)('POST', self.path(), {'text': 'Ada to Reporter'}),
+                        lambda: self.phone(self.first)('POST', self.path(chat=planner_chat), {'text': 'Ada to Planner'}),
+                        lambda: self.phone(self.second)('POST', self.path(), {'text': 'Grace to Reporter'}))
+        turns = self.recorded()
+        planner_turns = self.recorded(home)
+        self.phone(self.first)('POST', self.path(), {'text': 'Now Ada to Reporter'})
+        self.phone(self.second)('POST', self.path(), {'text': 'Now Grace to Reporter'})
+        self.phone(self.first)('POST', self.path(chat=planner_chat), {'text': 'Now Ada to Planner'})
+        self.only.team_sync_pass()
+        self.run_turns()
+        contexts = {turn['text']: turn['team']['context'] for turn in turns + planner_turns}
+        self.assertEqual(len(contexts), 3)
+        ada_reporter, grace, ada_planner = (contexts[text] for text in (
+            'Now Ada to Reporter', 'Now Grace to Reporter', 'Now Ada to Planner'))
+        self.assertIn('Ada wrote:\n> Ada to Reporter', ada_reporter)
+        self.assertNotIn('Planner', ada_reporter)
+        self.assertNotIn('Grace', ada_reporter)
+        self.assertIn('Grace wrote:\n> Grace to Reporter', grace)
+        self.assertNotIn('Ada', grace)
+        self.assertIn('Ada wrote:\n> Ada to Planner', ada_planner)
+        self.assertNotIn('Reporter', ada_planner)
+
+    def test_a_page_of_another_bot_and_a_page_past_its_end_are_no_longer_in_the_library(self):
+        from datetime import datetime, timedelta, timezone
+        planner, home, _ = self.second_bot()
+        self.only.gateway_document(dict(PAGE, key='plan', title='Plan', content='The plan of Planner.',
+                                        home=str(home), audience='team'))
+        ends = (datetime.now(timezone.utc) + timedelta(days=2)).strftime('%Y-%m-%d')
+        self.save(expires_at=ends)
+        self.passes()
+        turns = self.recorded()
+        plan = self.only._document_of_key(planner['id'], 'plan')['id']
+        self.write_to_mac('About the plan', page=self.only.team_store.page_entries(self.room)[plan])
+        self.only.team_sync_pass()
+        self.run_turns()
+        self.assertIn(PAGE_GONE.format(name='Ada'), turns[0]['team']['context'])
+        self.assertNotIn('The plan of Planner', turns[0]['team']['context'])
+        (page,) = [page['id'] for page in self.first.documents()['documents'] if 'team' in page and
+                   page['title'] == 'Weekly report']
+        self.dm('About the report', about_document_id=page)
+        with mock.patch.object(self.only, '_now', return_value='2999-01-01T00:00:00Z'):
+            self.run_turns()
+        self.assertIn(PAGE_GONE.format(name='Ada'), turns[1]['team']['context'])
+        self.assertNotIn('3 tasks are open', turns[1]['team']['context'])
+
+    def test_a_reply_quotes_only_a_message_of_the_same_person_and_bot(self):
+        planner, home, entry = self.second_bot()
+        planner_chat = f't-{self.room}-{entry}'
+        self.as_history(lambda: self.phone(self.second)('POST', self.path(), {'text': 'From Grace'}),
+                        lambda: self.phone(self.first)('POST', self.path(chat=planner_chat), {'text': 'To Planner'}))
+        grace = next(row for row in self.only.db.execute(
+            'SELECT entry, text FROM team_directs WHERE text=?', ('From Grace',)))[0]
+        planner_message = next(row for row in self.only.db.execute(
+            'SELECT entry FROM team_directs WHERE text=?', ('To Planner',)))[0]
+        turns = self.recorded(text='Here.')
+        self.write_to_mac('About Grace', reply_to=grace)
+        self.write_to_mac('About Planner', reply_to=planner_message)
+        self.only.team_sync_pass()
+        self.run_turns()
+        self.assertEqual([turn['team'].get('reply_to') for turn in turns], [None, None])
+        # A reply to the message of the bot in the same chat quotes it.
+        self.first.team_sync_pass()
+        answer = self.phone(self.first)('GET', self.path(), {})['messages'][0]
+        self.assertFalse(answer['this_mac'])
+        self.dm('And this?', reply_to=answer['id'])
+        self.run_turns()
+        self.assertEqual(turns[-1]['team']['reply_to'], {'id': answer['id'], 'text': 'Here.', 'own': True})
+
+    def test_a_direct_message_that_names_another_bot_starts_or_keeps_no_turn_of_this_bot(self):
+        planner, home, entry = self.second_bot()
+        sent = self.dm('Hello Reporter')
+        self.write_to_mac('Hello Planner', entry=sent['id'], bot=entry)
+        self.only.team_sync_pass()
+        turns = self.recorded()
+        self.run_turns()
+        self.assertEqual((turns, self.triggers()), ([], []))
+        # A running turn stops too. The gateway of `stopped` takes the turn.
+        self.gateway.stop()
+        sent = self.dm('Hello again')
+        self.stopped(lambda: self.write_to_mac('Hello Planner again', entry=sent['id'], bot=entry))
+        self.assertEqual([row for row in self.stored() if row[0] == self.mac], [])
+
+    def test_a_message_that_names_a_bot_of_another_member_is_no_chat_of_this_mac(self):
+        from uuid import uuid4
+        own = self.first.mutate('POST', '/v1/bots', {'name': 'Own'}, str(uuid4()), 'phone')
+        self.share_page(self.first, self.room, own)
+        self.passes()
+        ada_bot = self.first.team_store.shares(self.room)[own['id']]
+        entry = self.write_to_mac('Hello Own', bot=ada_bot)
+        self.only.team_sync_pass()
+        self.assertEqual(len(self.stored()), 1)
+        self.assertIsNone(self.only.team_store.bot_direct(self.room, entry))
+        self.assertEqual(self.triggers(), [])
+
+    def test_the_kind_of_the_request_must_fit_the_chat(self):
+        sent = self.dm('Hello Reporter')
+        message = self.send('A message of the Team chat.')
+        self.only.team_sync_pass()
+        bot = self.bot['id']
+        with self.only.lock:
+            self.assertIsNone(self.only._team_share(self.room, bot, sent['id']))
+            self.assertEqual(self.only._team_share(self.room, bot, sent['id'], self.ada), self.entry)
+            self.assertIsNone(self.only._team_share(self.room, bot, sent['id'], self.grace))
+            self.assertEqual(self.only._team_share(self.room, bot, message['id']), self.entry)
+            self.assertIsNone(self.only._team_share(self.room, bot, message['id'], self.ada))
+        # A notice that names a direct message never reaches the Team chat.
+        self.only._team_say(self.room, bot, sent['id'], 'restart', UNFINISHED, reply_to=sent['id'])
+        self.sync()
+        self.assertEqual([row for row in self.chat() if row[0] == 'Reporter'], [])
+
+    def test_a_trigger_message_that_becomes_a_direct_entry_stops_its_turn(self):
+        named = self.send('@Reporter status?', mentions=[self.mention])
+        self.sync()
+        self.stopped(lambda: self.write_to_mac('Now private', entry=named['id']))
+        self.sync()
+        self.assertEqual([row for row in self.chat() if row[0] == 'Reporter'], [])
+        self.assertEqual([row for row in self.stored() if row[0] == self.mac], [])
+
+    def test_a_reply_in_a_direct_chat_has_three_tries(self):
+        seen, write = {}, self.relay.write
+
+        def record(relay, room, token, entry, kept, body, tries=1):
+            seen[entry] = tries
+            return write(relay, room, token, entry, kept, body, tries)
+        self.serve(reply('Done.'))
+        self.dm('Status?')
+        with mock.patch.object(self.relay, 'write', side_effect=record):
+            self.run_turns()
+        (entry,) = [row[0] for row in self.only.db.execute('SELECT entry FROM team_directs WHERE writer=?',
+                                                            (self.mac,))]
+        self.assertEqual(seen[entry], 3)
+
+
+class MoreTypingTests(DirectTurnMacs, unittest.TestCase):
+    def typing(self) -> int | None:
+        self.first.team_sync_pass()
+        (chat,) = self.ask(self.first)['bot_directs']
+        return chat['typing']
+
+    def sign(self, **plaintext) -> None:
+        self.box(self.only, token_hex(16), self.ada, dict({'to': self.ada, 'bot': self.entry, 'on': True},
+                                                         **plaintext))
+
+    def test_a_room_that_is_not_active_and_a_mac_that_left_show_no_sign(self):
+        self.dm('Hello')
+        self.sign()
+        self.assertEqual(self.typing(), team_store.TYPING_BOT_SECONDS)
+        with self.first.transaction():
+            self.first.team_store.update_room(self.room, state='removed')
+        self.assertIsNone(self.ask(self.first)['bot_directs'][0]['typing'])
+        with self.first.transaction():
+            self.first.team_store.update_room(self.room, state='active')
+        self.sign()
+        self.assertEqual(self.typing(), team_store.TYPING_BOT_SECONDS)
+        self.leave(self.only, {'room': self.room})
+        self.assertIsNone(self.typing())
+
+    def test_a_box_with_text_or_without_a_true_or_false_on_is_no_sign(self):
+        self.dm('Hello')
+        self.sign(text='A message with on.')
+        self.assertIsNone(self.typing())
+        self.assertEqual(self.bot_replies(), ['A message with on.'])
+        for value in ('yes', 1, None):
+            with self.subTest(on=value):
+                self.sign(on=value)
+                self.assertIsNone(self.typing())
+
+    def test_a_sign_that_waited_for_its_key_shows_nothing(self):
+        self.dm('Hello')
+        self.sign()
+        self.call('PATCH', f'/v1/team/rooms/{self.room}', {'member_name': 'Reporter Mac 2'})
+        self.only.team_sync_pass()
+        with self.first.transaction():
+            for table in ('team_entries', 'team_members', 'team_directs'):
+                self.first.db.execute(f'DELETE FROM {table} WHERE room=?', (self.room,))
+            self.first.team_store.update_room(self.room, seq=0)
+        self.first.team_store.direct_typing.clear()
+        self.assertIsNone(self.typing())
+        self.assertEqual(self.bot_chat(), [('Hello', True)])
+
+    def test_the_writer_writes_no_sign_for_a_person_that_left(self):
+        self.leave(self.second, {'room': self.room})
+        self.only.team_sync_pass()
+        writer = team_typing.BotTyping(self.only, self.room, self.bot['id'], lambda: True, direct=self.grace)
+        self.assertFalse(writer.write(True))
+        token = json.loads(self.key_file(self.only, self.room).read_text())['token']
+        self.assertIsNone(self.only.team_store.entry(
+            self.room, team_typing.direct_typing_entry(token, self.room, self.entry, self.grace)))
+
+    def test_each_sign_past_its_end_goes_from_memory(self):
+        self.dm('Hello')
+        for _ in range(20):
+            self.sign(bot=token_hex(16))
+        self.first.team_sync_pass()
+        self.assertEqual(len(self.first.team_store.direct_typing), 20)
+        self.first.team_store.clock = lambda: time.time() + team_store.TYPING_BOT_SECONDS + 1
+        self.assertIsNone(self.typing())
+        self.assertEqual(self.first.team_store.direct_typing, {})
 
 
 class FromEndToEnd(DirectTurnMacs, unittest.TestCase):
