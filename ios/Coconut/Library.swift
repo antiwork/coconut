@@ -128,6 +128,7 @@ struct LibraryView: View {
     @Environment(AppStore.self) private var store
     /// Shows the documents of this bot only, as the inspector of a Mac chat does.
     var botId: String? = nil
+    @State private var deleting: BotDocument?
 
     var body: some View {
         let sections = LibrarySections(documents: store.documents ?? [], bots: store.bots, teamBots: store.teamBots,
@@ -151,7 +152,7 @@ struct LibraryView: View {
                         BotAvatar(symbol: group.owner.avatar, color: group.owner.color, size: 24,
                                   identity: group.owner.id, animated: false)
                     }
-                    ForEach(group.documents) { row($0) }
+                    ForEach(group.documents) { row($0, pinMark: !sections.showsPinned) }
                 }
             }
             .padding(.bottom, BoardStyle.Space.xl)
@@ -178,19 +179,21 @@ struct LibraryView: View {
         .accessibilityAddTraits(.isHeader)
     }
 
-    private func row(_ document: BotDocument) -> some View {
+    /// `pinMark` marks a pinned document in the group of its bot, in a Library without a section "Pinned".
+    private func row(_ document: BotDocument, pinMark: Bool = false) -> some View {
         NavigationLink(value: DocumentRoute(id: document.id)) {
-            DocumentRow(document: document)
+            DocumentRow(document: document, pinMark: pinMark && document.isPinned)
         }
         .buttonStyle(HomePressStyle())
         .contextMenu {
             PinDocumentButton(document: document)
             if document.canDelete {
-                Button(role: .destructive) { Task { await store.deleteDocument(document) } } label: {
-                    Label("Delete", systemImage: "trash")
-                }
+                Button(role: .destructive) { deleting = document } label: { Label("Delete…", systemImage: "trash") }
             }
         }
+        // The question hangs on the row that the person pressed, so iOS shows it next to that row.
+        .modifier(DeletePageDialog(page: Binding(get: { deleting?.id == document.id ? deleting : nil },
+                                                 set: { deleting = $0 })))
         .accessibilityIdentifier("library-document-\(document.key)")
         .padding(.horizontal, BoardStyle.Space.l)
     }
@@ -199,33 +202,99 @@ struct LibraryView: View {
         VStack(spacing: 8) {
             Image(systemName: "rectangle.3.group").font(.largeTitle.weight(.light)).foregroundStyle(.secondary)
             Text("Your Library").font(.title3.weight(.semibold))
-            Text("Bots keep documents here: notes, checklists, and charts that they update.")
+            Text("Bots keep pages here: notes, checklists, and charts that they update.")
                 .font(.subheadline).foregroundStyle(.secondary).multilineTextAlignment(.center)
         }
         .frame(maxWidth: .infinity).padding(.horizontal, 40).padding(.top, 120)
     }
 }
 
-/// The documents of the Library in the order of the list. A pinned document shows once, with the pinned documents.
+/// The documents of the Library in the order of the list. A pinned document shows once: with the pinned documents, or
+/// in the group of its bot with a pin mark where the Library has no section "Pinned".
 struct LibrarySections {
     let pinned: [BotDocument]
     let groups: [(owner: LibraryOwner, documents: [BotDocument])]
+    /// The Library has a section "Pinned". Without it, `pinned` is empty and each pinned document is in its group.
+    let showsPinned: Bool
 
     /// `botId` keeps the documents of one bot of this Mac. A team page has the ID of a team bot, so it never shows
     /// there.
-    init(documents: [BotDocument], bots: [Bot], teamBots: [TeamBot] = [], botId: String? = nil) {
+    init(documents: [BotDocument], bots: [Bot], teamBots: [TeamBot] = [], botId: String? = nil,
+         showsPinned: Bool = LibrarySections.platformShowsPinned) {
+        self.showsPinned = showsPinned
         // A team bot ID has the form "t-<room>-<entry>" and a bot of this Mac has a UUID, so the two never meet.
         var owners = Dictionary(teamBots.map { ($0.id, LibraryOwner($0)) }) { first, _ in first }
         for bot in bots { owners[bot.id] = LibraryOwner(bot) }
         // A document of an owner that the app does not know stays hidden.
         let shown = documents.filter { (botId == nil || $0.botId == botId) && owners[$0.botId] != nil }
             .sorted { $0.updatedAt > $1.updatedAt }
-        pinned = shown.filter(\.isPinned)
+        pinned = showsPinned ? shown.filter(\.isPinned) : []
         // The latest update of an owner counts its pinned documents, so a pin does not move the owner in the list.
         let latest = Dictionary(shown.map { ($0.botId, $0.updatedAt) }) { first, _ in first }
-        groups = Dictionary(grouping: shown.filter { !$0.isPinned }, by: \.botId)
+        groups = Dictionary(grouping: showsPinned ? shown.filter { !$0.isPinned } : shown, by: \.botId)
             .compactMap { id, documents in owners[id].map { (owner: $0, documents: documents) } }
             .sorted { (latest[$0.owner.id] ?? "") > (latest[$1.owner.id] ?? "") }
+    }
+}
+
+/// The section "Pinned" of the Mac sidebar: the pinned bots, then the pinned pages in the order of the pinned list of
+/// the Library. As in the Library, a page of an owner that the app does not know stays hidden. The section shows when
+/// it has a bot or a page.
+struct SidebarPins {
+    let bots: [Bot]
+    let pages: [BotDocument]
+
+    var isEmpty: Bool { bots.isEmpty && pages.isEmpty }
+
+    /// `pinnedBots` are the pinned bots of the chat list. `bots` and `teamBots` are the owners that the Library knows.
+    init(pinnedBots: [Bot], documents: [BotDocument], bots: [Bot], teamBots: [TeamBot] = []) {
+        self.bots = pinnedBots
+        pages = LibrarySections(documents: documents, bots: bots, teamBots: teamBots, showsPinned: true).pinned
+    }
+}
+
+/// Where the Mac window shows a page of the Library. A pinned page has a row in the sidebar; another page opens inside
+/// the Library, so the sidebar highlights "Library" and back goes to its list.
+enum MacPagePlace: Equatable {
+    /// The pinned row of the sidebar is selected.
+    case pinnedRow(String)
+    /// The Library is selected, with the page pushed.
+    case inLibrary(String)
+    /// The Library is selected, with its list.
+    case libraryList
+
+    /// A document card in a chat: the pinned row of a pinned page, else the page inside the Library.
+    static func card(_ id: String, documents: [BotDocument]?) -> MacPagePlace {
+        documents?.first { $0.id == id }?.isPinned == true ? .pinnedRow(id) : .inLibrary(id)
+    }
+
+    /// The place of the page of a pinned row after the list changed, or nil to keep the row. A page without its pin
+    /// stays open inside the Library. A deleted page leaves the Library list. Only a loaded list decides, and any other
+    /// change of the list keeps the page open.
+    static func afterChange(open id: String, documents: [BotDocument]?) -> MacPagePlace? {
+        guard let documents else { return nil }
+        guard let document = documents.first(where: { $0.id == id }) else { return .libraryList }
+        return document.isPinned ? nil : .inLibrary(id)
+    }
+}
+
+/// Asks before a page is deleted, as the dialog of a bot does. The Mac keeps no copy of a deleted page, and a page that
+/// the person shares with a team goes for each member. `deleted` runs after the Mac confirmed the delete.
+struct DeletePageDialog: ViewModifier {
+    @Environment(AppStore.self) private var store
+    @Binding var page: BotDocument?
+    var deleted: () -> Void = {}
+
+    func body(content: Content) -> some View {
+        content.confirmationDialog("Delete this page?",
+                                   isPresented: Binding(get: { page != nil }, set: { if !$0 { page = nil } }),
+                                   titleVisibility: .visible, presenting: page) { page in
+            Button("Delete", role: .destructive) { Task { if await store.deleteDocument(page) { deleted() } } }
+                .accessibilityIdentifier("confirm-delete-page")
+            Button("Cancel", role: .cancel) {}
+        } message: { page in
+            Text(page.deleteMessage)
+        }
     }
 }
 
@@ -246,15 +315,23 @@ private struct PinDocumentButton: View {
 
 private struct DocumentRow: View {
     let document: BotDocument
+    var pinMark = false
 
     var body: some View {
         HStack(spacing: 12) {
-            Image(systemName: document.isPage ? "chart.bar.xaxis" : "doc.text")
+            Image(systemName: document.symbol)
                 .font(.body).foregroundStyle(.secondary)
                 .frame(width: 36, height: 36)
                 .background(BoardStyle.surface, in: RoundedRectangle(cornerRadius: BoardStyle.Radius.small, style: .continuous))
             VStack(alignment: .leading, spacing: 2) {
-                Text(document.title).font(.body).foregroundStyle(.primary).lineLimit(1)
+                // The pin mark follows the title on its line. A long title is cut before the mark.
+                HStack(spacing: BoardStyle.Space.xs) {
+                    Text(document.title).font(.body).foregroundStyle(.primary).lineLimit(1)
+                    if pinMark {
+                        Image(systemName: "pin.fill").font(.footnote).foregroundStyle(.secondary)
+                            .accessibilityLabel("Pinned")
+                    }
+                }
                 Text(document.detail).font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
             }
             Spacer(minLength: 0)
@@ -274,6 +351,15 @@ private struct DocumentRow: View {
 }
 
 extension BotDocument {
+    /// The message of the question before a delete. A page that the person shares with a team goes for the team too.
+    var deleteMessage: String {
+        isSharedWithTeam ? "Coconut removes each version, also for your team. You cannot undo this."
+                         : "Coconut removes each version. You cannot undo this."
+    }
+
+    /// The symbol of the kind: a chart for an HTML page, a sheet of text for Markdown.
+    var symbol: String { isPage ? "chart.bar.xaxis" : "doc.text" }
+
     /// The summary of the bot, or the time of the last update.
     var detail: String { summary.flatMap { $0.isEmpty ? nil : $0 } ?? updatedText }
 
@@ -314,6 +400,7 @@ struct DocumentView: View {
     @State private var document: BotDocument?
     @State private var failed = false
     @State private var link: URL?
+    @State private var deleting: BotDocument?
 
     private var listed: BotDocument? { store.documents?.first { $0.id == documentId } }
     /// A bot of this Mac. A team page has none, so the actions that need one are not there.
@@ -335,7 +422,7 @@ struct DocumentView: View {
                     .ignoresSafeArea(edges: .bottom)
             } else if failed {
                 ContentUnavailableView {
-                    Label("Coconut could not load this document", systemImage: "doc.text")
+                    Label("Coconut could not load this page", systemImage: "doc.text")
                 } description: {
                     Text("Check the connection to your Mac and try again.")
                 } actions: {
@@ -370,12 +457,14 @@ struct DocumentView: View {
                             Label("Share", systemImage: "square.and.arrow.up")
                         }
                         if document.canDelete {
-                            Button(role: .destructive) {
-                                Task { if await store.deleteDocument(document) { dismiss() } }
-                            } label: { Label("Delete", systemImage: "trash") }
+                            Button(role: .destructive) { deleting = listed ?? document } label: {
+                                Label("Delete…", systemImage: "trash")
+                            }
                         }
                     } label: { Image(systemName: "ellipsis") }
-                        .accessibilityLabel("Document actions")
+                        .accessibilityLabel("Page actions")
+                        // The question hangs on the button of the menu, so iOS shows it next to the button.
+                        .modifier(DeletePageDialog(page: $deleting) { dismiss() })
                 }
             }
         }
@@ -435,7 +524,7 @@ struct DocumentCard: View {
             if let openDocument { openDocument(documentId) } else { pushRoute?(DocumentRoute(id: documentId)) }
         } label: {
             HStack(spacing: 12) {
-                Image(systemName: document?.isPage == true ? "chart.bar.xaxis" : "doc.text")
+                Image(systemName: document?.symbol ?? "doc.text")
                     .font(.body).foregroundStyle(.secondary)
                     .frame(width: 36, height: 36)
                     .background(BoardStyle.paper, in: RoundedRectangle(cornerRadius: BoardStyle.Radius.small, style: .continuous))
@@ -453,7 +542,7 @@ struct DocumentCard: View {
         }
         .buttonStyle(HomePressStyle())
         .accessibilityElement(children: .combine)
-        .accessibilityHint("Opens the document in the Library")
+        .accessibilityHint("Opens the page")
         .accessibilityIdentifier("document-card-\(documentId)")
         // A new document is not in the list yet. One load brings its summary.
         .task(id: documentId) {
