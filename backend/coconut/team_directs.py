@@ -257,7 +257,8 @@ class TeamDirects:
         return page if page is not None and not expired(page, self._now()) else None
 
     def _team_write_direct(self, room: dict, entry: str, member: str, agreement: str, fields: dict, text: str,
-                           reply_to: str | None, bot: str | None = None, page: str | None = None) -> None:
+                           reply_to: str | None, bot: str | None = None, page: str | None = None,
+                           tries: int = 2) -> None:
         """Seal the box of a direct message to `member` and write its entry. `fields` are the other fields of the
         payload. A message to a bot names its `bot` entry, and the page that it is about. The caller holds the lock of
         the room, and no lock of the service."""
@@ -269,7 +270,7 @@ class TeamDirects:
         box = self.team_helper.seal_direct(room['room'], entry, secrets['agreement_key'], room['member'], member,
                                            agreement, json.dumps(plaintext, ensure_ascii=False,
                                                                  separators=(',', ':')).encode())
-        self._team_write(room, entry, False, dict(fields, box=box), tries=2,
+        self._team_write(room, entry, False, dict(fields, box=box), tries=tries,
                          direct={'member': member, 'text': text, 'reply_to': reply_to, 'bot': bot, 'page': page})
 
     def _team_own_direct(self, room_id: str, member: str | None, bot: str | None, entry: str,

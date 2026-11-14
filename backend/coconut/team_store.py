@@ -1320,6 +1320,7 @@ class TeamStore:
         from now. An older sign changes nothing. `on` false ends it. A message of the bot does not end it."""
         key = (room, entry['member'], sign['bot'])
         now = self.clock()
+        self._drop_direct_typing(now)
         if not sign['on']:
             if self.direct_typing.pop(key, 0) > now:
                 self.typed.add(room)
@@ -1331,13 +1332,16 @@ class TeamStore:
 
     def direct_typing_now(self, room: str, member: str, bot: str) -> float | None:
         """The seconds that are left of the typing sign of a bot in its direct chat, or None. An end by time needs no
-        event, so this read drops a sign past its end."""
-        key, now = (room, member, bot), self.clock()
-        end = self.direct_typing.get(key)
-        if end is not None and end <= now:
-            del self.direct_typing[key]
-            return None
+        event, so this read drops each sign past its end."""
+        now = self.clock()
+        self._drop_direct_typing(now)
+        end = self.direct_typing.get((room, member, bot))
         return None if end is None else end - now
+
+    def _drop_direct_typing(self, now: float) -> None:
+        """Drop each typing sign past its end, also a sign whose `bot` names no chat, so the memory stays small."""
+        for key in [key for key, end in self.direct_typing.items() if end <= now]:
+            del self.direct_typing[key]
 
     def _end_typing(self, room: str, member: str, bot: str | None) -> None:
         current = self.typing.pop((room, member, bot), None)

@@ -5,10 +5,14 @@
 adapter, and nothing else: no tool, no hook, no skill and no change of cron. See backend/coconut/team_turns.py for the
 service side.
 
-The service gives a turn for each message of the team chat that names the bot. The adapter gives it to the gateway
-as a message of a group chat: the chat is the bot in one chat of a team (`<bot>:team:<room>` for the Team chat, and
-`<bot>:team:<room>:<chat>` for a named chat), the sender is the member of the team, and the earlier messages of the
-chat are `channel_context`. The adapter does not read the chat ID: it gives it back to the service with each send. Each reply goes back to the service.
+The service gives a turn for each message of the team chat that names the bot, and for each direct message of a person
+to the bot. The adapter gives each turn to the gateway as a message of a group chat: the chat is the bot in one chat of
+a team (`<bot>:team:<room>` for the Team chat, `<bot>:team:<room>:<chat>` for a named chat, and
+`<bot>:team:<room>:direct:<member>` for a direct chat), the sender is the member of the team, and the earlier messages
+of the chat are `channel_context`. A direct chat is a group chat too, not the chat type `dm`: Hermes adds a
+first-contact note to a `dm` chat and writes to the config of the Hermes home. Its chat ID is its own, so it has its own
+session, and its rules tell the agent that one person reads it. The adapter does not read the chat ID: it gives it back
+to the service with each send. Each reply goes back to the service.
 
 A production agent runs in this gateway. Each entry point of the adapter catches its own faults, so a fault of Coconut
 never stops the gateway or its other channels. A Hermes without the fields that the adapter needs gets one log line
