@@ -216,9 +216,20 @@ class HermesNoticeTests(unittest.TestCase):
             'The log shows gateway.errors.no_credentials once.\n  \n\nNothing else.\n',
             'v0.22.5', '`gateway.errors.no_credentials`', 'gateway.errors.no_credentials is a name.',
             FAILED_TURN_NOTICE, '', '  ']
+        # A name of two parts, or a name outside the sections of the catalog, can be a file name or an address.
+        texts += ['report.pdf', 'config.yaml', 'example.com', 'page.js', 'gateway.py', 'cli.py', 'gateway.draining',
+                  'notes.errors.missing', f'gateway.py\n\n{FAILED_TURN_NOTICE}']
         for text in texts:
             with self.subTest(text=text):
                 self.assertEqual(readable_text(text), text)
+
+    def test_a_name_of_three_parts_in_a_section_of_the_catalog_becomes_the_missing_text(self):
+        missing = ('Hermes reported a problem, but the text of its notice is missing on the Mac (`{}`). '
+                   'On the Mac, run `hermes doctor`.')
+        with self.assertLogs('coconut.hermes_notices', 'WARNING'):
+            self.assertEqual(readable_text(f'gateway.errors.generic_failed\n\n{FAILED_TURN_NOTICE}'),
+                             missing.format('gateway.errors.generic_failed') + f'\n\n{FAILED_TURN_NOTICE}')
+            self.assertEqual(readable_text('display.status.connecting'), missing.format('display.status.connecting'))
 
 
 class TurnEventTests(unittest.TestCase):

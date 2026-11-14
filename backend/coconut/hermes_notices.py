@@ -12,8 +12,13 @@ import re
 
 LOG = logging.getLogger(__name__)
 
-# A paragraph that is only a name of two to seven parts. Each part starts with a letter, so a version number is no name.
-RAW_NAME = re.compile(r'[a-z][a-z0-9_]*(?:\.[a-z][a-z0-9_]*){1,6}')
+# The top-level sections of the message catalog of Hermes (locales/en.yaml, checked on Hermes 0.23.1).
+CATALOG_SECTIONS = ('approval', 'gateway', 'platform', 'slash', 'cli', 'display', 'explainer', 'tips', 'plan_usage',
+                    'shared')
+# A paragraph that is only a name of three to seven parts, and the first part is a section of the catalog. A name of two
+# parts, such as `gateway.draining`, stays as it is, because a file name such as `gateway.py` has the same form. Each
+# part starts with a letter, so a version number is no name.
+RAW_NAME = re.compile(r'(?:%s)(?:\.[a-z][a-z0-9_]*){2,6}' % '|'.join(CATALOG_SECTIONS))
 # A blank line between two paragraphs. The group keeps the break, so a text without a raw name stays the same.
 PARAGRAPH_BREAK = re.compile(r'(\n[ \t]*\n\s*)')
 
