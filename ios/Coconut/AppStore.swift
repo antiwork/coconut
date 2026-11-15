@@ -83,6 +83,9 @@ final class AppStore {
     /// Counts the messages, edits and removals that the Mac confirmed, by chat. A page that the app asked for before
     /// such a change can be older than the change.
     @ObservationIgnored private var teamChatChanges: [TeamChatKey: Int] = [:]
+    /// Counts the updates that say that a document changed. A page of a chat that the app asked for before such an
+    /// update can show a page that went.
+    @ObservationIgnored private var teamDocumentChanges = 0
     /// The read position that the Mac confirmed, and the one on its way, by chat.
     @ObservationIgnored private var teamReadPosted: [TeamChatKey: Int] = [:]
     @ObservationIgnored private var teamReadPosting: [TeamChatKey: Int] = [:]
@@ -1620,6 +1623,8 @@ final class AppStore {
     /// between the cursors, also the team changes. A screen that never loaded loads when it opens.
     private func reloadChangedTeam(_ page: StateUpdates) {
         let chats = page.changedTeamChats
+        // A reset skips the events between the cursors, also the changes of documents.
+        if page.documentsChanged == true || page.reset != nil { teamDocumentChanges += 1 }
         reloadTeamChats(Self.teamChatsToRead(after: page, chats: teamChats))
         // The row of a team or a direct chat shows its newest message and its unread count, so a change of the chat
         // loads the list too. The list also says who types.
@@ -1637,8 +1642,8 @@ final class AppStore {
 
     /// The chats that read their newest page again for one update, each one time: each chat of a reset; else each
     /// changed chat that the app has, and after a change of the documents each chat with a team bot that quotes a
-    /// page (teamChatsQuotingPages). A change of the messages of a room names the room only, so it reads the Team chat
-    /// and each named chat of the room.
+    /// page (teamChatsQuotingPages). A chat whose first request runs reads again in loadTeamChat. A change of the
+    /// messages of a room names the room only, so it reads the Team chat and each named chat of the room.
     static func teamChatsToRead(after page: StateUpdates, chats: [TeamChatKey: TeamChat]) -> Set<TeamChatKey> {
         if page.reset != nil { return Set(chats.keys) }
         let changed = page.changedTeamChats
@@ -1866,6 +1871,7 @@ final class AppStore {
             let request = teamChatRequestCount
             teamChatRequests[chat] = request
             let changes = teamChatChanges[chat, default: 0]
+            let documents = teamDocumentChanges
             let page: TeamMessagePage
             do { page = try await client.request("\(chat.path)/messages?limit=\(Self.teamPage)\(chat.query)") } catch {
                 guard self.client === client, teamChatRequests[chat] == request, teamListHas(chat) else { return false }
@@ -1876,6 +1882,9 @@ final class AppStore {
             guard self.client === client, teamChatRequests[chat] == request, teamListHas(chat) else { return false }
             // The Mac confirmed a message, an edit or a removal during this request, so the page can be older. Ask again.
             guard changes == teamChatChanges[chat, default: 0] else { continue }
+            // A document changed during this request, so a page that a message quotes can be gone. Ask again. The
+            // update reads only the chats that the app has, so it does not read a chat whose first request runs.
+            guard documents == teamDocumentChanges || !page.messages.contains(where: { $0.page != nil }) else { continue }
             var merged = teamChats[chat] ?? TeamChat()
             // A page that starts the loaded range again makes each read of the old range out of date.
             if merged.merge(page, requested: nil) { teamOlderRequests[chat] = nil }
@@ -1954,13 +1963,13 @@ final class AppStore {
                         mentions: mentions)
     }
 
-    /// The loaded direct chats with a team bot that quote a page with an ID, each one time. After an update that
-    /// says that a document changed, each reads its messages again, so the quote of a page that went says so and
-    /// opens nothing. A chat whose pages all went already has no page with an ID, so it does not read again, and a
-    /// read gives no update: the reads cannot loop.
+    /// The loaded direct chats with a team bot that quote a page, each one time. After an update that says that a
+    /// document changed, each reads its messages again, so the quote of a page that went says so and opens nothing.
+    /// A page that went can come back with the same ID, so a chat whose pages all went also reads again. Only an
+    /// update starts these reads, and a read of a chat gives no update: the reads cannot loop.
     nonisolated static func teamChatsQuotingPages(_ chats: [TeamChatKey: TeamChat]) -> [TeamChatKey] {
         chats.compactMap { key, chat in
-            key.bot != nil && chat.loaded && chat.messages.contains { $0.page?.id != nil } ? key : nil
+            key.bot != nil && chat.loaded && chat.messages.contains { $0.page != nil } ? key : nil
         }
         .sorted { ($0.room, $0.bot ?? "") < ($1.room, $1.bot ?? "") }
     }

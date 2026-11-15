@@ -498,7 +498,8 @@ final class DirectMessageTests: XCTestCase {
     }
 
     /// An update that says that a document changed reads a chat that quotes a page again, also without a Library list:
-    /// one read for one update. When the page went, the quote has no ID, and the next update reads nothing.
+    /// one read for one update. When the page went, the quote has no ID. When the page comes back, the next update
+    /// reads the chat again, and the quote has the ID again.
     @MainActor
     func testAChangeOfTheDocumentsReadsAChatThatQuotesAPageWithoutALibraryList() async throws {
         #if !(DEBUG && targetEnvironment(simulator))
@@ -536,11 +537,48 @@ final class DirectMessageTests: XCTestCase {
             try await Task.sleep(for: .seconds(1))
             XCTAssertEqual(server.routes.filter { $0 == path }.count, reads + 2, "One read for one update.")
 
-            server.changeDocuments()
-            try await waitUntil { server.pendingUpdate == false }
+            // The page comes back with the same ID: the chat whose pages went reads again, and the quote opens it.
+            server.restorePages()
+            try await waitUntil { store.teamChats[chat]?.messages.last?.page?.id == "t-r1-p1" }
+            XCTAssertEqual(store.teamChats[chat]?.messages.last?.page, TeamAboutPage(id: "t-r1-p1", title: "Sales"),
+                           "The quote shows the page that came back.")
             try await Task.sleep(for: .seconds(1))
-            XCTAssertEqual(server.routes.filter { $0 == path }.count, reads + 2,
-                           "A chat whose pages went does not read again.")
+            XCTAssertEqual(server.routes.filter { $0 == path }.count, reads + 3, "One read for one update.")
+            store.setForeground(false)
+        }
+        #endif
+    }
+
+    /// A change of the documents during the first read of a chat reads the chat again, so the answer of the first
+    /// read, made before the change, does not show a page that went.
+    @MainActor
+    func testAChangeOfTheDocumentsDuringTheFirstReadReadsTheChatAgain() async throws {
+        #if !(DEBUG && targetEnvironment(simulator))
+        throw XCTSkip("This HTTP fixture requires a debug simulator build.")
+        #else
+        var state = try PreviewStateFixture.load()
+        state.cursor = 10; state.syncVersion = 1
+        let server = try DirectServer(state: APIJSON.encoder().encode(state), cursor: state.cursor, bot: true)
+        let address = try await server.start()
+        defer { server.stop() }
+        try await withPairedStore(address: address) { store in
+            let chat = TeamChatKey(room: "r1", bot: "t-r1-e1")
+            let path = "GET /v1/team/rooms/r1/directs/t-r1-e1/messages"
+            server.quotePage()
+            server.delayReads(3)
+            store.setForeground(true)
+            let load = Task { await store.loadTeamChat(chat) }
+            try await waitUntil { server.routes.contains(path) }
+
+            // The page goes while the first read waits for its answer.
+            server.removePages()
+            try await waitUntil { server.pendingUpdate == false }
+            XCTAssertNil(store.teamChats[chat], "The first read still runs when the update comes.")
+            server.delayReads(0.05)
+            _ = await load.value
+            XCTAssertEqual(store.teamChats[chat]?.messages.first?.page, TeamAboutPage(),
+                           "The chat reads again, and the quote says that the page is gone.")
+            XCTAssertEqual(server.routes.filter { $0 == path }.count, 2, "The change reads the chat one more time.")
             store.setForeground(false)
         }
         #endif
@@ -619,6 +657,20 @@ private final class DirectServer: @unchecked Sendable {
             pending = true
         }
     }
+
+    /// The pages of the messages came back with their IDs. The next updates answer says that a document changed.
+    func restorePages() {
+        lock.withLock { pagesGone = false; documentsChanged = true; pending = true }
+    }
+
+    /// The first message quotes the page `t-r1-p1`. The updates do not say it.
+    func quotePage() {
+        lock.withLock { messages[0].page = "t-r1-p1" }
+    }
+
+    /// Each read of the newest page answers after this many seconds, with the messages at the time of the request.
+    func delayReads(_ seconds: Double) { lock.withLock { readDelay = seconds } }
+    private var readDelay = 0.05
 
     /// The next updates answer says that a document changed, and with `andChat` also that the chat changed.
     func changeDocuments(andChat: Bool = false) {
@@ -755,7 +807,9 @@ private final class DirectServer: @unchecked Sendable {
                                   + "\(content.count)\r\nConnection: close\r\n\r\n").utf8)
                 reply.append(content)
                 let answer = reply
-                queue.asyncAfter(deadline: .now() + (route == "GET /v1/updates" ? 0.25 : 0.05)) {
+                let delay = route == "GET /v1/updates" ? 0.25
+                    : route == "GET /v1/team/rooms/r1/directs/\(other)/messages" ? lock.withLock { readDelay } : 0.05
+                queue.asyncAfter(deadline: .now() + delay) {
                     connection.send(content: answer, completion: .contentProcessed { _ in connection.cancel() })
                 }
             }
@@ -1450,8 +1504,8 @@ final class BotDirectChatTests: XCTestCase {
     }
 
     /// A fresh Library list without a page that a loaded chat with a bot quotes reads that chat again.
-    /// After an update that says that a document changed, each loaded chat with a bot that quotes a page with an ID
-    /// reads again, one time. A chat whose pages all went has no page with an ID, so it does not read again.
+    /// After an update that says that a document changed, each loaded chat with a bot that quotes a page reads again,
+    /// one time. A chat whose pages all went also reads again, because a page can come back with the same ID.
     func testAChatThatQuotesAPageReadsAgainAfterAChangeOfTheDocuments() {
         var message = answered
         message.page = sales
@@ -1466,8 +1520,8 @@ final class BotDirectChatTests: XCTestCase {
             TeamChatKey(room: "r1", bot: "t-r1-e3"): TeamChat(messages: [answered], loaded: true),
             TeamChatKey(room: "r1", bot: "t-r1-e4"): TeamChat(messages: [message], loaded: false),
             "r1": TeamChat(messages: [message], loaded: true)]
-        XCTAssertEqual(AppStore.teamChatsQuotingPages(chats), [bot],
-                       "One time for a chat with two pages. Not a chat whose pages went, not a chat without a page, "
+        XCTAssertEqual(AppStore.teamChatsQuotingPages(chats), [bot, TeamChatKey(room: "r1", bot: "t-r1-e2")],
+                       "One time for a chat with two pages, and a chat whose pages went. Not a chat without a page, "
                        + "not a chat that did not load, and not the Team chat.")
     }
 
