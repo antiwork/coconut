@@ -12,6 +12,7 @@ A team has two kinds of Mac:
 Status: the relay has the room (`relay/src/room.js`). The Mac backend makes, joins, leaves and copies a room for the tools on the Mac, and it learns of a new entry at once through the socket of the room (see [Mac](#mac)). It shares the pages that a person shares, and the Library of the phone lists the team pages of the other Macs (see [Agents and pages](#agents-and-pages)). It keeps the Team chat and serves it to the phone, and the app lists the team agents and the people that a person can name with `@` (see [Team chat](#team-chat) and [Mentions of a person](#mentions-of-a-person)). An agent of a Mac for a team only answers in the Team chat (see [An agent answers](#an-agent-answers)). A message of another member reaches this Mac through the socket in about one second, and a person's Mac notifies its phones (see [Notifications](#notifications)). The Mac keeps the direct messages between two people and serves them to the phone, and the app shows them (see [Direct messages](#direct-messages)). A person writes to an agent of a Mac for a team only in a direct chat, and the agent answers there (see [Direct chat with an agent](#direct-chat-with-an-agent)). The admin removes a member (see [Removal](#removal)), and the room then gets a new room key (see [Key change](#key-change)). The admin deletes a message of another member (see [The admin deletes a message](#the-admin-deletes-a-message)). The admin makes more chats with a name in a team (see [Chats of a team](#chats-of-a-team)). This part is not built yet:
 
 - A call of `GET .../members` that finds a member that left without a `delete` entry.
+- A Mac for a team only does not mark its agents for direct messages and does not answer in a direct chat yet. So no person can write to an agent yet. See [Direct chat with an agent](#direct-chat-with-an-agent).
 
 ## Terms
 
@@ -382,7 +383,7 @@ Everything else is in `coconut.sqlite3`:
 | --- | --- |
 | `team_rooms` | One row for each room: its relay, its name, the member ID of this Mac, the admin, the state, the epoch, the read position (`seq`), the profile that this Mac writes in its `member` entry, and `notifications`: the choice of the person of this Mac to get notifications of the room. |
 | `team_entries` | The newest accepted write of each entry ID, with its payload and the epoch of its body. |
-| `team_members` | The members that a Mac shows: the newest valid `member` entry of each member, with its marks `bot_only` and `direct`. |
+| `team_members` | The members that a Mac shows: the newest valid `member` entry of each member, with its marks `bot_only` and `direct`. Each start of the service sets the marks of each row from its kept entry again, and the marks `open` and `direct` of each row of `team_bots` from its kept `bot` entry. A service of an older version kept these rows without the marks, and the other Mac does not write its entry again. The start reads each payload with the reader of the accept, and never with a JSON function of SQLite, which refuses some JSON that another member can write. A row whose entry does not read, or is over 1 MiB, keeps its marks. The step is a best effort: an error, or a write lock of another connection for over one second, ends it with a log line, and the next start tries again. It writes only when a row is wrong. A room with a corrected row gets `team.updated`. The store keeps the room in `team_marks` until the event goes out, so a stop before the event does not lose it. |
 | `team_pending` | The bodies that the Mac cannot open yet, for a later version or a later epoch. Each start of the service and each new room key give them a new try. |
 | `team_shares` | The agents of this Mac that author a page in each room, each with the entry ID of its `bot` entry. On a person's Mac a row comes with the first shared page of the agent and goes with the last one. |
 | `team_page_shares` | The documents that the person of this Mac shares with each room. A Mac for a team only has no rows here. |
@@ -399,7 +400,7 @@ Everything else is in `coconut.sqlite3`:
 | `team_direct_reads` | The read position of this Mac in each direct chat of two people: one row for each room and other member. |
 | `team_bot_direct_reads` | The read position of this Mac in each direct chat with an agent: one row for each room and `bot` entry. |
 | `team_direct_waits` | The `direct` entries whose key comes later in the read. The end of the read tries each one again, then removes it. |
-| `team_marks` | The lasting marks of this Mac, for all its rooms. `direct`: an app of the person asked for direct messages. A leave does not remove it. |
+| `team_marks` | The lasting marks of this Mac, for all its rooms. `direct`: an app of the person asked for direct messages. A leave does not remove it. `corrected:<room ID>`: the open of the store corrected a row of the room, and the event for the phone did not go out yet. |
 | `team_removed` | The members that a `remove` entry of the admin took out of the room, each with the entry ID of that entry. See [Removal](#removal). |
 | `team_invites` | On the admin's Mac: the hash of the ticket and the end of each invite that this Mac made. See [Invite and join](#invite-and-join). |
 | `team_erased` | The entry IDs of the messages that an `erase` entry of the admin took out of the chat. See [The admin deletes a message](#the-admin-deletes-a-message). |
@@ -708,11 +709,11 @@ No log line has the text of a message, the name of a writer or the name of a tea
 
 A person names another person of the team with `@` in the chat, as the person names an agent. The app sends the member ID in `mentions`, and the Mac writes the entry ID of the `member` entry of that member. The log format and the relay do not change.
 
-- A mention of a person starts no turn of an agent. Rule 4 of [An agent answers](#an-agent-answers) names only `bot` entries.
+- A mention of a person starts no turn of an agent. Rule 4 of [An agent answers](#an-agent-answers) names `bot` entries, and the `member` entry of a Mac for a team only, which is no person.
 - A mention of this Mac's person notifies also in a quiet team (see rule 4 of [Notifications](#notifications)).
 - `GET /v1/team/rooms` gives `mentioned` and `mention_first` for each room. `mentioned` stays true until the read position passes each unread message that names this Mac's person. An own message, a removed message and a message that does not show never count. One query walks the index of the messages back from the newest message to the read position. It reads at most the newest 1,000 messages after the read position, also own messages, so a mention under them does not show.
 - The Mac app makes a banner for a quiet team when `mention_first` grows: a new mention arrived since the last list, also when a plain message came after it.
-- The `@` list of the app has the agents that a teammate can ask, then each other person of the team, without the Macs for a team only. The app lists the people only for a room with `mentioned`, because an older service does not notify a named person in a quiet team.
+- The `@` list of the app has the agents that a teammate can ask, then each other person of the team, without the Macs for a team only. The app lists the people only for a room with `mentioned`, because an older service does not notify a named person in a quiet team. A typed `@` name that an agent and a person share gives the agent. A tap gives the row that the person taps.
 
 #### An agent answers
 
@@ -723,7 +724,7 @@ Rules of a trigger. A `message` entry starts a turn of an agent of this Mac when
 1. This Mac sees the entry for the first time, and its `rev` is 1. An edit starts no turn, and neither does a read again of the same entry, also after a restart.
 2. The entry has no `bot`, its member is another member than this Mac, and that member is in the member list. The signature proves the member. No other field of the payload decides.
 3. The `at` of the relay is under one hour old. The history that a Mac reads after a join starts nothing.
-4. `mentions` has the entry ID of the `bot` entry of the agent, or `reply_to` names a message of that agent on this Mac.
+4. `mentions` has the entry ID of the `bot` entry of the agent, or `reply_to` names a message of that agent on this Mac. A Mac for a team only is no person, so a mention of it can only mean its agent: when `mentions` has the entry ID of the `member` entry of this Mac, the mention names the agent that answers in the room and has the name of the member. The Mac compares the names after Unicode normalization to NFC and without case. When no such agent exists, it names the only agent that answers in the room. With two or more answering agents and none with the name, it names no agent. With two or more answering agents that have the name, it names no agent too. A message that names the member and the agent starts one turn. A member row that a service of an older version kept, or an unsent message from before a correction, can still name the member.
 5. The agent is shared with the room, is not archived, and its chat is connected: `chat` is true in its record (`coconut team connect-chat`).
 
 The Mac keeps the triggers in `team_triggers`, in the order in which it accepted them, in the transaction of the accept. At most 8 triggers wait for one agent in one room, for the Team chat, the named chats and the direct chats together. The Mac skips a trigger over that bound, with a log line. One thread runs the triggers of one agent in one room one at a time. Before a turn, one transaction checks rules 2, 3 and 5 again, checks that the message still shows (a removal skips the trigger), and marks the trigger as started. When the turn ends, the row goes. So a trigger runs at most once: a row that is started at a start of the service is a turn that a stop cut off, and the agent posts a notice instead of a second run, which could repeat a tool action. An update drains the service: no new turn starts, and the running turn ends first.
@@ -957,7 +958,7 @@ The payload of a `bot` entry has the optional field `direct`.
 - Only a Mac for a team only writes it, and only while the record of the agent has `chat` true (the rule of `open`).
 - A missing `direct` and each other value are false. The agent still shows.
 - The mark is part of the form of an own `bot` entry, so a change of `chat` writes the entry again in each team.
-- A reader keeps the mark in `team_bots` (`direct`). A store of an older version gets the column in one step, and each row reads as false until the next write of its entry.
+- A reader keeps the mark in `team_bots` (`direct`). A store of an older version gets the column in one step. Each start of the service then sets the mark of each row from the kept `bot` entry of the row, as it sets `open`.
 - A change of `direct` of an agent of another member adds `team.updated`, as each other change of an agent.
 
 #### The box of a chat with an agent
@@ -1058,7 +1059,7 @@ A message of a chat of two people has no `page`.
    - This Mac sees the entry for the first time, and its `rev` is 1.
    - Its member is another member than this Mac, and that member is in the member list.
    - The `at` of the relay is under one hour old.
-   - Its box opens, names this Mac in `to`, has a valid `text`, and its `bot` is the entry ID of the `bot` entry of an agent of this Mac that is shared with the room, is not archived, and has `chat` true.
+   - Its box opens, names this Mac in `to`, has a valid `text`, and its `bot` is the entry ID of the `bot` entry of an agent of this Mac that is shared with the room, is not archived, and has `chat` true. The `member` entry of this Mac does not count here: a mention of this Mac is a rule of the team chat only (rule 4 of [An agent answers](#an-agent-answers)).
 4. The trigger goes into `team_triggers`, with the bound of 8 waiting triggers for one agent in one room. One thread still runs the triggers of one agent in one room one at a time: the Team chat, the named chats and the direct chats.
 5. The turn goes to Hermes with the chat ID `<bot ID>:team:<room ID>:direct:<member ID>`: one session for each person and agent. The name of the chat for Hermes is "<name of the person> · <name of the team>". The adapter gives the turn to Hermes as a group chat, as each turn of the team chat. It does not give the chat type `dm`, because Hermes adds a first-contact note to a `dm` chat and writes to the config of the Hermes home. The chat ID is its own, so the session is its own, and the rules tell the agent that one person reads the chat.
 6. The rules of the chat for Hermes: "You are in a direct chat with {name}, a member of the team {team}, in Coconut. Only {name} reads your reply. Keep this chat private: do not repeat in another chat what is written here. Do not repeat here what another member wrote to you in a direct chat. Coconut shows Markdown and has no cards here: when you need a choice or a fact, ask in your reply." The rules of the Team chat and of each named chat have the sentence "Do not repeat here what a member wrote to you in a direct chat." No rule depends on a name, because a name does not prove a person.

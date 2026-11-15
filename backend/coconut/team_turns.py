@@ -1,11 +1,11 @@
 """The bots of a team-only Mac answer in the team chat and in a direct chat (docs/team-log.md, "An agent answers" and
 "The Mac for a team only").
 
-A person of the team writes a message that names a bot of this Mac (`mentions`) or answers a message of that bot
-(`reply_to`), or writes to the bot in a direct chat (a `direct` entry with `bot`). TeamStore.accept queues the message as
-a trigger (`team_triggers`). The thread of this module gives each trigger, one at a time for each bot and room, to the
-Hermes gateway of the bot through the gateway bridge, and writes each complete reply into the chat: a `message` entry
-with `bot`, or in a direct chat a `direct` entry with `bot` that only the Mac of the person opens.
+A person of the team writes a message that names a bot of this Mac or this Mac itself (`mentions`), or answers a
+message of that bot (`reply_to`), or writes to the bot in a direct chat (a `direct` entry with `bot`). TeamStore.accept
+queues the message as a trigger (`team_triggers`). The thread of this module gives each trigger, one at a time for each
+bot and room, to the Hermes gateway of the bot through the gateway bridge, and writes each complete reply into the chat:
+a `message` entry with `bot`, or in a direct chat a `direct` entry with `bot` that only the Mac of the person opens.
 
 Only TeamOnlyService mixes this class in. A full Mac queues no trigger, because its bots are its person's.
 

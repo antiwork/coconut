@@ -263,6 +263,22 @@ class TriggerTests(DirectTurnMacs, unittest.TestCase):
         self.run_turns()
         self.assertEqual(order, ['@Reporter in the team', *(f'Direct {n}' for n in range(team_store.MAX_WAITING - 1))])
 
+    def test_a_mention_of_this_mac_asks_its_bot_and_a_direct_message_needs_the_bot_entry(self):
+        # A Mac for a team only is no person: a mention of its `member` entry in the team chat asks its bot.
+        mac_entry = self.only.team_store.member(self.room, self.mac)['entry']
+        named = self.send('@Reporter Mac status?', mentions=[self.mac])
+        self.sync()
+        self.assertEqual(self.triggers(), [(named['id'], 0)])
+        turns = self.recorded()
+        self.run_turns()
+        self.assertEqual([turn['chat_id'] for turn in turns], [team_turns.chat_id(self.room, self.bot['id'])])
+        # A direct message names its bot by the `bot` entry only. The `member` entry of this Mac names no bot there.
+        self.write_to_mac('Hello Mac', bot=mac_entry)
+        self.only.team_sync_pass()
+        self.assertEqual(self.triggers(), [])
+        sent = self.dm('Hello Reporter')
+        self.assertEqual(self.triggers(), [(sent['id'], 0)])
+
     def test_a_trigger_whose_member_left_before_its_turn_goes(self):
         self.dm('From Grace', service=self.second)
         self.leave(self.second, {'room': self.room})

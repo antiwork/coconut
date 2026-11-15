@@ -197,7 +197,7 @@ class DecisionInbox:
         action = data.get('action')
         if (type(data.get('revision')) is not int or data['revision'] != decision['revision']
                 or task['status'] == 'cancelled'):
-            raise ServiceError(409, 'This decision changed. Refresh it first.')
+            raise ServiceError(409, closed_reason(decision, 'This decision changed. Refresh it first.'))
         if action == 'restore':
             deadline = decision.get('inbox_undo_until')
             if not deadline or datetime.fromisoformat(deadline.replace('Z', '+00:00')) <= datetime.now(timezone.utc):

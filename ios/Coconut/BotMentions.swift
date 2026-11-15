@@ -105,8 +105,11 @@ enum BotMentions {
                 mention.snapshot = text
                 result.append(mention)
             } else {
+                // A typed name of a bot and a person gives the bot: an older service shows a Mac for a team only as a
+                // person with the name of its bot.
                 let exact = matchingBots.filter { $0.name.count == longest }
-                if exact.count == 1, let bot = exact.first {
+                let chosen = exact.count == 1 ? exact : exact.filter { $0.mentionedPerson == nil }
+                if chosen.count == 1, let bot = chosen.first {
                     result.append(SelectedBotMention(id: bot.id, name: bot.name, location: location, snapshot: text))
                 }
             }

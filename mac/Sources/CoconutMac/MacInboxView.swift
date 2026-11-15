@@ -13,11 +13,36 @@ struct MacInboxView: View {
     @State private var path = NavigationPath()
     // The last card that the X dismissed. Undo restores it while the Mac keeps its restore window open.
     @State private var dismissed: Dismissal?
+    // The time at which the view checks whether an undo waits. A task moves it to each deadline (see undoDeadline).
+    @State private var undoClock = Date()
 
     private struct Dismissal {
         let receipt: Decision
         let restoreKey = UUID().uuidString
         let at = Date()
+    }
+
+    private enum UndoAction {
+        case dismissal(Dismissal)
+        case answer(OutgoingAnswer)
+    }
+
+    /// What Undo takes back: the newest action, a dismissal or an answer that the app still holds. Nil when no undo
+    /// waits.
+    private var undoAction: UndoAction? {
+        let waiting = store.latestWaitingAnswer(at: undoClock)
+        if let dismissed, let deadline = dismissed.receipt.inboxUndoUntil?.apiDate, deadline > undoClock,
+           dismissed.at > (waiting?.createdAt.apiDate ?? .distantPast) {
+            return .dismissal(dismissed)
+        }
+        return waiting.map(UndoAction.answer)
+    }
+
+    /// The next time when Undo can change: the end of the restore window of the dismissal, or the time when the app
+    /// sends the waiting answer.
+    private var undoDeadline: Date? {
+        [dismissed?.receipt.inboxUndoUntil?.apiDate, store.latestWaitingAnswer(at: undoClock)?.sendAt]
+            .compactMap { $0 }.filter { $0 > undoClock }.min()
     }
 
     // An answered card leaves at once. The app holds the answer for a few seconds, and Undo in the toolbar takes it back.
@@ -95,16 +120,16 @@ struct MacInboxView: View {
         }
         .navigationTitle("Inbox")
         .toolbar {
-            ToolbarItem(placement: .primaryAction) {
-                TimelineView(.periodic(from: .now, by: 1)) { context in
-                    // Undo takes back the newest action: a dismissal, or an answer that the app still holds.
-                    let waiting = store.latestWaitingAnswer(at: context.date)
-                    if let dismissed, let deadline = dismissed.receipt.inboxUndoUntil?.apiDate, deadline > context.date,
-                       dismissed.at > (waiting?.createdAt.apiDate ?? .distantPast) {
+            // The toolbar has the Undo item only while an undo waits. An item without content still took a slot in the
+            // glass capsule of "Open chat", so that capsule was two slots wide with its symbol in the right half.
+            if let undoAction {
+                ToolbarItem(placement: .primaryAction) {
+                    switch undoAction {
+                    case .dismissal(let dismissed):
                         Button { restore(dismissed) } label: { Label("Undo", systemImage: "arrow.uturn.backward") }
                             .keyboardShortcut("z", modifiers: .command)
                             .help("Bring back the dismissed card \(dismissed.receipt.title)")
-                    } else if let waiting {
+                    case .answer(let waiting):
                         Button {
                             store.undoAnswer(decisionId: waiting.decisionId)
                             chosenId = waiting.decisionId
@@ -114,6 +139,14 @@ struct MacInboxView: View {
                     }
                 }
             }
+        }
+        // The task sleeps until the next deadline and then moves the clock, so Undo leaves on time. A new dismissal or
+        // a new answer gives a new deadline, and the task starts again.
+        .task(id: undoDeadline) {
+            undoClock = Date()
+            guard let deadline = undoDeadline else { return }
+            do { try await Task.sleep(for: .seconds(max(0, deadline.timeIntervalSinceNow))) } catch { return }
+            undoClock = Date()
         }
         .onChange(of: chosenId) { _, _ in path = NavigationPath() }
     }

@@ -52,6 +52,7 @@ import threading
 
 from .documents import SCHEMA as DOCUMENTS_SCHEMA, Documents
 from .gateway_bridge import GatewayBridge
+from .hermes_notices import readable_text
 from .service_base import (MODE_MARK, TEAM_MODE, ServiceError, check_data_folder, encoded, now, open_store,
                            release_data_folder, take_data_folder, uid)
 from .service_restart import ServiceRestart
@@ -371,7 +372,7 @@ class TeamOnlyService(TeamTurns, Documents, Team):
                                                                or self.team_store.member(room, direct) is None)
         if not answers or room_row['state'] != ACTIVE or gone:
             return {'recorded': False, 'reason': 'The agent does not answer in this team chat.'}
-        for number, piece in enumerate(parts(text)):
+        for number, piece in enumerate(parts(readable_text(text))):
             # A send outside a turn answers no message, so no request must still stand: only the bot must answer.
             self._team_say(room, bot_id, message_id, number, piece, request=False, chat=named, direct=direct)
         return {'recorded': True}

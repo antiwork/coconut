@@ -103,12 +103,18 @@ def message_content(message):
     return text
 
 
+# The fixed sentence next to `closed_cards` in the record of a card (14 words).
+CLOSED_CARDS_NOTE = 'Coconut closed these cards, because their source on GitHub ended. The person chose nothing.'
+
+
 def decision_context(request, decision):
     context = dict(decision)
     if request['task'].get('_closed_cards'):
-        # Other cards of this task that Coconut closed because their GitHub source ended (decision_freshness._closed_cards).
+        # Other cards of this task, and suggestions of this bot in this conversation, that Coconut closed because their
+        # GitHub source ended (decision_freshness._closed_cards).
         # Their titles are data of this record, never lines of the turn text.
         context['closed_cards'] = request['task']['_closed_cards']
+        context['closed_cards_note'] = CLOSED_CARDS_NOTE
     source = next((message for message in visible_history(request.get('history', []))
                    if message['id'] == decision.get('request_message_id')), None)
     if source:

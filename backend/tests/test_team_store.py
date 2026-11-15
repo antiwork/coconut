@@ -4,8 +4,12 @@ Each test gives TeamStore.accept an entry as the relay sends it, and the answer 
 needs the helper or the relay.
 """
 import json
+from pathlib import Path
 import sqlite3
+import tempfile
+import time
 import unittest
+from unittest import mock
 
 from coconut import team_store
 from coconut.team_store import DROPPED, PENDING, REFUSED, SAME, SKIPPED, STORED, TeamStore
@@ -521,6 +525,200 @@ class TeamStoreTests(unittest.TestCase):
         db.executescript(team_store.SCHEMA)
         TeamStore(db).migrate()
         self.assertEqual(db.execute('SELECT name, bot_only FROM team_members').fetchall(), [('Grace', 0)])
+
+    def test_an_older_store_reads_the_marks_of_its_kept_entries_again(self):
+        # A service of an older version kept the entries of a team-only Mac with their marks, and its rows had no
+        # column for them. The team-only Mac does not write the entries again, so only the store can correct the rows.
+        db = sqlite3.connect(':memory:', isolation_level=None)
+        self.addCleanup(db.close)
+        db.execute('CREATE TABLE team_entries (room TEXT NOT NULL, id TEXT NOT NULL, seq INTEGER NOT NULL, '
+                   'first INTEGER NOT NULL, member TEXT NOT NULL, kind TEXT NOT NULL, rev INTEGER NOT NULL, '
+                   'at INTEGER NOT NULL, kept INTEGER NOT NULL, payload TEXT NOT NULL, PRIMARY KEY (room, id))')
+        db.execute('CREATE TABLE team_members (room TEXT NOT NULL, member TEXT NOT NULL, name TEXT NOT NULL, '
+                   'avatar TEXT NOT NULL, color TEXT NOT NULL, agreement TEXT NOT NULL, entry TEXT NOT NULL, '
+                   'PRIMARY KEY (room, member))')
+        db.execute('CREATE TABLE team_bots (room TEXT NOT NULL, entry TEXT NOT NULL, member TEXT NOT NULL, '
+                   'name TEXT NOT NULL, avatar TEXT NOT NULL, color TEXT NOT NULL, PRIMARY KEY (room, entry))')
+        kept = {1: ('member', ADMIN, self.member('Reporter', bot_only=True, direct=True)),
+                2: ('member', MEMBER, self.member('Grace', bot_only=1)),
+                3: ('bot', ADMIN, self.bot('Reporter', open=True)), 4: ('bot', ADMIN, self.bot('Helper', open='true'))}
+        for number, (kind, member, payload) in kept.items():
+            db.execute('INSERT INTO team_entries VALUES (?, ?, ?, ?, ?, ?, 1, 0, 1, ?)',
+                       (ROOM, entry_id(number), number, number, member, kind, json.dumps(payload)))
+            if kind == 'member':
+                db.execute("INSERT INTO team_members VALUES (?, ?, ?, '', '', ?, ?)",
+                           (ROOM, member, payload['name'], AGREEMENT, entry_id(number)))
+            else:
+                db.execute("INSERT INTO team_bots VALUES (?, ?, ?, ?, '', '')",
+                           (ROOM, entry_id(number), member, payload['name']))
+        db.executescript(team_store.SCHEMA)
+        store = TeamStore(db)
+        store.migrate()
+        expected_members = [('Grace', 0, 0), ('Reporter', 1, 1)]
+        expected_bots = [('Helper', 0), ('Reporter', 1)]
+        members = 'SELECT name, bot_only, direct FROM team_members ORDER BY name'
+        bots = 'SELECT name, open FROM team_bots ORDER BY name'
+        self.assertEqual((db.execute(members).fetchall(), db.execute(bots).fetchall()), (expected_members, expected_bots))
+        # A store that got the columns without the marks is correct after its next start too.
+        db.execute('UPDATE team_members SET bot_only=0, direct=0')
+        db.execute('UPDATE team_bots SET open=0')
+        TeamStore(db).migrate()
+        self.assertEqual((db.execute(members).fetchall(), db.execute(bots).fetchall()), (expected_members, expected_bots))
+        self.assertEqual(store.changed, {ROOM}, 'The phone reads the room again.')
+        # A start with correct rows changes no row and no room.
+        again = TeamStore(db)
+        again.migrate()
+        self.assertEqual(again.changed, set())
+
+    def test_the_repair_reads_the_mark_direct_of_a_bot_from_its_own_entry(self):
+        # The mark `direct` of a member and of a bot have the same name. Each row takes the mark of its own entry.
+        self.write(1, self.member('Reporter Mac', bot_only=True), ADMIN)
+        self.write(2, self.bot('Reporter', open=True, direct=True), ADMIN)
+        self.write(3, self.bot('Quiet'), ADMIN)
+        self.write(4, self.member('Grace', direct=True))
+        bots = 'SELECT name, open, direct FROM team_bots ORDER BY name'
+        expected = ([('Quiet', 0, 0), ('Reporter', 1, 1)], [(ROOM, 'Grace', 0, 1), (ROOM, 'Reporter Mac', 1, 0)])
+        self.assertEqual((self.db.execute(bots).fetchall(), self.marks()), expected)
+        # An older store had no column `direct` in team_bots, so each bot row read as 0. A wrong mark goes the other way.
+        self.db.execute("UPDATE team_bots SET direct=CASE name WHEN 'Reporter' THEN 0 ELSE 1 END")
+        store = self.reopen()
+        self.assertEqual((self.db.execute(bots).fetchall(), self.marks()), expected)
+        self.assertEqual(store.changed, {ROOM})
+        self.assertEqual(self.reopen().changed, set())
+
+    def marks(self) -> list[tuple]:
+        return self.db.execute('SELECT room, name, bot_only, direct FROM team_members ORDER BY room, name').fetchall()
+
+    def reopen(self) -> TeamStore:
+        """The next start of the service: a new store on the same database."""
+        store = TeamStore(self.db)
+        store.migrate()
+        return store
+
+    def test_the_repair_reads_a_payload_as_accept_does(self):
+        # The same key two times: the reader of `accept` keeps the last value, so the member is a person.
+        twice = json.dumps(self.member('Grace'))[:-1] + ', "bot_only": true, "direct": true, "bot_only": false, ' \
+                                                         '"direct": false}'
+        self.assertEqual(self.write(1, twice.encode()), (STORED, None))
+        self.assertEqual(self.marks(), [(ROOM, 'Grace', 0, 0)])
+        store = self.reopen()
+        self.assertEqual((self.marks(), store.changed, store.corrected_rooms()), ([(ROOM, 'Grace', 0, 0)], set(), []))
+
+    def test_no_payload_stops_the_open_of_the_store(self):
+        self.write(1, self.member('Reporter', bot_only=True), ADMIN)
+        self.write(2, self.member('Grace', direct=True))
+        deep = json.dumps(self.member('Reporter', bot_only=True))[:-1] + ', "x": ' + '[' * 1001 + ']' * 1001 + '}'
+        large = json.dumps(self.member('Reporter', bot_only=True, padding='x' * 500_000))
+        over = json.dumps(self.member('Reporter', bot_only=True, padding='x' * team_store.MAX_MARK_PAYLOAD))
+        try:
+            # Python 3.11 refuses this depth with RecursionError, and a later Python reads it.
+            json.loads(deep)
+            deep_reads = True
+        except RecursionError:
+            deep_reads = False
+        invalid = json.dumps(self.member('Reporter', bot_only=True)).encode().replace(b'Reporter', b'Rep\xffrter')
+        for name, payload, read in (('deep', deep, deep_reads), ('not JSON', 'not { json', False),
+                                    ('not an object', '[true]', False), ('large', large, True),
+                                    ('over the bound', over, False), ('not UTF-8', invalid, False),
+                                    ('another kind', json.dumps(self.bot('Reporter')), False)):
+            with self.subTest(payload=name):
+                # Bytes go in as TEXT with the bytes as they are, as a damaged store can have them.
+                self.db.execute('UPDATE team_entries SET payload=CAST(? AS TEXT) WHERE room=? AND id=?',
+                                (payload, ROOM, entry_id(1)))
+                # Wrong marks on both rows: the row that reads gets (1, 0), and a row that does not read keeps (1, 1).
+                self.db.execute('UPDATE team_members SET bot_only=1, direct=1')
+                with self.assertLogs('coconut.team_store', 'WARNING') as logs:
+                    store = self.reopen()
+                    team_store.log.warning('The end of the open.')
+                self.assertEqual(len(logs.records), 1 if read else 2, 'A row that does not read has one log line.')
+                self.assertNotIn('Rep', '\n'.join(logs.output))
+                self.assertEqual(self.marks(), [(ROOM, 'Grace', 0, 1), (ROOM, 'Reporter', 1, 0 if read else 1)],
+                                 'The other row is repaired. A payload that reads sets the marks, and each other one '
+                                 'keeps the row.')
+                self.assertEqual(store.changed, {ROOM})
+
+    def test_an_error_or_a_lock_ends_the_repair_and_the_next_open_does_it(self):
+        with tempfile.TemporaryDirectory() as folder:
+            db = sqlite3.connect(Path(folder) / 'store.sqlite3', isolation_level=None, timeout=30)
+            self.addCleanup(db.close)
+            db.executescript(team_store.SCHEMA)
+            store = TeamStore(db)
+            store.migrate()
+            store.add_room(room=ROOM, relay='https://relay.example', name='Example Team', member=MEMBER, admin=ADMIN,
+                           state=team_store.ACTIVE, epoch=0, profile='{}', created_at='2026-11-10T12:00:00Z')
+            self.store, self.db = store, db
+            self.write(1, self.member('Reporter', bot_only=True), ADMIN)
+            db.execute('UPDATE team_members SET bot_only=0')
+            # A fault of the database in the read.
+            with mock.patch.object(TeamStore, '_wrong_marks', side_effect=sqlite3.DatabaseError('damaged')), \
+                    self.assertLogs('coconut.team_store', 'WARNING') as logs:
+                failed = self.reopen()
+            self.assertEqual((len(logs.records), failed.changed, self.marks()), (1, set(), [(ROOM, 'Reporter', 0, 0)]))
+            # Another connection holds the write lock: the open waits about MARK_WAIT_MS, not the 30 seconds of the
+            # connection, and the rows stay.
+            holder = sqlite3.connect(Path(folder) / 'store.sqlite3', isolation_level=None)
+            self.addCleanup(holder.close)
+            holder.execute('BEGIN IMMEDIATE')
+            begin = time.monotonic()
+            with self.assertLogs('coconut.team_store', 'WARNING'):
+                locked = self.reopen()
+            waited = time.monotonic() - begin
+            holder.execute('ROLLBACK')
+            self.assertLess(waited, 5)
+            self.assertEqual((locked.changed, self.marks(), locked.corrected_waiting()),
+                             (set(), [(ROOM, 'Reporter', 0, 0)], False))
+            self.assertEqual(db.execute('PRAGMA busy_timeout').fetchone()[0], 30_000, 'The bound of the connection.')
+            # The next open repairs the row.
+            self.assertEqual((self.reopen().changed, self.marks()), ({ROOM}, [(ROOM, 'Reporter', 1, 0)]))
+            # Right rows take no write lock: the open passes while another connection writes.
+            holder.execute('BEGIN IMMEDIATE')
+            with self.assertNoLogs('coconut.team_store', 'WARNING'):
+                self.reopen()
+            holder.execute('ROLLBACK')
+
+    def test_the_reader_of_a_kept_entry_never_raises(self):
+        payload = json.dumps(self.member('Reporter'))
+        self.assertEqual(team_store.stored_fields('member', payload.encode())['name'], 'Reporter')
+        for error in (MemoryError, RecursionError, TypeError, RuntimeError):
+            with self.subTest(error=error.__name__), mock.patch.object(team_store, 'read_entry', side_effect=error):
+                self.assertIsNone(team_store.stored_fields('member', payload))
+
+    def test_the_repair_clears_a_mark_too(self):
+        self.write(1, self.member('Reporter'), ADMIN)
+        self.db.execute('UPDATE team_members SET bot_only=1, direct=1')
+        self.assertEqual((self.reopen().changed, self.marks()), ({ROOM}, [(ROOM, 'Reporter', 0, 0)]))
+
+    def test_the_repair_reads_the_entry_of_the_row_in_its_own_room(self):
+        # Two rooms have an entry with the same ID: only the entry of the room of the row counts, and only the row of
+        # that room changes.
+        self.write(1, self.member('Grace'))
+        self.accept(dict(self.entry(1), seq=99, first=99), {'epoch': 0, 'payload': json.dumps(
+            self.member('Reporter', bot_only=True)).encode()}, room=OTHER_ROOM)
+        self.assertEqual(self.marks(), [(ROOM, 'Grace', 0, 0), (OTHER_ROOM, 'Reporter', 1, 0)])
+        self.db.execute('UPDATE team_members SET bot_only=0 WHERE room=?', (OTHER_ROOM,))
+        self.reopen()
+        self.assertEqual(self.marks(), [(ROOM, 'Grace', 0, 0), (OTHER_ROOM, 'Reporter', 1, 0)])
+
+    def test_a_row_without_its_kept_entry_keeps_its_marks(self):
+        self.db.execute("INSERT INTO team_members VALUES (?, ?, 'Reporter', '', '', ?, ?, 1, 1)",
+                        (ROOM, ADMIN, AGREEMENT, entry_id(7)))
+        self.reopen()
+        self.assertEqual(self.marks(), [(ROOM, 'Reporter', 1, 1)])
+
+    def test_a_corrected_room_waits_in_the_store_until_its_event_goes_out(self):
+        self.write(1, self.member('Reporter', bot_only=True), ADMIN)
+        self.db.execute('UPDATE team_members SET bot_only=0')
+        self.reopen()
+        # The service stops before it tells the phone. The next start finds correct rows and still tells the phone.
+        store = self.reopen()
+        self.assertEqual(store.changed, set())
+        self.assertTrue(store.corrected_waiting())
+        self.assertEqual((store.corrected_rooms(), store.changed), ([ROOM], {ROOM}))
+        self.assertFalse(self.reopen().corrected_waiting())
+        # A room that this Mac left gets no event, and its mark goes.
+        self.db.execute('INSERT INTO team_marks (mark) VALUES (?)', (team_store.CORRECTED_MARK + 'c' * 64,))
+        store = self.reopen()
+        self.assertEqual((store.corrected_rooms(), store.changed, store.corrected_waiting()), ([], set(), False))
 
     def test_an_older_store_gets_the_epoch_of_each_entry_as_0(self):
         db = sqlite3.connect(':memory:', isolation_level=None)
