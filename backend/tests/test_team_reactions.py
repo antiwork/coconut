@@ -266,25 +266,72 @@ class ReactionStoreTests(unittest.TestCase):
         self.assertIn('team_reactions_message', indexes)
 
 
-    def test_many_entries_of_one_member_for_one_message_keep_the_view_linear(self):
-        # A member can write many entries for one message, each with its own entry ID. The inner MAX(seq) of the view
-        # must find the newest row of a member with one seek, so the view reads each row of the message once.
-        rows = 2000
+    def add(self, rows: list[tuple]) -> None:
+        """Rows of team_reactions as (entry number, message number, emoji, seq, peer, bot) of the member OTHER."""
         self.db.executemany('INSERT INTO team_reactions (room, entry, message, member, emoji, seq, peer, bot) '
-                            'VALUES (?, ?, ?, ?, ?, ?, NULL, NULL)',
-                            [(ROOM, entry_id(1000 + n), entry_id(1), OTHER, THUMBS, n) for n in range(1, rows + 1)])
-        plan = [row[3] for row in self.db.execute('EXPLAIN QUERY PLAN ' + team_store.SHOWN_REACTIONS,
-                                                  (ROOM, json.dumps([entry_id(1)]), None, None))]
-        self.assertIn('SEARCH x USING INDEX team_reactions_message (room=? AND message=? AND member=?)', plan, plan)
-        # A bound on the work of SQLite, not on the clock: the steps of its machine, in thousands. One read of each
-        # row takes some tens of steps. A walk of each row of the message for each row would take some millions.
+                            'VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+                            [(ROOM, entry_id(entry), entry_id(message), OTHER, emoji, seq, peer, bot)
+                             for entry, message, emoji, seq, peer, bot in rows])
+
+    def work(self, view) -> tuple[object, int]:
+        """The result of a view and the work of SQLite for it, in thousands of steps of its machine: a bound on the
+        work, not on the clock. One read of a row takes some tens of steps."""
         thousands = []
         self.db.set_progress_handler(lambda: thousands.append(1), 1000)
         try:
-            self.assertEqual(self.reactions(), [(THUMBS, OTHER)])
+            return view(), len(thousands)
         finally:
             self.db.set_progress_handler(None, 0)
-        self.assertLess(len(thousands), rows // 4, f'{len(thousands)} thousand steps')
+
+    def plan(self, messages, peer=None, bot=None) -> list[str]:
+        return [row[3] for row in self.db.execute('EXPLAIN QUERY PLAN ' + team_store.SHOWN_REACTIONS,
+                                                  (ROOM, json.dumps(messages), peer, bot))]
+
+    def test_the_view_reads_each_row_of_its_chat_once(self):
+        plan = self.plan([entry_id(1)], OTHER, entry_id(2))
+        self.assertIn('SEARCH team_reactions USING COVERING INDEX team_reactions_message '
+                      '(room=? AND message=? AND peer=? AND bot=?)', plan, plan)
+        self.assertFalse([line for line in plan if 'CORRELATED' in line], plan)
+
+    def test_many_entries_of_one_member_for_one_message_keep_the_view_linear(self):
+        # A member can write many entries for one message, each with its own entry ID.
+        rows = 2000
+        self.add([(1000 + n, 1, THUMBS, n, None, None) for n in range(1, rows + 1)])
+        result, work = self.work(self.reactions)
+        self.assertEqual(result, [(THUMBS, OTHER)])
+        self.assertLess(work, rows // 4, f'{work} thousand steps')
+
+    def test_newer_entries_of_another_chat_keep_the_view_of_each_chat_linear(self):
+        # The case of the review: N entries in the chat without a bot, then N newer entries of the same member for the
+        # same message with a bot ID that names no bot. The view of each chat reads only its own rows.
+        n, bot = 2000, entry_id(7)
+        self.add([(1000 + k, 1, THUMBS, k, OTHER, None) for k in range(1, n + 1)])
+        self.add([(9000 + k, 1, HEART, n + k, OTHER, bot) for k in range(1, n + 1)])
+        for chat_bot, emoji in ((None, THUMBS), (bot, HEART)):
+            with self.subTest(bot=chat_bot):
+                result, work = self.work(lambda: self.store.reactions_of(ROOM, [entry_id(1)], OTHER, chat_bot))
+                self.assertEqual(result, {entry_id(1): [(emoji, OTHER)]})
+                self.assertLess(work, n // 4, f'{work} thousand steps')
+
+    def test_many_entries_on_each_message_of_a_page_keep_the_view_linear(self):
+        # 50 messages of a page, with 100 entries of the member on each. The view reads each of the 5,000 rows once,
+        # and sorts at most one row for each message and member.
+        messages, each = 50, 100
+        self.add([(100000 + m * each + k, m, THUMBS, m * each + k, None, None)
+                  for m in range(1, messages + 1) for k in range(1, each + 1)])
+        result, work = self.work(lambda: self.store.reactions_of(ROOM, [entry_id(m) for m in range(1, messages + 1)]))
+        self.assertEqual(len(result), messages)
+        self.assertLess(work, messages * each // 4, f'{work} thousand steps')
+
+    def test_the_emoji_is_the_one_of_the_newest_row_in_each_order_of_insert(self):
+        # The bare column `emoji` comes from the row with the highest `seq`, also when the older row has the higher
+        # rowid.
+        for order in ('newest first', 'oldest first'):
+            with self.subTest(order=order):
+                self.db.execute('DELETE FROM team_reactions')
+                rows = [(1, 1, THUMBS, 10, None, None), (2, 1, SAD, 20, None, None), (3, 1, HEART, 5, None, None)]
+                self.add(sorted(rows, key=lambda row: row[3], reverse=order == 'newest first'))
+                self.assertEqual(self.reactions(), [(SAD, OTHER)])
 
 
 class ReactionOrderTests(unittest.TestCase):

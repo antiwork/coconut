@@ -144,17 +144,23 @@ TABLES = ('team_rooms', 'team_entries', 'team_members', 'team_pending', 'team_sh
 # order it applies the entries.
 REACTIONS_TABLE = '''CREATE TABLE team_reactions (room TEXT NOT NULL, entry TEXT NOT NULL, message TEXT NOT NULL,
     member TEXT NOT NULL, emoji TEXT NOT NULL, seq INTEGER NOT NULL, peer TEXT, bot TEXT, PRIMARY KEY (room, entry))'''
-# The index has `member` and `seq`, so the inner MAX(seq) of SHOWN_REACTIONS finds the newest row of a member with one
-# seek. A member that writes many entries for one message then keeps the view of a page linear.
-REACTIONS_INDEX = 'CREATE INDEX team_reactions_message ON team_reactions (room, message, member, seq)'
+# The index of the views. It starts with the chat of a message (`room`, `message`, `peer`, `bot`), so a view reads only
+# the rows of its own chat, and then has `member`, `seq` and `emoji`, so SHOWN_REACTIONS reads the rows of each member
+# in one pass in the order of the index, from the index alone.
+REACTIONS_INDEX = '''CREATE INDEX team_reactions_message ON team_reactions
+    (room, message, peer, bot, member, seq, emoji)'''
 # The reactions that show on the messages of one chat: for each message and member, the row with the highest `seq`
 # in that chat (the same `peer` and `bot`), when its emoji is not empty. The values are the room, the entry IDs of
 # the messages as a JSON list, `peer` and `bot`.
-SHOWN_REACTIONS = '''SELECT r.message, r.emoji, r.member FROM team_reactions r
-    WHERE r.room=? AND r.message IN (SELECT value FROM json_each(?)) AND r.peer IS ? AND r.bot IS ? AND r.emoji!=''
-    AND r.seq=(SELECT MAX(x.seq) FROM team_reactions x WHERE x.room=r.room AND x.message=r.message
-        AND x.member=r.member AND x.peer IS r.peer AND x.bot IS r.bot)
-    ORDER BY r.seq'''
+# The inner query has one MAX() and a bare column `emoji`. This is no fault: SQLite gives each bare column of such a
+# query from the row that has the maximum (https://sqlite.org/lang_select.html, "Bare columns in an aggregate query").
+# So `emoji` is the emoji of the newest row of each message and member. The query reads each row of the chat on these
+# messages one time, and runs no subquery for each row.
+SHOWN_REACTIONS = '''SELECT message, emoji, member FROM (
+    SELECT message, member, emoji, MAX(seq) AS seq FROM team_reactions
+    WHERE room=? AND message IN (SELECT value FROM json_each(?)) AND peer IS ? AND bot IS ?
+    GROUP BY message, member)
+    WHERE emoji!='' ORDER BY seq'''
 # The emoji of a reaction, in the order of the view of a message (docs/team-log.md, "Reactions"): thumbs up, red heart
 # (with the variation selector 16), face with tears of joy, face with open mouth, crying face, folded hands.
 REACTIONS = ('\U0001F44D', '\u2764\ufe0f', '\U0001F602', '\U0001F62E', '\U0001F622', '\U0001F64F')
