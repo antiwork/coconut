@@ -48,6 +48,7 @@ def misfits() -> dict[str, object]:
     return {
         'a title of 10,000 characters': dict(PREVIEW, title='x' * 10_000),
         'a title of 201 characters': dict(PREVIEW, title='x' * (team_store.MAX_PREVIEW_TITLE + 1)),
+        'a title over its limit only with its spaces': dict(PREVIEW, title=' ' + 'x' * team_store.MAX_PREVIEW_TITLE),
         'a site of 101 characters': dict(PREVIEW, site='x' * (team_store.MAX_PREVIEW_SITE + 1)),
         'a url of 2,001 characters': dict(PREVIEW, url=LONG_URL + 'b'),
         'a url that is not in the text': dict(PREVIEW, url='https://example.com/b'),
@@ -72,10 +73,15 @@ def misfits() -> dict[str, object]:
 class PreviewRuleTests(unittest.TestCase):
     def test_a_preview_that_fits_and_its_limits(self):
         self.assertEqual(preview_fields(PREVIEW, TEXT), PREVIEW)
-        # The title and the site are trimmed. Each limit counts after the trim.
+        # Each value fits at its limit as sent.
         title, site = 'x' * team_store.MAX_PREVIEW_TITLE, 'y' * team_store.MAX_PREVIEW_SITE
-        self.assertEqual(preview_fields(dict(PREVIEW, url=LONG_URL, title=f'  {title} ', site=f'\t{site} '), ALL_TEXT),
+        self.assertEqual(preview_fields(dict(PREVIEW, url=LONG_URL, title=title, site=site), ALL_TEXT),
                          dict(url=LONG_URL, title=title, site=site))
+        # The title and the site are trimmed. The limit counts the text as sent, with its spaces.
+        self.assertEqual(preview_fields(dict(PREVIEW, title=f' {title[2:]} ', site=f'\t{site[2:]} '), TEXT),
+                         dict(PREVIEW, title=title[2:], site=site[2:]))
+        self.assertIsNone(preview_fields(dict(PREVIEW, title=f' {title}'), TEXT))
+        self.assertIsNone(preview_fields(dict(PREVIEW, site=f'{site} '), TEXT))
         self.assertEqual(preview_fields(dict(PREVIEW, url='http://example.com/a'), 'See http://example.com/a.'),
                          dict(PREVIEW, url='http://example.com/a'))
         self.assertIsNone(preview_fields(None, TEXT))
@@ -89,6 +95,72 @@ class PreviewRuleTests(unittest.TestCase):
                 box = json.dumps({'to': MEMBER, 'text': ALL_TEXT, 'preview': preview}).encode()
                 direct = direct_fields(box, MEMBER)
                 self.assertEqual((direct['text'], direct['preview']), (ALL_TEXT, None))
+
+
+class Watched(str):
+    """A text that records each call of encode, splitlines and strip, with its length. A reader gets plain texts from
+    JSON. A subclass lets the test see which of these calls a check makes, without a clock."""
+    calls: list[tuple[str, int]] = []
+
+    def encode(self, *arguments, **options):
+        Watched.calls.append(('encode', len(self)))
+        return super().encode(*arguments, **options)
+
+    def splitlines(self, *arguments, **options):
+        Watched.calls.append(('splitlines', len(self)))
+        return super().splitlines(*arguments, **options)
+
+    def strip(self, *arguments, **options):
+        Watched.calls.append(('strip', len(self)))
+        return super().strip(*arguments, **options)
+
+
+class CountedKeys(dict):
+    """A dict that counts each walk of its keys."""
+    walks = 0
+
+    def __iter__(self):
+        CountedKeys.walks += 1
+        return super().__iter__()
+
+    def keys(self):
+        CountedKeys.walks += 1
+        return super().keys()
+
+
+class PreviewCostTests(unittest.TestCase):
+    """A hostile preview of up to 1 MiB costs no work that grows with its size: the check stops at the cheap rules."""
+
+    def setUp(self):
+        Watched.calls = []
+        CountedKeys.walks = 0
+
+    def check(self, preview: dict) -> None:
+        self.assertIsNone(preview_fields(preview, TEXT))
+        self.assertEqual(Watched.calls, [], 'No encode, split or trim of a value over its limit.')
+
+    def test_a_title_of_600000_characters_with_line_breaks(self):
+        self.check(dict(PREVIEW, title=Watched('ab\n' * 200_000)))
+
+    def test_a_short_title_with_10000_spaces_around_it(self):
+        self.check(dict(PREVIEW, title=Watched(' ' * 5_000 + 'Example page title' + ' ' * 5_000)))
+
+    def test_a_long_url_and_a_long_site(self):
+        self.check(dict(PREVIEW, url=Watched(URL + '\n' * 600_000)))
+        self.check(dict(PREVIEW, site=Watched('\r' * 600_000)))
+
+    def test_a_preview_with_100000_keys(self):
+        preview = CountedKeys(PREVIEW)
+        preview.update((f'key{number}', '') for number in range(100_000 - 3))
+        self.assertEqual(len(preview), 100_000)
+        self.assertIsNone(preview_fields(preview, TEXT))
+        self.assertEqual(CountedKeys.walks, 0, 'No walk of the keys.')
+
+    def test_a_preview_that_fits_reads_each_short_value(self):
+        preview = {name: Watched(value) for name, value in PREVIEW.items()}
+        self.assertEqual(preview_fields(preview, TEXT), PREVIEW)
+        self.assertTrue(Watched.calls)
+        self.assertTrue(all(length <= team_store.MAX_PREVIEW_URL for _, length in Watched.calls))
 
 
 class PreviewStoreTests(unittest.TestCase):

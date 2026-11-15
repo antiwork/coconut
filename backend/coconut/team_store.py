@@ -247,6 +247,7 @@ MAX_MENTIONS = 16
 MAX_PREVIEW_URL = 2000
 MAX_PREVIEW_TITLE = 200
 MAX_PREVIEW_SITE = 100
+PREVIEW_LIMITS = {'url': MAX_PREVIEW_URL, 'title': MAX_PREVIEW_TITLE, 'site': MAX_PREVIEW_SITE}
 # The unread count of a room stops here, so the count reads at most this many rows.
 MAX_UNREAD = 99
 # The check of a mention (`mention_first`) reads at most this many rows of the index after the read position, the
@@ -431,19 +432,25 @@ def entry_id(value) -> bool:
 def preview_fields(value, text: str) -> dict | None:
     """The link preview of a message (docs/team-log.md, "Link previews"), or None when it is absent or does not fit.
 
-    The preview is an object with exactly `url`, `title` and `site`. Each is valid Unicode text without a line break.
-    `url` has 1 to MAX_PREVIEW_URL code points, starts with `http://` or `https://`, and `text` contains it exactly.
-    `title` and `site` have 1 to MAX_PREVIEW_TITLE and MAX_PREVIEW_SITE code points after a trim, and the result has
-    them trimmed. A preview that does not fit never makes its message invalid: the message shows without it.
+    The preview is an object with exactly `url`, `title` and `site`. Each is a str of at most its limit in
+    PREVIEW_LIMITS, as sent, and of valid Unicode text without a line break. `title` and `site` are not empty after a
+    trim, and the result has them trimmed. `url` is not empty, starts with `http://` or `https://`, and `text` contains
+    it exactly. A preview that does not fit never makes its message invalid: the message shows without it.
+
+    Another member can write a preview of up to 1 MiB, so the cheap checks come first: the count of the keys, then the
+    type and the length of each value. Each later step reads at most PREVIEW_LIMITS code points of a value. The search
+    of `url` in `text` reads a url of at most MAX_PREVIEW_URL code points in a text that its reader limits to
+    MAX_TEXT code points.
     """
-    if not isinstance(value, dict) or set(value) != {'url', 'title', 'site'}:
+    if not isinstance(value, dict) or len(value) != len(PREVIEW_LIMITS) or any(
+            name not in value for name in PREVIEW_LIMITS):
         return None
-    if not all(unicode_text(field) and field.splitlines() == [field] for field in value.values()):
+    if not all(isinstance(value[name], str) and len(value[name]) <= limit for name, limit in PREVIEW_LIMITS.items()):
+        return None
+    if not all(unicode_text(value[name]) and value[name].splitlines() == [value[name]] for name in PREVIEW_LIMITS):
         return None
     url, title, site = value['url'], value['title'].strip(), value['site'].strip()
-    if not 0 < len(url) <= MAX_PREVIEW_URL or not url.startswith(('http://', 'https://')) or url not in text:
-        return None
-    if not 0 < len(title) <= MAX_PREVIEW_TITLE or not 0 < len(site) <= MAX_PREVIEW_SITE:
+    if not (url and title and site) or not url.startswith(('http://', 'https://')) or url not in text:
         return None
     return dict(url=url, title=title, site=site)
 

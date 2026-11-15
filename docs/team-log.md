@@ -928,9 +928,12 @@ The preview is `{"url": "https://example.com/a", "title": "Example page", "site"
 Rules of a preview that fits:
 
 1. It is an object with exactly the keys `url`, `title` and `site`.
-2. Each value is valid Unicode text without a line break (each break of `str.splitlines`).
-3. `url` has 1 to 2,000 code points, starts with `http://` or `https://`, and `text` of the message contains it exactly.
-4. `title` has 1 to 200 code points and `site` 1 to 100 code points, each after a trim. The Mac writes and shows them trimmed.
+2. Each value is text of at most its limit as sent: 2,000 code points for `url`, 200 for `title` and 100 for `site`. Spaces around a value count toward the limit.
+3. Each value is valid Unicode text without a line break (each break of `str.splitlines`).
+4. `url` is not empty, starts with `http://` or `https://`, and `text` of the message contains it exactly.
+5. `title` and `site` are not empty after a trim. The Mac writes and shows them trimmed.
+
+A reader checks the count of the keys first, then the type and the length of each value, and only then reads a value. So a hostile preview of up to 1 MiB costs no work that grows with its size. The search of `url` in `text` reads at most 2,000 code points of `url` in at most 16,000 code points of `text`.
 
 - A Mac writes only a preview that fits. A send route answers 400 with "The link preview does not fit the rules of a preview, so send the message without it." for each other value, and writes nothing. The app sends only a preview that fits, so a person does not see this. Null is no preview.
 - A reader checks the same rules when it reads an entry or a box. A preview that does not fit is left out, and the message shows without it. A preview never makes a message invalid. The payload keeps the preview as its member wrote it.
