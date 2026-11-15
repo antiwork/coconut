@@ -46,7 +46,7 @@ private struct LinkPreviewCard: View {
             if large, let image = preview.image {
                 largeCard(preview, image: image)
             } else {
-                compactRow(preview)
+                LinkPreviewRow(title: preview.title, site: preview.site, image: preview.image)
             }
         }
         .buttonStyle(.plain)
@@ -59,17 +59,28 @@ private struct LinkPreviewCard: View {
     private func largeCard(_ preview: LinkPreview, image: URL) -> some View {
         VStack(alignment: .leading, spacing: 0) {
             RemotePhoto(url: image).frame(height: 150)
-            text(preview).padding(.horizontal, 12).padding(.vertical, BoardStyle.Space.m)
+            LinkPreviewText(title: preview.title, site: preview.site)
+                .padding(.horizontal, 12).padding(.vertical, BoardStyle.Space.m)
         }
         .frame(width: 280, alignment: .leading)
         .background(BoardStyle.surface)
         .clipShape(RoundedRectangle(cornerRadius: BoardStyle.Radius.medium))
     }
+}
 
-    private func compactRow(_ preview: LinkPreview) -> some View {
+/// The compact card of a page: its image, or the globe, then the title and the site. The chat of an own bot and the
+/// chats of a team share it. A team chat gives no image, and a fill and a corner that fit inside a bubble.
+struct LinkPreviewRow: View {
+    let title: String
+    let site: String
+    var image: URL? = nil
+    var fill: Color = BoardStyle.surface
+    var radius: CGFloat = BoardStyle.Radius.medium
+
+    var body: some View {
         HStack(spacing: BoardStyle.Space.m) {
             Group {
-                if let image = preview.image {
+                if let image {
                     RemotePhoto(url: image)
                 } else {
                     Image(systemName: "globe").font(.title3).foregroundStyle(.secondary)
@@ -78,17 +89,23 @@ private struct LinkPreviewCard: View {
             .frame(width: 44, height: 44)
             .background(BoardStyle.line.opacity(0.4))
             .clipShape(RoundedRectangle(cornerRadius: BoardStyle.Radius.small))
-            text(preview)
+            LinkPreviewText(title: title, site: site)
         }
         .padding(8)
-        .frame(width: 280, alignment: .leading)
-        .background(BoardStyle.surface, in: RoundedRectangle(cornerRadius: BoardStyle.Radius.medium))
+        .frame(maxWidth: 280, alignment: .leading)
+        .background(fill, in: RoundedRectangle(cornerRadius: radius))
     }
+}
 
-    private func text(_ preview: LinkPreview) -> some View {
+/// The title (at most two lines) and the site of a page preview.
+struct LinkPreviewText: View {
+    let title: String
+    let site: String
+
+    var body: some View {
         VStack(alignment: .leading, spacing: 2) {
-            Text(preview.title).font(.subheadline.weight(.semibold)).lineLimit(2)
-            Text(preview.site).font(.footnote).foregroundStyle(.secondary).lineLimit(1)
+            Text(title).font(.subheadline.weight(.semibold)).lineLimit(2)
+            Text(site).font(.footnote).foregroundStyle(.secondary).lineLimit(1)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }

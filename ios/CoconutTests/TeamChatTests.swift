@@ -1028,4 +1028,190 @@ final class TeamChatTests: XCTestCase {
         XCTAssertEqual(TeamReactions.action("❤️", on: mine), "React with heart")
         XCTAssertEqual(TeamReactions.all, ["👍", "\u{2764}\u{FE0F}", "😂", "😮", "😢", "🙏"])
     }
+
+    // MARK: Link previews
+
+    private let example = TeamLinkPreview(url: "https://example.com/a", title: "Example page", site: "example.com")
+
+    /// A Mac with previews sends the key: an object, or null. A Mac without previews sends no key. A preview that does
+    /// not fit is left out, and the message stays.
+    func testAMessageDecodesWithNullAndWithoutAPreview() throws {
+        let answer = #"""
+        {"room": "r1", "before": null, "messages": [
+          {"id": "e4", "first": 4, "member": "m-grace", "member_name": "Grace", "this_mac": false,
+           "text": "Read https://example.com/a", "created_at": "2026-11-10T12:00:00Z",
+           "preview": {"url": "https://example.com/a", "title": "Example page", "site": "example.com"}},
+          {"id": "e3", "first": 3, "member": "m-grace", "member_name": "Grace", "this_mac": false, "text": "Hello",
+           "created_at": "2026-11-10T11:00:00Z", "preview": null},
+          {"id": "e2", "first": 2, "member": "m-grace", "member_name": "Grace", "this_mac": false, "text": "Hi",
+           "created_at": "2026-11-10T10:00:00Z"},
+          {"id": "e1", "first": 1, "member": "m-grace", "member_name": "Grace", "this_mac": false, "text": "No link",
+           "created_at": "2026-11-10T09:00:00Z",
+           "preview": {"url": "https://example.com/a", "title": "Example page", "site": "example.com"}}
+        ]}
+        """#
+        let page = try APIJSON.decoder().decode(TeamMessagePage.self, from: Data(answer.utf8))
+        XCTAssertEqual(page.messages.map(\.id), ["e4", "e3", "e2", "e1"])
+        XCTAssertEqual(page.messages[0].preview, example)
+        XCTAssertEqual(page.messages.map(\.previewKey), [true, true, false, true])
+        XCTAssertNil(page.messages[1].preview, "Null: a Mac with previews, a message without one.")
+        XCTAssertNil(page.messages[2].preview, "No key: a Mac without previews.")
+        XCTAssertNil(page.messages[3].preview, "The text does not have the address: the preview is left out.")
+    }
+
+    /// The composer offers a preview only while the newest message of the chat has the key. A chat without a message
+    /// is not known, so it shows no bar.
+    func testOnlyAMacWithPreviewsGetsThem() {
+        var chat = TeamChat()
+        XCTAssertFalse(chat.offersPreviews, "A chat without a message.")
+        var newer = message("e2", 2)
+        newer.previewKey = true
+        chat.merge(page([message("e1", 1), newer], before: nil), requested: nil)
+        XCTAssertTrue(chat.offersPreviews)
+        chat.merge(page([message("e1", 1), message("e2", 2)], before: nil), requested: nil)
+        XCTAssertFalse(chat.offersPreviews, "A Mac without previews.")
+    }
+
+    /// The first link of a draft, exactly as the draft has it. A mail address is no link. A first link that is not a
+    /// public https page gives no preview, also when a later link is one.
+    func testTheFirstLinkOfADraft() throws {
+        XCTAssertNil(TeamDraftLink.first(in: "No link here"))
+        let link = try XCTUnwrap(TeamDraftLink.first(in: "Mail ada@example.com, read https://example.com/a?b=1. And https://example.org"))
+        XCTAssertEqual(link.text, "https://example.com/a?b=1")
+        XCTAssertEqual(link.url.absoluteString, "https://example.com/a?b=1")
+        XCTAssertNil(TeamDraftLink.first(in: "http://192.168.1.4/a then https://example.com/a"))
+        XCTAssertNil(TeamDraftLink.first(in: "example.com without a scheme"))
+    }
+
+    /// The page loads only after the pause, and a link that changes in the pause loads nothing.
+    @MainActor
+    func testThePageLoadsAfterThePauseOnly() async throws {
+        let link = try XCTUnwrap(TeamDraftLink.first(in: "Read https://example.com/a"))
+        let asked = AskedPages()
+        let stub: @MainActor @Sendable (URL) async -> LinkPreview? = { url in
+            asked.urls.append(url)
+            return LinkPreview(title: "Example\n  page ", site: "example.com", image: nil)
+        }
+        let cancelled = Task { @MainActor in await TeamComposerPreview.load(link, pause: .seconds(5), loader: stub) }
+        try await Task.sleep(for: .milliseconds(50))
+        cancelled.cancel()
+        let none = await cancelled.value
+        XCTAssertNil(none)
+        XCTAssertEqual(asked.urls, [], "A link that changes in the pause loads nothing.")
+        XCTAssertEqual(TeamComposerPreview.pause, .milliseconds(600))
+        let loaded = await TeamComposerPreview.load(link, pause: .milliseconds(10), loader: stub)
+        XCTAssertEqual(asked.urls.map(\.absoluteString), ["https://example.com/a"])
+        XCTAssertEqual(loaded, TeamLinkPreview(url: "https://example.com/a", title: "Example page", site: "example.com"),
+                       "The title has one line.")
+    }
+
+    /// A new first link drops the old preview at once. A late page of the old link shows nothing. A removed preview
+    /// stays removed for its link, and comes back after the link changed. A send clears the preview.
+    func testTheComposerKeepsThePreviewOfTheFirstLinkOnly() {
+        var composer = TeamComposerState()
+        composer.draft = "Read https://example.com/a"
+        composer.linkChanged(to: "https://example.com/a")
+        composer.previewLoaded(example, for: "https://example.com/a")
+        XCTAssertEqual(composer.linkPreview, example)
+
+        composer.draft = "Read https://example.org/b"
+        composer.linkChanged(to: "https://example.org/b")
+        XCTAssertNil(composer.linkPreview, "A new link drops the old bar at once.")
+        composer.previewLoaded(example, for: "https://example.com/a")
+        XCTAssertNil(composer.linkPreview, "A late page of the old link shows nothing.")
+
+        composer.draft = "Read https://example.com/a"
+        composer.linkChanged(to: "https://example.com/a")
+        composer.previewLoaded(example, for: "https://example.com/a")
+        composer.removePreview()
+        XCTAssertNil(composer.linkPreview)
+        composer.draft = "Read https://example.com/a again"
+        composer.linkChanged(to: "https://example.com/a")
+        composer.previewLoaded(example, for: "https://example.com/a")
+        XCTAssertNil(composer.linkPreview, "A removed preview stays removed for that link.")
+
+        composer.draft = "Read"
+        composer.linkChanged(to: nil)
+        composer.draft = "Read https://example.com/a"
+        composer.linkChanged(to: "https://example.com/a")
+        composer.previewLoaded(example, for: "https://example.com/a")
+        XCTAssertEqual(composer.linkPreview, example, "After the link changed, the preview comes back.")
+
+        composer.sent()
+        XCTAssertNil(composer.linkPreview)
+        XCTAssertNil(composer.removedLink)
+        composer.draft = "Read https://example.com/a"
+        composer.edit(message("e1", 1, own: true, text: "Read https://example.com/a"))
+        composer.previewLoaded(example, for: "https://example.com/a")
+        XCTAssertNil(composer.linkPreview, "An edit shows no preview.")
+    }
+
+    /// The limits of the Mac, for each value as sent: the title and the site are trimmed, then cut to 200 and 100
+    /// Unicode scalars. The address must be in the text exactly and have at most 2,000. A line break or an empty value
+    /// sends no preview.
+    func testThePreviewFitsTheLimitsOfTheMac() {
+        let text = "Read https://example.com/a"
+        XCTAssertEqual(TeamLinkPreview(url: "https://example.com/a", title: "  Example page ", site: " example.com")
+            .fitting(in: text), example)
+        func with(url: String = "https://example.com/a", title: String = "Example page", site: String = "example.com",
+                  in body: String = text) -> TeamLinkPreview? {
+            TeamLinkPreview(url: url, title: title, site: site).fitting(in: body)
+        }
+        XCTAssertEqual(with(title: String(repeating: "é", count: 200))?.title, String(repeating: "é", count: 200))
+        XCTAssertEqual(with(title: "  " + String(repeating: "a", count: 201) + " ")?.title, String(repeating: "a", count: 200),
+                       "A long title is trimmed, then cut to 200.")
+        XCTAssertEqual(with(title: String(repeating: "e\u{301}", count: 101))?.title,
+                       String(repeating: "e\u{301}", count: 100), "The Mac counts Unicode scalars, and a cut keeps whole characters.")
+        XCTAssertEqual(with(title: String(repeating: "a", count: 199) + " b")?.title, String(repeating: "a", count: 199),
+                       "A space at the cut goes.")
+        XCTAssertEqual(with(site: String(repeating: "s", count: 101))?.site, String(repeating: "s", count: 100))
+        XCTAssertNil(with(title: " "))
+        XCTAssertNil(with(site: ""))
+        XCTAssertNil(with(title: "Example\npage"))
+        XCTAssertNil(with(url: "https://example.com/b"), "The text does not have the address.")
+        XCTAssertNil(with(url: "ftp://example.com/a", in: "ftp://example.com/a"))
+        let path = String(repeating: "p", count: 2000 - "https://example.com/".count)
+        XCTAssertNotNil(with(url: "https://example.com/" + path, in: "https://example.com/" + path))
+        XCTAssertNil(with(url: "https://example.com/" + path + "p", in: "https://example.com/" + path + "p"))
+    }
+
+    /// The bubble shows the preview of a message of a person and of a message that waits. A message of a team agent
+    /// shows none.
+    func testAnAgentMessageShowsNoPreview() {
+        var chat = TeamChat()
+        var grace = message("e1", 1, text: "Read https://example.com/a")
+        grace.preview = example
+        var agent = message("e2", 2, bot: "t-r1-b1", text: "Read https://example.com/a")
+        agent.preview = example
+        chat.merge(page([grace, agent], before: nil), requested: nil)
+        chat.pending = [TeamPendingMessage(id: "k1", text: "Read https://example.com/a", replyTo: nil, reply: nil,
+                                           createdAt: "2026-11-10T13:00:00Z", preview: example)]
+        XCTAssertEqual(TeamChatRow.rows(chat).map(\.linkPreview), [example, nil, example])
+    }
+
+    /// The answer of an edit sets the preview of the Mac: an edit can drop it.
+    func testTheAnswerOfAnEditSetsThePreview() {
+        var chat = TeamChat()
+        var sent = message("e1", 1, own: true, text: "Read https://example.com/a")
+        sent.preview = example
+        chat.merge(page([sent], before: nil), requested: nil)
+        var edited = message("e1", 1, own: true, text: "Read it later")
+        edited.editedAt = "2026-11-10T13:00:00Z"
+        chat.putEdit(edited)
+        XCTAssertNil(chat.messages.first?.preview)
+        XCTAssertEqual(chat.messages.first?.text, "Read it later")
+    }
+
+    /// VoiceOver reads the card as one element, and only a web address opens.
+    func testTheCardSaysWhatItIs() {
+        XCTAssertEqual(example.spoken, "Link preview: Example page, example.com")
+        XCTAssertEqual(example.address?.absoluteString, "https://example.com/a")
+        XCTAssertNil(TeamLinkPreview(url: "javascript:alert(1)", title: "t", site: "s").address)
+    }
+}
+
+/// The pages that a stub loader was asked for.
+@MainActor
+private final class AskedPages {
+    var urls: [URL] = []
 }

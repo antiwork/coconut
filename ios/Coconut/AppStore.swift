@@ -1978,7 +1978,7 @@ final class AppStore {
     @discardableResult
     func sendTeamMessage(_ chat: TeamChatKey, from composer: TeamComposerState, mentions: [String] = []) -> Bool {
         sendTeamMessage(chat, text: composer.draft, replyingTo: composer.quote?.reply, page: composer.quote?.page,
-                        mentions: mentions)
+                        mentions: mentions, preview: composer.editing == nil ? composer.linkPreview : nil)
     }
 
     /// The loaded direct chats with a team bot that quote a page, each one time. After an update that says that a
@@ -2048,12 +2048,15 @@ final class AppStore {
     /// Mac takes is false too: the app saves nothing, the composer keeps the draft, and the error banner says why.
     /// `page` is the Library page that the message is about. Only a direct chat with a bot takes it, and then the
     /// message answers no other message.
+    /// `preview` is the link preview of the composer. It goes only to a Mac with previews (TeamChat.offersPreviews),
+    /// and only when it fits the text (TeamLinkPreview.fitting). Else the message goes without it.
     @discardableResult
     func sendTeamMessage(_ chat: TeamChatKey, text: String, replyingTo answered: TeamMessage?, page: TeamAboutPage? = nil,
-                         mentions: [String] = []) -> Bool {
+                         mentions: [String] = [], preview: TeamLinkPreview? = nil) -> Bool {
         let page = chat.bot == nil ? nil : page
         let answered = page == nil ? answered : nil
         let text = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let preview = teamChats[chat]?.offersPreviews == true ? preview?.fitting(in: text) : nil
         guard !text.isEmpty, teamListHas(chat) else { return false }
         guard TeamMentions.fits(mentions) else {
             error = TeamMentions.overLimit
@@ -2064,7 +2067,8 @@ final class AppStore {
                              botName: $0.botName, text: String($0.text.prefix(200)))
         }
         let pending = TeamPendingMessage(id: UUID().uuidString, text: text, replyTo: answered?.id, reply: quote,
-                                         createdAt: Self.now, mentions: mentions.isEmpty ? nil : mentions, page: page)
+                                         createdAt: Self.now, mentions: mentions.isEmpty ? nil : mentions, page: page,
+                                         preview: preview)
         teamChats[chat, default: TeamChat()].pending.append(pending)
         do { try saveOutgoing() } catch {
             teamChats[chat]?.pending.removeAll { $0.id == pending.id }
@@ -2074,6 +2078,9 @@ final class AppStore {
         Task { await deliverTeamMessage(chat, id: pending.id) }
         return true
     }
+
+    /// The answer of the Mac to a link preview that does not fit its rules. The Mac then saves nothing.
+    static let previewRefused = "The link preview does not fit the rules of a preview, so send the message without it."
 
     /// Sends a message that did not send again, with the same key.
     func retryTeamMessage(_ chat: TeamChatKey, id: String) {
@@ -2102,19 +2109,37 @@ final class AppStore {
             let first = (teamChats[chat]?.newestFirst ?? 0) + 1
             teamChats[chat]?.put(TeamMessage(id: id, first: first, thisMac: true, text: pending.text, replyTo: pending.replyTo,
                                              reply: pending.reply, mentions: pending.mentions,
-                                             createdAt: pending.createdAt, page: pending.page))
+                                             createdAt: pending.createdAt, page: pending.page,
+                                             preview: pending.preview))
             return
         }
         let change = startMessageChange(chat, id)
+        var refusedPreview = false
         let answer: TeamMessageAnswer? = await write("\(chat.path)/messages",
                                                      payload: TeamSendRequest(text: pending.text, replyTo: pending.replyTo,
                                                                               mentions: pending.mentions, chat: chat.chat,
-                                                                              aboutDocumentId: pending.page?.id),
+                                                                              aboutDocumentId: pending.page?.id,
+                                                                              preview: pending.preview),
                                                      as: TeamMessageAnswer.self, refreshInBackground: true,
-                                                     idempotencyKey: pending.idempotencyKey)
+                                                     idempotencyKey: pending.idempotencyKey,
+                                                     onFailure: { error in
+                                                         if let error = error as? ServiceError,
+                                                            case .response(400, AppStore.previewRefused) = error {
+                                                             refusedPreview = true
+                                                         }
+                                                     })
         // A new pairing or a removal of the room removed the message, or a newer try of it runs.
         guard isNewestMessageChange(chat, id, change),
               let index = teamChats[chat]?.pending.firstIndex(where: { $0.id == id }) else { return }
+        if answer == nil, refusedPreview, pending.preview != nil {
+            // The Mac refused the preview and saved nothing. The message goes one time again without it, with the
+            // same key, so a person never loses a message because of a preview.
+            teamChats[chat]?.pending[index].preview = nil
+            try? saveOutgoing()
+            if error == AppStore.previewRefused { error = nil }
+            await deliverTeamMessage(chat, id: id)
+            return
+        }
         guard let answer else {
             teamChats[chat]?.pending[index].failed = true
             try? saveOutgoing()
@@ -3089,6 +3114,7 @@ private struct PageShareAnswer: Decodable, Sendable { let document: BotDocument 
 /// A nil `mentions` or `aboutDocumentId` is not in the JSON: a message without a mention or a page sends none.
 private struct TeamSendRequest: Encodable {
     let text: String; let replyTo: String?; let mentions: [String]?; let chat: String?; let aboutDocumentId: String?
+    let preview: TeamLinkPreview?
 }
 private struct TeamEditRequest: Encodable { let text: String }
 private struct TeamReactionRequest: Encodable { let emoji: String }

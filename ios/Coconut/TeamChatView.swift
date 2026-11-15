@@ -394,7 +394,7 @@ struct TeamChatView: View {
             TeamChatComposer(placeholder: TeamDirectText.message(peer(room)?.name ?? room.title),
                              targets: mentionTargets(room), peer: peer(room)?.name, state: $composer,
                              mentions: $mentions, focused: $composerFocused,
-                             enabled: canWrite(room), send: send)
+                             enabled: canWrite(room), previews: chat.offersPreviews, send: send)
                 .fixedSize(horizontal: false, vertical: true)
         }
     }
@@ -696,6 +696,7 @@ struct TeamMessageRow: View {
                     .accessibilityIdentifier("team-message-quote-\(row.id)")
             case nil: EmptyView()
             }
+            if let preview = row.linkPreview { TeamLinkCard(preview: preview) }
             MessageText(text: shownText, linkColor: own ? BoardStyle.userBubbleLink : .blue, allowsTextSelection: false)
                 .accessibilityLabel(Text(spokenLabel))
                 .accessibilityActions { accessibilityMenu }
@@ -899,9 +900,13 @@ struct TeamChatComposer: View {
     @State private var selection: TextSelection?
     @FocusState.Binding var focused: Bool
     let enabled: Bool
+    /// The Mac of the chat takes link previews (TeamChat.offersPreviews). Without it the composer reads no link.
+    var previews = false
     let send: () -> Void
 
     private var text: String { state.draft }
+    /// The link whose preview the composer shows: the first link of a new message, while the Mac takes previews.
+    private var previewLink: TeamDraftLink? { previews && editing == nil ? TeamDraftLink.first(in: text) : nil }
     private var editing: TeamMessage? { state.editing }
     private var canSend: Bool { enabled && !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
 
@@ -920,6 +925,9 @@ struct TeamChatComposer: View {
             } else if let page = state.quote?.page {
                 ComposerQuoteBar(reference: page.quote, cancelLabel: PageQuoteText.remove) { state.removeQuote() }
                     .accessibilityIdentifier("reply-preview")
+            }
+            if editing == nil, let preview = state.linkPreview {
+                ComposerLinkBar(preview: preview) { state.removePreview() }
             }
             if editing == nil && !targets.isEmpty {
                 BotMentionControls(text: $state.draft, selection: $selection, selected: $mentions,
@@ -945,6 +953,68 @@ struct TeamChatComposer: View {
         .modifier(ComposerBackdrop())
         // A sent or cancelled draft leaves no caret in the old text.
         .onChange(of: text) { _, value in if value.isEmpty { selection = nil } }
+        // A new first link drops the old preview at once, and its page loads after a pause in typing. The send never
+        // waits for it.
+        .task(id: previewLink) {
+            let link = previewLink
+            state.linkChanged(to: link?.text)
+            guard let link, state.removedLink != link.text, state.linkPreview == nil else { return }
+            let preview = await TeamComposerPreview.load(link) { await LinkPreviewLoader.shared.preview($0) }
+            guard !Task.isCancelled else { return }
+            state.previewLoaded(preview, for: link.text)
+        }
+    }
+}
+
+/// The link preview of the draft above the field, in the form of the reply bar: the title and the site of the page,
+/// and a control that removes the preview from the message.
+struct ComposerLinkBar: View {
+    let preview: TeamLinkPreview
+    let remove: () -> Void
+
+    var body: some View {
+        HStack(spacing: 8) {
+            HStack(spacing: 8) {
+                Capsule().fill(.secondary).frame(width: 3)
+                VStack(alignment: .leading, spacing: BoardStyle.Space.line) {
+                    Text(preview.title).font(.footnote.weight(.semibold)).lineLimit(1)
+                    Text(preview.site).font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .fixedSize(horizontal: false, vertical: true).padding(.vertical, BoardStyle.Space.xs)
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(preview.spoken)
+            .accessibilityIdentifier("link-preview-bar")
+            Button(action: remove) {
+                Image(systemName: "xmark").foregroundStyle(.secondary).frame(minWidth: 44, minHeight: 44)
+            }
+            .accessibilityLabel("Remove preview")
+            .accessibilityIdentifier("link-preview-remove")
+        }
+        .padding(.leading, BoardStyle.Space.m).padding(.trailing, BoardStyle.Space.xs).padding(.vertical, BoardStyle.Space.xs)
+        .modifier(ComposerSurface(shape: RoundedRectangle(cornerRadius: BoardStyle.Radius.medium, style: .continuous)))
+        .padding(.horizontal, BoardStyle.Space.m).padding(.bottom, BoardStyle.Space.s)
+    }
+}
+
+/// The link preview of a message, at the top of its bubble: the title and the site that the app of the writer sent.
+/// It loads nothing. A tap opens the address with the system.
+struct TeamLinkCard: View {
+    @Environment(\.openURL) private var openURL
+    let preview: TeamLinkPreview
+
+    var body: some View {
+        Button { if let address = preview.address { openURL(address) } } label: {
+            // The card sits inside the bubble: the line fill reads on each bubble, and the corner follows the bubble.
+            LinkPreviewRow(title: preview.title, site: preview.site, fill: BoardStyle.line, radius: BoardStyle.Radius.small)
+        }
+        .buttonStyle(.plain)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(preview.spoken)
+        .accessibilityHint("Opens the link")
+        .accessibilityAddTraits(.isLink)
+        .accessibilityIdentifier("team-link-preview")
     }
 }
 
