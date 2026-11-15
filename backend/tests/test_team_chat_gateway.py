@@ -7,9 +7,11 @@ runs. test_native_team_chat.py runs a real Hermes gateway.
 """
 import asyncio
 import dataclasses
+import json
 import logging
 import os
 from pathlib import Path
+import sqlite3
 import sys
 import tempfile
 import threading
@@ -19,7 +21,7 @@ from unittest import mock
 
 import test_gateway_adapter
 from coconut.server import APIServer
-from coconut.team_turns import ASKED, DENIED
+from coconut.team_turns import ASKED, DENIED, chat_id
 from test_team_turns import TeamTurnMacs
 
 EVENT = '''
@@ -76,13 +78,17 @@ class PlatformEntry:
     max_message_length: int = 0
     emoji: str = ""
 '''
+# The middleware kinds of a Hermes that has the middleware of the guard of the direct chats.
+MIDDLEWARE = '''
+VALID_MIDDLEWARE = {"tool_request", "tool_execution", "llm_request", "llm_execution"}
+'''
 
 
 class Context:
     """The plugin context of Hermes: it records each registration."""
 
     def __init__(self, fail=None):
-        self.platforms, self.tools, self.hooks, self.fail = [], [], [], fail
+        self.platforms, self.tools, self.hooks, self.middleware, self.fail = [], [], [], {}, fail
 
     def register_platform(self, **options):
         if self.fail:
@@ -97,14 +103,17 @@ class Context:
 
     def register_middleware(self, name, callback):
         self.hooks.append(name)
+        self.middleware[name] = callback
 
 
 def setUpModule():
-    global STUBS, plugin, team
+    global STUBS, plugin, team, privacy
     STUBS = tempfile.TemporaryDirectory()
     with mock.patch.dict(test_gateway_adapter.STUBS, {'gateway/platforms/event.py': EVENT,
-                                                       'gateway/platform_registry.py': REGISTRY}):
+                                                       'gateway/platform_registry.py': REGISTRY,
+                                                       'hermes_cli/middleware.py': MIDDLEWARE}):
         plugin, _ = test_gateway_adapter.load_plugin(Path(STUBS.name))
+    import hermes_plugins.coconut.privacy as privacy
     import hermes_plugins.coconut.team as team
 
 
@@ -120,11 +129,12 @@ def team_mode(config=None):
 
 
 class RegistrationTests(unittest.TestCase):
-    def test_the_team_mode_registers_the_platform_and_nothing_else(self):
+    def test_the_team_mode_registers_the_guard_and_the_platform_and_nothing_else(self):
         context = Context()
         with team_mode():
             plugin.register(context)
-        self.assertEqual((context.tools, context.hooks), ([], []))
+        self.assertEqual((context.tools, context.hooks), ([], ['tool_execution']))
+        self.assertIs(context.middleware['tool_execution'], privacy.guard)
         (options,) = context.platforms
         self.assertEqual((options['name'], options['trusted_inbound'], options['platform_hint']),
                          ('coconut', True, plugin.TEAM_HINT))
@@ -153,7 +163,8 @@ class RegistrationTests(unittest.TestCase):
         with team_mode(), mock.patch.object(team, 'MessageEvent', OlderEvent), \
                 self.assertLogs('hermes_plugins.coconut', logging.WARNING) as logs:
             plugin.register(context)
-        self.assertEqual((context.platforms, context.tools, context.hooks), ([], [], []))
+        # The guard stays for the other platforms of the profile, which can read the sessions of the direct chats.
+        self.assertEqual((context.platforms, context.tools, context.hooks), ([], [], ['tool_execution']))
         self.assertEqual(len(logs.records), 1)
         self.assertIn('channel_context', logs.output[0])
 
@@ -188,9 +199,210 @@ class RegistrationTests(unittest.TestCase):
                 with team_mode(), mock.patch.dict(sys.modules, modules), \
                         self.assertLogs('hermes_plugins.coconut', logging.WARNING) as logs:
                     plugin.register(context)
-                self.assertEqual((context.platforms, context.tools, context.hooks), ([], [], []))
+                self.assertEqual((context.platforms, context.tools, context.hooks),
+                                 ([], [], ['tool_execution'] if fault == 'register' else []))
                 self.assertEqual(len(logs.records), 1)
                 self.assertIn('the team chat stays off', logs.output[0])
+
+    def test_a_hermes_without_the_middleware_of_the_guard_gets_a_channel_that_takes_no_message(self):
+        # Without the guard, a turn of each chat can read each direct chat: also the Team chat must not run.
+        import hermes_cli.middleware
+        for case in ('kind', 'method', 'module'):
+            with self.subTest(case=case):
+                self.addCleanup(setattr, team.TeamAdapter, 'lacking', None)
+                context = Context()
+                if case == 'method':
+                    context.register_middleware = None
+                patches = {'kind': mock.patch.object(hermes_cli.middleware, 'VALID_MIDDLEWARE', {'llm_request'}),
+                           'method': mock.patch.dict(sys.modules, {}),
+                           'module': mock.patch.dict(sys.modules, {'hermes_cli.middleware': None})}
+                with team_mode(), patches[case], self.assertLogs('hermes_plugins.coconut', logging.WARNING) as logs:
+                    plugin.register(context)
+                (options,) = context.platforms
+                self.assertIs(options['adapter_factory'], team.TeamAdapter)
+                self.assertEqual(context.hooks, [])
+                self.assertEqual(team.TeamAdapter.lacking, 'tool_execution')
+                self.assertEqual(logs.output, ['WARNING:hermes_plugins.coconut:Coconut: the team chat takes no '
+                                               'message, because this Hermes lacks tool_execution. Update Hermes.'])
+
+
+# The chats of the agent Reporter in the North team, as team_turns.chat_id makes them.
+TEAM_CHAT = chat_id('room-north', 'reporter')
+NAMED_CHAT = chat_id('room-north', 'reporter', 'entry-design')
+ADA_DIRECT = chat_id('room-north', 'reporter', direct='member-ada')
+GRACE_DIRECT = chat_id('room-north', 'reporter', direct='member-grace')
+# The rows of `sessions`: (id, source, chat_id, parent_session_id).
+SESSIONS = [('team-grace', 'coconut', TEAM_CHAT, None), ('named-grace', 'coconut', NAMED_CHAT, None),
+            ('ada', 'coconut', ADA_DIRECT, None), ('ada-later', 'coconut', ADA_DIRECT, 'ada'),
+            ('ada-child', 'subagent', None, 'ada'), ('grace', 'coconut', GRACE_DIRECT, None),
+            ('cli', 'cli', None, None), ('cron', 'cron', None, None), ('telegram', 'telegram', '42', None),
+            ('nobody', 'coconut', None, None)]
+
+
+class DirectChatGuardTests(unittest.TestCase):
+    """The guard of the direct chats (privacy.guard) against a `sessions` table of its own. No Hermes runs."""
+
+    def setUp(self):
+        self.home = tempfile.TemporaryDirectory()
+        self.addCleanup(self.home.cleanup)
+        patch = mock.patch.dict(os.environ, {'HERMES_HOME': self.home.name})
+        patch.start()
+        self.addCleanup(patch.stop)
+        self.table('CREATE TABLE sessions (id TEXT PRIMARY KEY, source TEXT NOT NULL, chat_id TEXT, '
+                   'parent_session_id TEXT)', SESSIONS)
+        self.calls = []
+
+    def table(self, create, rows=()):
+        connection = sqlite3.connect(Path(self.home.name) / 'state.db')
+        with connection:
+            connection.execute(create)
+            connection.executemany('INSERT INTO sessions VALUES (?, ?, ?, ?)', rows)
+        connection.close()
+
+    def call(self, session, tool='session_search', result=None, **args):
+        """Call the guard as Hermes does, with a tool that records its call and returns `result`."""
+        def tool_call(next_args):
+            self.calls.append(next_args)
+            return result if result is not None else json.dumps({'success': True, 'mode': 'read',
+                                                                  'session_id': next_args['session_id'].strip()})
+        return privacy.guard(tool_name=tool, args=args, next_call=tool_call, session_id=session,
+                             original_args=dict(args), task_id='', tool_call_id='call-1', turn_id='')
+
+    def refused(self, answer, text=None):
+        self.assertEqual(json.loads(answer), {'success': False, 'error': text or privacy.REFUSED})
+
+    @staticmethod
+    def found(mode, *sessions, **extra):
+        results = [dict(session_id=session, title=f'Title {session}', **({'parent_session_id': parent}
+                                                                         if parent else {}))
+                   for session, parent in sessions]
+        return json.dumps({'success': True, 'mode': mode, 'results': results, 'count': len(results), **extra})
+
+    def test_the_chat_ids_of_the_service_are_the_direct_chats_of_the_guard(self):
+        self.assertTrue(privacy.is_direct(ADA_DIRECT))
+        self.assertFalse(privacy.is_direct(TEAM_CHAT))
+        self.assertFalse(privacy.is_direct(NAMED_CHAT))
+        self.assertFalse(privacy.is_direct(None))
+        self.assertFalse(privacy.is_direct('42'))
+
+    def test_a_read_of_a_direct_chat_works_only_in_that_chat(self):
+        for session in ('team-grace', 'named-grace', 'grace', 'cli', 'cron', 'telegram', 'nobody', 'unknown', ''):
+            for target in ('ada', 'ada-later', 'ada-child', 'nobody', 'unknown'):
+                with self.subTest(session=session, target=target):
+                    self.refused(self.call(session, session_id=target))
+                    self.refused(self.call(session, session_id=target, around_message_id=3))
+        self.assertEqual(self.calls, [], 'A refused call does not reach the tool.')
+        # Ada's own chat, its later session and a subagent of it reach each session of her chat.
+        for session in ('ada', 'ada-later', 'ada-child'):
+            for target in ('ada', 'ada-later', 'ada-child'):
+                with self.subTest(session=session, target=target):
+                    self.assertEqual(json.loads(self.call(session, session_id=target))['session_id'], target)
+        # The other chats stay readable from each chat.
+        for session in ('ada', 'grace', 'team-grace', 'cli'):
+            for target in ('team-grace', 'named-grace', 'cli', 'cron', 'telegram'):
+                with self.subTest(session=session, target=target):
+                    self.assertEqual(json.loads(self.call(session, session_id=f' {target} '))['session_id'], target)
+
+    def test_a_read_whose_result_names_a_direct_chat_of_another_chat_is_refused(self):
+        # Scroll can move to a child session of the same lineage. The guard checks the session of the result again.
+        moved = json.dumps({'success': True, 'mode': 'scroll', 'session_id': 'ada', 'messages': []})
+        with self.assertLogs('hermes_plugins.coconut.privacy', logging.WARNING):
+            self.refused(self.call('team-grace', session_id='team-grace', around_message_id=3, result=moved))
+        self.assertEqual(len(self.calls), 1)
+
+    def test_discover_and_browse_return_no_direct_chat_of_another_chat(self):
+        discover = self.found('discover', ('team-grace', None), ('ada', None), ('ada-later', 'ada'),
+                              ('ada-child', 'ada'), ('telegram', None), ('nobody', None), ('grace', None),
+                              query='door', detail='adaptive', sessions_searched=7, link_hint='Write the link.',
+                              index_rebuild={'percent': 50})
+        answer = json.loads(self.call('team-grace', query='door', result=discover))
+        self.assertEqual([item['session_id'] for item in answer['results']], ['team-grace', 'telegram'])
+        self.assertEqual((answer['count'], answer['sessions_searched'], answer['query'], answer['link_hint'],
+                          answer['index_rebuild']), (2, 2, 'door', 'Write the link.', {'percent': 50}))
+        self.assertNotIn('Title ada', json.dumps(answer))
+        # Ada's own chat finds her sessions, and no session of Grace's direct chat.
+        answer = json.loads(self.call('ada', query='door', result=discover))
+        self.assertEqual([item['session_id'] for item in answer['results']],
+                         ['team-grace', 'ada', 'ada-later', 'ada-child', 'telegram'])
+        browse = self.found('browse', ('ada', None), ('cli', None), message='Showing 2 most recent sessions.')
+        answer = json.loads(self.call('cli', result=browse))
+        self.assertEqual(answer, {'success': True, 'mode': 'browse', 'results': [answer['results'][0]], 'count': 1,
+                                  'message': 'Showing 1 most recent sessions. Pass a query= to search, or '
+                                             'session_id+around_message_id to scroll.'})
+        self.assertEqual(answer['results'][0]['session_id'], 'cli')
+        # A result without a direct chat of another chat keeps each key that the guard knows, and loses the others.
+        self.assertEqual(json.loads(self.call('ada', result=browse)), json.loads(browse))
+        found = self.found('discover', ('cli', None), query='door', sessions_searched=1)
+        later = json.dumps(dict(json.loads(found), related=[{'session_id': 'ada', 'preview': 'My door code'}]))
+        self.assertEqual(json.loads(self.call('team-grace', query='door', result=later)), json.loads(found))
+
+    def test_profile_and_unknown_arguments_are_refused(self):
+        for args in ({'profile': 'default'}, {'profile': 'default', 'session_id': 'team-grace'},
+                     {'session_id': 'default/team-grace'}, {'session_id': 7}, {'session_id': ['ada']},
+                     {'query': 'door', 'scope': 'all'}, {'source': 'coconut'}):
+            with self.subTest(args=args):
+                self.refused(self.call('team-grace', **args))
+        self.assertEqual(self.calls, [])
+        # A blank profile is no profile for Hermes.
+        self.assertEqual(json.loads(self.call('team-grace', session_id='cli', profile=' '))['session_id'], 'cli')
+
+    def test_a_result_that_the_guard_cannot_read_is_refused(self):
+        for result in ('not json', json.dumps([]), json.dumps({'success': True}), json.dumps({'mode': 'browse'}),
+                       json.dumps({'success': True, 'mode': 'later', 'results': []}),
+                       json.dumps({'success': True, 'mode': 'browse', 'results': {}}),
+                       json.dumps({'success': True, 'mode': 'browse', 'results': ['cli']}),
+                       json.dumps({'success': True, 'mode': 'read'}), json.dumps({'success': False})):
+            with self.subTest(result=result), self.assertLogs('hermes_plugins.coconut.privacy', logging.WARNING):
+                self.refused(self.call('team-grace', query='door', result=result))
+        # A list of sessions for a read.
+        with self.assertLogs('hermes_plugins.coconut.privacy', logging.WARNING):
+            self.refused(self.call('team-grace', session_id='cli', result=self.found('browse', ('cli', None))))
+
+    def test_a_fault_of_the_guard_refuses_the_call(self):
+        # A store that does not read: no state.db, and a `sessions` table without the chat of a session.
+        for case in ('missing', 'columns'):
+            with self.subTest(store=case):
+                (Path(self.home.name) / 'state.db').unlink(missing_ok=True)
+                if case == 'columns':
+                    self.table('CREATE TABLE sessions (id TEXT PRIMARY KEY, source TEXT, model TEXT, title TEXT)',
+                               [('team-grace', 'coconut', 'stub', 'Plans')])
+                with self.assertLogs('hermes_plugins.coconut.privacy', logging.WARNING):
+                    self.refused(self.call('team-grace', query='door', result=self.found('browse', ('cli', None))))
+                    self.refused(self.call('team-grace', session_id='cli'))
+                    self.refused(self.call('team-grace', tool='memory', action='add', content='A fact.'),
+                                 privacy.WRITES['memory'])
+                    self.refused(self.call('team-grace', tool='skill_manage', action='create', name='plans'),
+                                 privacy.WRITES['skill_manage'])
+                self.assertEqual(self.calls, [], 'A refused call does not reach the tool.')
+        # Another tool does not need the store.
+        self.assertEqual(self.call('team-grace', tool='terminal', result='done', command='ls'), 'done')
+
+    def test_an_error_of_the_tool_reaches_the_model_as_an_error(self):
+        error = json.dumps({'error': 'around_message_id 9 not in session_id cli', 'success': False})
+        self.refused(self.call('team-grace', session_id='cli', around_message_id=9, result=error),
+                     'around_message_id 9 not in session_id cli')
+        self.refused(self.call('team-grace', query='door', result=json.dumps({'error': 'Search failed'})),
+                     'Search failed')
+
+    def test_a_direct_chat_writes_no_memory_and_no_skill(self):
+        for tool in ('memory', 'skill_manage'):
+            # A turn of a direct chat, a subagent of it, the review after it (it has the session ID of the turn),
+            # and a session that the guard cannot place.
+            for session in ('ada', 'ada-later', 'ada-child', 'grace', 'nobody', 'unknown', ''):
+                with self.subTest(tool=tool, session=session):
+                    self.refused(self.call(session, tool=tool, action='add', content='The door code is 7731.'),
+                                 privacy.WRITES[tool])
+            self.assertEqual(self.calls, [])
+            # The Team chat, a named chat and the other platforms keep their writes.
+            for session in ('team-grace', 'named-grace', 'cli', 'cron', 'telegram'):
+                with self.subTest(tool=tool, session=session):
+                    self.assertEqual(self.call(session, tool=tool, result='saved', action='add', content='A fact.'),
+                                     'saved')
+                    self.assertEqual(self.calls.pop(), {'action': 'add', 'content': 'A fact.'})
+
+    def test_another_tool_passes_untouched(self):
+        self.assertEqual(self.call('ada', tool='terminal', result='done', command='ls'), 'done')
+        self.assertEqual(self.calls, [{'command': 'ls'}])
 
 
 class TeamAdapterTests(TeamTurnMacs, unittest.TestCase):

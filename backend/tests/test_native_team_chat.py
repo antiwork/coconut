@@ -14,6 +14,7 @@ import json
 import os
 from pathlib import Path
 import signal
+import sqlite3
 import subprocess
 import sys
 import threading
@@ -39,14 +40,62 @@ AFTER = 'The slow command is done.'
 # The files that the slow command writes before and after its sleep. A test sets them in its scratch folder.
 MARKERS = {}
 SLEEP_SECONDS = 6
+# Ada's message in her direct chat with the bot, and a message of the Team chat.
+SECRET = 'ZEBRAFISH7731'
+PRIVATE = f'My door code is {SECRET}. Keep it for me.'
+PUBLIC_WORD = 'MARIGOLD42'
+PUBLIC = f'@Reporter The launch word is {PUBLIC_WORD}.'
+# A turn whose text has SEARCH calls session_search with each item of SEARCH_CALLS, one at a time. SEARCHES gets the
+# tool results of each such turn.
+SEARCH = 'DOSEARCH'
+SEARCH_CALLS = []
+SEARCHES = []
+# The review of Hermes after a turn saves what it read, as a model can. REVIEWS gets the tool results of each review.
+REVIEW = 'Review the conversation above'
+REVIEWS = []
+
+
+def tool_call(request, name, arguments, number):
+    """A call of a tool. Hermes defers some tools behind its tool search bridge: such a call goes through
+    `tool_call`."""
+    if name in {tool['function']['name'] for tool in request['tools']}:
+        function = dict(name=name, arguments=json.dumps(arguments))
+    else:
+        function = dict(name='tool_call', arguments=json.dumps({'calls': [{'name': name, 'arguments': arguments}]}))
+    return dict(id=f'call-{number}', type='function', function=function)
+
+
+def review(request, messages, last):
+    """The review of a turn: a memory write and a new skill with what the turn said, then the end."""
+    done = [message.get('content') for message in messages[last:] if message.get('role') == 'tool']
+    fact = PRIVATE if SECRET in json.dumps(messages) else f'The launch word is {PUBLIC_WORD}.'
+    calls = [('memory', dict(action='add', target='user', content=fact)),
+             ('skill_manage', dict(operations=[dict(action='create', name=f'fact-{len(REVIEWS)}', content=(
+                 f'---\nname: fact-{len(REVIEWS)}\ndescription: A fact of a chat.\n---\n{fact}\n'))]))]
+    if len(done) < len(calls):
+        name, arguments = calls[len(done)]
+        return dict(role='assistant', content=None,
+                    tool_calls=[tool_call(request, name, arguments, f'review-{len(done)}')])
+    REVIEWS.append(dict(fact=fact, results=done))
+    return dict(role='assistant', content='Saved.')
 
 
 def answer(request):
     """The reply of the stand-in model: a terminal call that takes some seconds for SLOW, then AFTER with its result;
-    SECOND for a question that answers the bot; else FIRST."""
+    the calls of SEARCH_CALLS for SEARCH; a memory write and a skill in a review; SECOND for a question that answers
+    the bot; else FIRST."""
     messages = request.get('messages') or []
     users = [index for index, message in enumerate(messages) if message.get('role') == 'user']
     last = json.dumps(messages[users[-1]].get('content')) if users else ''
+    if REVIEW in last and request.get('tools'):
+        return review(request, messages, users[-1])
+    if SEARCH in last and request.get('tools'):
+        done = [message.get('content') for message in messages[users[-1]:] if message.get('role') == 'tool']
+        if len(done) < len(SEARCH_CALLS):
+            return dict(role='assistant', content=None, tool_calls=[
+                tool_call(request, 'session_search', SEARCH_CALLS[len(done)], f'search-{len(SEARCHES)}-{len(done)}')])
+        SEARCHES.append(dict(calls=list(SEARCH_CALLS), results=done))
+        return dict(role='assistant', content=f'Search {len(SEARCHES)} done.')
     if SLOW in last and request.get('tools'):
         if any(message.get('role') == 'tool' for message in messages[users[-1]:]):
             return dict(role='assistant', content=AFTER)
@@ -69,6 +118,8 @@ class NativeTeamChatTests(AsThePerson, TeamOnlyMacs, unittest.TestCase):
         test_native_gateway_chat.answer, self.saved = answer, test_native_gateway_chat.answer
         self.addCleanup(setattr, test_native_gateway_chat, 'answer', self.saved)
         Model.requests.clear()
+        for found in (SEARCH_CALLS, SEARCHES, REVIEWS):
+            found.clear()
         MARKERS.update(started=Path(self.temp.name) / 'slow-started', ended=Path(self.temp.name) / 'slow-ended')
         self.addCleanup(MARKERS.clear)
         self.model = ThreadingHTTPServer(('127.0.0.1', 0), Model)
@@ -238,6 +289,166 @@ class NativeTeamChatTests(AsThePerson, TeamOnlyMacs, unittest.TestCase):
         log = self.log.read_text(errors='replace')
         self.assertNotIn('Traceback', log)
         self.assertNotIn('Unauthorized user', log)
+
+    def team_of_two(self):
+        """start_chat with Grace in the team, a named chat Design, and direct messages on for the Macs of Ada and
+        Grace. Return the named chat."""
+        from team_fakes import DEVICE
+        self.start_chat()
+        self.join(self.second, self.invite({'room': self.room})['link'], 'Grace')
+        self.sync_both()
+        for service in (self.first, self.second):
+            service.team_request('GET', '/v1/team/rooms', {}, '', DEVICE, True)
+        design = self.call('POST', f'/v1/team/rooms/{self.room}/chats', {'name': 'Design'}, service=self.first)['chat']
+        self.sync_both()
+        return design
+
+    def sync_both(self):
+        for _ in range(2):
+            self.second.team_sync_pass()
+            self.sync()
+
+    def say(self, service, text, chat=None):
+        """Name the bot in the Team chat, or in the named chat `chat`, and wait for its reply."""
+        query = {'chat': chat} if chat else {}
+
+        def replies():
+            service.team_sync_pass()
+            rows = self.call('GET', f'/v1/team/rooms/{self.room}/messages', query, service=service)['messages']
+            return [row for row in rows if row['bot']]
+        count = len(replies())
+        service.team_sync_pass()
+        self.call('POST', f'/v1/team/rooms/{self.room}/messages',
+                  dict(query, text=f'@Reporter {text}', mentions=[self.mention]), service=service)
+        self.wait_until(lambda: len(replies()) > count)
+
+    def direct(self, service, text):
+        """Write to the bot in the direct chat of the person of `service`, and wait for its reply."""
+        path = f'/v1/team/rooms/{self.room}/directs/{self.mention}/messages'
+
+        def replies():
+            service.team_sync_pass()
+            return [row for row in self.call('GET', path, service=service)['messages'] if not row['this_mac']]
+        count = len(replies())
+        self.call('POST', path, {'text': text}, service=service)
+        self.wait_until(lambda: len(replies()) > count)
+
+    def search(self, calls, ask):
+        """The tool results of a turn that `ask` starts, in which the model calls session_search with each of
+        `calls`."""
+        SEARCH_CALLS[:] = calls
+        count = len(SEARCHES)
+        ask()
+        self.wait_until(lambda: len(SEARCHES) > count)
+        return SEARCHES[count]['results']
+
+    def rows(self, query, *values):
+        connection = sqlite3.connect(f'{(self.hermes_home / "state.db").as_uri()}?mode=ro', uri=True)
+        try:
+            return connection.execute(query, values).fetchall()
+        finally:
+            connection.close()
+
+    def test_a_direct_chat_stays_out_of_the_search_of_each_other_chat(self):
+        design = self.team_of_two()
+        self.say(self.first, PUBLIC.removeprefix('@Reporter '))
+        self.direct(self.first, PRIVATE)
+        (direct,) = self.rows("SELECT id FROM sessions WHERE source = 'coconut' AND chat_id LIKE '%:direct:%'")[0]
+        (message,) = self.rows('SELECT id FROM messages WHERE session_id = ? AND content LIKE ? ORDER BY id LIMIT 1',
+                               direct, f'%{SECRET}%')[0]
+
+        # Ada's own chat reads its own session, and finds the Team chat.
+        own = self.search([dict(session_id=direct), dict(query=PUBLIC_WORD)],
+                          lambda: self.direct(self.first, f'{SEARCH} in my own chat'))
+        self.assertIn('door code', own[0])
+        self.assertIn('launch word is', own[1])
+
+        # Each other chat: Grace in the Team chat, in a named chat and in her own direct chat, and the operator on the
+        # command line of Hermes. The Team chat stays searchable from each of them.
+        calls = [dict(query=SECRET), dict(), dict(query=PUBLIC_WORD),
+                 dict(query=SECRET, role_filter='user,assistant,tool'),
+                 dict(session_id=direct), dict(session_id=direct, around_message_id=message),
+                 dict(session_id=direct, profile='default')]
+
+        def command_line():
+            shot = subprocess.run([PYTHON, '-c', LAUNCH, SOURCE, '-z', f'{SEARCH} from the command line'],
+                                  cwd=self.temp.name, env=self.environment, stdin=subprocess.DEVNULL,
+                                  capture_output=True, text=True, timeout=150)
+            self.assertEqual(shot.returncode, 0, shot.stdout + shot.stderr)
+        others = {'Team chat': lambda: self.say(self.second, f'{SEARCH} now'),
+                  'named chat': lambda: self.say(self.second, f'{SEARCH} now', chat=design),
+                  'direct chat of Grace': lambda: self.direct(self.second, f'{SEARCH} now'),
+                  'command line': command_line}
+        for name, ask in others.items():
+            with self.subTest(chat=name):
+                found = self.search(calls, ask)
+                self.assertEqual(len(found), len(calls), found)
+                for result in found:
+                    self.assertNotIn('door code', result)
+                self.assertIn('"mode": "discover"', found[0])
+                self.assertIn('"mode": "browse"', found[1])
+                self.assertIn('launch word is', found[2])
+                for result in found[4:]:
+                    self.assertIn('Coconut refused this search', result)
+        self.assertNotIn('Traceback', self.log.read_text(errors='replace'))
+
+    def test_the_guard_knows_each_argument_of_session_search(self):
+        # The guard refuses each argument that it does not know. A new argument of Hermes would refuse each call.
+        import importlib.util
+        spec = importlib.util.spec_from_file_location('privacy', ROOT / 'hermes_plugin/coconut/privacy.py')
+        privacy = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(privacy)
+        script = ('import json, sys; sys.path.insert(1, sys.argv[1]); '
+                  'from tools.session_search_tool import SESSION_SEARCH_SCHEMA as schema; '
+                  'print(json.dumps(sorted(schema["parameters"]["properties"])))')
+        shot = subprocess.run([PYTHON, '-c', script, SOURCE], cwd=self.temp.name, env=self.environment,
+                              stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=120)
+        self.assertEqual(shot.returncode, 0, shot.stderr)
+        self.assertEqual(json.loads(shot.stdout.splitlines()[-1]), sorted(privacy.ARGUMENTS))
+
+    def shared(self):
+        """The files of the memory and of the skills of the Hermes home: each chat reads them."""
+        return {str(path.relative_to(self.hermes_home)): path.read_bytes()
+                for folder in ('memories', 'skills') for path in (self.hermes_home / folder).rglob('*')
+                if path.is_file()}
+
+    def system_prompt(self, text):
+        """The system prompt of the first model request whose last message has `text`."""
+        request = self.wait_until(lambda: [request for request in Model.requests
+                                           if text in json.dumps(request['messages'][-1])])[0]
+        return json.dumps([message for message in request['messages'] if message.get('role') == 'system'])
+
+    def test_the_review_after_a_turn_of_a_direct_chat_writes_no_memory_and_no_skill(self):
+        # Hermes reviews each turn, not each tenth one, so the test sees the review at once.
+        config = json.loads((self.hermes_home / 'config.yaml').read_text())
+        config.update(memory={'nudge_interval': 1}, skills={'creation_nudge_interval': 1})
+        (self.hermes_home / 'config.yaml').write_text(json.dumps(config))
+        design = self.team_of_two()
+        before = self.shared()
+        self.direct(self.first, PRIVATE)
+        (private,) = self.wait_until(lambda: REVIEWS[:1])
+        # The review tried both writes, and the guard refused each of them.
+        self.assertEqual(private['fact'], PRIVATE)
+        self.assertEqual(len(private['results']), 2, private)
+        self.assertIn('Coconut refused this memory write', private['results'][0])
+        self.assertIn('Coconut refused this skill change', private['results'][1])
+        self.assertEqual(self.shared(), before)
+
+        # Grace's first turn in the Team chat starts a new session: its system prompt has no word of Ada's chat.
+        self.say(self.second, 'hello from Grace')
+        self.assertNotIn(SECRET, self.system_prompt('hello from Grace'))
+        # The review after a turn of the Team chat still writes the memory and a skill.
+        (_, public) = self.wait_until(lambda: REVIEWS[1:2] and REVIEWS)
+        self.assertNotIn('Coconut refused', json.dumps(public['results']))
+        self.assertIn(PUBLIC_WORD, (self.hermes_home / 'memories/USER.md').read_text())
+        self.assertIn(PUBLIC_WORD.encode(), b''.join(text for name, text in self.shared().items()
+                                                     if name.startswith('skills')))
+        # The next session gets that memory in its system prompt, and still no word of Ada's chat.
+        self.say(self.second, 'hello in design', chat=design)
+        prompt = self.system_prompt('hello in design')
+        self.assertIn(PUBLIC_WORD, prompt)
+        self.assertNotIn(SECRET, prompt)
+        self.assertNotIn(SECRET.encode(), b''.join(self.shared().values()))
 
     def test_a_message_during_a_restart_of_the_gateway_gets_its_answer(self):
         from coconut import team_turns
