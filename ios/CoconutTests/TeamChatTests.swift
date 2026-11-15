@@ -882,4 +882,150 @@ final class TeamChatTests: XCTestCase {
                        "Get notified when someone writes in this team.",
                        "An older service sends nothing for a mention in a quiet team.")
     }
+
+    // MARK: Reactions
+
+    /// Ada (this person), Grace and Lin in "North team".
+    private func northTeam() -> TeamRoom {
+        TeamRoom(room: "r1", name: "North team", state: "active",
+                 members: [TeamMember(member: "m-ada", name: "Ada", thisMac: true),
+                           TeamMember(member: "m-grace", name: "Grace"), TeamMember(member: "m-lin", name: "Lin")],
+                 unread: 0)
+    }
+
+    private func reacted(_ reactions: [TeamReaction]?) -> TeamMessage {
+        var message = message("e1", 1)
+        message.reactions = reactions
+        return message
+    }
+
+    /// A message of a Mac with reactions has the list, in the order of the service. A Mac with an older Coconut sends
+    /// no key, so the message has none: the app then offers no reaction.
+    func testAMessageDecodesWithAndWithoutReactions() throws {
+        let answer = #"""
+        {"room": "r1", "before": null, "messages": [
+          {"id": "e2", "first": 2, "member": "m-grace", "member_name": "Grace", "this_mac": false, "text": "Lunch?",
+           "created_at": "2026-11-10T12:00:00Z", "reactions": [
+             {"emoji": "👍", "members": ["m-ada"], "mine": true},
+             {"emoji": "❤️", "members": ["m-lin", "m-grace"], "mine": false}]},
+          {"id": "e1", "first": 1, "member": "m-grace", "member_name": "Grace", "this_mac": false, "text": "Hello",
+           "created_at": "2026-11-10T11:00:00Z"}
+        ]}
+        """#
+        let page = try APIJSON.decoder().decode(TeamMessagePage.self, from: Data(answer.utf8))
+        XCTAssertEqual(page.messages.map(\.id), ["e2", "e1"])
+        XCTAssertEqual(page.messages[0].reactions, [TeamReaction(emoji: "👍", members: ["m-ada"], mine: true),
+                                                    TeamReaction(emoji: "❤️", members: ["m-lin", "m-grace"], mine: false)])
+        XCTAssertEqual(page.messages[0].ownReaction, "👍")
+        XCTAssertNil(page.messages[1].reactions, "No key: a Mac without reactions.")
+        XCTAssertNil(page.messages[1].ownReaction)
+    }
+
+    /// A tap adds the reaction of this person, a new emoji replaces it, and the same emoji takes it back.
+    func testATapAddsReplacesAndRemovesTheOwnReaction() {
+        let start = reacted([TeamReaction(emoji: "❤️", members: ["m-grace"], mine: false)])
+        XCTAssertEqual(TeamReactions.value(tapping: "👍", on: start), "👍")
+        let added = start.reacting("👍", as: "m-ada")
+        XCTAssertEqual(added.reactions, [TeamReaction(emoji: "👍", members: ["m-ada"], mine: true),
+                                         TeamReaction(emoji: "❤️", members: ["m-grace"], mine: false)],
+                       "The list keeps the order of the six emoji.")
+        let replaced = added.reacting(TeamReactions.value(tapping: "❤️", on: added), as: "m-ada")
+        XCTAssertEqual(replaced.reactions, [TeamReaction(emoji: "❤️", members: ["m-grace", "m-ada"], mine: true)])
+        XCTAssertEqual(replaced.ownReaction, "❤️")
+        XCTAssertEqual(TeamReactions.value(tapping: "❤️", on: replaced), "", "The same emoji again takes it back.")
+        let removed = replaced.reacting("", as: "m-ada")
+        XCTAssertEqual(removed.reactions, [TeamReaction(emoji: "❤️", members: ["m-grace"], mine: false)])
+        XCTAssertEqual(reacted([]).reacting("👍", as: "m-ada").reacting("", as: "m-ada").reactions, [],
+                       "An emoji without a member is not in the list.")
+    }
+
+    /// The chat shows a reaction on its way in place of the reaction of the Mac. A page that the app reads meanwhile
+    /// does not take it off.
+    func testAReactionOnItsWayShowsAlsoAfterAPage() {
+        var chat = TeamChat()
+        chat.merge(page([reacted([])], before: nil), requested: nil)
+        chat.reacting["e1"] = TeamOwnReaction(emoji: "😂", member: "m-ada")
+        XCTAssertEqual(TeamChatRow.rows(chat).first?.message?.ownReaction, "😂")
+        chat.merge(page([reacted([TeamReaction(emoji: "👍", members: ["m-lin"], mine: false)])], before: nil),
+                   requested: nil)
+        XCTAssertEqual(TeamChatRow.rows(chat).first?.message?.reactions,
+                       [TeamReaction(emoji: "👍", members: ["m-lin"], mine: false),
+                        TeamReaction(emoji: "😂", members: ["m-ada"], mine: true)])
+        chat.reacting["e1"] = nil
+        XCTAssertEqual(TeamChatRow.rows(chat).first?.message?.ownReaction, nil)
+    }
+
+    /// The chat offers reactions only on a saved message, where the person can write, from a Mac with reactions, and
+    /// not in a direct chat with a bot.
+    func testTheChatOffersReactionsOnlyWhereTheyWork() {
+        var chat = TeamChat()
+        chat.merge(page([reacted([]), { var old = message("e2", 2); old.reactions = nil; return old }()], before: nil),
+                   requested: nil)
+        chat.pending = [TeamPendingMessage(id: "k1", text: "On its way", replyTo: nil, reply: nil,
+                                           createdAt: "2026-11-10T13:00:00Z")]
+        let rows = TeamChatRow.rows(chat)
+        let saved = rows[0], older = rows[1], pending = rows[2]
+        XCTAssertTrue(TeamReactions.offered(on: saved, in: "r1", canWrite: true))
+        XCTAssertTrue(TeamReactions.offered(on: saved, in: TeamChatKey(room: "r1", chat: "c1"), canWrite: true))
+        XCTAssertTrue(TeamReactions.offered(on: saved, in: TeamChatKey(room: "r1", member: "m-grace"), canWrite: true))
+        XCTAssertFalse(TeamReactions.offered(on: saved, in: TeamChatKey(room: "r1", bot: "t-r1-b1"), canWrite: true),
+                       "A direct chat with a bot.")
+        XCTAssertFalse(TeamReactions.offered(on: saved, in: "r1", canWrite: false), "A chat where the person cannot write.")
+        XCTAssertFalse(TeamReactions.offered(on: older, in: "r1", canWrite: true), "A Mac without reactions.")
+        XCTAssertFalse(TeamReactions.offered(on: pending, in: "r1", canWrite: true), "A message on its way.")
+        chat.deleting.insert("e1")
+        XCTAssertFalse(TeamChatRow.rows(chat).contains { $0.id == "e1" }, "A message whose removal runs has no row.")
+    }
+
+    /// The answer of a send adds its message in its place when the chat does not have it. A copy that a page brought
+    /// stays.
+    func testTheAnswerOfASendAddsOnlyAMissingMessage() {
+        var chat = TeamChat()
+        chat.merge(page([message("e1", 1), message("e3", 3)], before: nil), requested: nil)
+        chat.add(message("e2", 2, own: true, text: "Sent"))
+        XCTAssertEqual(chat.messages.map(\.id), ["e1", "e2", "e3"])
+        var newer = message("e2", 2, own: true, text: "Sent")
+        newer.reactions = [TeamReaction(emoji: "👍", members: ["m-grace"], mine: false)]
+        chat.merge(page([message("e1", 1), newer, message("e3", 3)], before: nil), requested: nil)
+        chat.add(message("e2", 2, own: true, text: "Sent"))
+        XCTAssertEqual(chat.messages.first { $0.id == "e2" }?.reactions, newer.reactions)
+    }
+
+    /// The pill: each emoji with a member in the fixed order, and one count after them for more than one person.
+    func testTheTextOfThePill() throws {
+        XCTAssertNil(TeamReactionSummary(nil))
+        XCTAssertNil(TeamReactionSummary([]))
+        let one = try XCTUnwrap(TeamReactionSummary([TeamReaction(emoji: "😮", members: ["m-lin"])]))
+        XCTAssertEqual(one.text, "😮")
+        XCTAssertEqual(one.spoken, "Reactions: 1 surprise")
+        let many = try XCTUnwrap(TeamReactionSummary([TeamReaction(emoji: "🙏", members: ["m-lin"]),
+                                                      TeamReaction(emoji: "❤️", members: ["m-ada"]),
+                                                      TeamReaction(emoji: "👍", members: ["m-grace", "m-lin"])]))
+        XCTAssertEqual(many.text, "👍❤️🙏 4")
+        XCTAssertEqual(many.spoken, "Reactions: 2 thumbs up, 1 heart, 1 thanks")
+        XCTAssertEqual(TeamReactionSummary([TeamReaction(emoji: "🎉", members: ["m-lin"])]), nil,
+                       "An emoji of a later version shows nothing.")
+    }
+
+    /// The list of the people: this person first as "You", then the others in the order of the emoji and of the log.
+    /// A member that left reads "Former member".
+    func testTheNamesOfTheListOfThePeople() {
+        let reactions = [TeamReaction(emoji: "👍", members: ["m-lin", "m-old"]),
+                         TeamReaction(emoji: "😢", members: ["m-grace", "m-ada"], mine: true)]
+        let people = TeamReactionPerson.list(reactions, room: northTeam())
+        XCTAssertEqual(people.map(\.name), ["You", "Lin", TeamNames.formerMember, "Grace"])
+        XCTAssertEqual(people.map(\.emoji), ["😢", "👍", "👍", "😢"])
+        XCTAssertEqual(people.map(\.own), [true, false, false, false])
+        let peer = TeamDirectPeer(member: "m-old", entry: nil, name: "Bea", canReceive: false)
+        XCTAssertEqual(TeamReactionPerson.list(reactions, room: northTeam(), peer: peer).map(\.name),
+                       ["You", "Lin", "Bea", "Grace"], "A direct chat names its other person.")
+    }
+
+    /// VoiceOver and the Mac menu name the action of each emoji.
+    func testTheWordsOfTheActions() {
+        let mine = reacted([TeamReaction(emoji: "👍", members: ["m-ada"], mine: true)])
+        XCTAssertEqual(TeamReactions.action("👍", on: mine), "Remove thumbs up")
+        XCTAssertEqual(TeamReactions.action("❤️", on: mine), "React with heart")
+        XCTAssertEqual(TeamReactions.all, ["👍", "\u{2764}\u{FE0F}", "😂", "😮", "😢", "🙏"])
+    }
 }

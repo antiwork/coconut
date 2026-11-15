@@ -97,6 +97,10 @@ final class AppStore {
     /// answer of the Mac applies only while its change is still the newest one of that message.
     @ObservationIgnored private var teamMessageChanges: [TeamChatKey: [String: Int]] = [:]
     @ObservationIgnored private var teamMessageChangeCount = 0
+    /// The number of the writer of the reaction of this person, by chat and message ID (writeTeamReaction). At most
+    /// one writer runs for a message.
+    @ObservationIgnored private var teamReactionWriters: [TeamChatKey: [String: Int]] = [:]
+    @ObservationIgnored private var teamReactionWriterCount = 0
     /// The pace of the calls that tell the Mac that the person types, by room (TeamTypingPace).
     @ObservationIgnored private var teamTypingPace: [TeamChatKey: TeamTypingPace] = [:]
     /// Counts the lists of the teams that the app took. A read answer from before a newer list does not set the count.
@@ -638,6 +642,7 @@ final class AppStore {
         team = nil; teamLoadError = nil; latestTeamLoad = nil; teamWrites = [:]
         teamChats = [:]; teamChatRequests = [:]; teamChatChanges = [:]; teamReadPosted = [:]; teamReadPosting = [:]
         teamChatsOnScreen = []; teamOlderRequests = [:]; teamMessageChanges = [:]; teamTypingPace = [:]
+        teamReactionWriters = [:]
         chatFilter = .all
         approvals = nil; parallelWork = nil; fallback = nil; workCapacity = nil; mcpServers = []
         reactionOverrides = [:]; decisionReplyDrafts = [:]; answeringDecisionIds = []
@@ -1832,6 +1837,7 @@ final class AppStore {
             teamChatRequests[chat] = nil
             teamOlderRequests[chat] = nil
             teamMessageChanges[chat] = nil
+            teamReactionWriters[chat] = nil
             teamReadPosted[chat] = nil
             teamReadPosting[chat] = nil
             teamChatsOnScreen.remove(chat)
@@ -2116,9 +2122,9 @@ final class AppStore {
         }
         teamChatChanges[chat, default: 0] += 1
         teamChats[chat]?.pending.remove(at: index)
-        // On purpose: the page of this answer can have gone after a newer read. Then a read answered first, so the
-        // chat is loaded and quotes a page, and the next update with a change of the documents reads it again.
-        teamChats[chat]?.put(answer.message)
+        // A page that brought the message first is as new as this answer or newer, so its copy stays: a late answer
+        // does not take away a reaction or bring back a page that went.
+        teamChats[chat]?.add(answer.message)
         try? saveOutgoing()
     }
 
@@ -2150,9 +2156,7 @@ final class AppStore {
         teamChats[chat]?.editing[message.id] = nil
         guard let answer else { return false }
         teamChatChanges[chat, default: 0] += 1
-        // On purpose, as for a send: a page that went after a newer read corrects itself at the next update with a
-        // change of the documents.
-        teamChats[chat]?.put(answer.message)
+        teamChats[chat]?.putEdit(answer.message)
         return true
     }
 
@@ -2180,6 +2184,60 @@ final class AppStore {
         teamChatChanges[chat, default: 0] += 1
         teamChats[chat]?.remove(message.id)
         return true
+    }
+
+    /// Sets the reaction that this person wants on a message to `emoji`, or takes it back when the person tapped the
+    /// emoji that the person has (TeamReactions.value). `message` is the message as the chat shows it. The chat shows
+    /// the wanted reaction at once, and the call returns at once. One writer for each message sends it to the Mac
+    /// (writeTeamReaction). False when the chat offers no reaction on the message.
+    @discardableResult
+    func reactToTeamMessage(_ chat: TeamChatKey, _ message: TeamMessage, emoji: String) -> Bool {
+        guard TeamReactions.all.contains(emoji), message.reactions != nil, chat.bot == nil,
+              teamChats[chat]?.deleting.contains(message.id) == false,
+              let member = team?.rooms.first(where: { $0.room == chat.room })?.ownMember?.member else { return false }
+        let value = TeamReactions.value(tapping: emoji, on: message)
+        if isDemo {
+            teamChats[chat]?.put(message.reacting(value, as: member))
+            return true
+        }
+        teamChats[chat]?.reacting[message.id] = TeamOwnReaction(emoji: value, member: member)
+        // A running writer sends the new value when its write ends.
+        guard teamReactionWriters[chat]?[message.id] == nil else { return true }
+        teamReactionWriterCount += 1
+        let writer = teamReactionWriterCount
+        teamReactionWriters[chat, default: [:]][message.id] = writer
+        Task { await writeTeamReaction(chat, message.id, writer: writer) }
+        return true
+    }
+
+    /// The one writer of the reaction of this person on a message. It sends the wanted value, and after each answer
+    /// the value that the person wants now, until the Mac has it. So the Mac gets the choices in their order, and the
+    /// last choice is the last write. Each write has its own key, so a write with the body of an earlier write does
+    /// not get the stored answer of that write.
+    ///
+    /// After each confirmed write, the writer puts the confirmed value into the message that the chat has, and the
+    /// overlay keeps only a value that still waits. It does not take the reactions of the answer: the reactions of the
+    /// other people come only from a page. A write fails: the writer clears the overlay and stops, so the chat shows
+    /// the last confirmed value, and the error shows. A new pairing or the removal of the chat ends the writer: it
+    /// changes nothing after that.
+    private func writeTeamReaction(_ chat: TeamChatKey, _ id: String, writer: Int) async {
+        while let wanted = teamChats[chat]?.reacting[id] {
+            let answer: TeamMessageAnswer? = await write("\(chat.path)/messages/\(id)/reaction", method: "PUT",
+                                                         payload: TeamReactionRequest(emoji: wanted.emoji),
+                                                         as: TeamMessageAnswer.self, refreshInBackground: true,
+                                                         idempotencyKey: UUID().uuidString)
+            guard teamReactionWriters[chat]?[id] == writer, teamListHas(chat) else { return }
+            guard answer != nil else {
+                teamChats[chat]?.reacting[id] = nil
+                teamReactionWriters[chat]?[id] = nil
+                return
+            }
+            // The Mac made a change, so a page that the app asked for before it can be older.
+            teamChatChanges[chat, default: 0] += 1
+            // The chat takes each confirmed value at once, so a later failure shows the value that the Mac has.
+            teamChats[chat]?.confirmReaction(id, wanted)
+        }
+        teamReactionWriters[chat]?[id] = nil
     }
 
     /// Tells the Mac that the person read the chat up to the message with this `first`. The app sends each position
@@ -3033,6 +3091,7 @@ private struct TeamSendRequest: Encodable {
     let text: String; let replyTo: String?; let mentions: [String]?; let chat: String?; let aboutDocumentId: String?
 }
 private struct TeamEditRequest: Encodable { let text: String }
+private struct TeamReactionRequest: Encodable { let emoji: String }
 private struct TeamReadRequest: Encodable { let first: Int; let chat: String? }
 private struct TeamTypingRequest: Encodable { let chat: String? }
 /// The body of a new chat and of a new name. A delete sends no name.

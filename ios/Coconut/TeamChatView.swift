@@ -133,6 +133,7 @@ struct TeamChatView: View {
                         .disabled(chat.loadingEarlier || growingAbove)
                         .accessibilityIdentifier("load-earlier-messages")
                     }
+                    let writable = canWrite(room)
                     ForEach(allRows[shown]) { row in
                         let date = row.createdAt.apiDate
                         VStack(spacing: 0) {
@@ -141,7 +142,9 @@ struct TeamChatView: View {
                             }
                             TeamMessageRow(row: row, room: room, peer: peer(room),
                                            editedText: row.message.flatMap { chat.editing[$0.id] },
-                                           canWrite: canWrite(room), actions: actions(proxy: proxy))
+                                           canWrite: writable,
+                                           canReact: TeamReactions.offered(on: row, in: chatKey, canWrite: writable),
+                                           actions: actions(proxy: proxy))
                         }
                         .pinnedDayRow(pinnedDay, id: row.id, date: date, startsDay: row.startsDay)
                         // Keep full text height when the list resizes or scrolls to a new message.
@@ -425,6 +428,7 @@ struct TeamChatView: View {
                 composerFocused = true
             },
             delete: { deleting = $0 },
+            react: { message, emoji in store.reactToTeamMessage(chatKey, message, emoji: emoji) },
             showMessage: { id in show(id, proxy: proxy) },
             retry: { store.retryTeamMessage(chatKey, id: $0) },
             removeUnsent: { store.removeUnsentTeamMessage(chatKey, id: $0) })
@@ -533,6 +537,8 @@ struct TeamMessageActions {
     let reply: (TeamMessage) -> Void
     let edit: (TeamMessage) -> Void
     let delete: (TeamMessage) -> Void
+    /// Sets or takes back the reaction of this person (AppStore.reactToTeamMessage).
+    let react: (TeamMessage, String) -> Void
     let showMessage: (String) -> Void
     let retry: (String) -> Void
     let removeUnsent: (String) -> Void
@@ -551,8 +557,11 @@ struct TeamMessageRow: View {
     /// The new text of an edit on its way.
     let editedText: String?
     let canWrite: Bool
+    /// The chat offers reactions on this message (TeamReactions.offered).
+    let canReact: Bool
     let actions: TeamMessageActions
     @State private var held = false
+    @State private var showsReactions = false
 
     private var own: Bool { row.writer == .you }
     private var message: TeamMessage? { row.message }
@@ -577,13 +586,54 @@ struct TeamMessageRow: View {
         VStack(alignment: .leading, spacing: BoardStyle.Space.xs) {
             if row.startsRun && !own && peer == nil { writerLabel }
             bubbleRow.modifier(MessageTimestamp(createdAt: row.createdAt))
-            // Under the bubble, on its side, in the style of the name above it. The bubble keeps the width of its text.
-            if message?.isEdited == true || editedText != nil {
-                Text("Edited").font(.footnote).foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, alignment: own ? .trailing : .leading)
-                    .padding(.horizontal, BoardStyle.Space.m)
-                    .accessibilityHidden(true)
+            // Under the bubble, on its side, in the style of the name above it: the reactions, then "Edited", in one
+            // line. The bubble keeps the width of its text.
+            let edited = message?.isEdited == true || editedText != nil
+            let summary = TeamReactionSummary(message?.reactions)
+            if edited || summary != nil {
+                HStack(spacing: BoardStyle.Space.s) {
+                    if own, edited { editedLabel }
+                    if let summary { reactionPill(summary) }
+                    if !own, edited { editedLabel }
+                }
+                .frame(maxWidth: .infinity, alignment: own ? .trailing : .leading)
+                // The first word starts at the edge of the text in the bubble: "Edited", or the first emoji in the
+                // capsule.
+                .padding(.horizontal, summary == nil ? BoardStyle.Space.m : BoardStyle.Space.xs)
             }
+        }
+    }
+
+    private var editedLabel: some View {
+        Text("Edited").font(.footnote).foregroundStyle(.secondary).accessibilityHidden(true)
+    }
+
+    /// The reactions on the message. A tap opens the list of the people: a sheet on the iPhone, a popover on a Mac.
+    private func reactionPill(_ summary: TeamReactionSummary) -> some View {
+        Button { showsReactions = true } label: {
+            (Text(summary.emoji.joined())
+             + Text(summary.count > 1 ? " \(summary.count)" : "").foregroundStyle(.secondary))
+                .font(.footnote).monospacedDigit()
+                .padding(.horizontal, BoardStyle.Space.xs).padding(.vertical, BoardStyle.Space.line)
+                .modifier(ReactionCapsule())
+                .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(summary.spoken)
+        .accessibilityIdentifier("team-reactions-\(row.id)")
+        #if os(iOS)
+        .sheet(isPresented: $showsReactions) {
+            reactionList.presentationDetents([.medium]).presentationDragIndicator(.visible)
+        }
+        #else
+        .popover(isPresented: $showsReactions, arrowEdge: .bottom) { reactionList.frame(width: 260) }
+        #endif
+    }
+
+    private var reactionList: some View {
+        TeamReactionList(people: TeamReactionPerson.list(message?.reactions, room: room, peer: peer),
+                         canRemove: canReact) { emoji in
+            if let message { actions.react(message, emoji) }
         }
     }
 
@@ -665,8 +715,13 @@ struct TeamMessageRow: View {
             withTransaction(transaction) { held = true }
         })
         .fullScreenCover(isPresented: $held) {
-            HeldBubbleView(trailing: own, actions: menuActions, share: .text(row.text), afterShare: changeActions) { _ in
-                EmptyView()
+            HeldBubbleView(trailing: own, actions: menuActions, share: .text(row.text), afterShare: changeActions) { close in
+                if canReact, let message {
+                    HeldReactionRow(emoji: TeamReactions.all, marked: { message.ownReaction == $0 },
+                                    label: { TeamReactions.action($0, on: message) }) { emoji in
+                        close { actions.react(message, emoji) }
+                    }
+                }
             } preview: { maxHeight in
                 HeldTextPreview(text: text, own: own, maxHeight: maxHeight)
             }
@@ -674,6 +729,10 @@ struct TeamMessageRow: View {
         #else
         // A Mac shows the actions of a message in the menu of a secondary click.
         .contextMenu {
+            if canReact, let message {
+                ReactionMenuRow(emoji: TeamReactions.all, marked: { message.ownReaction == $0 },
+                                label: { TeamReactions.action($0, on: message) }) { actions.react(message, $0) }
+            }
             if let message, canWrite {
                 Button("Reply", systemImage: "arrowshape.turn.up.left") { actions.reply(message) }
             }
@@ -714,6 +773,11 @@ struct TeamMessageRow: View {
     /// VoiceOver gets the same actions as the menu.
     @ViewBuilder private var accessibilityMenu: some View {
         if let message, canWrite { Button("Reply") { actions.reply(message) } }
+        if canReact, let message {
+            ForEach(TeamReactions.all, id: \.self) { emoji in
+                Button(TeamReactions.action(emoji, on: message)) { actions.react(message, emoji) }
+            }
+        }
         Button("Copy") { Pasteboard.copy(row.text) }
         if let message, canChange { Button("Edit") { actions.edit(message) } }
         if let message, canDelete { Button("Delete") { actions.delete(message) } }
@@ -754,6 +818,67 @@ struct TeamMessageRow: View {
         return MessageReference(messageId: replyTo, text: reply.text ?? "",
                                 author: TeamNames.author(of: reply, ownMember: room.ownMember?.member, peer: peer?.name),
                                 role: "")
+    }
+}
+
+/// The people that reacted to a message: the emoji and the name of each. The own row is first and takes the reaction
+/// back with a tap, then the list closes.
+struct TeamReactionList: View {
+    @Environment(\.dismiss) private var dismiss
+    let people: [TeamReactionPerson]
+    /// False where the person cannot change a reaction, for example in a team that ended.
+    let canRemove: Bool
+    /// Takes back the reaction of this person: the same emoji again.
+    let remove: (String) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Text("Reactions").font(.headline)
+                .padding(.horizontal, BoardStyle.Space.l).padding(.vertical, BoardStyle.Space.m)
+            // A short list takes its own height, so a popover on a Mac fits it. A long list scrolls.
+            ViewThatFits(in: .vertical) {
+                rows
+                ScrollView { rows }
+            }
+        }
+        .padding(.top, BoardStyle.Space.s)
+        // The list starts at the top of the sheet.
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+
+    private var rows: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            ForEach(people) { person in
+                if person.own && canRemove {
+                    Button {
+                        dismiss()
+                        remove(person.emoji)
+                    } label: { row(person) }
+                    .buttonStyle(.plain)
+                    .accessibilityIdentifier("team-reaction-remove")
+                } else {
+                    row(person)
+                }
+            }
+        }
+    }
+
+    private func row(_ person: TeamReactionPerson) -> some View {
+        HStack(spacing: BoardStyle.Space.m) {
+            Text(person.emoji).font(.title3)
+            VStack(alignment: .leading, spacing: BoardStyle.Space.line) {
+                Text(person.name).font(.body)
+                if person.own && canRemove {
+                    Text("Tap to remove").font(.footnote).foregroundStyle(.secondary)
+                }
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, BoardStyle.Space.l)
+        .frame(minHeight: 44)
+        .padding(.vertical, BoardStyle.Space.xs)
+        .contentShape(Rectangle())
+        .accessibilityElement(children: .combine)
     }
 }
 

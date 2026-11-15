@@ -112,6 +112,32 @@ struct HeldBubbleView<Header: View, Preview: View>: View {
     }
 }
 
+/// The emoji above a held message, in one capsule, as WhatsApp shows them. A marked emoji is the one that the person
+/// has. The bot chat and the team chats share it.
+struct HeldReactionRow: View {
+    let emoji: [String]
+    let marked: (String) -> Bool
+    /// The VoiceOver label of the button of an emoji.
+    let label: (String) -> String
+    let pick: (String) -> Void
+
+    var body: some View {
+        HStack(spacing: 2) {
+            ForEach(emoji, id: \.self) { emoji in
+                Button { pick(emoji) } label: {
+                    Text(emoji).font(.system(size: 24)).frame(width: 40, height: 40)
+                        .background(marked(emoji) ? Color.primary.opacity(0.12) : .clear, in: Circle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(label(emoji))
+                .accessibilityIdentifier("held-reaction-\(emoji)")
+            }
+        }
+        .padding(4)
+        .background(.regularMaterial, in: Capsule())
+    }
+}
+
 /// The text of a held message in its bubble. A long message shows its start.
 struct HeldTextPreview: View {
     let text: String
@@ -155,18 +181,10 @@ struct HeldMessageView<Preview: View>: View {
         actions.append(HeldAction(title: copyTitle, systemImage: copyTitle == "Copy link" ? "link" : "doc.on.doc", perform: copy))
         return HeldBubbleView(trailing: trailing, actions: actions, share: share) { close in
             if canReply {
-                HStack(spacing: 2) {
-                    ForEach(MessageReactions.selectable, id: \.self) { emoji in
-                        Button { close { Task { await store.react(to: message, emoji: emoji) } } } label: {
-                            Text(emoji).font(.system(size: 24)).frame(width: 40, height: 40)
-                                .background(reactions.contains(emoji) ? Color.primary.opacity(0.12) : .clear, in: Circle())
-                        }
-                        .buttonStyle(.plain)
-                        .accessibilityLabel("\(reactions.contains(emoji) ? "Remove" : "React with") \(MessageReactions.name(emoji))")
-                    }
+                HeldReactionRow(emoji: MessageReactions.selectable, marked: reactions.contains,
+                                label: { "\(reactions.contains($0) ? "Remove" : "React with") \(MessageReactions.name($0))" }) { emoji in
+                    close { Task { await store.react(to: message, emoji: emoji) } }
                 }
-                .padding(4)
-                .background(.regularMaterial, in: Capsule())
             }
         } preview: { maxHeight in
             preview(maxHeight)

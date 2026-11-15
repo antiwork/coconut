@@ -692,8 +692,14 @@ struct MessageBubble: View {
             #else
             // A Mac shows the actions of a held message in the menu of a secondary click.
             .contextMenu {
-                // As the swipe and VoiceOver do, Reply shows only for a saved message, which a reply can quote.
+                // As the swipe and VoiceOver do, Reply and the reactions show only for a saved message, which a reply
+                // can quote.
                 if let onReply, store.messageReference(for: message) != nil {
+                    let reactions = store.reactions(for: message)
+                    ReactionMenuRow(emoji: MessageReactions.selectable, marked: reactions.contains,
+                                    label: { "\(reactions.contains($0) ? "Remove" : "React with") \(MessageReactions.name($0))" }) { emoji in
+                        Task { await store.react(to: message, emoji: emoji) }
+                    }
                     Button("Reply", systemImage: "arrowshape.turn.up.left") { onReply() }
                 }
                 Button("Copy", systemImage: "doc.on.doc") { Pasteboard.copy(message.text) }
@@ -742,10 +748,40 @@ struct MessageReactionList: View {
                     }.buttonStyle(.plain).accessibilityLabel("Remove \(emoji) reaction")
                         .disabled(!enabled)
                 }
-            }.padding(.horizontal, BoardStyle.Space.xs)
-                .background(BoardStyle.surface, in: Capsule()).overlay(Capsule().stroke(BoardStyle.line))
+            }.modifier(ReactionCapsule())
                 .accessibilityIdentifier("message-reactions-\(message.id)")
         }
+    }
+}
+
+#if os(macOS)
+/// The emoji at the top of the menu of a message on a Mac, in one row. A marked emoji is the one that the person has.
+/// The bot chat and the team chats share it.
+struct ReactionMenuRow: View {
+    let emoji: [String]
+    let marked: (String) -> Bool
+    /// The VoiceOver label of the item of an emoji.
+    let label: (String) -> String
+    let pick: (String) -> Void
+
+    var body: some View {
+        ControlGroup {
+            ForEach(emoji, id: \.self) { emoji in
+                Toggle(isOn: Binding(get: { marked(emoji) }, set: { _ in pick(emoji) })) { Text(emoji) }
+                    .accessibilityLabel(label(emoji))
+            }
+        }
+        .controlGroupStyle(.palette)
+    }
+}
+#endif
+
+/// The look of the reactions under a bubble: a capsule on the surface, with the line. The chat of an own bot and the
+/// team chats share it.
+struct ReactionCapsule: ViewModifier {
+    func body(content: Content) -> some View {
+        content.padding(.horizontal, BoardStyle.Space.xs)
+            .background(BoardStyle.surface, in: Capsule()).overlay(Capsule().stroke(BoardStyle.line))
     }
 }
 
