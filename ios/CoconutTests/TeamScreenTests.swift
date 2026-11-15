@@ -1408,6 +1408,72 @@ final class TeamScreenTests: XCTestCase {
         #endif
     }
 
+    /// The Mac confirms 👍, then the next write (😂) fails. No page read comes. The chat shows the 👍 that the Mac has,
+    /// and the error.
+    @MainActor
+    func testAFailedLaterWriteShowsTheConfirmedReaction() async throws {
+        #if !(DEBUG && targetEnvironment(simulator))
+        throw XCTSkip("This HTTP fixture requires a debug simulator build.")
+        #else
+        let state = try PreviewStateFixture.load()
+        let server = try TeamServer(state: APIJSON.encoder().encode(state))
+        let address = try await server.start()
+        defer { server.stop() }
+        try await withPairedStore(address: address) { store in
+            server.addMessage("Lunch at noon?", announce: false)
+            await store.loadTeamChat("r1")
+            server.holdPages()
+            server.deferReactions(true)
+            try tap(store, "👍")
+            try await waitUntil { server.deferredReactions == 1 }
+            try tap(store, "😂")
+            server.releaseDeferredReactions()
+            try await waitUntil { server.deferredReactions == 1 && server.sentReactions.count == 2 }
+            server.failReactions(true)
+            server.deferReactions(false)
+            server.releaseDeferredReactions()
+            try await waitUntil { self.settled(store) }
+            XCTAssertEqual(server.sentReactions, ["👍", "😂"])
+            XCTAssertEqual(server.ownReaction(1), "👍")
+            XCTAssertEqual(shownReactions(store), [TeamReaction(emoji: "👍", members: ["m0"], mine: true)],
+                           "The chat shows the reaction that the Mac confirmed.")
+            XCTAssertEqual(store.error, "The relay of the team does not answer. Try again later.")
+            server.releasePages()
+        }
+        #endif
+    }
+
+    /// A page brings a message of this person before the answer of its send. The person reacts to it, and the Mac
+    /// confirms the reaction. The late answer of the send does not take the reaction away.
+    @MainActor
+    func testALateSendAnswerKeepsTheMessageOfAPage() async throws {
+        #if !(DEBUG && targetEnvironment(simulator))
+        throw XCTSkip("This HTTP fixture requires a debug simulator build.")
+        #else
+        let state = try PreviewStateFixture.load()
+        let server = try TeamServer(state: APIJSON.encoder().encode(state))
+        let address = try await server.start()
+        defer { server.stop() }
+        try await withPairedStore(address: address) { store in
+            await store.loadTeamChat("r1")
+            server.holdSends(true)
+            XCTAssertTrue(store.sendTeamMessage("r1", text: "Hello", replyingTo: nil))
+            try await waitUntil { server.heldSends == 1 }
+            server.holdSends(false)
+            await store.loadTeamChat("r1")
+            XCTAssertEqual(store.teamChats["r1"]?.messages.first?.text, "Hello")
+            try tap(store, "👍")
+            try await waitUntil { self.settled(store) }
+            XCTAssertEqual(store.teamChats["r1"]?.messages.first?.ownReaction, "👍")
+            server.releaseSends()
+            try await waitUntil { store.teamChats["r1"]?.pending.isEmpty == true }
+            XCTAssertEqual(store.teamChats["r1"]?.messages.count, 1)
+            XCTAssertEqual(store.teamChats["r1"]?.messages.first?.ownReaction, "👍",
+                           "The late answer of the send must not take away the reaction.")
+        }
+        #endif
+    }
+
     /// A Mac with an older Coconut sends no `reactions`. The store sends no reaction to it.
     @MainActor
     func testAMacWithoutReactionsGetsNoReaction() async throws {
@@ -1558,6 +1624,9 @@ private final class TeamServer: @unchecked Sendable {
     /// False for a Mac with an older Coconut: its messages have no `reactions`.
     private var reactionsKey = true
     private var holdingReactions = false
+    private var holdingSends = false
+    private var heldSend: [@Sendable () -> Void] = []
+    var heldSends: Int { lock.withLock { heldSend.count } }
     private var deferringReactions = false
     private var deferredReaction: [@Sendable () -> Void] = []
     var deferredReactions: Int { lock.withLock { deferredReaction.count } }
@@ -1670,6 +1739,13 @@ private final class TeamServer: @unchecked Sendable {
     func failReactions(_ fail: Bool) { lock.withLock { failingReactions = fail } }
     /// The Mac has an older Coconut: no `reactions` in a message.
     func dropReactionsKey() { lock.withLock { reactionsKey = false } }
+
+    /// Keeps the answers of the sends. The Mac saves each message at once, so a page has it before its answer.
+    func holdSends(_ hold: Bool) { lock.withLock { holdingSends = hold } }
+    func releaseSends() {
+        let answers = lock.withLock { defer { heldSend = [] }; return heldSend }
+        answers.forEach { $0() }
+    }
 
     /// Keeps each reaction request without applying it. `releaseDeferredReactions` applies and answers them, as a Mac
     /// that gets the request late does.
@@ -2007,6 +2083,10 @@ private final class TeamServer: @unchecked Sendable {
                 let holdWrite = lock.withLock {
                     if route.hasPrefix("PATCH /v1/team/rooms/r1/messages/") && holdingEdits {
                         heldEdit.append(send)
+                        return true
+                    }
+                    if route == "POST /v1/team/rooms/r1/messages" && holdingSends {
+                        heldSend.append(send)
                         return true
                     }
                     if route.hasSuffix("/reaction") && holdingReactions {

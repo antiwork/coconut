@@ -977,6 +977,20 @@ final class TeamChatTests: XCTestCase {
         XCTAssertFalse(TeamChatRow.rows(chat).contains { $0.id == "e1" }, "A message whose removal runs has no row.")
     }
 
+    /// The answer of a send adds its message in its place when the chat does not have it. A copy that a page brought
+    /// stays.
+    func testTheAnswerOfASendAddsOnlyAMissingMessage() {
+        var chat = TeamChat()
+        chat.merge(page([message("e1", 1), message("e3", 3)], before: nil), requested: nil)
+        chat.add(message("e2", 2, own: true, text: "Sent"))
+        XCTAssertEqual(chat.messages.map(\.id), ["e1", "e2", "e3"])
+        var newer = message("e2", 2, own: true, text: "Sent")
+        newer.reactions = [TeamReaction(emoji: "👍", members: ["m-grace"], mine: false)]
+        chat.merge(page([message("e1", 1), newer, message("e3", 3)], before: nil), requested: nil)
+        chat.add(message("e2", 2, own: true, text: "Sent"))
+        XCTAssertEqual(chat.messages.first { $0.id == "e2" }?.reactions, newer.reactions)
+    }
+
     /// The pill: each emoji with a member in the fixed order, and one count after them for more than one person.
     func testTheTextOfThePill() throws {
         XCTAssertNil(TeamReactionSummary(nil))

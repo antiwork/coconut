@@ -2122,9 +2122,9 @@ final class AppStore {
         }
         teamChatChanges[chat, default: 0] += 1
         teamChats[chat]?.pending.remove(at: index)
-        // On purpose: the page of this answer can have gone after a newer read. Then a read answered first, so the
-        // chat is loaded and quotes a page, and the next update with a change of the documents reads it again.
-        teamChats[chat]?.put(answer.message)
+        // A page that brought the message first is as new as this answer or newer, so its copy stays: a late answer
+        // does not take away a reaction or bring back a page that went.
+        teamChats[chat]?.add(answer.message)
         try? saveOutgoing()
     }
 
@@ -2215,15 +2215,15 @@ final class AppStore {
     /// last choice is the last write. Each write has its own key, so a write with the body of an earlier write does
     /// not get the stored answer of that write.
     ///
-    /// The Mac has the wanted value: the writer puts it into the message that the chat has, as the overlay shows it,
-    /// and clears the overlay. It does not take the reactions of the answer: the reactions of the other people come
-    /// only from a page. A write fails: the writer clears the overlay and stops, and the error shows. A new pairing or
-    /// the removal of the chat ends the writer: it changes nothing after that.
+    /// After each confirmed write, the writer puts the confirmed value into the message that the chat has, and the
+    /// overlay keeps only a value that still waits. It does not take the reactions of the answer: the reactions of the
+    /// other people come only from a page. A write fails: the writer clears the overlay and stops, so the chat shows
+    /// the last confirmed value, and the error shows. A new pairing or the removal of the chat ends the writer: it
+    /// changes nothing after that.
     private func writeTeamReaction(_ chat: TeamChatKey, _ id: String, writer: Int) async {
-        var sent: String?
-        while let wanted = teamChats[chat]?.reacting[id]?.emoji, wanted != sent {
+        while let wanted = teamChats[chat]?.reacting[id] {
             let answer: TeamMessageAnswer? = await write("\(chat.path)/messages/\(id)/reaction", method: "PUT",
-                                                         payload: TeamReactionRequest(emoji: wanted),
+                                                         payload: TeamReactionRequest(emoji: wanted.emoji),
                                                          as: TeamMessageAnswer.self, refreshInBackground: true,
                                                          idempotencyKey: UUID().uuidString)
             guard teamReactionWriters[chat]?[id] == writer, teamListHas(chat) else { return }
@@ -2234,9 +2234,9 @@ final class AppStore {
             }
             // The Mac made a change, so a page that the app asked for before it can be older.
             teamChatChanges[chat, default: 0] += 1
-            sent = wanted
+            // The chat takes each confirmed value at once, so a later failure shows the value that the Mac has.
+            teamChats[chat]?.confirmReaction(id, wanted)
         }
-        teamChats[chat]?.foldReaction(id)
         teamReactionWriters[chat]?[id] = nil
     }
 

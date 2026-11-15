@@ -812,13 +812,21 @@ struct TeamChat: Equatable, Sendable {
         messages[index].editedAt = message.editedAt
     }
 
-    /// The Mac has the reaction on its way: the message that the chat has takes it, as `shown` makes it, and the
-    /// overlay goes. Only the reaction of this person changes. The reactions of the other people stay as the last
-    /// page has them.
-    mutating func foldReaction(_ id: String) {
-        guard let change = reacting.removeValue(forKey: id),
-              let index = messages.firstIndex(where: { $0.id == id }) else { return }
-        messages[index] = messages[index].reacting(change.emoji, as: change.member)
+    /// The Mac confirmed a reaction of this person: the message that the chat has takes it, as `shown` makes it.
+    /// Only the reaction of this person changes. The reactions of the other people stay as the last page has them.
+    /// The overlay goes when it has this value. A newer value stays in the overlay, because it still waits.
+    mutating func confirmReaction(_ id: String, _ confirmed: TeamOwnReaction) {
+        if reacting[id] == confirmed { reacting[id] = nil }
+        guard let index = messages.firstIndex(where: { $0.id == id }) else { return }
+        messages[index] = messages[index].reacting(confirmed.emoji, as: confirmed.member)
+    }
+
+    /// Puts the answer of a send: the message goes in only when the chat does not have it yet. A page that brought
+    /// the message after the send is as new as the answer or newer, so that copy stays, with its reactions and its
+    /// page.
+    mutating func add(_ message: TeamMessage) {
+        guard !messages.contains(where: { $0.id == message.id }) else { return }
+        put(message)
     }
 
     mutating func remove(_ id: String) {
