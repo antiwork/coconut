@@ -14,8 +14,9 @@ import os
 NAME = 'coconut'
 TEAM = 'team'
 LOG = logging.getLogger(__name__)
-TEAM_HINT = ('You are in the team chat of Coconut. Each member of the team can write to you, and the whole team reads '
-             'your reply. Coconut shows Markdown. Coconut has no cards here: when you need a choice or a fact, ask in '
+# The hint of each session of the platform: the Team chat, a named chat and a direct chat. The rules of each turn
+# (team_turns.RULES and RULES_DIRECT) say who can write and who reads, and that Coconut shows Markdown without cards.
+TEAM_HINT = ('You are in a chat of a team in Coconut. The rules of the chat say who can write to you and who reads '
              'your reply.')
 HINT = ('You are in Coconut, the iPhone app of the person who runs this Hermes. Coconut shows Markdown. '
         'Write the answer for a phone screen. When the person writes to you, start with one short sentence that says '

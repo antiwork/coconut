@@ -128,6 +128,13 @@ class RegistrationTests(unittest.TestCase):
         (options,) = context.platforms
         self.assertEqual((options['name'], options['trusted_inbound'], options['platform_hint']),
                          ('coconut', True, plugin.TEAM_HINT))
+        # The hint holds for each chat of a team, a direct chat too. The rules of each chat say who reads.
+        from coconut import team_turns
+        self.assertEqual(plugin.TEAM_HINT, 'You are in a chat of a team in Coconut. The rules of the chat say who can '
+                                           'write to you and who reads your reply.')
+        self.assertIn('Each member of the team can write to you, and the whole team reads your reply.',
+                      team_turns.RULES)
+        self.assertNotIn('whole team', team_turns.RULES_DIRECT)
         self.assertIs(options['adapter_factory'], team.TeamAdapter)
         self.assertEqual(options['display_overrides'], plugin.DISPLAY)
         self.assertIsNone(team.TeamAdapter.lacking)
@@ -275,6 +282,19 @@ class TeamAdapterTests(TeamTurnMacs, unittest.TestCase):
         # A Hermes with each field of the registration: no poll names a lack.
         self.assertTrue(polls)
         self.assertFalse(any('lacking' in poll for poll in polls))
+
+    def test_a_turn_of_a_direct_chat_is_a_group_chat_of_its_own(self):
+        async def runner(event):
+            return None
+        self.connect(runner)
+        chat = f'{self.bot["id"]}:team:{self.room}:direct:{"a" * 64}'
+        # A `dm` chat gets a first-contact note of Hermes, so a direct chat is a group chat with its own chat ID.
+        event = self.adapter._event({'id': 'turn-1', 'chat_id': chat, 'chat_name': 'Ada · Example Team',
+                                     'text': 'Hello', 'team': {'member': 'a' * 64, 'member_name': 'Ada',
+                                                               'direct': True}})
+        self.assertEqual((event.source.chat_id, event.source.chat_type), (chat, 'group'))
+        self.assertEqual(self.complete(self.adapter.get_chat_info(chat)),
+                         {'name': 'Ada · Example Team', 'type': 'group', 'chat_id': chat})
 
     def test_an_approval_is_denied_and_a_clarify_question_goes_into_the_chat(self):
         from types import SimpleNamespace

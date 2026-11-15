@@ -480,11 +480,11 @@ class TeamStoreTests(unittest.TestCase):
                 self.assertEqual(self.opens()[f'Bot {number}'], 0, 'Only the JSON value true is the mark.')
 
     def test_the_own_bot_entry_keeps_its_mark_for_the_form_of_the_publish_step(self):
-        self.write(1, self.bot('Reporter', open=True))
+        self.write(1, self.bot('Reporter', open=True, direct=True))
         self.write(2, self.bot('Writer'))
         self.assertEqual(self.store.written(ROOM, MEMBER),
-                         {entry_id(1): ('bot', 'Reporter', 'fruit.kiwi', 'A68456', 1),
-                          entry_id(2): ('bot', 'Writer', 'fruit.kiwi', 'A68456', 0)})
+                         {entry_id(1): ('bot', 'Reporter', 'fruit.kiwi', 'A68456', 1, 1),
+                          entry_id(2): ('bot', 'Writer', 'fruit.kiwi', 'A68456', 0, 0)})
 
     def test_a_store_of_an_older_version_gets_the_column_and_reads_each_bot_as_not_open(self):
         db = sqlite3.connect(':memory:', isolation_level=None)
@@ -569,6 +569,22 @@ class TeamStoreTests(unittest.TestCase):
         again = TeamStore(db)
         again.migrate()
         self.assertEqual(again.changed, set())
+
+    def test_the_repair_reads_the_mark_direct_of_a_bot_from_its_own_entry(self):
+        # The mark `direct` of a member and of a bot have the same name. Each row takes the mark of its own entry.
+        self.write(1, self.member('Reporter Mac', bot_only=True), ADMIN)
+        self.write(2, self.bot('Reporter', open=True, direct=True), ADMIN)
+        self.write(3, self.bot('Quiet'), ADMIN)
+        self.write(4, self.member('Grace', direct=True))
+        bots = 'SELECT name, open, direct FROM team_bots ORDER BY name'
+        expected = ([('Quiet', 0, 0), ('Reporter', 1, 1)], [(ROOM, 'Grace', 0, 1), (ROOM, 'Reporter Mac', 1, 0)])
+        self.assertEqual((self.db.execute(bots).fetchall(), self.marks()), expected)
+        # An older store had no column `direct` in team_bots, so each bot row read as 0. A wrong mark goes the other way.
+        self.db.execute("UPDATE team_bots SET direct=CASE name WHEN 'Reporter' THEN 0 ELSE 1 END")
+        store = self.reopen()
+        self.assertEqual((self.db.execute(bots).fetchall(), self.marks()), expected)
+        self.assertEqual(store.changed, {ROOM})
+        self.assertEqual(self.reopen().changed, set())
 
     def marks(self) -> list[tuple]:
         return self.db.execute('SELECT room, name, bot_only, direct FROM team_members ORDER BY room, name').fetchall()

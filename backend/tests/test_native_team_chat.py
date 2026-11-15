@@ -210,6 +210,35 @@ class NativeTeamChatTests(AsThePerson, TeamOnlyMacs, unittest.TestCase):
         self.assertIn('Design', json.dumps(call['messages']))
         self.assertNotIn('Traceback', self.log.read_text(errors='replace'))
 
+    def test_ada_writes_to_the_bot_in_a_direct_chat_and_its_reply_reaches_her_alone(self):
+        from team_fakes import DEVICE
+        self.start_chat()
+        self.first.team_request('GET', '/v1/team/rooms', {}, '', DEVICE, True)
+        for _ in range(2):
+            self.sync()
+        path = f'/v1/team/rooms/{self.room}/directs/{self.mention}/messages'
+        self.call('POST', path, {'text': 'What is open for me?'}, service=self.first)
+
+        def replies():
+            self.first.team_sync_pass()
+            rows = self.call('GET', path, service=self.first)['messages']
+            return [row for row in reversed(rows) if not row['this_mac']]
+        (first,) = self.wait_until(lambda: replies()[:1])
+        self.assertEqual((first['text'], first['reply_to']), (FIRST, None))
+        self.assertEqual(self.bot_messages(), [], 'The Team chat gets no reply.')
+        # Hermes takes the chat as a group chat of its own: no pairing question, no first-contact note of a `dm`
+        # chat, and no change of the config of the home.
+        call = next(request for request in Model.requests if 'open for me' in json.dumps(request['messages']))
+        self.assertIn('Ada', json.dumps(call['messages']))
+        self.assertNotIn('DM with', json.dumps(call['messages']))
+        # The hint of the platform and the rules of the chat agree: only Ada reads the reply.
+        self.assertNotIn('the whole team reads your reply', json.dumps(call))
+        self.assertIn('Only Ada reads your reply.', json.dumps(call))
+        self.assertNotIn('profile_build_offered', (self.hermes_home / 'config.yaml').read_text())
+        log = self.log.read_text(errors='replace')
+        self.assertNotIn('Traceback', log)
+        self.assertNotIn('Unauthorized user', log)
+
     def test_a_message_during_a_restart_of_the_gateway_gets_its_answer(self):
         from coconut import team_turns
         self.start_chat()
