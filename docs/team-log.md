@@ -1140,7 +1140,7 @@ A message of a chat of two people has no `page`.
 - The Mac that runs the agent keeps the chat in its store, and Hermes keeps its session there.
 - The agent has one memory and one set of skills, and Hermes lets it search the sessions of each chat. The rules of each chat tell the agent to keep a direct chat private. The guard of the plugin also enforces it for these tools (see [The guard of the direct chats](architecture.md#the-guard-of-the-direct-chats)):
   - `session_search` reads a session of a direct chat only in a turn of that chat. In each other turn, also a turn outside Coconut on the same Hermes, a read is refused, and a search or a list of sessions shows no session of the direct chat.
-  - In a direct chat, and in the review that Hermes runs after its turn, the agent writes no memory and no skill.
+  - In a direct chat, in the review that Hermes runs after its turn, and in a subagent of it, the agent writes no memory and no skill. Each other session keeps its memory and skill writes: the Team chat, the named chats, cron jobs, the command line and the curator of Hermes.
 - The guard does not cover the terminal and the file tools of the agent: they can read `state.db` and the logs of Hermes, and the store of Coconut. It does not cover what the agent itself writes into a file or a cron job in a direct chat, another profile of the same Hermes root, or a memory provider plugin of Hermes.
 - A Hermes without the middleware of the guard gets no turn of the team chat. The service answers each trigger of the Team chat, of a named chat and of a direct chat with the notice `team_turns.OUTDATED`.
 

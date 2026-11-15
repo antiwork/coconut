@@ -236,7 +236,8 @@ SESSIONS = [('team-grace', 'coconut', TEAM_CHAT, None), ('named-grace', 'coconut
             ('ada', 'coconut', ADA_DIRECT, None), ('ada-later', 'coconut', ADA_DIRECT, 'ada'),
             ('ada-child', 'subagent', None, 'ada'), ('grace', 'coconut', GRACE_DIRECT, None),
             ('cli', 'cli', None, None), ('cron', 'cron', None, None), ('telegram', 'telegram', '42', None),
-            ('nobody', 'coconut', None, None)]
+            ('nobody', 'coconut', None, None), ('loop-a', 'subagent', None, 'loop-b'),
+            ('loop-b', 'subagent', None, 'loop-a')]
 
 
 class DirectChatGuardTests(unittest.TestCase):
@@ -369,10 +370,6 @@ class DirectChatGuardTests(unittest.TestCase):
                 with self.assertLogs('hermes_plugins.coconut.privacy', logging.WARNING):
                     self.refused(self.call('team-grace', query='door', result=self.found('browse', ('cli', None))))
                     self.refused(self.call('team-grace', session_id='cli'))
-                    self.refused(self.call('team-grace', tool='memory', action='add', content='A fact.'),
-                                 privacy.WRITES['memory'])
-                    self.refused(self.call('team-grace', tool='skill_manage', action='create', name='plans'),
-                                 privacy.WRITES['skill_manage'])
                 self.assertEqual(self.calls, [], 'A refused call does not reach the tool.')
         # Another tool does not need the store.
         self.assertEqual(self.call('team-grace', tool='terminal', result='done', command='ls'), 'done')
@@ -384,21 +381,80 @@ class DirectChatGuardTests(unittest.TestCase):
         self.refused(self.call('team-grace', query='door', result=json.dumps({'error': 'Search failed'})),
                      'Search failed')
 
+    def turn(self, platform, chat):
+        """The context of a gateway turn of Hermes, as gateway.session_context keeps it."""
+        from gateway.session_context import SESSION
+        token = SESSION.set({'HERMES_SESSION_PLATFORM': platform, 'HERMES_SESSION_CHAT_ID': chat})
+        self.addCleanup(SESSION.reset, token)
+
+    def write(self, session, tool='memory'):
+        return self.call(session, tool=tool, result='saved', action='add', content='A fact.')
+
     def test_a_direct_chat_writes_no_memory_and_no_skill(self):
         for tool in ('memory', 'skill_manage'):
             # A turn of a direct chat, a subagent of it, the review after it (it has the session ID of the turn),
-            # and a session that the guard cannot place.
-            for session in ('ada', 'ada-later', 'ada-child', 'grace', 'nobody', 'unknown', ''):
+            # and a `coconut` session without a chat ID.
+            for session in ('ada', 'ada-later', 'ada-child', 'grace', 'nobody'):
                 with self.subTest(tool=tool, session=session):
                     self.refused(self.call(session, tool=tool, action='add', content='The door code is 7731.'),
                                  privacy.WRITES[tool])
             self.assertEqual(self.calls, [])
-            # The Team chat, a named chat and the other platforms keep their writes.
-            for session in ('team-grace', 'named-grace', 'cli', 'cron', 'telegram'):
+            # The Team chat, a named chat, the other platforms, and each session that the guard does not know as a
+            # chat keep their writes: a session without a row (the curator), no session ID, and a loop of parents.
+            for session in ('team-grace', 'named-grace', 'cli', 'cron', 'telegram', 'unknown', '', 'loop-a'):
                 with self.subTest(tool=tool, session=session):
                     self.assertEqual(self.call(session, tool=tool, result='saved', action='add', content='A fact.'),
                                      'saved')
                     self.assertEqual(self.calls.pop(), {'action': 'add', 'content': 'A fact.'})
+
+    def test_the_chat_of_the_gateway_turn_also_marks_a_direct_chat(self):
+        # Hermes keeps the chat of the turn for the turn, its review and its subagents. The guard refuses a write when
+        # it names a direct chat, also when the row does not.
+        self.turn('coconut', ADA_DIRECT)
+        for session in ('unknown', 'team-grace', ''):
+            with self.subTest(session=session):
+                self.refused(self.write(session), privacy.WRITES['memory'])
+        self.assertEqual(self.calls, [])
+        self.turn('coconut', TEAM_CHAT)
+        self.assertEqual(self.write('unknown'), 'saved')
+        self.refused(self.write('ada'), privacy.WRITES['memory'])
+
+    def test_a_fault_of_the_store_on_a_write(self):
+        patch = mock.patch.object(privacy, 'RETRY_SECONDS', 0)
+        patch.start()
+        self.addCleanup(patch.stop)
+        real = privacy.store
+        # One fault: the second read decides.
+        for session, refused in (('ada', True), ('cli', False)):
+            with self.subTest(session=session), mock.patch.object(
+                    privacy, 'store', side_effect=[sqlite3.OperationalError('database is locked'), real()]) as store:
+                answer = self.write(session)
+                self.assertEqual(store.call_count, 2)
+                if refused:
+                    self.refused(answer, privacy.WRITES['memory'])
+                else:
+                    self.assertEqual(answer, 'saved')
+        # Two faults: a write outside a Coconut turn (cron, the command line, the curator) and a write of a Coconut
+        # turn of a known other chat run. A Coconut turn without its chat is refused with a true message.
+        failing = mock.patch.object(privacy, 'store', side_effect=sqlite3.OperationalError('database is locked'))
+        failing.start()
+        self.addCleanup(failing.stop)
+        for platform, chat, refused in (('', '', False), ('cron', '', False), ('coconut', TEAM_CHAT, False),
+                                        ('coconut', '', True)):
+            with self.subTest(platform=platform, chat=chat):
+                self.turn(platform, chat)
+                with self.assertLogs('hermes_plugins.coconut.privacy', logging.WARNING) as logs:
+                    answer = self.write('cron', tool='skill_manage')
+                if refused:
+                    self.refused(answer, 'Coconut could not check the chat of this turn, so it refused this skill '
+                                         'change. Try it again later.')
+                    self.assertIn('so it refused the call', logs.output[0])
+                else:
+                    self.assertEqual(answer, 'saved')
+                    self.assertIn('so it let the call run', logs.output[0])
+        # A direct chat of the gateway turn needs no store.
+        self.turn('coconut', ADA_DIRECT)
+        self.refused(self.write('cron'), privacy.WRITES['memory'])
 
     def test_another_tool_passes_untouched(self):
         self.assertEqual(self.call('ada', tool='terminal', result='done', command='ls'), 'done')

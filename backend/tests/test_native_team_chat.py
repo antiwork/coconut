@@ -45,7 +45,7 @@ SECRET = 'ZEBRAFISH7731'
 PRIVATE = f'My door code is {SECRET}. Keep it for me.'
 PUBLIC_WORD = 'MARIGOLD42'
 PUBLIC = f'@Reporter The launch word is {PUBLIC_WORD}.'
-# A turn whose text has SEARCH calls session_search with each item of SEARCH_CALLS, one at a time. SEARCHES gets the
+# A turn whose text has SEARCH calls a tool for each item of SEARCH_CALLS, one at a time. SEARCHES gets the
 # tool results of each such turn.
 SEARCH = 'DOSEARCH'
 SEARCH_CALLS = []
@@ -53,6 +53,11 @@ SEARCHES = []
 # The review of Hermes after a turn saves what it read, as a model can. REVIEWS gets the tool results of each review.
 REVIEW = 'Review the conversation above'
 REVIEWS = []
+# A turn whose text has SAVE, and a pass of the curator of Hermes, save a fact and a skill. SAVES gets the tool results.
+SAVE = 'SAVEFACT'
+CURATOR = 'background skill CURATOR'
+SAVES = []
+PLACES = ('on the command line', 'in a cron job')
 
 
 def tool_call(request, name, arguments, number):
@@ -80,6 +85,23 @@ def review(request, messages, last):
     return dict(role='assistant', content='Saved.')
 
 
+def save(request, messages, last, where):
+    """A memory write and a new skill, then the end. A pass of the curator has no memory tool, and Hermes offers no
+    skill_manage in a one-shot turn of the command line, so each of them makes only the write it can make."""
+    done = [message.get('content') for message in messages[last:] if message.get('role') == 'tool']
+    name = f'saved-{len(SAVES)}'
+    calls = [('memory', dict(action='add', target='memory', content=f'Saved {where}.')),
+             ('skill_manage', dict(operations=[dict(action='create', name=name, content=(
+                 f'---\nname: {name}\ndescription: A skill of a test.\n---\nSaved {where}.\n'))]))]
+    calls = {'curator': calls[1:], 'on the command line': calls[:1]}.get(where, calls)
+    if len(done) < len(calls):
+        tool, arguments = calls[len(done)]
+        return dict(role='assistant', content=None,
+                    tool_calls=[tool_call(request, tool, arguments, f'save-{len(done)}')])
+    SAVES.append(dict(where=where, calls=[tool for tool, _ in calls], results=done))
+    return dict(role='assistant', content='Saved.')
+
+
 def answer(request):
     """The reply of the stand-in model: a terminal call that takes some seconds for SLOW, then AFTER with its result;
     the calls of SEARCH_CALLS for SEARCH; a memory write and a skill in a review; SECOND for a question that answers
@@ -87,13 +109,20 @@ def answer(request):
     messages = request.get('messages') or []
     users = [index for index, message in enumerate(messages) if message.get('role') == 'user']
     last = json.dumps(messages[users[-1]].get('content')) if users else ''
+    if (SAVE in last or CURATOR in last) and request.get('tools'):
+        where = next((place for place in PLACES if place in last), 'curator')
+        return save(request, messages, users[-1], where)
     if REVIEW in last and request.get('tools'):
         return review(request, messages, users[-1])
     if SEARCH in last and request.get('tools'):
         done = [message.get('content') for message in messages[users[-1]:] if message.get('role') == 'tool']
         if len(done) < len(SEARCH_CALLS):
+            # An item is the arguments of session_search, or a function that gives a tool and its arguments when the
+            # model calls it.
+            item = SEARCH_CALLS[len(done)]
+            tool, arguments = item() if callable(item) else ('session_search', item)
             return dict(role='assistant', content=None, tool_calls=[
-                tool_call(request, 'session_search', SEARCH_CALLS[len(done)], f'search-{len(SEARCHES)}-{len(done)}')])
+                tool_call(request, tool, arguments, f'search-{len(SEARCHES)}-{len(done)}')])
         SEARCHES.append(dict(calls=list(SEARCH_CALLS), results=done))
         return dict(role='assistant', content=f'Search {len(SEARCHES)} done.')
     if SLOW in last and request.get('tools'):
@@ -118,7 +147,7 @@ class NativeTeamChatTests(AsThePerson, TeamOnlyMacs, unittest.TestCase):
         test_native_gateway_chat.answer, self.saved = answer, test_native_gateway_chat.answer
         self.addCleanup(setattr, test_native_gateway_chat, 'answer', self.saved)
         Model.requests.clear()
-        for found in (SEARCH_CALLS, SEARCHES, REVIEWS):
+        for found in (SEARCH_CALLS, SEARCHES, REVIEWS, SAVES):
             found.clear()
         MARKERS.update(started=Path(self.temp.name) / 'slow-started', ended=Path(self.temp.name) / 'slow-ended')
         self.addCleanup(MARKERS.clear)
@@ -392,6 +421,21 @@ class NativeTeamChatTests(AsThePerson, TeamOnlyMacs, unittest.TestCase):
                     self.assertIn('Coconut refused this search', result)
         self.assertNotIn('Traceback', self.log.read_text(errors='replace'))
 
+    def test_the_first_tool_call_of_a_direct_chat_finds_the_chat_in_its_row(self):
+        # The guard knows a direct chat by the row of its session. Hermes writes that row before the first tool call of
+        # the first turn: the read of the own session works only when the guard finds the chat of the turn there.
+        self.team_of_two()
+
+        def own():
+            rows = self.rows("SELECT id FROM sessions WHERE source = 'coconut' AND chat_id LIKE '%:direct:%'")
+            return 'session_search', dict(session_id=rows[0][0] if rows else 'no row yet')
+        found = self.search([own, lambda: ('memory', dict(action='add', target='memory', content=PRIVATE))],
+                            lambda: self.direct(self.first, f'{SEARCH} {PRIVATE}'))
+        self.assertIn('"mode": "read"', found[0])
+        self.assertIn('door code', found[0])
+        self.assertIn('Coconut refused this memory write', found[1])
+        self.assertNotIn(SECRET.encode(), b''.join(self.shared().values()))
+
     def test_the_guard_knows_each_argument_of_session_search(self):
         # The guard refuses each argument that it does not know. A new argument of Hermes would refuse each call.
         import importlib.util
@@ -449,6 +493,41 @@ class NativeTeamChatTests(AsThePerson, TeamOnlyMacs, unittest.TestCase):
         self.assertIn(PUBLIC_WORD, prompt)
         self.assertNotIn(SECRET, prompt)
         self.assertNotIn(SECRET.encode(), b''.join(self.shared().values()))
+
+    def hermes(self, *arguments):
+        shot = subprocess.run([PYTHON, '-c', LAUNCH, SOURCE, *arguments], cwd=self.temp.name, env=self.environment,
+                              stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=300)
+        self.assertEqual(shot.returncode, 0, shot.stdout + shot.stderr)
+        return shot.stdout
+
+    def test_the_agent_still_learns_outside_the_chats(self):
+        # Most sessions of a team agent are no chat: command line turns, cron jobs and the curator. The guard is on
+        # in each of them (the plugin loads in the mode team), and their memory and skill writes run.
+        self.start_chat()
+        self.hermes('-z', f'{SAVE} on the command line')
+        self.hermes('cron', 'create', '30m', f'{SAVE} in a cron job', '--name', 'facts')
+        jobs = json.loads((self.hermes_home / 'cron/jobs.json').read_text())
+        (job,) = jobs['jobs'] if isinstance(jobs, dict) else jobs
+        self.hermes('cron', 'run', job['id'])
+        # The curator works on the skills that the agent made. Its session has no row in state.db.
+        skill = self.hermes_home / 'skills/notes/SKILL.md'
+        skill.parent.mkdir(parents=True)
+        skill.write_text('---\nname: notes\ndescription: Notes of the team.\n---\nKeep notes short.\n')
+        self.hermes('curator', 'adopt', 'notes', '--yes')
+        self.hermes('curator', 'run', '--sync', '--consolidate')
+        saved = {item['where']: item for item in SAVES}
+        self.assertEqual(sorted(saved), ['curator', 'in a cron job', 'on the command line'], SAVES)
+        for where, item in saved.items():
+            with self.subTest(where=where):
+                self.assertEqual(len(item['results']), len(item['calls']), item)
+                self.assertNotIn('Coconut', json.dumps(item['results']), item)
+        memory = (self.hermes_home / 'memories/MEMORY.md').read_text()
+        self.assertIn('Saved on the command line.', memory)
+        self.assertIn('Saved in a cron job.', memory)
+        skills = b''.join(path.read_bytes() for path in (self.hermes_home / 'skills').rglob('SKILL.md'))
+        for where in ('in a cron job', 'curator'):
+            self.assertIn(f'Saved {where}.'.encode(), skills, SAVES)
+        self.assertNotIn('Traceback', self.log.read_text(errors='replace'))
 
     def test_a_message_during_a_restart_of_the_gateway_gets_its_answer(self):
         from coconut import team_turns
