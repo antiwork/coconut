@@ -889,6 +889,39 @@ private final class DirectServer: @unchecked Sendable {
         }
     }
 
+    /// The number after `name=` in the query of `path`, or nil.
+    private static func query(_ path: String, _ name: String) -> Int? {
+        let parts: [String] = path.components(separatedBy: "\(name)=")
+        guard parts.count > 1 else { return nil }
+        let digits: String = String(parts[1].prefix { $0.isNumber })
+        return Int(digits)
+    }
+
+    /// The newest `limit` messages under `before` of the query of `path`, newest first. The caller holds the lock.
+    private func messagesPage(path: String) -> String {
+        let upper: Int? = Self.query(path, "before")
+        if upper != nil { olderCount += 1 }
+        if upper == nil, changeOnRead { documentsChanged = true; pending = true }
+        let ceiling: Int = upper ?? Int.max
+        let under: [ChatMessage] = messages.filter { $0.first < ceiling }
+        let limit: Int = Self.query(path, "limit") ?? under.count
+        let page: [ChatMessage] = Array(under.suffix(limit))
+        let shown: String = page.reversed().map { json($0) }.joined(separator: ", ")
+        var before: String = "null"
+        if page.count < under.count, let oldest = page.first { before = "\(oldest.first)" }
+        return #"{"room": "r1", \#(key), "messages": [\#(shown)], "before": \#(before)}"#
+    }
+
+    /// The time before the answer of a request: longer for the updates, and the delay of a read of the chat.
+    private func answerDelay(route: String, path: String) -> Double {
+        if route == "GET /v1/updates" { return 0.25 }
+        guard route == "GET /v1/team/rooms/r1/directs/\(other)/messages" else { return 0.05 }
+        lock.lock()
+        defer { lock.unlock() }
+        if path.contains("before=") { return olderReadDelay }
+        return readDelay
+    }
+
     // swiftlint:disable:next function_body_length
     func start() async throws -> String {
         listener.newConnectionHandler = { [self] connection in
@@ -913,18 +946,7 @@ private final class DirectServer: @unchecked Sendable {
                             .split(separator: ":", maxSplits: 1).last?.trimmingCharacters(in: .whitespaces) ?? "")
                         return #"{"rooms": [\#(room())], "helper": true}"#
                     case "GET /v1/team/rooms/r1/directs/\(other)/messages":
-                        // The newest `limit` messages under `before`, newest first.
-                        func query(_ name: String) -> Int? {
-                            Int(words[1].components(separatedBy: "\(name)=").dropFirst().first?.prefix { $0.isNumber } ?? "")
-                        }
-                        let upper = query("before")
-                        if upper != nil { olderCount += 1 }
-                        if upper == nil, changeOnRead { documentsChanged = true; pending = true }
-                        let under = messages.filter { $0.first < upper ?? Int.max }
-                        let page = Array(under.suffix(query("limit") ?? under.count))
-                        let shown = page.reversed().map(json).joined(separator: ", ")
-                        let before = page.count < under.count ? page.first.map { "\($0.first)" } ?? "null" : "null"
-                        return #"{"room": "r1", \#(key), "messages": [\#(shown)], "before": \#(before)}"#
+                        return messagesPage(path: words[1])
                     case "POST /v1/team/rooms/r1/directs/\(other)/messages":
                         bodies.append(sent ?? [:])
                         if let refusal { status = "409 Conflict"; return #"{"error": "\#(refusal)"}"# }
@@ -962,9 +984,7 @@ private final class DirectServer: @unchecked Sendable {
                                   + "\(content.count)\r\nConnection: close\r\n\r\n").utf8)
                 reply.append(content)
                 let answer = reply
-                let read = route == "GET /v1/team/rooms/r1/directs/\(other)/messages"
-                let delay = route == "GET /v1/updates" ? 0.25
-                    : read ? lock.withLock { words[1].contains("before=") ? olderReadDelay : readDelay } : 0.05
+                let delay: Double = answerDelay(route: route, path: words[1])
                 queue.asyncAfter(deadline: .now() + delay) {
                     connection.send(content: answer, completion: .contentProcessed { _ in connection.cancel() })
                 }
