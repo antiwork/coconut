@@ -584,6 +584,46 @@ final class DirectMessageTests: XCTestCase {
         #endif
     }
 
+    /// A change of the documents during each of the 3 tries of the first read: the last try takes its answer, so the
+    /// chat loads and does not wait without end. The next update with a change of the documents reads the chat
+    /// again, and the quote is right.
+    @MainActor
+    func testTheLastTryOfTheFirstReadTakesItsAnswerAfterAChangeOfTheDocumentsInEachTry() async throws {
+        #if !(DEBUG && targetEnvironment(simulator))
+        throw XCTSkip("This HTTP fixture requires a debug simulator build.")
+        #else
+        var state = try PreviewStateFixture.load()
+        state.cursor = 10; state.syncVersion = 1
+        let server = try DirectServer(state: APIJSON.encoder().encode(state), cursor: state.cursor, bot: true)
+        let address = try await server.start()
+        defer { server.stop() }
+        try await withPairedStore(address: address) { store in
+            let chat = TeamChatKey(room: "r1", bot: "t-r1-e1")
+            let path = "GET /v1/team/rooms/r1/directs/t-r1-e1/messages"
+            server.quotePage()
+            server.delayReads(2)
+            server.changeDocumentsOnEachRead(true)
+            store.setForeground(true)
+            let loaded = await store.loadTeamChat(chat)
+            XCTAssertEqual(server.routes.filter { $0 == path }.count, 3, "Each try reads the chat one time.")
+            let first = try XCTUnwrap(store.teamChats[chat], "The last try loads the chat.")
+            XCTAssertTrue(loaded)
+            XCTAssertTrue(first.loaded)
+            XCTAssertEqual(first.messages.first?.page?.id, "t-r1-p1", "The last try takes its answer.")
+
+            // The page goes: the next update reads the chat, which quotes a page, and the quote says that it is gone.
+            server.changeDocumentsOnEachRead(false)
+            server.delayReads(0.05)
+            server.removePages()
+            try await waitUntil { store.teamChats[chat]?.messages.first?.page == TeamAboutPage() }
+            XCTAssertEqual(store.teamChats[chat]?.messages.first?.page, TeamAboutPage(),
+                           "The quote says that the page is gone.")
+            XCTAssertEqual(server.routes.filter { $0 == path }.count, 4, "The update reads the chat one more time.")
+            store.setForeground(false)
+        }
+        #endif
+    }
+
     /// The newest page of the chat quotes no page, so a change of the documents does not read the chat. A change
     /// during the read of an older page reads that page again, so it does not show a page that went.
     @MainActor
@@ -759,6 +799,10 @@ private final class DirectServer: @unchecked Sendable {
     /// request.
     func delayOlderReads(_ seconds: Double) { lock.withLock { olderReadDelay = seconds } }
     private var olderReadDelay = 0.05
+    /// With `true`, each read of the newest page makes the next updates answer say that a document changed.
+    func changeDocumentsOnEachRead(_ on: Bool) { lock.withLock { changeOnRead = on } }
+    private var changeOnRead = false
+
     /// The number of reads of an older page.
     var olderReads: Int { lock.withLock { olderCount } }
     private var olderCount = 0
@@ -875,6 +919,7 @@ private final class DirectServer: @unchecked Sendable {
                         }
                         let upper = query("before")
                         if upper != nil { olderCount += 1 }
+                        if upper == nil, changeOnRead { documentsChanged = true; pending = true }
                         let under = messages.filter { $0.first < upper ?? Int.max }
                         let page = Array(under.suffix(query("limit") ?? under.count))
                         let shown = page.reversed().map(json).joined(separator: ", ")

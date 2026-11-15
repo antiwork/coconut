@@ -1866,7 +1866,7 @@ final class AppStore {
             return true
         }
         guard let client else { return false }
-        for _ in 0..<3 {
+        for attempt in 0..<3 {
             teamChatRequestCount += 1
             let request = teamChatRequestCount
             teamChatRequests[chat] = request
@@ -1883,7 +1883,7 @@ final class AppStore {
             // The Mac confirmed a message, an edit or a removal during this request, so the page can be older. Ask again.
             guard changes == teamChatChanges[chat, default: 0] else { continue }
             // The update reads only the chats that the app has, so it does not read a chat whose first request runs.
-            guard !isOlderThanDocumentChange(page, since: documents) else { continue }
+            guard attempt == 2 || !isOlderThanDocumentChange(page, since: documents) else { continue }
             var merged = teamChats[chat] ?? TeamChat()
             // A page that starts the loaded range again makes each read of the old range out of date.
             if merged.merge(page, requested: nil) { teamOlderRequests[chat] = nil }
@@ -1898,7 +1898,9 @@ final class AppStore {
     }
 
     /// True when a document changed after the request of this page started (`documents` is teamDocumentChanges at
-    /// the start), and a message of the page quotes a page. That page can be gone, so the caller asks again.
+    /// the start), and a message of the page quotes a page. That page can be gone, so the caller asks again. In a loop
+    /// of 3 tries, the last try takes its answer: the loaded chat then quotes a page, so the next update with a
+    /// change of the documents reads it again (teamChatsQuotingPages), and the chat does not stay without messages.
     private func isOlderThanDocumentChange(_ page: TeamMessagePage, since documents: Int) -> Bool {
         documents != teamDocumentChanges && page.messages.contains { $0.page != nil }
     }
@@ -2010,7 +2012,7 @@ final class AppStore {
         }
         teamChats[chat]?.loadingEarlier = true
         defer { if self.client === client { teamChats[chat]?.loadingEarlier = false } }
-        for _ in 0..<3 {
+        for attempt in 0..<3 {
             let changes = teamChatChanges[chat, default: 0]
             let documents = teamDocumentChanges
             let page: TeamMessagePage
@@ -2027,7 +2029,7 @@ final class AppStore {
                   teamChatsOnScreen.contains(chat) else { return false }
             guard changes == teamChatChanges[chat, default: 0] else { continue }
             // An update reads only the chats whose loaded messages quote a page, so it does not read this page.
-            guard !isOlderThanDocumentChange(page, since: documents) else { continue }
+            guard attempt == 2 || !isOlderThanDocumentChange(page, since: documents) else { continue }
             teamChats[chat]?.merge(page, requested: before)
             return true
         }
@@ -2114,6 +2116,8 @@ final class AppStore {
         }
         teamChatChanges[chat, default: 0] += 1
         teamChats[chat]?.pending.remove(at: index)
+        // On purpose: the page of this answer can have gone after a newer read. Then a read answered first, so the
+        // chat is loaded and quotes a page, and the next update with a change of the documents reads it again.
         teamChats[chat]?.put(answer.message)
         try? saveOutgoing()
     }
@@ -2146,6 +2150,8 @@ final class AppStore {
         teamChats[chat]?.editing[message.id] = nil
         guard let answer else { return false }
         teamChatChanges[chat, default: 0] += 1
+        // On purpose, as for a send: a page that went after a newer read corrects itself at the next update with a
+        // change of the documents.
         teamChats[chat]?.put(answer.message)
         return true
     }
