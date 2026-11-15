@@ -57,7 +57,7 @@ struct HomeLaunchView: View {
                             .buttonStyle(HomePressStyle())
                             .accessibilityIdentifier("bot-conversation-\(bot.id)")
                             .padding(.horizontal, BoardStyle.Space.l)
-                    case .team, .direct:
+                    case .team, .direct, .botDirect:
                         // A team and a direct chat have no pin and no delete here. The Team screen has the leave
                         // action.
                         if let chat = item.chat {
@@ -128,9 +128,10 @@ struct HomeLaunchView: View {
     }
 
     /// "team-chat-<room>" for a team, "team-chat-<room>-<chat>" for a named chat, "direct-chat-<member>" for a direct
-    /// chat.
+    /// chat, "bot-direct-chat-<team bot ID>" for a direct chat with a bot.
     static func identifier(_ chat: TeamChatKey) -> String {
-        chat.member.map { "direct-chat-" + $0 } ?? "team-chat-" + chat.room + (chat.chat.map { "-" + $0 } ?? "")
+        if let bot = chat.bot { return "bot-direct-chat-" + bot }
+        return chat.member.map { "direct-chat-" + $0 } ?? "team-chat-" + chat.room + (chat.chat.map { "-" + $0 } ?? "")
     }
 
     @ViewBuilder

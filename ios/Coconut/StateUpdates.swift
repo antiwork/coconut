@@ -24,14 +24,17 @@ struct StateUpdates: Decodable, Sendable {
     var teamMessagesChanged: [String]?
     /// The direct chats that changed: a message, an edit, a removal, a name, or the read position.
     var teamDirectsChanged: [TeamDirectChange]?
+    /// The direct chats with a bot that changed: a message, an edit, a removal, a name, or the read position.
+    var teamBotDirectsChanged: [TeamBotDirectChange]?
     /// The teams where who types changed. The list of the teams says who types now.
     var teamTypingChanged: [String]?
     var confirmedRequestIds: [String]?
 
-    /// The chats that changed: each Team chat and each direct chat of this page.
+    /// The chats that changed: each Team chat, each direct chat and each direct chat with a bot of this page.
     var changedTeamChats: [TeamChatKey] {
         (teamMessagesChanged ?? []).map { TeamChatKey(room: $0) }
             + (teamDirectsChanged ?? []).map { TeamChatKey(room: $0.team, member: $0.member) }
+            + (teamBotDirectsChanged ?? []).map { TeamChatKey(room: $0.team, bot: $0.bot) }
     }
 
     func applying(to snapshot: StateSnapshot) -> StateSnapshot? {
@@ -131,6 +134,12 @@ struct StateUpdates: Decodable, Sendable {
 struct TeamDirectChange: Decodable, Equatable, Sendable {
     let team: String
     let member: String
+}
+
+/// One item of `team_bot_directs_changed`: the room and the team bot ID of a direct chat with a bot.
+struct TeamBotDirectChange: Decodable, Equatable, Sendable {
+    let team: String
+    let bot: String
 }
 
 struct HistoryPage: Decodable, Sendable {

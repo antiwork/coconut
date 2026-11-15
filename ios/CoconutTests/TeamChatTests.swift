@@ -441,7 +441,7 @@ final class TeamChatTests: XCTestCase {
         let sections = ChatSections.make(bots: bots, messages: [], rooms: rooms)
         XCTAssertEqual(sections.pinned.map(\.id), ["planner"])
         XCTAssertEqual(sections.people.map(\.room), ["r2", "r1", "r3"], "Newest activity first.")
-        XCTAssertEqual(sections.bots.map(\.id), ["writer"])
+        XCTAssertEqual(sections.bots.map(\.id), ["bot-writer"])
     }
 
     func testTheLettersOfAFace() {
