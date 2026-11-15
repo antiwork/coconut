@@ -58,6 +58,8 @@ The source pass closes a card when GitHub says that a linked issue closed, or a 
 A merge card whose own PR merged closes as "Already merged.".
 The person chose nothing. A task that waits only for that card continues and reads the source again.
 A task that waits for another card too keeps waiting, and its next turn names the closed card.
+A closed suggestion starts no turn. A later turn of its agent in the same conversation lists it as data.
+A card of an older store that was revised at an unknown time does not close by this rule.
 After an answer, the service starts a continuation with the recorded choice and the index of the completed tool
 receipts (`coconut_read_receipts`). A turn does not repeat a completed effect.
 

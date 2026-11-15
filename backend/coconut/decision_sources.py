@@ -165,6 +165,9 @@ def source_change(decision, url, *, state, ended_at=None):
         return None
     if state not in ('closed', 'merged'):
         return None
+    if not decision.get('_revised_at') and decision.get('revision', 1) != 1:
+        # A card of an older store that was revised at a time that the store does not have.
+        return None
     end = _instant(ended_at)
     revised = _instant(decision.get('_revised_at') or decision.get('created_at'))
     seen = decision.get('_source_seen', {}).get(url)
