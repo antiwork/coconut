@@ -584,6 +584,89 @@ final class DirectMessageTests: XCTestCase {
         #endif
     }
 
+    /// The newest page of the chat quotes no page, so a change of the documents does not read the chat. A change
+    /// during the read of an older page reads that page again, so it does not show a page that went.
+    @MainActor
+    func testAChangeOfTheDocumentsDuringTheReadOfAnOlderPageReadsItAgain() async throws {
+        #if !(DEBUG && targetEnvironment(simulator))
+        throw XCTSkip("This HTTP fixture requires a debug simulator build.")
+        #else
+        var state = try PreviewStateFixture.load()
+        state.cursor = 10; state.syncVersion = 1
+        let server = try DirectServer(state: APIJSON.encoder().encode(state), cursor: state.cursor, bot: true)
+        let address = try await server.start()
+        defer { server.stop() }
+        try await withPairedStore(address: address) { store in
+            let chat = TeamChatKey(room: "r1", bot: "t-r1-e1")
+            server.fillMessages(upTo: AppStore.teamPage + 10)
+            server.quotePage()
+            await store.loadTeamChat(chat)
+            store.openTeamChat(chat)
+            XCTAssertNotNil(store.teamChats[chat]?.before, "The chat has an older page.")
+            XCTAssertFalse(store.teamChats[chat]?.messages.contains { $0.page != nil } ?? true,
+                           "The newest page quotes no page.")
+            server.delayOlderReads(3)
+            store.setForeground(true)
+            let load = Task { await store.loadEarlierTeamMessages(chat) }
+            try await waitUntil { server.olderReads == 1 }
+
+            // The page goes while the read of the older page waits for its answer.
+            server.removePages()
+            try await waitUntil { server.pendingUpdate == false }
+            XCTAssertNil(store.teamChats[chat]?.messages.first { $0.id == "e1" }, "The read still runs.")
+            server.delayOlderReads(0.05)
+            _ = await load.value
+            XCTAssertEqual(store.teamChats[chat]?.messages.first { $0.id == "e1" }?.page, TeamAboutPage(),
+                           "The older page reads again, and the quote says that the page is gone.")
+            XCTAssertEqual(server.olderReads, 2, "The change reads the older page one more time.")
+            store.setForeground(false)
+        }
+        #endif
+    }
+
+    /// A read of the newest page of a chat on the screen also reads the older pages that the person loaded. The
+    /// loaded messages quote no page, so a change of the documents does not read the chat. A change during the read
+    /// of the older pages reads the same range again, so it does not show a page that went.
+    @MainActor
+    func testAChangeOfTheDocumentsDuringTheReadOfTheLoadedOlderPagesReadsThemAgain() async throws {
+        #if !(DEBUG && targetEnvironment(simulator))
+        throw XCTSkip("This HTTP fixture requires a debug simulator build.")
+        #else
+        var state = try PreviewStateFixture.load()
+        state.cursor = 10; state.syncVersion = 1
+        let server = try DirectServer(state: APIJSON.encoder().encode(state), cursor: state.cursor, bot: true)
+        let address = try await server.start()
+        defer { server.stop() }
+        try await withPairedStore(address: address) { store in
+            let chat = TeamChatKey(room: "r1", bot: "t-r1-e1")
+            server.fillMessages(upTo: AppStore.teamPage + 10)
+            await store.loadTeamChat(chat)
+            store.openTeamChat(chat)
+            await store.loadEarlierTeamMessages(chat)
+            XCTAssertEqual(store.teamChats[chat]?.messages.count, AppStore.teamPage + 10, "The chat has each message.")
+            XCTAssertNil(store.teamChats[chat]?.messages.first { $0.id == "e1" }?.page)
+            // The oldest message quotes a page now. Only a read of the older pages sees it.
+            server.quotePage()
+            server.delayOlderReads(3)
+            store.setForeground(true)
+            let reads = server.olderReads
+            let load = Task { await store.loadTeamChat(chat) }
+            try await waitUntil { server.olderReads == reads + 1 }
+
+            // The page goes while the read of the older pages waits for its answer.
+            server.removePages()
+            try await waitUntil { server.pendingUpdate == false }
+            XCTAssertNil(store.teamChats[chat]?.messages.first { $0.id == "e1" }?.page, "The read still runs.")
+            server.delayOlderReads(0.05)
+            _ = await load.value
+            XCTAssertEqual(store.teamChats[chat]?.messages.first { $0.id == "e1" }?.page, TeamAboutPage(),
+                           "The older pages read again, and the quote says that the page is gone.")
+            XCTAssertEqual(server.olderReads, reads + 2, "The change reads the older pages one more time.")
+            store.setForeground(false)
+        }
+        #endif
+    }
+
     #if DEBUG && targetEnvironment(simulator)
     @MainActor
     private func withPairedStore(address: String, _ body: (AppStore) async throws -> Void) async throws {
@@ -671,6 +754,24 @@ private final class DirectServer: @unchecked Sendable {
     /// Each read of the newest page answers after this many seconds, with the messages at the time of the request.
     func delayReads(_ seconds: Double) { lock.withLock { readDelay = seconds } }
     private var readDelay = 0.05
+
+    /// Each read of an older page (`before`) answers after this many seconds, with the messages at the time of the
+    /// request.
+    func delayOlderReads(_ seconds: Double) { lock.withLock { olderReadDelay = seconds } }
+    private var olderReadDelay = 0.05
+    /// The number of reads of an older page.
+    var olderReads: Int { lock.withLock { olderCount } }
+    private var olderCount = 0
+
+    /// Grace wrote messages up to `first`. The updates do not say it.
+    func fillMessages(upTo first: Int) {
+        lock.withLock {
+            while messages.count < first {
+                messages.append(ChatMessage(first: messages.count + 1, text: "Note \(messages.count + 1)", own: false,
+                                            replyTo: nil))
+            }
+        }
+    }
 
     /// The next updates answer says that a document changed, and with `andChat` also that the chat changed.
     func changeDocuments(andChat: Bool = false) {
@@ -768,8 +869,17 @@ private final class DirectServer: @unchecked Sendable {
                             .split(separator: ":", maxSplits: 1).last?.trimmingCharacters(in: .whitespaces) ?? "")
                         return #"{"rooms": [\#(room())], "helper": true}"#
                     case "GET /v1/team/rooms/r1/directs/\(other)/messages":
-                        let shown = messages.reversed().map(json).joined(separator: ", ")
-                        return #"{"room": "r1", \#(key), "messages": [\#(shown)], "before": null}"#
+                        // The newest `limit` messages under `before`, newest first.
+                        func query(_ name: String) -> Int? {
+                            Int(words[1].components(separatedBy: "\(name)=").dropFirst().first?.prefix { $0.isNumber } ?? "")
+                        }
+                        let upper = query("before")
+                        if upper != nil { olderCount += 1 }
+                        let under = messages.filter { $0.first < upper ?? Int.max }
+                        let page = Array(under.suffix(query("limit") ?? under.count))
+                        let shown = page.reversed().map(json).joined(separator: ", ")
+                        let before = page.count < under.count ? page.first.map { "\($0.first)" } ?? "null" : "null"
+                        return #"{"room": "r1", \#(key), "messages": [\#(shown)], "before": \#(before)}"#
                     case "POST /v1/team/rooms/r1/directs/\(other)/messages":
                         bodies.append(sent ?? [:])
                         if let refusal { status = "409 Conflict"; return #"{"error": "\#(refusal)"}"# }
@@ -807,8 +917,9 @@ private final class DirectServer: @unchecked Sendable {
                                   + "\(content.count)\r\nConnection: close\r\n\r\n").utf8)
                 reply.append(content)
                 let answer = reply
+                let read = route == "GET /v1/team/rooms/r1/directs/\(other)/messages"
                 let delay = route == "GET /v1/updates" ? 0.25
-                    : route == "GET /v1/team/rooms/r1/directs/\(other)/messages" ? lock.withLock { readDelay } : 0.05
+                    : read ? lock.withLock { words[1].contains("before=") ? olderReadDelay : readDelay } : 0.05
                 queue.asyncAfter(deadline: .now() + delay) {
                     connection.send(content: answer, completion: .contentProcessed { _ in connection.cancel() })
                 }
