@@ -19,7 +19,9 @@ from coconut.team_messages import GONE_MESSAGE
 from coconut.team_reactions import CHOOSE, TEAM_ONLY, reaction_entry
 from coconut.team_store import REACTIONS, REFUSED, STORED, TeamStore
 from team_fakes import TeamMacs
+from test_team_direct_turns import DirectTurnMacs
 from test_team_directs import DirectMacs
+from test_team_directs import TEAM_ONLY as DIRECTS_TEAM_ONLY
 from test_team_push import TeamPushMacs, flush
 from test_team_turns import TeamTurnMacs, reply
 
@@ -543,7 +545,11 @@ class BotDirectReactionTests(DirectMacs, unittest.TestCase):
         self.sync()
         bot_id = f't-{self.room}-{bot}'
         sent = self.send(self.first, bot_id, 'What is open?')
+        cursor = self.first._cursor()
         answer = self.phone(self.first)('PUT', self.path(bot_id, f'messages/{sent["id"]}/reaction'), {'emoji': PRAY})
+        updates = self.first.updates(cursor, 0, collection_deltas=True)
+        self.assertEqual(updates.get('team_bot_directs_changed'), [{'team': self.room, 'bot': bot_id}])
+        self.assertFalse(updates.get('team_directs_changed'))
         self.assertEqual((answer['bot'], answer['message']['reactions']),
                          (bot_id, [{'emoji': PRAY, 'members': [self.ada], 'mine': True}]))
         self.sync()
@@ -551,6 +557,95 @@ class BotDirectReactionTests(DirectMacs, unittest.TestCase):
         self.assertEqual(self.chat(self.first, self.lin), [])
         page = self.phone(self.first)('GET', self.path(bot_id), {})['messages']
         self.assertEqual(page[0]['reactions'], [{'emoji': PRAY, 'members': [self.ada], 'mine': True}])
+
+
+class TheTwoReadersOfABoxWithoutText(unittest.TestCase):
+    """A box without `text` is a reaction or the typing sign of a bot. Neither reader takes the box of the other."""
+
+    def test_each_reader_takes_only_its_own_box(self):
+        to, message, bot = MEMBER, entry_id(1), entry_id(2)
+
+        def box(**fields) -> bytes:
+            return json.dumps(dict(fields, to=to)).encode()
+        reaction, sign = box(message=message, emoji=THUMBS, bot=bot), box(bot=bot, on=True)
+        self.assertEqual(team_store.reaction_box_fields(reaction, to), {'message': message, 'emoji': THUMBS, 'bot': bot})
+        self.assertIsNone(team_store.direct_typing_fields(reaction, to))
+        self.assertEqual(team_store.direct_typing_fields(sign, to), {'bot': bot, 'on': True})
+        self.assertIsNone(team_store.reaction_box_fields(sign, to))
+        # A box with the fields of both is neither.
+        both = box(message=message, emoji=THUMBS, bot=bot, on=False)
+        self.assertEqual((team_store.reaction_box_fields(both, to), team_store.direct_typing_fields(both, to)),
+                         (None, None))
+
+
+class TeamOnlyMacAndAReactionBox(DirectTurnMacs, unittest.TestCase):
+    """Ada reacts in her direct chat with the bot Reporter of the Mac for a team only (`only`)."""
+
+    def own_writes(self) -> list[str]:
+        """The entries of the Mac for a team only on the relay: its answers and its typing signs would be here."""
+        return sorted(entry for entry, row in self.relay.rooms[self.room]['entries'].items()
+                      if row['member'] == self.mac)
+
+    def reaction_box(self, entry: str, message: str, emoji: str = THUMBS) -> None:
+        """A reaction box of Ada's Mac for the Mac of the bot, written by hand, as a Mac of another version could."""
+        self.box(self.first, entry, self.mac, {'to': self.mac, 'message': message, 'emoji': emoji, 'bot': self.entry})
+
+    def test_a_reaction_starts_no_turn_and_the_mac_keeps_nothing_of_it(self):
+        turns = []
+        self.serve(lambda turn: (turns.append(turn), reply('Noted.')(turn))[1])
+        # The first entry of Ada to the bot is a reaction, on a message ID that the Mac does not have.
+        writes = self.own_writes()
+        self.reaction_box('e' * 32, 'f' * 32)
+        self.only.team_sync_pass()
+        self.assertEqual(self.triggers(), [], 'No turn.')
+        self.assertEqual((self.stored(), self.count_reactions()), ([], 0), 'No message and no reaction.')
+        # A message, its turn, and then reactions on the message and on the answer of the bot: by the route, and as a
+        # write over the entry of the reaction.
+        sent = self.dm('What is open?')
+        self.run_turns()
+        self.assertEqual(len(turns), 1)
+        self.first.team_sync_pass()
+        answer = self.phone(self.first)('GET', self.path(), {})['messages'][0]
+        writes = self.own_writes()
+        for message, emoji in ((sent['id'], THUMBS), (answer['id'], HEART), (answer['id'], ''), (answer['id'], JOY)):
+            self.phone(self.first)('PUT', self.path(f'messages/{message}/reaction'), {'emoji': emoji})
+            self.only.team_sync_pass()
+        self.reaction_box('e' * 32, answer['id'], SAD)
+        self.only.team_sync_pass()
+        self.assertEqual(self.triggers(), [])
+        self.assertEqual(self.only.team_store.waiting(), [])
+        self.run_turns()
+        self.assertEqual(len(turns), 1, 'No turn.')
+        self.assertEqual(self.own_writes(), writes, 'No answer and no typing sign.')
+        # The Mac of the bot keeps only its chat: the message and the answer, and no reaction.
+        self.assertEqual([text for _, _, _, text in self.stored()], ['What is open?', 'Noted.'])
+        self.assertEqual(self.count_reactions(), 0)
+        # Ada's Mac shows her own reactions.
+        page = self.phone(self.first)('GET', self.path(), {})['messages']
+        self.assertEqual([row['reactions'] for row in page], [
+            [{'emoji': JOY, 'members': [self.ada], 'mine': True}],
+            [{'emoji': THUMBS, 'members': [self.ada], 'mine': True}]])
+        # The next turn has no emoji in its text or its context.
+        self.dm('And now?')
+        self.run_turns()
+        self.assertEqual(len(turns), 2)
+        text = json.dumps(turns[1], ensure_ascii=False)
+        for emoji in REACTIONS:
+            self.assertNotIn(emoji, text)
+
+    def count_reactions(self) -> int:
+        with self.only.lock:
+            return self.only.db.execute('SELECT COUNT(*) FROM team_reactions').fetchone()[0]
+
+    def test_the_mac_for_a_team_only_cannot_react(self):
+        sent = self.dm('Hello')
+        self.assertEqual(self.refusal(self.call, 'PUT', f'/v1/team/rooms/{self.room}/directs/{self.ada}/messages/'
+                                      f'{sent["id"]}/reaction', {'emoji': THUMBS}), (409, DIRECTS_TEAM_ONLY))
+        self.send('Hello team')
+        self.sync()
+        message = self.call('GET', f'/v1/team/rooms/{self.room}/messages')['messages'][0]
+        self.assertEqual(self.refusal(self.call, 'PUT', f'/v1/team/rooms/{self.room}/messages/{message["id"]}/reaction',
+                                      {'emoji': THUMBS}), (409, TEAM_ONLY))
 
 
 if __name__ == '__main__':

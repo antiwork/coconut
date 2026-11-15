@@ -453,9 +453,9 @@ def direct_fields(plaintext, to: str, page: bool = False) -> dict | None:
 def direct_typing_fields(plaintext, to: str) -> dict | None:
     """The typing sign of a bot in the plaintext of a box (docs/team-log.md, "The Mac for a team only", rule 12), or
     None when the box is not one. `to` must name this Mac, `bot` is an entry ID, `on` is true or false, and the box
-    has no `text`."""
+    has no `text`, no `message` and no `emoji`, so it is never a reaction (reaction_box_fields)."""
     fields = box_fields(plaintext, to)
-    if fields is None or fields.get('text') is not None:
+    if fields is None or any(fields.get(name) is not None for name in ('text', 'message', 'emoji')):
         return None
     if type(fields.get('on')) is not bool or not entry_id(fields.get('bot')):
         return None
@@ -501,13 +501,11 @@ def reaction_box_fields(plaintext, to: str) -> dict | None:
     """What the box of a `direct` entry says when it is a reaction, or None (docs/team-log.md, "Reactions").
 
     The box has the fields of a `reaction` payload, `to` (the member that the caller expects, as in direct_fields), and
-    `bot` for a chat with a bot. It has no `text`, so a Mac of an older version finds no direct message in it.
+    `bot` for a chat with a bot. It has no `text`, so a Mac of an older version finds no direct message in it. It has
+    no `on`, so it is never the typing sign of a bot (direct_typing_fields), and that sign is never a reaction.
     """
-    try:
-        fields = json.loads(bytes(plaintext).decode('utf-8'))
-    except (TypeError, ValueError, RecursionError):
-        return None
-    if not isinstance(fields, dict) or fields.get('to') != to or fields.get('text') is not None:
+    fields = box_fields(plaintext, to)
+    if fields is None or fields.get('text') is not None or fields.get('on') is not None:
         return None
     bot = fields.get('bot')
     reaction = reaction_fields(fields)
