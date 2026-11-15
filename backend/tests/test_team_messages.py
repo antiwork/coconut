@@ -77,7 +77,7 @@ class TeamMessageStoreTests(unittest.TestCase):
                                    text='Hello **team**', reply_to=reply, mentions=json.dumps([mention]),
                                    created_at=team_store.relay_time(START + 2),
                                    updated_at=team_store.relay_time(START + 2),
-                                   edited=0, chat=None))
+                                   edited=0, chat=None, preview=None))
         self.assertEqual(self.store.chatted, {ROOM})
 
     def test_unknown_fields_and_null_fields_stay_in_the_payload_and_change_nothing(self):

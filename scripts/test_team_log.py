@@ -1395,6 +1395,80 @@ class TeamReactionTests(unittest.TestCase):
 
 @unittest.skipUnless(sys.platform == 'darwin' and shutil.which('xcrun') and shutil.which('node')
                      and (ROOT / 'relay/node_modules/miniflare').is_dir(),
+                     'The link preview test needs macOS, the Xcode Command Line Tools, Node, and npm ci in relay/.')
+class TeamPreviewTests(unittest.TestCase):
+    """Ada sends a message with a link preview in the Team chat and in a direct chat with Grace, through the real relay
+    and the real helper. Each Mac shows the preview of the Team chat, and only Grace's Mac shows the direct message. An
+    edit without the link drops the preview. The three services run in this process, as in TeamDirectTests."""
+
+    @classmethod
+    def setUpClass(cls):
+        TeamPushTests.setUpClass.__func__(cls)
+
+    @classmethod
+    def tearDownClass(cls):
+        TeamPushTests.tearDownClass.__func__(cls)
+
+    def test_a_preview_reaches_the_other_macs_and_an_edit_without_the_link_drops_it(self):
+        from coconut.providers import FixtureProvider
+        from coconut.service import Service
+        os.environ['COCONUT_TEAM_HELPER'] = str(self.helper_path)
+        self.addCleanup(os.environ.pop, 'COCONUT_TEAM_HELPER', None)
+        macs = []
+        for name in ('ada-preview', 'grace-preview', 'lin-preview'):
+            root = Path(self.temp.name) / name
+            service = Service(root, FixtureProvider(root), start_workers=False)
+            self.addCleanup(service.close)
+            macs.append(service)
+        ada, grace, lin = macs
+        preview = {'url': 'https://example.com/a', 'title': 'Example page', 'site': 'example.com'}
+        text = 'Look at https://example.com/a'
+
+        def call(service, method, path, data=None, direct=False):
+            return service.team_request(method, path, data or {}, '', 'test-device', direct)
+
+        def sync():
+            for _ in range(2):
+                for service in macs:
+                    service.team_sync_pass()
+
+        def shown(service, path, message):
+            return next((row['preview'] for row in call(service, 'GET', path)['messages'] if row['id'] == message),
+                        'absent')
+
+        room_id = call(ada, 'POST', '/v1/team/rooms', {'name': 'North team', 'member_name': 'Ada',
+                                                       'relay': self.url})['room']['room']
+        for service, name in ((grace, 'Grace'), (lin, 'Lin')):
+            link = call(ada, 'POST', f'/v1/team/rooms/{room_id}/invites', {})['link']
+            call(service, 'POST', '/v1/team/join', {'link': link, 'member_name': name})
+        for service in macs:
+            call(service, 'GET', '/v1/team/rooms', direct=True)
+        sync()
+        ada_id, grace_id = (service.team_store.room(room_id)['member'] for service in (ada, grace))
+
+        # The Team chat.
+        chat = f'/v1/team/rooms/{room_id}/messages'
+        message = call(ada, 'POST', chat, {'text': text, 'preview': preview})['message']
+        self.assertEqual(message['preview'], preview)
+        sync()
+        for service in macs:
+            self.assertEqual(shown(service, chat, message['id']), preview)
+        call(ada, 'PATCH', f'{chat}/{message["id"]}', {'text': 'Look at the page'})
+        sync()
+        for service in macs:
+            self.assertIsNone(shown(service, chat, message['id']))
+
+        # A direct chat: the preview is in the box that only Grace's Mac opens.
+        sent = call(ada, 'POST', f'/v1/team/rooms/{room_id}/directs/{grace_id}/messages',
+                    {'text': text, 'preview': preview})['message']
+        sync()
+        self.assertEqual(shown(grace, f'/v1/team/rooms/{room_id}/directs/{ada_id}/messages', sent['id']), preview)
+        self.assertEqual(shown(lin, f'/v1/team/rooms/{room_id}/directs/{ada_id}/messages', sent['id']), 'absent')
+        self.assertNotIn('Example page', lin.team_store.entry(room_id, sent['id'])['payload'])
+
+
+@unittest.skipUnless(sys.platform == 'darwin' and shutil.which('xcrun') and shutil.which('node')
+                     and (ROOT / 'relay/node_modules/miniflare').is_dir(),
                      'The member removal test needs macOS, the Xcode Command Line Tools, Node, and npm ci in relay/.')
 class TeamRemovalTests(unittest.TestCase):
     """Ada, the admin, removes Grace through the real relay and the real helper. Lin's Mac drops Grace, her bot and
