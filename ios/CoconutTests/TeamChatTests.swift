@@ -1033,8 +1033,8 @@ final class TeamChatTests: XCTestCase {
 
     private let example = TeamLinkPreview(url: "https://example.com/a", title: "Example page", site: "example.com")
 
-    /// A Mac with previews sends the key: an object, or null. A Mac without previews sends no key. A preview that does
-    /// not fit is left out, and the message stays.
+    /// A Mac with previews sends the key: an object, or null. A Mac without previews sends no key. A preview of a wrong
+    /// shape, or one that does not fit, is left out, and the message stays.
     func testAMessageDecodesWithNullAndWithoutAPreview() throws {
         let answer = #"""
         {"room": "r1", "before": null, "messages": [
@@ -1047,16 +1047,24 @@ final class TeamChatTests: XCTestCase {
            "created_at": "2026-11-10T10:00:00Z"},
           {"id": "e1", "first": 1, "member": "m-grace", "member_name": "Grace", "this_mac": false, "text": "No link",
            "created_at": "2026-11-10T09:00:00Z",
-           "preview": {"url": "https://example.com/a", "title": "Example page", "site": "example.com"}}
+           "preview": {"url": "https://example.com/a", "title": "Example page", "site": "example.com"}},
+          {"id": "s1", "first": 0, "member": "m-grace", "text": "Read https://example.com/a",
+           "created_at": "2026-11-10T08:00:00Z", "preview": "https://example.com/a"},
+          {"id": "s2", "first": 0, "member": "m-grace", "text": "Read https://example.com/a",
+           "created_at": "2026-11-10T08:00:00Z", "preview": 7},
+          {"id": "s3", "first": 0, "member": "m-grace", "text": "Read https://example.com/a",
+           "created_at": "2026-11-10T08:00:00Z", "preview": {"url": "https://example.com/a", "title": "Example page"}}
         ]}
         """#
         let page = try APIJSON.decoder().decode(TeamMessagePage.self, from: Data(answer.utf8))
-        XCTAssertEqual(page.messages.map(\.id), ["e4", "e3", "e2", "e1"])
+        XCTAssertEqual(page.messages.map(\.id), ["e4", "e3", "e2", "e1", "s1", "s2", "s3"], "Each message stays.")
         XCTAssertEqual(page.messages[0].preview, example)
-        XCTAssertEqual(page.messages.map(\.previewKey), [true, true, false, true])
+        XCTAssertEqual(page.messages.map(\.previewKey), [true, true, false, true, true, true, true])
         XCTAssertNil(page.messages[1].preview, "Null: a Mac with previews, a message without one.")
         XCTAssertNil(page.messages[2].preview, "No key: a Mac without previews.")
         XCTAssertNil(page.messages[3].preview, "The text does not have the address: the preview is left out.")
+        XCTAssertEqual(page.messages[4...].map(\.preview), [nil, nil, nil],
+                       "A string, a number and an object without a site are left out.")
     }
 
     /// The composer offers a preview only while the newest message of the chat has the key. A chat without a message

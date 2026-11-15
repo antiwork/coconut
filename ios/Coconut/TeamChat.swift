@@ -396,8 +396,9 @@ extension TeamMessage {
         page = try container.decodeIfPresent(TeamAboutPage.self, forKey: .page)
         reactions = try container.decodeIfPresent([TeamReaction].self, forKey: .reactions)
         previewKey = container.contains(.preview)
-        let text = text
-        preview = (try? container.decodeIfPresent(TeamLinkPreview.self, forKey: .preview))?.flatMap { $0.fitting(in: text) }
+        // A preview of a wrong shape decodes to nil. The explicit type keeps one level of optional in each Swift mode.
+        let decoded: TeamLinkPreview? = try? container.decodeIfPresent(TeamLinkPreview.self, forKey: .preview)
+        preview = decoded?.fitting(in: text)
     }
 
     private enum CodingKeys: String, CodingKey {
