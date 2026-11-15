@@ -2182,6 +2182,39 @@ final class AppStore {
         return true
     }
 
+    /// Sets the reaction of this person on a message to `emoji`, or takes it back when the person tapped the emoji
+    /// that the person has (TeamReactions.value). `message` is the message as the chat shows it. The chat shows the
+    /// change at once. The answer of the Mac replaces the message, and a failure shows the reaction of the Mac again.
+    /// True when the Mac confirmed it.
+    @discardableResult
+    func reactToTeamMessage(_ chat: TeamChatKey, _ message: TeamMessage, emoji: String) async -> Bool {
+        guard TeamReactions.all.contains(emoji), message.reactions != nil, chat.bot == nil,
+              teamChats[chat]?.deleting.contains(message.id) == false,
+              let member = team?.rooms.first(where: { $0.room == chat.room })?.ownMember?.member else { return false }
+        let value = TeamReactions.value(tapping: emoji, on: message)
+        if isDemo {
+            teamChats[chat]?.put(message.reacting(value, as: member))
+            return true
+        }
+        // A reaction has its own count, so it does not make the answer of an edit of the same message out of date.
+        let key = "reaction-" + message.id
+        let change = startMessageChange(chat, key)
+        teamChats[chat]?.reacting[message.id] = TeamOwnReaction(emoji: value, member: member)
+        let answer: TeamMessageAnswer? = await write("\(chat.path)/messages/\(message.id)/reaction", method: "PUT",
+                                                     payload: TeamReactionRequest(emoji: value),
+                                                     as: TeamMessageAnswer.self, refreshInBackground: true)
+        // A newer tap on the same message wins over this answer.
+        guard isNewestMessageChange(chat, key, change) else {
+            if answer != nil { teamChatChanges[chat, default: 0] += 1 }
+            return answer != nil
+        }
+        teamChats[chat]?.reacting[message.id] = nil
+        guard let answer else { return false }
+        teamChatChanges[chat, default: 0] += 1
+        teamChats[chat]?.put(answer.message)
+        return true
+    }
+
     /// Tells the Mac that the person read the chat up to the message with this `first`. The app sends each position
     /// one time, and marks it as sent only after the Mac confirmed it.
     func markTeamRead(_ chat: TeamChatKey, first: Int) async {
@@ -3033,6 +3066,7 @@ private struct TeamSendRequest: Encodable {
     let text: String; let replyTo: String?; let mentions: [String]?; let chat: String?; let aboutDocumentId: String?
 }
 private struct TeamEditRequest: Encodable { let text: String }
+private struct TeamReactionRequest: Encodable { let emoji: String }
 private struct TeamReadRequest: Encodable { let first: Int; let chat: String? }
 private struct TeamTypingRequest: Encodable { let chat: String? }
 /// The body of a new chat and of a new name. A delete sends no name.

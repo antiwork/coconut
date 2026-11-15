@@ -1226,6 +1226,134 @@ final class TeamScreenTests: XCTestCase {
         #endif
     }
 
+    // MARK: Reactions
+
+    /// The reactions of this person on the first message of Grace, as the chat shows them.
+    @MainActor
+    private func shownReactions(_ store: AppStore) -> [TeamReaction]? {
+        guard let chat = store.teamChats["r1"] else { return nil }
+        return TeamChatRow.rows(chat).first?.message?.reactions
+    }
+
+    /// The tap shows the reaction at once, before the answer of the Mac. The answer then replaces the message. A
+    /// second tap of the same emoji sends an empty emoji and takes it back.
+    @MainActor
+    func testAReactionShowsAtOnceAndTheAnswerReplacesTheMessage() async throws {
+        #if !(DEBUG && targetEnvironment(simulator))
+        throw XCTSkip("This HTTP fixture requires a debug simulator build.")
+        #else
+        let state = try PreviewStateFixture.load()
+        let server = try TeamServer(state: APIJSON.encoder().encode(state))
+        let address = try await server.start()
+        defer { server.stop() }
+        try await withPairedStore(address: address) { store in
+            server.addMessage("Lunch at noon?", announce: false)
+            server.react(1, member: "m1", emoji: "👍")
+            await store.loadTeamChat("r1")
+            let message = try XCTUnwrap(store.teamChats["r1"]?.messages.first)
+            server.holdReactions(true)
+            let tap = Task { await store.reactToTeamMessage("r1", message, emoji: "👍") }
+            try await waitUntil { server.heldReactions == 1 }
+            XCTAssertEqual(shownReactions(store), [TeamReaction(emoji: "👍", members: ["m1", "m0"], mine: true)],
+                           "The reaction shows before the answer.")
+            XCTAssertNotNil(store.teamChats["r1"]?.reacting[message.id])
+            server.holdReactions(false)
+            server.releaseReactions()
+            let confirmed = await tap.value
+            XCTAssertTrue(confirmed)
+            XCTAssertNil(store.teamChats["r1"]?.reacting[message.id])
+            XCTAssertEqual(store.teamChats["r1"]?.messages.first?.reactions,
+                           [TeamReaction(emoji: "👍", members: ["m1", "m0"], mine: true)])
+            let shown = try XCTUnwrap(TeamChatRow.rows(XCTUnwrap(store.teamChats["r1"])).first?.message)
+            let removed = await store.reactToTeamMessage("r1", shown, emoji: "👍")
+            XCTAssertTrue(removed)
+            XCTAssertEqual(server.sentReactions, ["👍", ""], "The same emoji again sends an empty emoji.")
+            XCTAssertEqual(shownReactions(store), [TeamReaction(emoji: "👍", members: ["m1"], mine: false)])
+        }
+        #endif
+    }
+
+    /// The Mac does not confirm the reaction: the chat shows the reactions of the Mac again, and the error.
+    @MainActor
+    func testAFailedReactionGoesBackAndSaysWhy() async throws {
+        #if !(DEBUG && targetEnvironment(simulator))
+        throw XCTSkip("This HTTP fixture requires a debug simulator build.")
+        #else
+        let state = try PreviewStateFixture.load()
+        let server = try TeamServer(state: APIJSON.encoder().encode(state))
+        let address = try await server.start()
+        defer { server.stop() }
+        try await withPairedStore(address: address) { store in
+            server.addMessage("Lunch at noon?", announce: false)
+            await store.loadTeamChat("r1")
+            let message = try XCTUnwrap(store.teamChats["r1"]?.messages.first)
+            server.failReactions(true)
+            let confirmed = await store.reactToTeamMessage("r1", message, emoji: "❤️")
+            XCTAssertFalse(confirmed)
+            XCTAssertEqual(shownReactions(store), [], "The reaction goes back.")
+            XCTAssertNil(store.teamChats["r1"]?.reacting[message.id])
+            XCTAssertEqual(store.error, "The relay of the team does not answer. Try again later.")
+        }
+        #endif
+    }
+
+    /// Two taps on one message. The answer of the first comes last. The newer reaction stays.
+    @MainActor
+    func testALateReactionAnswerDoesNotReplaceANewerTap() async throws {
+        #if !(DEBUG && targetEnvironment(simulator))
+        throw XCTSkip("This HTTP fixture requires a debug simulator build.")
+        #else
+        let state = try PreviewStateFixture.load()
+        let server = try TeamServer(state: APIJSON.encoder().encode(state))
+        let address = try await server.start()
+        defer { server.stop() }
+        try await withPairedStore(address: address) { store in
+            server.addMessage("Lunch at noon?", announce: false)
+            await store.loadTeamChat("r1")
+            let message = try XCTUnwrap(store.teamChats["r1"]?.messages.first)
+            server.holdReactions(true)
+            let first = Task { await store.reactToTeamMessage("r1", message, emoji: "👍") }
+            try await waitUntil { server.heldReactions == 1 }
+            server.holdReactions(false)
+            let shown = try XCTUnwrap(TeamChatRow.rows(XCTUnwrap(store.teamChats["r1"])).first?.message)
+            let second = await store.reactToTeamMessage("r1", shown, emoji: "😂")
+            XCTAssertTrue(second)
+            server.releaseReactions()
+            _ = await first.value
+            // Check at once: a later read of the page also shows the newer reaction, and would hide a wrong merge.
+            XCTAssertEqual(store.teamChats["r1"]?.messages.first?.ownReaction, "😂",
+                           "The late answer must not put back the older reaction.")
+            try await Task.sleep(for: .milliseconds(300))
+            XCTAssertEqual(store.teamChats["r1"]?.messages.first?.ownReaction, "😂")
+            XCTAssertEqual(shownReactions(store), [TeamReaction(emoji: "😂", members: ["m0"], mine: true)])
+        }
+        #endif
+    }
+
+    /// A Mac with an older Coconut sends no `reactions`. The store sends no reaction to it.
+    @MainActor
+    func testAMacWithoutReactionsGetsNoReaction() async throws {
+        #if !(DEBUG && targetEnvironment(simulator))
+        throw XCTSkip("This HTTP fixture requires a debug simulator build.")
+        #else
+        let state = try PreviewStateFixture.load()
+        let server = try TeamServer(state: APIJSON.encoder().encode(state))
+        let address = try await server.start()
+        defer { server.stop() }
+        try await withPairedStore(address: address) { store in
+            server.dropReactionsKey()
+            server.addMessage("Lunch at noon?", announce: false)
+            await store.loadTeamChat("r1")
+            let message = try XCTUnwrap(store.teamChats["r1"]?.messages.first)
+            XCTAssertNil(message.reactions)
+            let sent = await store.reactToTeamMessage("r1", message, emoji: "👍")
+            XCTAssertFalse(sent)
+            XCTAssertEqual(server.sentReactions, [])
+            XCTAssertNil(shownReactions(store))
+        }
+        #endif
+    }
+
     #if DEBUG && targetEnvironment(simulator)
     /// Pairs a new store with the test Mac. The pairing and the files of the test host come back after the body.
     @MainActor
@@ -1289,7 +1417,20 @@ private final class TeamServer: @unchecked Sendable {
     private var lists = 0
     var heldLists: Int { lock.withLock { held.count } }
     /// One message of the chat. `first` grows with each message.
-    private struct ChatMessage { let first: Int; var text: String; let own: Bool; var edited = false }
+    private struct ChatMessage {
+        let first: Int; var text: String; let own: Bool; var edited = false
+        /// The reaction of each member, in the order of the writes.
+        var reactions: [(member: String, emoji: String)] = []
+    }
+    /// False for a Mac with an older Coconut: its messages have no `reactions`.
+    private var reactionsKey = true
+    private var holdingReactions = false
+    private var heldReaction: [@Sendable () -> Void] = []
+    var heldReactions: Int { lock.withLock { heldReaction.count } }
+    private var failingReactions = false
+    private var reactionBodies: [String] = []
+    /// The `emoji` of each reaction request, in order.
+    var sentReactions: [String] { lock.withLock { reactionBodies } }
     /// The messages of the chat, oldest first.
     private var messages: [ChatMessage] = []
     private var nextFirst = 1
@@ -1371,6 +1512,26 @@ private final class TeamServer: @unchecked Sendable {
 
     func holdRereads() { lock.withLock { holdingRereads = true } }
 
+    /// Keeps the answers of the reactions. The Mac makes each change at once.
+    func holdReactions(_ hold: Bool) { lock.withLock { holdingReactions = hold } }
+    /// Sends the held reaction answers.
+    func releaseReactions() {
+        let answers = lock.withLock { defer { heldReaction = [] }; return heldReaction }
+        answers.forEach { $0() }
+    }
+    func failReactions(_ fail: Bool) { lock.withLock { failingReactions = fail } }
+    /// The Mac has an older Coconut: no `reactions` in a message.
+    func dropReactionsKey() { lock.withLock { reactionsKey = false } }
+
+    /// A member reacts to the message with this `first`, as the Mac of the member does.
+    func react(_ first: Int, member: String, emoji: String) {
+        lock.withLock {
+            guard let index = messages.firstIndex(where: { $0.first == first }) else { return }
+            messages[index].reactions.removeAll { $0.member == member }
+            if !emoji.isEmpty { messages[index].reactions.append((member, emoji)) }
+        }
+    }
+
     /// Keeps the answers of the edits, or of the read positions. The Mac makes each change at once.
     func holdEdits(_ hold: Bool) { lock.withLock { holdingEdits = hold } }
     func holdReads(_ hold: Bool) { lock.withLock { holdingReads = hold } }
@@ -1418,9 +1579,16 @@ private final class TeamServer: @unchecked Sendable {
         let member = message.own ? #""member": "m0", "member_name": "Ada", "this_mac": true"#
             : #""member": "m1", "member_name": "Grace", "this_mac": false"#
         let edited = message.edited ? #""2026-11-10T13:00:00Z""# : "null"
+        let items = ["👍", "❤️", "😂", "😮", "😢", "🙏"].compactMap { emoji -> String? in
+            let members = message.reactions.filter { $0.emoji == emoji }.map(\.member)
+            guard !members.isEmpty else { return nil }
+            return #"{"emoji": "\#(emoji)", "members": [\#(members.map { "\"\($0)\"" }.joined(separator: ", "))], "#
+                + #""mine": \#(members.contains("m0"))}"#
+        }
+        let reactions = reactionsKey ? #", "reactions": [\#(items.joined(separator: ", "))]"# : ""
         return #"{"id": "e\#(message.first)", "first": \#(message.first), \#(member), "bot": null, "bot_name": null, "#
             + #""text": "\#(message.text)", "reply_to": null, "reply": null, "mentions": [], "#
-            + #""created_at": "2026-11-10T12:00:00Z", "edited_at": \#(edited)}"#
+            + #""created_at": "2026-11-10T12:00:00Z", "edited_at": \#(edited)\#(reactions)}"#
     }
 
     /// One page, newest first, as the Mac answers it: the messages under `before`, at most `limit`, and the `before` of
@@ -1551,6 +1719,25 @@ private final class TeamServer: @unchecked Sendable {
                         nextFirst += 1
                         return #"{"room": "r1", "message": \#(json(messages[messages.count - 1]))}"#
                     }
+                case _ where route.hasPrefix("PUT /v1/team/rooms/r1/messages/") && route.hasSuffix("/reaction"):
+                    let parts = route.split(separator: "/")
+                    let first = Int(parts[parts.count - 2].dropFirst()) ?? 0
+                    let emoji = request.components(separatedBy: "\r\n\r\n").last
+                        .flatMap { try? JSONSerialization.jsonObject(with: Data($0.utf8)) as? [String: Any] }?["emoji"] as? String ?? ""
+                    body = lock.withLock {
+                        reactionBodies.append(emoji)
+                        if failingReactions {
+                            status = "503 Service Unavailable"
+                            return #"{"error": "The relay of the team does not answer. Try again later."}"#
+                        }
+                        guard let index = messages.firstIndex(where: { $0.first == first }) else {
+                            status = "404 Not Found"
+                            return #"{"error": "This message is no longer in the chat."}"#
+                        }
+                        messages[index].reactions.removeAll { $0.member == "m0" }
+                        if !emoji.isEmpty { messages[index].reactions.append(("m0", emoji)) }
+                        return #"{"room": "r1", "message": \#(json(messages[index]))}"#
+                    }
                 case _ where route.hasPrefix("PATCH /v1/team/rooms/r1/messages/"):
                     let first = Int(route.split(separator: "/").last?.dropFirst() ?? "") ?? 0
                     let text = request.components(separatedBy: "\r\n\r\n").last
@@ -1627,6 +1814,10 @@ private final class TeamServer: @unchecked Sendable {
                 let holdWrite = lock.withLock {
                     if route.hasPrefix("PATCH /v1/team/rooms/r1/messages/") && holdingEdits {
                         heldEdit.append(send)
+                        return true
+                    }
+                    if route.hasSuffix("/reaction") && holdingReactions {
+                        heldReaction.append(send)
                         return true
                     }
                     if route == "POST /v1/team/rooms/r1/read" && holdingReads {

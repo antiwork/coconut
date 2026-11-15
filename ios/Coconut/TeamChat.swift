@@ -336,10 +336,143 @@ struct TeamMessage: Decodable, Identifiable, Equatable, Sendable {
     var editedAt: String? = nil
     /// The page that a message of a direct chat with a bot is about. The chat shows it as a quote above the text.
     var page: TeamAboutPage? = nil
+    /// The reactions on the message, in the order of TeamReactions.all. Nil from a Mac without reactions.
+    var reactions: [TeamReaction]? = nil
 
     /// A message of this Mac's person. A bot of this Mac writes as itself, not as the person.
     var isOwn: Bool { thisMac == true && bot == nil }
     var isEdited: Bool { editedAt != nil }
+
+    /// The emoji of this person on the message, or nil.
+    var ownReaction: String? { reactions?.first { $0.mine == true }?.emoji }
+
+    /// The message with the reaction of `member` (this person) set to `emoji`, as the Mac makes it. An empty emoji
+    /// takes the reaction back. The chat shows it while the Mac writes the change.
+    func reacting(_ emoji: String, as member: String) -> TeamMessage {
+        var copy = self
+        var items = (reactions ?? []).map { item in
+            var item = item
+            item.members.removeAll { $0 == member }
+            item.mine = false
+            return item
+        }
+        if !emoji.isEmpty {
+            if let index = items.firstIndex(where: { $0.emoji == emoji }) {
+                items[index].members.append(member)
+                items[index].mine = true
+            } else {
+                items.append(TeamReaction(emoji: emoji, members: [member], mine: true))
+            }
+        }
+        copy.reactions = items.filter { !$0.members.isEmpty }.sorted {
+            (TeamReactions.all.firstIndex(of: $0.emoji) ?? .max) < (TeamReactions.all.firstIndex(of: $1.emoji) ?? .max)
+        }
+        return copy
+    }
+}
+
+/// A reaction of this person on its way to the Mac: the emoji, empty to take it back, and the member ID of the person.
+struct TeamOwnReaction: Equatable, Sendable {
+    let emoji: String
+    let member: String
+}
+
+/// One emoji on a message and the members that chose it, in the order of the log (docs/team-log.md, "Reactions").
+/// `mine` is true when this person is one of them.
+struct TeamReaction: Decodable, Equatable, Sendable {
+    var emoji: String
+    var members: [String] = []
+    var mine: Bool? = nil
+
+    init(emoji: String, members: [String], mine: Bool? = nil) {
+        self.emoji = emoji
+        self.members = members
+        self.mine = mine
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        emoji = try container.decode(String.self, forKey: .emoji)
+        members = (try? container.decodeIfPresent([String].self, forKey: .members)) ?? []
+        mine = try? container.decodeIfPresent(Bool.self, forKey: .mine)
+    }
+
+    private enum CodingKeys: String, CodingKey { case emoji, members, mine }
+}
+
+/// The reactions of the team chats, as in WhatsApp: six emoji, one for each person on a message.
+enum TeamReactions {
+    /// The order of the service. The heart has the variation selector 16.
+    static let all = ["👍", "❤️", "😂", "😮", "😢", "🙏"]
+    static let names = ["thumbs up", "heart", "laugh", "surprise", "sad", "thanks"]
+    static func name(_ emoji: String) -> String { all.firstIndex(of: emoji).map { names[$0] } ?? emoji }
+
+    /// The emoji to send for a tap: the tapped one, or an empty text that takes it back when the person has it.
+    static func value(tapping emoji: String, on message: TeamMessage) -> String {
+        message.ownReaction == emoji ? "" : emoji
+    }
+
+    /// The menu and VoiceOver name of the action of an emoji.
+    static func action(_ emoji: String, on message: TeamMessage) -> String {
+        (message.ownReaction == emoji ? "Remove " : "React with ") + name(emoji)
+    }
+
+    /// True when the chat offers reactions on the row: a saved message, in a chat where the person can write, from a
+    /// Mac with reactions. Not in a direct chat with a bot: nobody else sees a reaction there, and the bot does not
+    /// read it.
+    static func offered(on row: TeamChatRow, in chat: TeamChatKey, canWrite: Bool) -> Bool {
+        guard canWrite, chat.bot == nil, let message = row.message else { return false }
+        return message.reactions != nil
+    }
+}
+
+/// The reactions under a bubble: each emoji with a member, in the fixed order, and the number of people when more than
+/// one person reacted (`👍❤️ 3`).
+struct TeamReactionSummary: Equatable {
+    let emoji: [String]
+    let count: Int
+
+    init?(_ reactions: [TeamReaction]?) {
+        let shown = (reactions ?? []).filter { TeamReactions.all.contains($0.emoji) && !$0.members.isEmpty }
+        guard !shown.isEmpty else { return nil }
+        emoji = TeamReactions.all.filter { emoji in shown.contains { $0.emoji == emoji } }
+        count = shown.reduce(0) { $0 + $1.members.count }
+        spoken = "Reactions: " + TeamReactions.all.compactMap { emoji in
+            shown.first { $0.emoji == emoji }.map { "\($0.members.count) " + TeamReactions.name(emoji) }
+        }.joined(separator: ", ")
+    }
+
+    /// What VoiceOver reads: "Reactions: 2 thumbs up, 1 heart".
+    let spoken: String
+    var text: String { emoji.joined() + (count > 1 ? " \(count)" : "") }
+}
+
+/// One person in the list of the reactions on a message.
+struct TeamReactionPerson: Identifiable, Equatable {
+    let member: String
+    let emoji: String
+    let name: String
+    let own: Bool
+    var id: String { member }
+
+    /// The people of the reactions: this person first, as "You", then the others in the order of the emoji and of the
+    /// log. A member that is no longer in the team reads "Former member". `peer` names the other person of a direct
+    /// chat.
+    static func list(_ reactions: [TeamReaction]?, room: TeamRoom, peer: TeamDirectPeer? = nil) -> [TeamReactionPerson] {
+        let own = room.ownMember?.member
+        var people: [TeamReactionPerson] = []
+        for emoji in TeamReactions.all {
+            for item in reactions ?? [] where item.emoji == emoji {
+                for member in item.members where !people.contains(where: { $0.member == member }) {
+                    let mine = member == own
+                    let name = mine ? "You" : peer.flatMap { $0.member == member ? $0.name : nil }
+                        ?? room.memberList.first { $0.member == member }?.name ?? TeamNames.formerMember
+                    people.append(TeamReactionPerson(member: member, emoji: emoji, name: name, own: mine))
+                }
+            }
+        }
+        return people.filter(\.own) + people.filter { !$0.own }
+    }
 }
 
 /// Which message of a chat has the action "Delete", and the words of the one confirmation (backend/coconut/
@@ -584,6 +717,15 @@ struct TeamChat: Equatable, Sendable {
     var editing: [String: String] = [:]
     /// The messages whose removal the Mac did not answer yet. They do not show.
     var deleting: Set<String> = []
+    /// The reaction of this person that the Mac did not answer yet, by message ID: the emoji (empty to take it back)
+    /// and the member ID of this person. The rows show it in place of the reaction of the Mac.
+    var reacting: [String: TeamOwnReaction] = [:]
+
+    /// A message as the chat shows it: with the reaction on its way.
+    func shown(_ message: TeamMessage) -> TeamMessage {
+        guard let change = reacting[message.id] else { return message }
+        return message.reacting(change.emoji, as: change.member)
+    }
 
     /// The `first` of the newest message that the Mac has.
     var newestFirst: Int? { messages.last?.first }
@@ -715,7 +857,7 @@ struct TeamChatRow: Identifiable, Equatable, Sendable {
     /// The rows of the chat: the messages without the ones whose removal is on its way, then the messages on their way.
     static func rows(_ chat: TeamChat, calendar: Calendar = .current) -> [TeamChatRow] {
         let shown = chat.messages.filter { !chat.deleting.contains($0.id) }
-            .map { (id: $0.id, content: Content.message($0), writer: TeamWriter($0), createdAt: $0.createdAt) }
+            .map { (id: $0.id, content: Content.message(chat.shown($0)), writer: TeamWriter($0), createdAt: $0.createdAt) }
         let pending = chat.pending.map {
             (id: "pending-" + $0.id, content: Content.pending($0), writer: TeamWriter.you, createdAt: $0.createdAt)
         }
