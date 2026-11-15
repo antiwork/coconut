@@ -26,8 +26,8 @@ from . import team_keys
 from .team_helper import TeamFormatError, TeamHelperError, TeamHelperMissing
 from .team_keys import TeamKeysError
 from .team_relay import TeamRelayError
-from .team_store import (ACTIVE, DIRECTS_EVENT, DROPPED, GONE, JOINING, MESSAGES_EVENT, PENDING, REFUSED, REMOVED,
-                         SKIPPED, TYPING_EVENT, direct_fields, read_entry)
+from .team_store import (ACTIVE, BOT_DIRECTS_EVENT, DIRECTS_EVENT, DROPPED, GONE, JOINING, MESSAGES_EVENT, PENDING,
+                         REFUSED, REMOVED, SKIPPED, TYPING_EVENT, direct_fields, read_entry)
 
 POLL_SECONDS = 30
 MAX_WAIT_SECONDS = 900
@@ -368,8 +368,8 @@ class TeamSync:
         An own entry tries the key of each other member, because the Mac does not know for whom it wrote when the
         store lacks the write: after a stop between the write to the relay and the write to the store, or when the
         store is behind the relay. Each `direct` entry gets `direct` in its result: the other member of the chat, the
-        text and the reply, when a box opens and its fields fit, else None. TeamStore.accept then shows or removes the
-        message.
+        text, the reply, the bot of a chat with a bot, and the page of an own message, when a box opens and its fields
+        fit, else None. TeamStore.accept then shows or removes the message.
 
         The relay gives a replaced `member` entry at the `seq` of its newest write, so a read from an earlier position
         can meet a direct entry before the `member` entry that it needs. Such an entry gets `wait`: an entry of a
@@ -419,7 +419,8 @@ class TeamSync:
     def _team_open_boxes(self, room_id: str, own: str, secrets: dict, boxes: dict) -> dict:
         """Open boxes with the helper. `boxes` maps a key of the caller to the entry ID, the writer, the box, and the
         public agreement key of each member to try. The result maps each key to what the box gave this Mac (the other
-        member of the chat, the text and the reply), or None. The caller holds no lock and no transaction."""
+        member of the chat, the text, the reply, the bot and the page), or None. The caller holds no lock and no
+        transaction."""
         asks = [(key, other, {'entry': entry, 'writer': writer, 'other': other, 'agreement': agreement, 'box': box})
                 for key, (entry, writer, box, others) in boxes.items() if isinstance(box, str)
                 for other, agreement in others.items()]
@@ -430,8 +431,10 @@ class TeamSync:
         for (key, other, ask), answer in zip(asks, answers):
             if results[key] is not None or 'plaintext' not in answer:
                 continue
-            # A message of another member is for this Mac. An own message names the member that it is for.
-            shown = direct_fields(answer['plaintext'], own if ask['writer'] != own else other)
+            # A message of another member is for this Mac. An own message names the member that it is for. Only an own
+            # message of a chat with a bot can name a page.
+            mine = ask['writer'] == own
+            shown = direct_fields(answer['plaintext'], other if mine else own, page=mine)
             if shown is not None:
                 results[key] = dict(shown, member=other)
         return results
@@ -505,10 +508,14 @@ class TeamSync:
             # Only a team-only Mac queues triggers (TeamStore.answers). Its turn thread reads them after the commit.
             self.team_store.triggered.discard(room_id)
             self._team_turns_due()
-        # A direct chat has its own event, with the other member of the chat.
+        # A direct chat has its own event: with the other member for a chat of two people, and with the team bot ID for
+        # a chat with a bot.
         for member in sorted(member for room, member in self.team_store.directed if room == room_id):
             self.team_store.directed.discard((room_id, member))
             self._event(DIRECTS_EVENT, {'team': room_id, 'member': member})
+        for bot in sorted(bot for room, bot in self.team_store.bot_directed if room == room_id):
+            self.team_store.bot_directed.discard((room_id, bot))
+            self._event(BOT_DIRECTS_EVENT, {'team': room_id, 'bot': f't-{room_id}-{bot}'})
         fresh = self.team_store.fresh.pop(room_id, None)
         if fresh:
             self._team_notify(room_id, fresh)
@@ -581,8 +588,8 @@ class TeamSync:
 
         A write with an entry ID that the store has replaces that entry, with the next `rev`. The caller holds the
         lock of the room. `direct` is what the box of a `direct` entry holds for this Mac: the other member of the
-        chat, the text and the reply. The store does not open an own box again. The body has the epoch of the room,
-        or `epoch`: a `key` entry has the epoch before its new one (TeamEpochs).
+        chat, the text, the reply, the bot and the page. The store does not open an own box again. The body has the
+        epoch of the room, or `epoch`: a `key` entry has the epoch before its new one (TeamEpochs).
         """
         epoch = room['epoch'] if epoch is None else epoch
         secrets = team_keys.read(self.root, room['room'])

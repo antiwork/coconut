@@ -35,7 +35,7 @@ TEAM_ONLY_MODULES = {'coconut', 'coconut.server', 'coconut.service_base', 'cocon
                      'coconut.team_helper', 'coconut.team_keys', 'coconut.team_messages', 'coconut.team_pages',
                      'coconut.team_relay', 'coconut.team_socket', 'coconut.team_store', 'coconut.team_sync',
                      'coconut.push_relay', 'coconut.team_turns', 'coconut.team_directs', 'coconut.team_epochs',
-                     'coconut.team_typing', 'coconut.team_chats'}
+                     'coconut.team_typing', 'coconut.team_chats', 'coconut.hermes_notices'}
 
 
 def make_hermes_home(home: Path) -> None:
@@ -442,6 +442,54 @@ class BotRecordTests(TeamOnlyMacs, unittest.TestCase):
         self.assertEqual(self.only.team_store.entry(room, self.only.team_store.member(room, own)['entry'])['rev'], rev + 1)
         view = self.first.team_request('GET', '/v1/team/rooms', {})['rooms'][0]
         self.assertEqual([member['bot_only'] for member in view['members']], [False, True])
+
+    def test_a_store_of_an_older_version_shows_the_team_only_mac_and_its_bot_again_at_the_next_start(self):
+        # A service of a version before the marks kept the `member` and `bot` entries of the team-only Mac in rows
+        # without the marks. The new columns came with 0, and the team-only Mac never writes the entries again.
+        room = self.team()
+        bot = self.declare()
+        self.share(room, bot)
+        self.call('PATCH', f'/v1/team/bots/{bot["id"]}', {'chat': True})
+        self.sync()
+
+        def seen():
+            view = self.first.team_request('GET', '/v1/team/rooms', {})['rooms'][0]
+            return ([(member['name'], member['bot_only']) for member in view['members']],
+                    [(row['name'], row['open']) for row in view['bots']])
+        right = ([('Ada', False), ('Reporter Mac', True)], [('Reporter', True)])
+        self.assertEqual(seen(), right)
+        with self.first.lock:
+            self.first.db.execute('UPDATE team_members SET bot_only=0')
+            self.first.db.execute('UPDATE team_bots SET open=0')
+        self.assertEqual(seen(), ([('Ada', False), ('Reporter Mac', False)], [('Reporter', False)]))
+        # The next start of the service opens the store and tells the app. The threads of the sync do not start here.
+        def start():
+            self.first.team_store.migrate()
+            with mock.patch.object(self.first, '_start_team_sync'), mock.patch.object(self.first, '_start_team_socket'):
+                self.first._start_team()
+        cursor = self.first.db.execute('SELECT MAX(seq) FROM events').fetchone()[0] or 0
+        # Another connection holds the write lock at the first start. The start goes on after a short wait, and the
+        # event waits in the store for the next start.
+        holder = sqlite3.connect(self.first.root / 'coconut.sqlite3', isolation_level=None)
+        self.addCleanup(holder.close)
+        self.first.team_store.migrate()
+        holder.execute('BEGIN IMMEDIATE')
+        begin = time.monotonic()
+        with self.assertLogs('coconut.team', 'WARNING'):
+            start()
+        holder.execute('ROLLBACK')
+        self.assertLess(time.monotonic() - begin, 5)
+        self.assertEqual(seen(), right)
+        self.assertTrue(self.first.team_store.corrected_waiting())
+        start()
+        events = [row[0] for row in self.first.db.execute('SELECT type FROM events WHERE seq>?', (cursor,))]
+        self.assertEqual(events, ['team.updated'])
+        # A start with correct rows changes nothing, tells nothing, and takes no write lock.
+        holder.execute('BEGIN IMMEDIATE')
+        with self.assertNoLogs('coconut', 'WARNING'):
+            start()
+        holder.execute('ROLLBACK')
+        self.assertEqual(self.first.db.execute('SELECT COUNT(*) FROM events WHERE seq>?', (cursor,)).fetchone()[0], 1)
 
     def test_a_change_keeps_the_home_and_reaches_the_team(self):
         room = self.team()

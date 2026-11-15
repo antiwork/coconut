@@ -20,6 +20,7 @@ on:
       - 'ios/Coconut.xcodeproj/**'
       - 'ios/Coconut/**'
       - 'ios/PushShared/**'
+      - 'ios/CoconutNotificationService/**' # AgentWordTests (swift test) reads the texts of this folder.
       - 'ios/Packages/**' # The Mac app builds the Swift package in this folder.
       - 'scripts/push-envelope.swift'
       - 'relay/**'
@@ -43,6 +44,7 @@ on:
       - 'ios/Coconut.xcodeproj/**'
       - 'ios/Coconut/**'
       - 'ios/PushShared/**'
+      - 'ios/CoconutNotificationService/**' # AgentWordTests (swift test) reads the texts of this folder.
       - 'ios/Packages/**' # The Mac app builds the Swift package in this folder.
       - 'scripts/push-envelope.swift'
       - 'relay/**'

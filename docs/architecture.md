@@ -58,6 +58,8 @@ The source pass closes a card when GitHub says that a linked issue closed, or a 
 A merge card whose own PR merged closes as "Already merged.".
 The person chose nothing. A task that waits only for that card continues and reads the source again.
 A task that waits for another card too keeps waiting, and its next turn names the closed card.
+A closed suggestion starts no turn. A later turn of its agent in the same conversation lists it as data.
+A card of an older store that was revised at an unknown time does not close by this rule.
 After an answer, the service starts a continuation with the recorded choice and the index of the completed tool
 receipts (`coconut_read_receipts`). A turn does not repeat a completed effect.
 
@@ -151,7 +153,7 @@ A Mac that runs Coconut for a team only has no person, and its agents answer the
 - The plugin reads the mode from the config of the profile when Hermes loads it (`coconut.mode`). Without the mode, and when the config does not read, it registers what it registers for a full install.
 - In the mode `team`, it registers the platform with the adapter of `hermes_plugin/coconut/team.py`, and nothing else: no tool, no hook, no middleware, no skill and no change of cron. The hint of the platform names the team chat, not the cards of a phone.
 - The adapter takes the turns of the team-only service with the same poll, events and token as above. It gives a turn to the gateway as a message of a group chat: the chat ID is `<agent ID>:team:<room ID>` for the Team chat and `<agent ID>:team:<room ID>:<chat entry ID>` for a named chat of the team (see [Chats of a team](team-log.md#chats-of-a-team)), so two agents of one Mac in one team, and two chats of one team, never share a session. The name is the team, or "<team> · <chat>" for a named chat. The sender is the member of the team, the messages of the same chat since the last message of the agent there are `channel_context`, and the rules of the chat are `channel_prompt`. A reply to the agent names its message (`reply_to_message_id`, `reply_to_is_own_message`). Hermes keeps a session for each member of a group, as `group_sessions_per_user` says.
-- The platform is `trusted_inbound`, so Hermes checks no sender. The team-only service is the gate: only a member of the team starts a turn, and only with a message that names the agent.
+- The platform is `trusted_inbound`, so Hermes checks no sender. The team-only service is the gate: only a member of the team starts a turn, and only with a message that names the agent or this Mac, or that answers a message of the agent (rule 4 of [An agent answers](team-log.md#an-agent-answers)).
 - What the team chat needs of Hermes:
   - the fields of a message event that the adapter sets (`team.EVENT_FIELDS`) and the methods of the base adapter that it calls (`team.BASE_METHODS`);
   - the fields `trusted_inbound` and `display_overrides` of the registration (`PlatformEntry`, `team.REGISTRATION_FIELDS`). Without `trusted_inbound`, Hermes refuses each member as an unknown user ("Unauthorized user") and ends the turn with no reply. Without `display_overrides`, Hermes sends its tool progress into the chat as messages of the agent (the tier `high` and the global defaults show it).

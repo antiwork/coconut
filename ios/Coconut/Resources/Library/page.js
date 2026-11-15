@@ -61,6 +61,62 @@
     }
   }
 
+  // The width of a table column comes from its content, and a chart has no width before it draws. So a chart in a
+  // table cell asks for the width of the page column, and takes less when its cell gives less: an empty drawing of
+  // that width stands in the chart. The table then gives each chart its room before the chart draws, and the drawn
+  // chart does not change that room. The drawing has no height. Its height is a style: WebKit gives an svg with the
+  // attribute height 0 a height of 150 px.
+  const rooms = [...main.querySelectorAll(":is(td, th) figure.chart[data-spec]")].map((figure) => {
+    const room = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    room.setAttribute("width", 680);
+    room.style.height = "0";
+    room.setAttribute("aria-hidden", "true");
+    figure.append(room);
+    return room;
+  });
+  // In a box that must not shrink (flex: none, a width of max-content), such a drawing makes the page too wide: a box
+  // around it leaves the page column, at its right or, in a text from right to left, at its left, or the page scrolls
+  // sideways. That drawing goes, and its chart asks for no room, as a chart in each other box that takes its width
+  // from its content. The check takes two pairs of numbers for a drawing. The first pair: how far a box around it
+  // leaves the column at most, against the column at the start of the check and against the column as it is now.
+  // The second pair: the width of all that the page can scroll to, and how far the page can scroll sideways. The
+  // check hides each drawing of a page that scrolls sideways or with a box outside the column, then shows them
+  // again one at a time. A drawing goes when it makes both numbers of a pair larger by more than 1 px. A scroll bar
+  // at the side that shows or goes during the check moves the column or changes its width, and changes the width
+  // of the view: it can make one number of a pair larger, but not both. A page that is as wide without a drawing
+  // keeps it: a text makes the page wide, as in a table that becomes a list of records. A difference of 1 px is a
+  // rounded number. The check keeps the vertical scroll position: a page without its drawings can be shorter. A new
+  // size of the page column checks again. A page without such a drawing has no check.
+  const tight = () => {
+    const start = main.getBoundingClientRect();
+    const page = document.scrollingElement;
+    const overhang = (room, column) => {
+      let most = 0;
+      for (let box = room.parentElement; box && box !== main; box = box.parentElement) {
+        const at = box.getBoundingClientRect();
+        most = Math.max(most, column.left - at.left, at.right - column.right);
+      }
+      return most;
+    };
+    const numbers = (room) => [overhang(room, start), overhang(room, main.getBoundingClientRect()),
+      page.scrollWidth, page.scrollWidth - page.clientWidth];
+    const sideways = page.scrollWidth - page.clientWidth > 1;
+    const suspects = rooms.filter((room) => room.isConnected && (sideways || overhang(room, start) > 0.5));
+    const scrolled = page.scrollTop;
+    for (const room of suspects) room.style.display = "none";
+    for (const room of suspects) {
+      const without = numbers(room);
+      room.style.display = "";
+      const [overStart, overNow, wider, further] = numbers(room).map((value, index) => value > without[index] + 1);
+      if ((overStart && overNow) || (wider && further)) room.remove();
+    }
+    if (page.scrollTop !== scrolled) page.scrollTop = scrolled;
+  };
+  if (rooms.length) {
+    tight();
+    new ResizeObserver(tight).observe(main);
+  }
+
   // A number: a sign, a currency sign, the digits 0 to 9 with separators, then a percent sign or one letter such as k
   // or M. A unit can follow after a space: at most 16 characters and no digit. "1,552 steps", "$41,200", "87%", "-3",
   // "27.6 in". The space before a unit can also be a no-break, thin or narrow no-break space, as in "12 %". The flag
@@ -251,7 +307,8 @@
   // each value its own text.
   const dateFormat = (dates) => {
     const times = [...new Set(dates.map((date) => date.getTime()))];
-    const span = Math.max(...times) - Math.min(...times);
+    const [first, last] = d3.extent(times);
+    const span = last - first;
     const day = 864e5;
     const timed = times.some((time) => time % day);
     const forms = timed ? (span <= day ? ["%-I %p", "%-I:%M %p", "%b %-d, %-I %p"] : ["%b %-d, %-I %p", "%b %-d, %H:%M"])
@@ -265,8 +322,6 @@
   // The numbers of the y axis: "1,000", "0.5", and short from 10,000 up ("12k", "1.5M", "3B").
   const yFormat = (ticks) => Math.max(...ticks.map(Math.abs)) >= 10000
     ? (value) => d3.format(".2~s")(value).replace("G", "B") : (value) => d3.format(",~r")(value);
-  // A count of ticks is always a small finite number: a count such as Infinity would make d3 work without end.
-  const tickCount = (count) => Number.isFinite(count) ? Math.min(Math.max(Math.floor(count), 1), 24) : 1;
   // At most four lines in even steps from zero, so the zero line always shows.
   // A domain that is not finite (no value at all) is [0, 0]: the chart shows its zero line.
   const yAxis = ([bottom, top]) => {
@@ -284,21 +339,39 @@
       .map((index) => Number((low + index * step).toPrecision(12)));
     return { domain: [low, high], ticks };
   };
+  // The width of each text. The code appends all texts first and then measures them: one layout for all texts.
   const textWidth = (figure, texts) => {
     const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
-    figure.append(svg);
-    const widths = texts.map((text) => {
+    const elements = texts.map((text) => {
       const element = document.createElementNS("http://www.w3.org/2000/svg", "text");
       element.textContent = text;
       svg.append(element);
-      return element.getComputedTextLength();
+      return element;
     });
+    figure.append(svg);
+    const widths = elements.map((element) => element.getComputedTextLength());
     svg.remove();
     return widths;
   };
-  const drawChart = (figure, spec, data, kind) => {
-    figure.querySelector("svg")?.remove();
-    const width = figure.clientWidth;
+  // The labels under the plot. Each label is a value of the data: a name as it is, a number without the noise of its
+  // binary form, a date in the form of dateFormat. The code measures each label in the place where it shows. The code
+  // goes through the points from left to right. A point gets its label only when the label has a visible character,
+  // stays in the chart and starts at least 8 px after the box of the last label that shows. The chart ends 8 px before
+  // the lowest y number. On a band, a label starts at the left edge of its bar. On each other scale, a label is
+  // centered on its point and stays inside the chart. A name is never cut, with one exception: when no label shows
+  // yet and the label is wider than the chart, the code cuts it to whole characters and an ellipsis. A text of more
+  // than 128 characters counts as wider than each chart.
+  const segmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" });
+  // The width of a chart: the whole pixels of the layout width of its figure. clientWidth rounds to the nearest pixel:
+  // an svg that is wider than its figure shrinks, and its texts change. A figure that does not show has no width. A
+  // figure in a vertical text has none too: its width there comes from its content, so a chart would make it wider
+  // with each draw.
+  const chartWidth = (figure) => {
+    const style = getComputedStyle(figure);
+    return figure.clientWidth && style.writingMode === "horizontal-tb" ? Math.floor(parseFloat(style.width)) : 0;
+  };
+  const drawChart = (figure, spec, data, kind, width) => {
+    figure.querySelector("svg.plot")?.remove();
     if (!width) return;
     const palette = coconut.palette;
     const names = [...new Set(data.map((row) => row.series))];
@@ -309,7 +382,8 @@
     const tone = spec.series ? "series" : palette[0];
     const line = { strokeWidth: 2, strokeLinejoin: "round", strokeLinecap: "round" };
     const valid = data.filter((row) => Number.isFinite(row.y));
-    const dots = names.every((name) => valid.filter((row) => row.series === name).length <= 12);
+    // A line has dots when each series has at most 12 values. The code counts the rows of each series one time.
+    const dots = (d3.max(d3.rollup(valid, (rows) => rows.length, (row) => row.series).values()) ?? 0) <= 12;
     const z = spec.series ? "series" : undefined;
     const marks = {
       // Only a bar without a stack has round top corners: Plot rounds each part of a stack.
@@ -330,98 +404,82 @@
     const probe = Plot.plot({ width, height: 200, x: { ...x, axis: null }, y: { axis: null }, marks: marks() });
     const y = yAxis(probe.scale("y").domain);
     const yText = yFormat(y.ticks);
-    const right = Math.ceil(Math.max(0, ...textWidth(figure, y.ticks.map(yText)))) + 8;
-    const plotWidth = width - right;
-    const draw = (axis) => {
-      figure.querySelector("svg")?.remove();
-      const svg = Plot.plot({
-        width, height: 200, marginTop: 8, marginBottom: 24, marginLeft: 0, marginRight: right, style: look,
-        x: { ...x, axis: null }, y: { domain: y.domain, axis: null }, color: { domain: names, range: palette },
-        marks: [
-          Plot.gridY(y.ticks, { stroke: "var(--line)", strokeOpacity: 1 }),
-          ...marks(),
-          Plot.axisY(y.ticks, { anchor: "right", tickSize: 0, tickPadding: 0, textAnchor: "end", dx: right,
-            tickFormat: yText, label: null }),
-          Plot.axisX({ tickSize: 0, tickPadding: 6, label: null, ...axis }),
-        ],
-      });
-      svg.setAttribute("class", "plot");
-      figure.querySelector(".legend") ? figure.querySelector(".legend").after(svg) : figure.prepend(svg);
-      return svg;
+    const yWidths = textWidth(figure, y.ticks.map(yText));
+    const right = Math.ceil(Math.max(0, ...yWidths)) + 8;
+    // The chart of the labels ends 8 px before the lowest y number, at the right edge of the svg.
+    const end = width - yWidths[0] - 8;
+    // A number that is not whole shows without the noise of its binary form: 0.1 * 3 is "0.3". A whole number shows
+    // as it is.
+    const format = kind === "date" ? dateFormat(xs)
+      : kind === "number" ? (value) => String(Number.isInteger(value) ? value : Number(value.toPrecision(15)))
+      : (value) => String(value);
+    const svg = Plot.plot({
+      width, height: 200, marginTop: 8, marginBottom: 24, marginLeft: 0, marginRight: right, style: look,
+      x: { ...x, axis: null }, y: { domain: y.domain, axis: null }, color: { domain: names, range: palette },
+      marks: [
+        Plot.gridY(y.ticks, { stroke: "var(--line)", strokeOpacity: 1 }),
+        ...marks(),
+        Plot.axisY(y.ticks, { anchor: "right", tickSize: 0, tickPadding: 0, textAnchor: "end", dx: right,
+          tickFormat: yText, label: null }),
+      ],
+    });
+    svg.setAttribute("class", "plot");
+    const labels = document.createElementNS("http://www.w3.org/2000/svg", "g");
+    labels.setAttribute("aria-label", "x-axis tick label");
+    // The svg of Plot centers each text (text-anchor middle). A label starts at its x.
+    labels.setAttribute("text-anchor", "start");
+    svg.append(labels);
+    figure.querySelector(":scope > .plot-box").append(svg);
+    // The points are in the order of the x axis: a band and a scale of names keep the order of the data, and the data
+    // of a scale of numbers or dates is in the order of x. A value without a place (an x that is not finite) has no
+    // point. Each point has one text in the place where a label shows, and its measure is the width of its box: the
+    // drawn label has that width, also with a style of the page such as a letter spacing. A text of more than 128
+    // characters has no measure: WebKit measures one long word in a time that grows with the square of its length.
+    const scale = svg.scale("x");
+    const points = xs.map((value) => ({ at: scale.apply(value), text: format(value) }))
+      .filter((point) => Number.isFinite(point.at));
+    const nodes = points.map((point) => {
+      const node = document.createElementNS("http://www.w3.org/2000/svg", "text");
+      // A label has the place of a tick label of Plot, 6 px under the plot: the height of 200 px less the bottom
+      // margin of 24 px, plus 6.
+      node.setAttribute("y", 182);
+      node.setAttribute("dy", "0.71em");
+      node.textContent = point.text.length > 128 ? "" : point.text;
+      labels.append(node);
+      return node;
+    });
+    const sizes = nodes.map((node, index) => points[index].text.length > 128 ? Infinity : node.getBBox().width);
+    // A text cut to the room that it has: the most whole characters that end inside its first 128, then an ellipsis.
+    // The cut never keeps the last of these characters. A binary search measures it.
+    const cut = (node, text, room) => {
+      const parts = [];
+      for (const { segment, index } of segmenter.segment(text)) {
+        if (index + segment.length > 128) break;
+        parts.push(segment);
+      }
+      const kept = (count) => parts.slice(0, count).join("").trimEnd();
+      let low = 0, high = parts.length - 1;
+      while (low < high) {
+        const middle = Math.ceil((low + high) / 2);
+        node.textContent = kept(middle) + "…";
+        if (node.getBBox().width <= room) low = middle; else high = middle - 1;
+      }
+      node.textContent = kept(low) ? kept(low) + "…" : "";
+      return node.getBBox().width;
     };
-    // A text cut with an ellipsis to the room that it has.
-    const cutTo = (text, room) => {
-      let words = String(text);
-      while (words.length > 1 && textWidth(figure, [words === String(text) ? words : words + "…"])[0] > room) {
-        words = words.slice(0, -1).trimEnd();
-      }
-      return words === String(text) ? words : words + "…";
-    };
-    // The labels under the plot never meet, never repeat and never pass the end of the column. On a scale, the first
-    // and the last label start or end at the edge of the plot when they would pass it.
-    const clean = (svg) => {
-      const texts = [...svg.querySelectorAll('[aria-label="x-axis tick label"] text')];
-      if (!band && texts.length) {
-        const frame = svg.getBoundingClientRect();
-        if (texts[0].getBoundingClientRect().left < frame.left) texts[0].setAttribute("text-anchor", "start");
-        const last = texts[texts.length - 1];
-        if (last.getBoundingClientRect().right > frame.left + plotWidth) last.setAttribute("text-anchor", "end");
-      }
-      const boxes = texts.map((text) => text.getBoundingClientRect()).sort((a, b) => a.left - b.left);
-      const { left, right: end } = svg.getBoundingClientRect();
-      return new Set(texts.map((text) => text.textContent)).size === texts.length && boxes.every((box, index) =>
-        box.left >= left - 0.5 && box.right <= end + 0.5 && (!index || box.left - boxes[index - 1].right >= 8));
-    };
-    if (!band) {
-      // A scale of dates or numbers: the ticks of Plot (d3), with their count bounded by the width. A date tick has
-      // one line in the form of the span of the ticks.
-      if (kind === "text") {
-        // Names on a line keep each label, cut to the room between two points, or each k-th one.
-        const room = (xs.length > 1 ? plotWidth / (xs.length - 1) : plotWidth) - 8;
-        const short = new Map(xs.map((value) => [value, cutTo(value, room)]));
-        for (let every = 1; every <= xs.length; every += 1) {
-          const ticks = xs.filter((_, index) => index % every === 0);
-          if (clean(draw({ ticks, tickFormat: (value) => short.get(value) }))) return;
-        }
-        return void draw({ ticks: [] });
-      }
-      // Whole numbers keep whole ticks.
-      const whole = kind === "number" && xs.every(Number.isInteger);
-      const [first, last] = d3.extent(xs);
-      if (!Number.isFinite(+first) || !Number.isFinite(+last)) return void draw({ ticks: [] });
-      for (let count = tickCount(plotWidth / 56); count >= 1; count -= 1) {
-        const all = kind === "date" ? d3.utcTicks(first, last, count)
-          : d3.ticks(first, last, count).filter((tick) => !whole || Number.isInteger(tick));
-        // d3 has no step between a week and a month: each second tick comes before a lower count.
-        for (const every of [1, 2]) {
-          const ticks = all.filter((_, index) => index % every === 0);
-          if (clean(draw({ ticks, tickFormat: kind === "date" ? dateFormat(ticks) : d3.format("~r") }))) return;
-        }
-      }
-      draw({ ticks: [] });
-      return;
-    }
-    // A band: names keep each label, cut to its step. Days and runs of numbers show the first and each k-th label.
-    const scale = draw({ ticks: [] }).scale("x");
-    const step = scale.step;
-    const shift = { textAnchor: "start", dx: -scale.bandwidth / 2 };
-    const format = kind === "date" ? dateFormat(xs) : (value) => String(value);
-    if (kind === "text") {
-      // A label ends 8 px before the next step, and the last one at the end of the plot.
-      const cut = (value) => cutTo(format(value), Math.min(step - 8, plotWidth - scale.apply(value)));
-      const labels = xs.map(cut);
-      if (step >= textWidth(figure, ["Mm…"])[0] + 8 && new Set(labels).size === labels.length) {
-        const text = new Map(xs.map((value, index) => [value, labels[index]]));
-        if (clean(draw({ ticks: xs, tickFormat: (value) => text.get(value), ...shift }))) return;
-      }
-    }
-    const widest = Math.max(...textWidth(figure, xs.map(format)));
-    for (let every = Math.max(1, Math.ceil((widest + 8) / step)); every <= xs.length; every += 1) {
-      const ticks = xs.filter((_, index) => index % every === 0);
-      if (clean(draw({ ticks, tickFormat: format, ...shift }))) return;
-      if (clean(draw({ ticks: ticks.slice(0, -1), tickFormat: format, ...shift }))) return;
-    }
-    draw({ ticks: [] });
+    const shown = [];
+    let edge = -Infinity;
+    points.forEach((point, index) => {
+      const node = nodes[index];
+      let size = sizes[index];
+      if (edge === -Infinity && size > end) size = cut(node, point.text, end);
+      const left = band ? point.at : Math.min(Math.max(point.at - size / 2, 0), end - size);
+      if (!node.textContent.trim() || left < edge + 8 || left + size > end) return;
+      node.setAttribute("x", left);
+      shown.push(node);
+      edge = left + size;
+    });
+    labels.replaceChildren(...shown);
   };
   for (const figure of main.querySelectorAll("figure.chart[data-spec]")) {
     try {
@@ -439,6 +497,11 @@
       }));
       // A line and an area go in the order of x.
       if (spec.type !== "bar" && spec.type && kind !== "text") data.sort((a, b) => a.x - b.x);
+      // The box of the plot. It has no content width (the stylesheet): a drawn plot never changes the width of a box
+      // around its chart, so no chart draws again because it drew.
+      const box = document.createElement("div");
+      box.className = "plot-box";
+      figure.prepend(box);
       // One line above the plot: a round dot in the color of each series and its name.
       if (spec.series) {
         const legend = document.createElement("div");
@@ -452,7 +515,7 @@
           key.append(dot, name);
           legend.append(key);
         });
-        figure.append(legend);
+        figure.prepend(legend);
       }
       // The caption under the chart: the label of the y axis first, then the title.
       const caption = [spec.y_label, spec.title].filter(Boolean).join(" · ");
@@ -461,13 +524,14 @@
         element.textContent = caption;
         figure.append(element);
       }
-      drawChart(figure, spec, data, kind);
+      let drawn = chartWidth(figure);
+      drawChart(figure, spec, data, kind, drawn);
       // A new width of the column draws the chart again, with the rule of the tables.
-      let drawn = figure.clientWidth;
       new ResizeObserver(() => {
-        if (figure.clientWidth === drawn) return;
-        drawn = figure.clientWidth;
-        try { drawChart(figure, spec, data, kind); } catch (error) { /* The first drawing showed it. */ }
+        const width = chartWidth(figure);
+        if (width === drawn) return;
+        drawn = width;
+        try { drawChart(figure, spec, data, kind, drawn); } catch (error) { /* The first drawing showed it. */ }
       }).observe(figure);
     } catch (error) {
       figure.textContent = "This chart could not be drawn: " + error.message;

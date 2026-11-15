@@ -79,6 +79,56 @@ final class DecisionSelectionTests: XCTestCase {
         XCTAssertEqual(mark("pending", pending: true, dismissed: true), "xmark")
     }
 
+    func testACardThatTheServiceDecidedShowsNoCheck() {
+        for decider in ["cancellation", "archive", "workflow_permission"] {
+            XCTAssertFalse(DecisionSelection.showsCheck(status: "rejected", decidedBy: decider), decider)
+            XCTAssertTrue(DecisionSelection.closedWithoutChoice(status: "rejected", dismissed: false, decidedBy: decider), decider)
+            XCTAssertNil(DecisionSelection.mark(status: "rejected", pending: false, dismissed: false, decidedBy: decider), decider)
+        }
+        // A task cancellation rejects its cards with the outcome "Task cancelled.". A draft does not say "Discarded".
+        XCTAssertEqual(DecisionSelection.label(status: "rejected", hasDraft: false, dismissed: false, choosingLabel: nil,
+                                               selectedOptionLabel: nil, outcome: "Task cancelled.", decidedBy: "cancellation"),
+                       "Task cancelled.")
+        XCTAssertEqual(DecisionSelection.label(status: "rejected", hasDraft: true, dismissed: false, choosingLabel: nil,
+                                               selectedOptionLabel: nil, outcome: nil, decidedBy: "cancellation"), "Closed")
+        // A person on a paired device or on this Mac chose.
+        for decider in ["device-1", "local"] {
+            XCTAssertTrue(DecisionSelection.showsCheck(status: "rejected", decidedBy: decider), decider)
+            XCTAssertEqual(DecisionSelection.mark(status: "rejected", pending: false, dismissed: false, decidedBy: decider),
+                           "checkmark", decider)
+        }
+        XCTAssertEqual(DecisionSelection.label(status: "rejected", hasDraft: true, dismissed: false, choosingLabel: nil,
+                                               selectedOptionLabel: nil, outcome: "Draft discarded. Nothing was sent.",
+                                               decidedBy: "device-1"), "Discarded")
+    }
+
+    private func card(status: String, decidedBy: String?, outcome: String?, draft: Bool = false) -> Decision {
+        var decision = Decision(id: "card", botId: "bot", taskId: "task", title: "Install the test dependencies?",
+                                explanation: "", actionType: "question", resource: "", consequences: "",
+                                recommended: "approve", options: [], status: status, urgency: "normal",
+                                createdAt: "2026-11-13T12:00:00Z", decidedAt: nil, decidedBy: decidedBy, correction: nil,
+                                outcome: outcome, revision: 2)
+        if draft {
+            decision.draft = MessageDraft(channel: "Email", recipient: "ada@example.com", body: "The refund page is live.")
+        }
+        return decision
+    }
+
+    func testTheReceiptOfACardPassesItsDecider() {
+        let cancelled = card(status: "rejected", decidedBy: "cancellation", outcome: "Task cancelled.")
+        XCTAssertEqual(DecisionSelection.receipt(cancelled, dismissed: false),
+                       DecisionSelection.Receipt(label: "Task cancelled.", mark: nil, dimmed: true))
+        let draft = card(status: "rejected", decidedBy: "cancellation", outcome: nil, draft: true)
+        XCTAssertEqual(DecisionSelection.receipt(draft, dismissed: false),
+                       DecisionSelection.Receipt(label: "Closed", mark: nil, dimmed: true))
+        let declined = card(status: "rejected", decidedBy: "device-1", outcome: "Answer recorded. Hermes will continue.")
+        XCTAssertEqual(DecisionSelection.receipt(declined, dismissed: false),
+                       DecisionSelection.Receipt(label: "Rejected", mark: "checkmark", dimmed: false))
+        let closed = card(status: "resolved", decidedBy: nil, outcome: "Issue #12 closed on GitHub.", draft: true)
+        XCTAssertEqual(DecisionSelection.receipt(closed, dismissed: false),
+                       DecisionSelection.Receipt(label: "Issue #12 closed on GitHub.", mark: nil, dimmed: true))
+    }
+
     func testADismissalAndAChoiceInFlightKeepTheirWords() {
         XCTAssertEqual(label("resolved", draft: true, dismissed: true, outcome: "Issue #12 closed on GitHub."), "Dismissed")
         XCTAssertEqual(label("pending", draft: false, choosing: "Install", selected: "Leave"), "Install")

@@ -41,6 +41,7 @@ import time
 from . import hermes_runtime
 from .gateway_bridge import (OTHER_PATHS, WORK_MESSAGE_FIELDS, WORK_SESSION_INPUTS, GatewayBridge, GatewayBusy,
                              GatewayUnavailable, gateway_claim_turn, gateway_work_turn, plain_chat_turn)
+from .hermes_notices import readable_text
 from .native_conversation import current_messages, reaction_only_turn
 from .work_capacity import bot_input_turn
 
@@ -1252,6 +1253,8 @@ class GatewayChat:
         kind, text = data.get('kind'), data.get('text', '')
         if kind not in ('send', 'edit', 'delete') or not isinstance(text, str) or len(text) > MAX_TEXT:
             raise ServiceError(400, 'Send a send, an edit or a delete with a text.')
+        # The chat and the title of a task outside a turn show clear words in place of the raw name of a notice.
+        text = readable_text(text)
         home = os.path.realpath(require_text(data, 'home', 4096))
         chat_id, message_id = require_text(data, 'chat_id', 200), require_text(data, 'message_id', 200)
         # The chat of a work session or of a status question belongs to its bot. The message goes to the bot's chat.
