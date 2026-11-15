@@ -266,6 +266,27 @@ class ReactionStoreTests(unittest.TestCase):
         self.assertIn('team_reactions_message', indexes)
 
 
+    def test_many_entries_of_one_member_for_one_message_keep_the_view_linear(self):
+        # A member can write many entries for one message, each with its own entry ID. The inner MAX(seq) of the view
+        # must find the newest row of a member with one seek, so the view reads each row of the message once.
+        rows = 2000
+        self.db.executemany('INSERT INTO team_reactions (room, entry, message, member, emoji, seq, peer, bot) '
+                            'VALUES (?, ?, ?, ?, ?, ?, NULL, NULL)',
+                            [(ROOM, entry_id(1000 + n), entry_id(1), OTHER, THUMBS, n) for n in range(1, rows + 1)])
+        plan = [row[3] for row in self.db.execute('EXPLAIN QUERY PLAN ' + team_store.SHOWN_REACTIONS,
+                                                  (ROOM, json.dumps([entry_id(1)]), None, None))]
+        self.assertIn('SEARCH x USING INDEX team_reactions_message (room=? AND message=? AND member=?)', plan, plan)
+        # A bound on the work of SQLite, not on the clock: the steps of its machine, in thousands. One read of each
+        # row takes some tens of steps. A walk of each row of the message for each row would take some millions.
+        thousands = []
+        self.db.set_progress_handler(lambda: thousands.append(1), 1000)
+        try:
+            self.assertEqual(self.reactions(), [(THUMBS, OTHER)])
+        finally:
+            self.db.set_progress_handler(None, 0)
+        self.assertLess(len(thousands), rows // 4, f'{len(thousands)} thousand steps')
+
+
 class ReactionOrderTests(unittest.TestCase):
     """Each Mac shows the same reactions for the same log, in whatever order it applies the entries: the log in order,
     only the newest write of each entry (a Mac that joins later or reads again), and an entry that waits for its key

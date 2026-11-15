@@ -405,7 +405,7 @@ Everything else is in `coconut.sqlite3`:
 | `team_removed` | The members that a `remove` entry of the admin took out of the room, each with the entry ID of that entry. See [Removal](#removal). |
 | `team_invites` | On the admin's Mac: the hash of the ticket and the end of each invite that this Mac made. See [Invite and join](#invite-and-join). |
 | `team_erased` | The entry IDs of the messages that an `erase` entry of the admin took out of the chat. See [The admin deletes a message](#the-admin-deletes-a-message). |
-| `team_reactions` | One row for each entry that says a reaction, from its newest write: the message, the member, the emoji (empty for a reaction that its member took back), the `seq`, and for a reaction of a direct chat the other member of the chat (`peer`) and the `bot` entry of a chat with an agent. An index on the room and the message gives the reactions of a page. See [Reactions](#reactions). |
+| `team_reactions` | One row for each entry that says a reaction, from its newest write: the message, the member, the emoji (empty for a reaction that its member took back), the `seq`, and for a reaction of a direct chat the other member of the chat (`peer`) and the `bot` entry of a chat with an agent. An index on the room, the message, the member and the `seq` gives the reactions of a page, and the newest row of a member with one search. See [Reactions](#reactions). |
 
 A room is `joining` (the relay did not answer the join yet), `active`, `removed` (the relay answered 401) or `gone` (the relay answered 404). The copy of a `removed` or `gone` room stays until the person leaves the room on the Mac. The Library does not show the agents and the pages of such a room.
 

@@ -144,7 +144,9 @@ TABLES = ('team_rooms', 'team_entries', 'team_members', 'team_pending', 'team_sh
 # order it applies the entries.
 REACTIONS_TABLE = '''CREATE TABLE team_reactions (room TEXT NOT NULL, entry TEXT NOT NULL, message TEXT NOT NULL,
     member TEXT NOT NULL, emoji TEXT NOT NULL, seq INTEGER NOT NULL, peer TEXT, bot TEXT, PRIMARY KEY (room, entry))'''
-REACTIONS_INDEX = 'CREATE INDEX team_reactions_message ON team_reactions (room, message)'
+# The index has `member` and `seq`, so the inner MAX(seq) of SHOWN_REACTIONS finds the newest row of a member with one
+# seek. A member that writes many entries for one message then keeps the view of a page linear.
+REACTIONS_INDEX = 'CREATE INDEX team_reactions_message ON team_reactions (room, message, member, seq)'
 # The reactions that show on the messages of one chat: for each message and member, the row with the highest `seq`
 # in that chat (the same `peer` and `bot`), when its emoji is not empty. The values are the room, the entry IDs of
 # the messages as a JSON list, `peer` and `bot`.
