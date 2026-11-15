@@ -225,6 +225,130 @@ class ReactionStoreTests(unittest.TestCase):
         store.migrate()
         self.assertEqual(len(store.reactions_of(ROOM, [entry_id(1)])[entry_id(1)]), 2)
 
+    def test_each_statement_of_the_pass_and_of_a_reaction_uses_an_index(self):
+        # Many reactions, so a statement without an index would scan. Each statement that names the table, in the pass
+        # of an older store and in a new write, must find its rows by an index.
+        db = self.older_store()
+        for number in range(10, 210):
+            db.execute('INSERT INTO team_entries (room, id, seq, first, member, kind, rev, at, kept, payload) '
+                       "VALUES (?, ?, ?, ?, ?, 'reaction', 1, ?, 0, ?)",
+                       (ROOM, entry_id(number), number, number, OTHER, START + number,
+                        json.dumps(self.reaction(THUMBS, message=number))))
+        statements, during = [], []
+        store = TeamStore(db)
+        replay = store._read_reactions_again
+
+        def read_again():
+            # The plans below are taken after the pass. So the indexes at the start of the pass must be the same.
+            during.extend(row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE tbl_name='team_reactions'"))
+            db.set_trace_callback(statements.append)
+            replay()
+        store._read_reactions_again = read_again
+        store.migrate()
+        self.db, self.store, self.seq = db, store, 1000
+        self.write(300, self.reaction(SAD), OTHER)
+        self.write(300, {'kind': 'delete', 'rev': 2}, OTHER)
+        db.set_trace_callback(None)
+        checked = 0
+        # An INSERT with ON CONFLICT finds its row by the primary key, and its plan is empty. Each read and each delete
+        # must name its index in the plan.
+        for statement in {text for text in statements if 'team_reactions' in text and 'sqlite_master' not in text
+                          and text.lstrip().startswith(('SELECT', 'DELETE', 'UPDATE'))}:
+            plan = ' '.join(row[3] for row in db.execute('EXPLAIN QUERY PLAN ' + statement))
+            with self.subTest(statement=statement[:80]):
+                self.assertNotRegex(plan, r'SCAN (r|x|team_reactions)\b', plan)
+                self.assertRegex(plan, r'USING (INDEX|PRIMARY KEY)|sqlite_autoindex_team_reactions_1|'
+                                 r'team_reactions_message', plan)
+            checked += 1
+        self.assertGreaterEqual(checked, 3, 'The trace has the statements with their values.')
+        indexes = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE tbl_name='team_reactions'")}
+        self.assertEqual(set(during), indexes, 'The pass has each index of the table.')
+        self.assertIn('team_reactions_message', indexes)
+
+
+class ReactionOrderTests(unittest.TestCase):
+    """Each Mac shows the same reactions for the same log, in whatever order it applies the entries: the log in order,
+    only the newest write of each entry (a Mac that joins later or reads again), and an entry that waits for its key
+    and comes at the end of the read (TeamStore.end_wait). Each reaction here is in a direct chat of OTHER with this
+    Mac, MEMBER, so the wait path applies."""
+
+    def store(self) -> TeamStore:
+        db = sqlite3.connect(':memory:', isolation_level=None)
+        self.addCleanup(db.close)
+        db.executescript(team_store.SCHEMA)
+        store = TeamStore(db)
+        store.migrate()
+        store.add_room(room=ROOM, relay='https://relay.example', name='North team', member=MEMBER, admin=ADMIN,
+                       state=team_store.ACTIVE, epoch=0, profile='{}', created_at='2026-11-10T12:00:00Z')
+        return store
+
+    @staticmethod
+    def accept(store, entry: str, seq: int, rev: int, reaction: dict | None, wait: bool = False) -> None:
+        opened = team_store.read_entry({'epoch': 0, 'payload': json.dumps(
+            {'kind': 'direct', 'rev': rev, 'at': 'x', 'box': 'sealed'}).encode()})
+        opened.update(direct=None, wait=wait)
+        if reaction is not None and not wait:
+            opened['reaction'] = dict(reaction, peer=OTHER, bot=None)
+        existing = store.entry(ROOM, entry)
+        row = dict(id=entry, seq=seq, first=existing['first'] if existing else seq, member=OTHER, at=START + seq,
+                   kept=False, body=b'')
+        store.accept(store.room(ROOM), row, opened)
+
+    def view(self, store, messages) -> dict:
+        return store.reactions_of(ROOM, messages, OTHER, None)
+
+    def views(self, writes: list[tuple[str, int, int, dict]], late: str) -> dict[str, dict]:
+        """`writes` are (entry, seq, rev, reaction) in the order of the log. `late` is the entry that waits."""
+        messages = sorted({reaction['message'] for _, _, _, reaction in writes})
+        newest = {}
+        for write in writes:
+            newest[write[0]] = write
+        newest = sorted(newest.values(), key=lambda write: write[1])
+        result = {}
+        store = self.store()
+        for entry, seq, rev, reaction in writes:
+            self.accept(store, entry, seq, rev, reaction)
+        result['in order'] = self.view(store, messages)
+        store = self.store()
+        for entry, seq, rev, reaction in newest:
+            self.accept(store, entry, seq, rev, reaction)
+        result['newest writes'] = self.view(store, messages)
+        store = self.store()
+        for entry, seq, rev, reaction in newest:
+            self.accept(store, entry, seq, rev, reaction, wait=entry == late)
+        (entry, seq, rev, reaction) = next(write for write in newest if write[0] == late)
+        store.end_wait(ROOM, store.entry(ROOM, entry), {'reaction': dict(reaction, peer=OTHER, bot=None)})
+        result['one entry late'] = self.view(store, messages)
+        return result
+
+    def assertSame(self, views: dict[str, dict], expected: dict) -> None:
+        for order, view in views.items():
+            with self.subTest(order=order):
+                self.assertEqual(view, expected)
+
+    def test_a_late_reaction_does_not_come_back_after_a_newer_empty_one(self):
+        # The case of the review: A (seq 10) waits, and B (seq 20) of the same member takes the reaction back.
+        m = entry_id(1)
+        views = self.views([('a' * 32, 10, 1, {'message': m, 'emoji': THUMBS}),
+                            ('b' * 32, 20, 1, {'message': m, 'emoji': ''})], late='a' * 32)
+        self.assertSame(views, {})
+
+    def test_three_entries_and_an_entry_that_moves_to_another_message(self):
+        # F (seq 5, M1), E rev 1 (seq 10, M1), E rev 2 (seq 20, M2). The newest write of E names M2, so F alone says
+        # the reaction of the member on M1.
+        m1, m2 = entry_id(1), entry_id(2)
+        views = self.views([('f' * 32, 5, 1, {'message': m1, 'emoji': THUMBS}),
+                            ('e' * 32, 10, 1, {'message': m1, 'emoji': THUMBS}),
+                            ('e' * 32, 20, 2, {'message': m2, 'emoji': THUMBS})], late='f' * 32)
+        self.assertSame(views, {m1: [(THUMBS, OTHER)], m2: [(THUMBS, OTHER)]})
+
+    def test_the_newest_entry_of_a_member_counts_in_each_order(self):
+        m = entry_id(1)
+        views = self.views([('a' * 32, 10, 1, {'message': m, 'emoji': THUMBS}),
+                            ('b' * 32, 20, 1, {'message': m, 'emoji': HEART}),
+                            ('a' * 32, 30, 2, {'message': m, 'emoji': SAD})], late='b' * 32)
+        self.assertSame(views, {m: [(SAD, OTHER)]})
+
 
 class ReactionMacs(TeamMacs):
     def setUp(self):

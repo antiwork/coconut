@@ -96,7 +96,7 @@ class TeamReactions:
                 row = self.team_store.direct(room_id, entry)
                 if row is None or row['member'] != member or row['bot'] != bot:
                     raise ServiceError(404, GONE_MESSAGE)
-                same = self.team_store.own_reaction(room_id, entry, room['member']) == emoji
+                same = self.team_store.own_reaction(room_id, entry, room['member'], member, bot) == emoji
                 agreement = None if same else self._team_direct_reachable(room, member, bot)
             if not same:
                 plaintext = {'to': member, 'message': entry, 'emoji': emoji}

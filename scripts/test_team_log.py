@@ -1386,7 +1386,8 @@ class TeamReactionTests(unittest.TestCase):
         sync()
         self.assertEqual(reactions(ada, f'{direct}/{grace_id}/messages', sent['id']),
                          [{'emoji': heart, 'members': [grace_id], 'mine': False}])
-        self.assertEqual(lin.db.execute('SELECT COUNT(*) FROM team_reactions').fetchone()[0], 0)
+        # Lin keeps the row of the reaction of the Team chat, taken back, and no row of the direct chat.
+        self.assertEqual(lin.db.execute('SELECT COUNT(*) FROM team_reactions WHERE peer IS NOT NULL').fetchone()[0], 0)
         call(grace, 'PUT', f'{direct}/{ada_id}/messages/{sent["id"]}/reaction', {'emoji': ''})
         sync()
         self.assertEqual(reactions(ada, f'{direct}/{grace_id}/messages', sent['id']), [])
