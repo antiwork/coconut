@@ -14,6 +14,8 @@ the member ID of the other person, or the team bot ID of a bot (`t-<room ID>-<en
 - `PATCH /v1/team/rooms/<room>/directs/<chat>/messages/<id>` with `{text}`: change a message of this Mac's person.
 - `DELETE /v1/team/rooms/<room>/directs/<chat>/messages/<id>`: remove a message of this Mac's person.
 - `POST /v1/team/rooms/<room>/directs/<chat>/read` with `{first}`: move the read position of the chat.
+- `PUT /v1/team/rooms/<room>/directs/<chat>/messages/<id>/reaction` with `{emoji}`: the reaction of this Mac's person
+  on a message of the chat (team_reactions.py).
 
 An answer names a chat of two people with `member`, and a chat with a bot with `bot` (the team bot ID). A Mac for a
 team only has no person, so it answers 409. The text of a direct message is private, so no log line of this module
@@ -29,7 +31,7 @@ from secrets import token_hex
 from . import team_keys
 from .team_messages import GONE_MESSAGE, MAX_PAGE, PAGE, PREVIEW, message_text, query_number
 from .team_relay import HEX64, MAX_NUMBER, number
-from .team_store import ACTIVE, BOT_DIRECTS_EVENT, DIRECTS_EVENT, entry_id
+from .team_store import ACTIVE, BOT_DIRECTS_EVENT, DIRECTS_EVENT, entry_id, reaction_views
 
 # The answers of a person's Mac when the member of a chat cannot get a direct message now (rule 2 of the contract).
 NOT_HERE = 'This person is not in this team.'
@@ -67,8 +69,12 @@ class TeamDirects:
                   ('POST', 'messages'): lambda: self.team_direct_send(room, chat, data, repeat),
                   ('PATCH', 'message'): lambda: self.team_direct_edit(room, chat, rest[1], data),
                   ('DELETE', 'message'): lambda: self.team_direct_unsend(room, chat, rest[1]),
-                  ('POST', 'read'): lambda: self.team_direct_mark_read(room, chat, data)}
-        shape = 'message' if len(rest) == 2 and rest[0] == 'messages' else rest[0] if len(rest) == 1 else ''
+                  ('POST', 'read'): lambda: self.team_direct_mark_read(room, chat, data),
+                  ('PUT', 'message reaction'): lambda: self.team_direct_react(room, chat, rest[1], data)}
+        if len(rest) == 3 and rest[0] == 'messages' and rest[2] == 'reaction':
+            shape = 'message reaction'
+        else:
+            shape = 'message' if len(rest) == 2 and rest[0] == 'messages' else rest[0] if len(rest) == 1 else ''
         route = routes.get((method, shape))
         if route is None:
             raise ServiceError(404, 'This route was not found.')
@@ -306,12 +312,13 @@ class TeamDirects:
     def _team_direct_views(self, room: dict, member: str | None, bot: str | None, rows: list[dict]) -> list[dict]:
         """The messages of a direct chat as the app gets them. `reply` quotes the message of the same chat that
         `reply_to` names, or is null when the chat does not show it. One query reads the answered messages of the
-        page. A message of a chat with a bot also has `page`: null, the ID and the title of a page that the Library
-        shows now, or `{"id": null, "title": null}` for a page that no longer shows. The caller holds the service
-        lock."""
+        page, and one query its reactions. A message of a chat with a bot also has `page`: null, the ID and the title of
+        a page that the Library shows now, or `{"id": null, "title": null}` for a page that no longer shows. The caller
+        holds the service lock."""
         from .team_pages import team_id
         answered = self.team_store.directs_of(room['room'], member,
                                               [row['reply_to'] for row in rows if row['reply_to']], bot)
+        reactions = self.team_store.reactions_of(room['room'], [row['entry'] for row in rows], member, bot)
 
         def quote(entry):
             row = answered.get(entry)
@@ -324,6 +331,7 @@ class TeamDirects:
             return {'id': team_id(room['room'], entry), 'title': page['title']} if page else {'id': None, 'title': None}
         views = [{'id': row['entry'], 'first': row['first'], 'this_mac': row['writer'] == room['member'],
                   'text': row['text'], 'reply_to': row['reply_to'], 'reply': quote(row['reply_to']),
+                  'reactions': reaction_views(reactions.get(row['entry'], []), room['member']),
                   'created_at': row['created_at'], 'edited_at': row['updated_at'] if row['edited'] else None}
                  for row in rows]
         if bot is not None:

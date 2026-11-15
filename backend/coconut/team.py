@@ -26,6 +26,8 @@ for a person, because the app shows them.
 - `DELETE /v1/team/rooms/<room>/bots/<bot_id>`: stop sharing the bot with the room, with the same rule.
 - The routes of the Team chat under `/v1/team/rooms/<room>/messages` and `/v1/team/rooms/<room>/read`
   (team_messages.py).
+- `PUT /v1/team/rooms/<room>/messages/<id>/reaction` with `{emoji}`: the person reacts to a message of a team chat,
+  or takes the reaction back (team_reactions.py). A direct chat has the same route under its path.
 - `POST /v1/team/rooms/<room>/typing`: the person types in the Team chat (team_typing.py). Only a paired device calls
   it, and the Mac writes at most one `typing` entry in 4 seconds for a room and chat.
 - `POST /v1/team/rooms/<room>/chats`, `PATCH` and `DELETE /v1/team/rooms/<room>/chats/<id>`: the admin makes, renames
@@ -66,6 +68,7 @@ from .team_epochs import TeamEpochs
 from .team_keys import ROOM_ID, TeamKeysError
 from .team_messages import TeamMessages
 from .team_pages import TeamPages
+from .team_reactions import TeamReactions
 from .team_relay import HEX64, TeamRelay, TeamRelayError, relay_origin
 from .team_socket import TeamSocket
 from .team_store import ACTIVE, JOINING, MAX_TICKET_SECONDS, MEMBER_LIMITS, SCHEMA, TeamStore, unicode_text
@@ -203,7 +206,8 @@ def team_errors():
         raise ServiceError(status, room_error(error)) from None
 
 
-class Team(TeamSync, TeamSocket, TeamPages, TeamMessages, TeamChats, TeamDirects, TeamEpochs, TeamTyping):
+class Team(TeamSync, TeamSocket, TeamPages, TeamMessages, TeamChats, TeamDirects, TeamEpochs, TeamTyping,
+           TeamReactions):
     """The team rooms of this Mac: the routes of the tools, and the thread that copies each log."""
 
     def _init_team(self):
@@ -363,6 +367,9 @@ class Team(TeamSync, TeamSocket, TeamPages, TeamMessages, TeamChats, TeamDirects
             return self.team_edit(parts[1], parts[3], data)
         if len(parts) == 4 and parts[0] == 'rooms' and parts[2] == 'messages' and method == 'DELETE':
             return self.team_unsend(parts[1], parts[3])
+        if (len(parts) == 5 and parts[0] == 'rooms' and parts[2] == 'messages' and parts[4] == 'reaction'
+                and method == 'PUT'):
+            return self.team_react(parts[1], parts[3], data)
         if len(parts) == 3 and parts[0] == 'rooms' and parts[2] == 'read' and method == 'POST':
             return self.team_mark_read(parts[1], data)
         if len(parts) == 3 and parts[0] == 'rooms' and parts[2] == 'typing' and method == 'POST':

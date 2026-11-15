@@ -11,6 +11,7 @@ It needs macOS, the Xcode Command Line Tools, and `npm ci` in relay/.
 scripts/test_tunnel_loopback.py loads this test too, so the Mac app job of CI runs it after its `npm ci`.
 TeamLogVectorTests checks the test vectors of docs/team-log.md with the real helper. TeamDirectTests sends a direct
 message between two of three Macs in one team. TeamTypingTests shows that one person types to the other two.
+TeamReactionTests shows a reaction and its removal in the Team chat and in a direct chat.
 """
 from __future__ import annotations
 
@@ -1310,6 +1311,86 @@ class TeamTypingTests(unittest.TestCase):
         from coconut import team_keys
         token = team_keys.read(service.root, room_id)['token']
         return TeamRelay().read(self.url, room_id, token, 0)['entries']
+
+
+@unittest.skipUnless(sys.platform == 'darwin' and shutil.which('xcrun') and shutil.which('node')
+                     and (ROOT / 'relay/node_modules/miniflare').is_dir(),
+                     'The reaction test needs macOS, the Xcode Command Line Tools, Node, and npm ci in relay/.')
+class TeamReactionTests(unittest.TestCase):
+    """Grace reacts to a message of the Team chat and to a direct message of Ada, through the real relay and the real
+    helper. The other Macs show the reaction and its removal. Lin stores the direct entry and shows nothing. The three
+    services run in this process, as in TeamDirectTests."""
+
+    @classmethod
+    def setUpClass(cls):
+        TeamPushTests.setUpClass.__func__(cls)
+
+    @classmethod
+    def tearDownClass(cls):
+        TeamPushTests.tearDownClass.__func__(cls)
+
+    def test_a_reaction_and_its_removal_reach_the_other_macs(self):
+        from coconut.providers import FixtureProvider
+        from coconut.service import Service
+        os.environ['COCONUT_TEAM_HELPER'] = str(self.helper_path)
+        self.addCleanup(os.environ.pop, 'COCONUT_TEAM_HELPER', None)
+        macs = []
+        for name in ('ada-reaction', 'grace-reaction', 'lin-reaction'):
+            root = Path(self.temp.name) / name
+            service = Service(root, FixtureProvider(root), start_workers=False)
+            self.addCleanup(service.close)
+            macs.append(service)
+        ada, grace, lin = macs
+        heart = '❤️'
+
+        def call(service, method, path, data=None, direct=False):
+            return service.team_request(method, path, data or {}, '', 'test-device', direct)
+
+        def sync():
+            for _ in range(2):
+                for service in macs:
+                    service.team_sync_pass()
+
+        def reactions(service, path, message):
+            return next(row['reactions'] for row in call(service, 'GET', path)['messages'] if row['id'] == message)
+
+        room_id = call(ada, 'POST', '/v1/team/rooms', {'name': 'North team', 'member_name': 'Ada',
+                                                       'relay': self.url})['room']['room']
+        for service, name in ((grace, 'Grace'), (lin, 'Lin')):
+            link = call(ada, 'POST', f'/v1/team/rooms/{room_id}/invites', {})['link']
+            call(service, 'POST', '/v1/team/join', {'link': link, 'member_name': name})
+        for service in macs:
+            call(service, 'GET', '/v1/team/rooms', direct=True)
+        sync()
+        ada_id, grace_id = (service.team_store.room(room_id)['member'] for service in (ada, grace))
+
+        # The Team chat.
+        chat = f'/v1/team/rooms/{room_id}/messages'
+        message = call(ada, 'POST', chat, {'text': 'Hello team'})['message']
+        sync()
+        call(grace, 'PUT', f'{chat}/{message["id"]}/reaction', {'emoji': heart})
+        sync()
+        for service in (ada, lin):
+            self.assertEqual(reactions(service, chat, message['id']),
+                             [{'emoji': heart, 'members': [grace_id], 'mine': False}])
+        call(grace, 'PUT', f'{chat}/{message["id"]}/reaction', {'emoji': ''})
+        sync()
+        for service in (ada, lin):
+            self.assertEqual(reactions(service, chat, message['id']), [])
+
+        # A direct chat: the reaction is in a box that only Ada's Mac opens.
+        direct = f'/v1/team/rooms/{room_id}/directs'
+        sent = call(ada, 'POST', f'{direct}/{grace_id}/messages', {'text': 'Hello Grace'})['message']
+        sync()
+        call(grace, 'PUT', f'{direct}/{ada_id}/messages/{sent["id"]}/reaction', {'emoji': heart})
+        sync()
+        self.assertEqual(reactions(ada, f'{direct}/{grace_id}/messages', sent['id']),
+                         [{'emoji': heart, 'members': [grace_id], 'mine': False}])
+        # Lin keeps the row of the reaction of the Team chat, taken back, and no row of the direct chat.
+        self.assertEqual(lin.db.execute('SELECT COUNT(*) FROM team_reactions WHERE peer IS NOT NULL').fetchone()[0], 0)
+        call(grace, 'PUT', f'{direct}/{ada_id}/messages/{sent["id"]}/reaction', {'emoji': ''})
+        sync()
+        self.assertEqual(reactions(ada, f'{direct}/{grace_id}/messages', sent['id']), [])
 
 
 @unittest.skipUnless(sys.platform == 'darwin' and shutil.which('xcrun') and shutil.which('node')

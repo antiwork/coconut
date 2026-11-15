@@ -27,7 +27,8 @@ from .team_helper import TeamFormatError, TeamHelperError, TeamHelperMissing
 from .team_keys import TeamKeysError
 from .team_relay import TeamRelayError
 from .team_store import (ACTIVE, BOT_DIRECTS_EVENT, DIRECTS_EVENT, DROPPED, GONE, JOINING, MESSAGES_EVENT, PENDING,
-                         REFUSED, REMOVED, SKIPPED, TYPING_EVENT, direct_fields, direct_typing_fields, read_entry)
+                         REFUSED, REMOVED, SKIPPED, TYPING_EVENT, direct_fields, direct_typing_fields,
+                         reaction_box_fields, read_entry)
 
 POLL_SECONDS = 30
 MAX_WAIT_SECONDS = 900
@@ -377,7 +378,8 @@ class TeamSync:
         store lacks the write: after a stop between the write to the relay and the write to the store, or when the
         store is behind the relay. Each `direct` entry gets `direct` in its result: the other member of the chat, the
         text, the reply, the bot of a chat with a bot, and the page (see _team_open_boxes), when a box opens and its
-        fields fit, else None. TeamStore.accept then shows or removes the message. A typing sign of a bot gets `sign`.
+        fields fit, else None. TeamStore.accept then shows or removes the message. A typing sign of a bot gets `sign`,
+        and a reaction gets `reaction`.
 
         The relay gives a replaced `member` entry at the `seq` of its newest write, so a read from an earlier position
         can meet a direct entry before the `member` entry that it needs. Such an entry gets `wait`: an entry of a
@@ -421,6 +423,8 @@ class TeamSync:
             if direct is not None and 'sign' in direct:
                 # The typing sign of a bot is no message.
                 opened[index]['sign'] = direct['sign']
+            elif direct is not None and 'reaction' in direct:
+                opened[index]['reaction'] = direct['reaction']
             elif direct is not None:
                 opened[index]['direct'] = direct
             elif entries[index]['member'] == own:
@@ -431,11 +435,13 @@ class TeamSync:
         """Open boxes with the helper. `boxes` maps a key of the caller to the entry ID, the writer, the box, and the
         public agreement key of each member to try. The result maps each key to what the box gave this Mac (the other
         member of the chat, the text, the reply, the bot and the page), to `{"sign": ...}` for the typing sign of a
-        bot in a box for this Mac, or to None. The caller holds no lock and no transaction.
+        bot in a box for this Mac, to `{"reaction": ...}` for a reaction (the message, the emoji, the bot, and the other
+        member of the chat in `peer`), or to None. The caller holds no lock and no transaction.
 
-        A person's Mac reads `page` only in an own message, and the typing sign of a bot of another member. A Mac for a
-        team only keeps only a message with `bot`: the chats of its bots. It reads `page` only in a message of another
-        member, the person."""
+        A person's Mac reads `page` only in an own message, the typing sign of a bot of another member, and each
+        reaction. A Mac for a team only keeps only a message with `bot`: the chats of its bots. It reads `page` only in a
+        message of another member, the person. It reads no reaction: its bots never see one (docs/team-log.md,
+        "Reactions")."""
         asks = [(key, other, {'entry': entry, 'writer': writer, 'other': other, 'agreement': agreement, 'box': box})
                 for key, (entry, writer, box, others) in boxes.items() if isinstance(box, str)
                 for other, agreement in others.items()]
@@ -452,9 +458,14 @@ class TeamSync:
             shown = direct_fields(answer['plaintext'], other if mine else own, page=mine != bot_only)
             if shown is not None and (shown['bot'] is not None or not bot_only):
                 results[key] = dict(shown, member=other)
-            elif shown is None and not mine and not bot_only:
-                sign = direct_typing_fields(answer['plaintext'], own)
-                if sign is not None:
+            elif shown is None and not bot_only:
+                # A box without a text can be a reaction of the same chat (docs/team-log.md, "Reactions"), or the
+                # typing sign of a bot of another member. Neither reader takes the box of the other.
+                reaction = reaction_box_fields(answer['plaintext'], other if mine else own)
+                sign = None if mine else direct_typing_fields(answer['plaintext'], own)
+                if reaction is not None:
+                    results[key] = {'reaction': dict(reaction, peer=other)}
+                elif sign is not None:
                     results[key] = {'sign': sign, 'member': other}
         return results
 
@@ -604,13 +615,14 @@ class TeamSync:
         self._team_write(room, profile['entry'], True, self._team_member_payload(profile))
 
     def _team_write(self, room: dict, entry_id: str, kept: bool, fields: dict, tries: int = 1,
-                    direct: dict | None = None, epoch: int | None = None) -> None:
+                    direct: dict | None = None, epoch: int | None = None, reaction: dict | None = None) -> None:
         """Seal an entry of this Mac, write it to the relay, and put it into the store.
 
         A write with an entry ID that the store has replaces that entry, with the next `rev`. The caller holds the
         lock of the room. `direct` is what the box of a `direct` entry holds for this Mac: the other member of the
-        chat, the text, the reply, the bot and the page. The store does not open an own box again. The body has the
-        epoch of the room, or `epoch`: a `key` entry has the epoch before its new one (TeamEpochs).
+        chat, the text, the reply, the bot and the page. `reaction` is what the box of a reaction holds: the message,
+        the emoji, the other member of the chat (`peer`) and the bot. The store does not open an own box again. The
+        body has the epoch of the room, or `epoch`: a `key` entry has the epoch before its new one (TeamEpochs).
         """
         epoch = room['epoch'] if epoch is None else epoch
         secrets = team_keys.read(self.root, room['room'])
@@ -632,6 +644,8 @@ class TeamSync:
         opened = read_entry({'epoch': epoch, 'payload': payload})
         if fields['kind'] == 'direct':
             opened['direct'] = direct
+            if reaction is not None:
+                opened['reaction'] = reaction
         with self.transaction():
             current = self.team_store.room(room['room'])
             if current is not None:

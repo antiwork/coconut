@@ -47,6 +47,10 @@ Each table has the room ID in its key, because a Mac can be in more than one roo
   removes the open ones on the relay first.
 - `team_erased`: the messages that an `erase` entry of the admin took out of the chat. A later write of such a message
   shows nothing.
+- `team_reactions`: the reactions on the messages of the chats: one row for each entry that says a reaction, from its
+  newest write: a `reaction` entry, or a `direct` entry whose box is a reaction. An empty emoji (taken back) keeps its
+  row. `peer` and `bot` name the direct chat of such a box, as `member` and `bot` of `team_directs` do, and both are
+  null for a reaction in a team chat. A view takes the row with the highest `seq` for each message, member and chat.
 
 Who types in a chat is in memory only (`TeamStore.typing` and `TeamStore.direct_typing`), not in a table: a restart of
 the service forgets it.
@@ -133,7 +137,38 @@ TABLES = ('team_rooms', 'team_entries', 'team_members', 'team_pending', 'team_sh
           'team_page_entries', 'team_bots', 'team_pages', 'team_messages', 'team_names', 'team_reads', 'team_triggers',
           'team_directs', 'team_direct_reads', 'team_bot_direct_reads', 'team_direct_waits', 'team_removed',
           'team_invites',
-          'team_erased', 'team_chats', 'team_chat_reads')
+          'team_erased', 'team_chats', 'team_chat_reads', 'team_reactions')
+# The table of the reactions and its index for the views. The store makes both in `migrate`, so a store of an older
+# version reads its stored `reaction` entries one time when it gets the table (_read_reactions_again). The state is a
+# function of the newest write of each entry only, so each Mac shows the same reactions for the same log, in whatever
+# order it applies the entries.
+REACTIONS_TABLE = '''CREATE TABLE team_reactions (room TEXT NOT NULL, entry TEXT NOT NULL, message TEXT NOT NULL,
+    member TEXT NOT NULL, emoji TEXT NOT NULL, seq INTEGER NOT NULL, peer TEXT, bot TEXT, PRIMARY KEY (room, entry))'''
+# The index of the views. It starts with the chat of a message (`room`, `message`, `peer`, `bot`), so a view reads only
+# the rows of its own chat, and then has `member`, `seq` and `emoji`, so SHOWN_REACTIONS reads the rows of each member
+# in one pass in the order of the index, from the index alone.
+REACTIONS_INDEX = '''CREATE INDEX team_reactions_message ON team_reactions
+    (room, message, peer, bot, member, seq, emoji)'''
+# The reactions that show on the messages of one chat: for each message and member, the row with the highest `seq`
+# in that chat (the same `peer` and `bot`), when its emoji is not empty. The values are the room, the entry IDs of
+# the messages as a JSON list, `peer` and `bot`.
+# The inner query has one MAX() and a bare column `emoji`. This is no fault: SQLite gives each bare column of such a
+# query from the row that has the maximum (https://sqlite.org/lang_select.html, "Bare columns in an aggregate query").
+# So `emoji` is the emoji of the newest row of each message and member. The query reads each row of the chat on these
+# messages one time, and runs no subquery for each row.
+# The reaction of one member on one message of one chat: its row with the highest `seq`. The index
+# team_reactions_message has these columns in this order, so one search finds the row. The values are the room, the
+# message, `peer`, `bot` and the member.
+OWN_REACTION = '''SELECT emoji FROM team_reactions WHERE room=? AND message=? AND peer IS ? AND bot IS ? AND member=?
+    ORDER BY seq DESC LIMIT 1'''
+SHOWN_REACTIONS = '''SELECT message, emoji, member FROM (
+    SELECT message, member, emoji, MAX(seq) AS seq FROM team_reactions
+    WHERE room=? AND message IN (SELECT value FROM json_each(?)) AND peer IS ? AND bot IS ?
+    GROUP BY message, member)
+    WHERE emoji!='' ORDER BY seq'''
+# The emoji of a reaction, in the order of the view of a message (docs/team-log.md, "Reactions"): thumbs up, red heart
+# (with the variation selector 16), face with tears of joy, face with open mouth, crying face, folded hands.
+REACTIONS = ('\U0001F44D', '\u2764\ufe0f', '\U0001F602', '\U0001F62E', '\U0001F622', '\U0001F64F')
 ROOM_FIELDS = ('room', 'relay', 'name', 'member', 'admin', 'state', 'epoch', 'seq', 'profile', 'created_at',
                'notifications')
 ENTRY_FIELDS = ('id', 'seq', 'first', 'member', 'kind', 'rev', 'at', 'kept', 'payload')
@@ -442,9 +477,9 @@ def direct_fields(plaintext, to: str, page: bool = False) -> dict | None:
 def direct_typing_fields(plaintext, to: str) -> dict | None:
     """The typing sign of a bot in the plaintext of a box (docs/team-log.md, "The Mac for a team only", rule 12), or
     None when the box is not one. `to` must name this Mac, `bot` is an entry ID, `on` is true or false, and the box
-    has no `text`."""
+    has no `text`, no `message` and no `emoji`, so it is never a reaction (reaction_box_fields)."""
     fields = box_fields(plaintext, to)
-    if fields is None or fields.get('text') is not None:
+    if fields is None or any(fields.get(name) is not None for name in ('text', 'message', 'emoji')):
         return None
     if type(fields.get('on')) is not bool or not entry_id(fields.get('bot')):
         return None
@@ -471,6 +506,47 @@ def typing_fields(fields: dict) -> dict | None:
     if type(on) is not bool or any(value is not None and not entry_id(value) for value in (bot, chat)):
         return None
     return dict(on=on, bot=bot, chat=chat)
+
+
+def reaction_fields(fields: dict) -> dict | None:
+    """What a `reaction` payload says, or None when a field does not fit (docs/team-log.md, "Reactions").
+
+    `message` is the entry ID of the message. `emoji` is one of REACTIONS, or empty when the member took its reaction
+    back. A later version can know more emoji. An emoji that this version does not know does not fit, so the entry
+    shows nothing, as each entry that does not fit.
+    """
+    message, emoji = fields.get('message'), fields.get('emoji')
+    if not entry_id(message) or not (emoji == '' or emoji in REACTIONS):
+        return None
+    return dict(message=message, emoji=emoji)
+
+
+def reaction_box_fields(plaintext, to: str) -> dict | None:
+    """What the box of a `direct` entry says when it is a reaction, or None (docs/team-log.md, "Reactions").
+
+    The box has the fields of a `reaction` payload, `to` (the member that the caller expects, as in direct_fields), and
+    `bot` for a chat with a bot. It has no `text`, so a Mac of an older version finds no direct message in it. It has
+    no `on`, so it is never the typing sign of a bot (direct_typing_fields), and that sign is never a reaction.
+    """
+    fields = box_fields(plaintext, to)
+    if fields is None or fields.get('text') is not None or fields.get('on') is not None:
+        return None
+    bot = fields.get('bot')
+    reaction = reaction_fields(fields)
+    if reaction is None or (bot is not None and not entry_id(bot)):
+        return None
+    return dict(reaction, bot=bot)
+
+
+def reaction_views(reactions: list[tuple[str, str]], own: str) -> list[dict]:
+    """The `reactions` of a message for the app: one item for each emoji with a member, in the order of REACTIONS.
+    `reactions` are (emoji, member ID) in the order of the log. `mine` is true when `own`, the member of this Mac, is
+    one of the members."""
+    members: dict[str, list[str]] = {}
+    for emoji, member in reactions:
+        members.setdefault(emoji, []).append(member)
+    return [{'emoji': emoji, 'members': members[emoji], 'mine': own in members[emoji]}
+            for emoji in REACTIONS if emoji in members]
 
 
 def remove_fields(fields: dict) -> dict | None:
@@ -530,7 +606,8 @@ def key_fields(fields: dict, epoch) -> dict | None:
 
 
 SHOWN = {'member': member_fields, 'bot': bot_fields, 'page': page_fields, 'message': message_fields,
-         'remove': remove_fields, 'erase': erase_fields, 'typing': typing_fields, 'chat': chat_fields}
+         'remove': remove_fields, 'erase': erase_fields, 'typing': typing_fields, 'chat': chat_fields,
+         'reaction': reaction_fields}
 
 
 def same_name(first: str, second: str) -> bool:
@@ -554,8 +631,8 @@ def stored_fields(kind: str, payload: str | bytes) -> dict | None:
 def read_entry(opened: dict) -> dict:
     """The first part of the reading rules for one entry: the work that needs no database.
 
-    It reads the payload (rule 2), and for a `member`, `bot`, `page`, `message`, `remove`, `erase`, `typing`, `chat` or
-    `key` entry it checks the fields that the store uses. The page rules run an HTML parser on up to 512 KiB that another member wrote, so a
+    It reads the payload (rule 2), and for a `member`, `bot`, `page`, `message`, `remove`, `erase`, `typing`, `chat`,
+    `reaction` or `key` entry it checks the fields that the store uses. The page rules run an HTML parser on up to 512 KiB that another member wrote, so a
     caller runs this part before its transaction and without the lock of the service. A page that is slow to check then slows only the
     sync thread. The result is `opened` with `read` (the text and the fields of the payload, or None) and `shown`
     (the checked fields, or None). TeamStore.accept is the second part.
@@ -655,6 +732,19 @@ class TeamStore:
         # named chat and then walk the messages of each other chat.
         self.db.execute('DROP INDEX IF EXISTS team_messages_order')
         self.db.execute('CREATE INDEX IF NOT EXISTS team_messages_chat ON team_messages (room, chat, first)')
+        if not self.db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='team_reactions'").fetchone():
+            # The new table and the pass are one step, as for the column `chat` above.
+            self.db.execute('SAVEPOINT team_reactions_table')
+            try:
+                self.db.execute(REACTIONS_TABLE)
+                # The index comes before the pass, so each step of the pass finds its rows by an index.
+                self.db.execute(REACTIONS_INDEX)
+                self._read_reactions_again()
+            except BaseException:
+                self.db.execute('ROLLBACK TO team_reactions_table')
+                self.db.execute('RELEASE team_reactions_table')
+                raise
+            self.db.execute('RELEASE team_reactions_table')
         self._read_marks_again()
 
     def _read_marks_again(self) -> None:
@@ -782,6 +872,23 @@ class TeamStore:
                 WHERE m.room=c.room AND m.chat=c.entry))
             FROM team_reads r JOIN team_chats c ON c.room=r.room
             WHERE EXISTS (SELECT 1 FROM team_messages m WHERE m.room=c.room AND m.chat=c.entry)""")
+
+    def _read_reactions_again(self) -> None:
+        """Read the `reaction` entries of a store of an older version, one time. That version kept each one as an entry
+        of an unknown kind. The pass reads each payload with the reader of an entry.
+
+        The state is a function of the newest write of each entry, so the order of the pass does not matter. The pass
+        walks team_entries one time and reads one row at a time from the cursor, so it holds no list of the entries in
+        memory. It writes only team_reactions, so the walk of team_entries goes on undisturbed.
+
+        A reaction of a direct chat is in a box, and only the helper opens a box. So this pass does not find such a
+        reaction, and it shows when its member writes it again."""
+        rows = self.db.execute("SELECT room, id, seq, member, payload FROM team_entries WHERE kind='reaction'")
+        for room, entry, seq, member, payload in rows:
+            read = read_payload(payload.encode())
+            reaction = reaction_fields(read[1]) if read else None
+            if reaction is not None:
+                self._show_reaction(room, dict(id=entry, seq=seq, member=member), dict(reaction, peer=None, bot=None))
 
     def _rows(self, fields, query, values=()) -> list[dict]:
         return [dict(zip(fields, row)) for row in self.db.execute(query, values).fetchall()]
@@ -921,6 +1028,15 @@ class TeamStore:
             self.db.execute('DELETE FROM team_direct_waits WHERE room=? AND entry=?', (room['room'], entry['id']))
             if fields['kind'] == 'direct' and opened.get('wait'):
                 self.db.execute('INSERT INTO team_direct_waits (room, entry) VALUES (?, ?)', (room['room'], entry['id']))
+        # A reaction: a `reaction` entry in a team chat, or a `direct` entry whose box TeamSync found to be a reaction
+        # (`reaction` of `opened`). Each other write over such an entry takes the reaction back. A reaction changes no
+        # unread count and no read position, notifies nothing and starts no turn.
+        if kinds & {'reaction', 'direct'}:
+            if fields['kind'] == 'reaction':
+                reaction = dict(shown, peer=None, bot=None) if shown else None
+            else:
+                reaction = opened.get('reaction') if fields['kind'] == 'direct' else None
+            self._show_reaction(room['room'], entry, reaction)
         # A trigger is the first write of a message of another member that this Mac sees. A later write is an edit.
         if self.answers and existing is None and other and fields['kind'] == 'message' and fields['rev'] == 1 and shown:
             self._queue_triggers(room, entry, shown)
@@ -1355,6 +1471,70 @@ class TeamStore:
                 self.directed.add((room, member))
             else:
                 self.bot_directed.add((room, bot))
+
+    def _show_reaction(self, room: str, entry: dict, reaction: dict | None) -> None:
+        """Set the row of an entry that says a reaction, or delete it (docs/team-log.md, "Reactions"). `reaction` is
+        what the newest write of the entry says: the message, the emoji, and `peer` and `bot` of a reaction in a direct
+        chat. It is None for a write that does not fit, a box that does not open for this Mac, and a write of another
+        kind over the entry: then the entry says no reaction, and its row goes.
+
+        Each row holds the newest write of one entry, and an empty emoji keeps its row with its `seq`. A view takes the
+        row with the highest `seq` for each message, member and chat (SHOWN_REACTIONS). So the state depends only on the
+        newest write of each entry, and each Mac shows the same reactions in whatever order it applies the entries.
+
+        A write changes at most the shown reaction of its own member, at the old place of the entry (its message and
+        chat before) and at its new place. So the store compares only that one reaction, before and after, with one
+        index search each (own_reaction), and the chat of a message gets its event only when it changes.
+        """
+        member = entry['member']
+        old = self.db.execute('SELECT message, peer, bot FROM team_reactions WHERE room=? AND entry=?',
+                              (room, entry['id'])).fetchone()
+        chats = {tuple(old)} if old else set()
+        if reaction is not None:
+            chats.add((reaction['message'], reaction['peer'], reaction['bot']))
+        before = {chat: self.own_reaction(room, chat[0], member, chat[1], chat[2]) for chat in chats}
+        if reaction is None:
+            self.db.execute('DELETE FROM team_reactions WHERE room=? AND entry=?', (room, entry['id']))
+        else:
+            self.db.execute('''INSERT INTO team_reactions (room, entry, message, member, emoji, seq, peer, bot)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (room, entry) DO UPDATE SET message=excluded.message,
+                member=excluded.member, emoji=excluded.emoji, seq=excluded.seq, peer=excluded.peer, bot=excluded.bot
+                WHERE excluded.seq >= team_reactions.seq''',
+                            (room, entry['id'], reaction['message'], entry['member'], reaction['emoji'], entry['seq'],
+                             reaction['peer'], reaction['bot']))
+        for chat, shown in before.items():
+            if self.own_reaction(room, chat[0], member, chat[1], chat[2]) != shown:
+                self._reaction_changed(room, *chat)
+
+    def _reaction_changed(self, room: str, message: str, peer: str | None, bot: str | None) -> None:
+        """Note the chat whose message shows other reactions now, for the event of a change of its messages. A reaction
+        on a message that the store does not have changes no chat."""
+        if peer is None:
+            if self.db.execute('SELECT 1 FROM team_messages WHERE room=? AND entry=?', (room, message)).fetchone():
+                self.chatted.add(room)
+        elif self.db.execute('SELECT 1 FROM team_directs WHERE room=? AND entry=? AND member=? AND bot IS ?',
+                             (room, message, peer, bot)).fetchone():
+            self._direct_changed(room, {(peer, bot)})
+
+    def own_reaction(self, room: str, message: str, member: str, peer: str | None = None,
+                     bot: str | None = None) -> str:
+        """The emoji that the reaction of `member` on a message of a chat shows (`peer` and `bot` as in reactions_of),
+        or an empty text: the emoji of the row of the member with the highest `seq` there (OWN_REACTION)."""
+        row = self.db.execute(OWN_REACTION, (room, message, peer, bot, member)).fetchone()
+        return row[0] if row else ''
+
+    def reactions_of(self, room: str, entries, peer: str | None = None,
+                     bot: str | None = None) -> dict[str, list[tuple[str, str]]]:
+        """The reactions that show on these messages, by entry ID: (emoji, member) in the order of the log. A message of
+        a team chat takes only the reactions of `reaction` entries (`peer` None). A message of a direct chat takes only
+        the reactions in the boxes of that chat: the other member `peer`, and `bot` for a chat with a bot. So a
+        reaction never shows in another chat than the one that it names. One query reads the reactions of a whole page
+        (SHOWN_REACTIONS)."""
+        result: dict[str, list[tuple[str, str]]] = {}
+        for message, emoji, member in self.db.execute(SHOWN_REACTIONS, (room, json.dumps(sorted(set(entries))), peer,
+                                                                         bot)):
+            result.setdefault(message, []).append((emoji, member))
+        return result
 
     def _show_page(self, room: str, entry: dict, fields: dict, page: dict | None, other: bool) -> None:
         """Set the row of a `page` entry. `page` is what read_entry found valid, or None.
@@ -1822,13 +2002,17 @@ class TeamStore:
             JOIN team_direct_waits w ON w.room=e.room AND w.entry=e.id WHERE e.room=? ORDER BY e.seq''', (room,))
 
     def end_wait(self, room: str, entry: dict, direct: dict | None) -> None:
-        """End the wait of a `direct` entry after its last try. `direct` is what its box gave this Mac, or None. A
-        message that shows now is history: it changes its chat and notifies nothing. A newer write of the entry since
-        the try has its own wait, so this one changes nothing then."""
+        """End the wait of a `direct` entry after its last try. `direct` is what its box gave this Mac: a message, a
+        reaction (`{"reaction": ...}`), or None. A message that shows now is history: it changes its chat and notifies
+        nothing. A newer write of the entry since the try has its own wait, so this one changes nothing then."""
         current = self.entry(room, entry['id'])
         if current is None or current['seq'] != entry['seq']:
             return
-        if self.db.execute('DELETE FROM team_direct_waits WHERE room=? AND entry=?', (room, entry['id'])).rowcount:
+        if not self.db.execute('DELETE FROM team_direct_waits WHERE room=? AND entry=?', (room, entry['id'])).rowcount:
+            return
+        if direct is not None and 'reaction' in direct:
+            self._show_reaction(room, entry, direct['reaction'])
+        else:
             self._direct_changed(room, self._show_direct(room, entry, entry['rev'], direct))
 
     def direct(self, room: str, entry: str) -> dict | None:

@@ -28,7 +28,7 @@ from secrets import token_hex
 from . import team_keys
 from .team_pages import team_id, team_ids
 from .team_relay import MAX_NUMBER, number
-from .team_store import ACTIVE, MAX_MENTIONS, MAX_TEXT, MESSAGES_EVENT, entry_id, unicode_text
+from .team_store import ACTIVE, MAX_MENTIONS, MAX_TEXT, MESSAGES_EVENT, entry_id, reaction_views, unicode_text
 
 log = logging.getLogger(__name__)
 
@@ -280,11 +280,13 @@ class TeamMessages:
 
         `reply` quotes the message that `reply_to` names, because that message is often not in the page of the app.
         It is null when the chat does not show that message: removed, not valid, never seen, or in another chat. One
-        query reads the answered messages of the whole page. The caller holds the service lock.
+        query reads the answered messages of the whole page, and one query its reactions (team_reactions.py). The
+        caller holds the service lock.
         """
         mentions = [json.loads(row['mentions']) for row in rows]
         names = self.team_store.names(room['room'], [entry for entries in mentions for entry in entries])
         answered = self.team_store.messages_of(room['room'], [row['reply_to'] for row in rows if row['reply_to']])
+        reactions = self.team_store.reactions_of(room['room'], [row['entry'] for row in rows])
 
         def phone_id(entry):
             kind, member = names[entry]
@@ -301,6 +303,7 @@ class TeamMessages:
                  'text': row['text'], 'reply_to': row['reply_to'], 'reply': quote(row['reply_to'], row['chat']),
                  'chat': row['chat'],
                  'mentions': [phone_id(entry) for entry in entries if entry in names],
+                 'reactions': reaction_views(reactions.get(row['entry'], []), room['member']),
                  'created_at': row['created_at'], 'edited_at': row['updated_at'] if row['edited'] else None}
                 for row, entries in zip(rows, mentions)]
 

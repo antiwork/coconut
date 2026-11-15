@@ -9,7 +9,7 @@ A team has two kinds of Mac:
 - **A person's Mac** (a full install): its agents are the person's, and nobody else can ask them. The person shares a page of an agent with a team by one act on the page, and stops when they want. The agent of the page is then the author of the page in the team, and nothing more.
 - **A Mac for a team only** (see [Team-only mode](#team-only-mode)): its agents are the team's. Each page that such an agent saves with the audience "team" goes to the teams of the agent.
 
-Status: the relay has the room (`relay/src/room.js`). The Mac backend makes, joins, leaves and copies a room for the tools on the Mac, and it learns of a new entry at once through the socket of the room (see [Mac](#mac)). It shares the pages that a person shares, and the Library of the phone lists the team pages of the other Macs (see [Agents and pages](#agents-and-pages)). It keeps the Team chat and serves it to the phone, and the app lists the team agents and the people that a person can name with `@` (see [Team chat](#team-chat) and [Mentions of a person](#mentions-of-a-person)). An agent of a Mac for a team only answers in the Team chat (see [An agent answers](#an-agent-answers)). A message of another member reaches this Mac through the socket in about one second, and a person's Mac notifies its phones (see [Notifications](#notifications)). The Mac keeps the direct messages between two people and serves them to the phone, and the app shows them (see [Direct messages](#direct-messages)). A person writes to an agent of a Mac for a team only in a direct chat, and the agent answers there (see [Direct chat with an agent](#direct-chat-with-an-agent)). The admin removes a member (see [Removal](#removal)), and the room then gets a new room key (see [Key change](#key-change)). The admin deletes a message of another member (see [The admin deletes a message](#the-admin-deletes-a-message)). The admin makes more chats with a name in a team (see [Chats of a team](#chats-of-a-team)). This part is not built yet:
+Status: the relay has the room (`relay/src/room.js`). The Mac backend makes, joins, leaves and copies a room for the tools on the Mac, and it learns of a new entry at once through the socket of the room (see [Mac](#mac)). It shares the pages that a person shares, and the Library of the phone lists the team pages of the other Macs (see [Agents and pages](#agents-and-pages)). It keeps the Team chat and serves it to the phone, and the app lists the team agents and the people that a person can name with `@` (see [Team chat](#team-chat) and [Mentions of a person](#mentions-of-a-person)). An agent of a Mac for a team only answers in the Team chat (see [An agent answers](#an-agent-answers)). A message of another member reaches this Mac through the socket in about one second, and a person's Mac notifies its phones (see [Notifications](#notifications)). The Mac keeps the direct messages between two people and serves them to the phone, and the app shows them (see [Direct messages](#direct-messages)). A person writes to an agent of a Mac for a team only in a direct chat, and the agent answers there (see [Direct chat with an agent](#direct-chat-with-an-agent)). The admin removes a member (see [Removal](#removal)), and the room then gets a new room key (see [Key change](#key-change)). The admin deletes a message of another member (see [The admin deletes a message](#the-admin-deletes-a-message)). The admin makes more chats with a name in a team (see [Chats of a team](#chats-of-a-team)). A person reacts to a message of a team chat or of a direct chat with an emoji (see [Reactions](#reactions)). This part is not built yet:
 
 - A call of `GET .../members` that finds a member that left without a `delete` entry.
 - A Mac for a team only does not mark its agents for direct messages and does not answer in a direct chat yet. So no person can write to an agent yet. See [Direct chat with an agent](#direct-chat-with-an-agent).
@@ -91,10 +91,11 @@ Each payload has these fields:
 | `chat` | `true` | The admin, one entry for each chat of the team | `name` (1 to 50 characters). See [Chats of a team](#chats-of-a-team). |
 | `key` | `true` | The admin, one entry for each new epoch | `epoch` (the new epoch), `agreement` (the public agreement key of the admin), `boxes` (for each member ID, the room key of the new epoch in a box for that member). See [Key change](#key-change). |
 | `erase` | `false` | The admin, one entry for each deleted message | `entry` (the entry ID of a `message` entry of another member). See [The admin deletes a message](#the-admin-deletes-a-message). |
+| `reaction` | `false` | A person's Mac, one entry for each message that its person reacts to | `message` (the entry ID of a `message` entry), `emoji` (one of six emoji, or empty). See [Reactions](#reactions). |
 
 The kinds `member`, `delete`, `bot`, `page`, `message`, `direct`, `remove`, `key` and `erase` are complete. See [Agents and pages](#agents-and-pages) for the rules of `bot` and `page`, [Team chat](#team-chat) for `message`, and [Direct messages](#direct-messages) for `direct`. Each other kind gets its fields in the pull request that builds it. A new kind needs no change of the relay and no change of the body.
 
-The kinds `typing` and `chat` are complete too. See [Typing](#typing) and [Chats of a team](#chats-of-a-team).
+The kinds `typing`, `chat` and `reaction` are complete too. See [Typing](#typing), [Chats of a team](#chats-of-a-team) and [Reactions](#reactions).
 
 A key in a payload is unpadded base64url, as in a pairing setup.
 
@@ -404,6 +405,7 @@ Everything else is in `coconut.sqlite3`:
 | `team_removed` | The members that a `remove` entry of the admin took out of the room, each with the entry ID of that entry. See [Removal](#removal). |
 | `team_invites` | On the admin's Mac: the hash of the ticket and the end of each invite that this Mac made. See [Invite and join](#invite-and-join). |
 | `team_erased` | The entry IDs of the messages that an `erase` entry of the admin took out of the chat. See [The admin deletes a message](#the-admin-deletes-a-message). |
+| `team_reactions` | One row for each entry that says a reaction, from its newest write: the message, the member, the emoji (empty for a reaction that its member took back), the `seq`, and for a reaction of a direct chat the other member of the chat (`peer`) and the `bot` entry of a chat with an agent. An index on the room, the message, `peer`, `bot`, the member, the `seq` and the emoji gives the reactions of a page in one pass over the rows of its chat. See [Reactions](#reactions). |
 
 A room is `joining` (the relay did not answer the join yet), `active`, `removed` (the relay answered 401) or `gone` (the relay answered 404). The copy of a `removed` or `gone` room stays until the person leaves the room on the Mac. The Library does not show the agents and the pages of such a room.
 
@@ -642,6 +644,7 @@ The routes have the authorization of the other team routes, and a write with an 
 | `PATCH /v1/team/rooms/<room>/messages/<id>`, body `{text}` | Changes the text of a message of this Mac's person, and answers `{room, message}`. The other fields stay. The same text writes nothing. A message of another member or of an agent answers 403. |
 | `DELETE /v1/team/rooms/<room>/messages/<id>` | Removes a message of this Mac's person with a `delete` entry, and answers `{room, id, deleted: true}`. When the entry is already a `delete` entry of this Mac, for example after a delete without an answer, the Mac gives the same answer and writes nothing. An ID that the store does not have answers 404. On the admin's Mac, a message of another member or of an agent gets an `erase` entry (see [The admin deletes a message](#the-admin-deletes-a-message)). On another Mac, an entry of another member answers 403. |
 | `POST /v1/team/rooms/<room>/read`, body `{first, chat?}` | Moves the read position, and answers `{room, read, unread}`. |
+| `PUT /v1/team/rooms/<room>/messages/<id>/reaction`, body `{emoji}` | Sets the reaction of this Mac's person on a message of a team chat, and answers `{room, message}`. See [Reactions](#reactions). |
 | `POST /v1/team/rooms/<room>/typing`, body `{chat?}` | The person types in the Team chat, and answers `{room}`. See [Typing](#typing). |
 | The routes of the named chats | See [Chats of a team](#chats-of-a-team). Without `chat`, each route above means the Team chat. |
 | `PUT /v1/team/rooms/<room>/notifications`, body `{enabled}` | Turns the notifications of the room on or off for the phones of this Mac, and answers `{room, notifications}`. See [Notifications](#notifications). |
@@ -657,9 +660,10 @@ A message in an answer:
 | `chat` | The entry ID of the named chat of the message, or null for the Team chat. |
 | `reply` | The message that `reply_to` names, so the app can quote it without a second request: `id`, `member`, `member_name`, `bot`, `bot_name`, and the first 200 code points of its `text`. Null when `reply_to` is null, or when the chat does not show that message: removed, not valid, or never seen by this Mac. One query reads the answered messages of a whole page. |
 | `mentions` | For each mention: the member ID of a member, or the `t-` ID of a team agent. A mention that the store cannot name stays out. |
+| `reactions` | The reactions on the message: one item `{emoji, members, mine}` for each emoji with at least one member, in the order of the six emoji. See [Reactions](#reactions). An older service sends none. |
 | `created_at`, `edited_at` | The times of rule 6. `edited_at` is null for a message without an edit. |
 
-When the chat of a room changes on this Mac, the Mac adds one `team_messages.updated` event with `{"team": <room ID>}` in the same transaction: a new message, an edit, a removal, a new time from the relay, a new or changed name in `team_names` of a room with messages (for example a rename, or a `bot` entry that makes a message of its agent show), or a new read position, for example from another device of the person. The same name written again adds no event. `GET /v1/updates` then has `team_messages_changed`: the IDs of these rooms. A pass that changes nothing adds no event. The event type is in the `known` set of `GET /v1/updates` and changes no Work row, so an app of today does not read its whole state again.
+When the chat of a room changes on this Mac, the Mac adds one `team_messages.updated` event with `{"team": <room ID>}` in the same transaction: a new message, an edit, a removal, a new time from the relay, a new or changed name in `team_names` of a room with messages (for example a rename, or a `bot` entry that makes a message of its agent show), a new, changed or removed reaction on a message that the chat has, or a new read position, for example from another device of the person. The same name written again adds no event. `GET /v1/updates` then has `team_messages_changed`: the IDs of these rooms. A pass that changes nothing adds no event. The event type is in the `known` set of `GET /v1/updates` and changes no Work row, so an app of today does not read its whole state again.
 
 No log line has the text of a message. A log line names a message by its entry ID and its `seq`, as for each other entry.
 
@@ -862,6 +866,57 @@ An agent of a Mac for a team only answers in the chat where a person names it (s
 
 No log line has the name of a chat.
 
+#### Reactions
+
+A person reacts to a message with an emoji, as in WhatsApp: in the Team chat, in a named chat, in a direct chat of two people and in a direct chat with an agent. Each person has one reaction on a message. A new choice replaces the old one. `backend/coconut/team_reactions.py` serves the routes, and `TeamStore` keeps the reactions.
+
+The emoji are exactly these six texts, in this order: 👍 (U+1F44D), ❤️ (U+2764 U+FE0F), 😂 (U+1F602), 😮 (U+1F62E), 😢 (U+1F622) and 🙏 (U+1F64F). An empty text takes the reaction back. The heart has the variation selector 16, and a heart without it is no reaction.
+
+The payload of a `reaction` entry: `{"kind": "reaction", "rev": n, "at": "...", "message": "<entry ID>", "emoji": "👍"}`. The entry is not kept, as a message.
+
+- A person's Mac writes one entry for each message that its person reacts to, and replaces it with the next `rev` for a new emoji and for an empty one. The entry ID is the first 16 bytes of HMAC-SHA256 with the member token of the Mac as the key, over `"coconut room reaction" | room ID (32 bytes) | entry ID of the message (16 bytes)`. So a change and a repeat write the same entry, and no other member can take the ID first (rule 3 of a reader).
+- In a direct chat, the reaction is a `direct` entry with a box, as a direct message, so the other members do not learn who talks with whom. The plaintext of the box: `{"to": "<member ID>", "message": "<entry ID>", "emoji": "👍"}`, and `bot` (the entry ID of the `bot` entry) in a chat with an agent. It has no `text`. The entry ID uses the label `"coconut room direct reaction"` in the place of `"coconut room reaction"`.
+- A Mac for a team only writes no reaction: it has no person, and its agents never react.
+
+Rules for a Mac that reads a reaction:
+
+1. A `reaction` entry is valid when `message` is an entry ID and `emoji` is one of the six emoji or empty. A reader takes null as an absent field. An entry that does not fit stays in the store and says no reaction: the earlier write of the entry no longer counts. So an emoji of a later version shows nothing on a Mac of today.
+2. A box of a `direct` entry is a reaction when it has no `text` and no `on`, its `to` is the member that the reader expects (as for a direct message), its `message` and `emoji` fit rule 1, and its `bot` is an entry ID or absent. Only a person's Mac reads it. The typing sign of an agent (rule 12 of [The Mac for a team only](#the-mac-for-a-team-only)) has no `message` and no `emoji`, so neither reader takes the box of the other, and a box with the fields of both is neither. The box opens, waits and gets its try at the end of the read as the box of a direct message does.
+3. Only the newest write of each entry counts, as for each other kind. A `delete` entry over the entry, a write of another kind, a box that does not open for this Mac, and a write that does not fit say no reaction. A member has one reaction on a message in a chat: of the entries of that member that name the message in that chat (the same `peer` and `bot`), the one with the highest `seq` counts, also when its emoji is empty. An empty emoji shows no reaction. So the reactions are a function of the newest write of each entry, and each Mac shows the same reactions for the same log, in whatever order it applies the entries: in the order of the log, only the newest writes, or an entry that waits for its key and comes at the end of the read. An honest Mac writes one entry for each message.
+4. A reaction of a `reaction` entry shows only on a message of a team chat. A reaction of a box shows only on a message of the direct chat of the box: the chat of the writer and this Mac, and with `bot` the chat with that agent. So a member cannot put a reaction into a chat that it is not part of. The check runs when the Mac reads the chat, because a reaction can come before its message.
+5. A message that does not show has no reaction that shows: a message that its member deleted, that the admin erased, or whose chat the admin removed. A reaction of a member that left stays, as its messages stay.
+6. A reaction changes no unread count and no read position, notifies no phone, starts no turn of an agent, and goes into no text for a model. A Mac for a team only opens the box of each `direct` entry for the chats of its agents, but it keeps nothing of the box of a reaction: no row in `team_reactions` and no row in `team_directs`. So a reaction of a person to an agent starts no turn, also as the first entry of that person to the agent and as a new write of an entry, and goes into no context, no page context and no notice. The agent writes no answer and no typing sign for it. A `reaction` entry of a team chat goes into `team_reactions` on each Mac, also on a Mac for a team only, and no turn and no context reads that table.
+7. A Mac with an older Coconut keeps a `reaction` entry by rule 5 of a reader and shows nothing. It finds no `text` in the box of a reaction, so it shows no direct message.
+
+The update from a version without reactions: in one step with the new table `team_reactions` and its index, the Mac reads each stored `reaction` entry with the reader above. Each statement of this pass finds its rows by the primary key or by the index. A stop or an error in this pass takes the table back, so the next start does the pass again. A reaction in a box that the older version stored does not show, because only the helper opens a box. It shows when its member changes it.
+
+The routes. Each one has the authorization of the other team routes, and a write with an `Idempotency-Key` is safe to repeat (see [Repeat a write](#repeat-a-write)). The token of the bridge file gets 403 on a person's Mac, and a Mac for a team only answers 409 with "This Mac runs Coconut for a team only, so nobody reacts here."
+
+| Request | Answer |
+| --- | --- |
+| `PUT /v1/team/rooms/<room>/messages/<id>/reaction`, body `{"emoji": "👍"}` | Sets the reaction of this Mac's person on a message of a team chat, and answers `{room, message}`: the message with its new `reactions`. |
+| `PUT /v1/team/rooms/<room>/directs/<member or team agent ID>/messages/<id>/reaction`, body `{"emoji": "👍"}` | The same in a direct chat. The answer is `{room, member, message}`, or `{room, bot, message}` in a chat with an agent. |
+
+- The route sets a value, so a repeat writes nothing: the same emoji, or an empty emoji when the person has no reaction. The app takes a reaction back when the person picks the same emoji again: it sends an empty `emoji`.
+- 400 with "Choose one of these reactions: 👍 ❤️ 😂 😮 😢 🙏." for another value of `emoji`, also for a missing one.
+- 404 with "This message is no longer in the chat." for a message that the chat of the route does not show: unknown, deleted, erased, in a removed chat, or in another chat.
+- 409 for a room that is not `active`, as for each write of the chat. In a direct chat, a change that needs a write follows [Who can get a direct message](#who-can-get-a-direct-message) and [Who can write to an agent](#who-can-write-to-an-agent), with their sentences.
+
+A message in an answer has `reactions`: a list, empty when nobody reacted, with one item for each emoji with at least one member, in the order of the six emoji. `members` are the member IDs, in the order of the log. `mine` is true when the member of this Mac is one of them. For example:
+
+```json
+{"room": "<room ID>", "message": {"id": "<entry ID>", "first": 42, "member": "<member ID of Ada>", "member_name": "Ada",
+  "this_mac": false, "bot": null, "bot_name": null, "text": "Lunch at noon?", "reply_to": null, "reply": null,
+  "chat": null, "mentions": [],
+  "reactions": [{"emoji": "👍", "members": ["<member ID of Grace>"], "mine": true},
+                {"emoji": "❤️", "members": ["<member ID of Lin>", "<member ID of Ada>"], "mine": false}],
+  "created_at": "2026-11-14T12:00:00.000000Z", "edited_at": null}}
+```
+
+Events: a change of the reactions that a message of the store shows adds the event of a change of its chat, in the same transaction: `team_messages.updated` with `{"team": <room ID>}` for a team chat, `team_directs.updated` for a direct chat of two people, and `team_bot_directs.updated` for a direct chat with an agent. So an app of today reads the newest page again, and `GET /v1/updates` marks the chat as for an edit. No new event type exists. An older app ignores the field `reactions`.
+
+No log line has an emoji or a name.
+
 ### Direct messages
 
 A direct message is a private chat between two people of a team. It is an entry of the kind `direct` in the log that the team has. Its text is sealed a second time, with a key that only the two Macs can make. No second room, no invite and no join is necessary. `backend/coconut/team_directs.py` serves the routes, and `TeamStore` keeps the chats. A person can also write to an agent of a Mac for a team only with the same entries: see [Direct chat with an agent](#direct-chat-with-an-agent).
@@ -878,7 +933,7 @@ plaintext = {"to": "<member ID>", "text": "...", "reply_to": "<entry ID>"}
 - The seal is ChaChaPoly with the pair key. The nonce is 12 random bytes, new for each seal.
 - The additional data is `room ID (32 bytes) | entry ID (16 bytes) | member ID of the writer (32 bytes)`: 80 bytes. So a box belongs to one room, one entry and one writer.
 - The pair key: X25519 of the own private agreement key and the public agreement key of the other member (the `agreement` of its `member` entry). Then HKDF-SHA256 with an empty salt and 32 bytes of output. The input is the shared secret, and the info is `"coconut room direct" | room ID (32 bytes) | the lower member ID (32 bytes) | the higher member ID (32 bytes)`, compared as bytes. So both Macs make the same key, and a key of one room opens nothing in another room.
-- The plaintext is one JSON object in UTF-8. `to` is the member that the message is for. `text` has 1 to 16,000 code points of valid Unicode text. `reply_to` is the entry ID of a direct message of the same chat, or absent. A reader takes null as an absent field, and ignores a field that it does not know. A message of a chat with an agent also has `bot`, and can have `page` or `on`: see [Direct chat with an agent](#direct-chat-with-an-agent).
+- The plaintext is one JSON object in UTF-8. `to` is the member that the message is for. `text` has 1 to 16,000 code points of valid Unicode text. `reply_to` is the entry ID of a direct message of the same chat, or absent. A reader takes null as an absent field, and ignores a field that it does not know. A message of a chat with an agent also has `bot`, and can have `page` or `on`: see [Direct chat with an agent](#direct-chat-with-an-agent). A box without `text` can be a reaction: see [Reactions](#reactions).
 - An edit is a new write of the same entry ID with the next `rev` and a new box. A removal is a `delete` entry over it. The rules of an entry (`rev`, the member of an entry) do not change.
 
 `TeamLog.swift` has the pair key, the seal and the open of a box. The helper has the operations `seal_direct` and `open_direct`. See [Test vectors](#test-vectors).
@@ -922,10 +977,11 @@ Only a paired device reaches these routes on a person's Mac: `tool_route` refuse
 | `PATCH /v1/team/rooms/<room>/directs/<member>/messages/<id>`, body `{text}` | Changes the text of a message of this Mac's person, with a new box, and answers `{room, member, message}`. The reply stays. The same text writes nothing. A message of the other member answers 403. A member that can no longer get a direct message answers 409. |
 | `DELETE /v1/team/rooms/<room>/directs/<member>/messages/<id>` | Removes a message of this Mac's person with a `delete` entry, and answers `{room, member, id, deleted: true}`. A repeat gives the same answer and writes nothing. |
 | `POST /v1/team/rooms/<room>/directs/<member>/read`, body `{first}` | Moves the read position of the chat, and answers `{room, member, read, unread}`. |
+| `PUT /v1/team/rooms/<room>/directs/<member>/messages/<id>/reaction`, body `{emoji}` | Sets the reaction of this Mac's person on a message of the chat, and answers `{room, member, message}`. See [Reactions](#reactions). |
 
-A message in an answer: `id`, `first`, `this_mac`, `text`, `reply_to`, `reply` (`id`, `this_mac` and the first 200 code points of `text` of the message that `reply_to` names in the same chat, or null), `created_at` and `edited_at`.
+A message in an answer: `id`, `first`, `this_mac`, `text`, `reply_to`, `reply` (`id`, `this_mac` and the first 200 code points of `text` of the message that `reply_to` names in the same chat, or null), `reactions` (as in the Team chat, see [Reactions](#reactions)), `created_at` and `edited_at`.
 
-When a direct chat of two people changes on this Mac, the Mac adds one `team_directs.updated` event with `{"team": <room ID>, "member": <member ID>}` in the same transaction: a new message, an edit, a removal, a new time from the relay, a new name of the other member, or a new read position. `GET /v1/updates` then has `team_directs_changed`: a list of `{team, member}`. The type is in the `known` set, so an app of today does not read its whole state again. A change of `direct` of a member adds `team.updated`, as each other change of a member.
+When a direct chat of two people changes on this Mac, the Mac adds one `team_directs.updated` event with `{"team": <room ID>, "member": <member ID>}` in the same transaction: a new message, an edit, a removal, a new time from the relay, a new name of the other member, a new, changed or removed reaction, or a new read position. `GET /v1/updates` then has `team_directs_changed`: a list of `{team, member}`. The type is in the `known` set, so an app of today does not read its whole state again. A change of `direct` of a member adds `team.updated`, as each other change of a member.
 
 #### Notifications of a direct message
 
@@ -1025,6 +1081,7 @@ The routes of the direct messages take a team agent ID in the place of the membe
 | `PATCH .../directs/<team agent ID>/messages/<id>`, body `{text}` | Changes the text of a message of this Mac's person, with a new box, and answers `{room, bot, message}`. `bot`, `page` and `reply_to` stay. The same text writes nothing. A message of the agent answers 403. |
 | `DELETE .../directs/<team agent ID>/messages/<id>` | Removes a message of this Mac's person with a `delete` entry, and answers `{room, bot, id, deleted: true}`. A message of the agent answers 403. |
 | `POST .../directs/<team agent ID>/read`, body `{first}` | Moves the read position, and answers `{room, bot, read, unread}`. |
+| `PUT .../directs/<team agent ID>/messages/<id>/reaction`, body `{emoji}` | Sets the reaction of this Mac's person on a message of the chat, and answers `{room, bot, message}`. See [Reactions](#reactions). |
 
 A message in an answer has the fields of a direct message (`id`, `first`, `this_mac`, `text`, `reply_to`, `reply`, `created_at`, `edited_at`) and `page`:
 
@@ -1044,7 +1101,7 @@ A message of a chat of two people has no `page`.
 
 #### Events and notifications of a chat with an agent
 
-- When a chat with an agent changes on this Mac (a new message, an edit, a removal, a new time from the relay, a new name of the agent, or a new read position), the Mac adds one `team_bot_directs.updated` event with `{"team": <room ID>, "bot": <team agent ID>}` in the same transaction. `GET /v1/updates` then has `team_bot_directs_changed`: a list of `{team, bot}`. The type is in the `known` set and changes no Work row, as `team_directs.updated`. `team_directs.updated` and `team_directs_changed` stay for the chats of two people, because an older app reads `member` in each item.
+- When a chat with an agent changes on this Mac (a new message, an edit, a removal, a new time from the relay, a new name of the agent, a new, changed or removed reaction, or a new read position), the Mac adds one `team_bot_directs.updated` event with `{"team": <room ID>, "bot": <team agent ID>}` in the same transaction. `GET /v1/updates` then has `team_bot_directs_changed`: a list of `{team, bot}`. The type is in the `known` set and changes no Work row, as `team_directs.updated`. `team_directs.updated` and `team_directs_changed` stay for the chats of two people, because an older app reads `member` in each item.
 - A message of an agent notifies the phone by the rules of [Notifications of a direct message](#notifications-of-a-direct-message): the kind of the item is `direct`, and it notifies only as the first write of a message of the other side, after the read position of its chat, under one hour old. Each plan and each send checks the read position of the chat with the agent. The switch `notifications` of the room does not decide.
 - The sealed alert has the name of the agent as its title and the text as its body, with no subtitle. When the store has no name for the agent, the title is the name of the team. `thread-id` is the room ID, a colon, and the entry ID of the `bot` entry. A phone without a relay route gets "Coconut" and "You have a new direct message."
 - The `coconut` part is `{"version": 1, "device_id": ..., "kind": "direct", "direct": {"team": <room ID>, "bot": <team agent ID>}}`. It has no `member`, so an older app opens the app and nothing more. A group whose items are all messages of one chat with an agent has the thread of that chat and `{"version": 1, "device_id": ..., "kind": "group", "count": n, "direct": {"team": <room ID>, "bot": <team agent ID>}}`. Each other group opens Inbox, also a group of a chat with an agent and another chat.
@@ -1054,7 +1111,7 @@ A message of a chat of two people has no `page`.
 `backend/coconut/team_turns.py` and `backend/coconut/team_typing.py` hold these rules.
 
 1. It writes `direct: true` in the `bot` entry of each agent whose record has `chat` true.
-2. It reads the `direct` entries of the other members: it opens each box with the pair key of the writer. A box with `to` this Mac and a `bot` that is an entry ID is a message of the chat of the writer with that agent, and goes into `team_directs`, with its `page`. A box without `bot` shows nothing there. It keeps no read position and sends no notification. The helper opens the boxes before the transaction and without the lock of the service, and the wait for a `member` entry that comes later and the repair of an own entry hold as on a person's Mac. A message of the chat shows there only while `bot` names a `bot` entry of this Mac that the store has a name for. A message that waited for its key is history: it starts no turn.
+2. It reads the `direct` entries of the other members: it opens each box with the pair key of the writer. A box with `to` this Mac and a `bot` that is an entry ID is a message of the chat of the writer with that agent, and goes into `team_directs`, with its `page`. A box without `bot` shows nothing there. It keeps no read position and sends no notification. The helper opens the boxes before the transaction and without the lock of the service, and the wait for a `member` entry that comes later and the repair of an own entry hold as on a person's Mac. A message of the chat shows there only while `bot` names a `bot` entry of this Mac that the store has a name for. A message that waited for its key is history: it starts no turn. A box of a reaction (see [Reactions](#reactions)) is no message: this Mac keeps nothing of it, so a reaction starts no turn and goes into no context.
 3. A `direct` entry starts a turn of an agent of this Mac when each of these holds (the rules of [An agent answers](#an-agent-answers)):
    - This Mac sees the entry for the first time, and its `rev` is 1.
    - Its member is another member than this Mac, and that member is in the member list.
