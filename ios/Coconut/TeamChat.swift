@@ -812,11 +812,13 @@ struct TeamChat: Equatable, Sendable {
         messages[index].editedAt = message.editedAt
     }
 
-    /// Puts the answer of a reaction: only the reactions of a message that the chat has. A late answer does not put
-    /// back an older text.
-    mutating func putReactions(_ message: TeamMessage) {
-        guard let index = messages.firstIndex(where: { $0.id == message.id }) else { return }
-        messages[index].reactions = message.reactions
+    /// The Mac has the reaction on its way: the message that the chat has takes it, as `shown` makes it, and the
+    /// overlay goes. Only the reaction of this person changes. The reactions of the other people stay as the last
+    /// page has them.
+    mutating func foldReaction(_ id: String) {
+        guard let change = reacting.removeValue(forKey: id),
+              let index = messages.firstIndex(where: { $0.id == id }) else { return }
+        messages[index] = messages[index].reacting(change.emoji, as: change.member)
     }
 
     mutating func remove(_ id: String) {

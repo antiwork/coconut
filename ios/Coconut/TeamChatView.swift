@@ -428,7 +428,7 @@ struct TeamChatView: View {
                 composerFocused = true
             },
             delete: { deleting = $0 },
-            react: { message, emoji in Task { await store.reactToTeamMessage(chatKey, message, emoji: emoji) } },
+            react: { message, emoji in store.reactToTeamMessage(chatKey, message, emoji: emoji) },
             showMessage: { id in show(id, proxy: proxy) },
             retry: { store.retryTeamMessage(chatKey, id: $0) },
             removeUnsent: { store.removeUnsentTeamMessage(chatKey, id: $0) })

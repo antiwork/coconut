@@ -1235,10 +1235,21 @@ final class TeamScreenTests: XCTestCase {
         return TeamChatRow.rows(chat).first?.message?.reactions
     }
 
-    /// The tap shows the reaction at once, before the answer of the Mac. The answer then replaces the message. A
-    /// second tap of the same emoji sends an empty emoji and takes it back.
+    /// One tap on an emoji of the first message, as the chat makes it: with the message as the chat shows it.
+    @MainActor @discardableResult
+    private func tap(_ store: AppStore, _ emoji: String) throws -> Bool {
+        let shown = try XCTUnwrap(TeamChatRow.rows(XCTUnwrap(store.teamChats["r1"])).first?.message)
+        return store.reactToTeamMessage("r1", shown, emoji: emoji)
+    }
+
+    /// True when no reaction of this person is on its way.
     @MainActor
-    func testAReactionShowsAtOnceAndTheAnswerReplacesTheMessage() async throws {
+    private func settled(_ store: AppStore) -> Bool { store.teamChats["r1"]?.reacting.isEmpty == true }
+
+    /// The tap shows the reaction at once, before the answer of the Mac. Then the message has it. A second tap of the
+    /// same emoji sends an empty emoji and takes it back.
+    @MainActor
+    func testAReactionShowsAtOnceAndTheMacGetsIt() async throws {
         #if !(DEBUG && targetEnvironment(simulator))
         throw XCTSkip("This HTTP fixture requires a debug simulator build.")
         #else
@@ -1250,32 +1261,28 @@ final class TeamScreenTests: XCTestCase {
             server.addMessage("Lunch at noon?", announce: false)
             server.react(1, member: "m1", emoji: "👍")
             await store.loadTeamChat("r1")
-            let message = try XCTUnwrap(store.teamChats["r1"]?.messages.first)
             server.holdReactions(true)
-            let tap = Task { await store.reactToTeamMessage("r1", message, emoji: "👍") }
-            try await waitUntil { server.heldReactions == 1 }
+            XCTAssertTrue(try tap(store, "👍"))
             XCTAssertEqual(shownReactions(store), [TeamReaction(emoji: "👍", members: ["m1", "m0"], mine: true)],
                            "The reaction shows before the answer.")
-            XCTAssertNotNil(store.teamChats["r1"]?.reacting[message.id])
+            try await waitUntil { server.heldReactions == 1 }
             server.holdReactions(false)
             server.releaseReactions()
-            let confirmed = await tap.value
-            XCTAssertTrue(confirmed)
-            XCTAssertNil(store.teamChats["r1"]?.reacting[message.id])
+            try await waitUntil { self.settled(store) }
             XCTAssertEqual(store.teamChats["r1"]?.messages.first?.reactions,
                            [TeamReaction(emoji: "👍", members: ["m1", "m0"], mine: true)])
-            let shown = try XCTUnwrap(TeamChatRow.rows(XCTUnwrap(store.teamChats["r1"])).first?.message)
-            let removed = await store.reactToTeamMessage("r1", shown, emoji: "👍")
-            XCTAssertTrue(removed)
+            try tap(store, "👍")
+            try await waitUntil { self.settled(store) }
             XCTAssertEqual(server.sentReactions, ["👍", ""], "The same emoji again sends an empty emoji.")
             XCTAssertEqual(shownReactions(store), [TeamReaction(emoji: "👍", members: ["m1"], mine: false)])
         }
         #endif
     }
 
-    /// The Mac does not confirm the reaction: the chat shows the reactions of the Mac again, and the error.
+    /// Two taps while the Mac has not applied the first. The second request starts only after the first ended, so the
+    /// Mac gets 👍 and then 😂, and keeps the last choice.
     @MainActor
-    func testAFailedReactionGoesBackAndSaysWhy() async throws {
+    func testTwoTapsReachTheMacOneAfterTheOther() async throws {
         #if !(DEBUG && targetEnvironment(simulator))
         throw XCTSkip("This HTTP fixture requires a debug simulator build.")
         #else
@@ -1286,20 +1293,28 @@ final class TeamScreenTests: XCTestCase {
         try await withPairedStore(address: address) { store in
             server.addMessage("Lunch at noon?", announce: false)
             await store.loadTeamChat("r1")
-            let message = try XCTUnwrap(store.teamChats["r1"]?.messages.first)
-            server.failReactions(true)
-            let confirmed = await store.reactToTeamMessage("r1", message, emoji: "❤️")
-            XCTAssertFalse(confirmed)
-            XCTAssertEqual(shownReactions(store), [], "The reaction goes back.")
-            XCTAssertNil(store.teamChats["r1"]?.reacting[message.id])
-            XCTAssertEqual(store.error, "The relay of the team does not answer. Try again later.")
+            server.deferReactions(true)
+            try tap(store, "👍")
+            try await waitUntil { server.deferredReactions == 1 }
+            try tap(store, "😂")
+            XCTAssertEqual(shownReactions(store), [TeamReaction(emoji: "😂", members: ["m0"], mine: true)])
+            try await Task.sleep(for: .milliseconds(300))
+            XCTAssertEqual(server.sentReactions, ["👍"], "No second request starts before the first ends.")
+            server.deferReactions(false)
+            server.releaseDeferredReactions()
+            try await waitUntil { self.settled(store) }
+            XCTAssertEqual(server.sentReactions, ["👍", "😂"])
+            XCTAssertEqual(server.mostOpenReactions, 1)
+            XCTAssertEqual(server.ownReaction(1), "😂", "The Mac keeps the last choice.")
+            XCTAssertEqual(store.teamChats["r1"]?.messages.first?.ownReaction, "😂")
         }
         #endif
     }
 
-    /// Two taps on one message. The answer of the first comes last. The newer reaction stays.
+    /// Three taps (👍, 😂, 👍) while the Mac has not applied the first. The Mac ends with 👍, and gets at most two
+    /// requests after the first, one at a time, each with its own key.
     @MainActor
-    func testALateReactionAnswerDoesNotReplaceANewerTap() async throws {
+    func testThreeTapsEndWithTheLastChoice() async throws {
         #if !(DEBUG && targetEnvironment(simulator))
         throw XCTSkip("This HTTP fixture requires a debug simulator build.")
         #else
@@ -1310,22 +1325,85 @@ final class TeamScreenTests: XCTestCase {
         try await withPairedStore(address: address) { store in
             server.addMessage("Lunch at noon?", announce: false)
             await store.loadTeamChat("r1")
-            let message = try XCTUnwrap(store.teamChats["r1"]?.messages.first)
-            server.holdReactions(true)
-            let first = Task { await store.reactToTeamMessage("r1", message, emoji: "👍") }
-            try await waitUntil { server.heldReactions == 1 }
-            server.holdReactions(false)
-            let shown = try XCTUnwrap(TeamChatRow.rows(XCTUnwrap(store.teamChats["r1"])).first?.message)
-            let second = await store.reactToTeamMessage("r1", shown, emoji: "😂")
-            XCTAssertTrue(second)
-            server.releaseReactions()
-            _ = await first.value
-            // Check at once: a later read of the page also shows the newer reaction, and would hide a wrong merge.
-            XCTAssertEqual(store.teamChats["r1"]?.messages.first?.ownReaction, "😂",
-                           "The late answer must not put back the older reaction.")
+            server.deferReactions(true)
+            try tap(store, "👍")
+            try await waitUntil { server.deferredReactions == 1 }
+            try tap(store, "😂")
+            try tap(store, "👍")
+            server.deferReactions(false)
+            server.releaseDeferredReactions()
+            try await waitUntil { self.settled(store) }
             try await Task.sleep(for: .milliseconds(300))
-            XCTAssertEqual(store.teamChats["r1"]?.messages.first?.ownReaction, "😂")
-            XCTAssertEqual(shownReactions(store), [TeamReaction(emoji: "😂", members: ["m0"], mine: true)])
+            XCTAssertEqual(server.ownReaction(1), "👍")
+            XCTAssertLessThanOrEqual(server.sentReactions.count, 3)
+            XCTAssertEqual(server.mostOpenReactions, 1, "One request at a time.")
+            XCTAssertEqual(Set(server.reactionKeys).count, server.reactionKeys.count, "Each request has its own key.")
+            XCTAssertEqual(store.teamChats["r1"]?.messages.first?.ownReaction, "👍")
+        }
+        #endif
+    }
+
+    /// Lin reacts after the Mac made the answer, and a page brings her reaction. The late answer does not take it away.
+    @MainActor
+    func testALateAnswerKeepsTheReactionOfAnotherMember() async throws {
+        #if !(DEBUG && targetEnvironment(simulator))
+        throw XCTSkip("This HTTP fixture requires a debug simulator build.")
+        #else
+        let state = try PreviewStateFixture.load()
+        let server = try TeamServer(state: APIJSON.encoder().encode(state))
+        let address = try await server.start()
+        defer { server.stop() }
+        try await withPairedStore(address: address) { store in
+            server.addMessage("Lunch at noon?", announce: false)
+            await store.loadTeamChat("r1")
+            server.holdReactions(true)
+            try tap(store, "👍")
+            try await waitUntil { server.heldReactions == 1 }
+            server.react(1, member: "m2", emoji: "❤️")
+            await store.loadTeamChat("r1")
+            XCTAssertEqual(store.teamChats["r1"]?.messages.first?.reactions?.contains { $0.members == ["m2"] }, true)
+            server.holdReactions(false)
+            server.releaseReactions()
+            try await waitUntil { self.settled(store) }
+            XCTAssertEqual(store.teamChats["r1"]?.messages.first?.reactions,
+                           [TeamReaction(emoji: "👍", members: ["m0"], mine: true),
+                            TeamReaction(emoji: "❤️", members: ["m2"], mine: false)],
+                           "The answer must not take away the reaction of Lin.")
+        }
+        #endif
+    }
+
+    /// A write fails while the person changed the choice. The writer stops: no second request, the reactions of the
+    /// Mac show again, and the error shows. A new tap works.
+    @MainActor
+    func testAFailedReactionStopsAndANewTapWorks() async throws {
+        #if !(DEBUG && targetEnvironment(simulator))
+        throw XCTSkip("This HTTP fixture requires a debug simulator build.")
+        #else
+        let state = try PreviewStateFixture.load()
+        let server = try TeamServer(state: APIJSON.encoder().encode(state))
+        let address = try await server.start()
+        defer { server.stop() }
+        try await withPairedStore(address: address) { store in
+            server.addMessage("Lunch at noon?", announce: false)
+            await store.loadTeamChat("r1")
+            server.failReactions(true)
+            server.deferReactions(true)
+            try tap(store, "❤️")
+            try await waitUntil { server.deferredReactions == 1 }
+            try tap(store, "😂")
+            try await Task.sleep(for: .milliseconds(300))
+            server.deferReactions(false)
+            server.releaseDeferredReactions()
+            try await waitUntil { self.settled(store) }
+            try await Task.sleep(for: .milliseconds(300))
+            XCTAssertEqual(server.sentReactions, ["❤️"], "The writer stops after a failure.")
+            XCTAssertEqual(shownReactions(store), [], "The reaction goes back.")
+            XCTAssertEqual(store.error, "The relay of the team does not answer. Try again later.")
+            server.failReactions(false)
+            try tap(store, "👍")
+            try await waitUntil { self.settled(store) && server.ownReaction(1) == "👍" }
+            XCTAssertEqual(shownReactions(store), [TeamReaction(emoji: "👍", members: ["m0"], mine: true)])
         }
         #endif
     }
@@ -1344,49 +1422,11 @@ final class TeamScreenTests: XCTestCase {
             server.dropReactionsKey()
             server.addMessage("Lunch at noon?", announce: false)
             await store.loadTeamChat("r1")
-            let message = try XCTUnwrap(store.teamChats["r1"]?.messages.first)
-            XCTAssertNil(message.reactions)
-            let sent = await store.reactToTeamMessage("r1", message, emoji: "👍")
-            XCTAssertFalse(sent)
+            XCTAssertNil(store.teamChats["r1"]?.messages.first?.reactions)
+            XCTAssertFalse(try tap(store, "👍"))
+            try await Task.sleep(for: .milliseconds(300))
             XCTAssertEqual(server.sentReactions, [])
             XCTAssertNil(shownReactions(store))
-        }
-        #endif
-    }
-
-    /// The first answer is late. The person taps 👍, then 😂, then 👍 again. The third tap has the body of the first, but
-    /// its own key, so the Mac applies it and does not give the stored answer of the first.
-    @MainActor
-    func testEachTapHasItsOwnKey() async throws {
-        #if !(DEBUG && targetEnvironment(simulator))
-        throw XCTSkip("This HTTP fixture requires a debug simulator build.")
-        #else
-        let state = try PreviewStateFixture.load()
-        let server = try TeamServer(state: APIJSON.encoder().encode(state))
-        let address = try await server.start()
-        defer { server.stop() }
-        try await withPairedStore(address: address) { store in
-            server.addMessage("Lunch at noon?", announce: false)
-            await store.loadTeamChat("r1")
-            @MainActor func shown() throws -> TeamMessage {
-                try XCTUnwrap(TeamChatRow.rows(XCTUnwrap(store.teamChats["r1"])).first?.message)
-            }
-            server.holdReactions(true)
-            let start = try shown()
-            let first = Task { await store.reactToTeamMessage("r1", start, emoji: "👍") }
-            try await waitUntil { server.heldReactions == 1 }
-            server.holdReactions(false)
-            let second = await store.reactToTeamMessage("r1", try shown(), emoji: "😂")
-            XCTAssertTrue(second)
-            let third = await store.reactToTeamMessage("r1", try shown(), emoji: "👍")
-            XCTAssertTrue(third)
-            XCTAssertEqual(server.sentReactions, ["👍", "😂", "👍"])
-            XCTAssertEqual(Set(server.reactionKeys).count, 3, "Each tap sends its own key.")
-            XCTAssertEqual(server.ownReaction(1), "👍", "The Mac applied the third tap.")
-            server.releaseReactions()
-            _ = await first.value
-            XCTAssertEqual(store.teamChats["r1"]?.messages.first?.ownReaction, "👍")
-            XCTAssertEqual(try shown().ownReaction, "👍")
         }
         #endif
     }
@@ -1404,13 +1444,13 @@ final class TeamScreenTests: XCTestCase {
         try await withPairedStore(address: address) { store in
             let message = try await ownMessage(store, "Hello")
             server.holdReactions(true)
-            let reaction = Task { await store.reactToTeamMessage("r1", message, emoji: "👍") }
+            try tap(store, "👍")
             try await waitUntil { server.heldReactions == 1 }
             server.holdReactions(false)
             let edited = await store.editTeamMessage("r1", message, text: "Hello again")
             XCTAssertTrue(edited)
             server.releaseReactions()
-            _ = await reaction.value
+            try await waitUntil { self.settled(store) }
             let saved = try XCTUnwrap(store.teamChats["r1"]?.messages.first { $0.id == message.id })
             XCTAssertEqual(saved.text, "Hello again", "The late answer of the reaction must not put back the old text.")
             XCTAssertEqual(saved.ownReaction, "👍")
@@ -1418,7 +1458,7 @@ final class TeamScreenTests: XCTestCase {
         #endif
     }
 
-    /// The answer of an edit comes after the answer of a reaction on the same message. The reaction stays.
+    /// The answer of an edit comes after the reaction of the same message reached the Mac. The reaction stays.
     @MainActor
     func testALateEditAnswerKeepsTheNewReaction() async throws {
         #if !(DEBUG && targetEnvironment(simulator))
@@ -1434,8 +1474,8 @@ final class TeamScreenTests: XCTestCase {
             let edit = Task { await store.editTeamMessage("r1", message, text: "Hello again") }
             try await waitUntil { server.heldEdits == 1 }
             server.holdEdits(false)
-            let reacted = await store.reactToTeamMessage("r1", message, emoji: "😮")
-            XCTAssertTrue(reacted)
+            try tap(store, "😮")
+            try await waitUntil { self.settled(store) }
             server.releaseEdits()
             let edited = await edit.value
             XCTAssertTrue(edited)
@@ -1518,6 +1558,13 @@ private final class TeamServer: @unchecked Sendable {
     /// False for a Mac with an older Coconut: its messages have no `reactions`.
     private var reactionsKey = true
     private var holdingReactions = false
+    private var deferringReactions = false
+    private var deferredReaction: [@Sendable () -> Void] = []
+    var deferredReactions: Int { lock.withLock { deferredReaction.count } }
+    /// The reaction requests that came and got no answer yet, and the most of them at one time.
+    private var reactionsOpen = 0
+    private var mostReactionsOpen = 0
+    var mostOpenReactions: Int { lock.withLock { mostReactionsOpen } }
     private var heldReaction: [@Sendable () -> Void] = []
     var heldReactions: Int { lock.withLock { heldReaction.count } }
     private var failingReactions = false
@@ -1623,6 +1670,31 @@ private final class TeamServer: @unchecked Sendable {
     func failReactions(_ fail: Bool) { lock.withLock { failingReactions = fail } }
     /// The Mac has an older Coconut: no `reactions` in a message.
     func dropReactionsKey() { lock.withLock { reactionsKey = false } }
+
+    /// Keeps each reaction request without applying it. `releaseDeferredReactions` applies and answers them, as a Mac
+    /// that gets the request late does.
+    func deferReactions(_ on: Bool) { lock.withLock { deferringReactions = on } }
+    func releaseDeferredReactions() {
+        let requests = lock.withLock { defer { deferredReaction = [] }; return deferredReaction }
+        requests.forEach { $0() }
+    }
+
+    /// Applies one reaction request of this Mac's person and gives its status and body. The caller holds the lock.
+    private func applyReaction(_ first: Int, emoji: String, key: String) -> (String, String) {
+        // As the Mac does: a repeat of a key gets the stored answer and changes nothing.
+        if let stored = reactionAnswers[key] { return ("200 OK", stored) }
+        if failingReactions {
+            return ("503 Service Unavailable", #"{"error": "The relay of the team does not answer. Try again later."}"#)
+        }
+        guard let index = messages.firstIndex(where: { $0.first == first }) else {
+            return ("404 Not Found", #"{"error": "This message is no longer in the chat."}"#)
+        }
+        messages[index].reactions.removeAll { $0.member == "m0" }
+        if !emoji.isEmpty { messages[index].reactions.append(("m0", emoji)) }
+        let answer = #"{"room": "r1", "message": \#(json(messages[index]))}"#
+        reactionAnswers[key] = answer
+        return ("200 OK", answer)
+    }
 
     /// A member reacts to the message with this `first`, as the Mac of the member does.
     func react(_ first: Int, member: String, emoji: String) {
@@ -1828,23 +1900,32 @@ private final class TeamServer: @unchecked Sendable {
                     let key = request.components(separatedBy: "\r\n")
                         .first { $0.lowercased().hasPrefix("idempotency-key:") }?
                         .split(separator: ":", maxSplits: 1).last?.trimmingCharacters(in: .whitespaces) ?? ""
-                    body = lock.withLock {
+                    let deferred = lock.withLock {
                         reactionBodies.append(emoji)
                         reactionKeyList.append(key)
-                        // As the Mac does: a repeat of a key gets the stored answer and changes nothing.
-                        if let stored = reactionAnswers[key] { return stored }
-                        if failingReactions {
-                            status = "503 Service Unavailable"
-                            return #"{"error": "The relay of the team does not answer. Try again later."}"#
+                        reactionsOpen += 1
+                        mostReactionsOpen = max(mostReactionsOpen, reactionsOpen)
+                        return deferringReactions
+                    }
+                    if deferred {
+                        // The Mac applies the request only at the release, so a later request that came meanwhile
+                        // would apply first.
+                        let late: @Sendable () -> Void = { [self, queue] in
+                            let (lateStatus, lateBody) = lock.withLock { applyReaction(first, emoji: emoji, key: key) }
+                            let content = Data(lateBody.utf8)
+                            var reply = Data("HTTP/1.1 \(lateStatus)\r\nContent-Type: application/json\r\nContent-Length: \(content.count)\r\nConnection: close\r\n\r\n".utf8)
+                            reply.append(content)
+                            queue.asyncAfter(deadline: .now() + 0.05) {
+                                self.lock.withLock { self.reactionsOpen -= 1 }
+                                connection.send(content: reply, completion: .contentProcessed { _ in connection.cancel() })
+                            }
                         }
-                        guard let index = messages.firstIndex(where: { $0.first == first }) else {
-                            status = "404 Not Found"
-                            return #"{"error": "This message is no longer in the chat."}"#
-                        }
-                        messages[index].reactions.removeAll { $0.member == "m0" }
-                        if !emoji.isEmpty { messages[index].reactions.append(("m0", emoji)) }
-                        let answer = #"{"room": "r1", "message": \#(json(messages[index]))}"#
-                        reactionAnswers[key] = answer
+                        lock.withLock { deferredReaction.append(late) }
+                        return
+                    }
+                    body = lock.withLock {
+                        let (answerStatus, answer) = applyReaction(first, emoji: emoji, key: key)
+                        status = answerStatus
                         return answer
                     }
                 case _ where route.hasPrefix("PATCH /v1/team/rooms/r1/messages/"):
@@ -1894,8 +1975,10 @@ private final class TeamServer: @unchecked Sendable {
                 var reply = Data("HTTP/1.1 \(status)\r\nContent-Type: application/json\r\nContent-Length: \(content.count)\r\nConnection: close\r\n\r\n".utf8)
                 reply.append(content)
                 let answer = reply
-                let send: @Sendable () -> Void = { [queue] in
+                let reaction = route.hasSuffix("/reaction")
+                let send: @Sendable () -> Void = { [self, queue] in
                     queue.asyncAfter(deadline: .now() + (route == "GET /v1/updates" ? 0.25 : 0.05)) {
+                        if reaction { self.lock.withLock { self.reactionsOpen -= 1 } }
                         connection.send(content: answer, completion: .contentProcessed { _ in connection.cancel() })
                     }
                 }
