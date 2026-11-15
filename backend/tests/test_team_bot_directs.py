@@ -41,16 +41,16 @@ def box_text(**fields) -> bytes:
 class TheBox(unittest.TestCase):
     def test_bot_and_page(self):
         self.assertEqual(direct_fields(box_text(to='m', text='Hi', bot=ENTRY, page=PAGE_ENTRY), 'm', page=True),
-                         dict(text='Hi', reply_to=None, bot=ENTRY, page=PAGE_ENTRY))
+                         dict(text='Hi', reply_to=None, bot=ENTRY, page=PAGE_ENTRY, preview=None))
         # A box without `bot` is a message of a chat of two people, and the reader ignores its `page`.
         self.assertEqual(direct_fields(box_text(to='m', text='Hi', page='not an entry'), 'm', page=True),
-                         dict(text='Hi', reply_to=None, bot=None, page=None))
+                         dict(text='Hi', reply_to=None, bot=None, page=None, preview=None))
         # A message of the Mac of the bot: the reader ignores its `page`.
         self.assertEqual(direct_fields(box_text(to='m', text='Hi', bot=ENTRY, page='x'), 'm'),
-                         dict(text='Hi', reply_to=None, bot=ENTRY, page=None))
+                         dict(text='Hi', reply_to=None, bot=ENTRY, page=None, preview=None))
         # Null is an absent field.
         self.assertEqual(direct_fields(box_text(to='m', text='Hi', bot=None, page=None), 'm', page=True),
-                         dict(text='Hi', reply_to=None, bot=None, page=None))
+                         dict(text='Hi', reply_to=None, bot=None, page=None, preview=None))
 
     def test_a_bot_or_a_page_that_is_not_an_entry_id_does_not_fit(self):
         for fields in ({'bot': 'x'}, {'bot': ENTRY.upper()}, {'bot': 7}, {'bot': ENTRY, 'page': 'x'},
@@ -253,7 +253,7 @@ class Routes(BotDirectMacs, unittest.TestCase):
     def test_a_message_to_the_bot(self):
         sent = self.send(self.first, self.bot_id, 'Hello Reporter')
         self.assertEqual(set(sent), {'id', 'first', 'this_mac', 'text', 'reply_to', 'reply', 'reactions', 'created_at',
-                                     'edited_at', 'page'})
+                                     'edited_at', 'page', 'preview'})
         self.assertEqual((sent['text'], sent['this_mac'], sent['page']), ('Hello Reporter', True, None))
         # The box is for the Mac of the bot, and names the bot.
         self.assertEqual(self.plaintext(self.first, sent['id']), {'to': self.lin, 'text': 'Hello Reporter',

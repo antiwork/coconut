@@ -5,7 +5,7 @@ history in `team_messages` (team_store.py). An edit is a new write of the same e
 removal is a `delete` entry over it. The routes are for the chat of the app:
 
 - `GET /v1/team/rooms/<room>/messages?before=<first>&limit=<n>&chat=<id>`: one page of messages, newest first.
-- `POST /v1/team/rooms/<room>/messages` with `{text, reply_to?, mentions?, chat?}`: send a message.
+- `POST /v1/team/rooms/<room>/messages` with `{text, reply_to?, mentions?, chat?, preview?}`: send a message.
 - `PATCH /v1/team/rooms/<room>/messages/<id>` with `{text}`: change a message of this Mac's person.
 - `DELETE /v1/team/rooms/<room>/messages/<id>`: remove a message of this Mac's person. On the admin's Mac, also a
   message of another member or of a bot: an `erase` entry takes it out of the chat on each Mac.
@@ -28,7 +28,8 @@ from secrets import token_hex
 from . import team_keys
 from .team_pages import team_id, team_ids
 from .team_relay import MAX_NUMBER, number
-from .team_store import ACTIVE, MAX_MENTIONS, MAX_TEXT, MESSAGES_EVENT, entry_id, reaction_views, unicode_text
+from .team_store import (ACTIVE, MAX_MENTIONS, MAX_TEXT, MESSAGES_EVENT, entry_id, preview_fields, preview_view,
+                         reaction_views, unicode_text)
 
 log = logging.getLogger(__name__)
 
@@ -39,6 +40,8 @@ MAX_PAGE = 100
 PREVIEW = 200
 GONE_MESSAGE = 'This message is no longer in the chat.'
 OWN_MESSAGE = 'You can change only your own messages.'
+# The app sends only a link preview that fits (docs/team-log.md, "Link previews"), so a person never sees this.
+PREVIEW_MISFIT = 'The link preview does not fit the rules of a preview, so send the message without it.'
 # The label of the entry ID of an `erase` entry (erase_entry).
 ERASE_LABEL = b'coconut room erase'
 
@@ -61,6 +64,18 @@ def message_text(value) -> str:
     if not unicode_text(value):
         raise ServiceError(400, 'Use only valid text in the message.')
     return value
+
+
+def message_preview(value, text: str) -> dict | None:
+    """The link preview of a message that this Mac writes, checked and trimmed, or None without one. A request takes
+    null as an absent preview."""
+    from .service_base import ServiceError
+    if value is None:
+        return None
+    preview = preview_fields(value, text)
+    if preview is None:
+        raise ServiceError(400, PREVIEW_MISFIT)
+    return preview
 
 
 def query_number(data: dict, name: str, default: int | None, low: int, high: int, text: str) -> int | None:
@@ -101,6 +116,7 @@ class TeamMessages:
         from .service_base import ServiceError
         from .team import team_errors
         text = message_text(data.get('text'))
+        preview = message_preview(data.get('preview'), text)
         reply_to, mentions = data.get('reply_to'), data.get('mentions')
         if reply_to is not None and not entry_id(reply_to):
             raise ServiceError(400, GONE_MESSAGE)
@@ -124,11 +140,14 @@ class TeamMessages:
                     fields['reply_to'] = reply_to
                 if mentions:
                     fields['mentions'] = self._team_mention_entries(room, mentions)
+                if preview is not None:
+                    fields['preview'] = preview
             self._team_write(room, entry, False, fields, tries=2)
         return self._team_message_answer(room_id, entry)
 
     def team_edit(self, room_id: str, entry: str, data: dict) -> dict:
-        """Change the text of a message of this Mac's person. The other fields of the message stay.
+        """Change the text of a message of this Mac's person. The other fields of the message stay. The link preview
+        stays only while the new text still contains its `url`.
 
         The edit replaces the write of the message on the relay. The store can have that write with the clock of this
         Mac, when the sync did not read it back yet (TeamStore._relay_time). So the Mac first reads the room to its
@@ -142,8 +161,11 @@ class TeamMessages:
             while self._team_read(room_id):
                 pass
             room, existing = self._team_own_message(room_id, entry)
-            fields = {name: value for name, value in json.loads(existing['payload']).items()
-                      if name not in ('rev', 'at')}
+            payload = json.loads(existing['payload'])
+            fields = {name: value for name, value in payload.items() if name not in ('rev', 'at', 'preview')}
+            preview = preview_fields(payload.get('preview'), text)
+            if preview is not None:
+                fields['preview'] = preview
             # The same text needs no write, so a repeat of an edit without a key changes nothing.
             if fields.get('text') != text:
                 self._team_write(room, entry, False, dict(fields, text=text), tries=2)
@@ -304,6 +326,7 @@ class TeamMessages:
                  'chat': row['chat'],
                  'mentions': [phone_id(entry) for entry in entries if entry in names],
                  'reactions': reaction_views(reactions.get(row['entry'], []), room['member']),
+                 'preview': preview_view(row['preview']),
                  'created_at': row['created_at'], 'edited_at': row['updated_at'] if row['edited'] else None}
                 for row, entries in zip(rows, mentions)]
 

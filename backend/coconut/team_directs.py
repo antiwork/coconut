@@ -9,8 +9,8 @@ are for the app of the person, and only a paired device reaches them on a person
 the member ID of the other person, or the team bot ID of a bot (`t-<room ID>-<entry ID of the bot entry>`):
 
 - `GET /v1/team/rooms/<room>/directs/<chat>/messages?before=<first>&limit=<n>`: one page of the chat, newest first.
-- `POST /v1/team/rooms/<room>/directs/<chat>/messages` with `{text, reply_to?}`: send a direct message. A message to
-  a bot can also have `about_document_id`: the Library ID of a page of that bot.
+- `POST /v1/team/rooms/<room>/directs/<chat>/messages` with `{text, reply_to?, preview?}`: send a direct message. A
+  message to a bot can also have `about_document_id`: the Library ID of a page of that bot.
 - `PATCH /v1/team/rooms/<room>/directs/<chat>/messages/<id>` with `{text}`: change a message of this Mac's person.
 - `DELETE /v1/team/rooms/<room>/directs/<chat>/messages/<id>`: remove a message of this Mac's person.
 - `POST /v1/team/rooms/<room>/directs/<chat>/read` with `{first}`: move the read position of the chat.
@@ -29,9 +29,10 @@ import math
 from secrets import token_hex
 
 from . import team_keys
-from .team_messages import GONE_MESSAGE, MAX_PAGE, PAGE, PREVIEW, message_text, query_number
+from .team_messages import GONE_MESSAGE, MAX_PAGE, PAGE, PREVIEW, message_preview, message_text, query_number
 from .team_relay import HEX64, MAX_NUMBER, number
-from .team_store import ACTIVE, BOT_DIRECTS_EVENT, DIRECTS_EVENT, entry_id, reaction_views
+from .team_store import (ACTIVE, BOT_DIRECTS_EVENT, DIRECTS_EVENT, entry_id, preview_fields, preview_view,
+                         reaction_views)
 
 # The answers of a person's Mac when the member of a chat cannot get a direct message now (rule 2 of the contract).
 NOT_HERE = 'This person is not in this team.'
@@ -105,6 +106,7 @@ class TeamDirects:
         from .service_base import ServiceError
         from .team import team_errors
         text = message_text(data.get('text'))
+        preview = message_preview(data.get('preview'), text)
         reply_to = data.get('reply_to')
         if reply_to is not None and not entry_id(reply_to):
             raise ServiceError(400, GONE_MESSAGE)
@@ -123,12 +125,13 @@ class TeamDirects:
                 if reply_to is not None and not self.team_store.directs_of(room_id, member, [reply_to], bot):
                     raise ServiceError(409, 'The message that you answer is no longer in the chat.')
                 page = self._team_direct_page(room, bot, data) if bot is not None else None
-            self._team_write_direct(room, entry, member, agreement, {'kind': 'direct'}, text, reply_to, bot, page)
+            self._team_write_direct(room, entry, member, agreement, {'kind': 'direct'}, text, reply_to, bot, page,
+                                    preview=preview)
         return self._team_direct_answer(room_id, member, bot, entry)
 
     def team_direct_edit(self, room_id: str, chat: str, entry: str, data: dict) -> dict:
-        """Change the text of a direct message of this Mac's person. The reply, the bot and the page stay. The same text
-        writes nothing.
+        """Change the text of a direct message of this Mac's person. The reply, the bot and the page stay. The link
+        preview stays only while the new text still contains its `url`. The same text writes nothing.
 
         As for an edit in the Team chat, the Mac first reads the room to its end, so the store has the time of the
         relay before the edit replaces the write. The new box needs the agreement key of the other member, so a member
@@ -146,7 +149,8 @@ class TeamDirects:
                     agreement = self._team_direct_reachable(room, member, bot)
                 fields = {name: value for name, value in json.loads(existing['payload']).items()
                           if name not in ('rev', 'at', 'box')}
-                self._team_write_direct(room, entry, member, agreement, fields, text, row['reply_to'], bot, row['page'])
+                self._team_write_direct(room, entry, member, agreement, fields, text, row['reply_to'], bot, row['page'],
+                                        preview=preview_fields(preview_view(row['preview']), text))
         return self._team_direct_answer(room_id, member, bot, entry)
 
     def team_direct_unsend(self, room_id: str, chat: str, entry: str) -> dict:
@@ -264,12 +268,12 @@ class TeamDirects:
 
     def _team_write_direct(self, room: dict, entry: str, member: str, agreement: str, fields: dict, text: str,
                            reply_to: str | None, bot: str | None = None, page: str | None = None,
-                           tries: int = 2) -> None:
+                           tries: int = 2, preview: dict | None = None) -> None:
         """Seal the box of a direct message to `member` and write its entry. `fields` are the other fields of the
-        payload. A message to a bot names its `bot` entry, and the page that it is about. The caller holds the lock of
-        the room, and no lock of the service."""
+        payload. A message to a bot names its `bot` entry, and the page that it is about. `preview` is the checked link
+        preview of a message of the person. The caller holds the lock of the room, and no lock of the service."""
         plaintext = {'to': member, 'text': text}
-        for name, value in (('bot', bot), ('reply_to', reply_to), ('page', page)):
+        for name, value in (('bot', bot), ('reply_to', reply_to), ('page', page), ('preview', preview)):
             if value is not None:
                 plaintext[name] = value
         secrets = team_keys.read(self.root, room['room'])
@@ -277,7 +281,8 @@ class TeamDirects:
                                            agreement, json.dumps(plaintext, ensure_ascii=False,
                                                                  separators=(',', ':')).encode())
         self._team_write(room, entry, False, dict(fields, box=box), tries=tries,
-                         direct={'member': member, 'text': text, 'reply_to': reply_to, 'bot': bot, 'page': page})
+                         direct={'member': member, 'text': text, 'reply_to': reply_to, 'bot': bot, 'page': page,
+                                 'preview': preview})
 
     def _team_own_direct(self, room_id: str, member: str | None, bot: str | None, entry: str,
                          deleted: bool = False) -> tuple[dict, dict, dict | None]:
@@ -332,6 +337,7 @@ class TeamDirects:
         views = [{'id': row['entry'], 'first': row['first'], 'this_mac': row['writer'] == room['member'],
                   'text': row['text'], 'reply_to': row['reply_to'], 'reply': quote(row['reply_to']),
                   'reactions': reaction_views(reactions.get(row['entry'], []), room['member']),
+                  'preview': preview_view(row['preview']),
                   'created_at': row['created_at'], 'edited_at': row['updated_at'] if row['edited'] else None}
                  for row in rows]
         if bot is not None:

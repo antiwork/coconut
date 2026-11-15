@@ -20,7 +20,8 @@ Each table has the room ID in its key, because a Mac can be in more than one roo
   entries of the other members. The Library list reads them and parses no payload. A page row also keeps the pin of
   this Mac and the time of the first write that this Mac saw.
 - `team_messages`: a view of `team_entries` for the chats: one row for each valid `message` entry, in the order of
-  `first`. `chat` is the entry ID of the named chat of the message, or null for the Team chat.
+  `first`. `chat` is the entry ID of the named chat of the message, or null for the Team chat. `preview` is the link
+  preview of the message as JSON, or null.
 - `team_chats`: a view of `team_entries`: the valid `chat` entries of the admin, the named chats of the room.
 - `team_names`: the last name that the store showed for each member and each bot. It stays after a `delete` entry,
   so a message of a member that left keeps a name, and a message of a bot can still name a valid `bot` entry.
@@ -31,8 +32,9 @@ Each table has the room ID in its key, because a Mac can be in more than one roo
   Mac, in the order in which this Mac accepted them (team_turns.py). `started` marks a trigger whose turn began.
 - `team_directs`: the direct messages that this Mac shows: one row for each `direct` entry whose box opens for this
   Mac, with `member`, the other member of the chat. `bot` is the `bot` entry of a chat with a bot, or null for a
-  chat of two people, and `page` the page that a message is about. On a team-only Mac each row is a message of a chat
-  of a person with a bot of this Mac: `member` is the person. No query of the Team chat reads this table.
+  chat of two people, `page` the page that a message is about, and `preview` the link preview as in `team_messages`.
+  On a team-only Mac each row is a message of a chat of a person with a bot of this Mac: `member` is the person. No
+  query of the Team chat reads this table.
 - `team_direct_reads`: the read position of this Mac in each direct chat of two people: one row for each room and
   other member.
 - `team_bot_direct_reads`: the read position of this Mac in each direct chat with a bot: one row for each room and
@@ -181,7 +183,7 @@ LIBRARY_BOT = ('room', 'entry', 'name', 'avatar', 'color', 'team', 'member', 'me
 TEAM_BOT = ('entry', 'member', 'name', 'avatar', 'color', 'open', 'direct')
 # What the chat of the phone gets for a message. TeamStore.messages reads these rows.
 MESSAGE_FIELDS = ('entry', 'first', 'member', 'member_name', 'bot', 'bot_name', 'text', 'reply_to', 'mentions',
-                  'created_at', 'updated_at', 'edited', 'chat')
+                  'created_at', 'updated_at', 'edited', 'chat', 'preview')
 # A message shows only when its `bot` is null or names a `bot` entry of the same member that the store showed once.
 # The bot entry can come after the message, because the relay keeps only its newest write, so the check runs at read
 # time. team_names keeps the bot after a `delete`, so the history of a bot that the team no longer has stays. The same
@@ -203,7 +205,7 @@ MESSAGES_EVENT = 'team_messages.updated'
 # member of the chat, and `writer` is the member that wrote the message. `bot` is the entry ID of the `bot` entry of a
 # chat with a bot, or null for a chat of two people. `page` is the entry ID of the page that a message is about.
 DIRECT_FIELDS = ('entry', 'first', 'writer', 'member', 'member_name', 'text', 'reply_to', 'created_at', 'updated_at',
-                 'edited', 'bot', 'bot_name', 'page')
+                 'edited', 'bot', 'bot_name', 'page', 'preview')
 # A direct message with `bot` shows only while `bot` names a `bot` entry of the member of the chat that the store showed
 # once (team_names), as a message of a bot in the Team chat. The `bot` entry can come after the message, so the check
 # runs at read time.
@@ -241,6 +243,11 @@ MARK_WAIT_MS = 1000
 # The limits of a `message` entry, in Unicode code points and in entry IDs.
 MAX_TEXT = 16000
 MAX_MENTIONS = 16
+# The limits of the texts of a link preview, in Unicode code points (docs/team-log.md, "Link previews").
+MAX_PREVIEW_URL = 2000
+MAX_PREVIEW_TITLE = 200
+MAX_PREVIEW_SITE = 100
+PREVIEW_LIMITS = {'url': MAX_PREVIEW_URL, 'title': MAX_PREVIEW_TITLE, 'site': MAX_PREVIEW_SITE}
 # The unread count of a room stops here, so the count reads at most this many rows.
 MAX_UNREAD = 99
 # The check of a mention (`mention_first`) reads at most this many rows of the index after the read position, the
@@ -422,12 +429,49 @@ def entry_id(value) -> bool:
     return isinstance(value, str) and HEX32.fullmatch(value) is not None
 
 
+def preview_fields(value, text: str) -> dict | None:
+    """The link preview of a message (docs/team-log.md, "Link previews"), or None when it is absent or does not fit.
+
+    The preview is an object with exactly `url`, `title` and `site`. Each is a str of at most its limit in
+    PREVIEW_LIMITS, as sent, and of valid Unicode text without a line break. `title` and `site` are not empty after a
+    trim, and the result has them trimmed. `url` is not empty, starts with `http://` or `https://`, and `text` contains
+    it exactly. A preview that does not fit never makes its message invalid: the message shows without it.
+
+    Another member can write a preview of up to 1 MiB, so the cheap checks come first: the count of the keys, then the
+    type and the length of each value. Each later step reads at most PREVIEW_LIMITS code points of a value. The search
+    of `url` in `text` reads a url of at most MAX_PREVIEW_URL code points in a text that its reader limits to
+    MAX_TEXT code points.
+    """
+    if not isinstance(value, dict) or len(value) != len(PREVIEW_LIMITS) or any(
+            name not in value for name in PREVIEW_LIMITS):
+        return None
+    if not all(isinstance(value[name], str) and len(value[name]) <= limit for name, limit in PREVIEW_LIMITS.items()):
+        return None
+    if not all(unicode_text(value[name]) and value[name].splitlines() == [value[name]] for name in PREVIEW_LIMITS):
+        return None
+    url, title, site = value['url'], value['title'].strip(), value['site'].strip()
+    if not (url and title and site) or not url.startswith(('http://', 'https://')) or url not in text:
+        return None
+    return dict(url=url, title=title, site=site)
+
+
+def stored_preview(preview: dict | None) -> str | None:
+    """The text of the column `preview` for a checked preview, or None."""
+    return json.dumps(preview, ensure_ascii=False) if preview else None
+
+
+def preview_view(stored: str | None) -> dict | None:
+    """The `preview` of a message view: the object of the column `preview`, or None."""
+    return json.loads(stored) if stored else None
+
+
 def message_fields(fields: dict) -> dict | None:
     """What the chat shows of a `message` payload, or None when a field does not fit.
 
     `text` has 1 to MAX_TEXT code points of valid Unicode text. `reply_to`, `bot` and `chat` are entry IDs, and
     `mentions` is a list of at most MAX_MENTIONS entry IDs. A reader takes null as an absent field, so a later writer
-    can write either. Fields that this version does not know stay in the payload, and nothing reads them.
+    can write either. Fields that this version does not know stay in the payload, and nothing reads them. `preview` is
+    the link preview of preview_fields, or None.
     """
     text, reply_to, mentions, bot, chat = (fields.get(name) for name in ('text', 'reply_to', 'mentions', 'bot', 'chat'))
     if not unicode_text(text) or not 0 < len(text) <= MAX_TEXT:
@@ -437,7 +481,8 @@ def message_fields(fields: dict) -> dict | None:
     mentions = [] if mentions is None else mentions
     if not isinstance(mentions, list) or len(mentions) > MAX_MENTIONS or not all(map(entry_id, mentions)):
         return None
-    return dict(text=text, reply_to=reply_to, mentions=list(dict.fromkeys(mentions)), bot=bot, chat=chat)
+    return dict(text=text, reply_to=reply_to, mentions=list(dict.fromkeys(mentions)), bot=bot, chat=chat,
+                preview=preview_fields(fields.get('preview'), text))
 
 
 def chat_fields(fields: dict) -> dict | None:
@@ -459,7 +504,7 @@ def direct_fields(plaintext, to: str, page: bool = False) -> dict | None:
     `bot` is the entry ID of the `bot` entry of a chat with a bot, or absent for a chat of two people. With `page`, the
     reader also takes the field `page`: the entry ID of the page that a message of the person is about. A reader
     ignores `page` in a box without `bot` and in a message of the Mac of the bot, so a person's Mac reads it only in
-    an own message.
+    an own message. `preview` is the link preview of preview_fields, or None.
     """
     fields = box_fields(plaintext, to)
     if fields is None:
@@ -471,7 +516,7 @@ def direct_fields(plaintext, to: str, page: bool = False) -> dict | None:
     about = fields.get('page') if page and bot is not None else None
     if any(value is not None and not entry_id(value) for value in (reply_to, bot, about)):
         return None
-    return dict(text=text, reply_to=reply_to, bot=bot, page=about)
+    return dict(text=text, reply_to=reply_to, bot=bot, page=about, preview=preview_fields(fields.get('preview'), text))
 
 
 def direct_typing_fields(plaintext, to: str) -> dict | None:
@@ -745,6 +790,12 @@ class TeamStore:
                 self.db.execute('RELEASE team_reactions_table')
                 raise
             self.db.execute('RELEASE team_reactions_table')
+        # The link preview of a message as JSON (preview_fields), or null. Only `migrate` adds the column, also to a new
+        # store. No version before this column writes a preview, so no stored entry needs a second read: a preview
+        # that another Mac wrote before this Mac had the column stays out until an edit of its message.
+        for table in ('team_messages', 'team_directs'):
+            if 'preview' not in {row[1] for row in self.db.execute(f'PRAGMA table_info({table})')}:
+                self.db.execute(f'ALTER TABLE {table} ADD COLUMN preview TEXT')
         self._read_marks_again()
 
     def _read_marks_again(self) -> None:
@@ -1430,11 +1481,13 @@ class TeamStore:
             removed = self.db.execute('DELETE FROM team_messages WHERE room=? AND entry=?', (room, entry['id']))
             return removed.rowcount > 0
         self.db.execute('''INSERT INTO team_messages (room, entry, first, member, bot, text, reply_to, mentions,
-            created_at, updated_at, edited, chat) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (room, entry)
-            DO UPDATE SET first=excluded.first, bot=excluded.bot, text=excluded.text, reply_to=excluded.reply_to,
-            mentions=excluded.mentions, updated_at=excluded.updated_at, edited=excluded.edited, chat=excluded.chat''',
+            created_at, updated_at, edited, chat, preview) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT (room, entry) DO UPDATE SET first=excluded.first, bot=excluded.bot, text=excluded.text,
+            reply_to=excluded.reply_to, mentions=excluded.mentions, updated_at=excluded.updated_at,
+            edited=excluded.edited, chat=excluded.chat, preview=excluded.preview''',
                         (room, entry['id'], entry['first'], entry['member'], message['bot'], message['text'],
-                         message['reply_to'], json.dumps(message['mentions']), at, at, int(rev > 1), message['chat']))
+                         message['reply_to'], json.dumps(message['mentions']), at, at, int(rev > 1), message['chat'],
+                         stored_preview(message.get('preview'))))
         return True
 
     def _show_direct(self, room: str, entry: dict, rev: int, direct: dict | None) -> set[tuple[str, str | None]]:
@@ -1455,12 +1508,12 @@ class TeamStore:
             return changed
         bot, page = direct.get('bot'), direct.get('page')
         self.db.execute('''INSERT INTO team_directs (room, entry, first, writer, member, text, reply_to, created_at,
-            updated_at, edited, bot, page) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            updated_at, edited, bot, page, preview) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT (room, entry) DO UPDATE SET first=excluded.first, writer=excluded.writer, member=excluded.member, text=excluded.text,
             reply_to=excluded.reply_to, updated_at=excluded.updated_at, edited=excluded.edited, bot=excluded.bot,
-            page=excluded.page''',
+            page=excluded.page, preview=excluded.preview''',
                         (room, entry['id'], entry['first'], entry['member'], direct['member'], direct['text'],
-                         direct['reply_to'], at, at, int(rev > 1), bot, page))
+                         direct['reply_to'], at, at, int(rev > 1), bot, page, stored_preview(direct.get('preview'))))
         return changed | {(direct['member'], bot)}
 
     def _direct_changed(self, room: str, chats) -> None:
@@ -1923,7 +1976,7 @@ class TeamStore:
     def _message_sql(where: str) -> str:
         # The name of a member or a bot is the last one that the store showed, also after a `delete` (team_names).
         return f'''SELECT m.entry, m.first, m.member, n.name, m.bot, k.name, m.text,
-            m.reply_to, m.mentions, m.created_at, m.updated_at, m.edited, m.chat FROM team_messages m
+            m.reply_to, m.mentions, m.created_at, m.updated_at, m.edited, m.chat, m.preview FROM team_messages m
             LEFT JOIN team_names n ON n.room=m.room AND n.member=m.member AND n.kind='member'
             LEFT JOIN team_names k ON k.room=m.room AND k.entry=m.bot AND k.kind='bot'
             WHERE m.room=? AND {SHOWN_MESSAGE} AND {where}'''
@@ -2067,7 +2120,7 @@ class TeamStore:
         # The name of the other member and of the bot is the last one that the store showed, also after a `delete`
         # (team_names).
         return f'''SELECT d.entry, d.first, d.writer, d.member, n.name, d.text, d.reply_to, d.created_at, d.updated_at,
-            d.edited, d.bot, k.name, d.page FROM team_directs d
+            d.edited, d.bot, k.name, d.page, d.preview FROM team_directs d
             LEFT JOIN team_names n ON n.room=d.room AND n.member=d.member AND n.kind='member'
             LEFT JOIN team_names k ON k.room=d.room AND k.entry=d.bot AND k.kind='bot'
             WHERE d.room=? AND {shown} AND {where}'''
