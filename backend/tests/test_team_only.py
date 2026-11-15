@@ -35,7 +35,8 @@ TEAM_ONLY_MODULES = {'coconut', 'coconut.server', 'coconut.service_base', 'cocon
                      'coconut.team_helper', 'coconut.team_keys', 'coconut.team_messages', 'coconut.team_pages',
                      'coconut.team_relay', 'coconut.team_socket', 'coconut.team_store', 'coconut.team_sync',
                      'coconut.push_relay', 'coconut.team_turns', 'coconut.team_directs', 'coconut.team_epochs',
-                     'coconut.team_typing', 'coconut.team_chats', 'coconut.hermes_notices'}
+                     'coconut.team_typing', 'coconut.team_chats', 'coconut.hermes_notices',
+                     'coconut.team_reactions'}
 
 
 def make_hermes_home(home: Path) -> None:

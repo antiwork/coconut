@@ -27,7 +27,7 @@ from .team_helper import TeamFormatError, TeamHelperError, TeamHelperMissing
 from .team_keys import TeamKeysError
 from .team_relay import TeamRelayError
 from .team_store import (ACTIVE, BOT_DIRECTS_EVENT, DIRECTS_EVENT, DROPPED, GONE, JOINING, MESSAGES_EVENT, PENDING,
-                         REFUSED, REMOVED, SKIPPED, TYPING_EVENT, direct_fields, read_entry)
+                         REFUSED, REMOVED, SKIPPED, TYPING_EVENT, direct_fields, reaction_box_fields, read_entry)
 
 POLL_SECONDS = 30
 MAX_WAIT_SECONDS = 900
@@ -369,7 +369,8 @@ class TeamSync:
         store lacks the write: after a stop between the write to the relay and the write to the store, or when the
         store is behind the relay. Each `direct` entry gets `direct` in its result: the other member of the chat, the
         text, the reply, the bot of a chat with a bot, and the page of an own message, when a box opens and its fields
-        fit, else None. TeamStore.accept then shows or removes the message.
+        fit, else None. A box of a reaction gives `reaction` instead. TeamStore.accept then shows or removes the message
+        or the reaction.
 
         The relay gives a replaced `member` entry at the `seq` of its newest write, so a read from an earlier position
         can meet a direct entry before the `member` entry that it needs. Such an entry gets `wait`: an entry of a
@@ -410,7 +411,9 @@ class TeamSync:
             if writer != own and writer not in keys:
                 opened[index]['wait'] = True
         for index, direct in self._team_open_boxes(room_id, own, secrets, boxes).items():
-            if direct is not None:
+            if direct is not None and 'reaction' in direct:
+                opened[index]['reaction'] = direct['reaction']
+            elif direct is not None:
                 opened[index]['direct'] = direct
             elif entries[index]['member'] == own:
                 opened[index]['wait'] = True
@@ -419,7 +422,8 @@ class TeamSync:
     def _team_open_boxes(self, room_id: str, own: str, secrets: dict, boxes: dict) -> dict:
         """Open boxes with the helper. `boxes` maps a key of the caller to the entry ID, the writer, the box, and the
         public agreement key of each member to try. The result maps each key to what the box gave this Mac (the other
-        member of the chat, the text, the reply, the bot and the page), or None. The caller holds no lock and no
+        member of the chat, the text, the reply, the bot and the page), `{"reaction": ...}` for the box of a reaction
+        (the message, the emoji, the bot, and the other member of the chat in `peer`), or None. The caller holds no lock and no
         transaction."""
         asks = [(key, other, {'entry': entry, 'writer': writer, 'other': other, 'agreement': agreement, 'box': box})
                 for key, (entry, writer, box, others) in boxes.items() if isinstance(box, str)
@@ -437,6 +441,11 @@ class TeamSync:
             shown = direct_fields(answer['plaintext'], other if mine else own, page=mine)
             if shown is not None:
                 results[key] = dict(shown, member=other)
+                continue
+            # A box without a text can be a reaction of the same chat (docs/team-log.md, "Reactions").
+            reaction = reaction_box_fields(answer['plaintext'], other if mine else own)
+            if reaction is not None:
+                results[key] = {'reaction': dict(reaction, peer=other)}
         return results
 
     def _team_retry_directs(self, room_id: str) -> None:
@@ -583,13 +592,14 @@ class TeamSync:
         self._team_write(room, profile['entry'], True, self._team_member_payload(profile))
 
     def _team_write(self, room: dict, entry_id: str, kept: bool, fields: dict, tries: int = 1,
-                    direct: dict | None = None, epoch: int | None = None) -> None:
+                    direct: dict | None = None, epoch: int | None = None, reaction: dict | None = None) -> None:
         """Seal an entry of this Mac, write it to the relay, and put it into the store.
 
         A write with an entry ID that the store has replaces that entry, with the next `rev`. The caller holds the
         lock of the room. `direct` is what the box of a `direct` entry holds for this Mac: the other member of the
-        chat, the text, the reply, the bot and the page. The store does not open an own box again. The body has the
-        epoch of the room, or `epoch`: a `key` entry has the epoch before its new one (TeamEpochs).
+        chat, the text, the reply, the bot and the page. `reaction` is what the box of a reaction holds: the message,
+        the emoji, the other member of the chat (`peer`) and the bot. The store does not open an own box again. The
+        body has the epoch of the room, or `epoch`: a `key` entry has the epoch before its new one (TeamEpochs).
         """
         epoch = room['epoch'] if epoch is None else epoch
         secrets = team_keys.read(self.root, room['room'])
@@ -611,6 +621,8 @@ class TeamSync:
         opened = read_entry({'epoch': epoch, 'payload': payload})
         if fields['kind'] == 'direct':
             opened['direct'] = direct
+            if reaction is not None:
+                opened['reaction'] = reaction
         with self.transaction():
             current = self.team_store.room(room['room'])
             if current is not None:

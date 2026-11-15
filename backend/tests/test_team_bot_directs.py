@@ -252,8 +252,8 @@ class ReadingAChatWithABot(BotDirectMacs, unittest.TestCase):
 class Routes(BotDirectMacs, unittest.TestCase):
     def test_a_message_to_the_bot(self):
         sent = self.send(self.first, self.bot_id, 'Hello Reporter')
-        self.assertEqual(set(sent), {'id', 'first', 'this_mac', 'text', 'reply_to', 'reply', 'created_at', 'edited_at',
-                                     'page'})
+        self.assertEqual(set(sent), {'id', 'first', 'this_mac', 'text', 'reply_to', 'reply', 'reactions', 'created_at',
+                                     'edited_at', 'page'})
         self.assertEqual((sent['text'], sent['this_mac'], sent['page']), ('Hello Reporter', True, None))
         # The box is for the Mac of the bot, and names the bot.
         self.assertEqual(self.plaintext(self.first, sent['id']), {'to': self.lin, 'text': 'Hello Reporter',
