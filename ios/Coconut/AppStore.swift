@@ -2152,7 +2152,7 @@ final class AppStore {
         teamChatChanges[chat, default: 0] += 1
         // On purpose, as for a send: a page that went after a newer read corrects itself at the next update with a
         // change of the documents.
-        teamChats[chat]?.put(answer.message)
+        teamChats[chat]?.putEdit(answer.message)
         return true
     }
 
@@ -2200,9 +2200,12 @@ final class AppStore {
         let key = "reaction-" + message.id
         let change = startMessageChange(chat, key)
         teamChats[chat]?.reacting[message.id] = TeamOwnReaction(emoji: value, member: member)
+        // Each tap has its own key. A tap with the body of an earlier tap whose answer did not come yet must not get
+        // the stored answer of that tap from the Mac.
         let answer: TeamMessageAnswer? = await write("\(chat.path)/messages/\(message.id)/reaction", method: "PUT",
                                                      payload: TeamReactionRequest(emoji: value),
-                                                     as: TeamMessageAnswer.self, refreshInBackground: true)
+                                                     as: TeamMessageAnswer.self, refreshInBackground: true,
+                                                     idempotencyKey: UUID().uuidString)
         // A newer tap on the same message wins over this answer.
         guard isNewestMessageChange(chat, key, change) else {
             if answer != nil { teamChatChanges[chat, default: 0] += 1 }
@@ -2211,7 +2214,7 @@ final class AppStore {
         teamChats[chat]?.reacting[message.id] = nil
         guard let answer else { return false }
         teamChatChanges[chat, default: 0] += 1
-        teamChats[chat]?.put(answer.message)
+        teamChats[chat]?.putReactions(answer.message)
         return true
     }
 

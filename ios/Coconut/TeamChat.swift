@@ -803,6 +803,22 @@ struct TeamChat: Equatable, Sendable {
         messages.insert(message, at: index)
     }
 
+    /// Puts the answer of an edit: only the text and the edited time, the fields that an edit changes. The other
+    /// fields keep what the chat has, so a late answer does not take away a newer reaction. A message that the chat
+    /// does not have goes in whole, as `put` does.
+    mutating func putEdit(_ message: TeamMessage) {
+        guard let index = messages.firstIndex(where: { $0.id == message.id }) else { return put(message) }
+        messages[index].text = message.text
+        messages[index].editedAt = message.editedAt
+    }
+
+    /// Puts the answer of a reaction: only the reactions of a message that the chat has. A late answer does not put
+    /// back an older text.
+    mutating func putReactions(_ message: TeamMessage) {
+        guard let index = messages.firstIndex(where: { $0.id == message.id }) else { return }
+        messages[index].reactions = message.reactions
+    }
+
     mutating func remove(_ id: String) {
         messages.removeAll { $0.id == id }
         removed.insert(id)

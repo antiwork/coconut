@@ -1354,6 +1354,99 @@ final class TeamScreenTests: XCTestCase {
         #endif
     }
 
+    /// The first answer is late. The person taps 👍, then 😂, then 👍 again. The third tap has the body of the first, but
+    /// its own key, so the Mac applies it and does not give the stored answer of the first.
+    @MainActor
+    func testEachTapHasItsOwnKey() async throws {
+        #if !(DEBUG && targetEnvironment(simulator))
+        throw XCTSkip("This HTTP fixture requires a debug simulator build.")
+        #else
+        let state = try PreviewStateFixture.load()
+        let server = try TeamServer(state: APIJSON.encoder().encode(state))
+        let address = try await server.start()
+        defer { server.stop() }
+        try await withPairedStore(address: address) { store in
+            server.addMessage("Lunch at noon?", announce: false)
+            await store.loadTeamChat("r1")
+            @MainActor func shown() throws -> TeamMessage {
+                try XCTUnwrap(TeamChatRow.rows(XCTUnwrap(store.teamChats["r1"])).first?.message)
+            }
+            server.holdReactions(true)
+            let start = try shown()
+            let first = Task { await store.reactToTeamMessage("r1", start, emoji: "👍") }
+            try await waitUntil { server.heldReactions == 1 }
+            server.holdReactions(false)
+            let second = await store.reactToTeamMessage("r1", try shown(), emoji: "😂")
+            XCTAssertTrue(second)
+            let third = await store.reactToTeamMessage("r1", try shown(), emoji: "👍")
+            XCTAssertTrue(third)
+            XCTAssertEqual(server.sentReactions, ["👍", "😂", "👍"])
+            XCTAssertEqual(Set(server.reactionKeys).count, 3, "Each tap sends its own key.")
+            XCTAssertEqual(server.ownReaction(1), "👍", "The Mac applied the third tap.")
+            server.releaseReactions()
+            _ = await first.value
+            XCTAssertEqual(store.teamChats["r1"]?.messages.first?.ownReaction, "👍")
+            XCTAssertEqual(try shown().ownReaction, "👍")
+        }
+        #endif
+    }
+
+    /// The answer of a reaction comes after the answer of an edit of the same message. The new text stays.
+    @MainActor
+    func testALateReactionAnswerKeepsTheNewText() async throws {
+        #if !(DEBUG && targetEnvironment(simulator))
+        throw XCTSkip("This HTTP fixture requires a debug simulator build.")
+        #else
+        let state = try PreviewStateFixture.load()
+        let server = try TeamServer(state: APIJSON.encoder().encode(state))
+        let address = try await server.start()
+        defer { server.stop() }
+        try await withPairedStore(address: address) { store in
+            let message = try await ownMessage(store, "Hello")
+            server.holdReactions(true)
+            let reaction = Task { await store.reactToTeamMessage("r1", message, emoji: "👍") }
+            try await waitUntil { server.heldReactions == 1 }
+            server.holdReactions(false)
+            let edited = await store.editTeamMessage("r1", message, text: "Hello again")
+            XCTAssertTrue(edited)
+            server.releaseReactions()
+            _ = await reaction.value
+            let saved = try XCTUnwrap(store.teamChats["r1"]?.messages.first { $0.id == message.id })
+            XCTAssertEqual(saved.text, "Hello again", "The late answer of the reaction must not put back the old text.")
+            XCTAssertEqual(saved.ownReaction, "👍")
+        }
+        #endif
+    }
+
+    /// The answer of an edit comes after the answer of a reaction on the same message. The reaction stays.
+    @MainActor
+    func testALateEditAnswerKeepsTheNewReaction() async throws {
+        #if !(DEBUG && targetEnvironment(simulator))
+        throw XCTSkip("This HTTP fixture requires a debug simulator build.")
+        #else
+        let state = try PreviewStateFixture.load()
+        let server = try TeamServer(state: APIJSON.encoder().encode(state))
+        let address = try await server.start()
+        defer { server.stop() }
+        try await withPairedStore(address: address) { store in
+            let message = try await ownMessage(store, "Hello")
+            server.holdEdits(true)
+            let edit = Task { await store.editTeamMessage("r1", message, text: "Hello again") }
+            try await waitUntil { server.heldEdits == 1 }
+            server.holdEdits(false)
+            let reacted = await store.reactToTeamMessage("r1", message, emoji: "😮")
+            XCTAssertTrue(reacted)
+            server.releaseEdits()
+            let edited = await edit.value
+            XCTAssertTrue(edited)
+            let saved = try XCTUnwrap(store.teamChats["r1"]?.messages.first { $0.id == message.id })
+            XCTAssertEqual(saved.ownReaction, "😮", "The late answer of the edit must not take away the reaction.")
+            XCTAssertEqual(saved.text, "Hello again")
+            XCTAssertTrue(saved.isEdited)
+        }
+        #endif
+    }
+
     #if DEBUG && targetEnvironment(simulator)
     /// Pairs a new store with the test Mac. The pairing and the files of the test host come back after the body.
     @MainActor
@@ -1431,6 +1524,14 @@ private final class TeamServer: @unchecked Sendable {
     private var reactionBodies: [String] = []
     /// The `emoji` of each reaction request, in order.
     var sentReactions: [String] { lock.withLock { reactionBodies } }
+    private var reactionKeyList: [String] = []
+    private var reactionAnswers: [String: String] = [:]
+    /// The `Idempotency-Key` of each reaction request, in order.
+    var reactionKeys: [String] { lock.withLock { reactionKeyList } }
+    /// The emoji of this Mac's person on the message with this `first`, as the Mac has it.
+    func ownReaction(_ first: Int) -> String? {
+        lock.withLock { messages.first { $0.first == first }?.reactions.first { $0.member == "m0" }?.emoji }
+    }
     /// The messages of the chat, oldest first.
     private var messages: [ChatMessage] = []
     private var nextFirst = 1
@@ -1724,8 +1825,14 @@ private final class TeamServer: @unchecked Sendable {
                     let first = Int(parts[parts.count - 2].dropFirst()) ?? 0
                     let emoji = request.components(separatedBy: "\r\n\r\n").last
                         .flatMap { try? JSONSerialization.jsonObject(with: Data($0.utf8)) as? [String: Any] }?["emoji"] as? String ?? ""
+                    let key = request.components(separatedBy: "\r\n")
+                        .first { $0.lowercased().hasPrefix("idempotency-key:") }?
+                        .split(separator: ":", maxSplits: 1).last?.trimmingCharacters(in: .whitespaces) ?? ""
                     body = lock.withLock {
                         reactionBodies.append(emoji)
+                        reactionKeyList.append(key)
+                        // As the Mac does: a repeat of a key gets the stored answer and changes nothing.
+                        if let stored = reactionAnswers[key] { return stored }
                         if failingReactions {
                             status = "503 Service Unavailable"
                             return #"{"error": "The relay of the team does not answer. Try again later."}"#
@@ -1736,7 +1843,9 @@ private final class TeamServer: @unchecked Sendable {
                         }
                         messages[index].reactions.removeAll { $0.member == "m0" }
                         if !emoji.isEmpty { messages[index].reactions.append(("m0", emoji)) }
-                        return #"{"room": "r1", "message": \#(json(messages[index]))}"#
+                        let answer = #"{"room": "r1", "message": \#(json(messages[index]))}"#
+                        reactionAnswers[key] = answer
+                        return answer
                     }
                 case _ where route.hasPrefix("PATCH /v1/team/rooms/r1/messages/"):
                     let first = Int(route.split(separator: "/").last?.dropFirst() ?? "") ?? 0
