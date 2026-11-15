@@ -156,6 +156,11 @@ REACTIONS_INDEX = '''CREATE INDEX team_reactions_message ON team_reactions
 # query from the row that has the maximum (https://sqlite.org/lang_select.html, "Bare columns in an aggregate query").
 # So `emoji` is the emoji of the newest row of each message and member. The query reads each row of the chat on these
 # messages one time, and runs no subquery for each row.
+# The reaction of one member on one message of one chat: its row with the highest `seq`. The index
+# team_reactions_message has these columns in this order, so one search finds the row. The values are the room, the
+# message, `peer`, `bot` and the member.
+OWN_REACTION = '''SELECT emoji FROM team_reactions WHERE room=? AND message=? AND peer IS ? AND bot IS ? AND member=?
+    ORDER BY seq DESC LIMIT 1'''
 SHOWN_REACTIONS = '''SELECT message, emoji, member FROM (
     SELECT message, member, emoji, MAX(seq) AS seq FROM team_reactions
     WHERE room=? AND message IN (SELECT value FROM json_each(?)) AND peer IS ? AND bot IS ?
@@ -872,11 +877,14 @@ class TeamStore:
         """Read the `reaction` entries of a store of an older version, one time. That version kept each one as an entry
         of an unknown kind. The pass reads each payload with the reader of an entry.
 
+        The state is a function of the newest write of each entry, so the order of the pass does not matter. The pass
+        walks team_entries one time and reads one row at a time from the cursor, so it holds no list of the entries in
+        memory. It writes only team_reactions, so the walk of team_entries goes on undisturbed.
+
         A reaction of a direct chat is in a box, and only the helper opens a box. So this pass does not find such a
         reaction, and it shows when its member writes it again."""
-        rows = self.db.execute("SELECT room, id, seq, member, payload FROM team_entries WHERE kind='reaction' "
-                               'ORDER BY room, seq')
-        for room, entry, seq, member, payload in rows.fetchall():
+        rows = self.db.execute("SELECT room, id, seq, member, payload FROM team_entries WHERE kind='reaction'")
+        for room, entry, seq, member, payload in rows:
             read = read_payload(payload.encode())
             reaction = reaction_fields(read[1]) if read else None
             if reaction is not None:
@@ -1472,15 +1480,19 @@ class TeamStore:
 
         Each row holds the newest write of one entry, and an empty emoji keeps its row with its `seq`. A view takes the
         row with the highest `seq` for each message, member and chat (SHOWN_REACTIONS). So the state depends only on the
-        newest write of each entry, and each Mac shows the same reactions in whatever order it applies the entries. The
-        chat of a message gets its event only when the reactions that it shows change.
+        newest write of each entry, and each Mac shows the same reactions in whatever order it applies the entries.
+
+        A write changes at most the shown reaction of its own member, at the old place of the entry (its message and
+        chat before) and at its new place. So the store compares only that one reaction, before and after, with one
+        index search each (own_reaction), and the chat of a message gets its event only when it changes.
         """
+        member = entry['member']
         old = self.db.execute('SELECT message, peer, bot FROM team_reactions WHERE room=? AND entry=?',
                               (room, entry['id'])).fetchone()
         chats = {tuple(old)} if old else set()
         if reaction is not None:
             chats.add((reaction['message'], reaction['peer'], reaction['bot']))
-        before = {chat: self._shown_reactions(room, *chat) for chat in chats}
+        before = {chat: self.own_reaction(room, chat[0], member, chat[1], chat[2]) for chat in chats}
         if reaction is None:
             self.db.execute('DELETE FROM team_reactions WHERE room=? AND entry=?', (room, entry['id']))
         else:
@@ -1491,11 +1503,8 @@ class TeamStore:
                             (room, entry['id'], reaction['message'], entry['member'], reaction['emoji'], entry['seq'],
                              reaction['peer'], reaction['bot']))
         for chat, shown in before.items():
-            if self._shown_reactions(room, *chat) != shown:
+            if self.own_reaction(room, chat[0], member, chat[1], chat[2]) != shown:
                 self._reaction_changed(room, *chat)
-
-    def _shown_reactions(self, room: str, message: str, peer: str | None, bot: str | None) -> list[tuple[str, str]]:
-        return self.reactions_of(room, [message], peer, bot).get(message, [])
 
     def _reaction_changed(self, room: str, message: str, peer: str | None, bot: str | None) -> None:
         """Note the chat whose message shows other reactions now, for the event of a change of its messages. A reaction
@@ -1510,8 +1519,9 @@ class TeamStore:
     def own_reaction(self, room: str, message: str, member: str, peer: str | None = None,
                      bot: str | None = None) -> str:
         """The emoji that the reaction of `member` on a message of a chat shows (`peer` and `bot` as in reactions_of),
-        or an empty text."""
-        return next((emoji for emoji, who in self._shown_reactions(room, message, peer, bot) if who == member), '')
+        or an empty text: the emoji of the row of the member with the highest `seq` there (OWN_REACTION)."""
+        row = self.db.execute(OWN_REACTION, (room, message, peer, bot, member)).fetchone()
+        return row[0] if row else ''
 
     def reactions_of(self, room: str, entries, peer: str | None = None,
                      bot: str | None = None) -> dict[str, list[tuple[str, str]]]:

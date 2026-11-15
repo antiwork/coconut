@@ -323,6 +323,41 @@ class ReactionStoreTests(unittest.TestCase):
         self.assertEqual(len(result), messages)
         self.assertLess(work, messages * each // 4, f'{work} thousand steps')
 
+    # The work of N writes of one member for one message. Each write compares only the reaction of its member, with one
+    # index search, so the total work grows as N log N. A write that read each row of the message would take N × N.
+    ENTRIES = 2000
+    # Thousands of steps of SQLite for each entry. A write in the store takes some hundred steps with its entry
+    # row, so the bound has room for that and for the log factor.
+    WORK_PER_ENTRY = 2
+
+    def test_n_entries_of_one_member_through_accept_take_linear_work(self):
+        self.write(1, self.message())
+
+        def writes():
+            for number in range(2, self.ENTRIES + 2):
+                self.write(number, self.reaction(REACTIONS[number % 6]), OTHER)
+        _, work = self.work(writes)
+        self.assertEqual(len(self.reactions()), 1)
+        self.assertLess(work, self.ENTRIES * self.WORK_PER_ENTRY, f'{work} thousand steps')
+
+    def test_the_read_of_an_older_store_takes_linear_work(self):
+        db = self.older_store()
+        db.executemany('INSERT INTO team_entries (room, id, seq, first, member, kind, rev, at, kept, payload) '
+                       "VALUES (?, ?, ?, ?, ?, 'reaction', 1, ?, 0, ?)",
+                       [(ROOM, entry_id(1000 + n), 1000 + n, 1000 + n, OTHER, START + n,
+                         json.dumps(self.reaction(REACTIONS[n % 6]))) for n in range(self.ENTRIES)])
+        store = TeamStore(db)
+        self.db = db
+        _, work = self.work(store.migrate)
+        self.assertEqual(len(store.reactions_of(ROOM, [entry_id(1)])[entry_id(1)]), 2)
+        self.assertLess(work, self.ENTRIES * self.WORK_PER_ENTRY, f'{work} thousand steps')
+
+    def test_the_reaction_of_one_member_is_one_index_search(self):
+        plan = [row[3] for row in self.db.execute('EXPLAIN QUERY PLAN ' + team_store.OWN_REACTION,
+                                                  (ROOM, entry_id(1), None, None, OTHER))]
+        self.assertEqual(plan, ['SEARCH team_reactions USING COVERING INDEX team_reactions_message '
+                                '(room=? AND message=? AND peer=? AND bot=? AND member=?)'])
+
     def test_the_emoji_is_the_one_of_the_newest_row_in_each_order_of_insert(self):
         # The bare column `emoji` comes from the row with the highest `seq`, also when the older row has the higher
         # rowid.
