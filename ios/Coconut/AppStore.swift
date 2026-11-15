@@ -2150,8 +2150,6 @@ final class AppStore {
         teamChats[chat]?.editing[message.id] = nil
         guard let answer else { return false }
         teamChatChanges[chat, default: 0] += 1
-        // On purpose, as for a send: a page that went after a newer read corrects itself at the next update with a
-        // change of the documents.
         teamChats[chat]?.putEdit(answer.message)
         return true
     }
