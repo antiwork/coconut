@@ -46,7 +46,7 @@ private struct LinkPreviewCard: View {
             if large, let image = preview.image {
                 largeCard(preview, image: image)
             } else {
-                LinkPreviewRow(title: preview.title, site: preview.site, image: preview.image)
+                compactRow(preview)
             }
         }
         .buttonStyle(.plain)
@@ -66,21 +66,11 @@ private struct LinkPreviewCard: View {
         .background(BoardStyle.surface)
         .clipShape(RoundedRectangle(cornerRadius: BoardStyle.Radius.medium))
     }
-}
 
-/// The compact card of a page: its image, or the globe, then the title and the site. The chat of an own bot and the
-/// chats of a team share it. A team chat gives no image, and a fill and a corner that fit inside a bubble.
-struct LinkPreviewRow: View {
-    let title: String
-    let site: String
-    var image: URL? = nil
-    var fill: Color = BoardStyle.surface
-    var radius: CGFloat = BoardStyle.Radius.medium
-
-    var body: some View {
+    private func compactRow(_ preview: LinkPreview) -> some View {
         HStack(spacing: BoardStyle.Space.m) {
             Group {
-                if let image {
+                if let image = preview.image {
                     RemotePhoto(url: image)
                 } else {
                     Image(systemName: "globe").font(.title3).foregroundStyle(.secondary)
@@ -89,15 +79,15 @@ struct LinkPreviewRow: View {
             .frame(width: 44, height: 44)
             .background(BoardStyle.line.opacity(0.4))
             .clipShape(RoundedRectangle(cornerRadius: BoardStyle.Radius.small))
-            LinkPreviewText(title: title, site: site)
+            LinkPreviewText(title: preview.title, site: preview.site)
         }
         .padding(8)
-        .frame(maxWidth: 280, alignment: .leading)
-        .background(fill, in: RoundedRectangle(cornerRadius: radius))
+        .frame(width: 280, alignment: .leading)
+        .background(BoardStyle.surface, in: RoundedRectangle(cornerRadius: BoardStyle.Radius.medium))
     }
 }
 
-/// The title (at most two lines) and the site of a page preview.
+/// The title (at most two lines) and the site of a page preview. The agent chat cards and the team chat card share it.
 struct LinkPreviewText: View {
     let title: String
     let site: String

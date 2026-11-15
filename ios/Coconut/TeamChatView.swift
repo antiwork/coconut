@@ -684,7 +684,7 @@ struct TeamMessageRow: View {
     }
 
     private var bubble: some View {
-        VStack(alignment: .leading, spacing: 4) {
+        BubbleStack(spacing: 4) {
             switch TeamRowQuote(message: message, pending: pending) {
             case .page(let page): pageQuote(page)
             case .reply(let id):
@@ -696,7 +696,9 @@ struct TeamMessageRow: View {
                     .accessibilityIdentifier("team-message-quote-\(row.id)")
             case nil: EmptyView()
             }
-            if let preview = row.linkPreview { TeamLinkCard(preview: preview) }
+            if let preview = row.linkPreview {
+                TeamLinkCard(preview: preview).layoutValue(key: BubbleStack.CardWidth.self, value: TeamLinkCard.maxWidth)
+            }
             MessageText(text: shownText, linkColor: own ? BoardStyle.userBubbleLink : .blue, allowsTextSelection: false)
                 .accessibilityLabel(Text(spokenLabel))
                 .accessibilityActions { accessibilityMenu }
@@ -998,16 +1000,20 @@ struct ComposerLinkBar: View {
     }
 }
 
-/// The link preview of a message, at the top of its bubble: the title and the site that the app of the writer sent.
-/// It loads nothing. A tap opens the address with the system.
+/// The link preview of a message, at the top of its bubble: the title and the site that the app of the writer sent,
+/// text only. It loads nothing. A tap opens the address with the system.
 struct TeamLinkCard: View {
+    /// The widest card, as the card of the agent chat. A card never makes a bubble wider than a text of this width.
+    static let maxWidth: CGFloat = 280
     @Environment(\.openURL) private var openURL
     let preview: TeamLinkPreview
 
     var body: some View {
         Button { if let address = preview.address { openURL(address) } } label: {
-            // The card sits inside the bubble: the line fill reads on each bubble, and the corner follows the bubble.
-            LinkPreviewRow(title: preview.title, site: preview.site, fill: BoardStyle.line, radius: BoardStyle.Radius.small)
+            // The line fill reads on each bubble, and the corner follows the corner of the bubble.
+            LinkPreviewText(title: preview.title, site: preview.site)
+                .padding(.horizontal, BoardStyle.Space.m).padding(.vertical, BoardStyle.Space.s)
+                .background(BoardStyle.line, in: RoundedRectangle(cornerRadius: BoardStyle.Radius.small))
         }
         .buttonStyle(.plain)
         .accessibilityElement(children: .ignore)
@@ -1015,6 +1021,50 @@ struct TeamLinkCard: View {
         .accessibilityHint("Opens the link")
         .accessibilityAddTraits(.isLink)
         .accessibilityIdentifier("team-link-preview")
+    }
+}
+
+/// The content of a bubble, from top to bottom, as a leading VStack: each part takes its own width, and the stack takes
+/// the width of the widest part. A part with a `CardWidth` (the link card) takes its own width up to that value, then
+/// the width of the stack. So the card ends at the edge of a wider text, and a short text keeps the card at its own
+/// width. The sizes come from the proposal only, so a row has the same height at each layout.
+struct BubbleStack: Layout {
+    /// The most width of a part that grows to the width of the stack.
+    struct CardWidth: LayoutValueKey {
+        static let defaultValue: CGFloat? = nil
+    }
+
+    var spacing: CGFloat
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let sizes = sizes(proposal, subviews)
+        let height = sizes.reduce(0) { $0 + $1.height } + spacing * CGFloat(max(subviews.count - 1, 0))
+        return CGSize(width: sizes.map(\.width).max() ?? 0, height: height)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        var y = bounds.minY
+        for (subview, size) in zip(subviews, sizes(proposal, subviews)) {
+            subview.place(at: CGPoint(x: bounds.minX, y: y), anchor: .topLeading, proposal: ProposedViewSize(size))
+            y += size.height + spacing
+        }
+    }
+
+    /// The size of each part: a part measures at the width of the proposal; a card at its ideal width, at most its
+    /// `CardWidth` and the proposal, and then at the width of the widest part.
+    private func sizes(_ proposal: ProposedViewSize, _ subviews: Subviews) -> [CGSize] {
+        let measured: [CGSize?] = subviews.map { subview in
+            subview[CardWidth.self] == nil ? subview.sizeThatFits(ProposedViewSize(width: proposal.width, height: nil)) : nil
+        }
+        let cardWidths: [CGFloat] = subviews.compactMap { subview in
+            subview[CardWidth.self].map { limit in
+                min(subview.sizeThatFits(.unspecified).width, limit, proposal.width ?? .infinity)
+            }
+        }
+        let width: CGFloat = (measured.compactMap { $0?.width } + cardWidths).max() ?? 0
+        return zip(subviews, measured).map { subview, size in
+            size ?? CGSize(width: width, height: subview.sizeThatFits(ProposedViewSize(width: width, height: nil)).height)
+        }
     }
 }
 
