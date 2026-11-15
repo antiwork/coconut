@@ -334,7 +334,7 @@ struct TeamMessage: Decodable, Identifiable, Equatable, Sendable {
     var mentions: [String]? = nil
     var createdAt: String
     var editedAt: String? = nil
-    /// The page that a message of a direct chat with a bot is about. The chat does not show it yet.
+    /// The page that a message of a direct chat with a bot is about. The chat shows it as a quote above the text.
     var page: TeamAboutPage? = nil
 
     /// A message of this Mac's person. A bot of this Mac writes as itself, not as the person.
@@ -362,6 +362,139 @@ enum TeamMessageDeletion {
 struct TeamAboutPage: Codable, Equatable, Sendable {
     var id: String? = nil
     var title: String? = nil
+
+    /// The quote of the page, in the form of the quote of a page in the chat of an own bot. A page that is gone has no
+    /// ID, so its quote opens nothing.
+    var quote: MessageReference {
+        MessageReference(messageId: "", text: id == nil ? PageQuoteText.gone : title ?? "", author: "Library",
+                         role: "document", documentId: id)
+    }
+}
+
+extension TeamAboutPage {
+    /// A page of the Library as the subject of a message: "Chat about this page".
+    init(_ document: BotDocument) {
+        self.init(id: document.id, title: document.title)
+    }
+
+    /// What a tap on the quote of the page does: it opens the page in the Library, with `openDocument` where the
+    /// window sets it, else with a push of the page. Nil for a page that is gone, so its quote is no button.
+    func open(openDocument: ((String) -> Void)?, pushRoute: ((any Hashable) -> Void)?) -> (() -> Void)? {
+        guard let id else { return nil }
+        return { if let openDocument { openDocument(id) } else { pushRoute?(DocumentRoute(id: id)) } }
+    }
+}
+
+/// What a message row of a chat of a team shows above its text: the Library page that the message is about, else the
+/// message that it answers. A page goes first, because a message with a page answers no other message.
+enum TeamRowQuote: Equatable {
+    case page(TeamAboutPage)
+    /// The ID of the answered message.
+    case reply(String)
+
+    init?(message: TeamMessage?, pending: TeamPendingMessage?) {
+        if let page = message?.page ?? pending?.page { self = .page(page) }
+        else if let id = message?.replyTo ?? pending?.replyTo { self = .reply(id) }
+        else { return nil }
+    }
+}
+
+/// The composer of a chat of a team: the draft, and the reply, the Library page or the edit above the field. The view
+/// shows it, and each change goes through a function here.
+struct TeamComposerState: Equatable {
+    var draft = ""
+    /// The reply or the Library page that the composer quotes above its field.
+    var quote: TeamComposerQuote?
+    /// The sent message that the person edits. An edit shows no quote.
+    var editing: TeamMessage?
+
+    /// A reply takes the place of a page and of an edit.
+    mutating func reply(to message: TeamMessage) {
+        editing = nil
+        quote = .reply(message)
+    }
+
+    /// An edit takes the place of a reply and of a page. The draft is the text of the message.
+    mutating func edit(_ message: TeamMessage) {
+        quote = nil
+        editing = message
+        draft = message.text
+    }
+
+    /// "Chat about this page": the page takes the place of a reply and of an edit. An edit takes its draft with it.
+    mutating func ask(about page: TeamAboutPage) {
+        if editing != nil { cancelEdit() }
+        quote = .page(page)
+    }
+
+    /// An edit that the Mac did not take comes back with its text, unless the person typed something new or started
+    /// another edit. Only the edit comes back: a reply or a page that the person set in the meantime stays.
+    mutating func restore(edit message: TeamMessage, text: String) {
+        guard draft.isEmpty, editing == nil else { return }
+        editing = message
+        draft = text
+    }
+
+    mutating func cancelEdit() {
+        editing = nil
+        draft = ""
+    }
+
+    /// The cross of the quote: "Cancel reply" or "Remove the page".
+    mutating func removeQuote() { quote = nil }
+
+    /// The person can no longer write in the chat: the closed line takes the place of the composer, and the page goes.
+    mutating func close() {
+        if quote?.page != nil { quote = nil }
+    }
+
+    /// The chat removed a message: an edit or a reply of it goes.
+    mutating func removed(_ id: String) {
+        if editing?.id == id { cancelEdit() }
+        if quote?.reply?.id == id { quote = nil }
+    }
+
+    /// The store saved the new message: the draft and the quote go.
+    mutating func sent() {
+        draft = ""
+        quote = nil
+    }
+}
+
+/// What the composer of a chat of a team quotes above its field: a message that the person answers, or a Library page
+/// that the message is about. A reply and a page do not go together: the newer one takes the place of the other, as in
+/// the chat of an own bot.
+enum TeamComposerQuote: Equatable {
+    case reply(TeamMessage)
+    case page(TeamAboutPage)
+
+    var reply: TeamMessage? { if case .reply(let message) = self { message } else { nil } }
+    var page: TeamAboutPage? { if case .page(let page) = self { page } else { nil } }
+}
+
+extension TeamRooms {
+    /// The direct chat that "Chat about this page" opens for a page of a team bot: the chat with the bot of the page,
+    /// while this person can send the bot a direct message (TeamRoom.directBot). Nil for a page of a bot of this Mac,
+    /// which has the chat of its own bot.
+    func directChat(about document: BotDocument) -> TeamChatKey? {
+        guard let team = document.team, let room = rooms.first(where: { $0.room == team.room }),
+              let bot = room.directBot(document.botId) else { return nil }
+        return TeamChatKey(room: room.room, bot: bot.id)
+    }
+}
+
+/// The chat that "Chat about this page" opens for a page of the Library: the chat of a bot of this Mac, or the direct
+/// chat with the team bot of a team page (TeamRooms.directChat). Nil for each other page, so its menu has no item.
+enum DocumentChatTarget: Equatable {
+    /// The ID of a bot of this Mac.
+    case bot(String)
+    case team(TeamChatKey)
+
+    init?(_ document: BotDocument, bots: [Bot], team: TeamRooms?) {
+        if bots.contains(where: { $0.id == document.botId }) { self = .bot(document.botId) }
+        else if let chat = team?.directChat(about: document) { self = .team(chat) }
+        else { return nil }
+    }
 }
 
 /// One page of the chat, newest first. `before` is the `first` to ask for the next older page, or nil.
@@ -413,6 +546,9 @@ struct TeamPendingMessage: Codable, Identifiable, Equatable, Sendable {
     /// The ID of each team bot and each person that the text names. Nil for a message without a mention, and for a
     /// message that an older app saved.
     var mentions: [String]? = nil
+    /// The Library page that the message is about, in a direct chat with a bot. Nil for each other message, and for a
+    /// message that an older app saved.
+    var page: TeamAboutPage? = nil
 
     var idempotencyKey: String { id }
 

@@ -235,6 +235,17 @@ struct MessageReference: Codable, Equatable, Sendable {
     static func page(_ document: BotDocument) -> MessageReference {
         MessageReference(messageId: "", text: document.title, author: "Library", role: "document", documentId: document.id)
     }
+
+    /// The quote is a Library page, also a page that is no longer in the Library and so has no ID.
+    var isPage: Bool { role == "document" }
+}
+
+/// The texts of a quoted Library page that a person reads, in one place. The chat of an own bot and the direct chat
+/// with a team bot use them.
+enum PageQuoteText {
+    static let remove = "Remove the page"
+    static let gone = "This page is no longer in the Library."
+    static func open(_ title: String) -> String { "Open the page " + title }
 }
 
 struct MessageReactionEvent: Codable, Equatable, Sendable {

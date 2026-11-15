@@ -83,6 +83,9 @@ final class AppStore {
     /// Counts the messages, edits and removals that the Mac confirmed, by chat. A page that the app asked for before
     /// such a change can be older than the change.
     @ObservationIgnored private var teamChatChanges: [TeamChatKey: Int] = [:]
+    /// Counts the updates that say that a document changed. A page of a chat that the app asked for before such an
+    /// update can show a page that went.
+    @ObservationIgnored private var teamDocumentChanges = 0
     /// The read position that the Mac confirmed, and the one on its way, by chat.
     @ObservationIgnored private var teamReadPosted: [TeamChatKey: Int] = [:]
     @ObservationIgnored private var teamReadPosting: [TeamChatKey: Int] = [:]
@@ -100,6 +103,9 @@ final class AppStore {
     @ObservationIgnored private var teamListVersion = 0
     /// A Library page that a chat quotes in its composer when it opens: "Ask the bot about this page". By bot ID.
     var pageQuotes: [String: MessageReference] = [:]
+    /// A Library page that a direct chat with a team bot quotes in its composer when it opens: "Chat about this page".
+    /// By chat key, so only the chat of that key shows it.
+    var teamPageQuotes: [TeamChatKey: TeamAboutPage] = [:]
     var connection: ConnectionState = .unconfigured {
         // A photo from the Mac that failed while the phone was offline loads again.
         didSet { if connection == .connected, oldValue != .connected { NotificationCenter.default.post(name: .coconutMacConnected, object: nil) } }
@@ -1553,7 +1559,8 @@ final class AppStore {
 
     /// The updates carry no documents. They say that a document or a team page changed, so a Library that the app
     /// loaded before loads its list again. A reset skips the events between the cursors, also the changes of
-    /// documents. A Library that never loaded loads when it opens.
+    /// documents. A Library that never loaded loads when it opens. The chats that quote a page read again with the
+    /// changed chats (reloadChangedTeam, AppStore.teamChatsToRead).
     private func reloadChangedDocuments(_ page: StateUpdates) {
         // A Library whose first request runs also loads again: that request can be older than the change.
         guard page.documentsChanged == true || page.reset != nil, documents != nil || latestDocumentLoad != nil else { return }
@@ -1616,7 +1623,9 @@ final class AppStore {
     /// between the cursors, also the team changes. A screen that never loaded loads when it opens.
     private func reloadChangedTeam(_ page: StateUpdates) {
         let chats = page.changedTeamChats
-        reloadTeamChats(page.reset != nil ? nil : chats)
+        // A reset skips the events between the cursors, also the changes of documents.
+        if page.documentsChanged == true || page.reset != nil { teamDocumentChanges += 1 }
+        reloadTeamChats(Self.teamChatsToRead(after: page, chats: teamChats))
         // The row of a team or a direct chat shows its newest message and its unread count, so a change of the chat
         // loads the list too. The list also says who types.
         let typing = !(page.teamTypingChanged ?? []).isEmpty
@@ -1624,17 +1633,25 @@ final class AppStore {
         Task { await loadTeam() }
     }
 
-    /// Reads the newest page again of each changed chat that the app has, or of each chat for nil. A change of the
-    /// messages of a room names the room only, so it reads the Team chat and each named chat of the room.
-    private func reloadTeamChats(_ chats: [TeamChatKey]?) {
-        let changed = chats.map { chats in
-            teamChats.keys.filter { key in
-                chats.contains(key) || (key.chat != nil && chats.contains(TeamChatKey(room: key.room)))
-            }
-        }
-        for chat in changed ?? Array(teamChats.keys) where teamChats[chat] != nil {
+    /// Reads the newest page again of each of these chats that the app has, one time each.
+    private func reloadTeamChats(_ chats: Set<TeamChatKey>) {
+        for chat in chats where teamChats[chat] != nil {
             Task { await loadTeamChat(chat) }
         }
+    }
+
+    /// The chats that read their newest page again for one update, each one time: each chat of a reset; else each
+    /// changed chat that the app has, and after a change of the documents each chat with a team bot that quotes a
+    /// page (teamChatsQuotingPages). A chat whose first request runs reads again in loadTeamChat. A change of the
+    /// messages of a room names the room only, so it reads the Team chat and each named chat of the room.
+    static func teamChatsToRead(after page: StateUpdates, chats: [TeamChatKey: TeamChat]) -> Set<TeamChatKey> {
+        if page.reset != nil { return Set(chats.keys) }
+        let changed = page.changedTeamChats
+        var read = Set(chats.keys.filter { key in
+            changed.contains(key) || (key.chat != nil && changed.contains(TeamChatKey(room: key.room)))
+        })
+        if page.documentsChanged == true { read.formUnion(teamChatsQuotingPages(chats)) }
+        return read
     }
 
     /// The Team screen asked for the list: it has one, or its first request runs. A change during that first request
@@ -1849,11 +1866,12 @@ final class AppStore {
             return true
         }
         guard let client else { return false }
-        for _ in 0..<3 {
+        for attempt in 0..<3 {
             teamChatRequestCount += 1
             let request = teamChatRequestCount
             teamChatRequests[chat] = request
             let changes = teamChatChanges[chat, default: 0]
+            let documents = teamDocumentChanges
             let page: TeamMessagePage
             do { page = try await client.request("\(chat.path)/messages?limit=\(Self.teamPage)\(chat.query)") } catch {
                 guard self.client === client, teamChatRequests[chat] == request, teamListHas(chat) else { return false }
@@ -1864,6 +1882,8 @@ final class AppStore {
             guard self.client === client, teamChatRequests[chat] == request, teamListHas(chat) else { return false }
             // The Mac confirmed a message, an edit or a removal during this request, so the page can be older. Ask again.
             guard changes == teamChatChanges[chat, default: 0] else { continue }
+            // The update reads only the chats that the app has, so it does not read a chat whose first request runs.
+            guard attempt == 2 || !isOlderThanDocumentChange(page, since: documents) else { continue }
             var merged = teamChats[chat] ?? TeamChat()
             // A page that starts the loaded range again makes each read of the old range out of date.
             if merged.merge(page, requested: nil) { teamOlderRequests[chat] = nil }
@@ -1875,6 +1895,14 @@ final class AppStore {
             return true
         }
         return false
+    }
+
+    /// True when a document changed after the request of this page started (`documents` is teamDocumentChanges at
+    /// the start), and a message of the page quotes a page. That page can be gone, so the caller asks again. In a loop
+    /// of 3 tries, the last try takes its answer: the loaded chat then quotes a page, so the next update with a
+    /// change of the documents reads it again (teamChatsQuotingPages), and the chat does not stay without messages.
+    private func isOlderThanDocumentChange(_ page: TeamMessagePage, since documents: Int) -> Bool {
+        documents != teamDocumentChanges && page.messages.contains { $0.page != nil }
     }
 
     /// The most messages of one request that reads loaded older pages again.
@@ -1891,6 +1919,7 @@ final class AppStore {
         let floor = teamChats[chat]?.before ?? 0
         while true {
             let changes = teamChatChanges[chat, default: 0]
+            let documents = teamDocumentChanges
             let page: TeamMessagePage
             do {
                 page = try await client.request(
@@ -1900,6 +1929,10 @@ final class AppStore {
                   teamChats[chat] != nil else { return }
             // A confirmed write can make this page older. The next change reads it again.
             guard changes == teamChatChanges[chat, default: 0] else { return }
+            // After a change of the documents, no next read comes for a chat whose loaded messages quote no page. So
+            // ask for the same range again. Only an update changes the count, and a read gives no update: each new
+            // request needs a new update, so the reads cannot loop.
+            guard !isOlderThanDocumentChange(page, since: documents) else { continue }
             teamChats[chat]?.merge(page, requested: upper, floor: floor)
             guard let next = page.before, next > floor else { return }
             upper = next
@@ -1918,10 +1951,48 @@ final class AppStore {
         teamMessageChanges[chat]?[id] == change && teamListHas(chat)
     }
 
+    /// "Chat about this page": the page waits for the chat of the target, which takes it when it opens.
+    func ask(about document: BotDocument, in target: DocumentChatTarget) {
+        switch target {
+        case .bot(let id): pageQuotes[id] = .page(document)
+        case .team(let chat): teamPageQuotes[chat] = TeamAboutPage(document)
+        }
+    }
+
+    /// Takes the page that the chat of `chat` quotes when it opens ("Chat about this page"). Only the chat of that key
+    /// gets it, only one time, and only while the chat is on the screen: a chat that the person does not see leaves it
+    /// for the chat that the person sees. A chat where the person cannot write takes the page and drops it.
+    func takeTeamPageQuote(_ chat: TeamChatKey, onScreen: Bool, canWrite: Bool) -> TeamAboutPage? {
+        guard onScreen, let page = teamPageQuotes.removeValue(forKey: chat) else { return nil }
+        return canWrite ? page : nil
+    }
+
+    /// Sends the draft of a composer with its reply or its page (sendTeamMessage). False when the store did not save
+    /// it, so the composer keeps the draft.
+    @discardableResult
+    func sendTeamMessage(_ chat: TeamChatKey, from composer: TeamComposerState, mentions: [String] = []) -> Bool {
+        sendTeamMessage(chat, text: composer.draft, replyingTo: composer.quote?.reply, page: composer.quote?.page,
+                        mentions: mentions)
+    }
+
+    /// The loaded direct chats with a team bot that quote a page, each one time. After an update that says that a
+    /// document changed, each reads its messages again, so the quote of a page that went says so and opens nothing.
+    /// A page that went can come back with the same ID, so a chat whose pages all went also reads again. Only an
+    /// update starts these reads, and a read of a chat gives no update: the reads cannot loop.
+    nonisolated static func teamChatsQuotingPages(_ chats: [TeamChatKey: TeamChat]) -> [TeamChatKey] {
+        chats.compactMap { key, chat in
+            key.bot != nil && chat.loaded && chat.messages.contains { $0.page != nil } ? key : nil
+        }
+        .sorted { ($0.room, $0.bot ?? "") < ($1.room, $1.bot ?? "") }
+    }
+
     /// The chat of a room is on screen. It loads its newest page when it opens.
     func openTeamChat(_ chat: TeamChatKey) {
         teamChatsOnScreen.insert(chat)
     }
+
+    /// The chat is on the screen: it appeared and did not disappear since.
+    func isTeamChatOnScreen(_ chat: TeamChatKey) -> Bool { teamChatsOnScreen.contains(chat) }
 
     /// The chat of a room leaves the screen. It keeps its newest page only, so it opens again without stale history.
     func closeTeamChat(_ chat: TeamChatKey) {
@@ -1941,8 +2012,9 @@ final class AppStore {
         }
         teamChats[chat]?.loadingEarlier = true
         defer { if self.client === client { teamChats[chat]?.loadingEarlier = false } }
-        for _ in 0..<3 {
+        for attempt in 0..<3 {
             let changes = teamChatChanges[chat, default: 0]
+            let documents = teamDocumentChanges
             let page: TeamMessagePage
             do {
                 page = try await client.request("\(chat.path)/messages?before=\(before)&limit=\(Self.teamPage)\(chat.query)")
@@ -1956,6 +2028,8 @@ final class AppStore {
             guard self.client === client, teamChats[chat]?.before == before, teamListHas(chat),
                   teamChatsOnScreen.contains(chat) else { return false }
             guard changes == teamChatChanges[chat, default: 0] else { continue }
+            // An update reads only the chats whose loaded messages quote a page, so it does not read this page.
+            guard attempt == 2 || !isOlderThanDocumentChange(page, since: documents) else { continue }
             teamChats[chat]?.merge(page, requested: before)
             return true
         }
@@ -1966,8 +2040,13 @@ final class AppStore {
     /// The message is saved before the composer clears, so a restart keeps it. False when the save failed.
     /// `mentions` are the IDs of the team bots and the people that the text names (TeamMentions.ids). More than the
     /// Mac takes is false too: the app saves nothing, the composer keeps the draft, and the error banner says why.
+    /// `page` is the Library page that the message is about. Only a direct chat with a bot takes it, and then the
+    /// message answers no other message.
     @discardableResult
-    func sendTeamMessage(_ chat: TeamChatKey, text: String, replyingTo answered: TeamMessage?, mentions: [String] = []) -> Bool {
+    func sendTeamMessage(_ chat: TeamChatKey, text: String, replyingTo answered: TeamMessage?, page: TeamAboutPage? = nil,
+                         mentions: [String] = []) -> Bool {
+        let page = chat.bot == nil ? nil : page
+        let answered = page == nil ? answered : nil
         let text = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty, teamListHas(chat) else { return false }
         guard TeamMentions.fits(mentions) else {
@@ -1979,7 +2058,7 @@ final class AppStore {
                              botName: $0.botName, text: String($0.text.prefix(200)))
         }
         let pending = TeamPendingMessage(id: UUID().uuidString, text: text, replyTo: answered?.id, reply: quote,
-                                         createdAt: Self.now, mentions: mentions.isEmpty ? nil : mentions)
+                                         createdAt: Self.now, mentions: mentions.isEmpty ? nil : mentions, page: page)
         teamChats[chat, default: TeamChat()].pending.append(pending)
         do { try saveOutgoing() } catch {
             teamChats[chat]?.pending.removeAll { $0.id == pending.id }
@@ -2017,13 +2096,14 @@ final class AppStore {
             let first = (teamChats[chat]?.newestFirst ?? 0) + 1
             teamChats[chat]?.put(TeamMessage(id: id, first: first, thisMac: true, text: pending.text, replyTo: pending.replyTo,
                                              reply: pending.reply, mentions: pending.mentions,
-                                             createdAt: pending.createdAt))
+                                             createdAt: pending.createdAt, page: pending.page))
             return
         }
         let change = startMessageChange(chat, id)
         let answer: TeamMessageAnswer? = await write("\(chat.path)/messages",
                                                      payload: TeamSendRequest(text: pending.text, replyTo: pending.replyTo,
-                                                                              mentions: pending.mentions, chat: chat.chat),
+                                                                              mentions: pending.mentions, chat: chat.chat,
+                                                                              aboutDocumentId: pending.page?.id),
                                                      as: TeamMessageAnswer.self, refreshInBackground: true,
                                                      idempotencyKey: pending.idempotencyKey)
         // A new pairing or a removal of the room removed the message, or a newer try of it runs.
@@ -2036,6 +2116,8 @@ final class AppStore {
         }
         teamChatChanges[chat, default: 0] += 1
         teamChats[chat]?.pending.remove(at: index)
+        // On purpose: the page of this answer can have gone after a newer read. Then a read answered first, so the
+        // chat is loaded and quotes a page, and the next update with a change of the documents reads it again.
         teamChats[chat]?.put(answer.message)
         try? saveOutgoing()
     }
@@ -2068,6 +2150,8 @@ final class AppStore {
         teamChats[chat]?.editing[message.id] = nil
         guard let answer else { return false }
         teamChatChanges[chat, default: 0] += 1
+        // On purpose, as for a send: a page that went after a newer read corrects itself at the next update with a
+        // change of the documents.
         teamChats[chat]?.put(answer.message)
         return true
     }
@@ -2443,7 +2527,7 @@ final class AppStore {
         if replaced { apply(snapshot, persist: true) }
         // A full state skips the events between the cursors, also the team changes, so a loaded Team screen loads again.
         if replaced, teamAsked { Task { await loadTeam() } }
-        if replaced { reloadTeamChats(nil) }
+        if replaced { reloadTeamChats(Set(teamChats.keys)) }
         markConnected()
         Task { await syncPushRegistration() }
         refreshNativeSettings(using: client)
@@ -2944,8 +3028,10 @@ private struct TeamNotificationsRequest: Encodable { let enabled: Bool }
 private struct TeamNotificationsAnswer: Decodable, Sendable { let room: String; let notifications: Bool }
 /// The answer of a share or a stop of a page: the document with its teams.
 private struct PageShareAnswer: Decodable, Sendable { let document: BotDocument }
-/// A nil `mentions` is not in the JSON: a message without a mention sends none.
-private struct TeamSendRequest: Encodable { let text: String; let replyTo: String?; let mentions: [String]?; let chat: String? }
+/// A nil `mentions` or `aboutDocumentId` is not in the JSON: a message without a mention or a page sends none.
+private struct TeamSendRequest: Encodable {
+    let text: String; let replyTo: String?; let mentions: [String]?; let chat: String?; let aboutDocumentId: String?
+}
 private struct TeamEditRequest: Encodable { let text: String }
 private struct TeamReadRequest: Encodable { let first: Int; let chat: String? }
 private struct TeamTypingRequest: Encodable { let chat: String? }

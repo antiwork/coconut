@@ -396,6 +396,7 @@ struct DocumentView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.openChat) private var openChat
     @Environment(\.pushRoute) private var pushRoute
+    @Environment(\.showTeamChat) private var showTeamChat
     let documentId: String
     @State private var document: BotDocument?
     @State private var failed = false
@@ -439,8 +440,8 @@ struct DocumentView: View {
             if let document, let content = document.content {
                 ToolbarItem(placement: .trailingBar) {
                     Menu {
-                        if let bot {
-                            Button { ask(bot, about: document) } label: {
+                        if let target = DocumentChatTarget(listed ?? document, bots: store.bots, team: store.team) {
+                            Button { ask(target, about: document) } label: {
                                 Label("Chat about this page", systemImage: "bubble.left")
                             }
                             .accessibilityIdentifier("document-ask")
@@ -486,10 +487,15 @@ struct DocumentView: View {
         }
     }
 
-    /// Opens the bot's chat with the page quoted in the composer, as a reply quotes a message.
-    private func ask(_ bot: Bot, about document: BotDocument) {
-        store.pageQuotes[bot.id] = .page(document)
-        if let openChat { openChat(bot.id) } else { pushRoute?(ConversationRoute(botId: bot.id)) }
+    /// Opens the chat of the target with the page quoted in the composer, as a reply quotes a message. The chat of a
+    /// bot of this Mac opens as today. The direct chat with a team bot opens where each other way to it opens it: on
+    /// the Chats tab of an iPhone, and in the sidebar of the Mac window.
+    private func ask(_ target: DocumentChatTarget, about document: BotDocument) {
+        store.ask(about: document, in: target)
+        switch target {
+        case .bot(let id): if let openChat { openChat(id) } else { pushRoute?(ConversationRoute(botId: id)) }
+        case .team(let chat): showTeamChat?(chat)
+        }
     }
 
     private func load() async {
