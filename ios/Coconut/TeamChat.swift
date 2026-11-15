@@ -338,6 +338,10 @@ struct TeamMessage: Decodable, Identifiable, Equatable, Sendable {
     var page: TeamAboutPage? = nil
     /// The reactions on the message, in the order of TeamReactions.all. Nil from a Mac without reactions.
     var reactions: [TeamReaction]? = nil
+    /// The preview of the first link of the text, that the app of the writer made. Nil for a message without one.
+    var preview: TeamLinkPreview? = nil
+    /// True when the Mac sent the key `preview`, also as null. A Mac without link previews sends no key.
+    var previewKey = false
 
     /// A message of this Mac's person. A bot of this Mac writes as itself, not as the person.
     var isOwn: Bool { thisMac == true && bot == nil }
@@ -368,6 +372,142 @@ struct TeamMessage: Decodable, Identifiable, Equatable, Sendable {
             (TeamReactions.all.firstIndex(of: $0.emoji) ?? .max) < (TeamReactions.all.firstIndex(of: $1.emoji) ?? .max)
         }
         return copy
+    }
+}
+
+extension TeamMessage {
+    /// The fields of the synthesized decode, and `preview`: a preview that does not fit the rules is left out, and the
+    /// message stays.
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(String.self, forKey: .id)
+        first = try container.decode(Int.self, forKey: .first)
+        member = try container.decodeIfPresent(String.self, forKey: .member)
+        memberName = try container.decodeIfPresent(String.self, forKey: .memberName)
+        thisMac = try container.decodeIfPresent(Bool.self, forKey: .thisMac)
+        bot = try container.decodeIfPresent(String.self, forKey: .bot)
+        botName = try container.decodeIfPresent(String.self, forKey: .botName)
+        text = try container.decode(String.self, forKey: .text)
+        replyTo = try container.decodeIfPresent(String.self, forKey: .replyTo)
+        reply = try container.decodeIfPresent(TeamMessageQuote.self, forKey: .reply)
+        mentions = try container.decodeIfPresent([String].self, forKey: .mentions)
+        createdAt = try container.decode(String.self, forKey: .createdAt)
+        editedAt = try container.decodeIfPresent(String.self, forKey: .editedAt)
+        page = try container.decodeIfPresent(TeamAboutPage.self, forKey: .page)
+        reactions = try container.decodeIfPresent([TeamReaction].self, forKey: .reactions)
+        previewKey = container.contains(.preview)
+        // A preview of a wrong shape decodes to nil. The explicit type keeps one level of optional in each Swift mode.
+        let decoded: TeamLinkPreview? = try? container.decodeIfPresent(TeamLinkPreview.self, forKey: .preview)
+        preview = decoded?.fitting(in: text)
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, first, member, memberName, thisMac, bot, botName, text, replyTo, reply, mentions, createdAt, editedAt
+        case page, reactions, preview
+    }
+}
+
+/// The preview of the first link in a message of a person: the address as the text has it, the title and the name of
+/// the site. The app of the writer reads the page and sends these texts with the message. A
+/// reader shows them and loads nothing.
+struct TeamLinkPreview: Codable, Equatable, Sendable {
+    var url: String
+    var title: String
+    var site: String
+
+    /// The limits of the Mac, in Unicode scalars, as the service counts.
+    static let urlLimit = 2000
+    static let titleLimit = 200
+    static let siteLimit = 100
+
+    init(url: String, title: String, site: String) {
+        self.url = url
+        self.title = title
+        self.site = site
+    }
+
+    /// The preview of a page that the loader read for the link `url` of a draft. A title or a site name of a page can
+    /// have line breaks and runs of spaces: each run becomes one space.
+    init(url: String, page: LinkPreview) {
+        self.init(url: url, title: Self.oneLine(page.title), site: Self.oneLine(page.site))
+    }
+
+    /// The preview as the Mac takes it: the title and the site trimmed, then cut to their limits. Nil when a rule still
+    /// fails, so the message goes without a preview: an address that is not `http` or `https`, that `text` does not
+    /// have exactly, or that is too long, an empty title or site, or a line break.
+    func fitting(in text: String) -> TeamLinkPreview? {
+        let title = Self.cut(title, Self.titleLimit)
+        let site = Self.cut(site, Self.siteLimit)
+        guard Self.fits(url, Self.urlLimit), Self.fits(title, Self.titleLimit), Self.fits(site, Self.siteLimit),
+              url.hasPrefix("https://") || url.hasPrefix("http://"), text.contains(url) else { return nil }
+        return TeamLinkPreview(url: url, title: title, site: site)
+    }
+
+    /// The address that a tap opens.
+    var address: URL? {
+        URL(string: url).flatMap { ["http", "https"].contains($0.scheme?.lowercased()) ? $0 : nil }
+    }
+
+    /// What VoiceOver reads for the card of the preview.
+    var spoken: String { "Link preview: " + title + ", " + site }
+
+    private static func fits(_ value: String, _ limit: Int) -> Bool {
+        (1...limit).contains(value.unicodeScalars.count) && !value.unicodeScalars.contains { scalar in
+            CharacterSet.newlines.contains(scalar) || scalar.properties.generalCategory == .control
+        }
+    }
+
+    /// The trimmed text, cut after the last whole character that fits in `limit` Unicode scalars, and trimmed again.
+    private static func cut(_ text: String, _ limit: Int) -> String {
+        var kept = ""
+        var count = 0
+        for character in text.trimmingCharacters(in: .whitespacesAndNewlines) {
+            count += character.unicodeScalars.count
+            guard count <= limit else { break }
+            kept.append(character)
+        }
+        return kept.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private static func oneLine(_ text: String) -> String {
+        text.split(whereSeparator: { $0.isWhitespace || $0.isNewline }).joined(separator: " ")
+    }
+}
+
+/// The first link of a draft: the address as the draft has it, and the address that the loader reads.
+struct TeamDraftLink: Hashable, Sendable {
+    let text: String
+    let url: URL
+
+    /// The first `http` or `https` link of the text, with the link finder of the app. Nil when the text has none, and
+    /// when the first link is not a public https page (TranscriptPresentation.isPublicWebAddress): the app loads no
+    /// other page.
+    static func first(in text: String) -> TeamDraftLink? {
+        guard text.contains("http"),
+              let detector = try? NSDataDetector(types: NSTextCheckingResult.CheckingType.link.rawValue) else { return nil }
+        for match in detector.matches(in: text, range: NSRange(text.startIndex..., in: text)) {
+            guard let range = Range(match.range, in: text), let url = match.url else { continue }
+            let link = String(text[range])
+            guard link.hasPrefix("https://") || link.hasPrefix("http://") else { continue }
+            return TranscriptPresentation.isPublicWebAddress(url) ? TeamDraftLink(text: link, url: url) : nil
+        }
+        return nil
+    }
+}
+
+/// When the composer reads the page of a link: after a pause in typing, so a link that the person still types does
+/// not load.
+enum TeamComposerPreview {
+    static let pause = Duration.milliseconds(600)
+
+    /// The preview of `link` after the pause. Nil when the task ended in the pause (the link changed), and for a page
+    /// without a title.
+    @MainActor
+    static func load(_ link: TeamDraftLink, pause: Duration = pause,
+                     loader: @MainActor (URL) async -> LinkPreview?) async -> TeamLinkPreview? {
+        try? await Task.sleep(for: pause)
+        guard !Task.isCancelled, let page = await loader(link.url) else { return nil }
+        return TeamLinkPreview(url: link.text, page: page)
     }
 }
 
@@ -540,6 +680,11 @@ struct TeamComposerState: Equatable {
     var quote: TeamComposerQuote?
     /// The sent message that the person edits. An edit shows no quote.
     var editing: TeamMessage?
+    /// The preview of the first link of the draft, while it is ready and the person did not remove it. It goes with
+    /// the send. An edit has none.
+    var linkPreview: TeamLinkPreview?
+    /// The link whose preview the person removed. It stays removed until the first link of the draft changes.
+    var removedLink: String?
 
     /// A reply takes the place of a page and of an edit.
     mutating func reply(to message: TeamMessage) {
@@ -547,9 +692,10 @@ struct TeamComposerState: Equatable {
         quote = .reply(message)
     }
 
-    /// An edit takes the place of a reply and of a page. The draft is the text of the message.
+    /// An edit takes the place of a reply, of a page and of a link preview. The draft is the text of the message.
     mutating func edit(_ message: TeamMessage) {
         quote = nil
+        linkPreview = nil
         editing = message
         draft = message.text
     }
@@ -587,10 +733,32 @@ struct TeamComposerState: Equatable {
         if quote?.reply?.id == id { quote = nil }
     }
 
-    /// The store saved the new message: the draft and the quote go.
+    /// The store saved the new message: the draft, the quote and the preview go.
     mutating func sent() {
         draft = ""
         quote = nil
+        linkPreview = nil
+        removedLink = nil
+    }
+
+    /// The first link of the draft is now `link`, or the draft has none. The preview of another link goes at once, and
+    /// a removal of another link ends.
+    mutating func linkChanged(to link: String?) {
+        if linkPreview?.url != link { linkPreview = nil }
+        if removedLink != link { removedLink = nil }
+    }
+
+    /// The page of `link` loaded. Its preview shows while the draft still has that link first, the person did not
+    /// remove it, and no edit started. Nil (a page without a title) shows nothing.
+    mutating func previewLoaded(_ preview: TeamLinkPreview?, for link: String) {
+        guard editing == nil, removedLink != link, TeamDraftLink.first(in: draft)?.text == link else { return }
+        linkPreview = preview
+    }
+
+    /// "Remove preview": the message goes without it.
+    mutating func removePreview() {
+        removedLink = linkPreview?.url
+        linkPreview = nil
     }
 }
 
@@ -682,6 +850,9 @@ struct TeamPendingMessage: Codable, Identifiable, Equatable, Sendable {
     /// The Library page that the message is about, in a direct chat with a bot. Nil for each other message, and for a
     /// message that an older app saved.
     var page: TeamAboutPage? = nil
+    /// The preview of the first link of the text. Nil for a message without one, and for a message that an older app
+    /// saved.
+    var preview: TeamLinkPreview? = nil
 
     var idempotencyKey: String { id }
 
@@ -729,6 +900,10 @@ struct TeamChat: Equatable, Sendable {
 
     /// The `first` of the newest message that the Mac has.
     var newestFirst: Int? { messages.last?.first }
+
+    /// The Mac of the chat takes link previews: its newest message has the key `preview`. A Mac without previews, and a
+    /// chat without a message, give no preview, so the composer shows no bar and sends none.
+    var offersPreviews: Bool { messages.last?.previewKey == true }
 
     /// The newest message of the chat in the app, for the row of a direct chat that the list of the Mac does not have
     /// yet: the newest unsent message, else the newest saved message that shows. Nil for a chat without one.
@@ -803,13 +978,15 @@ struct TeamChat: Equatable, Sendable {
         messages.insert(message, at: index)
     }
 
-    /// Puts the answer of an edit: only the text and the edited time, the fields that an edit changes. The other
-    /// fields keep what the chat has, so a late answer does not take away a newer reaction. A message that the chat
-    /// does not have goes in whole, as `put` does.
+    /// Puts the answer of an edit: only the text, the edited time and the link preview, the fields that an edit
+    /// changes. The Mac drops the preview when the new text no longer has its address. The other fields keep what the
+    /// chat has, so a late answer does not take away a newer reaction. A message that the chat does not have goes in
+    /// whole, as `put` does.
     mutating func putEdit(_ message: TeamMessage) {
         guard let index = messages.firstIndex(where: { $0.id == message.id }) else { return put(message) }
         messages[index].text = message.text
         messages[index].editedAt = message.editedAt
+        messages[index].preview = message.preview
     }
 
     /// The Mac confirmed a reaction of this person: the message that the chat has takes it, as `shown` makes it.
@@ -873,6 +1050,16 @@ struct TeamChatRow: Identifiable, Equatable, Sendable {
     let startsRun: Bool
 
     var message: TeamMessage? { if case .message(let message) = content { message } else { nil } }
+
+    /// The link preview that the bubble shows: the one of a message of a person, also while it waits to send. A
+    /// message of a team agent shows none.
+    var linkPreview: TeamLinkPreview? {
+        switch content {
+        case .message(let message): message.bot == nil ? message.preview : nil
+        case .pending(let pending): pending.preview
+        }
+    }
+
     var text: String {
         switch content {
         case .message(let message): message.text

@@ -1553,6 +1553,155 @@ final class TeamScreenTests: XCTestCase {
         #endif
     }
 
+    // MARK: Link previews
+
+    private static let examplePreview = TeamLinkPreview(url: "https://example.com/a", title: "Example page",
+                                                        site: "example.com")
+
+    /// A send carries the preview of the composer. The message that waits shows it, a restart keeps it, and the retry
+    /// sends it again with the same key. A send without a preview, and a preview that does not fit, send no `preview`.
+    @MainActor
+    func testTheLinkPreviewGoesWithTheSendAndStaysOverARestart() async throws {
+        #if !(DEBUG && targetEnvironment(simulator))
+        throw XCTSkip("This HTTP fixture requires a debug simulator build.")
+        #else
+        let state = try PreviewStateFixture.load()
+        let server = try TeamServer(state: APIJSON.encoder().encode(state))
+        let address = try await server.start()
+        defer { server.stop() }
+        try await withPairedStore(address: address) { store in
+            server.addMessage("Hello", announce: false)
+            await store.loadTeamChat("r1")
+            XCTAssertEqual(store.teamChats["r1"]?.offersPreviews, true)
+            server.failSends(true)
+            var composer = TeamComposerState()
+            composer.draft = "Read https://example.com/a today"
+            composer.linkPreview = Self.examplePreview
+            XCTAssertTrue(store.sendTeamMessage("r1", from: composer))
+            XCTAssertEqual(store.teamChats["r1"]?.pending.first?.preview, Self.examplePreview,
+                           "The message that waits shows the preview.")
+            try await waitUntil { store.teamChats["r1"]?.pending.first?.failed == true }
+            let key = try XCTUnwrap(store.teamChats["r1"]?.pending.first?.idempotencyKey)
+
+            let restarted = AppStore(demo: false)
+            XCTAssertEqual(restarted.teamChats["r1"]?.pending.first?.preview, Self.examplePreview,
+                           "The saved outgoing queue keeps the preview.")
+
+            server.failSends(false)
+            store.retryTeamMessage("r1", id: key)
+            try await waitUntil { store.teamChats["r1"]?.pending.isEmpty == true }
+            let sent: [String: String] = ["url": "https://example.com/a", "title": "Example page", "site": "example.com"]
+            XCTAssertEqual(server.sentPreviews, [sent, sent])
+            XCTAssertEqual(server.sentKeys, [key, key])
+            XCTAssertEqual(store.teamChats["r1"]?.messages.last?.preview, Self.examplePreview)
+
+            XCTAssertTrue(store.sendTeamMessage("r1", text: "No link here", replyingTo: nil))
+            try await waitUntil { server.sentPreviews.count == 3 }
+            XCTAssertNil(server.sentPreviews[2], "A message without a preview sends no preview.")
+
+            var long = Self.examplePreview
+            long.title = " " + String(repeating: "a", count: 201)
+            XCTAssertTrue(store.sendTeamMessage("r1", text: "See https://example.com/a", replyingTo: nil, preview: long))
+            try await waitUntil { server.sentPreviews.count == 4 }
+            XCTAssertEqual(server.sentPreviews[3]?["title"], String(repeating: "a", count: 200),
+                           "A title over the limit goes trimmed and cut.")
+            var moved = Self.examplePreview
+            moved.url = "https://example.com/b"
+            XCTAssertTrue(store.sendTeamMessage("r1", text: "See https://example.com/a", replyingTo: nil, preview: moved))
+            XCTAssertNil(store.teamChats["r1"]?.pending.last?.preview)
+            try await waitUntil { server.sentPreviews.count == 5 }
+            XCTAssertNil(server.sentPreviews[4], "An address that the text does not have sends no preview, and the message goes.")
+        }
+        #endif
+    }
+
+    /// The Mac refuses a preview that the app took as fitting. The store sends the same message one time again
+    /// without it, with the same key, and the person sees no error.
+    @MainActor
+    func testARefusedPreviewSendsTheMessageAgainWithoutIt() async throws {
+        #if !(DEBUG && targetEnvironment(simulator))
+        throw XCTSkip("This HTTP fixture requires a debug simulator build.")
+        #else
+        let state = try PreviewStateFixture.load()
+        let server = try TeamServer(state: APIJSON.encoder().encode(state))
+        let address = try await server.start()
+        defer { server.stop() }
+        try await withPairedStore(address: address) { store in
+            server.addMessage("Hello", announce: false)
+            await store.loadTeamChat("r1")
+            server.refusePreviews()
+            XCTAssertTrue(store.sendTeamMessage("r1", text: "Read https://example.com/a", replyingTo: nil,
+                                                preview: Self.examplePreview))
+            try await waitUntil { store.teamChats["r1"]?.pending.isEmpty == true }
+            let sent: [String: String] = ["url": "https://example.com/a", "title": "Example page", "site": "example.com"]
+            XCTAssertEqual(server.sentPreviews, [sent, nil])
+            XCTAssertEqual(Set(server.sentKeys).count, 1, "The second try has the same key.")
+            XCTAssertEqual(store.teamChats["r1"]?.messages.last?.text, "Read https://example.com/a")
+            XCTAssertNil(store.teamChats["r1"]?.messages.last?.preview)
+            XCTAssertNil(store.error, "The person sees no error.")
+        }
+        #endif
+    }
+
+    /// A Mac without link previews sends no key `preview`. The store sends it no preview.
+    @MainActor
+    func testAMacWithoutPreviewsGetsNoPreview() async throws {
+        #if !(DEBUG && targetEnvironment(simulator))
+        throw XCTSkip("This HTTP fixture requires a debug simulator build.")
+        #else
+        let state = try PreviewStateFixture.load()
+        let server = try TeamServer(state: APIJSON.encoder().encode(state))
+        let address = try await server.start()
+        defer { server.stop() }
+        try await withPairedStore(address: address) { store in
+            server.dropPreviewKey()
+            server.addMessage("Hello", announce: false)
+            await store.loadTeamChat("r1")
+            XCTAssertEqual(store.teamChats["r1"]?.offersPreviews, false)
+            XCTAssertTrue(store.sendTeamMessage("r1", text: "Read https://example.com/a", replyingTo: nil,
+                                                preview: Self.examplePreview))
+            XCTAssertNil(store.teamChats["r1"]?.pending.first?.preview)
+            try await waitUntil { server.sentPreviews.count == 1 }
+            XCTAssertNil(server.sentPreviews[0], "An older Mac gets no preview.")
+        }
+        #endif
+    }
+
+    /// The edit screen sends no preview. The message then shows what the Mac answers: an edit that keeps the address
+    /// keeps the preview, and an edit without it drops the preview.
+    @MainActor
+    func testTheAnswerOfAnEditDropsThePreview() async throws {
+        #if !(DEBUG && targetEnvironment(simulator))
+        throw XCTSkip("This HTTP fixture requires a debug simulator build.")
+        #else
+        let state = try PreviewStateFixture.load()
+        let server = try TeamServer(state: APIJSON.encoder().encode(state))
+        let address = try await server.start()
+        defer { server.stop() }
+        try await withPairedStore(address: address) { store in
+            server.addMessage("Hello", announce: false)
+            await store.loadTeamChat("r1")
+            XCTAssertTrue(store.sendTeamMessage("r1", text: "Read https://example.com/a", replyingTo: nil,
+                                                preview: Self.examplePreview))
+            try await waitUntil { store.teamChats["r1"]?.pending.isEmpty == true }
+            let message = try XCTUnwrap(store.teamChats["r1"]?.messages.last)
+            XCTAssertEqual(message.preview, Self.examplePreview)
+
+            var composer = TeamComposerState()
+            composer.edit(message)
+            XCTAssertNil(composer.linkPreview, "An edit has no preview.")
+            let kept = await store.editTeamMessage("r1", message, text: "Read https://example.com/a now")
+            XCTAssertTrue(kept)
+            XCTAssertEqual(store.teamChats["r1"]?.messages.last?.preview, Self.examplePreview)
+            let edited = try XCTUnwrap(store.teamChats["r1"]?.messages.last)
+            let dropped = await store.editTeamMessage("r1", edited, text: "Read it later")
+            XCTAssertTrue(dropped)
+            XCTAssertNil(store.teamChats["r1"]?.messages.last?.preview, "The answer of the edit drops the preview.")
+            XCTAssertEqual(server.sentPreviews.count, 1, "An edit is no send.")
+        }
+        #endif
+    }
+
     #if DEBUG && targetEnvironment(simulator)
     /// Pairs a new store with the test Mac. The pairing and the files of the test host come back after the body.
     @MainActor
@@ -1620,9 +1769,18 @@ private final class TeamServer: @unchecked Sendable {
         let first: Int; var text: String; let own: Bool; var edited = false
         /// The reaction of each member, in the order of the writes.
         var reactions: [(member: String, emoji: String)] = []
+        /// The link preview of the message as JSON, or nil.
+        var preview: String? = nil
+        /// The address of the preview. An edit keeps the preview only while the new text has it.
+        var previewURL: String? = nil
     }
     /// False for a Mac with an older Coconut: its messages have no `reactions`.
     private var reactionsKey = true
+    /// False for a Mac without link previews: its messages have no `preview`.
+    private var previewKey = true
+    private var previewBodies: [[String: String]?] = []
+    /// The `preview` of each send, in order. Nil when the body had no `preview`.
+    var sentPreviews: [[String: String]?] { lock.withLock { previewBodies } }
     private var holdingReactions = false
     private var holdingSends = false
     private var heldSend: [@Sendable () -> Void] = []
@@ -1739,6 +1897,11 @@ private final class TeamServer: @unchecked Sendable {
     func failReactions(_ fail: Bool) { lock.withLock { failingReactions = fail } }
     /// The Mac has an older Coconut: no `reactions` in a message.
     func dropReactionsKey() { lock.withLock { reactionsKey = false } }
+    /// The Mac has a Coconut without link previews: no `preview` in a message.
+    func dropPreviewKey() { lock.withLock { previewKey = false } }
+    /// The Mac refuses each send with a `preview` with its 400 answer, and saves nothing.
+    private var refusingPreviews = false
+    func refusePreviews() { lock.withLock { refusingPreviews = true } }
 
     /// Keeps the answers of the sends. The Mac saves each message at once, so a page has it before its answer.
     func holdSends(_ hold: Bool) { lock.withLock { holdingSends = hold } }
@@ -1835,9 +1998,10 @@ private final class TeamServer: @unchecked Sendable {
                 + #""mine": \#(members.contains("m0"))}"#
         }
         let reactions = reactionsKey ? #", "reactions": [\#(items.joined(separator: ", "))]"# : ""
+        let preview = previewKey ? #", "preview": \#(message.preview ?? "null")"# : ""
         return #"{"id": "e\#(message.first)", "first": \#(message.first), \#(member), "bot": null, "bot_name": null, "#
             + #""text": "\#(message.text)", "reply_to": null, "reply": null, "mentions": [], "#
-            + #""created_at": "2026-11-10T12:00:00Z", "edited_at": \#(edited)\#(reactions)}"#
+            + #""created_at": "2026-11-10T12:00:00Z", "edited_at": \#(edited)\#(reactions)\#(preview)}"#
     }
 
     /// One page, newest first, as the Mac answers it: the messages under `before`, at most `limit`, and the `before` of
@@ -1957,14 +2121,25 @@ private final class TeamServer: @unchecked Sendable {
                     let sent = request.components(separatedBy: "\r\n\r\n").last
                         .flatMap { try? JSONSerialization.jsonObject(with: Data($0.utf8)) as? [String: Any] }
                     let text = sent?["text"] as? String ?? ""
+                    let preview = sent?["preview"] as? [String: String]
+                    let previewData: Data? = preview.flatMap { value in
+                        try? JSONSerialization.data(withJSONObject: value, options: .sortedKeys)
+                    }
+                    let previewJSON: String? = previewData.map { String(decoding: $0, as: UTF8.self) }
                     body = lock.withLock {
                         keys.append(key)
                         mentionLists.append(sent?["mentions"] as? [String])
+                        previewBodies.append(preview)
                         if failingSends {
                             status = "503 Service Unavailable"
                             return #"{"error": "The relay of the team does not answer. Try again later."}"#
                         }
-                        messages.append(ChatMessage(first: nextFirst, text: text, own: true))
+                        if refusingPreviews && preview != nil {
+                            status = "400 Bad Request"
+                            return #"{"error": "The link preview does not fit the rules of a preview, so send the message without it."}"#
+                        }
+                        messages.append(ChatMessage(first: nextFirst, text: text, own: true, preview: previewJSON,
+                                                    previewURL: preview?["url"]))
                         nextFirst += 1
                         return #"{"room": "r1", "message": \#(json(messages[messages.count - 1]))}"#
                     }
@@ -2016,6 +2191,11 @@ private final class TeamServer: @unchecked Sendable {
                         }
                         messages[index].text = text
                         messages[index].edited = true
+                        // As the Mac does: the preview stays while the new text has its address.
+                        if let url = messages[index].previewURL, !text.contains(url) {
+                            messages[index].preview = nil
+                            messages[index].previewURL = nil
+                        }
                         return #"{"room": "r1", "message": \#(json(messages[index]))}"#
                     }
                 case _ where route.hasPrefix("DELETE /v1/team/rooms/r1/messages/"):
