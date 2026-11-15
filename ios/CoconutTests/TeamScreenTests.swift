@@ -1915,9 +1915,10 @@ private final class TeamServer: @unchecked Sendable {
                             let content = Data(lateBody.utf8)
                             var reply = Data("HTTP/1.1 \(lateStatus)\r\nContent-Type: application/json\r\nContent-Length: \(content.count)\r\nConnection: close\r\n\r\n".utf8)
                             reply.append(content)
+                            let answer = reply
                             queue.asyncAfter(deadline: .now() + 0.05) {
                                 self.lock.withLock { self.reactionsOpen -= 1 }
-                                connection.send(content: reply, completion: .contentProcessed { _ in connection.cancel() })
+                                connection.send(content: answer, completion: .contentProcessed { _ in connection.cancel() })
                             }
                         }
                         lock.withLock { deferredReaction.append(late) }
