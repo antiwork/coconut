@@ -27,7 +27,8 @@ from .team_helper import TeamFormatError, TeamHelperError, TeamHelperMissing
 from .team_keys import TeamKeysError
 from .team_relay import TeamRelayError
 from .team_store import (ACTIVE, BOT_DIRECTS_EVENT, DIRECTS_EVENT, DROPPED, GONE, JOINING, MESSAGES_EVENT, PENDING,
-                         REFUSED, REMOVED, SKIPPED, TYPING_EVENT, direct_fields, reaction_box_fields, read_entry)
+                         REFUSED, REMOVED, SKIPPED, TYPING_EVENT, direct_fields, direct_typing_fields,
+                         reaction_box_fields, read_entry)
 
 POLL_SECONDS = 30
 MAX_WAIT_SECONDS = 900
@@ -354,10 +355,18 @@ class TeamSync:
 
     @property
     def _team_reads_directs(self) -> bool:
-        """True on a person's Mac whose app asked for direct messages (TeamStore.direct_on). Only such a Mac opens the
-        box of a `direct` entry. Each other Mac keeps the entry as an entry of an unknown kind. The caller holds the
+        """True on a person's Mac whose app asked for direct messages (TeamStore.direct_on). Only such a Mac writes the
+        mark `direct` in its `member` entry. It and a Mac for a team only open the box of a `direct` entry
+        (_team_opens_directs). Each other Mac keeps the entry as an entry of an unknown kind. The caller holds the
         service lock."""
         return not self._team_bot_only and self.team_store.direct_on()
+
+    @property
+    def _team_opens_directs(self) -> bool:
+        """True on a Mac that opens the box of a `direct` entry: a person's Mac that reads direct messages, and a Mac
+        for a team only, whose bots answer in a direct chat (docs/team-log.md, "The Mac for a team only"). The caller
+        holds the service lock."""
+        return self._team_bot_only or self._team_reads_directs
 
     def _team_open_directs(self, room: dict, secrets: dict, entries: list[dict], opened: list[dict]) -> list[dict]:
         """Open the boxes of the `direct` entries of one answer of the relay (docs/team-log.md, "Rules for a Mac that
@@ -368,9 +377,9 @@ class TeamSync:
         An own entry tries the key of each other member, because the Mac does not know for whom it wrote when the
         store lacks the write: after a stop between the write to the relay and the write to the store, or when the
         store is behind the relay. Each `direct` entry gets `direct` in its result: the other member of the chat, the
-        text, the reply, the bot of a chat with a bot, and the page of an own message, when a box opens and its fields
-        fit, else None. A box of a reaction gives `reaction` instead. TeamStore.accept then shows or removes the message
-        or the reaction.
+        text, the reply, the bot of a chat with a bot, and the page (see _team_open_boxes), when a box opens and its
+        fields fit, else None. TeamStore.accept then shows or removes the message. A typing sign of a bot gets `sign`,
+        and a reaction gets `reaction`.
 
         The relay gives a replaced `member` entry at the `seq` of its newest write, so a read from an earlier position
         can meet a direct entry before the `member` entry that it needs. Such an entry gets `wait`: an entry of a
@@ -379,7 +388,7 @@ class TeamSync:
         """
         room_id, own = room['room'], room['member']
         with self.lock:
-            if not self._team_reads_directs:
+            if not self._team_opens_directs:
                 return opened
             keys = {member['member']: (member['entry'], member['agreement'])
                     for member in self.team_store.members(room_id)}
@@ -411,7 +420,10 @@ class TeamSync:
             if writer != own and writer not in keys:
                 opened[index]['wait'] = True
         for index, direct in self._team_open_boxes(room_id, own, secrets, boxes).items():
-            if direct is not None and 'reaction' in direct:
+            if direct is not None and 'sign' in direct:
+                # The typing sign of a bot is no message.
+                opened[index]['sign'] = direct['sign']
+            elif direct is not None and 'reaction' in direct:
                 opened[index]['reaction'] = direct['reaction']
             elif direct is not None:
                 opened[index]['direct'] = direct
@@ -422,30 +434,39 @@ class TeamSync:
     def _team_open_boxes(self, room_id: str, own: str, secrets: dict, boxes: dict) -> dict:
         """Open boxes with the helper. `boxes` maps a key of the caller to the entry ID, the writer, the box, and the
         public agreement key of each member to try. The result maps each key to what the box gave this Mac (the other
-        member of the chat, the text, the reply, the bot and the page), `{"reaction": ...}` for the box of a reaction
-        (the message, the emoji, the bot, and the other member of the chat in `peer`), or None. The caller holds no lock and no
-        transaction."""
+        member of the chat, the text, the reply, the bot and the page), to `{"sign": ...}` for the typing sign of a
+        bot in a box for this Mac, to `{"reaction": ...}` for a reaction (the message, the emoji, the bot, and the other
+        member of the chat in `peer`), or to None. The caller holds no lock and no transaction.
+
+        A person's Mac reads `page` only in an own message, the typing sign of a bot of another member, and each
+        reaction. A Mac for a team only keeps only a message with `bot`: the chats of its bots. It reads `page` only in a
+        message of another member, the person. It reads no reaction: its bots never see one (docs/team-log.md,
+        "Reactions")."""
         asks = [(key, other, {'entry': entry, 'writer': writer, 'other': other, 'agreement': agreement, 'box': box})
                 for key, (entry, writer, box, others) in boxes.items() if isinstance(box, str)
                 for other, agreement in others.items()]
         results = dict.fromkeys(boxes)
         if not asks:
             return results
+        bot_only = self._team_bot_only
         answers = self.team_helper.open_direct(room_id, secrets['agreement_key'], own, [ask for _, _, ask in asks])
         for (key, other, ask), answer in zip(asks, answers):
             if results[key] is not None or 'plaintext' not in answer:
                 continue
-            # A message of another member is for this Mac. An own message names the member that it is for. Only an own
-            # message of a chat with a bot can name a page.
+            # A message of another member is for this Mac. An own message names the member that it is for.
             mine = ask['writer'] == own
-            shown = direct_fields(answer['plaintext'], other if mine else own, page=mine)
-            if shown is not None:
+            shown = direct_fields(answer['plaintext'], other if mine else own, page=mine != bot_only)
+            if shown is not None and (shown['bot'] is not None or not bot_only):
                 results[key] = dict(shown, member=other)
-                continue
-            # A box without a text can be a reaction of the same chat (docs/team-log.md, "Reactions").
-            reaction = reaction_box_fields(answer['plaintext'], other if mine else own)
-            if reaction is not None:
-                results[key] = {'reaction': dict(reaction, peer=other)}
+            elif shown is None and not bot_only:
+                # A box without a text can be a reaction of the same chat (docs/team-log.md, "Reactions"), or the
+                # typing sign of a bot of another member. Neither reader takes the box of the other.
+                reaction = reaction_box_fields(answer['plaintext'], other if mine else own)
+                sign = None if mine else direct_typing_fields(answer['plaintext'], own)
+                if reaction is not None:
+                    results[key] = {'reaction': dict(reaction, peer=other)}
+                elif sign is not None:
+                    results[key] = {'sign': sign, 'member': other}
         return results
 
     def _team_retry_directs(self, room_id: str) -> None:
@@ -456,7 +477,7 @@ class TeamSync:
         holds the lock of the room."""
         with self.lock:
             room = self.team_store.room(room_id)
-            if room is None or room['state'] != ACTIVE or not self._team_reads_directs:
+            if room is None or room['state'] != ACTIVE or not self._team_opens_directs:
                 return
             waiting = self.team_store.direct_waits(room_id)
             if not waiting:
@@ -471,7 +492,9 @@ class TeamSync:
         results = self._team_open_boxes(room_id, own, team_keys.read(self.root, room_id), boxes)
         with self.transaction():
             for entry in waiting:
-                self.team_store.end_wait(room_id, entry, results[entry['id']])
+                # A typing sign that waited is old: it shows nothing.
+                result = results[entry['id']]
+                self.team_store.end_wait(room_id, entry, None if result and 'sign' in result else result)
             self._team_tell(room_id)
 
     def _team_accept(self, room: dict, entry: dict, opened: dict, first_epoch: int) -> tuple[str, str | None]:
@@ -538,7 +561,7 @@ class TeamSync:
 
     def _team_notify_directs(self, room_id: str, entries: list[str]) -> None:
         """Fresh direct messages of other members wait in the room. Service queues a notification for each one
-        (PushDelivery.record_direct). A team-only Mac reads no direct message."""
+        (PushDelivery.record_direct). A team-only Mac has no phone, so it does nothing here."""
 
     def _team_turns_due(self) -> None:
         """A new trigger waits. A full Mac queues none, so it does nothing here. See team_turns.TeamTurns."""

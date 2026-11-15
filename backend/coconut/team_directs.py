@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 from secrets import token_hex
 
 from . import team_keys
@@ -262,7 +263,8 @@ class TeamDirects:
         return page if page is not None and not expired(page, self._now()) else None
 
     def _team_write_direct(self, room: dict, entry: str, member: str, agreement: str, fields: dict, text: str,
-                           reply_to: str | None, bot: str | None = None, page: str | None = None) -> None:
+                           reply_to: str | None, bot: str | None = None, page: str | None = None,
+                           tries: int = 2) -> None:
         """Seal the box of a direct message to `member` and write its entry. `fields` are the other fields of the
         payload. A message to a bot names its `bot` entry, and the page that it is about. The caller holds the lock of
         the room, and no lock of the service."""
@@ -274,7 +276,7 @@ class TeamDirects:
         box = self.team_helper.seal_direct(room['room'], entry, secrets['agreement_key'], room['member'], member,
                                            agreement, json.dumps(plaintext, ensure_ascii=False,
                                                                  separators=(',', ':')).encode())
-        self._team_write(room, entry, False, dict(fields, box=box), tries=2,
+        self._team_write(room, entry, False, dict(fields, box=box), tries=tries,
                          direct={'member': member, 'text': text, 'reply_to': reply_to, 'bot': bot, 'page': page})
 
     def _team_own_direct(self, room_id: str, member: str | None, bot: str | None, entry: str,
@@ -349,13 +351,20 @@ class TeamDirects:
     def _team_bot_direct_summary(self, room: dict) -> list[dict]:
         """The direct chats with a bot of a room for GET /v1/team/rooms: one item for each chat with a message that
         shows, newest chat first. A chat with a bot that left stays. `member` and `member_name` name the Mac of the
-        `bot` entry: a reader does not check that this Mac runs Coconut for a team only. `typing` is null: this version does not read the
-        typing sign of a bot in a direct chat. The caller holds the service lock."""
+        `bot` entry: a reader does not check that this Mac runs Coconut for a team only. `typing` is the whole number
+        of seconds that are left of the typing sign of the bot, or null. A sign shows only while the room is active and
+        the member of the bot is in the member list. The caller holds the service lock."""
         from .team_pages import team_id
+
+        def typing(row) -> int | None:
+            if room['state'] != ACTIVE or self.team_store.member(room['room'], row['member']) is None:
+                return None
+            seconds = self.team_store.direct_typing_now(room['room'], row['member'], row['bot'])
+            return None if seconds is None else math.ceil(seconds)
         return [{'bot': team_id(room['room'], row['bot']), 'bot_name': row['bot_name'], 'member': row['member'],
                  'member_name': row['member_name'],
                  'unread': self.team_store.direct_unread(room['room'], row['member'], row['bot']),
                  'last_message': {'first': row['first'], 'this_mac': row['writer'] == room['member'],
                                   'text': row['text'][:PREVIEW], 'created_at': row['created_at']},
-                 'typing': None}
+                 'typing': typing(row)}
                 for row in self.team_store.bot_direct_chats(room['room'])]

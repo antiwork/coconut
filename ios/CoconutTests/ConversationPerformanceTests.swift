@@ -63,9 +63,9 @@ final class ConversationPerformanceTests: XCTestCase {
         let active = bots.filter { !$0.archived }.sorted { scan($0) > scan($1) }
         let sections = ChatSections.make(bots: bots, messages: messages, rooms: [])
         XCTAssertEqual(sections.pinned.map(\.id), ["news", "desk", "old"])
-        XCTAssertEqual(sections.bots.map(\.id), ["forge", "scout", "quiet"])
+        XCTAssertEqual(sections.bots.map(\.id), ["bot-forge", "bot-scout", "bot-quiet"])
         XCTAssertEqual(sections.pinned.map(\.id), active.filter(\.pinned).map(\.id))
-        XCTAssertEqual(sections.bots.map(\.id), active.filter { !$0.pinned }.map(\.id))
+        XCTAssertEqual(sections.bots.map(\.id), active.filter { !$0.pinned }.map { "bot-" + $0.id })
         XCTAssertTrue(sections.people.isEmpty, "A Mac without a team has no People section.")
     }
 }

@@ -8,7 +8,7 @@ enum MacSelection: Hashable {
     case bot(String)
     /// A page of the Library, by its document ID.
     case document(String)
-    /// The Team chat of a team, or a direct chat with one person of a team.
+    /// The Team chat of a team, a named chat, or a direct chat with one person or one bot of a team.
     case team(TeamChatKey)
 }
 
@@ -319,7 +319,20 @@ struct MacSidebar: View {
             }
             if !sections.bots.isEmpty {
                 Section("Agents") {
-                    ForEach(sections.bots) { bot in row(bot) }
+                    ForEach(sections.bots) { item in
+                        switch item {
+                        case .bot(let bot): row(bot)
+                        default:
+                            // A direct chat with a bot of a team, newest activity first with the bots. It has no pin
+                            // and no delete.
+                            if let chat = item.chat {
+                                PeopleRow(item: item, avatarSize: 32)
+                                    .padding(.vertical, BoardStyle.Space.xs)
+                                    .tag(MacSelection.team(chat))
+                                    .accessibilityIdentifier("sidebar-bot-direct-" + (chat.bot ?? ""))
+                            }
+                        }
+                    }
                 }
             }
         }

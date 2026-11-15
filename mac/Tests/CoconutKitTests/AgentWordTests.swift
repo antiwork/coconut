@@ -10,6 +10,8 @@ final class AgentWordTests: XCTestCase {
     private static let allowed: [(file: String, text: String, reason: String)] = [
         ("mac/Sources/CoconutKit/InstallMode.swift", "FROM bots WHERE", "SQL text: the name of the table bots."),
         ("ios/Coconut/AppStore.swift", "bots", "The route POST /v1/bots of the service: write(\"bots\", …)."),
+        ("ios/Coconut/PushNotifications.swift", "bot",
+         "The key bot of the part direct of a push of a chat with an agent (docs/team-log.md): fields[\"bot\"]."),
     ]
 
     /// The folders of Swift sources. The test skips an optional folder that does not exist.

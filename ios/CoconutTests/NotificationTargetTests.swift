@@ -83,10 +83,10 @@ final class NotificationTargetTests: XCTestCase {
     func testATeamThatTheAppNoLongerHasOpensTheChatsList() {
         let store = AppStore(demo: true)
         let other = String(repeating: "cd", count: 32)
-        XCTAssertEqual(store.teamNotificationPlace(other), .team(other), "A list that is not loaded keeps each chat.")
+        XCTAssertEqual(store.teamNotificationPlace(TeamChatKey(room: other)), .team(other), "A list that is not loaded keeps each chat.")
         store.team = TeamRooms(rooms: [TeamRoom(room: room, name: "Example Team", state: "active")], helper: true)
-        XCTAssertEqual(store.teamNotificationPlace(room), .team(room))
-        XCTAssertEqual(store.teamNotificationPlace(other), .chatList)
+        XCTAssertEqual(store.teamNotificationPlace(TeamChatKey(room: room)), .team(room))
+        XCTAssertEqual(store.teamNotificationPlace(TeamChatKey(room: other)), .chatList)
     }
 
     private func payload(decisionID: String? = nil) -> [AnyHashable: Any] {

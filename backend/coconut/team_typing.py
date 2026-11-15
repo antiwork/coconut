@@ -12,13 +12,17 @@ and `GET /v1/team/rooms` gives the list in `typing`.
 - A Mac for a team only writes the entry of a bot while a turn of the bot runs (BotTyping): `on` true when the turn
   starts in the gateway, again every AGAIN_SECONDS, and `on` false at the end of the turn.
 
-A direct chat shows no typing: a `typing` entry would tell each member that two people talk. No log line of this module
-has a name.
+A `typing` entry would tell each member that two people talk, so a direct chat has no such entry. In a direct chat of a
+person with a bot, the Mac for a team only writes the typing sign of the bot as a `direct` entry that only the person's
+Mac opens (docs/team-log.md, "The Mac for a team only", rule 12): BotTyping with `direct`. The person's Mac reads it in
+TeamStore.accept and gives `typing` in each item of `bot_directs`. A person types in a direct chat without a sign. No
+log line of this module has a name.
 """
 from __future__ import annotations
 
 import hashlib
 import hmac
+import json
 import logging
 import math
 import threading
@@ -38,8 +42,10 @@ FLOOR_SECONDS = 4
 AGAIN_SECONDS = 20
 # How often BotTyping looks whether the adapter of the gateway took the turn.
 SHOWN_SECONDS = 0.2
-# The label of the entry ID of a `typing` entry (typing_entry).
+# The label of the entry ID of a `typing` entry (typing_entry), and of the typing sign of a bot in a direct chat
+# (direct_typing_entry).
 TYPING_LABEL = b'coconut room typing'
+DIRECT_TYPING_LABEL = b'coconut room direct typing'
 # The answer of a Mac for a team only: no person types there.
 TEAM_ONLY = 'This Mac runs Coconut for a team only, so nobody types here.'
 # The clock of FLOOR_SECONDS. A test replaces it, so it needs no wait.
@@ -53,6 +59,13 @@ def typing_entry(token: str, room: str, bot: str | None = None) -> str:
     The member token is the key of the HMAC, as for a `remove` entry. Another member cannot compute the ID and take it
     first, because the relay gives an entry ID to one member only."""
     message = TYPING_LABEL + bytes.fromhex(room) + (bytes.fromhex(bot) if bot else b'')
+    return hmac.new(token.encode(), message, hashlib.sha256).hexdigest()[:32]
+
+
+def direct_typing_entry(token: str, room: str, bot: str, member: str) -> str:
+    """The entry ID of the typing sign of a bot of this Mac (the entry ID of its `bot` entry) in its direct chat with
+    `member`. One entry for each room, bot and person, by the rule of typing_entry."""
+    message = DIRECT_TYPING_LABEL + bytes.fromhex(room) + bytes.fromhex(bot) + bytes.fromhex(member)
     return hmac.new(token.encode(), message, hashlib.sha256).hexdigest()[:32]
 
 
@@ -106,6 +119,17 @@ class TeamTyping:
             fields['chat'] = chat
         self._team_write(room, typing_entry(token, room['room'], bot), False, fields)
 
+    def _team_direct_typing_write(self, room: dict, bot: str, member: str, agreement: str, on: bool) -> None:
+        """Write the typing sign of the bot with the `bot` entry `bot` in its direct chat with `member`: a `direct`
+        entry that is not kept, with a box that only the Mac of `member` opens. `agreement` is the public agreement key
+        of that member. The caller holds the lock of the room, and no lock of the service."""
+        secrets = team_keys.read(self.root, room['room'])
+        plaintext = json.dumps({'to': member, 'bot': bot, 'on': on}, separators=(',', ':')).encode()
+        entry = direct_typing_entry(secrets['token'], room['room'], bot, member)
+        box = self.team_helper.seal_direct(room['room'], entry, secrets['agreement_key'], room['member'], member,
+                                           agreement, plaintext)
+        self._team_write(room, entry, False, {'kind': 'direct', 'box': box})
+
     def _team_typing_view(self, room: dict, members: list[dict], chat: str | None = None) -> list[dict]:
         """`typing` of one chat of a room view (None for the Team chat): each other subject that types there now, the
         earliest start first. `members` are the
@@ -128,14 +152,16 @@ class TeamTyping:
 
 class BotTyping:
     """The `typing` entry of one bot of a Mac for a team only while one turn runs (team_turns.py), on a thread of its
-    own, so a write never fails or delays the turn.
+    own, so a write never fails or delays the turn. In a direct chat (`direct`, the member ID of the person), it writes
+    the typing sign of the bot for that person in place of the `typing` entry.
 
     The thread waits until the adapter of the gateway shows the turn (`started`). Then it writes `on` true, again every
     AGAIN_SECONDS, and `on` false after `stop`. A turn that ends before the adapter shows it writes nothing. A turn that
     gets a notice at once (no adapter) never starts this thread. A failed write gives one log line."""
 
-    def __init__(self, service, room: str, bot: str, started, chat: str | None = None):
+    def __init__(self, service, room: str, bot: str, started, chat: str | None = None, direct: str | None = None):
         self.service, self.room, self.bot, self.started, self.chat = service, room, bot, started, chat
+        self.direct = direct
         self.done = threading.Event()
         self.thread = threading.Thread(target=self.run, name='coconut-team-typing', daemon=True)
 
@@ -159,16 +185,21 @@ class BotTyping:
             self.write(False)
 
     def write(self, on: bool) -> bool:
-        """Write the entry while the bot still answers in the room. True when the relay took it."""
+        """Write the entry while the bot still answers in the room, and in a direct chat while the person is in the
+        member list. True when the relay took it."""
         service = self.service
         try:
             with service._team_room_lock(self.room):
                 with service.lock:
                     room = service.team_store.room(self.room)
                     share = service._team_share(self.room, self.bot, None)
-                if room is None or share is None:
+                    person = service.team_store.member(self.room, self.direct) if self.direct else None
+                if room is None or share is None or (self.direct and person is None):
                     return False
-                service._team_typing_write(room, share, on, self.chat)
+                if self.direct:
+                    service._team_direct_typing_write(room, share, self.direct, person['agreement'], on)
+                else:
+                    service._team_typing_write(room, share, on, self.chat)
             return True
         except Exception as error:
             log.warning('coconut.team_turns room %s: the typing entry of the bot %s did not reach the relay (%s).',

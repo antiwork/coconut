@@ -1047,9 +1047,11 @@ final class TeamChatFlowTests: XCTestCase {
     }
 
     /// The Team screen of a member that is not the admin, or of the removed person. COCONUT_TEAM_REMOVE names the
-    /// team. COCONUT_REMOVE_AS names the picture. With COCONUT_REMOVE_SWIPE=1 the test swipes and presses the row of
-    /// the bot Reporter, which opens nothing, and finds no removal. A swipe on the row of a person counts as a tap and
-    /// opens the direct chat, as before.
+    /// team. COCONUT_REMOVE_AS names the picture. With COCONUT_REMOVE_SWIPE=1 the test swipes the row of the bot
+    /// Reporter and finds no removal. A bot without the mark `direct` has a plain row: the test also presses it and
+    /// finds no menu. A bot with the mark has a row that opens its direct chat, as the row of a person: a swipe on it
+    /// counts as a tap. The chat takes the place of the stack (showTeamChat), so Back leads to the Chats list. The test
+    /// then opens the Team screen again and finds no removal there.
     @MainActor
     func testATeamScreenWithoutTheRemoval() throws {
         let env = ProcessInfo.processInfo.environment
@@ -1063,11 +1065,27 @@ final class TeamChatFlowTests: XCTestCase {
         let bot = app.descendants(matching: .any)
             .matching(NSPredicate(format: "identifier BEGINSWITH 'team-bot-' AND label BEGINSWITH 'Reporter'")).firstMatch
         XCTAssertTrue(bot.waitForExistence(timeout: 15))
+        let opensChat = bot.elementType == .button
         bot.swipeLeft()
         XCTAssertFalse(app.buttons["team-remove-swipe"].waitForExistence(timeout: 2), "A member has no removal.")
         shot("remove-\(name)-after-swipe")
-        bot.press(forDuration: 1.2)
-        XCTAssertFalse(app.buttons["team-remove-menu"].waitForExistence(timeout: 2), "A member has no menu.")
+        if opensChat {
+            let chatTitle = app.descendants(matching: .any).matching(identifier: "direct-chat-title").firstMatch
+            if chatTitle.waitForExistence(timeout: 3) {
+                app.navigationBars.buttons.element(boundBy: 0).tap()
+                let row = app.buttons["team-chat-\(room)"]
+                XCTAssertTrue(row.waitForExistence(timeout: 10), "Back leads to the Chats list.")
+                row.tap()
+                let title = app.buttons["team-chat-title"]
+                XCTAssertTrue(title.waitForExistence(timeout: 10))
+                title.tap()
+            }
+            XCTAssertTrue(bot.waitForExistence(timeout: 10))
+            XCTAssertFalse(app.buttons["team-remove-swipe"].exists, "A member has no removal.")
+        } else {
+            bot.press(forDuration: 1.2)
+            XCTAssertFalse(app.buttons["team-remove-menu"].waitForExistence(timeout: 2), "A member has no menu.")
+        }
         XCTAssertFalse(app.buttons["Remove from team"].exists)
     }
 

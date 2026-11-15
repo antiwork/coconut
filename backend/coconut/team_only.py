@@ -350,11 +350,12 @@ class TeamOnlyService(TeamTurns, Documents, Team):
         """POST /v1/gateway/messages: a send of Hermes in a chat of the team outside a turn of Coconut, for example the
         reply of its own turn after a background process. A send becomes a message of the bot without `reply_to`, and
         its entry ID comes from the message ID of Hermes, so a send that the adapter repeats adds none. A message of
-        the chat is complete, so an edit and a delete change nothing."""
+        the chat is complete, so an edit and a delete change nothing. In a direct chat, a send is a direct message of
+        the bot to the person of the chat, while that person is in the member list (TeamTurns._team_say)."""
         home, chat, message_id = data.get('home'), parse_chat(data.get('chat_id')), data.get('message_id')
         if not isinstance(home, str) or chat is None or not isinstance(message_id, str):
             raise ServiceError(400, 'Name the home, the chat and the message.')
-        room, bot_id, named = chat
+        room, bot_id, named, direct = chat
         with self.lock:
             bot = self._team_bot(bot_id) if unicode_text(bot_id) else None
         if bot is None or bot['home'] != os.path.realpath(home):
@@ -365,11 +366,13 @@ class TeamOnlyService(TeamTurns, Documents, Team):
         with self.lock:
             room_row = self.team_store.room(room)
             answers = room_row is not None and bot_id in dict(self.team_store.answering(room))
-            # A send into a named chat that the team removed goes nowhere.
+            # A send into a named chat that the team removed goes nowhere, and so does a send to a person who left.
             gone = named is not None and self.team_store.chat(room, named) is None
+            gone = gone or answers and direct is not None and (direct == room_row['member']
+                                                               or self.team_store.member(room, direct) is None)
         if not answers or room_row['state'] != ACTIVE or gone:
             return {'recorded': False, 'reason': 'The agent does not answer in this team chat.'}
         for number, piece in enumerate(parts(readable_text(text))):
             # A send outside a turn answers no message, so no request must still stand: only the bot must answer.
-            self._team_say(room, bot_id, message_id, number, piece, request=False, chat=named)
+            self._team_say(room, bot_id, message_id, number, piece, request=False, chat=named, direct=direct)
         return {'recorded': True}
