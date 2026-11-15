@@ -4,8 +4,9 @@ Hermes imports this package in each of its processes that loads plugins, so the 
 creates it, and the tools and hooks act only in a Coconut chat of the gateway.
 
 `gateway.platforms.coconut.extra.mode: team` in the profile is the mode of the team chat of a Mac that runs Coconut
-for a team only (team.py). In that mode the plugin registers the platform and its adapter, and nothing else. A fault
-in that mode turns the channel off with one log line, and the gateway and its other channels go on.
+for a team only (team.py). In that mode the plugin registers the guard of the direct chats (privacy.py), the platform
+and its adapter, and nothing else. A fault in that mode turns the channel off with one log line, and the gateway and
+its other channels go on.
 """
 import dataclasses
 import logging
@@ -57,12 +58,15 @@ def mode() -> str | None:
 
 
 def register_team(ctx):
-    """Register the platform with the adapter of the team chat, and nothing else. Each fault, also an import of a
-    Hermes that lacks a part, gives one log line and leaves the channel off. A Hermes that lacks only a field of the
-    registration that the chat needs (team.unregistered) gets one log line and a channel that takes no message."""
+    """Register the guard of the direct chats and the platform with the adapter of the team chat, and nothing else.
+    Each fault, also an import of a Hermes that lacks a part, gives one log line and leaves the channel off. A Hermes
+    that lacks only a field of the registration that the chat needs (team.unregistered) or the middleware of the guard
+    gets one log line and a channel that takes no message."""
     try:
         from gateway.platform_registry import PlatformEntry
-        from . import team
+        from . import privacy, team
+        # The guard also acts on the other platforms of the profile, so it registers also when the channel stays off.
+        unguarded = privacy.register(ctx)
         lacking = team.missing()
         if lacking:
             LOG.warning('Coconut: the team chat stays off, because this Hermes lacks %s. Update Coconut or Hermes.',
@@ -71,7 +75,7 @@ def register_team(ctx):
         options = dict(trusted_inbound=True, display_tier='high', display_overrides=DISPLAY, platform_hint=TEAM_HINT,
                        max_message_length=100_000, emoji='🥥')
         known = {field.name for field in dataclasses.fields(PlatformEntry)}
-        team.TeamAdapter.lacking = team.unregistered(known)
+        team.TeamAdapter.lacking = ', '.join(filter(None, (team.unregistered(known), unguarded))) or None
         if team.TeamAdapter.lacking:
             LOG.warning('Coconut: the team chat takes no message, because this Hermes lacks %s. Update Hermes.',
                         team.TeamAdapter.lacking)

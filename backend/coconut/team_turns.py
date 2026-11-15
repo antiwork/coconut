@@ -69,7 +69,9 @@ DENIED_DIRECT = 'Nobody can approve a command in this chat, so Coconut denied it
 ASKED_DIRECT = 'Coconut put your question in this chat. End your turn now. The reply of {name} starts a new turn.'
 # The rules of the team chat for each turn (the channel prompt of Hermes). `where` is the Team chat or a named chat.
 # Hermes gives the bot one memory and lets it search the sessions of each chat, so the rules of each chat tell it to
-# keep a direct chat private. A name does not prove a person, so no rule depends on a name.
+# keep a direct chat private. The guard of the plugin (hermes_plugin/coconut/privacy.py) also enforces that for the
+# search and the memory, but not for the terminal of the agent. A name does not prove a person, so no rule depends on a
+# name.
 RULES = ('You are in {where} in Coconut. Each member of the team can write to you, and the whole team reads your '
          'reply. Do not repeat here what a member wrote to you in a direct chat. Coconut shows Markdown and has no '
          'cards here: when you need a choice or a fact, ask in your reply.')
