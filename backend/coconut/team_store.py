@@ -33,6 +33,7 @@ Each table has the room ID in its key, because a Mac can be in more than one roo
   Mac, with `member`, the other member of the chat. No query of the Team chat reads this table.
 - `team_direct_reads`: the read position of this Mac in each direct chat: one row for each room and other member.
 - `team_marks`: the lasting marks of this Mac. `direct` means that an app of the person knows direct messages.
+  `corrected:<room>` means that the open of the store corrected a row of the room, and its event did not go out yet.
 - `team_direct_waits`: the `direct` entries that the sync could not try with the key that they need yet, because the
   `member` entry of that key came later in the read. The end of the read tries each one again, then removes it.
 - `team_removed`: the members that a `remove` entry of the admin took out of the room, each with the entry ID of that
@@ -50,11 +51,13 @@ here: team_keys.py keeps them in a private file. The caller holds the transactio
 from __future__ import annotations
 
 import base64
+from contextlib import contextmanager
 from datetime import datetime, timezone
 import json
 import logging
 import re
 import time
+import unicodedata
 
 from .team_relay import HEX32, HEX64, number
 
@@ -171,6 +174,14 @@ TYPING_PERSON_SECONDS = 10
 TYPING_BOT_SECONDS = 30
 # The mark in `team_marks` after an app of the person asked for direct messages.
 DIRECT_MARK = 'direct'
+# The prefix of a mark in `team_marks` for a room whose rows the open of the store corrected, until its event goes out.
+CORRECTED_MARK = 'corrected:'
+# The repair of the marks at a start (TeamStore._read_marks_again) reads a kept `member` or `bot` payload only up to this
+# size. An honest one has at most some kilobytes: four short text fields of at most 80 code points and a key.
+MAX_MARK_PAYLOAD = 1 << 20
+# The longest wait of that repair, and of the event after it, for the write lock of another connection. A write of the
+# service lasts some milliseconds, and the next start tries again, so a start never waits long for it.
+MARK_WAIT_MS = 1000
 # The limits of a `message` entry, in Unicode code points and in entry IDs.
 MAX_TEXT = 16000
 MAX_MENTIONS = 16
@@ -474,6 +485,24 @@ SHOWN = {'member': member_fields, 'bot': bot_fields, 'page': page_fields, 'messa
          'remove': remove_fields, 'erase': erase_fields, 'typing': typing_fields, 'chat': chat_fields}
 
 
+def same_name(first: str, second: str) -> bool:
+    """True when two names are the same for a person: equal after Unicode normalization to NFC and casefold().
+
+    The limit: casefold() does not join each letter with its other case. About 11 letters, for example some letters
+    with a title case of their own, stay different from their other case here."""
+    return unicodedata.normalize('NFC', first).casefold() == unicodedata.normalize('NFC', second).casefold()
+
+
+def stored_fields(kind: str, payload: str | bytes) -> dict | None:
+    """The checked fields of a kept entry of this kind, as read_entry finds them for `accept`. None for a payload that
+    does not read, has another kind, or has fields that do not fit. No payload makes it raise."""
+    try:
+        opened = read_entry({'epoch': 0, 'payload': payload.encode() if isinstance(payload, str) else payload})
+    except Exception:
+        return None
+    return opened['shown'] if opened['read'] and opened['read'][1]['kind'] == kind else None
+
+
 def read_entry(opened: dict) -> dict:
     """The first part of the reading rules for one entry: the work that needs no database.
 
@@ -531,15 +560,14 @@ class TeamStore:
         self.clock = time.time
 
     def migrate(self) -> None:
-        """Add the columns that a store of an older version lacks. A `bot` row of that version reads as not open
-        until its next write, a `member` row as a person, and a room has its notifications on."""
+        """Add the columns that a store of an older version lacks. A room of that version has its notifications on.
+        The marks of a `bot` row and a `member` row come from their kept entries (_read_marks_again)."""
         if 'open' not in {row[1] for row in self.db.execute('PRAGMA table_info(team_bots)')}:
             self.db.execute('ALTER TABLE team_bots ADD COLUMN open INTEGER NOT NULL DEFAULT 0')
         if 'bot_only' not in {row[1] for row in self.db.execute('PRAGMA table_info(team_members)')}:
             self.db.execute('ALTER TABLE team_members ADD COLUMN bot_only INTEGER NOT NULL DEFAULT 0')
         if 'notifications' not in {row[1] for row in self.db.execute('PRAGMA table_info(team_rooms)')}:
             self.db.execute('ALTER TABLE team_rooms ADD COLUMN notifications INTEGER NOT NULL DEFAULT 1')
-        # A `member` row of an older version reads as a member without direct messages until its next write.
         if 'direct' not in {row[1] for row in self.db.execute('PRAGMA table_info(team_members)')}:
             self.db.execute('ALTER TABLE team_members ADD COLUMN direct INTEGER NOT NULL DEFAULT 0')
         # Each body of an older version has epoch 0, because no Mac changed a room key before this column.
@@ -562,6 +590,99 @@ class TeamStore:
         # named chat and then walk the messages of each other chat.
         self.db.execute('DROP INDEX IF EXISTS team_messages_order')
         self.db.execute('CREATE INDEX IF NOT EXISTS team_messages_chat ON team_messages (room, chat, first)')
+        self._read_marks_again()
+
+    def _read_marks_again(self) -> None:
+        """Set `bot_only` and `direct` of each member row and `open` of each bot row from the kept entry of the row.
+
+        A service of an older version kept the entries with their marks in rows without a column for a mark, and each
+        column came with the value 0. The other Mac does not write its entry again, so without this step a team-only
+        Mac shows as a person, and its bots as bots that answer nobody.
+
+        The step is a best effort: it must never stop or slow a start. Each error ends it with one log line, and the
+        next start tries again. It reads one row at a time, each payload as bytes, so one damaged row does not stop the
+        read. It reads each payload with `stored_fields`, the reader of `accept`, and no JSON function of SQLite: such
+        a function refuses some JSON that Python reads. A row whose entry does not read, or is over MAX_MARK_PAYLOAD
+        bytes, keeps its marks with a log line. So does a row without its kept entry. Only when a row is wrong does it
+        write, and it waits at most MARK_WAIT_MS for the write lock.
+
+        The room of a corrected row goes into `changed`, and into `team_marks` in the same savepoint, so the event for
+        the phone (`corrected_rooms`) is not lost when the service stops before it can send it."""
+        try:
+            changes = self._wrong_marks()
+            if changes:
+                with self.short_wait():
+                    self._write_marks(changes)
+                self.changed.update(room for _, room, _, _ in changes)
+        except Exception as error:
+            log.warning('coconut.team_log: the start did not read the marks of the members and bots again (%s). The '
+                        'next start tries again.', type(error).__name__)
+
+    def _wrong_marks(self) -> list[tuple[str, str, str, tuple[int, int]]]:
+        """Each member row and bot row whose marks differ from its kept entry: (kind, room, key, marks). The key is the
+        member ID of a member row and the entry ID of a bot row: the primary key of the row in its room.
+
+        CROSS JOIN keeps the order of the tables: SQLite walks the few rows of the members and bots and finds each entry
+        by its key. It does not walk each entry of the store."""
+        blob = 'CAST(e.payload AS BLOB)'
+        read = f'length({blob}), CASE WHEN length({blob}) <= {MAX_MARK_PAYLOAD} THEN {blob} END'
+        cursor = self.db.execute(f"""SELECT 'member', m.room, m.entry, m.member, m.bot_only, m.direct, {read}
+                FROM team_members m CROSS JOIN team_entries e ON e.room=m.room AND e.id=m.entry AND e.kind='member'
+            UNION ALL SELECT 'bot', b.room, b.entry, b.entry, b.open, 0, {read}
+                FROM team_bots b CROSS JOIN team_entries e ON e.room=b.room AND e.id=b.entry AND e.kind='bot'""")
+        changes = []
+        for kind, room, entry, key, first, second, size, payload in cursor:
+            fields = stored_fields(kind, payload) if payload is not None else None
+            if fields is None:
+                log.warning('coconut.team_log room %s: the kept %s entry %s (%d bytes) does not read, so its row keeps '
+                            'its marks.', room[:8], kind, entry[:8], size or 0)
+                continue
+            marks = (int(fields['bot_only']), int(fields['direct'])) if kind == 'member' else (int(fields['open']), 0)
+            if marks != (first, second):
+                changes.append((kind, room, key, marks))
+        return changes
+
+    def _write_marks(self, changes: list[tuple[str, str, str, tuple[int, int]]]) -> None:
+        self.db.execute('SAVEPOINT team_marks_again')
+        try:
+            for kind, room, key, (first, second) in changes:
+                if kind == 'member':
+                    self.db.execute('UPDATE team_members SET bot_only=?, direct=? WHERE room=? AND member=?',
+                                    (first, second, room, key))
+                else:
+                    self.db.execute('UPDATE team_bots SET open=? WHERE room=? AND entry=?', (first, room, key))
+            self.db.executemany('INSERT OR IGNORE INTO team_marks (mark) VALUES (?)',
+                                [(CORRECTED_MARK + room,) for room in {room for _, room, _, _ in changes}])
+        except BaseException:
+            self.db.execute('ROLLBACK TO team_marks_again')
+            self.db.execute('RELEASE team_marks_again')
+            raise
+        self.db.execute('RELEASE team_marks_again')
+
+    @contextmanager
+    def short_wait(self):
+        """Wait at most MARK_WAIT_MS for a lock of another connection, then give the old bound back."""
+        before = self.db.execute('PRAGMA busy_timeout').fetchone()[0]
+        self.db.execute(f'PRAGMA busy_timeout={MARK_WAIT_MS}')
+        try:
+            yield
+        finally:
+            self.db.execute(f'PRAGMA busy_timeout={int(before)}')
+
+    def corrected_waiting(self) -> bool:
+        """True when a corrected room waits for its event. A read only: it takes no lock."""
+        return self.db.execute('SELECT 1 FROM team_marks WHERE substr(mark, 1, ?)=? LIMIT 1',
+                               (len(CORRECTED_MARK), CORRECTED_MARK)).fetchone() is not None
+
+    def corrected_rooms(self) -> list[str]:
+        """The rooms whose rows _read_marks_again corrected and whose event did not go out yet. The marks go, and each
+        room that this Mac still has goes into `changed`. The caller holds the transaction and tells the phone."""
+        marks = [row[0] for row in self.db.execute('SELECT mark FROM team_marks WHERE substr(mark, 1, ?)=?',
+                                                   (len(CORRECTED_MARK), CORRECTED_MARK))]
+        self.db.executemany('DELETE FROM team_marks WHERE mark=?', [(mark,) for mark in marks])
+        rooms = sorted(room for room in (mark[len(CORRECTED_MARK):] for mark in marks) if self.room(room))
+        self.changed.update(rooms)
+        return rooms
 
     def _read_chats_again(self) -> None:
         """Read the chats of a store of an older version, one time. That version kept each `chat` entry as an entry of
@@ -842,7 +963,7 @@ class TeamStore:
                 fields = known[1]
             else:
                 payload = self.db.execute('SELECT payload FROM team_entries WHERE room=? AND id=?', (room, entry))
-                fields = member_fields(json.loads(payload.fetchone()[0]))
+                fields = stored_fields('member', payload.fetchone()[0])
             if fields:
                 self.db.execute('''INSERT INTO team_members (room, member, name, avatar, color, agreement, entry,
                     bot_only, direct) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (room, member) DO UPDATE SET
@@ -1246,8 +1367,9 @@ class TeamStore:
         """Queue a turn for each bot of this Mac that the message names or answers (docs/team-log.md, "An agent answers").
 
         The message has no `bot`, is under TRIGGER_SECONDS old, and its member is in the member list. It names the
-        `bot` entry of a bot in `mentions`, or its `reply_to` is a message of that bot. The bot is shared with the room,
-        is not archived, and has its chat connected (`chat` of its record). The signature of the entry proves its
+        `bot` entry of a bot in `mentions`, or its `reply_to` is a message of that bot. A team-only Mac is no person, so
+        a mention of its own `member` entry names a bot too: the one that `_meant_bot` finds. The bot is shared with the
+        room, is not archived, and has its chat connected (`chat` of its record). The signature of the entry proves its
         member, and no other field of a payload decides here. A bot with MAX_WAITING triggers that wait skips the
         message, with a log line and no text of the message.
         """
@@ -1262,8 +1384,11 @@ class TeamStore:
             row = self.db.execute('SELECT bot FROM team_messages WHERE room=? AND entry=? AND member=? AND chat IS ?',
                                   (room_id, message['reply_to'], room['member'], message['chat'])).fetchone()
             answered = row[0] if row else None
-        for bot, share in self.answering(room_id):
-            if share not in message['mentions'] and share != answered:
+        answering = self.answering(room_id)
+        own = self.member(room_id, room['member'])
+        meant = self._meant_bot(room_id, own['name'], answering) if own and own['entry'] in message['mentions'] else None
+        for bot, share in answering:
+            if share not in message['mentions'] and share != answered and bot != meant:
                 continue
             if self.db.execute('SELECT COUNT(*) FROM team_triggers WHERE room=? AND bot=? AND started=0',
                                (room_id, bot)).fetchone()[0] >= MAX_WAITING:
@@ -1280,6 +1405,15 @@ class TeamStore:
         return self.db.execute('''SELECT s.bot, s.entry FROM team_shares s JOIN bots b ON b.id=s.bot
             WHERE s.room=? AND json_extract(b.data, '$.chat')=1 AND COALESCE(json_extract(b.data, '$.archived'), 0)=0
             ORDER BY s.bot''', (room,)).fetchall()
+
+    def _meant_bot(self, room: str, name: str, answering: list[tuple[str, str]]) -> str | None:
+        """The bot that a mention of this Mac's `member` entry names: of the bots in `answering`, the one with the name
+        of the member (same_name), else the only one. None when the choice is not clear."""
+        names = dict(self.db.execute('SELECT entry, name FROM team_bots WHERE room=?', (room,)).fetchall())
+        same = [bot for bot, share in answering if same_name(names.get(share, ''), name)]
+        if len(same) == 1:
+            return same[0]
+        return answering[0][0] if len(answering) == 1 else None
 
     def next_trigger(self, room: str, bot: str) -> dict | None:
         """The oldest trigger of the bot in the room whose turn did not begin."""
