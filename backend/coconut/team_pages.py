@@ -322,25 +322,33 @@ class TeamPages:
                 live[bot_id] = entry, bot
         return live
 
-    def _team_bots(self, room: dict, members: list[dict]) -> list[dict]:
+    def _team_bots(self, room: dict, members: list[dict], sends: bool | None = None) -> list[dict]:
         """The bots of the team as a person sees them, for GET /v1/team/rooms. The caller holds the service lock.
 
         As in the Library, a bot shows only while the room is active and its member is in the member list. A bot of
         another Mac has the ID of its team bot in GET /v1/documents. A bot of this Mac also has its `bot_id`, and
         its profile comes from the bot of this Mac, so a change shows before the next pass writes it.
+
+        With `sends` (not None), for an app that knows direct messages, each bot has `direct`: true when this Mac reads
+        direct messages (`sends`) and the `bot` entry of another member has the mark `direct`. A bot of this Mac never
+        has it.
         """
         if room['state'] != ACTIVE:
             return []
         names = {member['member']: member['name'] for member in members}
+
+        def mark(value: bool) -> dict:
+            return {} if sends is None else {'direct': bool(sends and value)}
         bots = [dict(id=team_id(room['room'], row['entry']), name=row['name'], avatar=row['avatar'], color=row['color'],
-                     member=row['member'], member_name=names[row['member']], this_mac=False, open=bool(row['open']))
+                     member=row['member'], member_name=names[row['member']], this_mac=False, open=bool(row['open']),
+                     **mark(row['direct']))
                 for row in self.team_store.bots(room['room']) if row['member'] in names]
         if room['member'] in names:
             for bot_id, (entry, bot) in self._team_live_bots(room['room']).items():
                 fields = bot_entry(bot)
                 bots.append(dict(id=team_id(room['room'], entry), name=fields['name'], avatar=fields['avatar'],
                                  color=fields['color'], member=room['member'], member_name=names[room['member']],
-                                 this_mac=True, bot_id=bot_id, open=self._team_opens(bot)))
+                                 this_mac=True, bot_id=bot_id, open=self._team_opens(bot), **mark(False)))
         # The bots follow the order of the members, then their names.
         order = {member: index for index, member in enumerate(names)}
         return sorted(bots, key=lambda bot: (order[bot['member']], bot['name'], bot['id']))
