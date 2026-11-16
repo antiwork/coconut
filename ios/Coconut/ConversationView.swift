@@ -941,6 +941,9 @@ struct ConversationComposer: View {
                 }
                 }
                 .padding(.leading, BoardStyle.Space.m).padding(.trailing, BoardStyle.Space.xs)
+                .modifier(ComposerClickArea(shape: RoundedRectangle(cornerRadius: BoardStyle.Radius.large, style: .continuous)) {
+                    focused = true
+                })
                 .modifier(ComposerSurface(shape: RoundedRectangle(cornerRadius: BoardStyle.Radius.large, style: .continuous)))
             }
             .modifier(ComposerGlassGroup())
@@ -1111,12 +1114,14 @@ struct ComposerFieldStyle: ViewModifier {
         content
             .lineLimit(1...5).font(.body)
             #if os(macOS)
-            // The composer draws the box. A Mac text field would draw a second one inside it. Its line is shorter than
-            // on an iPhone, so it gets the height of the buttons next to it.
+            // The composer draws the box. A Mac text field would draw a second one inside it. The field fills the box,
+            // and the box is taller than the line, so a click does not need to hit the line itself (ComposerClickArea).
             .textFieldStyle(.plain)
-            .frame(minHeight: 20)
-            #endif
+            .frame(maxWidth: .infinity, minHeight: 24, alignment: .leading)
+            .padding(.vertical, 16)
+            #else
             .padding(.vertical, 12)
+            #endif
             #if os(macOS)
             .onKeyPress(.return, phases: .down) { press in
                 guard !press.modifiers.contains(.shift) else { return .ignored }
@@ -1124,6 +1129,20 @@ struct ComposerFieldStyle: ViewModifier {
                 return .handled
             }
             #endif
+    }
+}
+
+/// A click anywhere in the box of a composer puts the cursor in its field. A Mac text field takes clicks only on its
+/// line of text, so a click above or below it, or in its padding, did nothing. The area lies behind the field and the
+/// buttons, so they keep their own clicks.
+struct ComposerClickArea<S: Shape>: ViewModifier {
+    let shape: S
+    let focus: () -> Void
+
+    func body(content: Content) -> some View {
+        content.background {
+            shape.fill(Color.clear).contentShape(shape).onTapGesture(perform: focus)
+        }
     }
 }
 

@@ -946,6 +946,9 @@ struct TeamChatComposer: View {
                 }
             }
             .padding(.leading, BoardStyle.Space.m).padding(.trailing, BoardStyle.Space.xs)
+            .modifier(ComposerClickArea(shape: RoundedRectangle(cornerRadius: BoardStyle.Radius.large, style: .continuous)) {
+                focused = true
+            })
             .modifier(ComposerSurface(shape: RoundedRectangle(cornerRadius: BoardStyle.Radius.large, style: .continuous)))
             .modifier(ComposerGlassGroup())
         }
