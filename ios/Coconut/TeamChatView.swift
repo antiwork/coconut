@@ -1049,12 +1049,12 @@ struct TeamChatComposer: View {
     var body: some View {
         VStack(spacing: 0) {
             if let editing {
-                ComposerQuoteBar(reference: MessageReference(messageId: editing.id, text: editing.text,
+                ComposerQuoteBar(reference: MessageReference(messageId: editing.id, text: editing.shortText,
                                                              author: "Edit message", role: ""),
                                  cancelLabel: "Cancel edit") { state.cancelEdit() }
                 .accessibilityIdentifier("edit-preview")
             } else if let replyTo = state.quote?.reply {
-                ComposerQuoteBar(reference: MessageReference(messageId: replyTo.id, text: replyTo.text,
+                ComposerQuoteBar(reference: MessageReference(messageId: replyTo.id, text: replyTo.shortText,
                                                              author: TeamNames.author(of: replyTo, peer: peer), role: ""),
                                  cancelLabel: "Cancel reply") { state.removeQuote() }
                     .accessibilityIdentifier("reply-preview")

@@ -50,6 +50,27 @@ extension TeamFile {
     private enum CodingKeys: String, CodingKey { case id, name, type, size, width, height, complete }
 }
 
+/// The short text of a message of a team chat, for a quote, the bar of a reply or an edit, and a row of a list: the
+/// text, or for an empty text "Photo" when the first file is an image, else the name of the first file. This is the
+/// rule of `shown_text` in backend/coconut/team_store.py, which gives the chat list and the notifications their text.
+/// With files, a text of white space only is an empty text, as the Mac takes it.
+enum TeamShortText {
+    static func text(_ text: String, files: [TeamFile]) -> String {
+        guard let first = files.first, text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return text }
+        return (first.type ?? "").hasPrefix("image/") ? "Photo" : first.name
+    }
+}
+
+extension TeamMessage {
+    /// The short text of the message (TeamShortText).
+    var shortText: String { TeamShortText.text(text, files: files) }
+}
+
+extension TeamPendingMessage {
+    /// The short text of the message on its way (TeamShortText).
+    var shortText: String { TeamShortText.text(text, files: files ?? []) }
+}
+
 /// The texts and the limits of the files of a message, in one place.
 enum TeamFileRules {
     /// The most files of one message (`MAX_FILES` in backend/coconut/team_store.py).
@@ -170,39 +191,56 @@ enum FileFit {
     /// The largest side that the Mac takes in `width` and `height` (`MAX_SIDE`).
     static let largestSide = 20_000
 
-    /// The file as it goes to the Mac, or nil when it cannot fit. An image larger than the limit, or a HEIC or HEIF
-    /// image, becomes a JPEG of at most `longestSide` pixels. A PNG, a GIF or a JPEG under the limit stays as it is.
-    /// Each other file must be 1 byte to the limit as it is.
+    /// The file as it goes to the Mac, or nil when it cannot fit. Each piece of a file is one write to the relay and
+    /// one download on each device, and the space of a person in a room holds 320 MiB in 90 days. So a photo goes at
+    /// the size that a screen shows:
+    /// - An image with a side over `longestSide` pixels becomes a JPEG of `longestSide` pixels, whatever its bytes.
+    /// - A HEIC or HEIF image always becomes a JPEG, so each Mac and each app can show it.
+    /// - Each other image within `longestSide` pixels stays as it is, unless it is over the limit: then it becomes a
+    ///   JPEG of the same size.
+    /// - A GIF never changes, because a JPEG loses its frames. A GIF over the limit does not fit.
+    /// - Each other file must be 1 byte to the limit as it is.
+    /// `width` and `height` are the pixels that go to the Mac.
     static func fit(_ data: Data, name: String, limit: Int = TeamFileRules.largest) -> FittedFile? {
         guard !data.isEmpty else { return nil }
-        if let source = CGImageSourceCreateWithData(data as CFData, nil),
-           let identifier = CGImageSourceGetType(source) as String?, let kind = UTType(identifier),
-           kind.conforms(to: .image), CGImageSourceGetCount(source) > 0 {
-            let heif = kind.conforms(to: .heic) || kind.conforms(to: .heif)
-            if data.count <= limit && !heif {
-                let (width, height) = pixelSize(source)
-                return FittedFile(data: data, name: name, type: kind.preferredMIMEType ?? mimeType(name),
-                                  width: width, height: height)
-            }
-            guard let image = downsampledImage(data, largestSide: longestSide) else { return nil }
-            for quality in [quality, 0.6, 0.4] {
-                if let jpeg = jpegData(image, quality: quality), jpeg.count <= limit {
-                    return FittedFile(data: jpeg, name: jpegName(name), type: "image/jpeg",
-                                      width: image.width, height: image.height)
-                }
-            }
-            return nil
+        guard let source = CGImageSourceCreateWithData(data as CFData, nil),
+              let identifier = CGImageSourceGetType(source) as String?, let kind = UTType(identifier),
+              kind.conforms(to: .image), CGImageSourceGetCount(source) > 0,
+              let size = pixelSize(source) else {
+            guard data.count <= limit else { return nil }
+            return FittedFile(data: data, name: name, type: mimeType(name), width: nil, height: nil)
         }
-        guard data.count <= limit else { return nil }
-        return FittedFile(data: data, name: name, type: mimeType(name), width: nil, height: nil)
+        let (width, height) = size
+        let longest = max(width, height)
+        if kind.conforms(to: .gif) {
+            guard data.count <= limit else { return nil }
+            return kept(data, name: name, kind: kind, width: width, height: height)
+        }
+        let heif = kind.conforms(to: .heic) || kind.conforms(to: .heif)
+        if !heif && longest <= longestSide && data.count <= limit {
+            return kept(data, name: name, kind: kind, width: width, height: height)
+        }
+        guard let image = downsampledImage(data, largestSide: min(longest, longestSide)) else { return nil }
+        for quality in [quality, 0.6, 0.4] {
+            if let jpeg = jpegData(image, quality: quality), jpeg.count <= limit {
+                return FittedFile(data: jpeg, name: jpegName(name), type: "image/jpeg",
+                                  width: image.width, height: image.height)
+            }
+        }
+        return nil
     }
 
-    /// The size of the first image, turned upright as the app draws it. Nil for a side that the Mac does not take.
-    private static func pixelSize(_ source: CGImageSource) -> (Int?, Int?) {
+    private static func kept(_ data: Data, name: String, kind: UTType, width: Int, height: Int) -> FittedFile {
+        let fits = (1...largestSide).contains(width) && (1...largestSide).contains(height)
+        return FittedFile(data: data, name: name, type: kind.preferredMIMEType ?? mimeType(name),
+                          width: fits ? width : nil, height: fits ? height : nil)
+    }
+
+    /// The size of the first image in pixels, turned upright as the app draws it.
+    private static func pixelSize(_ source: CGImageSource) -> (Int, Int)? {
         guard let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
               let width = properties[kCGImagePropertyPixelWidth] as? Int,
-              let height = properties[kCGImagePropertyPixelHeight] as? Int,
-              (1...largestSide).contains(width), (1...largestSide).contains(height) else { return (nil, nil) }
+              let height = properties[kCGImagePropertyPixelHeight] as? Int, width > 0, height > 0 else { return nil }
         // The orientations 5 to 8 turn the image by a quarter.
         let turned = ((properties[kCGImagePropertyOrientation] as? Int) ?? 1) >= 5
         return turned ? (height, width) : (width, height)

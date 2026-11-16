@@ -962,10 +962,10 @@ struct TeamChat: Equatable, Sendable {
     /// yet: the newest unsent message, else the newest saved message that shows. Nil for a chat without one.
     var newestLocal: TeamLastMessage? {
         if let pending = pending.last {
-            return TeamLastMessage(thisMac: true, text: pending.text, createdAt: pending.createdAt)
+            return TeamLastMessage(thisMac: true, text: pending.shortText, createdAt: pending.createdAt)
         }
         guard let message = messages.last(where: { !deleting.contains($0.id) }) else { return nil }
-        return TeamLastMessage(first: message.first, thisMac: message.thisMac, text: message.text,
+        return TeamLastMessage(first: message.first, thisMac: message.thisMac, text: message.shortText,
                                createdAt: message.createdAt)
     }
 

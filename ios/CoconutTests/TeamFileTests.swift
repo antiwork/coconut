@@ -90,6 +90,30 @@ final class TeamFileTests: XCTestCase {
         XCTAssertNil(TeamFileAddress(room: Self.room, message: "../x", file: Self.file))
     }
 
+    // MARK: Short text
+
+    /// The rule of `shown_text` of the service: the text, else "Photo" for a first image, else the first file name.
+    func testTheShortTextOfAMessageWithOnlyFiles() {
+        let photo = TeamFile(id: Self.file, name: "IMG_1.jpg", type: "image/jpeg", size: 1)
+        let pdf = TeamFile(id: Self.file, name: "Plan.pdf", type: "application/pdf", size: 1)
+        XCTAssertEqual(TeamShortText.text("Look", files: [photo]), "Look")
+        XCTAssertEqual(TeamShortText.text("", files: [photo, pdf]), "Photo")
+        XCTAssertEqual(TeamShortText.text(" \n", files: [pdf, photo]), "Plan.pdf", "White space with files is empty.")
+        XCTAssertEqual(TeamShortText.text("", files: [TeamFile(id: Self.file, name: "a", size: 1)]), "a")
+        XCTAssertEqual(TeamShortText.text("", files: []), "")
+        let message = TeamMessage(id: "e1", first: 1, text: "", createdAt: "2026-11-16T10:00:00Z", files: [photo])
+        XCTAssertEqual(message.shortText, "Photo")
+        let pending = TeamPendingMessage(id: "p1", text: "", replyTo: nil, reply: nil,
+                                         createdAt: "2026-11-16T10:01:00Z", files: [pdf])
+        XCTAssertEqual(pending.shortText, "Plan.pdf")
+        // The row of a direct chat that the list of the Mac does not have yet uses it too.
+        var chat = TeamChat()
+        chat.messages = [message]
+        XCTAssertEqual(chat.newestLocal?.text, "Photo")
+        chat.pending = [pending]
+        XCTAssertEqual(chat.newestLocal?.text, "Plan.pdf")
+    }
+
     // MARK: Composer
 
     /// Send is on with a text or with a file, and off while a file uploads. The composer takes at most four files, and
@@ -175,6 +199,41 @@ final class TeamFileTests: XCTestCase {
         XCTAssertEqual([fitted.width, fitted.height], [2400, 1200])
         let source = try XCTUnwrap(CGImageSourceCreateWithData(fitted.data as CFData, nil))
         XCTAssertEqual(CGImageSourceGetType(source) as String?, UTType.jpeg.identifier)
+    }
+
+    /// A camera photo of 4032 by 3024 pixels as a JPEG under the limit still becomes a JPEG of 2400 pixels: each
+    /// piece of a file is one write and one download on each device.
+    func testALargeCameraJPEGUnderTheLimitBecomesSmaller() throws {
+        let jpeg = try image(width: 4032, height: 3024, type: .jpeg)
+        XCTAssertLessThan(jpeg.count, TeamFileRules.largest)
+        let fitted = try XCTUnwrap(FileFit.fit(jpeg, name: "IMG_0002.JPG"))
+        XCTAssertEqual([fitted.width, fitted.height], [2400, 1800], "The size of the pixels that go to the Mac.")
+        XCTAssertEqual(fitted.type, "image/jpeg")
+        XCTAssertEqual(fitted.name, "IMG_0002.jpg")
+        let source = try XCTUnwrap(CGImageSourceCreateWithData(fitted.data as CFData, nil))
+        let properties = try XCTUnwrap(CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any])
+        XCTAssertEqual(properties[kCGImagePropertyPixelWidth] as? Int, 2400)
+        XCTAssertEqual(properties[kCGImagePropertyPixelHeight] as? Int, 1800)
+    }
+
+    /// An image within 2400 pixels but over the limit becomes a JPEG of the same size.
+    func testASmallImageOverTheLimitKeepsItsSizeAsAJPEG() throws {
+        let png = try image(width: 1200, height: 1000, type: .png, noise: true)
+        XCTAssertGreaterThan(png.count, TeamFileRules.largest)
+        let fitted = try XCTUnwrap(FileFit.fit(png, name: "noise.png"))
+        XCTAssertEqual(fitted.type, "image/jpeg")
+        XCTAssertEqual([fitted.width, fitted.height], [1200, 1000])
+        XCTAssertLessThanOrEqual(fitted.data.count, TeamFileRules.largest)
+    }
+
+    /// A GIF never changes, also when it is wider than 2400 pixels: a JPEG loses its frames.
+    func testAGIFStaysAsItIs() throws {
+        let gif = try image(width: 3000, height: 100, type: .gif)
+        let fitted = try XCTUnwrap(FileFit.fit(gif, name: "banner.gif"))
+        XCTAssertEqual(fitted.data, gif)
+        XCTAssertEqual(fitted.type, "image/gif")
+        XCTAssertEqual([fitted.width, fitted.height], [3000, 100])
+        XCTAssertNil(FileFit.fit(gif, name: "banner.gif", limit: gif.count - 1), "A GIF over the limit does not fit.")
     }
 
     /// A HEIC image becomes a JPEG also under the limit, so each Mac and each app can show it.

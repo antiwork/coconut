@@ -2116,7 +2116,7 @@ final class AppStore {
         }
         let quote = answered.map {
             TeamMessageQuote(id: $0.id, thisMac: $0.thisMac, member: $0.member, memberName: $0.memberName, bot: $0.bot,
-                             botName: $0.botName, text: String($0.text.prefix(200)))
+                             botName: $0.botName, text: String($0.shortText.prefix(200)))
         }
         let pending = TeamPendingMessage(id: UUID().uuidString, text: text, replyTo: answered?.id, reply: quote,
                                          createdAt: Self.now, mentions: mentions.isEmpty ? nil : mentions, page: page,
