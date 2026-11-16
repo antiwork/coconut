@@ -63,7 +63,9 @@ class RelayPushTests(unittest.TestCase):
         task = self.run_task()
         self.flush()
         payload = self.relay.sealed[0]
-        self.assertEqual(payload['aps']['alert'], {'title': 'Private bot name', 'body': 'The independent task is done.'})
+        # The sealed alert names the work that the reply is about.
+        self.assertEqual(payload['aps']['alert'], {'title': 'Private bot name', 'subtitle': 'Re: Private task content',
+                                                   'body': 'The independent task is done.'})
         self.assertEqual(payload['coconut']['task_id'], task['id'])
         self.assertNotIn('Private', json.dumps(self.relay.sent))
 
@@ -81,7 +83,8 @@ class RelayPushTests(unittest.TestCase):
     def test_decision_preview_uses_pending_question(self):
         self.run_task('Write report')
         self.flush()
-        self.assertEqual(self.relay.sealed[0]['aps']['alert']['body'], 'Create report.md? Save the prepared report.')
+        self.assertEqual(self.relay.sealed[0]['aps']['alert']['subtitle'], 'Needs your decision')
+        self.assertEqual(self.relay.sealed[0]['aps']['alert']['body'], 'Create report.md?\n\nSave the prepared report.')
         self.assertEqual(self.relay.sealed[0]['aps']['badge'], 1)
         self.assertNotIn('badge', json.dumps(self.relay.sent))
 
@@ -149,7 +152,10 @@ class RelayPushTests(unittest.TestCase):
         self.assertTrue(self.flush())
         self.assertEqual({key: self.relay.sealed[0]['coconut'][key] for key in ('version', 'device_id', 'kind', 'count')},
                          dict(version=1, device_id=self.device, kind='group', count=2))
-        self.assertEqual(self.relay.sealed[0]['aps']['alert'], dict(title='Coconut', body='2 finished tasks are waiting'))
+        # A sealed group lists each item under the count.
+        self.assertEqual(self.relay.sealed[0]['aps']['alert'], dict(
+            title='2 new in Coconut', subtitle='2 finished tasks are waiting',
+            body='Private bot name: The independent task is done.\nPrivate bot name: The independent task is done.'))
         self.assertFalse(self.flush())
         self.assertEqual(len(self.relay.sent), 1)
         self.assertEqual(self.service.db.execute('SELECT status FROM push_outbox').fetchall(), [('accepted',)])

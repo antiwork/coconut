@@ -628,6 +628,10 @@ class PushDelivery:
     def _payload(self, device_id, items, sealed):
         """The notification for one item, or the count of several. Items are rechecked when the text is written."""
         service = self.service
+        if len(items) > 1 and sealed:
+            payload, subject = self._payload(device_id, items, False)
+            payload['aps']['alert'] = self._group_alert(device_id, items, payload['aps']['alert'])
+            return payload, subject
         if len(items) > 1:
             # One chat: its kind, its room, and for a direct chat its other member or for a team item its named chat.
             # The kind decides, because a team item and a direct item of one room are two chats.
@@ -691,6 +695,24 @@ class PushDelivery:
         if sealed:
             payload['aps']['alert'] = notification_alert(service, item, bot, task, decision)
         return payload, item['decision_id'] or item['message_id'] or task['id']
+
+    def _group_alert(self, device_id, items, alert):
+        """A group in detail for a sealed notification: the count in the title and one line per item, the agent or
+        the writer and the start of its text. An item that no longer reads keeps the count only."""
+        from .push_relay import group_lines, notification_text
+        lines = []
+        for item in items:
+            try:
+                one, _ = self._payload(device_id, [item], True)
+            except Exception:
+                continue
+            part = one['aps']['alert']
+            text = notification_text(part.get('body'), limit=110, byte_limit=330)
+            lines.append(f'{part["title"]}: {text}' if part.get('title') and part['title'] != 'Coconut' else text)
+        if not lines:
+            return alert
+        return {'title': f'{len(items)} new in Coconut', 'subtitle': notification_text(alert['body'], limit=120),
+                'body': group_lines(lines, len(items))}
 
     def deliver_one(self):
         if not self.configured:
