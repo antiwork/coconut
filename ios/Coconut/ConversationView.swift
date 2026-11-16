@@ -448,6 +448,8 @@ struct ConversationView: View {
                     #endif
                 }
                 #if os(macOS)
+                // The window moves with a drag in the band above the chat, under the pill.
+                .overlay(alignment: .top) { WindowDragStrip() }
                 // A Mac toolbar groups its items into one glass bar. The bot gets a pill of its own over the top of the
                 // chat instead. Next to an inspector it shows and hides the details; elsewhere it opens the settings.
                 .overlay(alignment: .top) {

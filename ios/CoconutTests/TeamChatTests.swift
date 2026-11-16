@@ -511,6 +511,21 @@ final class TeamChatTests: XCTestCase {
         XCTAssertEqual(sections.bots.map(\.id), ["bot-reader"])
     }
 
+    /// The To-dos list the open work of the active agents: working first, then blocked, waiting and ready, newest first.
+    func testTheToDosOfTheMacSidebar() {
+        func work(_ id: String, _ status: String, bot: String = "planner", created: String = "2026-11-01T00:00:00Z",
+                  kind: String = "work") -> Artifact {
+            Artifact(id: id, botId: bot, taskId: nil, title: id, kind: kind, status: status, preview: "", url: nil,
+                     createdAt: created)
+        }
+        var archived = bot("old"); archived.archived = true
+        let artifacts = [work("ready", "ready"), work("done", "completed"), work("w-old", "working"),
+                         work("w-new", "working", created: "2026-11-05T00:00:00Z"), work("stuck", "blocked"),
+                         work("gone", "working", bot: "old"), work("pr", "working", kind: "pr"), work("wait", "waiting")]
+        XCTAssertEqual(AgentTodos.make(artifacts: artifacts, bots: [bot("planner"), archived]).map(\.id),
+                       ["w-new", "w-old", "stuck", "wait", "ready"])
+    }
+
     func testTheLettersOfAFace() {
         XCTAssertEqual(LetterFace.letters("Example Team"), "ET")
         XCTAssertEqual(LetterFace.letters("design crew"), "DC")

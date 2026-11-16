@@ -6,6 +6,8 @@ enum MacSelection: Hashable {
     case inbox
     case library
     case bot(String)
+    /// A To-do of an agent: its chat, with the work item attached.
+    case work(String)
     /// A page of the Library, by its document ID.
     case document(String)
     /// The Team chat of a team, a named chat, or a direct chat with one person or one bot of a team.
@@ -148,6 +150,24 @@ struct MacMainWindow: View {
         case .document(let documentId):
             // A page has no links to other pages, so its stack has only the page.
             NavigationStack { DocumentView(documentId: documentId).id(documentId) }
+        case .work(let workId):
+            if let item = store.artifacts.first(where: { $0.id == workId }) {
+                NavigationStack(path: $chatPath) {
+                    ConversationView(botId: item.botId, attachedWork: WorkReference(id: item.id, title: item.title))
+                        .id(workId)
+                        .navigationDestination(for: ConversationRoute.self) { route in
+                            ConversationView(botId: route.botId, focusDecisionId: route.decisionId,
+                                             focusMessageId: route.messageId, attachedWork: route.workContext)
+                        }
+                        .navigationDestination(for: BotSettingsRoute.self) { BotSettingsView(botId: $0.botId) }
+                }
+                .environment(\.pushRoute) { route in chatPath.append(route) }
+                .ignoresSafeArea(.container, edges: .top)
+                .toolbarBackgroundVisibility(.hidden, for: .windowToolbar)
+                .toolbar(removing: .title)
+            } else {
+                MacInboxView(selection: $selection)
+            }
         case .bot(let botId):
             // The details are a column of fixed width next to the chat, not an inspector. Next to a chat, the
             // inspector's split view did not settle on a layout and stopped the app, below about 1,300 points of
@@ -280,6 +300,7 @@ struct MacSidebar: View {
     @Binding var selection: MacSelection?
     @State private var deleting: Bot?
     @AppStorage("sidebar-unreads-open") private var unreadsOpen = true
+    @AppStorage("sidebar-todos-open") private var todosOpen = true
     @AppStorage("sidebar-starred-open") private var starredOpen = true
     @AppStorage("sidebar-people-open") private var peopleOpen = true
     @AppStorage("sidebar-agents-open") private var agentsOpen = true
@@ -307,6 +328,13 @@ struct MacSidebar: View {
             if !sections.unread.isEmpty {
                 Section("Unreads", isExpanded: $unreadsOpen) {
                     ForEach(sections.unread) { item in itemRow(item) }
+                }
+            }
+            // What the agents work on now and next. A To-do leaves the list when its agent finishes it.
+            let todos = AgentTodos.make(artifacts: store.artifacts, bots: store.bots)
+            if !todos.isEmpty {
+                Section("To-dos", isExpanded: $todosOpen) {
+                    ForEach(todos) { item in todoRow(item) }
                 }
             }
             if !pins.isEmpty {
@@ -367,6 +395,25 @@ struct MacSidebar: View {
                 Button("Delete Agent…", role: .destructive) { deleting = bot }
             }
             .accessibilityIdentifier("sidebar-bot-\(bot.id)")
+    }
+
+    /// A To-do: its state as a symbol, its title, and the agent that works on it. A click opens the agent's chat with
+    /// the work attached.
+    private func todoRow(_ item: Artifact) -> some View {
+        let agent = store.bots.first { $0.id == item.botId }?.name ?? ""
+        return HStack(spacing: BoardStyle.Space.s) {
+            Image(systemName: AgentTodos.symbol(item.status))
+                .font(.callout).foregroundStyle(item.status == "blocked" ? BoardStyle.destructive : .secondary)
+                .frame(width: 20, height: 20)
+            Text(item.title).lineLimit(1)
+            Spacer(minLength: 0)
+            Text(agent).font(.caption).foregroundStyle(.tertiary).lineLimit(1)
+        }
+        .padding(.vertical, 2)
+        .help(item.preview.isEmpty ? item.title : item.preview)
+        .tag(MacSelection.work(item.id))
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier("sidebar-todo-\(item.id)")
     }
 
     /// The row of a chat in any section: an agent, a team, a direct chat with a person, or one with a bot of a team.

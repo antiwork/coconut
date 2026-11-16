@@ -1586,6 +1586,34 @@ struct ChatSections: Equatable {
     }
 }
 
+/// The To-dos of the agents: the work that each agent tracks (coconut_track_work) and has not finished, so the person
+/// sees what the agents work on now and next without another tool. The work that runs comes first, then the work that
+/// is stuck or waits, then the work that is ready for review. Each group has its newest item first.
+enum AgentTodos {
+    static let order = ["working", "blocked", "waiting", "ready"]
+
+    static func make(artifacts: [Artifact], bots: [Bot]) -> [Artifact] {
+        let active = Set(bots.filter { !$0.archived }.map(\.id))
+        return artifacts
+            .filter { $0.kind == "work" && order.contains($0.status) && active.contains($0.botId) }
+            .sorted {
+                let first = order.firstIndex(of: $0.status) ?? order.count, second = order.firstIndex(of: $1.status) ?? order.count
+                return first != second ? first < second : ($0.createdAt, $0.id) > ($1.createdAt, $1.id)
+            }
+    }
+
+    /// The symbol of a To-do: a dot that fills while the agent works on it.
+    static func symbol(_ status: String) -> String {
+        switch status {
+        case "working": "circle.dotted.circle"
+        case "blocked": "exclamationmark.circle"
+        case "waiting": "clock"
+        case "ready": "checkmark.circle"
+        default: "circle"
+        }
+    }
+}
+
 extension ChatListItem {
     /// The unread messages of the chat. A muted team chat counts none, so it never moves to "Unreads".
     var unreadCount: Int {
