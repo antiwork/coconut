@@ -82,8 +82,10 @@ extension AppStore {
     func loadBusinessCatalog(fresh: Bool = false) async throws {
         if isDemo { if businessCatalog == nil { businessCatalog = .preview }; return }
         if businessCatalog != nil && !fresh { return }
+        let changes = businessChanges
         let catalog: BusinessCatalog = try await businessRequest("business" + (fresh ? "?fresh=1" : ""))
-        businessCatalog = catalog
+        guard changes == businessChanges else { return }
+        optimisticUpdates.receive { businessCatalog = catalog }
     }
 
     func businessWork(function: String?, project: String?, state: String) async throws -> [BusinessWork] {
@@ -108,8 +110,31 @@ extension AppStore {
 
     func addBusinessProject(_ key: String) async throws {
         if isDemo { return }
-        let _: BusinessRepository = try await businessRequest("business/projects", method: "POST", body: APIJSON.encode(BusinessProjectRequest(key: key)))
-        try await loadBusinessCatalog(fresh: true)
+        guard let repository = businessCatalog?.repositories.first(where: { $0.key == key }) else {
+            throw ServiceError.configuration("Choose a repository from Projects.")
+        }
+        let generation = businessGeneration
+        guard optimistically("business/\(generation)/project/\(key)", change: { transaction in
+            optimisticUpdates.set("business/\(generation)/project/\(key)", to: true, in: transaction,
+                read: { self.businessCatalog?.projects.contains { $0.key == key } ?? false },
+                write: { registered in
+                    guard self.businessGeneration == generation else { return }
+                    self.businessCatalog?.projects.removeAll { $0.key == key }
+                    if registered { self.businessCatalog?.projects.append(repository) }
+                })
+        }, save: {
+            guard self.businessGeneration == generation else { return }
+            do {
+                let registered: BusinessRepository = try await self.businessRequest("business/projects", method: "POST", body: APIJSON.encode(BusinessProjectRequest(key: key)))
+                self.optimisticUpdates.receive {
+                    self.businessCatalog?.projects.removeAll { $0.key == key }
+                    self.businessCatalog?.projects.append(registered)
+                }
+            } catch is CancellationError { return }
+            catch { self.error = error.localizedDescription }
+            self.businessChanges += 1
+        }) else { throw ServiceError.configuration(error ?? "Connect your Mac to continue.") }
+        businessChanges += 1
     }
 
     func createBusinessWork(function: String, project: String?, title: String, body: String, requestId: String) async throws -> BusinessWork {
