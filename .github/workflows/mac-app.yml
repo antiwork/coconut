@@ -19,6 +19,7 @@ on:
       - 'ios/project.yml'
       - 'ios/Coconut.xcodeproj/**'
       - 'ios/Coconut/**'
+      - 'ios/CoconutTests/**' # CoconutMacTests (-scheme CoconutMac test) compiles the tests of this folder.
       - 'ios/PushShared/**'
       - 'ios/CoconutNotificationService/**' # AgentWordTests (swift test) reads the texts of this folder.
       - 'ios/Packages/**' # The Mac app builds the Swift package in this folder.
@@ -43,6 +44,7 @@ on:
       - 'ios/project.yml'
       - 'ios/Coconut.xcodeproj/**'
       - 'ios/Coconut/**'
+      - 'ios/CoconutTests/**' # CoconutMacTests (-scheme CoconutMac test) compiles the tests of this folder.
       - 'ios/PushShared/**'
       - 'ios/CoconutNotificationService/**' # AgentWordTests (swift test) reads the texts of this folder.
       - 'ios/Packages/**' # The Mac app builds the Swift package in this folder.
