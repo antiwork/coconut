@@ -39,6 +39,7 @@ struct MCPSettingsView: View {
 
 struct MCPConnectionView: View {
     @Environment(AppStore.self) private var store
+    @ShownError private var shownError
     @Environment(\.dismiss) private var dismiss
     var server: MCPServer? = nil
     @State private var name = ""
@@ -107,7 +108,7 @@ struct MCPConnectionView: View {
                     }
                 }
             }
-            if let error = store.error { Section { InlineError(error) } }
+            if let error = shownError { Section { InlineError(error) } }
         }
         .navigationTitle(server?.id ?? "Add connection").inlineNavigationTitle()
         .settingsBackground()

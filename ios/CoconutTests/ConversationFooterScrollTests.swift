@@ -131,23 +131,29 @@ final class ConversationFooterScrollTests: XCTestCase {
         XCTAssertNil(holders.holder)
     }
 
-    // A sheet that shows the error itself, for example the Character sheet: while it is open, neither a chat nor the
-    // column shows the notice of the window. When it closes, the chat holds the notice again.
-    func testOpenSheetThatShowsTheErrorHidesTheNotice() {
-        var holders = NoticeHolders()
-        let chat = UUID(), sheet = UUID()
-        holders.add(chat)
-        holders.addSheet(sheet)
-        XCTAssertNil(holders.holder)
-        XCTAssertFalse(holders.columnShowsNotice)
-        holders.removeSheet(sheet)
-        XCTAssertEqual(holders.holder, chat)
-        // Without a chat on the screen, the column shows the notice again when the sheet closes.
-        holders.remove(chat)
-        holders.addSheet(sheet)
-        XCTAssertFalse(holders.columnShowsNotice)
-        holders.removeSheet(sheet)
-        XCTAssertTrue(holders.columnShowsNotice)
+    // One error shows at one place: the last open sheet that shows the error itself. The page (nil) and an earlier
+    // sheet show no copy. On an iPad and a Mac the page stays in view next to a sheet.
+    func testOnlyTheLastSheetThatShowsTheErrorShowsIt() {
+        var order = SheetErrorOrder()
+        XCTAssertTrue(order.shows(in: nil))
+        let newAgent = UUID(), character = UUID()
+        order.add(newAgent)
+        XCTAssertFalse(order.shows(in: nil))
+        XCTAssertTrue(order.shows(in: newAgent))
+        // The Character sheet opens over the New agent sheet.
+        order.add(character)
+        XCTAssertFalse(order.shows(in: newAgent))
+        XCTAssertTrue(order.shows(in: character))
+        // It closes: the New agent sheet shows the error again, then the page.
+        order.remove(character)
+        XCTAssertTrue(order.shows(in: newAgent))
+        order.remove(newAgent)
+        XCTAssertTrue(order.shows(in: nil))
+        // A sheet that shows again goes to the end, once.
+        order.add(newAgent)
+        order.add(character)
+        order.add(newAgent)
+        XCTAssertEqual(order.open, [character, newAgent])
     }
 
     // A page that a stack pushes over a chat covers the chat, so the chat leaves the screen. The column shows the

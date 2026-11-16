@@ -120,6 +120,54 @@ extension EnvironmentValues {
     @Entry var noticeArea: CGFloat?
     /// The chats of the main window of the Mac that can hold its notice. Nil outside the detail column of that window.
     @Entry var windowNotice: WindowNotice?
+    /// The open sheets of this window that show the error themselves (ErrorSheets). Nil outside a window that keeps
+    /// them, and then each place shows the error.
+    @Entry var errorSheets: ErrorSheets?
+    /// The sheet that this view is in, when that sheet shows the error itself (SheetShowsError). Nil on a page.
+    @Entry var errorSheet: UUID?
+}
+
+/// The sheets that show the error themselves, from the first that opened to the last. One error shows at one place:
+/// the last of these sheets shows it. The pages and the sheets behind it show no copy. On an iPad and on a Mac a
+/// sheet does not cover the page behind it, so the page showed its own copy next to the copy of the sheet.
+struct SheetErrorOrder: Equatable {
+    private(set) var open: [UUID] = []
+
+    /// A sheet that shows the error itself opens.
+    mutating func add(_ sheet: UUID) {
+        open.removeAll { $0 == sheet }
+        open.append(sheet)
+    }
+
+    /// The sheet closes.
+    mutating func remove(_ sheet: UUID) { open.removeAll { $0 == sheet } }
+
+    /// True when the place in `sheet` shows the error. Nil is a page of the window.
+    func shows(in sheet: UUID?) -> Bool { open.last == sheet }
+}
+
+/// The open sheets of one window that show the error themselves. The window keeps it (errorSheetRoot) and puts it in
+/// the environment, so each sheet and each page of the window gets it.
+@MainActor @Observable
+final class ErrorSheets {
+    var order = SheetErrorOrder()
+}
+
+/// The error of an action, when this place shows it. A place that shows the error reads it here, not from the store:
+/// - In the detail column of the main window of the Mac, the notice of the window shows each error, so a page shows
+///   none (windowShowsError).
+/// - Behind a sheet that shows the error itself, a page or an earlier sheet shows none (SheetErrorOrder).
+@MainActor @propertyWrapper
+struct ShownError: DynamicProperty {
+    @Environment(AppStore.self) private var store
+    @Environment(\.windowShowsError) private var windowShowsError
+    @Environment(\.errorSheets) private var sheets
+    @Environment(\.errorSheet) private var sheet
+
+    var wrappedValue: String? {
+        guard !windowShowsError, sheets?.order.shows(in: sheet) ?? true else { return nil }
+        return store.error
+    }
 }
 
 /// The place of the notice in the main window of the Mac. A chat on the screen shows the notice above its composer.
@@ -127,20 +175,11 @@ extension EnvironmentValues {
 struct NoticeHolders: Equatable {
     /// The chats on the screen, in the order that they came on the screen.
     private(set) var chats: [UUID] = []
-    /// The open sheets that show the error themselves (SheetShowsError).
-    private(set) var sheets: Set<UUID> = []
 
-    /// The chat that shows the notice: the chat that came on the screen last. Nil when no chat is on the screen, and
-    /// while a sheet shows the error.
-    var holder: UUID? { sheets.isEmpty ? chats.last : nil }
-    /// True when no chat is on the screen and no sheet shows the error, so the detail column shows the notice.
-    var columnShowsNotice: Bool { chats.isEmpty && sheets.isEmpty }
-
-    /// A sheet that shows the error itself opens.
-    mutating func addSheet(_ sheet: UUID) { sheets.insert(sheet) }
-
-    /// The sheet closes.
-    mutating func removeSheet(_ sheet: UUID) { sheets.remove(sheet) }
+    /// The chat that shows the notice: the chat that came on the screen last. Nil when no chat is on the screen.
+    var holder: UUID? { chats.last }
+    /// True when no chat is on the screen, so the detail column shows the notice.
+    var columnShowsNotice: Bool { chats.isEmpty }
 
     /// A chat comes on the screen.
     mutating func add(_ chat: UUID) {
@@ -248,10 +287,12 @@ struct WindowErrorNotice: View {
     @Environment(AppStore.self) private var store
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.noticeArea) private var area
+    @Environment(\.errorSheets) private var sheets
 
     var body: some View {
         VStack {
-            if let error = store.error {
+            // A sheet that shows the error covers most of this notice, and the edge of the notice showed next to it.
+            if let error = store.error, sheets?.order.shows(in: nil) ?? true {
                 ErrorBanner(message: error, fillsWidth: false, area: area) { store.error = nil }
                     .frame(maxWidth: 480)
                     .padding(.horizontal, BoardStyle.Space.l)
@@ -269,12 +310,13 @@ struct WindowErrorNotice: View {
 struct ChatErrorNotice: ViewModifier {
     @Environment(AppStore.self) private var store
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @ShownError private var error
 
     func body(content: Content) -> some View {
         content.overlay {
             GeometryReader { geometry in
                 VStack {
-                    if let error = store.error {
+                    if let error {
                         ErrorBanner(message: error, area: max(0, geometry.size.height - BoardStyle.Space.s)) {
                             store.error = nil
                         }
@@ -285,7 +327,7 @@ struct ChatErrorNotice: ViewModifier {
                 }
                 .frame(width: geometry.size.width, height: geometry.size.height, alignment: .top)
                 .clipped()
-                .animation(BoardStyle.fade(reduceMotion: reduceMotion), value: store.error)
+                .animation(BoardStyle.fade(reduceMotion: reduceMotion), value: error)
             }
         }
     }
@@ -311,11 +353,11 @@ private struct TopBanners<Banners: View>: ViewModifier {
 /// there a pushed page shows none.
 private struct PageErrorBanner: ViewModifier {
     @Environment(AppStore.self) private var store
-    @Environment(\.windowShowsError) private var windowShowsError
+    @ShownError private var error
 
     func body(content: Content) -> some View {
         content.topBanners { area in
-            if !windowShowsError, let error = store.error {
+            if let error {
                 // The page less the padding under the banner, as on a tab root.
                 ErrorBanner(message: error, area: area.map { $0 - 8 }) { store.error = nil }
                     .padding(.horizontal, 16).padding(.bottom, 8)
@@ -324,19 +366,27 @@ private struct PageErrorBanner: ViewModifier {
     }
 }
 
-/// A sheet has no notice over it, so it shows the error itself: inline, or in its own PageErrorBanner. The page behind
-/// the sheet must not show a second copy. On an iPhone the sheet covers the page. A sheet of the Mac window covers most
-/// of the notice of the window, and the edge of the notice showed next to it. While the sheet is open, the notice of
-/// the window shows nothing.
+/// A sheet has no notice over it, so it shows the error itself: inline, or in its own PageErrorBanner. While it is
+/// open, the pages and the sheets behind it show no copy (SheetErrorOrder).
 private struct SheetShowsError: ViewModifier {
-    @Environment(\.windowNotice) private var windowNotice
+    @Environment(\.errorSheets) private var sheets
     @State private var sheet = UUID()
 
     func body(content: Content) -> some View {
         content
             .environment(\.windowShowsError, false)
-            .onAppear { windowNotice?.holders.addSheet(sheet) }
-            .onDisappear { windowNotice?.holders.removeSheet(sheet) }
+            .environment(\.errorSheet, sheet)
+            .onAppear { sheets?.order.add(sheet) }
+            .onDisappear { sheets?.order.remove(sheet) }
+    }
+}
+
+/// The window keeps the order of its sheets that show the error (ErrorSheets).
+private struct ErrorSheetRoot: ViewModifier {
+    @State private var sheets = ErrorSheets()
+
+    func body(content: Content) -> some View {
+        content.environment(\.errorSheets, sheets)
     }
 }
 
@@ -352,6 +402,10 @@ extension View {
 
     /// Tells a sheet that it shows the error itself (SheetShowsError).
     func sheetShowsError() -> some View { modifier(SheetShowsError()) }
+
+    /// Keeps the order of the sheets of a window that show the error (ErrorSheetRoot). Put it outside each sheet
+    /// modifier of the window.
+    func errorSheetRoot() -> some View { modifier(ErrorSheetRoot()) }
 
     /// VoiceOver reads each new error of an action when it shows.
     func announcesErrors(_ error: String?) -> some View {

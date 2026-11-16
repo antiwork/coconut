@@ -2,7 +2,7 @@ import SwiftUI
 
 struct ModelSettingsView: View {
     @Environment(AppStore.self) private var store
-    @Environment(\.windowShowsError) private var windowShowsError
+    @ShownError private var shownError
     var botId: String? = nil
     @State private var useDefault = true
     @State private var selectionKey = ""
@@ -131,7 +131,7 @@ struct ModelSettingsView: View {
                 Section { InlineError(currentIssue) }
                     .accessibilityIdentifier("current-model-error")
             }
-            if !windowShowsError, let error = store.error {
+            if let error = shownError {
                 Section { InlineError(error) }
             }
         }

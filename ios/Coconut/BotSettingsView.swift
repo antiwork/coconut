@@ -4,7 +4,7 @@ import SwiftUI
 // when the person submits it, and when the page closes. Back never drops an edit.
 struct BotSettingsView: View {
     @Environment(AppStore.self) private var store
-    @Environment(\.windowShowsError) private var windowShowsError
+    @ShownError private var shownError
     let botId: String
     @State private var edits: BotDraft?
     @State private var routineOpen = false
@@ -46,7 +46,7 @@ struct BotSettingsView: View {
                     }
                 }
             }
-            if !windowShowsError, let error = store.error { Section { InlineError(error) } }
+            if let error = shownError { Section { InlineError(error) } }
         }
         .settingsBackground()
         .navigationTitle(draft?.name ?? "Agent").inlineNavigationTitle()
@@ -200,7 +200,7 @@ struct BotTextDraft {
 
 private struct RoutineEditorView: View {
     @Environment(AppStore.self) private var store
-    @Environment(\.windowShowsError) private var windowShowsError
+    @ShownError private var shownError
     @Environment(\.dismiss) private var dismiss
     let botId: String
     var routine: Routine? = nil
@@ -265,7 +265,7 @@ private struct RoutineEditorView: View {
                     Button("Delete routine", role: .destructive) { deleteOpen = true }
                 }
             }
-            if !windowShowsError, let error = store.error { Section { InlineError(error) } }
+            if let error = shownError { Section { InlineError(error) } }
         }
         .settingsBackground()
         .navigationTitle(routine == nil ? "New routine" : "Routine").inlineNavigationTitle()

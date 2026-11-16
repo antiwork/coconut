@@ -9,6 +9,7 @@ struct ParallelWorkSettings: Codable, Equatable, Sendable {
 // One control: how many bots work at once. Automatic lets the Mac choose from its processors and memory.
 struct ParallelWorkSettingsView: View {
     @Environment(AppStore.self) private var store
+    @ShownError private var shownError
     @State private var saving = false
 
     var body: some View {
@@ -31,7 +32,7 @@ struct ParallelWorkSettingsView: View {
                     Text(store.hasPairing || store.isDemo ? "Update Coconut on your Mac to change this." : "Connect to your Mac first.")
                 }
             }
-            if let error = store.error { Section { InlineError(error) } }
+            if let error = shownError { Section { InlineError(error) } }
         }
         .disabled(saving)
         .settingsBackground()

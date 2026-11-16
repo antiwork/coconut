@@ -2,6 +2,7 @@ import SwiftUI
 
 struct AppSettingsView: View {
     @Environment(AppStore.self) private var store
+    @ShownError private var shownError
     @Environment(\.dismiss) private var dismiss
     private var paired: Bool { store.hasPairing || store.isDemo }
 
@@ -54,7 +55,7 @@ struct AppSettingsView: View {
                     }
                     .accessibilityIdentifier("parallel-work-settings")
                 }
-                if let error = store.error {
+                if let error = shownError {
                     Section { InlineError(error) }
                 }
                 Section {} footer: {
@@ -123,6 +124,7 @@ struct SettingsNavigationLabel: View {
 
 private struct MacConnectionSettingsView: View {
     @Environment(AppStore.self) private var store
+    @ShownError private var shownError
     @State private var disconnectOpen = false
     @State private var restartingBots = false
     @State private var restartRequested = false
@@ -174,7 +176,7 @@ private struct MacConnectionSettingsView: View {
                 Text("Open the app to sync messages and decisions. Push alerts can arrive while the app is closed.")
                 Text("When your phone cannot reach the Mac, it shows the last known state.")
             }.font(.subheadline).foregroundStyle(.secondary)
-            if let error = store.syncIssue ?? store.error {
+            if let error = store.syncIssue ?? shownError {
                 Section { InlineError(error) }
             }
             if store.hasPairing && !store.isDemo {
@@ -228,9 +230,18 @@ struct BotIdentityFields: View {
                 NavigationStack {
                     Form { BotAppearancePicker(avatar: $avatar, color: $color, identity: identity) }
                         .settingsBackground()
-                        // In the bot settings a pick saves at once, and the save can fail. The sheet covers the page and
-                        // its error, so the sheet shows the error at its top. It stays in view at each scroll position.
+                        // In the bot settings a pick saves at once, and the save can fail. The sheet shows the error at
+                        // its top, and the page behind it shows none. It stays in view at each scroll position.
                         .pageErrorBanner()
+                        #if os(macOS)
+                        // A Mac sheet takes the height of its content. The fruits made it 835 points high, and the
+                        // notice of an error made it higher than a small window, so Done went off the screen. With a
+                        // fixed height the fruits scroll, and the notice takes its place inside the sheet. A plain Mac
+                        // form did not scroll inside the height, and it pushed the notice above the sheet. A grouped
+                        // form scrolls, as in the New agent sheet.
+                        .formStyle(.grouped)
+                        .frame(width: 470, height: 600)
+                        #endif
                         .navigationTitle("Character").inlineNavigationTitle()
                         .toolbar { Button("Done") { appearanceOpen = false } }
                 }
@@ -263,6 +274,7 @@ struct BotIdentityFields: View {
 // Creates a bot. Bot settings edit an existing bot and save each change.
 struct BotEditorView: View {
     @Environment(AppStore.self) private var store
+    @ShownError private var shownError
     @Environment(\.dismiss) private var dismiss
     @State private var name = ""
     @State private var instructions = ""
@@ -274,7 +286,7 @@ struct BotEditorView: View {
         NavigationStack {
             Form {
                 BotIdentityFields(name: $name, instructions: $instructions, avatar: $avatar, color: $color, identity: "")
-                if let error = store.error {
+                if let error = shownError {
                     Section { InlineError(error) }
                 }
             }
