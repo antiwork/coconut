@@ -78,11 +78,14 @@ struct PastedAttachment: Equatable {
     static let limit = 4 * 1024 * 1024
 
     /// The name of a pasted image without a file: "Pasted image 10.42.05.png". A Mac file name has no colon.
-    static func imageName(at date: Date = .now, ext: String) -> String {
+    static func imageName(at date: Date = .now, ext: String) -> String { timedName("Pasted image", at: date, ext: ext) }
+
+    /// A name with the time of the day, for an image without a file name. A Mac file name has no colon.
+    static func timedName(_ start: String, at date: Date, ext: String) -> String {
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.dateFormat = "HH.mm.ss"
-        return "Pasted image \(formatter.string(from: date)).\(ext)"
+        return "\(start) \(formatter.string(from: date)).\(ext)"
     }
 
     /// Text that goes into the field even when the pasteboard has an image too. A browser and an app often put the
@@ -165,6 +168,17 @@ enum Pasteboard {
     static func copy(_ url: URL) {
         #if canImport(UIKit)
         UIPasteboard.general.url = url
+        #else
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.writeObjects([url as NSURL])
+        #endif
+    }
+
+    /// A file on this device, as Finder or Files copies one.
+    static func copyFile(_ url: URL) {
+        #if canImport(UIKit)
+        guard let provider = NSItemProvider(contentsOf: url) else { return }
+        UIPasteboard.general.setItemProviders([provider], localOnly: false, expirationDate: nil)
         #else
         NSPasteboard.general.clearContents()
         NSPasteboard.general.writeObjects([url as NSURL])

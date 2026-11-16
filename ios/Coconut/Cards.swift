@@ -470,14 +470,110 @@ struct DecisionChoiceContent: View {
     }
 }
 
+/// The form of a card in a chat: the inset, the surface and the corner. The agent chat and the team chats share it.
+struct ChatCardSurface: ViewModifier {
+    func body(content: Content) -> some View {
+        content
+            // The inset of each card in a chat.
+            .padding(BoardStyle.Space.l)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(BoardStyle.surface, in: RoundedRectangle(cornerRadius: BoardStyle.Radius.large))
+    }
+}
+
+/// The top of a card in a chat: the symbol, the title, and one line under it. A file that is still on its way shows
+/// the loading state in the place of the symbol, as a tile of a photo does.
+struct ChatCardHead<Detail: View>: View {
+    let symbol: String
+    let title: String
+    var loading = false
+    @ViewBuilder let detail: () -> Detail
+    @ScaledMetric(relativeTo: .title3) private var iconWidth = 30
+    @ScaledMetric(relativeTo: .title3) private var iconHeight = 36
+
+    var body: some View {
+        HStack(alignment: .top, spacing: BoardStyle.Space.m) {
+            Group {
+                if loading { ProgressView() }
+                else { Image(systemName: symbol).font(.title3).foregroundStyle(.secondary) }
+            }
+            .frame(width: iconWidth, height: iconHeight)
+            VStack(alignment: .leading, spacing: BoardStyle.Space.xs) {
+                Text(title).font(.subheadline.weight(.semibold))
+                detail()
+            }
+            Spacer(minLength: 0)
+        }
+    }
+}
+
+/// "Preview file" of a card: it opens the file in Quick Look. "Opening…" while the file loads.
+struct PreviewFileButton: View {
+    let opening: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Label(opening ? "Opening…" : "Preview file", systemImage: "doc.text.magnifyingglass")
+                .font(.subheadline.weight(.semibold)).frame(minHeight: 44)
+        }
+        .disabled(opening)
+    }
+}
+
+/// A file of a message of a team chat, in the form of a file card of the agent chat: the name, the kind and the size,
+/// and "Preview file". A file that is not on the Mac yet shows the loading state, and its button is off.
+struct ChatFileCard: View {
+    /// The widest card in a team chat: the width of one tile of a photo, so a card stands on the side of its writer.
+    static let width: CGFloat = 280
+    let file: TeamFile
+    /// Where the bytes are (TeamChatRow.address). Nil keeps the button off.
+    let source: URL?
+    @State private var previewURL: URL?
+    @State private var opening = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: BoardStyle.Space.m) {
+            ChatCardHead(symbol: "doc.text", title: file.name, loading: !file.isReady) {
+                Text(file.detail).font(.footnote).foregroundStyle(.secondary)
+            }
+            PreviewFileButton(opening: opening) {
+                guard let source else { return }
+                opening = true
+                Task {
+                    previewURL = await QuickLookFile.url(for: source, name: file.name)
+                    opening = false
+                }
+            }
+            .disabled(!file.isReady || source == nil)
+        }
+        .modifier(ChatCardSurface())
+        .quickLookPreview($previewURL)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(file.name + ", " + file.detail)
+    }
+}
+
+/// Copy of a file of a team chat: the image of a photo, else the file.
+@MainActor
+enum TeamFileCopy {
+    static func copy(_ file: TeamFile, source: URL) {
+        Task {
+            if file.isImage, let image = await PhotoLoader.shared.image(source, size: .full) {
+                Pasteboard.copy(image)
+            } else if let url = await QuickLookFile.url(for: source, name: file.name) {
+                Pasteboard.copyFile(url)
+            }
+        }
+    }
+}
+
 struct ArtifactCard: View {
     @Environment(AppStore.self) private var store
     let artifact: Artifact
     @State private var previewURL: URL?
     @State private var downloading = false
     @State private var expanded = false
-    @ScaledMetric(relativeTo: .title3) private var iconWidth = 30
-    @ScaledMetric(relativeTo: .title3) private var iconHeight = 36
     private var shortResult: Bool {
         artifact.preview.count <= 160 && artifact.preview.components(separatedBy: "\n").count <= 3
     }
@@ -491,15 +587,9 @@ struct ArtifactCard: View {
     var body: some View {
         TimelineView(.periodic(from: .now, by: 30)) { context in
             VStack(alignment: .leading, spacing: BoardStyle.Space.m) {
-                HStack(alignment: .top, spacing: 12) {
-                    Image(systemName: artifact.kind == "pr" ? "arrow.triangle.pull" : artifact.kind == "task" ? "checkmark.circle" : "doc.text")
-                        .font(.title3).foregroundStyle(.secondary)
-                        .frame(width: iconWidth, height: iconHeight)
-                    VStack(alignment: .leading, spacing: BoardStyle.Space.xs) {
-                        Text(artifact.title).font(.subheadline.weight(.semibold))
-                        StatusLabel(status: artifact.cardStatus(at: context.date))
-                    }
-                    Spacer(minLength: 0)
+                ChatCardHead(symbol: artifact.kind == "pr" ? "arrow.triangle.pull" : artifact.kind == "task" ? "checkmark.circle" : "doc.text",
+                             title: artifact.title) {
+                    StatusLabel(status: artifact.cardStatus(at: context.date))
                 }
                 if !artifact.cardPreview(at: context.date).isEmpty {
                     Text(.init(artifact.cardPreview(at: context.date))).font(.subheadline).foregroundStyle(.secondary)
@@ -522,24 +612,17 @@ struct ArtifactCard: View {
                         Spacer()
                         ShareLink(item: externalURL) { Image(systemName: "square.and.arrow.up").frame(minWidth: 44, minHeight: 44) }
                     } else if artifact.kind != "task" {
-                        Button {
+                        PreviewFileButton(opening: downloading) {
                             downloading = true
                             Task {
                                 previewURL = await store.downloadArtifact(artifact)
                                 downloading = false
                             }
-                        } label: {
-                            Label(downloading ? "Opening…" : "Preview file", systemImage: "doc.text.magnifyingglass")
-                                .font(.subheadline.weight(.semibold)).frame(minHeight: 44)
                         }
-                        .disabled(downloading)
                     }
                 }
             }
-            // The inset of each card in a chat.
-            .padding(BoardStyle.Space.l)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(BoardStyle.surface, in: RoundedRectangle(cornerRadius: BoardStyle.Radius.large))
+            .modifier(ChatCardSurface())
             .quickLookPreview($previewURL)
         }
     }

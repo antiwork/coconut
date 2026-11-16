@@ -268,6 +268,7 @@ final class AppStore {
     init(demo: Bool = ProcessInfo.processInfo.arguments.contains("--demo")) {
         isDemo = demo
         PhotoLoader.shared.macFile = { [weak self] id in await self?.macFileData(id: id) }
+        PhotoLoader.shared.teamFile = { [weak self] address in await self?.teamFileData(address) }
         if demo {
             setBadge = { _ in }
             apply(Self.previewSnapshot(), persist: false)
@@ -1454,8 +1455,8 @@ final class AppStore {
         defer { if accessed { url.stopAccessingSecurityScopedResource() } }
         do {
             let values = try url.resourceValues(forKeys: [.fileSizeKey, .isRegularFileKey])
-            guard values.isRegularFile == true, let size = values.fileSize, size > 0, size <= 4 * 1024 * 1024 else {
-                throw ServiceError.configuration("Choose a file between 1 byte and 4 MB.")
+            guard values.isRegularFile == true, let size = values.fileSize, size > 0, size <= TeamFileRules.largest else {
+                throw ServiceError.configuration(TeamFileRules.sizeText)
             }
             let data = try Data(contentsOf: url, options: .mappedIfSafe)
             return await uploadAttachment(bot: bot, data: data, filename: url.lastPathComponent)
@@ -1469,8 +1470,10 @@ final class AppStore {
             error = "Attachments must be between 1 byte and 4 MB."
             return nil
         }
+        // Each upload has its own key, as for a file of a team chat: two equal pastes give two attachments.
         return await write("attachments", payload: AttachmentRequest(botId: bot.id, filename: filename,
-                                                                     contentBase64: data.base64EncodedString()), as: Artifact.self)
+                                                                     contentBase64: data.base64EncodedString()), as: Artifact.self,
+                           idempotencyKey: UUID().uuidString)
     }
 
     func decisionPreviewData(id: String) async throws -> Data {
@@ -1482,6 +1485,48 @@ final class AppStore {
     func macFileData(id: String) async -> Data? {
         guard let client else { return nil }
         return try? await client.artifactContent(id: id)
+    }
+
+    /// The bytes of a file of a message of a team chat, or nil without a paired Mac or for a file that is not there.
+    func teamFileData(_ address: TeamFileAddress) async -> Data? {
+        guard let client else { return nil }
+        return try? await client.teamFileContent(address)
+    }
+
+    /// Keeps a picked file as a draft of the Mac for the next message of a team chat. An image fits the limit first
+    /// (FileFit). Nil after a failure, with its text in the error banner: a file that does not fit, or the answer of
+    /// the Mac, for example a full space of the team. The bytes stay on the phone, so a message on its way shows them.
+    func uploadTeamFile(_ chat: TeamChatKey, _ picked: PickedFile) async -> TeamFile? {
+        guard !chat.isDirect else { return nil }
+        let outcome = await FileFit.fitted(picked)
+        guard let fitted = outcome.file else {
+            error = outcome.text
+            return nil
+        }
+        if isDemo {
+            let file = TeamFile(id: UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased(),
+                                name: fitted.name, type: fitted.type, size: fitted.data.count, width: fitted.width,
+                                height: fitted.height)
+            PhotoLoader.shared.keepDraft(fitted.data, id: file.id)
+            return file
+        }
+        let request = TeamFileRequest(name: fitted.name, content: fitted.data.base64EncodedString(), type: fitted.type,
+                                      width: fitted.width, height: fitted.height)
+        // Each upload has its own key. An equal request without an answer would else lend its key, and the Mac would
+        // answer the same draft for two picks of the same file, for example a double Command-V.
+        guard let answer = await write("\(chat.path)/files", payload: request, as: TeamFileAnswer.self,
+                                       idempotencyKey: UUID().uuidString) else { return nil }
+        PhotoLoader.shared.keepDraft(fitted.data, id: answer.file.id)
+        return answer.file
+    }
+
+    /// The person removed a draft: the Mac and the phone drop its bytes. A failure changes nothing that the person
+    /// sees: the Mac drops an old draft after 24 hours.
+    func dropTeamFile(_ chat: TeamChatKey, _ file: TeamFile) {
+        PhotoLoader.shared.dropDraft(file.id)
+        guard !isDemo, TeamFileAddress.isID(file.id) else { return }
+        Task { _ = await write("\(chat.path)/files/\(file.id)", method: "DELETE", payload: EmptyRequest(),
+                               as: TeamFileDropAnswer.self, quiet: true) }
     }
 
     func downloadArtifact(_ artifact: Artifact) async -> URL? {
@@ -1983,12 +2028,13 @@ final class AppStore {
         return canWrite ? page : nil
     }
 
-    /// Sends the draft of a composer with its reply or its page (sendTeamMessage). False when the store did not save
-    /// it, so the composer keeps the draft.
+    /// Sends the draft of a composer with its reply or its page and its files (sendTeamMessage). False when the store
+    /// did not save it, so the composer keeps the draft.
     @discardableResult
     func sendTeamMessage(_ chat: TeamChatKey, from composer: TeamComposerState, mentions: [String] = []) -> Bool {
         sendTeamMessage(chat, text: composer.draft, replyingTo: composer.quote?.reply, page: composer.quote?.page,
-                        mentions: mentions, preview: composer.editing == nil ? composer.linkPreview : nil)
+                        mentions: mentions, preview: composer.editing == nil ? composer.linkPreview : nil,
+                        files: composer.uploading == 0 ? composer.files : [])
     }
 
     /// The loaded direct chats with a team bot that quote a page, each one time. After an update that says that a
@@ -2060,25 +2106,27 @@ final class AppStore {
     /// message answers no other message.
     /// `preview` is the link preview of the composer. It goes only to a Mac with previews (TeamChat.offersPreviews),
     /// and only when it fits the text (TeamLinkPreview.fitting). Else the message goes without it.
+    /// `files` are the drafts of the composer on the Mac. With them the text can be empty. A direct chat takes none.
     @discardableResult
     func sendTeamMessage(_ chat: TeamChatKey, text: String, replyingTo answered: TeamMessage?, page: TeamAboutPage? = nil,
-                         mentions: [String] = [], preview: TeamLinkPreview? = nil) -> Bool {
+                         mentions: [String] = [], preview: TeamLinkPreview? = nil, files: [TeamFile] = []) -> Bool {
         let page = chat.bot == nil ? nil : page
         let answered = page == nil ? answered : nil
         let text = text.trimmingCharacters(in: .whitespacesAndNewlines)
         let preview = teamChats[chat]?.offersPreviews == true ? preview?.fitting(in: text) : nil
-        guard !text.isEmpty, teamListHas(chat) else { return false }
+        let files = chat.isDirect ? [] : Array(files.prefix(TeamFileRules.limit))
+        guard !text.isEmpty || !files.isEmpty, teamListHas(chat) else { return false }
         guard TeamMentions.fits(mentions) else {
             error = TeamMentions.overLimit
             return false
         }
         let quote = answered.map {
             TeamMessageQuote(id: $0.id, thisMac: $0.thisMac, member: $0.member, memberName: $0.memberName, bot: $0.bot,
-                             botName: $0.botName, text: String($0.text.prefix(200)))
+                             botName: $0.botName, text: String($0.shortText.prefix(200)))
         }
         let pending = TeamPendingMessage(id: UUID().uuidString, text: text, replyTo: answered?.id, reply: quote,
                                          createdAt: Self.now, mentions: mentions.isEmpty ? nil : mentions, page: page,
-                                         preview: preview)
+                                         preview: preview, files: files.isEmpty ? nil : files)
         teamChats[chat, default: TeamChat()].pending.append(pending)
         do { try saveOutgoing() } catch {
             teamChats[chat]?.pending.removeAll { $0.id == pending.id }
@@ -2087,6 +2135,16 @@ final class AppStore {
         }
         Task { await deliverTeamMessage(chat, id: pending.id) }
         return true
+    }
+
+    /// The Mac confirmed a message with files: the bytes of each draft on the phone become the bytes of the file of
+    /// the message, so the chat shows them without a download.
+    private func adoptTeamDrafts(_ pending: TeamPendingMessage, as message: TeamMessage, in chat: TeamChatKey) {
+        for file in pending.files ?? [] where message.files.contains(where: { $0.id == file.id }) {
+            if let address = TeamFileAddress(room: chat.room, message: message.id, file: file.id) {
+                PhotoLoader.shared.adoptDraft(file.id, as: address)
+            }
+        }
     }
 
     /// The answer of the Mac to a link preview that does not fit its rules. The Mac then saves nothing.
@@ -2105,11 +2163,15 @@ final class AppStore {
     /// first, so a restart does not bring it back.
     func removeUnsentTeamMessage(_ chat: TeamChatKey, id: String) {
         guard let previous = teamChats[chat]?.pending else { return }
+        let removed = previous.first { $0.id == id && $0.failed }
         teamChats[chat]?.pending.removeAll { $0.id == id && $0.failed }
         do { try saveOutgoing() } catch {
             teamChats[chat]?.pending = previous
             report(error)
+            return
         }
+        // The drafts of the message go too, on the Mac and on the phone.
+        for file in removed?.files ?? [] { dropTeamFile(chat, file) }
     }
 
     private func deliverTeamMessage(_ chat: TeamChatKey, id: String) async {
@@ -2117,10 +2179,13 @@ final class AppStore {
         if isDemo {
             teamChats[chat]?.pending.removeAll { $0.id == id }
             let first = (teamChats[chat]?.newestFirst ?? 0) + 1
-            teamChats[chat]?.put(TeamMessage(id: id, first: first, thisMac: true, text: pending.text, replyTo: pending.replyTo,
-                                             reply: pending.reply, mentions: pending.mentions,
-                                             createdAt: pending.createdAt, page: pending.page,
-                                             preview: pending.preview))
+            let files = (pending.files ?? []).map { file in var file = file; file.complete = true; return file }
+            let message = TeamMessage(id: id, first: first, thisMac: true, text: pending.text, replyTo: pending.replyTo,
+                                      reply: pending.reply, mentions: pending.mentions,
+                                      createdAt: pending.createdAt, page: pending.page,
+                                      preview: pending.preview, files: files, filesKey: true)
+            adoptTeamDrafts(pending, as: message, in: chat)
+            teamChats[chat]?.put(message)
             return
         }
         let change = startMessageChange(chat, id)
@@ -2129,7 +2194,8 @@ final class AppStore {
                                                      payload: TeamSendRequest(text: pending.text, replyTo: pending.replyTo,
                                                                               mentions: pending.mentions, chat: chat.chat,
                                                                               aboutDocumentId: pending.page?.id,
-                                                                              preview: pending.preview),
+                                                                              preview: pending.preview,
+                                                                              files: pending.files?.map(\.id)),
                                                      as: TeamMessageAnswer.self, refreshInBackground: true,
                                                      idempotencyKey: pending.idempotencyKey,
                                                      onFailure: { error in
@@ -2156,6 +2222,7 @@ final class AppStore {
             return
         }
         teamChatChanges[chat, default: 0] += 1
+        adoptTeamDrafts(pending, as: answer.message, in: chat)
         teamChats[chat]?.pending.remove(at: index)
         // A page that brought the message first is as new as this answer or newer, so its copy stays: a late answer
         // does not take away a reaction or bring back a page that went.
@@ -2167,7 +2234,8 @@ final class AppStore {
     /// Mac confirmed it.
     func editTeamMessage(_ chat: TeamChatKey, _ message: TeamMessage, text: String) async -> Bool {
         let text = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty else { return false }
+        // A message with files takes an empty text (docs/team-log.md, "Files").
+        guard !text.isEmpty || !message.files.isEmpty else { return false }
         guard text != message.text else { return true }
         if isDemo {
             var edited = message
@@ -3125,7 +3193,15 @@ private struct PageShareAnswer: Decodable, Sendable { let document: BotDocument 
 private struct TeamSendRequest: Encodable {
     let text: String; let replyTo: String?; let mentions: [String]?; let chat: String?; let aboutDocumentId: String?
     let preview: TeamLinkPreview?
+    /// The draft IDs of the files, or nil for a message without files.
+    var files: [String]? = nil
 }
+/// A nil `type`, `width` or `height` is not in the JSON.
+private struct TeamFileRequest: Encodable {
+    let name: String; let content: String; let type: String?; let width: Int?; let height: Int?
+}
+private struct TeamFileAnswer: Decodable, Sendable { let file: TeamFile }
+private struct TeamFileDropAnswer: Decodable, Sendable { let file: String }
 private struct TeamEditRequest: Encodable { let text: String }
 private struct TeamReactionRequest: Encodable { let emoji: String }
 private struct TeamReadRequest: Encodable { let first: Int; let chat: String? }

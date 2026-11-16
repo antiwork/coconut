@@ -342,6 +342,10 @@ struct TeamMessage: Decodable, Identifiable, Equatable, Sendable {
     var preview: TeamLinkPreview? = nil
     /// True when the Mac sent the key `preview`, also as null. A Mac without link previews sends no key.
     var previewKey = false
+    /// The files of the message, in the order of the writer (docs/team-log.md, "Files"). Empty without files.
+    var files: [TeamFile] = []
+    /// True when the Mac sent the key `files`, also as an empty list. A Mac without files sends no key.
+    var filesKey = false
 
     /// A message of this Mac's person. A bot of this Mac writes as itself, not as the person.
     var isOwn: Bool { thisMac == true && bot == nil }
@@ -399,11 +403,15 @@ extension TeamMessage {
         // A preview of a wrong shape decodes to nil. The explicit type keeps one level of optional in each Swift mode.
         let decoded: TeamLinkPreview? = try? container.decodeIfPresent(TeamLinkPreview.self, forKey: .preview)
         preview = decoded?.fitting(in: text)
+        // A missing key means a Mac without files. A file that the app cannot read drops only that file.
+        filesKey = container.contains(.files)
+        files = ((try? container.decodeIfPresent([Lossy<TeamFile>].self, forKey: .files)) ?? nil)?
+            .compactMap(\.value) ?? []
     }
 
     private enum CodingKeys: String, CodingKey {
         case id, first, member, memberName, thisMac, bot, botName, text, replyTo, reply, mentions, createdAt, editedAt
-        case page, reactions, preview
+        case page, reactions, preview, files
     }
 }
 
@@ -685,6 +693,44 @@ struct TeamComposerState: Equatable {
     var linkPreview: TeamLinkPreview?
     /// The link whose preview the person removed. It stays removed until the first link of the draft changes.
     var removedLink: String?
+    /// The drafts on the Mac that go with the next message, in the order of the picks. A chip above the field shows
+    /// each one.
+    var files: [TeamFile] = []
+    /// The picked files from the moment of the pick until the Mac has their drafts: a photo that still loads, the fit
+    /// step and the upload. The plus control shows the hourglass meanwhile, and Send is off.
+    var uploads = OrderedUploads<TeamFile>()
+    var uploading: Int { uploads.count }
+
+    /// One more file fits the message: the drafts and the uploads count.
+    var canAddFile: Bool { files.count + uploading < TeamFileRules.limit }
+
+    /// A pick: its place among the files. Nil when the message already has the most files: the composer then says
+    /// why.
+    mutating func startUpload() -> UUID? {
+        guard canAddFile else { return nil }
+        return uploads.start()
+    }
+
+    /// An upload ended: the draft of the Mac, or nil for a failure. The drafts take the order of the picks, also when
+    /// a later upload ends first.
+    mutating func finishUpload(_ id: UUID, _ file: TeamFile?) {
+        files += uploads.finish(id, file)
+    }
+
+    /// The cross of a chip: the draft goes from the message. Returns it, so the Mac can drop it.
+    mutating func removeFile(_ id: String) -> TeamFile? {
+        guard let index = files.firstIndex(where: { $0.id == id }) else { return nil }
+        return files.remove(at: index)
+    }
+
+    /// Send is on: a text, or at least one file for a new message, and no upload on its way. An edit needs a text,
+    /// except for a message with files, which the Mac takes with an empty text.
+    func canSend(enabled: Bool) -> Bool {
+        guard enabled, uploading == 0 else { return false }
+        let hasText = !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        if let editing { return hasText || !editing.files.isEmpty }
+        return hasText || !files.isEmpty
+    }
 
     /// A reply takes the place of a page and of an edit.
     mutating func reply(to message: TeamMessage) {
@@ -733,12 +779,13 @@ struct TeamComposerState: Equatable {
         if quote?.reply?.id == id { quote = nil }
     }
 
-    /// The store saved the new message: the draft, the quote and the preview go.
+    /// The store saved the new message: the draft, the quote, the preview and the files go.
     mutating func sent() {
         draft = ""
         quote = nil
         linkPreview = nil
         removedLink = nil
+        files = []
     }
 
     /// The first link of the draft is now `link`, or the draft has none. The preview of another link goes at once, and
@@ -853,6 +900,10 @@ struct TeamPendingMessage: Codable, Identifiable, Equatable, Sendable {
     /// The preview of the first link of the text. Nil for a message without one, and for a message that an older app
     /// saved.
     var preview: TeamLinkPreview? = nil
+    /// The drafts that the message sends, with the items that the Mac answered for them. Their bytes stay on the phone
+    /// until the Mac confirms the send, so the row shows them at once. Nil for a message without files, and for a
+    /// message that an older app saved.
+    var files: [TeamFile]? = nil
 
     var idempotencyKey: String { id }
 
@@ -905,14 +956,18 @@ struct TeamChat: Equatable, Sendable {
     /// chat without a message, give no preview, so the composer shows no bar and sends none.
     var offersPreviews: Bool { messages.last?.previewKey == true }
 
+    /// The Mac of the chat takes files: its newest message has the key `files`. A Mac without files, and a chat without
+    /// a message, take none, so the composer shows no control to attach (TeamFileRules.offered).
+    var offersFiles: Bool { messages.last?.filesKey == true }
+
     /// The newest message of the chat in the app, for the row of a direct chat that the list of the Mac does not have
     /// yet: the newest unsent message, else the newest saved message that shows. Nil for a chat without one.
     var newestLocal: TeamLastMessage? {
         if let pending = pending.last {
-            return TeamLastMessage(thisMac: true, text: pending.text, createdAt: pending.createdAt)
+            return TeamLastMessage(thisMac: true, text: pending.shortText, createdAt: pending.createdAt)
         }
         guard let message = messages.last(where: { !deleting.contains($0.id) }) else { return nil }
-        return TeamLastMessage(first: message.first, thisMac: message.thisMac, text: message.text,
+        return TeamLastMessage(first: message.first, thisMac: message.thisMac, text: message.shortText,
                                createdAt: message.createdAt)
     }
 

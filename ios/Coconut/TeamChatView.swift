@@ -394,7 +394,8 @@ struct TeamChatView: View {
             TeamChatComposer(placeholder: TeamDirectText.message(peer(room)?.name ?? room.title),
                              targets: mentionTargets(room), peer: peer(room)?.name, state: $composer,
                              mentions: $mentions, focused: $composerFocused,
-                             enabled: canWrite(room), previews: chat.offersPreviews, send: send)
+                             enabled: canWrite(room), previews: chat.offersPreviews,
+                             files: TeamFileRules.offered(in: chatKey, chat) ? composerFiles : nil, send: send)
                 .fixedSize(horizontal: false, vertical: true)
         }
     }
@@ -434,9 +435,15 @@ struct TeamChatView: View {
             removeUnsent: { store.removeUnsentTeamMessage(chatKey, id: $0) })
     }
 
+    private var composerFiles: TeamComposerFiles {
+        TeamComposerFiles(upload: { await store.uploadTeamFile(chatKey, $0) },
+                          drop: { store.dropTeamFile(chatKey, $0) },
+                          report: { store.error = $0 })
+    }
+
     private func send() {
         let text = composer.draft.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let room, canWrite(room), !text.isEmpty else { return }
+        guard let room, canWrite(room), composer.canSend(enabled: true) else { return }
         if let message = composer.editing {
             composer.cancelEdit()
             Task {
@@ -562,6 +569,8 @@ struct TeamMessageRow: View {
     let actions: TeamMessageActions
     @State private var held = false
     @State private var showsReactions = false
+    /// The file whose held view shows, on an iPhone.
+    @State private var heldFile: TeamFile?
 
     private var own: Bool { row.writer == .you }
     private var message: TeamMessage? { row.message }
@@ -582,10 +591,34 @@ struct TeamMessageRow: View {
         return TeamMessageDeletion.allows(message, in: room, direct: peer != nil)
     }
 
+    /// The files stand above the bubble, in the components of the agent chat: the images in one tile row, each other
+    /// file as a card. The text keeps its bubble under them. A message without a text and without a quote has no
+    /// bubble.
     var body: some View {
         VStack(alignment: .leading, spacing: BoardStyle.Space.xs) {
             if row.startsRun && !own && peer == nil { writerLabel }
-            bubbleRow.modifier(MessageTimestamp(createdAt: row.createdAt))
+            if row.files.isEmpty {
+                bubbleRow.modifier(MessageTimestamp(createdAt: row.createdAt))
+            } else {
+                VStack(alignment: own ? .trailing : .leading, spacing: BoardStyle.Space.xs) {
+                    let photos = row.photos(room: room.room)
+                    if !photos.isEmpty { photoRow(photos) }
+                    ForEach(row.documents) { file in fileCard(file) }
+                    if hasBubble {
+                        bubbleRow
+                    } else if let pending, pending.failed {
+                        NotSentControls(id: pending.id, retry: { actions.retry(pending.id) },
+                                        delete: { actions.removeUnsent(pending.id) })
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: own ? .trailing : .leading)
+                .modifier(MessageTimestamp(createdAt: row.createdAt))
+                #if os(iOS)
+                .fullScreenCover(item: $heldFile) { file in
+                    if let source = row.address(of: file, room: room.room) { heldView(file, source: source) }
+                }
+                #endif
+            }
             // Under the bubble, on its side, in the style of the name above it: the reactions, then "Edited", in one
             // line. The bubble keeps the width of its text.
             let edited = message?.isEdited == true || editedText != nil
@@ -603,6 +636,90 @@ struct TeamMessageRow: View {
             }
         }
     }
+
+    /// The text, a quote or a link preview needs the bubble.
+    private var hasBubble: Bool {
+        !text.isEmpty || TeamRowQuote(message: message, pending: pending) != nil || row.linkPreview != nil
+    }
+
+    /// The images of the message in the tile row of the agent chat, on the side of the writer.
+    private func photoRow(_ photos: [MessagePhoto]) -> some View {
+        let images = row.files.filter(\.isImage)
+        return PhotoTileRow(photos: photos, trailing: own,
+                            hold: { index in if index < images.count { holdFile(images[index]) } },
+                            identifier: "team-photo-\(row.id)", menuOnMac: true) { index in
+            if index < images.count, let source = row.address(of: images[index], room: room.room) {
+                fileActions(images[index], source: source)
+            }
+        } below: { _ in EmptyView() }
+    }
+
+    /// A file that is no image, in the form of a file card of the agent chat, on the side of the writer.
+    private func fileCard(_ file: TeamFile) -> some View {
+        let source = row.address(of: file, room: room.room)
+        return ChatFileCard(file: file, source: source)
+            .frame(maxWidth: ChatFileCard.width)
+            #if os(iOS)
+            .simultaneousGesture(LongPressGesture(minimumDuration: 0.45).onEnded { _ in holdFile(file) })
+            #else
+            .contextMenu { if let source { fileActions(file, source: source) } }
+            #endif
+            .accessibilityActions { if let source { fileActions(file, source: source) } }
+            .accessibilityIdentifier("team-file-\(row.id)-\(file.id)")
+    }
+
+    private func holdFile(_ file: TeamFile) {
+        #if os(iOS)
+        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+        // The held message fades in over the chat, without the slide of a full-screen cover.
+        var transaction = Transaction()
+        transaction.disablesAnimations = true
+        withTransaction(transaction) { heldFile = file }
+        #endif
+    }
+
+    /// The team actions of a text message for a file: reactions, Reply, Copy, Edit and Delete. Copy takes the image or
+    /// the file, not a link.
+    @ViewBuilder private func fileActions(_ file: TeamFile, source: URL) -> some View {
+        #if os(macOS)
+        if canReact, let message {
+            ReactionMenuRow(emoji: TeamReactions.all, marked: { message.ownReaction == $0 },
+                            label: { TeamReactions.action($0, on: message) }) { actions.react(message, $0) }
+        }
+        if let message, canWrite { Button("Reply", systemImage: "arrowshape.turn.up.left") { actions.reply(message) } }
+        #else
+        if let message, canWrite { Button("Reply") { actions.reply(message) } }
+        if canReact, let message {
+            ForEach(TeamReactions.all, id: \.self) { emoji in
+                Button(TeamReactions.action(emoji, on: message)) { actions.react(message, emoji) }
+            }
+        }
+        #endif
+        if file.isReady { Button("Copy", systemImage: "doc.on.doc") { TeamFileCopy.copy(file, source: source) } }
+        if let message, canChange { Button("Edit", systemImage: "pencil") { actions.edit(message) } }
+        if let message, canDelete {
+            Button("Delete", systemImage: "trash", role: .destructive) { actions.delete(message) }
+        }
+    }
+
+    #if os(iOS)
+    /// A held image or file: the reactions above, the image or the card, then Reply, Copy, Share, and Edit and Delete
+    /// as a held text message has them. Copy and Share take the image or the file.
+    private func heldView(_ file: TeamFile, source: URL) -> some View {
+        HeldTeamFile(file: file, source: source, own: own,
+                     reply: message.flatMap { message in
+                         canWrite ? HeldAction(title: "Reply", systemImage: "arrowshape.turn.up.left") { actions.reply(message) } : nil
+                     },
+                     afterShare: changeActions) { close in
+            if canReact, let message {
+                HeldReactionRow(emoji: TeamReactions.all, marked: { message.ownReaction == $0 },
+                                label: { TeamReactions.action($0, on: message) }) { emoji in
+                    close { actions.react(message, emoji) }
+                }
+            }
+        }
+    }
+    #endif
 
     private var editedLabel: some View {
         Text("Edited").font(.footnote).foregroundStyle(.secondary).accessibilityHidden(true)
@@ -885,10 +1002,19 @@ struct TeamReactionList: View {
     }
 }
 
-/// The composer of the Team chat: text only. A reply or an edit shows its message above the field, with a way to cancel.
-/// In a direct chat with a bot, a Library page shows there in the same form.
-/// `@` opens the list of the team bots and the people, as in the composer of a bot chat. An edit changes only the text,
-/// so it has no list.
+/// What the composer of a team chat does with files: the chat uploads a picked file as a draft, and drops a removed
+/// one. Nil where the chat takes no file (TeamFileRules.offered).
+struct TeamComposerFiles {
+    let upload: (PickedFile) async -> TeamFile?
+    let drop: (TeamFile) -> Void
+    /// A text for the error banner.
+    let report: (String) -> Void
+}
+
+/// The composer of the Team chat: the text, and up to four files where the Mac takes them. A reply or an edit shows its
+/// message above the field, with a way to cancel. In a direct chat with a bot, a Library page shows there in the same
+/// form. `@` opens the list of the team bots and the people, as in the composer of a bot chat. An edit changes only the
+/// text, so it has no list and no plus control.
 struct TeamChatComposer: View {
     /// "Message Example Team", or "Message Grace" in a direct chat.
     let placeholder: String
@@ -904,23 +1030,31 @@ struct TeamChatComposer: View {
     let enabled: Bool
     /// The Mac of the chat takes link previews (TeamChat.offersPreviews). Without it the composer reads no link.
     var previews = false
+    var files: TeamComposerFiles? = nil
     let send: () -> Void
+    @State private var importing = false
+    @State private var pickingPhotos = false
 
     private var text: String { state.draft }
     /// The link whose preview the composer shows: the first link of a new message, while the Mac takes previews.
     private var previewLink: TeamDraftLink? { previews && editing == nil ? TeamDraftLink.first(in: text) : nil }
     private var editing: TeamMessage? { state.editing }
-    private var canSend: Bool { enabled && !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+    private var canSend: Bool { state.canSend(enabled: enabled) }
+    /// Send shows with a text, or with a file of a new message.
+    private var showsSend: Bool {
+        !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || (editing == nil && !state.files.isEmpty)
+            || (editing.map { !$0.files.isEmpty } ?? false)
+    }
 
     var body: some View {
         VStack(spacing: 0) {
             if let editing {
-                ComposerQuoteBar(reference: MessageReference(messageId: editing.id, text: editing.text,
+                ComposerQuoteBar(reference: MessageReference(messageId: editing.id, text: editing.shortText,
                                                              author: "Edit message", role: ""),
                                  cancelLabel: "Cancel edit") { state.cancelEdit() }
                 .accessibilityIdentifier("edit-preview")
             } else if let replyTo = state.quote?.reply {
-                ComposerQuoteBar(reference: MessageReference(messageId: replyTo.id, text: replyTo.text,
+                ComposerQuoteBar(reference: MessageReference(messageId: replyTo.id, text: replyTo.shortText,
                                                              author: TeamNames.author(of: replyTo, peer: peer), role: ""),
                                  cancelLabel: "Cancel reply") { state.removeQuote() }
                     .accessibilityIdentifier("reply-preview")
@@ -935,27 +1069,45 @@ struct TeamChatComposer: View {
                 BotMentionControls(text: $state.draft, selection: $selection, selected: $mentions,
                                    bots: targets, focused: focused) { focused = true }
             }
-            HStack(alignment: .bottom, spacing: 4) {
-                TextField(placeholder, text: $state.draft, selection: $selection, axis: .vertical)
-                    .focused($focused)
-                    .modifier(ComposerFieldStyle(send: { if canSend { send() } }))
-                    .accessibilityIdentifier("message-input")
-                if !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    ComposerSendButton(symbol: editing == nil ? "arrow.up" : "checkmark", enabled: canSend,
-                                       label: editing == nil ? "Send message" : "Save edit", action: send)
+            if editing == nil {
+                ComposerAttachmentChips(chips: state.files.map { ComposerChip(id: $0.id, title: $0.name) }) { id in
+                    if let file = state.removeFile(id) { files?.drop(file) }
                 }
             }
-            .padding(.leading, BoardStyle.Space.m).padding(.trailing, BoardStyle.Space.xs)
-            .modifier(ComposerClickArea(shape: RoundedRectangle(cornerRadius: BoardStyle.Radius.large, style: .continuous)) {
-                focused = true
-            })
-            .modifier(ComposerSurface(shape: RoundedRectangle(cornerRadius: BoardStyle.Radius.large, style: .continuous)))
+            HStack(alignment: .bottom, spacing: BoardStyle.Space.s) {
+                if files != nil && editing == nil {
+                    ComposerPlusMenu(uploading: state.uploading > 0, enabled: enabled) {
+                        AttachMenuItems(importing: $importing, pickingPhotos: $pickingPhotos)
+                    }
+                }
+                HStack(alignment: .bottom, spacing: 4) {
+                    TextField(placeholder, text: $state.draft, selection: $selection, axis: .vertical)
+                        .focused($focused)
+                        .modifier(ComposerFieldStyle(send: { if canSend { send() } }))
+                        .accessibilityIdentifier("message-input")
+                    if showsSend {
+                        ComposerSendButton(symbol: editing == nil ? "arrow.up" : "checkmark", enabled: canSend,
+                                           label: editing == nil ? "Send message" : "Save edit", action: send)
+                    }
+                }
+                .padding(.leading, BoardStyle.Space.m).padding(.trailing, BoardStyle.Space.xs)
+                .modifier(ComposerClickArea(shape: RoundedRectangle(cornerRadius: BoardStyle.Radius.large, style: .continuous)) {
+                    focused = true
+                })
+                .modifier(ComposerSurface(shape: RoundedRectangle(cornerRadius: BoardStyle.Radius.large, style: .continuous)))
+            }
             .modifier(ComposerGlassGroup())
         }
         .padding(.horizontal, 16)
         .padding(.top, 4)
         .padding(.bottom, 8)
         .modifier(ComposerBackdrop())
+        .modifier(ComposerAttachmentSources(importing: $importing, pickingPhotos: $pickingPhotos,
+                                            photoLimit: TeamFileRules.limit - state.files.count - state.uploading,
+                                            pasteEnabled: files != nil && editing == nil && focused && enabled) { url in
+            guard let picked = PickedFile.read(url) else { return report(TeamFileRules.sizeText) }
+            add { picked }
+        } photo: { add($0) } paste: { picked in add { picked } } report: { report($0) })
         // A sent or cancelled draft leaves no caret in the old text.
         .onChange(of: text) { _, value in if value.isEmpty { selection = nil } }
         // A new first link drops the old preview at once, and its page loads after a pause in typing. The send never
@@ -969,6 +1121,20 @@ struct TeamChatComposer: View {
             state.previewLoaded(preview, for: link.text)
         }
     }
+
+    /// A picked file counts as on its way from the pick, and goes to the Mac as a draft when it has loaded. Its chip
+    /// shows when the Mac has it and each earlier pick is done, so the chips keep the order of the picks. The uploads
+    /// run side by side. A fifth file says why it does not fit.
+    private func add(_ load: @escaping @MainActor () async -> PickedFile?) {
+        guard let files else { return }
+        guard let id = state.startUpload() else { return report(TeamFileRules.limitText) }
+        Task {
+            let file: TeamFile? = if let picked = await load() { await files.upload(picked) } else { nil }
+            state.finishUpload(id, file)
+        }
+    }
+
+    private func report(_ text: String) { files?.report(text) }
 }
 
 /// The link preview of the draft above the field, in the form of the reply bar: the title and the site of the page,
