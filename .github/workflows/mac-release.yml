@@ -29,11 +29,11 @@ permissions:
   actions: read
 
 # Two releases must not deploy the feed at the same time: the later one would drop the archive of the earlier one.
-# A push and a person share this group, so each release waits for the release before it. GitHub keeps one waiting run
-# in the group: a newer run cancels it, and publishes the newer commits.
+# A push and a person share this group. Keep queued runs so a later push cannot cancel an urgent manual release.
 concurrency:
   group: mac-release
   cancel-in-progress: false
+  queue: max
 
 jobs:
   plan:
