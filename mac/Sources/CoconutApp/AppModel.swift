@@ -71,7 +71,8 @@ final class AppModel: ObservableObject {
     var startAtLogin: Bool { UserDefaults.standard.bool(forKey: Self.startAtLoginKey) }
 
     func start() {
-        guard timer == nil else { return }
+        // A test run hosts the app, and it must not register login items, install or update the person's Coconut.
+        guard timer == nil, !TestIsolation.active else { return }
         if RemoveRequest.asked(arguments: CommandLine.arguments) {
             if mode == .team {
                 // No registration and no update: the app removes what it installed, then quits.

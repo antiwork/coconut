@@ -20,7 +20,7 @@ struct CoconutApp: App {
         // The chat client starts with the app, not with a view: the app can start without its main window, and the
         // banners need the lists of the teams also then. A team-only Mac has no pairing, so its chat client has
         // nothing to connect to.
-        if model.mode == .full {
+        if model.mode == .full && !TestIsolation.active {
             banners.start()
             store.start()
         }
