@@ -575,11 +575,15 @@ def piece_fields(fields: dict) -> dict | None:
 def stored_piece(fields: dict, piece: dict | None) -> str:
     """The text of the payload of a `file` entry in `team_entries`: the payload without `data`, and with `size`, the
     number of bytes of a piece that fits. The bytes go into `team_file_pieces`, so they are not in the store two
-    times, and the count of the space of a member (team_files.py) reads `size`."""
+    times, and the count of the space of a member (team_files.py) reads `size`.
+
+    The other fields are as the member wrote them, and a field that this version does not read can hold a lone
+    surrogate, in a value or in a key, at any depth. SQLite cannot store such a str (unicode_text), so the text is
+    ASCII: the serializer writes each other character as an escape, and the text reads back to the same fields."""
     stored = {name: value for name, value in fields.items() if name not in ('data', 'size')}
     if piece is not None:
         stored['size'] = len(piece['data'])
-    return json.dumps(stored, ensure_ascii=False, separators=(',', ':'))
+    return json.dumps(stored, separators=(',', ':'))
 
 
 def stored_files(files: list[dict]) -> str | None:
@@ -1691,7 +1695,7 @@ class TeamStore:
         self.db.executemany('INSERT INTO team_message_files (room, message, member, file, size, hash) '
                             'VALUES (?, ?, ?, ?, ?, ?)', [(room, message, *file) for file in files])
         for member, file in {(member, file) for member, file, _, _ in files}:
-            self._check_file(room, member, file)
+            self._check_file(room, member, file, message)
         for member, file, _, _ in old - set(files):
             if not self._file_named(room, member, file):
                 self.db.execute('DELETE FROM team_file_pieces WHERE room=? AND member=? AND file=?', (room, member, file))
@@ -1700,20 +1704,22 @@ class TeamStore:
         return self.db.execute('SELECT 1 FROM team_message_files WHERE room=? AND member=? AND file=? LIMIT 1',
                                (room, member, file)).fetchone() is not None
 
-    def _check_file(self, room: str, member: str, file: str) -> None:
-        """Set `checked` of each message of `member` that names the file: the hash of its item when the file is
-        complete (file_bytes), else null. The check runs when a piece or a message changes, in the transaction of the
-        accept, so a view and a new process read the result and never the bytes. The pieces get one hash for each
-        size and hash of an item."""
-        rows = self.db.execute('SELECT message, size, hash FROM team_message_files WHERE room=? AND member=? AND file=?',
-                               (room, member, file)).fetchall()
-        results = {}
-        for message, size, file_hash in rows:
-            if (size, file_hash) not in results:
-                item = dict(id=file, size=size, hash=file_hash)
-                results[size, file_hash] = self.file_bytes(room, member, item) is not None
+    def _check_file(self, room: str, member: str, file: str, message: str | None = None) -> None:
+        """Set `checked` of each message of `member` that names the file, or only of `message`: the hash of its item
+        when the file is complete (file_bytes), else null. The check runs when a piece or a message changes, in the
+        transaction of the accept, so a view and a new process read the result and never the bytes.
+
+        A member can name one file ID in many messages with other hashes. So the check joins and hashes the pieces at
+        most one time for each size that fits, and compares that SHA-256 with the hash of each item."""
+        rows = self.db.execute('''SELECT message, size, hash FROM team_message_files WHERE room=? AND member=? AND file=?
+            AND (? IS NULL OR message=?)''', (room, member, file, message, message)).fetchall()
+        digests = {}
+        for name, size, file_hash in rows:
+            if size not in digests:
+                data = self._joined(room, member, file, size)
+                digests[size] = hashlib.sha256(data).hexdigest() if data is not None else None
             self.db.execute('UPDATE team_message_files SET checked=? WHERE room=? AND message=? AND file=?',
-                            (file_hash if results[size, file_hash] else None, room, message, file))
+                            (file_hash if digests[size] == file_hash else None, room, name, file))
 
     def _show_piece(self, room: str, entry: dict, piece: dict | None) -> None:
         """Set the row of the bytes of a `file` entry, or remove it. `piece` is what read_entry found valid, or None
@@ -1757,12 +1763,16 @@ class TeamStore:
         """The bytes of a file of a message of `member`, or None while the file is not complete: the pieces fit
         (_pieces_fit) and the SHA-256 of the joined bytes is `hash`. Only the pieces of the member of the message
         count, so a piece of another member never takes the place of one."""
-        if not self._pieces_fit(room, member, item):
+        data = self._joined(room, member, item['id'], item['size'])
+        return data if data is not None and hashlib.sha256(data).hexdigest() == item['hash'] else None
+
+    def _joined(self, room: str, member: str, file: str, size: int) -> bytes | None:
+        """The joined pieces of a file of `member` with `size` bytes, or None when the pieces do not fit
+        (_pieces_fit)."""
+        if not self._pieces_fit(room, member, dict(id=file, size=size)):
             return None
-        data = b''.join(row[0] for row in self.db.execute('''SELECT data FROM team_file_pieces
-            WHERE room=? AND member=? AND file=? AND piece<? ORDER BY piece''',
-                                                          (room, member, item['id'], -(-item['size'] // CHUNK))))
-        return data if hashlib.sha256(data).hexdigest() == item['hash'] else None
+        return b''.join(row[0] for row in self.db.execute('''SELECT data FROM team_file_pieces
+            WHERE room=? AND member=? AND file=? AND piece<? ORDER BY piece''', (room, member, file, -(-size // CHUNK))))
 
     def file_views(self, room: str, message: str, files: str | None) -> list[dict]:
         """The `files` of a message view: each item without its hash, and `complete` from `checked`. `files` is the
@@ -1784,11 +1794,18 @@ class TeamStore:
     def sent_bytes(self, room: str, member: str, since: int, leave_out: list[str]) -> int:
         """The bytes of the pieces of `member` in the room with an `at` from `since` on, from the `size` of each stored
         `file` entry (stored_piece), without the pieces of the files in `leave_out`. A `delete` over a piece frees its
-        space on the relay, and its entry is no longer of the kind `file`."""
-        return self.db.execute('''SELECT COALESCE(SUM(json_extract(payload, '$.size')), 0) FROM team_entries
-            WHERE room=? AND member=? AND kind='file' AND at>=?
-            AND json_extract(payload, '$.file') NOT IN (SELECT value FROM json_each(?))''',
-                               (room, member, since, json.dumps(leave_out))).fetchone()[0]
+        space on the relay, and its entry is no longer of the kind `file`.
+
+        Python reads each payload, not a JSON function of SQLite, which refuses some JSON that Python reads (see
+        _read_marks_again). A payload without a whole `size` counts nothing."""
+        total = 0
+        for (payload,) in self.db.execute("SELECT payload FROM team_entries WHERE room=? AND member=? AND kind='file' "
+                                          'AND at>=?', (room, member, since)):
+            fields = json.loads(payload)
+            size = fields.get('size')
+            if fields.get('file') not in leave_out and type(size) is int and size > 0:
+                total += size
+        return total
 
     def add_draft(self, room: str, draft: dict, data: bytes) -> None:
         self.db.execute('''INSERT INTO team_file_drafts (room, id, name, type, size, hash, width, height, created, data)

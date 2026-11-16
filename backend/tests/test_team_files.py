@@ -298,13 +298,63 @@ class FileStoreTests(unittest.TestCase):
         again = TeamStore(self.db)
         again.migrate()
         row = again.message(ROOM, entry_id(1))
-        with mock.patch('coconut.team_store.hashlib.sha256', side_effect=AssertionError('A view hashed the bytes.')):
+        refuse = mock.Mock(side_effect=AssertionError('A view hashed the bytes.'))
+        with mock.patch.object(team_store, 'hashlib', mock.Mock(sha256=refuse)):
             self.assertTrue(again.file_views(ROOM, row['entry'], row['files'])[0]['complete'])
         # A change of a piece checks the file again.
         self.piece(1, b'x' * 3, rev=2)
         self.assertFalse(self.complete())
         self.piece(1, data[CHUNK:], rev=3)
         self.assertTrue(self.complete())
+
+    def test_a_piece_with_a_lone_surrogate_in_an_unused_field_goes_into_the_store(self):
+        data = b'surrogate'
+        payload = {'kind': 'file', 'rev': 1, 'file': FILE, 'index': 0, 'data': base64.b64encode(data).decode(),
+                   'extra': '\ud800', '\udfff': {'deep': ['\ud800']}}
+        self.assertEqual(self.write(piece_id(0), payload), (STORED, None))
+        stored = self.store.entry(ROOM, piece_id(0))['payload']
+        self.assertTrue(stored.isascii())
+        self.assertEqual(json.loads(stored)['\udfff'], {'deep': ['\ud800']})
+        self.assertEqual(self.message(1, [item(data)]), (STORED, None))
+        self.assertTrue(self.complete())
+
+    def test_a_check_hashes_the_bytes_one_time_for_each_size(self):
+        data = b'h' * 50
+        self.piece(0, data)
+        right = hashlib.sha256(data).hexdigest()
+        hashes = [right] + [f'{number:064x}' for number in range(1, 20)]
+        for number, file_hash in enumerate(hashes, start=1):
+            self.message(number, [dict(item(data), hash=file_hash)])
+        calls, statements = [], []
+        real = hashlib.sha256
+
+        def counted(*arguments):
+            calls.append(1)
+            return real(*arguments)
+        with mock.patch.object(team_store, 'hashlib', mock.Mock(sha256=counted)):
+            self.piece(0, data, rev=2)
+            self.assertEqual(len(calls), 1, 'A change of a piece hashes one time.')
+            calls.clear()
+            self.db.set_trace_callback(statements.append)
+            self.message(21, [dict(item(data), hash=right)])
+            self.db.set_trace_callback(None)
+            self.assertEqual(len(calls), 1, 'A new message hashes one time.')
+        updates = [text for text in statements if text.lstrip().startswith('UPDATE team_message_files')]
+        self.assertEqual(len(updates), 1, 'A new message checks only its own row.')
+        complete = [number for number in range(1, 22) if self.complete(number)]
+        self.assertEqual(complete, [1, 21])
+
+    def test_the_count_of_the_space_reads_each_payload_with_python(self):
+        rows = ((MEMBER, '{"kind":"file","file":"%s","size":7,"x":NaN}' % FILE),
+                (MEMBER, '{"kind":"file","file":"%s","size":5}' % ('e' * 32)),
+                (OTHER, '{"kind":"file","file":"%s","size":9,"x":NaN}' % FILE))
+        for number, (member, payload) in enumerate(rows, start=700):
+            self.db.execute('INSERT INTO team_entries (room, id, seq, first, member, kind, rev, at, kept, payload) '
+                            "VALUES (?, ?, 0, 0, ?, 'file', 1, ?, 0, ?)", (ROOM, entry_id(number), member, START,
+                                                                           payload))
+        self.assertEqual(self.store.sent_bytes(ROOM, MEMBER, START, []), 12)
+        self.assertEqual(self.store.sent_bytes(ROOM, MEMBER, START, ['e' * 32]), 7)
+        self.assertEqual(self.store.sent_bytes(ROOM, MEMBER, START + 1, []), 0)
 
     def test_the_sweep_uses_the_index_on_the_time(self):
         plan = ' '.join(row[3] for row in self.db.execute('EXPLAIN QUERY PLAN ' + team_store.SWEEP_PIECES, (0,)))
@@ -365,6 +415,19 @@ class FileStoreTests(unittest.TestCase):
         changes = db.total_changes
         TeamStore(db).migrate()
         self.assertEqual(db.total_changes, changes, 'A second start changes nothing.')
+
+    def test_an_older_store_with_a_lone_surrogate_in_a_piece_starts(self):
+        db = self.older_store()
+        payload = {'kind': 'file', 'rev': 1, 'file': 'e' * 32, 'index': 0, 'data': base64.b64encode(b'x').decode(),
+                   'extra': '\ud800', '\udfff': ['\ud800']}
+        db.execute('INSERT INTO team_entries (room, id, seq, first, member, kind, rev, at, kept, payload) '
+                   "VALUES (?, ?, 9, 9, ?, 'file', 1, ?, 0, ?)", (ROOM, entry_id(11), ADMIN, START + 9,
+                                                                  json.dumps(payload)))
+        store = TeamStore(db)
+        store.migrate()
+        self.assertIn('files', {row[1] for row in db.execute('PRAGMA table_info(team_messages)')})
+        self.assertEqual(db.execute('SELECT COUNT(*) FROM team_file_pieces').fetchone()[0], 2)
+        self.assertNotIn('data', json.loads(store.entry(ROOM, entry_id(11))['payload']))
 
     def test_a_stop_in_the_pass_leaves_the_store_of_before(self):
         db = self.older_store()
