@@ -1458,9 +1458,19 @@ final class AppStore {
                 throw ServiceError.configuration("Choose a file between 1 byte and 4 MB.")
             }
             let data = try Data(contentsOf: url, options: .mappedIfSafe)
-            return await write("attachments", payload: AttachmentRequest(botId: bot.id, filename: url.lastPathComponent,
-                                                                         contentBase64: data.base64EncodedString()), as: Artifact.self)
+            return await uploadAttachment(bot: bot, data: data, filename: url.lastPathComponent)
         } catch { report(error); return nil }
+    }
+
+    /// Attaches bytes without a file, for example an image that the person pasted.
+    func uploadAttachment(bot: Bot, data: Data, filename: String) async -> Artifact? {
+        guard !isDemo else { error = "Attachments require a paired Mac. Preview data stays on this screen."; return nil }
+        guard !data.isEmpty, data.count <= 4 * 1024 * 1024 else {
+            error = "Attachments must be between 1 byte and 4 MB."
+            return nil
+        }
+        return await write("attachments", payload: AttachmentRequest(botId: bot.id, filename: filename,
+                                                                     contentBase64: data.base64EncodedString()), as: Artifact.self)
     }
 
     func decisionPreviewData(id: String) async throws -> Data {
