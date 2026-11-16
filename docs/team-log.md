@@ -162,7 +162,7 @@ A long poll would keep the Durable Object in memory, and Cloudflare bills that t
 | Welcome | At most 1,024 bytes |
 | Body of an entry | 99 bytes to 1 MiB |
 | Kept entries of one member | 512 entries and 64 MiB |
-| Other entries of one member | 64 MiB |
+| Other entries of one member | 512 MiB |
 | All entries of one room | 8 GiB |
 | Retention of an entry that is not kept | 90 days after its last write |
 | Writes of one member | 300 each minute |
@@ -171,6 +171,8 @@ A long poll would keep the Durable Object in memory, and Cloudflare bills that t
 | Room without a request of a member | Deleted after 180 days |
 
 A member that leaves and joins again continues its counts: its entries that are not kept stay on the relay, and so does its count of writes in the minute.
+
+The limit of the other entries of one member has room for the files of a team chat. The two limits of one member add up to 576 MiB. So in a room with more than 14 members, the limit of the room can stop a write before the limit of the member does.
 
 A file of a message has at most 4 MiB, in pieces of at most 720 KiB, so each piece fits in one body. A person's Mac sends at most 320 MiB of files in one room in 90 days (see [Files](#files)).
 
