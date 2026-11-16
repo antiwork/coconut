@@ -43,10 +43,8 @@ struct ConversationTimestamps: ViewModifier {
     }
 }
 
-/// The time of each message, as Slack and Codex show it: on by default, in Settings > General.
+/// The time of each message, always shown, as Slack and Codex show it.
 enum MessageTimes {
-    static let key = "show-message-times"
-
     /// "4:02 PM" today, "Yesterday 4:02 PM", "Mon 4:02 PM" this week, else "Nov 3, 4:02 PM".
     static func label(_ date: Date, now: Date = .now, calendar: Calendar = .current) -> String {
         let time = date.formatted(date: .omitted, time: .shortened)
@@ -71,11 +69,10 @@ struct MessageTimestamp: ViewModifier {
     /// True for a message of the person, whose time sits at the right edge under it.
     var trailing = false
     @Environment(\.timestampReveal) private var reveal
-    @AppStorage(MessageTimes.key) private var shown = true
     @ScaledMetric(relativeTo: .footnote) private var width = 88.0
 
     func body(content: Content) -> some View {
-        if shown, let date = createdAt.apiDate {
+        if let date = createdAt.apiDate {
             VStack(alignment: trailing ? .trailing : .leading, spacing: 2) {
                 content
                 Text(MessageTimes.label(date))

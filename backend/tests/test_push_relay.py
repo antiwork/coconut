@@ -130,7 +130,7 @@ class RelayPushTests(unittest.TestCase):
         self.assertEqual(payload['coconut']['device_id'], self.device)
         self.assertEqual(self.service.db.execute('SELECT status FROM push_outbox').fetchone()[0], 'accepted')
 
-    def test_encryption_failure_keeps_a_retry_and_sends_the_group_once(self):
+    def test_encryption_failure_keeps_a_retry_and_sends_each_item_once(self):
         first, second = self.run_task('First result'), self.run_task('Second result')
         original_seal = self.relay.seal
         calls = []
@@ -148,17 +148,15 @@ class RelayPushTests(unittest.TestCase):
         self.assertGreater(row[2], 0)
         self.assertEqual(row[3], 'EncryptionUnavailable')
         self.assertIsNone(row[4])
-        self.assertFalse(self.service.push.deliver_one())
-        self.assertTrue(self.flush())
-        self.assertEqual({key: self.relay.sealed[0]['coconut'][key] for key in ('version', 'device_id', 'kind', 'count')},
-                         dict(version=1, device_id=self.device, kind='group', count=2))
-        # A sealed group lists each item under the count.
-        self.assertEqual(self.relay.sealed[0]['aps']['alert'], dict(
-            title='2 new in Coconut', subtitle='2 finished tasks are waiting',
-            body='Private bot name: The independent task is done.\nPrivate bot name: The independent task is done.'))
-        self.assertFalse(self.flush())
-        self.assertEqual(len(self.relay.sent), 1)
-        self.assertEqual(self.service.db.execute('SELECT status FROM push_outbox').fetchall(), [('accepted',)])
+        # The failed notification waits for its retry, and the other item notifies on its own.
+        with self.service.transaction():
+            self.service.db.execute("UPDATE push_outbox SET not_before=0")
+        while self.flush():
+            pass
+        self.assertEqual(sorted(payload['coconut']['kind'] for payload in self.relay.sealed), ['completed', 'completed'])
+        self.assertTrue(all('count' not in payload['coconut'] for payload in self.relay.sealed))
+        self.assertEqual(len(self.relay.sent), 2)
+        self.assertEqual(self.service.db.execute('SELECT status FROM push_outbox').fetchall(), [('accepted',)] * 2)
         self.assertEqual(self.service.db.execute('SELECT task_id,status FROM push_items ORDER BY created').fetchall(),
                          [(first['id'], 'sent'), (second['id'], 'sent')])
 

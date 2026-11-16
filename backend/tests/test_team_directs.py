@@ -664,31 +664,21 @@ class DirectAlerts(DirectPushMacs, unittest.TestCase):
         self.arrive('One')
         self.arrive('Two')
         flush(self.second)
-        (payload,) = self.payloads()
-        self.assertEqual(payload['aps']['alert'], {'title': 'Coconut', 'body': '2 direct messages are waiting'})
-        self.assertEqual(payload['aps']['thread-id'], f'{self.room}:{self.ada}')
-        self.assertEqual(payload['coconut'], {'version': 1, 'device_id': self.phone_id, 'kind': 'group', 'count': 2,
-                                              'direct': {'team': self.room, 'member': self.ada}})
+        payloads = self.payloads()
+        self.assertEqual([payload['coconut']['kind'] for payload in payloads], ['direct', 'direct'])
+        self.assertEqual({payload['aps']['thread-id'] for payload in payloads}, {f'{self.room}:{self.ada}'})
 
     def test_a_group_of_a_team_message_and_a_direct_message_of_one_room_opens_inbox(self):
         self.phone(self.first)('POST', f'/v1/team/rooms/{self.room}/messages', {'text': 'For the team'})
         self.arrive('For Grace')
         flush(self.second)
-        (payload,) = self.payloads()
-        self.assertEqual(payload['aps']['alert']['body'], '1 team message and 1 direct message are waiting')
-        self.assertEqual(payload['aps']['thread-id'], 'coconut-inbox')
-        self.assertEqual({name: payload['coconut'][name] for name in ('kind', 'count', 'bot_id', 'decision_id')},
-                         {'kind': 'group', 'count': 2, 'bot_id': None, 'decision_id': None})
-        self.assertNotIn('team', payload['coconut'])
-        self.assertNotIn('direct', payload['coconut'])
+        self.assertEqual(sorted(payload['coconut']['kind'] for payload in self.payloads()), ['direct', 'team'])
 
     def test_a_group_of_two_direct_chats_opens_inbox(self):
         self.arrive('From Ada')
         self.arrive('From Lin', service=self.third)
         flush(self.second)
-        (payload,) = self.payloads()
-        self.assertEqual((payload['aps']['thread-id'], payload['coconut']['count']), ('coconut-inbox', 2))
-        self.assertNotIn('direct', payload['coconut'])
+        self.assertEqual(len({payload['aps']['thread-id'] for payload in self.payloads()}), 2)
 
     def test_the_text_of_a_group(self):
         def item(kind):

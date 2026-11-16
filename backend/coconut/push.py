@@ -599,7 +599,9 @@ class PushDelivery:
             alone = lambda item: item['urgent'] and not item['held']
             waiting = [item for item in items if not alone(item)]
             # Only urgent has no timing of its own: its held urgent cards wait as One summary at a time.
-            timing = level if level in ('every', 'grouped') else 'grouped'
+            # Each item notifies on its own, at once: one notification per message, card or task, never a count.
+            # Work hours still hold items until they open.
+            timing = 'every'
             # The gap counts from the last delivered notification. With Grouped, new items also wait while a group retries.
             # Every card has no gap, so a retrying group does not hold its new items.
             last = db.execute("SELECT MAX(sent) FROM push_outbox WHERE device_id=? AND status='accepted'", (device_id,)).fetchone()[0]
@@ -617,13 +619,10 @@ class PushDelivery:
                 if alone(item) and not item.get('dropped'):
                     self._queue(device_id, 'item:' + item['event_key'], [item], current)
             group = [item for item in ready if not alone(item) and not item.get('dropped')]
-            if level == 'every':
-                # Every card: an item that arrived inside work hours notifies alone. Items held from outside them notify as one group.
-                for item in [item for item in group if in_window(schedule, item['created']) or not schedule['enabled']]:
-                    self._queue(device_id, 'item:' + item['event_key'], [item], current)
-                    group.remove(item)
-            if group:
-                self._queue(device_id, 'group:' + group[0]['event_key'], group, current)
+            # One notification per item, also for items that waited for work hours: a list of single notifications
+            # reads better than one count.
+            for item in group:
+                self._queue(device_id, 'item:' + item['event_key'], [item], current)
 
     def _payload(self, device_id, items, sealed):
         """The notification for one item, or the count of several. Items are rechecked when the text is written."""

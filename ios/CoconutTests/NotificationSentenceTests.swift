@@ -147,7 +147,8 @@ final class NotificationSentenceTests: XCTestCase {
         defer { defaults.removePersistentDomain(forName: name) }
         defaults.set("grouped", forKey: "notificationLevel")
         defaults.set(true, forKey: "afterHoursImportantOnly")
-        XCTAssertEqual(NotificationLevel.load(from: defaults), .grouped)
+        // A saved summary is now one notification per card.
+        XCTAssertEqual(NotificationLevel.load(from: defaults), .every)
         XCTAssertEqual(OutsideWorkHours.load(from: defaults), .urgent)
         XCTAssertTrue(NotificationSchedule.load(from: defaults).enabled)
         defaults.set(false, forKey: "afterHoursImportantOnly")

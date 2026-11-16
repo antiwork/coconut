@@ -16,9 +16,4 @@ final class MessageTimesTests: XCTestCase {
         XCTAssertTrue(MessageTimes.label(older, now: now, calendar: calendar).hasSuffix(", " + time(older)))
         XCTAssertTrue(MessageTimes.exact(today).contains(":"))
     }
-
-    func testTimesShowByDefault() {
-        UserDefaults.standard.removeObject(forKey: MessageTimes.key)
-        XCTAssertNil(UserDefaults.standard.object(forKey: MessageTimes.key), "No choice yet means the times show.")
-    }
 }

@@ -265,6 +265,24 @@ class DeliveryTimingTests(unittest.TestCase):
     def sent(self):
         return [call[2] for call in self.transport.calls]
 
+
+    def test_each_item_notifies_on_its_own_also_after_work_hours(self):
+        # Three cards wait outside work hours. The opening sends three notifications, never a count.
+        for _ in range(3):
+            self.decision()
+        self.deliver(self.NIGHT)
+        self.assertEqual(self.sent(), [])
+        self.deliver(self.MORNING)
+        sent = self.sent()
+        self.assertEqual(len(sent), 3)
+        self.assertTrue(all(payload['coconut']['kind'] == 'decision' for payload in sent))
+        # Inside work hours a burst notifies at once, one by one, with no gap.
+        self.transport.calls.clear()
+        later = instant(2026, 7, 16, 12)
+        for _ in range(2):
+            self.decision(ts=later)
+        self.deliver(later + 5)
+        self.assertEqual(len(self.sent()), 2)
     def items(self):
         return self.service.db.execute('SELECT kind,urgent,status FROM push_items ORDER BY created,rowid').fetchall()
 
@@ -279,45 +297,12 @@ class DeliveryTimingTests(unittest.TestCase):
         self.assertEqual([payload['coconut']['decision_id'] for payload in self.sent()], [decision['id']])
         self.assertEqual(self.items(), [('decision', 0, 'sent')])
 
-    def test_the_opening_sends_one_group_for_everything_that_waited(self):
-        for level in ('grouped', 'every'):
-            self.service.db.execute('DELETE FROM push_items')
-            self.service.db.execute('DELETE FROM push_outbox')
-            self.transport.calls.clear()
-            self.register(level=level)
-            for _ in range(3):
-                self.decision()
-            self.failure()
-            self.deliver(self.NIGHT + 60)
-            self.assertEqual(self.sent(), [], level)
-            self.deliver(self.MORNING)
-            self.deliver(self.MORNING + 3600)
-            self.assertEqual(len(self.sent()), 1, level)
-            payload = self.sent()[0]
-            self.assertEqual({key: payload['coconut'][key] for key in ('version', 'device_id', 'kind', 'count')},
-                             dict(version=1, device_id=self.device, kind='group', count=4))
-            self.assertEqual(payload['aps']['alert'], dict(title='Coconut', body='3 decisions and 1 failed task are waiting'))
-            self.assertEqual(self.service.db.execute('SELECT count(*) FROM push_outbox').fetchone()[0], 1)
-
     def test_a_card_that_needs_attention_now_sends_at_once_and_alone(self):
         self.decision()
         urgent = self.decision(urgent=True)
         self.deliver(self.NIGHT)
         self.assertEqual([payload['coconut'].get('decision_id') for payload in self.sent()], [urgent['id']])
         self.assertEqual(self.items(), [('decision', 0, 'waiting'), ('decision', 1, 'sent')])
-
-    def test_nothing_outside_work_hours_holds_an_urgent_card_until_the_opening_count(self):
-        self.register(outside_work_hours='nothing')
-        self.assertEqual(self.service.push.schedule(self.device)['outside'], 'nothing')
-        self.decision()
-        self.decision(urgent=True)
-        self.deliver(self.NIGHT + 60)
-        self.deliver(self.MORNING - 1)
-        self.assertEqual(self.sent(), [])
-        self.deliver(self.MORNING)
-        self.deliver(self.MORNING + 3600)
-        self.assertEqual([payload['aps']['alert']['body'] for payload in self.sent()], ['2 decisions are waiting'])
-        self.assertEqual(self.items(), [('decision', 0, 'sent'), ('decision', 1, 'sent')])
 
     def test_nothing_outside_work_hours_still_sends_an_urgent_card_inside_them_at_once(self):
         for level in ('grouped', 'urgent_only'):
@@ -407,24 +392,6 @@ class DeliveryTimingTests(unittest.TestCase):
             self.deliver(self.CLOSE + 10)
             self.assertEqual(len(self.sent()), 1, choice)
 
-    def test_held_urgent_cards_wait_for_a_retrying_group_and_the_ten_minute_gap(self):
-        self.register(outside_work_hours='nothing')
-        self.decision(ts=self.CLOSE - 120)
-        self.transport.result = (503, 'Unavailable')
-        self.deliver(self.CLOSE - 60)
-        self.assertEqual(len(self.sent()), 1)
-        self.decision(urgent=True)
-        self.transport.result = (200, 'Accepted')
-        self.service.db.execute('UPDATE push_outbox SET not_before=0')
-        # At the opening, the group of yesterday sends first. The held urgent card does not form a second group with it.
-        self.deliver(self.MORNING)
-        self.assertEqual(len(self.sent()), 2)
-        self.assertEqual(self.items()[-1], ('decision', 1, 'waiting'))
-        self.deliver(self.MORNING + 599)
-        self.assertEqual(len(self.sent()), 2)
-        self.deliver(self.MORNING + 600)
-        self.assertEqual(len(self.sent()), 3)
-
     def test_the_urgent_summary_reads_only_indexes(self):
         db = self.service.db
         current = __import__('time').time()
@@ -477,20 +444,6 @@ class DeliveryTimingTests(unittest.TestCase):
         self.assertEqual(self.sent(), [])
         self.assertEqual(self.items(), [('failed', 0, 'waiting')])
 
-    def test_grouped_settles_a_burst_and_limits_the_rate_inside_work_hours(self):
-        self.decision(ts=self.NOON)
-        self.decision(ts=self.NOON + 10)
-        self.deliver(self.NOON + 29)
-        self.assertEqual(self.sent(), [])
-        self.deliver(self.NOON + 30)
-        self.assertEqual([payload['coconut'].get('count') for payload in self.sent()], [2])
-        # The next card waits until ten minutes after the last notification.
-        later = self.decision(ts=self.NOON + 60)
-        self.deliver(self.NOON + 629)
-        self.assertEqual(len(self.sent()), 1)
-        self.deliver(self.NOON + 630)
-        self.assertEqual(self.sent()[1]['coconut']['decision_id'], later['id'])
-
     def test_every_card_notifies_a_burst_one_card_at_a_time(self):
         self.register(level='every')
         first = self.decision(ts=self.NOON)
@@ -498,39 +451,6 @@ class DeliveryTimingTests(unittest.TestCase):
         self.deliver(self.NOON + 3)
         self.assertEqual([payload['coconut']['decision_id'] for payload in self.sent()], [first['id'], second['id']])
         self.assertTrue(all('count' not in payload['coconut'] for payload in self.sent()))
-
-    def test_the_ten_minute_gap_counts_from_the_delivery_and_waits_for_a_retry(self):
-        self.decision(ts=self.NOON)
-        self.transport.result = (503, 'Unavailable')
-        self.deliver(self.NOON + 30)
-        self.assertEqual(len(self.sent()), 1)
-        self.decision(ts=self.NOON + 60)
-        # The first notification still retries, so the new card does not form a second group.
-        with self.at(self.NOON + 700):
-            with self.service.transaction():
-                self.service.push.plan(self.NOON + 700)
-        self.assertEqual(self.service.db.execute('SELECT count(*) FROM push_outbox').fetchone()[0], 1)
-        self.transport.result = (200, 'Accepted')
-        self.service.db.execute('UPDATE push_outbox SET not_before=0')
-        self.deliver(self.NOON + 700)
-        self.assertEqual(len(self.sent()), 2)
-        self.deliver(self.NOON + 1299)
-        self.assertEqual(len(self.sent()), 2)
-        self.deliver(self.NOON + 1300)
-        self.assertEqual(len(self.sent()), 3)
-
-    def test_a_retrying_group_does_not_hold_new_cards_at_every_card(self):
-        self.register(level='every')
-        self.decision()
-        self.decision()
-        self.transport.result = (503, 'Unavailable')
-        self.deliver(self.MORNING)
-        self.assertEqual([payload['coconut'].get('count') for payload in self.sent()], [2])
-        self.transport.result = (200, 'Accepted')
-        later = self.decision(ts=self.MORNING + 60)
-        self.deliver(self.MORNING + 62)
-        self.assertEqual(self.sent()[-1]['coconut'].get('decision_id'), later['id'])
-        self.assertNotIn('count', self.sent()[-1]['coconut'])
 
     def test_a_retry_stops_when_the_bot_is_muted(self):
         route = {'route_id': 'a' * 64, 'send_token': 'b' * 64, 'public_key': base64.b64encode(b'x' * 32).decode()}
@@ -547,13 +467,6 @@ class DeliveryTimingTests(unittest.TestCase):
         self.deliver(self.NOON + 3600)
         self.assertEqual(len(relay.sent), 1)
         self.assertEqual(self.service.db.execute('SELECT status,reason FROM push_outbox').fetchone(), ('discarded', 'NoLongerRelevant'))
-
-    def test_a_group_still_opens_the_first_card_in_an_older_app(self):
-        first, _ = self.decision(), self.decision()
-        self.deliver(self.MORNING)
-        target = self.sent()[0]['coconut']
-        self.assertEqual((target['kind'], target['decision_id'], target['bot_id']), ('group', first['id'], self.bot['id']))
-        self.assertEqual(target['task_id'], first['task_id'])
 
     def test_every_card_notifies_each_card_inside_work_hours(self):
         self.register(level='every')
@@ -676,24 +589,6 @@ class DeliveryTimingTests(unittest.TestCase):
         self.deliver(instant(2026, 7, 22, 9))
         self.assertEqual(self.sent(), [])
         self.assertEqual(self.service.db.execute('SELECT status,reason FROM push_items').fetchone(), ('dropped', 'Expired'))
-
-    def test_sealed_group_retries_the_same_bytes_after_hours(self):
-        route = {'route_id': 'a' * 64, 'send_token': 'b' * 64, 'public_key': base64.b64encode(b'x' * 32).decode()}
-        relay = EncryptedTransport()
-        self.service.push.relay = relay
-        self.register(relay=route, schedule=DEFAULT_SCHEDULE)
-        self.decision(ts=self.MORNING - 60)
-        self.decision(ts=self.MORNING - 50)
-        relay.result = (503, 'Unavailable')
-        self.deliver(self.MORNING)
-        self.assertEqual(len(relay.sealed), 1)
-        expires = relay.sent[0][4]
-        self.assertTrue(self.MORNING < expires <= self.MORNING + 86400)
-        relay.result = (200, 'Accepted')
-        self.deliver(instant(2026, 7, 16, 23))
-        self.assertEqual((len(relay.sealed), len(relay.sent)), (1, 2))
-        self.assertEqual(relay.sent[1][1:], relay.sent[0][1:])
-        self.assertEqual(self.service.db.execute('SELECT status FROM push_outbox').fetchall(), [('accepted',)])
 
     def test_schedule_weekdays_persist_through_partial_updates_and_restart(self):
         self.register(schedule=dict(weekdays=[1, 3], honor_routine=True))

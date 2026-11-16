@@ -135,9 +135,8 @@ class NotificationCategoryTests(unittest.TestCase):
         task.update(_native_turn_id=str(uuid4()), status='working')
         self.service._put('tasks', task)
         self.flush()
-        # Both replies arrived together, so they notify once as a group.
-        self.assertEqual([c[2]['coconut'].get('count') for c in self.transport.calls], [2])
-        self.assertEqual(self.transport.calls[0][2]['aps']['alert']['body'], '2 messages are waiting')
+        # Each reply notifies on its own.
+        self.assertEqual([c[2]['coconut']['message_id'] for c in self.transport.calls], [first['id'], second['id']])
         self.assertEqual(self.service.db.execute("SELECT message_id FROM push_items WHERE status='sent' ORDER BY created,rowid").fetchall(),
                          [(first['id'],), (second['id'],)])
         alert = notification_alert(self.service, {'kind': 'message', 'message_id': first['id']}, self.bot, task, None)
