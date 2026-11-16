@@ -853,6 +853,11 @@ The room view of `GET /v1/team/rooms` has `notices`: the active ones first, the 
 
 The token of the bridge file gets 403 for each write, so an agent cannot post a notice on its own. Each turn of an agent gets the active notices of the teams of its Mac as data: a turn in a team chat in the rules of its chat, and a turn of a person's agent as one record whose ID changes with the text.
 
+A new notice of another member notifies each paired phone of a person's Mac, under the rules of a message
+(`TRIGGER_SECONDS`, and nothing from the history that a Mac reads after a join), also in a quiet team: a notice is what
+the whole team must know. The Mac sends it only while the notice is active and the person has not seen it. Its payload
+has `kind` `notice`, the room in `team` and the entry ID in `notice`, and a tap opens the notice board of the team.
+
 #### Chats of a team
 
 A team has the Team chat, and the admin can make more chats with a name, for example "Design" and "Launch". Each member of the team reads each chat. A chat is one kept entry of the admin, and a message names its chat. So the relay and the helper need no change.

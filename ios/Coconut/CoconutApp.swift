@@ -263,6 +263,13 @@ struct CoconutHome: View {
             PushNotifications.shared.target = nil
             return
         }
+        // A notice opens the board of its team. The board reads the team from the store, so nothing waits for the Mac.
+        if let room = target.noticeRoom {
+            PushNotifications.shared.target = nil
+            previewedNotification = nil
+            showNotification(.notices(room))
+            return
+        }
         if target.team == nil && (target.group || target.decisionId == nil) {
             PushNotifications.shared.target = nil
             previewedNotification = nil
@@ -341,6 +348,11 @@ struct CoconutHome: View {
             notificationDecisionId = nil
             selectedTab = .bots
             botsPath = NavigationPath()
+        case .notices(let room):
+            notificationDecisionId = nil
+            selectedTab = .home
+            homePath = NavigationPath()
+            homePath.append(NoticeBoardRoute(roomId: room))
         }
     }
 

@@ -3417,6 +3417,7 @@ final class AppStore {
 
     func notificationDestination(_ target: NotificationTarget) async -> NotificationDestination? {
         guard acceptsNotification(target) else { return nil }
+        if let room = target.noticeRoom { return .notices(room) }
         if target.team != nil { return await teamNotificationDestination(target) }
         if target.group { return .inboxList }
         if target.decisionId == nil { return .conversation(target.conversationRoute) }
@@ -3460,7 +3461,8 @@ final class AppStore {
     /// The place that a tapped notification shows at once, before the Mac confirms it: the chat of a team, the card,
     /// or the conversation.
     func notificationPreview(_ target: NotificationTarget) -> NotificationDestination {
-        target.chat.map(teamNotificationPlace)
+        if let room = target.noticeRoom { return .notices(room) }
+        return target.chat.map(teamNotificationPlace)
             ?? target.decisionId.map(NotificationDestination.inbox) ?? .conversation(target.conversationRoute)
     }
 

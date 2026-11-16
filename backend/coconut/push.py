@@ -20,7 +20,7 @@ import tempfile
 import threading
 import time
 from uuid import NAMESPACE_URL, uuid5
-from .push_relay import RelayTransport, validate_route, notification_alert, group_text, team_alert, direct_alert
+from .push_relay import RelayTransport, validate_route, notification_alert, group_text, team_alert, direct_alert, notice_alert
 from .team_store import ACTIVE
 from .push_schedule import (LEGACY_SCHEDULE, OUTSIDE, due, holds_urgent, in_window, merge as merge_schedule,
                             stored as stored_schedule)
@@ -44,8 +44,9 @@ URGENT_DECISION = "json_extract(data,'$.needs_attention_now') IS 1"
 TEAM_BODY = 'Your team has a new message.'
 # The text of a direct message for a phone without a relay route.
 DIRECT_BODY = 'You have a new direct message.'
+NOTICE_BODY = 'Your team has a new notice.'
 # The kinds of the items of the chats of a team: no bot, task or turn.
-CHAT_KINDS = ('team', 'direct')
+CHAT_KINDS = ('team', 'direct', 'notice')
 # A phone reaches the Mac only through the relay tunnel, which needs the phone's static key. A device without one is an
 # old version 1 pairing or a tool on this Mac, so it is not paired for notifications.
 PHONES = 'SELECT id FROM devices WHERE peer_key IS NOT NULL'
@@ -488,6 +489,24 @@ class PushDelivery:
         that accepts the entry."""
         self._record_chat('direct', room, entry)
 
+    def record_notice(self, room, entry):
+        """Queue one item for each phone for a new notice of another member (TeamStore._note_notice_fresh). A notice is
+        what the whole team must know, so it notifies also in a quiet team. The caller holds the transaction that
+        accepts the entry."""
+        self._record_chat('notice', room, entry)
+
+    def notice_relevant(self, item):
+        """Whether a notice still notifies: the room is active, and the notice is active and unseen by the person. So
+        a closed, removed or ended notice, or one that the person saw on another device, sends nothing."""
+        from .team_notices import active
+        store = self.service.team_store
+        room = store.room(item['team'])
+        if room is None or room['state'] != ACTIVE:
+            return False
+        notice = store.notice(item['team'], item['message_id'])
+        return (notice is not None and active(notice)
+                and item['message_id'] not in store.seen(item['team']).get(room['member'], set()))
+
     def direct_relevant(self, item):
         """Whether a direct message still notifies: the room is active, and the message shows after the read position
         of its chat. So a message that the person read, a removed message and a team that the person left send
@@ -521,6 +540,8 @@ class PushDelivery:
             return self.allows(item['device_id'], item['kind']) and self.team_relevant(item)
         if item['kind'] == 'direct':
             return self.allows(item['device_id'], item['kind']) and self.direct_relevant(item)
+        if item['kind'] == 'notice':
+            return self.allows(item['device_id'], item['kind']) and self.notice_relevant(item)
         task = service._get('tasks', item['task_id'])
         bot = service._get('bots', item['bot_id'])
         conversation = service._get('bots', task.get('conversation_bot_id', bot['id']))
@@ -671,6 +692,15 @@ class PushDelivery:
                                    'direct': direct_target(room, chat)}}
             if sealed and chat:
                 payload['aps']['alert'] = direct_alert(service.team_store, room, item['message_id'])
+            return payload, item['message_id']
+        if item['kind'] == 'notice':
+            # A tap opens the notice board of the team. An app from before notices opens itself only.
+            payload = {'aps': {'alert': {'title': 'Coconut', 'body': NOTICE_BODY}, 'sound': 'default',
+                               'thread-id': 'notices-' + item['team']},
+                       'coconut': {'version': 1, 'device_id': device_id, 'kind': 'notice', 'team': item['team'],
+                                   'notice': item['message_id']}}
+            if sealed:
+                payload['aps']['alert'] = notice_alert(service.team_store, item['team'], item['message_id'])
             return payload, item['message_id']
         if item['kind'] == 'team':
             # A message of a named chat carries its chat, so a tap opens that chat. An older app opens the Team chat.

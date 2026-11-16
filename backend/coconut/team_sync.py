@@ -558,6 +558,9 @@ class TeamSync:
         fresh = self.team_store.fresh_directs.pop(room_id, None)
         if fresh:
             self._team_notify_directs(room_id, fresh)
+        fresh = self.team_store.fresh_notices.pop(room_id, None)
+        if fresh:
+            self._team_notify_notices(room_id, fresh)
 
     def _team_notify(self, room_id: str, entries: list[str]) -> None:
         """Fresh messages of other members wait in the room. Only a person's Mac has phones, and Service queues a
@@ -566,6 +569,10 @@ class TeamSync:
     def _team_notify_directs(self, room_id: str, entries: list[str]) -> None:
         """Fresh direct messages of other members wait in the room. Service queues a notification for each one
         (PushDelivery.record_direct). A team-only Mac has no phone, so it does nothing here."""
+
+    def _team_notify_notices(self, room_id: str, entries: list[str]) -> None:
+        """New notices of other members wait in the room. Service queues a notification for each one
+        (PushDelivery.record_notice). A team-only Mac has no phone, so it does nothing here."""
 
     def _team_turns_due(self) -> None:
         """A new trigger waits. A full Mac queues none, so it does nothing here. See team_turns.TeamTurns."""

@@ -927,6 +927,8 @@ class TeamStore:
         # The direct chats with a bot that `accept` changed, as (room, entry ID of the `bot` entry).
         self.bot_directed: set[tuple[str, str]] = set()
         self.fresh_directs: dict[str, list[str]] = {}
+        # The fresh notices of the other members by room (_note_notice_fresh). TeamSync gives them to the push code.
+        self.fresh_notices: dict[str, list[str]] = {}
         # Who types in the chats of each room: for each (room, member, bot entry or None) the time of the start, the
         # time of the end on the clock below, and the chat (None for the Team chat). A subject types in one chat at a
         # time. `typed` has the rooms whose lists changed, and TeamSync tells the phone. Nothing of this goes to the
@@ -1435,6 +1437,8 @@ class TeamStore:
             self._note_fresh(room, entry, shown)
         if existing is None and fields['kind'] == 'direct' and fields['rev'] == 1 and other and opened.get('direct'):
             self._note_direct_fresh(room, entry)
+        if existing is None and fields['kind'] == 'notice' and other and shown:
+            self._note_notice_fresh(room, entry)
         return STORED, None
 
     def _follow_profile(self, room: str, shown: dict) -> None:
@@ -2190,6 +2194,26 @@ class TeamStore:
         if row is None or entry['first'] <= self.direct_read_position(room['room'], row['member'], row['bot']):
             return
         self.fresh_directs.setdefault(room['room'], []).append(entry['id'])
+
+    def _note_notice_fresh(self, room: dict, entry: dict) -> None:
+        """Note a new notice of another member that can notify the phone of the person. Like a message, it is under
+        TRIGGER_SECONDS old, and the room has a read position, so the board that a Mac reads after a join notifies
+        nothing."""
+        if self.clock() * 1000 - entry['at'] >= TRIGGER_SECONDS * 1000:
+            return
+        if self.db.execute('SELECT 1 FROM team_reads WHERE room=?', (room['room'],)).fetchone() is None:
+            return
+        self.fresh_notices.setdefault(room['room'], []).append(entry['id'])
+
+    def notice(self, room: str, entry: str) -> dict | None:
+        """One notice of the room that fits, as `notices` gives it, with the name of its author in `member_name`
+        (None when the store has no name), or None."""
+        found = next((notice for notice in self.notices(room) if notice['entry'] == entry), None)
+        if found is None:
+            return None
+        row = self.db.execute("SELECT name FROM team_names WHERE room=? AND member=? AND kind='member'",
+                              (room, found['member'])).fetchone()
+        return dict(found, member_name=row[0] if row else None)
 
     # Who types in the Team chat
 
