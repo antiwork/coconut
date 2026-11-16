@@ -328,7 +328,8 @@ struct BotContactRow: View {
         }
         let sender = message.senderBotId.flatMap { id in id == bot.id ? nil : store.bots.first { $0.id == id }?.name ?? "Deleted agent" }
         let prefix = message.role == "user" ? "You: " : sender.map { $0 + ": " } ?? ""
-        return prefix + (message.photo?.preview ?? TranscriptPresentation.previewText(message.text))
+        let body = AttachmentOnly.isMarker(message.text) ? "Photo" : TranscriptPresentation.previewText(message.text)
+        return prefix + (message.photo?.preview ?? body)
     }
     private var lastMessageDate: Date? {
         store.messages.filter { $0.botId == bot.id }.compactMap { $0.createdAt.apiDate }.max()

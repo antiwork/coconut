@@ -797,8 +797,10 @@ final class AppStore {
 
     @discardableResult
     func send(bot: Bot, text: String, mode: String = "auto", taskId: String? = nil, attachments: [String] = [], scheduledAt: String? = nil, mentionedBotIds: [String] = [], replyTo: MessageReference? = nil, workContext: WorkReference? = nil, workStatusOnly: Bool = false) async -> Bool {
-        let text = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        var text = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty || !attachments.isEmpty else { return false }
+        // The Mac needs a text for each message. Attachments alone go with the marker, which the chat does not show.
+        if text.isEmpty { text = AttachmentOnly.text }
         guard ["auto", "steer", "queue"].contains(mode) else { return false }
         let selectedMode = workContext != nil ? "queue" : (scheduledAt == nil ? mode : "queue")
         let currentTask = selectedMode == "auto"

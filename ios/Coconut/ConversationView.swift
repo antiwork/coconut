@@ -940,7 +940,10 @@ struct ConversationComposer: View {
                     .accessibilityIdentifier("reply-preview")
             }
             BotMentionControls(text: $text, selection: $selection, selected: $mentions, bots: store.bots, focused: focused) { focused = true }
-            ComposerAttachmentChips(chips: attachments.map { ComposerChip(id: $0.id, title: $0.title) }) { id in
+            ComposerAttachmentChips(chips: attachments.map {
+                ComposerChip(id: $0.id, title: $0.title,
+                             image: TranscriptPresentation.isImageName($0.title) ? URL(string: "coconut-file://" + $0.id) : nil)
+            }) { id in
                 attachments.removeAll { $0.id == id }
             }
             if scheduling {
@@ -966,7 +969,7 @@ struct ConversationComposer: View {
                     .focused($focused)
                     .modifier(ComposerFieldStyle(send: send))
                     .accessibilityIdentifier("message-input")
-                if !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                if hasContent {
                     ComposerSendButton(symbol: scheduling ? "clock.fill" : "arrow.up", enabled: canSend,
                                        label: scheduling ? "Schedule task" : "Send message", action: send)
                 } else if let task, task.isRunning, connected {
@@ -990,7 +993,7 @@ struct ConversationComposer: View {
         .padding(.bottom, 8)
         .modifier(ComposerBackdrop())
         .modifier(ComposerAttachmentSources(importing: $importing, pickingPhotos: $pickingPhotos,
-                                            pasteEnabled: focused && connected && !uploading) { url in
+                                            pasteEnabled: focused && connected) { url in
             upload { await store.uploadAttachment(bot: bot, url: url) }
         } photo: { load in
             upload {
@@ -1008,7 +1011,7 @@ struct ConversationComposer: View {
             upload { await store.uploadAttachment(bot: bot, data: pasted.data, filename: pasted.name) }
         } report: { store.error = $0 })
         // Only after a send: a key without a send changes no state.
-        .onChange(of: text) { _, draft in if draftSend.sent != nil { draftSend.shows(draft) } }
+        .onChange(of: draftKey) { _, draft in if draftSend.sent != nil { draftSend.shows(draft) } }
     }
 
     private var uploading: Bool { uploads.count > 0 }
@@ -1023,7 +1026,14 @@ struct ConversationComposer: View {
         }
     }
 
-    private var canSend: Bool { connected && !uploading && !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+    /// The draft of one send: its text and its attachments, so a second image alone counts as a new draft.
+    private var draftKey: String { ([text] + attachments.map(\.id)).joined(separator: "\u{0}") }
+
+    /// Text, or attachments alone: a pasted screenshot can go without words.
+    private var hasContent: Bool {
+        !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !attachments.isEmpty || uploading
+    }
+    private var canSend: Bool { connected && !uploading && hasContent }
 
     /// Clears the draft. `sent` is the text that the clear follows: what the person typed after it stays.
     private func clearDraft(after sent: String? = nil) {
@@ -1038,7 +1048,7 @@ struct ConversationComposer: View {
     }
 
     private func send() {
-        guard canSend, draftSend.begin(text) else { return }
+        guard canSend, draftSend.begin(draftKey) else { return }
         let submittedText = text
         let submittedWork = workContext
         let submittedReply = replyTo
