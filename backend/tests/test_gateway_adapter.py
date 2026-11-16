@@ -490,20 +490,49 @@ class GatewayAdapterTests(unittest.TestCase):
         task = self.write('POST', f'/v1/bots/{self.bot["id"]}/messages', {'text': 'Send the chart.'})
         self.service._run_task(task['id'])
         texts = [text for text, _ in self.replies(task)]
-        # The two notices have the same text, so the turn keeps them as one message.
         self.assertEqual(len(texts), 2)
         self.assertRegex(texts[0], r'^!\[Weekly chart\]\(coconut-file://[0-9a-f-]{36}\)$')
         artifact_id = texts[0].split('coconut-file://')[1].rstrip(')')
         # The phone loads the photo through the content route of the artifact.
         self.assertEqual(self.service.artifact_content(artifact_id), (png, 'chart.png'))
         self.assertTrue(self.read('artifacts', artifact_id)['_attachment'])
-        # A file that is not a photo, and a missing file, get the notice of Hermes. It names no path.
-        self.assertEqual(texts[1:], ['The image could not be sent.'])
+        # A file that is not a photo goes as a file card. A missing file gets a line that names no path.
+        cards = [m for m in self.service._task_messages(task['id']) if m['kind'] == 'artifact']
+        self.assertEqual([m['text'] for m in cards], ['notes.txt'])
+        self.assertEqual(texts[1], 'missing.png could not be sent: the file is not readable on this Mac.')
         # Only the bot of the adapter's profile may keep a photo.
         other = self.write('POST', '/v1/bots', {'name': 'Grace'})
         with self.assertRaises(Exception):
             self.service.gateway_file({'home': str(self.home), 'chat_id': other['id'], 'filename': 'x.png',
                                        'content_base64': 'iVBORw0KGgo='})
+
+    def test_a_file_on_the_mac_becomes_a_file_card_in_the_chat_of_the_turn(self):
+        # Hermes's own send_document only posted "Couldn't deliver the file attachment."
+        pdf = b'%PDF-1.7\n' + b'x' * 2048
+        folder = Path(self.temp.name)
+        (folder / 'IRS letter.pdf').write_bytes(pdf)
+        (folder / 'big.zip').write_bytes(b'0' * (4 * 1024 * 1024 + 1))
+        results = []
+        async def runner(event):
+            chat = event.source.chat_id
+            results.append(await self.adapter.send_document(chat, str(folder / 'IRS letter.pdf'), caption='The scan.'))
+            results.append(await self.adapter.send_document(chat, str(folder / 'big.zip')))
+            return None
+        self.connect(runner)
+        task = self.write('POST', f'/v1/bots/{self.bot["id"]}/messages', {'text': 'Send the scan.'})
+        self.service._run_task(task['id'])
+        self.assertTrue(all(result.success for result in results))
+        messages = [m for m in self.service._task_messages(task['id']) if m['role'] == 'assistant']
+        cards = [m for m in messages if m['kind'] == 'artifact']
+        self.assertEqual([m['text'] for m in cards], ['IRS letter.pdf'])
+        artifact = self.read('artifacts', cards[0]['artifact_id'])
+        self.assertEqual((artifact['kind'], artifact['task_id'], artifact.get('_bot_photo')), ('file', task['id'], None))
+        self.assertEqual(self.service.artifact_content(artifact['id']), (pdf, 'IRS letter.pdf'))
+        texts = [text for text, _ in self.replies(task)]
+        self.assertIn('The scan.', texts)
+        self.assertTrue(any(text.startswith('big.zip is 4.0 MB, and Coconut sends files of at most 4 MB')
+                            for text in texts), texts)
+        self.assertFalse(any("Couldn't deliver" in text for text in texts))
 
     def test_a_send_outside_a_turn_to_another_chat_fails_without_a_retry(self):
         self.connect(None)

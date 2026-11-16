@@ -771,6 +771,7 @@ class GatewayChat:
         records = turn_records(task) if own is not None else []
         if own is not None:
             records += self._instructions_record(bot, own)
+            records += self._notices_record()
         # The attached images of the turn go to Hermes as images, so the model sees a pasted screenshot.
         if images is None:
             images = turn_images(task.get('attachments', []))
@@ -820,6 +821,20 @@ class GatewayChat:
             self._gateway_wait_summary(task['id'], None)
             if context_id is None:
                 self._close_gateway_questions(task['id'])
+
+    def _notices_record(self) -> list[dict]:
+        """The active notices of the teams of this Mac as one data record (team_notices.notices_text). Its ID changes
+        with the text, so a session gets the board again only when a notice changes."""
+        reader = getattr(self, 'team_active_notices', None)
+        try:
+            text = reader() if reader is not None else None
+        except Exception as error:
+            LOG.warning('The notices of the teams did not reach the turn (%s).', type(error).__name__)
+            return []
+        if not text:
+            return []
+        import hashlib
+        return [{'id': 'notices:' + hashlib.sha256(text.encode()).hexdigest()[:16], 'text': text}]
 
     def _instructions_record(self, bot: dict, own: str) -> list[dict]:
         """The record of the bot's SOUL.md, as a list of one record, or none without a readable SOUL.md. A continuing
@@ -1212,11 +1227,15 @@ class GatewayChat:
         return self.delete_page(bot_id, arguments)
 
     def gateway_file(self, data: dict) -> dict:
-        """POST /v1/gateway/files: a photo that a bot of the adapter's profile saved on the Mac.
+        """POST /v1/gateway/files: a photo or a file that a bot of the adapter's profile saved on the Mac.
 
         The service keeps the bytes as an attachment of the bot, as for a file from the phone, and returns its
-        artifact. The adapter then sends the photo as `![caption](coconut-file://<artifact id>)`, and the phone loads
+        artifact. For a photo the adapter then sends `![caption](coconut-file://<artifact id>)`, and the phone loads
         the bytes through the artifact content route. Only PNG, JPEG, GIF, WebP and HEIC data of at most 4 MB count.
+
+        With `document` true the bytes can be any file of at most 4 MB, for example a PDF or a CSV. The service then
+        posts the file itself in the chat of the bot as a file card that opens it: the message of the running turn
+        (`turn_id`) when there is one. Before, Hermes sent only "Couldn't deliver the file attachment."
         """
         import base64
         from .service import ServiceError, now, require_text, uid
@@ -1229,20 +1248,28 @@ class GatewayChat:
             content = base64.b64decode(data.get('content_base64', ''), validate=True)
         except (ValueError, TypeError):
             raise ServiceError(400, 'The photo must use base64 encoding.')
+        document = data.get('document') is True
         if not content or len(content) > 4 * 1024 * 1024:
-            raise ServiceError(413, 'A photo must contain between 1 byte and 4 MB.')
-        if not is_photo_data(content):
+            raise ServiceError(413, ('A file' if document else 'A photo') + ' must contain between 1 byte and 4 MB.')
+        if not document and not is_photo_data(content):
             raise ServiceError(415, 'Send a PNG, JPEG, GIF, WebP or HEIC photo.')
+        turn_id = data.get('turn_id')
+        task_id = self.gateway_bridge.task_of(turn_id) if document and isinstance(turn_id, str) else None
         with self.transaction():
             bot = self._get('bots', chat_id)
             if bot['archived'] or bot.get('_deleted'):
                 raise ServiceError(409, 'The agent is archived or deleted.')
-            artifact = dict(id=uid(), bot_id=chat_id, task_id=None, title=filename, kind='file', status='attached',
-                            preview=f'{len(content):,} bytes', url=None, created_at=now(), _attachment=True,
-                            _bot_photo=True)
+            if task_id is not None and self._get('tasks', task_id).get('conversation_bot_id', chat_id) != chat_id:
+                task_id = None
+            artifact = dict(id=uid(), bot_id=chat_id, task_id=task_id, title=filename, kind='file',
+                            status='attached', preview=f'{len(content):,} bytes', url=None, created_at=now(),
+                            _attachment=True, **({} if document else {'_bot_photo': True}))
             self._put('artifacts', artifact)
             self.store_artifact_content(artifact['id'], content)
-            self._event('artifact.created', self._public(artifact), chat_id)
+            self._event('artifact.created', self._public(artifact), chat_id, task_id)
+            if document:
+                message = self._message(chat_id, filename, task_id=task_id, kind='artifact', artifact_id=artifact['id'])
+                return {'id': artifact['id'], 'message_id': message['id']}
         return {'id': artifact['id']}
 
     def gateway_message(self, data: dict) -> dict:

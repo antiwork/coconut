@@ -2087,6 +2087,51 @@ final class AppStore {
         return answer.chat
     }
 
+    /// Posts a notice on the board of a team (docs/team-log.md, "Notices"). Return whether the Mac posted it.
+    func postTeamNotice(_ room: TeamRoom, kind: NoticeKind, text: String, endsAt: Date?) async -> Bool {
+        await changeTeamNotices(room, path: "team/rooms/\(room.room)/notices", method: "POST",
+                                payload: TeamNoticeRequest(type: kind.rawValue, text: text,
+                                                           endsAt: endsAt.map(Self.noticeTime)),
+                                key: UUID().uuidString)
+    }
+
+    /// Closes an own notice for each member. It stays on the board as ended.
+    func closeTeamNotice(_ room: TeamRoom, notice: WorkspaceNotice) async -> Bool {
+        await changeTeamNotices(room, path: "team/rooms/\(room.room)/notices/\(notice.id)", method: "PATCH",
+                                payload: TeamNoticeChange(closed: true))
+    }
+
+    /// Removes an own notice from the board of each member.
+    func deleteTeamNotice(_ room: TeamRoom, notice: WorkspaceNotice) async -> Bool {
+        await changeTeamNotices(room, path: "team/rooms/\(room.room)/notices/\(notice.id)", method: "DELETE",
+                                payload: EmptyRequest())
+    }
+
+    /// Tells the team that this person has seen these notices. A notice that the person has seen writes nothing.
+    func markTeamNoticesSeen(_ room: TeamRoom, notices: [WorkspaceNotice]) async {
+        let ids = notices.filter { !$0.seen }.map(\.id)
+        guard !ids.isEmpty, !isDemo else { return }
+        _ = await changeTeamNotices(room, path: "team/rooms/\(room.room)/notices/seen", method: "POST",
+                                    payload: TeamNoticesSeen(notices: ids), quiet: true)
+    }
+
+    private func changeTeamNotices<Payload: Encodable>(_ room: TeamRoom, path: String, method: String,
+                                                       payload: Payload, key: String? = nil,
+                                                       quiet: Bool = false) async -> Bool {
+        let ticket = startTeamWrite(room.room)
+        let answer: TeamRoomAnswer? = await write(path, method: method, payload: payload, as: TeamRoomAnswer.self,
+                                                  quiet: quiet, refreshInBackground: true, idempotencyKey: key)
+        guard let answer else { return false }
+        applyTeamChange(room: answer.room, write: ticket)
+        return true
+    }
+
+    nonisolated static func noticeTime(_ date: Date) -> String {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime]
+        return formatter.string(from: date)
+    }
+
     /// Leaves a team, or removes a team that this Mac is no longer in. The Mac deletes its copy and its keys.
     func leaveTeam(_ room: TeamRoom) async -> Bool {
         // An answer of an earlier write of the room must not bring the room back.
@@ -3471,6 +3516,9 @@ private struct TeamReadRequest: Encodable { let first: Int; let chat: String? }
 private struct TeamTypingRequest: Encodable { let chat: String? }
 /// The body of a new chat and of a new name. A delete sends no name.
 private struct TeamChatRequest: Encodable { let name: String? }
+private struct TeamNoticeRequest: Encodable { let type: String; let text: String; let endsAt: String? }
+private struct TeamNoticeChange: Encodable { let closed: Bool }
+private struct TeamNoticesSeen: Encodable { let notices: [String] }
 /// The answer of a change of the named chats: the room, and the ID of the chat.
 private struct TeamChatAnswer: Decodable, Sendable { let room: TeamRoom; let chat: String }
 private struct InstructionsRequest: Encodable { let instructions: String }
