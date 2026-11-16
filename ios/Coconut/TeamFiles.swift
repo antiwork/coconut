@@ -241,16 +241,19 @@ enum FileFit {
         return nil
     }
 
-    /// The image has a GPS position: in its EXIF data (the GPS dictionary of ImageIO) or in its XMP data.
+    /// The file has a GPS position: in the container, or in the EXIF data (the GPS dictionary of ImageIO) or the XMP
+    /// data of any of its images. A file with more than one image, for example a TIFF with pages, can carry a
+    /// position only on a later image.
     static func hasPosition(_ source: CGImageSource) -> Bool {
-        let image = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any]
         let container = CGImageSourceCopyProperties(source, nil) as? [CFString: Any]
-        if image?[kCGImagePropertyGPSDictionary] != nil || container?[kCGImagePropertyGPSDictionary] != nil {
-            return true
-        }
-        guard let metadata = CGImageSourceCopyMetadataAtIndex(source, 0, nil) else { return false }
-        return [kCGImagePropertyGPSLatitude, kCGImagePropertyGPSLongitude].contains { key in
-            CGImageMetadataCopyTagMatchingImageProperty(metadata, kCGImagePropertyGPSDictionary, key) != nil
+        if container?[kCGImagePropertyGPSDictionary] != nil { return true }
+        return (0..<CGImageSourceGetCount(source)).contains { index in
+            let image = CGImageSourceCopyPropertiesAtIndex(source, index, nil) as? [CFString: Any]
+            if image?[kCGImagePropertyGPSDictionary] != nil { return true }
+            guard let metadata = CGImageSourceCopyMetadataAtIndex(source, index, nil) else { return false }
+            return [kCGImagePropertyGPSLatitude, kCGImagePropertyGPSLongitude].contains { key in
+                CGImageMetadataCopyTagMatchingImageProperty(metadata, kCGImagePropertyGPSDictionary, key) != nil
+            }
         }
     }
 
