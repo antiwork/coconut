@@ -80,7 +80,8 @@ class ProfileTests(unittest.TestCase):
         before = sorted(str(path) for path in self.hermes.rglob('*'))
         bots = self.bots()
         self.assertEqual(set(bots), {'default', 'work'})
-        self.assertEqual((bots['default']['name'], bots['work']['name'], bots['work']['role']), ('Hermes', 'Lin', 'Research helper'))
+        self.assertEqual((bots['default']['name'], bots['work']['name'], bots['work']['role']), ('Coconut', 'Lin', 'Research helper'),
+                         'The default profile shows as the Coconut chat.')
         self.assertEqual(self.service.profiles.home(bots['default']), self.hermes)
         self.assertEqual(self.service.profiles.home(bots['work']), self.work)
         self.assertEqual(sorted(str(path) for path in self.hermes.rglob('*')), before)
@@ -187,7 +188,7 @@ class ProfileTests(unittest.TestCase):
 
     def test_deleting_a_hermes_profile_needs_its_typed_name_and_never_default(self):
         bots = self.bots()
-        with self.assertRaisesRegex(ServiceError, 'never default'):
+        with self.assertRaisesRegex(ServiceError, 'The Coconut chat stays'):
             self.write('POST', f'/v1/bots/{bots["default"]["id"]}/profile/delete', {'confirm': 'default'})
         with self.assertRaisesRegex(ServiceError, 'Type the profile name'):
             self.write('POST', f'/v1/bots/{bots["work"]["id"]}/profile/delete', {'confirm': 'Work'})

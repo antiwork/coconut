@@ -14,10 +14,15 @@ final class MacWindowSnapshotTests: XCTestCase {
             store.bots[index].unreadCount = unread
         }
         if !store.bots.isEmpty { store.bots[0].pinned = true }
+        // The last agent is the Coconut chat, so the sidebar shows it at the top and its chat shows its bar.
+        store.bots[store.bots.count - 1].coconut = true
+        store.bots[store.bots.count - 1].name = "Coconut"
+        let coconutId = store.bots[store.bots.count - 1].id
         let botId = try XCTUnwrap(store.bots.first?.id)
         store.team = try APIJSON.decoder().decode(TeamRooms.self, from: Data(TeamNoticeTests.rooms.utf8))
         let windows: [(String, AnyView)] = [
             ("notices", AnyView(NavigationStack { NoticeBoardView(roomId: "example") })),
+            ("coconut", AnyView(NavigationStack { ConversationView(botId: coconutId) })),
             ("chat", AnyView(NavigationStack { ConversationView(botId: botId) })),
             ("inbox", AnyView(MacInboxView(selection: .constant(.inbox)))),
             ("library", AnyView(NavigationStack { LibraryView().navigationTitle("Library") })),
@@ -27,6 +32,7 @@ final class MacWindowSnapshotTests: XCTestCase {
             case "chat": .bot(botId)
             case "inbox": .inbox
             case "notices": .notices("example")
+            case "coconut": .bot(coconutId)
             default: .library
             }
             let view = HStack(spacing: 0) {

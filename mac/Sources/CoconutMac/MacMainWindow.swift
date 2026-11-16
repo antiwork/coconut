@@ -323,11 +323,15 @@ struct MacSidebar: View {
     var body: some View {
         // The store keeps the newest activity of each bot (ChatSummaries), so the sidebar reads no message. A pass
         // over the messages for each body cost about 3 ms with 1,500 messages.
-        let sections = ChatSections.make(bots: store.bots, latest: store.chatSummaries.newestActivity,
+        let sections = ChatSections.make(bots: store.bots.agents, latest: store.chatSummaries.newestActivity,
                                          rooms: store.shownTeamRooms, local: store.newestLocalMessages)
         let pins = SidebarPins(pinnedBots: sections.pinned, documents: store.documents ?? [], bots: store.bots,
                                teamBots: store.teamBots)
         return List(selection: $selection) {
+            // The Coconut chat: where the person changes Coconut. Coconut has no settings window for it.
+            if let coconut = store.bots.coconutChat {
+                CoconutChatRow(bot: coconut).tag(MacSelection.bot(coconut.id))
+            }
             MacSidebarLabel(title: "Inbox", symbol: "tray")
                 .badge(store.inboxBadgeCount)
                 .tag(MacSelection.inbox)
@@ -405,7 +409,7 @@ struct MacSidebar: View {
                 }
             }
             // The archived agents, closed until the person opens the section. An archived chat stays readable.
-            let archived = store.bots.filter(\.archived).sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+            let archived = store.bots.agents.filter(\.archived).sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
             if !archived.isEmpty {
                 Section("Archived", isExpanded: $archivedOpen) {
                     ForEach(archived) { bot in row(bot) }

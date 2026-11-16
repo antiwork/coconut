@@ -994,6 +994,9 @@ class GatewayChat:
             if task.get('_chat_session'):
                 raise ServiceError(409, TRACK_WORK_CHAT)
             return self.emit(task_id, 'artifact', dict(arguments, kind='work'))
+        if tool == 'settings':
+            from .coconut_chat import settings_tool
+            return settings_tool(self, task_id, arguments)
         if tool == 'save_document':
             return self.save_document(task_id, arguments)
         if tool == 'read_document':

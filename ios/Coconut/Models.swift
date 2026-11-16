@@ -25,6 +25,9 @@ struct Bot: Codable, Identifiable, Equatable, Sendable {
     var workerLimit: Int? = nil
     var modelError: String? = nil
     var health: BotHealth? = nil
+    /// True for the Coconut chat: the agent of the default Hermes profile, where the person changes Coconut. It stays
+    /// at the top of the lists and is never archived.
+    var coconut: Bool = false
 }
 
 /// A bot that cannot run: its provider limit or error, and the source items that wait for it.
@@ -90,7 +93,7 @@ struct BotPatch: Encodable {
 extension Bot {
     enum CodingKeys: String, CodingKey {
         case id, sessionId, name, role, avatar, color, instructions, status
-        case lastMessage, unreadCount, archived, createdAt, memory, pinned, preferences, modelOverride, effectiveModel, modelError, notifications, approvalOverride, effectiveApproval, workerLimit, health
+        case lastMessage, unreadCount, archived, createdAt, memory, pinned, preferences, modelOverride, effectiveModel, modelError, notifications, approvalOverride, effectiveApproval, workerLimit, health, coconut
     }
 
     init(from decoder: Decoder) throws {
@@ -118,6 +121,7 @@ extension Bot {
         workerLimit = try values.decodeIfPresent(Int.self, forKey: .workerLimit)
         modelError = try values.decodeIfPresent(String.self, forKey: .modelError)
         health = try values.decodeIfPresent(BotHealth.self, forKey: .health)
+        coconut = try values.decodeIfPresent(Bool.self, forKey: .coconut) ?? false
     }
 }
 

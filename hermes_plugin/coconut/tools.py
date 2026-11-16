@@ -273,6 +273,7 @@ def register(ctx):
                             (backend('technical_lane').CONTINUE_SCHEMA, _service_tool('continue_work')),
                             (backend('tracked_work').TRACK_WORK_SCHEMA, _service_tool('track_work')),
                             (backend('documents').SAVE_SCHEMA, _service_tool('save_document')),
+                            (backend('coconut_chat').SETTINGS_SCHEMA, _service_tool('settings')),
                             (backend('documents').READ_SCHEMA, _service_tool('read_document')),
                             (backend('documents').DELETE_SCHEMA, _service_tool('delete_document')),
                             *((schema, _service_tool(schema['name'][len('coconut_'):])) for schema in claim_schemas())):

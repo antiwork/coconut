@@ -175,7 +175,8 @@ struct ConversationView: View {
                     List {
                         Group {
                             #if os(macOS)
-                            ChatTitleSpace(titleHeight: Self.titleHeight)
+                            // The Coconut chat leaves room for its bar too.
+                            ChatTitleSpace(titleHeight: Self.titleHeight + (bot.coconut ? 44 : 0))
                             #endif
                             conversationHeader(bot: bot, messages: messages)
                             // Older rows that the window does not hold yet come with this control too: a press adds
@@ -480,6 +481,8 @@ struct ConversationView: View {
                     .accessibilityIdentifier("bot-settings")
                 }
                 #endif
+                // The Coconut chat has its bar: where Coconut runs, and the things that need this device.
+                .modifier(CoconutChatArea(bot: bot, top: Self.titleHeight + 4))
                 .confirmationDialog(StopCopy.title(executor: stop.item.map { executorName($0) } ?? bot.name),
                                     isPresented: $stop.isPresented, titleVisibility: .visible, presenting: stop.item) { task in
                     Button("Stop task", role: .destructive) { Task { await store.cancel(task) } }
