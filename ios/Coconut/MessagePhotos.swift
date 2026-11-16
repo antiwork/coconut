@@ -119,13 +119,14 @@ struct PhotoTileRow<Actions: View, Below: View>: View {
         .id(trailing ? photos.map(\.url) : [])
     }
 
+    /// A photo whose bytes are not on the Mac yet opens nothing: the tile shows its loading state.
     private func open(_ index: Int) {
+        let photo = photos[index]
+        guard photo.ready else { return }
         viewing = index
         #if os(iOS)
         viewerOpen = true
         #else
-        let photo = photos[index]
-        guard photo.ready else { return }
         Task { lookURL = await QuickLookFile.url(for: photo.url, name: photo.fileName) }
         #endif
     }
@@ -255,7 +256,8 @@ struct PhotoViewer: View {
     var body: some View {
         TabView(selection: $index) {
             ForEach(photos.indices, id: \.self) { page in
-                PhotoPage(url: photos[page].url, zoomed: page == index ? $zoomed : .constant(false)) {
+                PhotoPage(url: photos[page].url, ready: photos[page].ready,
+                          zoomed: page == index ? $zoomed : .constant(false)) {
                     loaded.insert(photos[page].url)
                 }
                 .accessibilityLabel(photos[page].label)
@@ -310,6 +312,9 @@ struct PhotoViewer: View {
 
 private struct PhotoPage: View {
     let url: URL
+    /// False while the bytes are not on the Mac yet, for another photo of the same message: the page waits, and loads
+    /// when the photo turns ready.
+    let ready: Bool
     @Binding var zoomed: Bool
     let loaded: () -> Void
     @State private var image: PlatformImage?
@@ -330,8 +335,9 @@ private struct PhotoPage: View {
         .onReceive(NotificationCenter.default.publisher(for: .coconutMacConnected)) { _ in
             if failed && PhotoLoader.isMacFile(url) { attempt += 1 }
         }
-        .task(id: "\(url.absoluteString) \(attempt)") {
+        .task(id: "\(url.absoluteString) \(attempt) \(ready)") {
             failed = false
+            guard ready else { return }
             image = await PhotoLoader.shared.image(url, size: .full)
             failed = image == nil
             if image != nil { loaded() }
