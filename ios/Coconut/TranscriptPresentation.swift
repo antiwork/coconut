@@ -22,6 +22,12 @@ struct MessagePhoto: Equatable, Sendable {
 extension Message {
     /// The photo of a finished bot message that has nothing else to show, such as a quote or a card.
     var photo: MessagePhoto? {
+        // An image that the person attached, such as a pasted screenshot, shows as the image itself, not as a file
+        // card that needs a click. The bytes come through the paired Mac, as a photo that a bot saved there.
+        if role == "user", kind == "artifact", let id = artifactId, TranscriptPresentation.isImageName(text),
+           let url = URL(string: "coconut-file://" + id) {
+            return MessagePhoto(url: url, caption: "", name: text)
+        }
         guard role == "assistant", kind == "text", !streaming, decisionId == nil, artifactId == nil, replyTo == nil,
               workContext == nil else { return nil }
         return TranscriptPresentation.photo(in: text)
@@ -31,9 +37,26 @@ extension Message {
     var photoSender: [String] { [senderBotId ?? botId] + (recipientBotIds ?? []) }
 }
 
+/// The text of a message of attachments only. The Mac needs a text for each message, so the app sends this one and
+/// shows the attachments alone. Agents read it as a message without words.
+enum AttachmentOnly {
+    static let text = "[attachment]"
+    static func isMarker(_ text: String) -> Bool { text.trimmingCharacters(in: .whitespacesAndNewlines) == Self.text }
+}
+
 enum TranscriptPresentation {
+    /// A file name of an image that the chat can show: the formats of the attachments that the agents see as images.
+    static func isImageName(_ name: String) -> Bool {
+        ["png", "jpg", "jpeg", "gif", "webp", "heic"].contains((name as NSString).pathExtension.lowercased())
+    }
+
     static func previewFallback(_ text: String, messages: [Message]) -> String {
-        if messages.contains(where: \.streaming) || trimmed(text, equals: "[SILENT]")
+        previewFallback(text, streaming: messages.contains(where: \.streaming))
+    }
+
+    /// `streaming` says whether a message of the chat streams in.
+    static func previewFallback(_ text: String, streaming: Bool) -> String {
+        if streaming || trimmed(text, equals: "[SILENT]")
             || isLegacySettingsNotice(text) { return "" }
         return text
     }
@@ -97,6 +120,16 @@ enum TranscriptPresentation {
     /// code marks, and link text without its address. Code in a fence stays as it is. Fence and rule lines are
     /// dropped, and lines join with spaces.
     static func previewText(_ markdown: String) -> String {
+        // A preview shows one or two lines, so the start of a long message is enough.
+        previews.value(for: String(markdown.prefix(1000)), make: plainPreview)
+    }
+
+    /// The previews by the start of their text. Each row of the Chats list and of the Mac sidebar parsed the Markdown
+    /// of its newest message for each redraw.
+    static let previews = TextCache<String>(limit: 512)
+
+    /// `previewText` without the cache.
+    static func plainPreview(_ markdown: String) -> String {
         var parts: [String] = []
         var prose: [String] = []
         var fenced = false
@@ -108,8 +141,7 @@ enum TranscriptPresentation {
             let plain = (try? AttributedString(markdown: text, options: options)).map { String($0.characters) } ?? text
             parts += plain.split(whereSeparator: \.isNewline).map { $0.trimmingCharacters(in: .whitespaces) }
         }
-        // A preview shows one or two lines, so the start of a long message is enough.
-        for line in markdown.prefix(1000).split(omittingEmptySubsequences: false, whereSeparator: \.isNewline) {
+        for line in markdown.split(omittingEmptySubsequences: false, whereSeparator: \.isNewline) {
             let text = line.trimmingCharacters(in: .whitespaces)
             if text.hasPrefix("```") || text.hasPrefix("~~~") {
                 flush()
@@ -166,6 +198,7 @@ enum TranscriptPresentation {
                 return !isLabel(message.text, in: genericProgress)
             }
             if message.kind == "text" && trimmed(message.text, equals: "") { return false }
+            if message.kind == "text" && message.role == "user" && AttachmentOnly.isMarker(message.text) { return false }
             guard message.kind == "artifact", let id = message.artifactId,
                   let artifact = byID[id], artifact.kind == "task", artifact.status == "completed",
                   artifact.url == nil, !artifact.preview.isEmpty,

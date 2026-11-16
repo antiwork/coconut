@@ -12,6 +12,7 @@ from uuid import uuid4
 from coconut.providers import FixtureProvider
 from coconut.server import TunnelServer, request_timing
 from coconut.service import Service
+from coconut.state_sync import CONFIRMED_REQUESTS
 import legacy_work_sync
 
 setUpModule, tearDownModule = legacy_work_sync.scope()
@@ -28,6 +29,13 @@ REFERENCE_PAGE = (
     "json_extract(data,'$.sender_bot_id')=? OR EXISTS(SELECT 1 FROM json_each(messages.data,'$.recipient_bot_ids') WHERE value=?) "
     "OR EXISTS(SELECT 1 FROM json_each(messages.data,'$.exchange_recipient_bot_ids') WHERE value=?)))) "
     "ORDER BY rowid DESC LIMIT ?)")
+
+
+# The read of the confirmed requests before it took the bot of each message from the index.
+REFERENCE_CONFIRMED = (
+    "SELECT json_group_array(DISTINCT json_extract(data,'$.client_request_id')) FROM messages "
+    "WHERE json_type(data,'$.client_request_id')='text' AND EXISTS(SELECT 1 FROM bots "
+    "WHERE id=json_extract(messages.data,'$.bot_id') AND NOT COALESCE(json_extract(bots.data,'$._deleted'),0))")
 
 
 class PhoneReadCase(unittest.TestCase):
@@ -226,6 +234,61 @@ class MessagePageTests(PhoneReadCase):
         with self.service._read_view() as view:
             plan = ' '.join(row[3] for row in view.db.execute('EXPLAIN QUERY PLAN ' + confirmed))
         self.assertIn('messages_client_request', plan)
+
+    def test_the_confirmed_requests_equal_the_ones_of_the_statement_that_opened_each_message(self):
+        with self.service.transaction():
+            for number, bot_id in enumerate([self.bot['id'], self.gone['id'], self.other['id']] * 200):
+                # A long text, as a reply has it. Two messages share request 7, and a number is no confirmed request.
+                request = {7: 'request-0006', 9: 9, 11: None}.get(number, f'request-{999 - number:04}')
+                self.service._put('messages', dict(
+                    id=str(uuid4()), bot_id=bot_id, task_id=None, role='user', kind='text', text='x' * 20_000,
+                    client_request_id=request, created_at='2026-10-29T00:00:00Z', streaming=False))
+        self.assertFalse(self.service.db.execute(
+            "SELECT 1 FROM sqlite_master WHERE name='messages_client_request'").fetchone())
+        def read(statement, runs=5):
+            times = []
+            for _ in range(runs):
+                started = time.perf_counter()
+                value = json.loads(self.service.db.execute(statement).fetchone()[0])
+                times.append(time.perf_counter() - started)
+            return value, min(times)
+        expected, before = read(REFERENCE_CONFIRMED)
+        confirmed, after = read(CONFIRMED_REQUESTS)
+        self.assertEqual(confirmed, expected)
+        self.assertEqual(len(confirmed), 398)
+        self.assertEqual(self.service.snapshot(content_only=True, compact_history=True)['confirmed_request_ids'], expected)
+        # The old statement opened each message, here 8 MB of text. The new one reads the index only.
+        self.assertLess(after * 4, before, (before, after))
+
+    def test_a_search_names_the_bots_that_a_read_of_every_message_named(self):
+        with self.service.transaction():
+            for bot_id, text in [(self.other['id'], 'The STRASSE report'), (self.quiet['id'], 'Maße und Gewichte'),
+                                 (self.gone['id'], 'The straße of a removed bot')]:
+                self.service._put('messages', dict(id=str(uuid4()), bot_id=bot_id, task_id=None, role='assistant', kind='text',
+                                                   text=text, created_at='2026-10-29T00:00:00Z', streaming=False))
+            self.service._put('messages', dict(id=str(uuid4()), bot_id=self.bot['id'], task_id=None, role='assistant',
+                                               kind='activity', text='straße in an activity', created_at='2026-10-29T00:00:00Z',
+                                               streaming=False))
+        def reference(query):
+            query = query.strip()[:200]
+            if not query:
+                return {'bot_ids': []}
+            with self.service._read_view() as view, view._read_transaction():
+                visible = {b['id'] for b in view._all('bots') if not b.get('_deleted')}
+                return {'bot_ids': sorted({m['bot_id'] for m in view._all('messages')
+                    if m['bot_id'] in visible and not m.get('_hidden') and not m.get('_deleted')
+                    and m['kind'] == 'text' and query.casefold() in m['text'].casefold()})}
+        for query in ['', '  ', '1', '0', '11', '13', '26', 'straße', 'STRASSE', 'masse', ' report ', 'no such text', 'x' * 300]:
+            with self.subTest(query=query):
+                self.assertEqual(self.service.search_conversations(query), reference(query))
+        self.assertEqual(self.service.search_conversations('strasse')['bot_ids'], [self.other['id']])
+        self.assertEqual(self.service.search_conversations('MASSE')['bot_ids'], [self.quiet['id']])
+        with self.service._read_view() as view:
+            plan = ' '.join(row[3] for row in view.db.execute(
+                "EXPLAIN QUERY PLAN SELECT json_extract(data,'$.text') FROM messages WHERE json_extract(data,'$.bot_id')=? "
+                "AND json_extract(data,'$.kind')='text' AND NOT COALESCE(json_extract(data,'$._hidden'),0) "
+                "AND NOT COALESCE(json_extract(data,'$._deleted'),0)", ('bot',)))
+        self.assertIn('messages_chat', plan)
 
     def test_a_page_does_not_read_more_with_a_longer_exchange_history(self):
         def add_exchanges(count):

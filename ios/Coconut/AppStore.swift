@@ -14,9 +14,14 @@ final class AppStore {
     var messages: [Message] = [] {
         // Each row of a chat looks up its saved message. A scan of all messages for each row cost about 450 ms when a
         // chat of 1,270 rows opened. The index comes from the messages here only, so it cannot lag behind them.
-        didSet { messageIndex = MessageIndex(messages) }
+        didSet {
+            messageIndex.update(from: oldValue, to: messages)
+            assign(\.chatSummaries, chatSummaries.updated(from: oldValue, to: messages))
+        }
     }
     @ObservationIgnored private(set) var messageIndex = MessageIndex([])
+    /// What the Chats list and the Mac sidebar show of the messages of each bot. They change only when a row changes.
+    private(set) var chatSummaries = ChatSummaries()
     var outgoingMessages: [OutgoingMessage] = []
     var outgoingAnswers: [OutgoingAnswer] = []
     @ObservationIgnored private var deliveryTasks: [String: Task<Void, Never>] = [:]
@@ -797,8 +802,10 @@ final class AppStore {
 
     @discardableResult
     func send(bot: Bot, text: String, mode: String = "auto", taskId: String? = nil, attachments: [String] = [], scheduledAt: String? = nil, mentionedBotIds: [String] = [], replyTo: MessageReference? = nil, workContext: WorkReference? = nil, workStatusOnly: Bool = false) async -> Bool {
-        let text = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        var text = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty || !attachments.isEmpty else { return false }
+        // The Mac needs a text for each message. Attachments alone go with the marker, which the chat does not show.
+        if text.isEmpty { text = AttachmentOnly.text }
         guard ["auto", "steer", "queue"].contains(mode) else { return false }
         let selectedMode = workContext != nil ? "queue" : (scheduledAt == nil ? mode : "queue")
         let currentTask = selectedMode == "auto"
@@ -1860,13 +1867,13 @@ final class AppStore {
     }
 
     /// Asks the Mac for a new invite link. The link is a secret: the caller gives it to the share sheet and keeps no
-    /// copy.
+    /// copy. The person shares the web form, which a mail or a chat keeps and which opens the app.
     func teamInviteLink(_ room: TeamRoom) async -> URL? {
         // Each tap makes a new link, so a request never reuses the key of an earlier one.
         let invite: TeamInvite? = await write("team/rooms/\(room.room)/invites", payload: EmptyRequest(),
                                               as: TeamInvite.self, refreshInBackground: true,
                                               idempotencyKey: UUID().uuidString)
-        return invite.flatMap { URL(string: $0.link) }
+        return invite.flatMap { TeamLog.webLink(fromLink: $0.link) }.flatMap { URL(string: $0) }
     }
 
     /// The admin takes another member out of a team (backend/coconut/team.py, `team_remove`). Return whether the Mac
@@ -2733,10 +2740,17 @@ final class AppStore {
 
     nonisolated static func newReplies(in incoming: StateSnapshot, after previous: StateSnapshot?) -> [Message] {
         guard let previous, incoming.cursor > previous.cursor else { return [] }
-        let finished = Set(previous.messages.filter { !$0.streaming }.map(\.id))
-        return incoming.messages.filter {
-            $0.role == "assistant" && $0.kind == "text" && !$0.streaming && !finished.contains($0.id)
-        }
+        // Most messages keep their place from one state to the next. A set of the IDs is made only for a reply
+        // that moved or that is new.
+        var finished: Set<String>?
+        return incoming.messages.enumerated().filter { index, message in
+            guard message.role == "assistant", message.kind == "text", !message.streaming else { return false }
+            if index < previous.messages.count, previous.messages[index].id == message.id,
+               !previous.messages[index].streaming { return false }
+            let known = finished ?? Set(previous.messages.filter { !$0.streaming }.map(\.id))
+            finished = known
+            return !known.contains(message.id)
+        }.map(\.element)
     }
 
     private func apply(_ incoming: StateSnapshot, persist: Bool) {
@@ -2756,10 +2770,13 @@ final class AppStore {
             snapshot.routines = routines
             snapshot.bots = preservingNativeSettings(in: snapshot.bots)
         }
-        let confirmed = Set(snapshot.messages.compactMap(\.clientRequestId) + (snapshot.confirmedRequestIds ?? []))
-        if outgoingMessages.contains(where: { confirmed.contains($0.id) }) {
-            outgoingMessages.removeAll { confirmed.contains($0.id) }
-            try? saveOutgoing()
+        // The set holds each sent message of the state. Only a message that waits needs it.
+        if !outgoingMessages.isEmpty {
+            let confirmed = Set(snapshot.messages.compactMap(\.clientRequestId) + (snapshot.confirmedRequestIds ?? []))
+            if outgoingMessages.contains(where: { confirmed.contains($0.id) }) {
+                outgoingMessages.removeAll { confirmed.contains($0.id) }
+                try? saveOutgoing()
+            }
         }
         assign(\.bots, snapshot.bots)
         assign(\.tasks, snapshot.tasks)

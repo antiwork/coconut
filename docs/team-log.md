@@ -186,6 +186,18 @@ The link does not hold the room key. It holds an invite secret, and the relay ho
 coconut://team/<token>
 ```
 
+The link also has a web form, which is the same token on the site:
+
+```
+https://coconut.gumroad.com/i/<token>
+```
+
+A person shares the web form, because a mail or a chat keeps an https link, and the system opens it in the app through
+the associated domain `applinks:coconut.gumroad.com` (`ios/Coconut/Coconut.entitlements`). The Worker in `links/` serves
+that page and the file of the associated domain: it decodes the token to show the name of the team, keeps no copy and
+writes no log. `TeamLog.invite(link:)` reads either form, so the app, `coconut team join` and the service take a link as
+a person received it, also with a line break after it and with the slash that a browser adds at the end of a path.
+
 The token is unpadded lowercase base32 (RFC 4648) of these bytes. The pairing link uses the same encoding, because Hermes masks text that looks like a secret. `backend/tests/test_native_pairing_redaction.py` must check this link too.
 
 | Bytes | Value |

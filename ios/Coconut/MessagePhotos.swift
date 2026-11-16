@@ -12,11 +12,13 @@ struct PhotoCarousel: View {
     /// The message of each photo, in the same order. Reply and reactions act on it.
     let messages: [Message]
     let photos: [MessagePhoto]
+    /// The person's own images stand on the trailing side, as their messages do.
+    var trailing = false
     var onReply: ((Message) -> Void)? = nil
     @State private var held: Int?
 
     var body: some View {
-        PhotoTileRow(photos: photos, hold: { held = $0 }) { index in
+        PhotoTileRow(photos: photos, trailing: trailing, hold: { held = $0 }) { index in
             let message = messages[index]
             if onReply != nil && store.messageReference(for: message) != nil {
                 Button("Reply") { onReply?(message) }

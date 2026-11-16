@@ -69,7 +69,7 @@ Keep this group limited to Gianfranco. Do not add other testers or create a publ
 The upload command does not create groups or enforce their membership.
 See [Apple’s internal tester instructions](https://developer.apple.com/help/app-store-connect/test-a-beta-version/add-internal-testers).
 
-CI uploads each release. See [TestFlight releases from CI](#testflight-releases-from-ci).
+The release workflow uploads each release. See [Automatic TestFlight releases](#automatic-testflight-releases).
 For a manual upload, open **Update TestFlight.command**, or run:
 
 ```sh
@@ -108,10 +108,12 @@ See [Apple’s encryption guidance](https://developer.apple.com/documentation/se
 
 The `archive` and `export` commands remain available for local preparation without upload.
 
-## TestFlight releases from CI
+## Automatic TestFlight releases
 
 GitHub Actions makes each TestFlight release. The Mac mini does not upload builds.
-The workflow `.github/workflows/testflight.yml` runs on each push to `main` that changes an input of the app.
+The workflow `.github/workflows/testflight.yml` builds the latest `main` when an app input changes. It publishes at
+most once per hour, after a successful build. Pushes within that hour wait for the next hourly run. Manual runs use
+the same cooldown. Regression tests run locally before commits.
 A person can also start it from the Actions tab.
 
 1. The workflow sets the version to the UTC date and the build number to the highest App Store Connect build plus one.

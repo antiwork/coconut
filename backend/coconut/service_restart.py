@@ -100,6 +100,7 @@ class ServiceRestart:
                     return False
             self.restart_pending = False
             self.stopping.set()
+            self.commits.notify()
             return True
         finally:
             self.lock.release()

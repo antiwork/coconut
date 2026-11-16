@@ -45,8 +45,10 @@ struct StateUpdates: Decodable, Sendable {
         if let bots { result.bots = bots }
         if let tasks { result.tasks = Self.merge(tasks, into: result.tasks) }
         if let messages { result.messages = Self.merge(messages, into: result.messages) }
-        let removed = Set(removedMessages ?? [])
-        result.messages.removeAll { removed.contains($0.id) }
+        if let removedMessages, !removedMessages.isEmpty {
+            let removed = Set(removedMessages)
+            result.messages.removeAll { removed.contains($0.id) }
+        }
         result.messages.sort { ($0.createdAt, $0.id) < ($1.createdAt, $1.id) }
         if collectionDeltas == true {
             if let decisions { result.decisions = Self.merge(decisions, into: result.decisions) }
@@ -119,8 +121,19 @@ struct StateUpdates: Decodable, Sendable {
             && (left.name, left.prompt, left.cron, left.timezone, left.enabled) == (right.name, right.prompt, right.cron, right.timezone, right.enabled)
     }
 
+    /// An update of a few values finds each place with a scan from the end, where the newest values are. A table of
+    /// the places of all values costs more than the scans then.
+    static let scannedUpdates = 8
+
     static func merge<T: Identifiable>(_ updates: [T], into values: [T]) -> [T] where T.ID: Hashable {
         var result = values
+        if updates.count <= scannedUpdates {
+            for value in updates {
+                if let index = result.lastIndex(where: { $0.id == value.id }) { result[index] = value }
+                else { result.append(value) }
+            }
+            return result
+        }
         var positions = Dictionary(uniqueKeysWithValues: values.enumerated().map { ($0.element.id, $0.offset) })
         for value in updates {
             if let index = positions[value.id] { result[index] = value }
