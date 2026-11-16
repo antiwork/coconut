@@ -251,6 +251,7 @@
 		AA89548C8152E181E0E59B47 /* TeamNamedChatTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4CC8A411D39CBE7A41852A01 /* TeamNamedChatTests.swift */; };
 		AB0D9958DA5879956B813515 /* BusinessDashboardSnapshotTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C4BE27A0E7E4A06CCF3BA99C /* BusinessDashboardSnapshotTests.swift */; };
 		AC79D2714151DDDF6CA5E9F4 /* Library-LICENSE.txt in Resources */ = {isa = PBXBuildFile; fileRef = 5DE6EF2DBE9CCF248AAE0B81 /* Library-LICENSE.txt */; };
+		AEA8D4D59AF4444990450690 /* MacWindowSnapshotTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C87852B485B2A71DE1E97FE5 /* MacWindowSnapshotTests.swift */; };
 		AEC766F768B807D80107BF8C /* ConnectionRecoveryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 08AC057AFD56622718B7AA03 /* ConnectionRecoveryTests.swift */; };
 		B0757E4EDC933C2771C8903A /* ComposerAttachments.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3449C2277EDAF3BB0C2BA0E3 /* ComposerAttachments.swift */; };
 		B15ACAFBE7184FB08FD744E8 /* MarkdownUI in Frameworks */ = {isa = PBXBuildFile; productRef = BC59E1DD5B09E3520ADF36FE /* MarkdownUI */; };
@@ -350,6 +351,7 @@
 		F465DCF601A6719645A2AC8B /* SettingsFlowTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 315FBF2217D4036990C750DE /* SettingsFlowTests.swift */; };
 		F4DC95CD12B360A3B127E9C8 /* PushEnvelopeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9161A48CE88624483A69EAB7 /* PushEnvelopeTests.swift */; };
 		F6AA8200060D51B0E56BC6F6 /* NavigationPerformanceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 775879288B90F2B57BD28B20 /* NavigationPerformanceTests.swift */; };
+		F77C2C0871EA5E5AAF9F2336 /* MacWindowSnapshotTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C87852B485B2A71DE1E97FE5 /* MacWindowSnapshotTests.swift */; };
 		F81B2F287511865444AD03F8 /* MessageDraftView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 78004F47AACBEB462A36AA3B /* MessageDraftView.swift */; };
 		F893B78721DBB37A269BC981 /* MessageDraftFlowTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 266C0E77203BBC09A992449C /* MessageDraftFlowTests.swift */; };
 		F8D3D42B305C4B756A76121C /* MacEncryptedNotification.json in Resources */ = {isa = PBXBuildFile; fileRef = D06723F2DD7E138C71DBE073 /* MacEncryptedNotification.json */; };
@@ -578,6 +580,7 @@
 		C5F99DD733E95E46E48B7BE0 /* ChatSummaries.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatSummaries.swift; sourceTree = "<group>"; };
 		C77D5CDAA72E7F4867D4E5DA /* TranscriptPresentation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TranscriptPresentation.swift; sourceTree = "<group>"; };
 		C85304C388785794EE366959 /* DecisionSelectionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DecisionSelectionTests.swift; sourceTree = "<group>"; };
+		C87852B485B2A71DE1E97FE5 /* MacWindowSnapshotTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MacWindowSnapshotTests.swift; sourceTree = "<group>"; };
 		C88CC267B471365C378EBE32 /* ArchiveAgentFlowTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ArchiveAgentFlowTests.swift; sourceTree = "<group>"; };
 		C962981F7EF1ACA8EA2EF4B7 /* MacSidebarSnapshotTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MacSidebarSnapshotTests.swift; sourceTree = "<group>"; };
 		C9766E68811623FC1BB688BF /* DaySeparatorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DaySeparatorTests.swift; sourceTree = "<group>"; };
@@ -759,6 +762,7 @@
 				A517CAB2F40AC69855A64BA5 /* LockedPairingFileTests.swift */,
 				5AA47984CE398CBA9ECCB69B /* MacNoticeHooksTests.swift */,
 				C962981F7EF1ACA8EA2EF4B7 /* MacSidebarSnapshotTests.swift */,
+				C87852B485B2A71DE1E97FE5 /* MacWindowSnapshotTests.swift */,
 				5D5D7F8A1AFEDB8D75F7D91F /* MessageBannerTests.swift */,
 				F171F9C844D24DEF2B4389C6 /* MessageInteractionTests.swift */,
 				B4BD35F28442F5CDDF9B0E66 /* MessageReplayTests.swift */,
@@ -1281,6 +1285,7 @@
 				AA0C3BC10D61FCA798A01CA7 /* LockedPairingFileTests.swift in Sources */,
 				907E9A94BE87F7C41E0A4C47 /* MacNoticeHooksTests.swift in Sources */,
 				E5EBA0E89AE19327F63CF620 /* MacSidebarSnapshotTests.swift in Sources */,
+				AEA8D4D59AF4444990450690 /* MacWindowSnapshotTests.swift in Sources */,
 				CFE89FF45DE7871BFF833FA3 /* MessageBannerTests.swift in Sources */,
 				72821C913ECFF2FD7A02150A /* MessageInteractionTests.swift in Sources */,
 				82B09BD4EA0AF47CD2BAD29C /* MessageReplayTests.swift in Sources */,
@@ -1581,6 +1586,7 @@
 				8FC56D40D97C5936F187C315 /* LockedPairingFileTests.swift in Sources */,
 				5C0386B6961CD9BB80C20C4F /* MacNoticeHooksTests.swift in Sources */,
 				189B42E36911142A340127F1 /* MacSidebarSnapshotTests.swift in Sources */,
+				F77C2C0871EA5E5AAF9F2336 /* MacWindowSnapshotTests.swift in Sources */,
 				9878D20F305BA855D089E935 /* MessageBannerTests.swift in Sources */,
 				543A8FB1B7C7B9213E0C683A /* MessageInteractionTests.swift in Sources */,
 				5E923EBC6DA285BCD7E2D60B /* MessageReplayTests.swift in Sources */,
