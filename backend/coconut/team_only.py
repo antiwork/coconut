@@ -388,10 +388,14 @@ class TeamOnlyService(TeamTurns, Documents, Team):
         # that the log does not have, so after a failure of the relay or the helper the answer has `retry: true`.
         if shown == len(pieces):
             return {'recorded': True}
+        answer = {'recorded': False}
         if shown:
-            reason = f'The chat shows only {shown} of {len(pieces)} parts of this message.'
+            # `shown`: the chat shows the first parts, so a send under a new message ID would show them two times.
+            answer.update(reason=f'The chat shows only {shown} of {len(pieces)} parts of this message.', shown=shown)
         elif result == SAY_FAILED:
-            reason = 'The team log did not take this message.'
+            answer['reason'] = 'The team log did not take this message.'
         else:
-            reason = 'The agent does not answer in this team chat.'
-        return dict(recorded=False, reason=reason, **({'retry': True} if result == SAY_FAILED else {}))
+            answer['reason'] = 'The agent does not answer in this team chat.'
+        if result == SAY_FAILED:
+            answer['retry'] = True
+        return answer

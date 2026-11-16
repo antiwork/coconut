@@ -693,6 +693,53 @@ class TeamAdapterTests(TeamTurnMacs, unittest.TestCase):
         self.assertFalse(self.complete(self.adapter.send_image_file('chat', str(photo))).success)
         self.assertEqual(list(self.only.root.glob('**/photo.png')), [])
 
+    def test_a_cron_send_that_the_chat_does_not_show_fails_and_another_send_does_not(self):
+        async def runner(event):
+            return None
+        self.connect(runner)
+        self.connect(chat=False)
+        chat = chat_id(self.room, self.bot['id'])
+        with self.assertLogs('hermes_plugins.coconut', logging.INFO):
+            cron = self.complete(self.adapter.send(chat, 'The weekly report is ready.', metadata={'job_id': 'job1'}))
+            other = self.complete(self.adapter.send(chat, 'The process is done.'))
+        # The job records a failed delivery. Hermes then tries send_standalone, as nothing shows in the chat.
+        self.assertFalse(cron.success)
+        self.assertEqual(cron.error, 'Coconut did not show this message: The agent does not answer in this team chat.')
+        self.assertEqual(cron.raw_response, {'coconut_refused': True})
+        # A send that is not a cron delivery stays a success, as before.
+        self.assertTrue(other.success)
+
+    def test_a_cron_send_with_only_some_parts_in_the_log_is_a_partial_delivery(self):
+        from coconut.team_turns import MAX_TEXT
+
+        async def runner(event):
+            return None
+        self.connect(runner)
+        real, writes = self.only.team_relay.write, []
+
+        def first_only(*arguments, **options):
+            writes.append(arguments)
+            if len(writes) > 1:
+                raise relay_error(503)
+            return real(*arguments, **options)
+        chat = chat_id(self.room, self.bot['id'])
+        with mock.patch.object(team, 'STANDALONE_WAITS', (.01, .01)), \
+                mock.patch.object(self.only.team_relay, 'write', side_effect=first_only), \
+                self.assertLogs('hermes_plugins.coconut', logging.WARNING):
+            result = self.complete(self.adapter.send(chat, 'a' * MAX_TEXT + 'b', metadata={'job_id': 'job1'}))
+        # Three tries with one message ID: the second part never reaches the log.
+        self.assertEqual(len(writes), 4)
+        self.assertFalse(result.success)
+        self.assertEqual(result.error, 'Coconut did not show this message: The chat shows only 1 of 2 parts of this '
+                                       'message.')
+        # Hermes sends nothing again after a partial delivery (BasePlatformAdapter._is_partial_delivery).
+        self.assertEqual(result.raw_response, {'coconut_refused': True, 'partial_overflow': True})
+
+    def test_only_the_team_adapter_says_that_it_splits_long_messages(self):
+        # Hermes cuts a cron delivery over 4,000 characters for an adapter without the mark (gateway/delivery.py).
+        self.assertIs(team.TeamAdapter.splits_long_messages, True)
+        self.assertFalse(getattr(team.CoconutAdapter, 'splits_long_messages', False))
+
 
 # A relay write that the relay took, but whose answer did not arrive (StandaloneSenderTests.relay_faults).
 LOST = object()
@@ -993,6 +1040,7 @@ class StandaloneSenderTests(DirectTurnMacs, unittest.TestCase):
         writes = self.relay_faults(None, relay_error(503))
         with self.assertLogs('coconut', logging.WARNING):
             self.assertEqual(self.outside(text), {'recorded': False, 'retry': True,
+                                                  'shown': 1,
                                                   'reason': 'The chat shows only 1 of 3 parts of this message.'})
         # The third part waits: the chat shows no part after a gap.
         self.assertEqual(len(writes), 2)
@@ -1011,6 +1059,7 @@ class StandaloneSenderTests(DirectTurnMacs, unittest.TestCase):
         writes = self.relay_faults(None, None, relay_error(503))
         with self.assertLogs('coconut', logging.WARNING):
             self.assertEqual(self.outside(text), {'recorded': False, 'retry': True,
+                                                  'shown': 2,
                                                   'reason': 'The chat shows only 2 of 3 parts of this message.'})
         self.assertEqual(self.outside(text), {'recorded': True})
         self.assertEqual(len(writes), 4)

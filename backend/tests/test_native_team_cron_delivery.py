@@ -35,6 +35,30 @@ result = error or asyncio.run(_send_to_platform(Platform(platform_name), pconfig
                                                 thread_id=thread_id))
 print(json.dumps({'chat_id': chat_id, 'thread_id': thread_id, 'result': result}))
 '''
+# The delivery of cron in a gateway process: the real _deliver_result with a live adapter of the plugin, connected to
+# the service. Each item of argv[2] is a target chat and a text. The output: the error of each delivery (None for a
+# success) and its `last_delivery_unverified` (None when the send gave a message ID).
+LIVE = '''
+import asyncio, json, sys, threading
+sys.path.insert(0, sys.argv[1])
+from gateway.config import Platform, load_gateway_config
+from gateway.platform_registry import platform_registry
+from tools.send_message_tool import prepare_send_message_platforms
+prepare_send_message_platforms()
+from cron.scheduler_delivery import _deliver_result
+platform = Platform('coconut')
+adapter = platform_registry.get('coconut').adapter_factory(load_gateway_config().platforms[platform])
+loop = asyncio.new_event_loop()
+threading.Thread(target=loop.run_forever, daemon=True).start()
+asyncio.run_coroutine_threadsafe(adapter.connect(), loop).result(30)
+results = []
+for number, (chat, text) in enumerate(json.loads(sys.argv[2])):
+    job = {'id': f'job{number}', 'name': 'Weekly report', 'deliver': 'coconut:' + chat}
+    error = _deliver_result(job, text, adapters={platform: adapter}, loop=loop)
+    results.append({'error': error, 'unverified': job.get('last_delivery_unverified')})
+asyncio.run_coroutine_threadsafe(adapter.disconnect(), loop).result(30)
+print(json.dumps(results))
+'''
 
 
 @needs_hermes
@@ -83,6 +107,36 @@ class NativeTeamCronDeliveryTests(AsThePerson, TeamOnlyMacs, unittest.TestCase):
         self.assertEqual([(row['bot_name'], row['text']) for row in rows], [('Reporter', TEXT)])
         # The log of the delivery has no text of the message.
         self.assertNotIn(TEXT, run.stderr)
+
+    def test_a_cron_delivery_through_the_live_adapter_tells_the_truth(self):
+        design, removed = (self.call('POST', f'/v1/team/rooms/{self.room}/chats', {'name': name},
+                                     service=self.first)['chat'] for name in ('Design', 'Old'))
+        self.sync()
+        self.call('DELETE', f'/v1/team/rooms/{self.room}/chats/{removed}', service=self.first)
+        self.sync()
+        long_text = 'Line of the long report. ' * 360  # 9,000 characters, over the cut of Hermes at 4,000.
+        self.assertEqual(len(long_text), 9000)
+        deliveries = [(team_turns.chat_id(self.room, self.bot['id'], design), TEXT),
+                      (team_turns.chat_id(self.room, self.bot['id'], design), long_text),
+                      (team_turns.chat_id(self.room, self.bot['id'], removed), TEXT)]
+        run = subprocess.run([PYTHON, '-I', '-B', '-c', LIVE, SOURCE, json.dumps(deliveries)],
+                             env=self.environment, capture_output=True, text=True, timeout=300, cwd=self.temp.name)
+        self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+        normal, long, gone = json.loads(run.stdout.strip().splitlines()[-1])
+        # A normal delivery records success, with a message ID as evidence.
+        self.assertEqual(normal, {'error': None, 'unverified': None})
+        self.assertEqual(long, {'error': None, 'unverified': None})
+        # A removed chat: the live adapter and then send_standalone report the refusal, and the job records it.
+        self.assertIn('The agent does not answer in this team chat.', gone['error'])
+        self.sync()
+        rows = self.call('GET', f'/v1/team/rooms/{self.room}/messages', {'chat': design},
+                         service=self.first)['messages']
+        texts = [row['text'] for row in reversed(rows)]
+        self.assertEqual(len(texts), 2)
+        self.assertIn(TEXT, texts[0])
+        # The whole text arrives, without the cut of Hermes and without a file path of this Mac.
+        self.assertTrue(long_text.strip() in texts[1], texts[1][-200:])
+        self.assertNotIn('truncated', texts[1])
 
 
 if __name__ == '__main__':

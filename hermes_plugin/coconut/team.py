@@ -81,6 +81,20 @@ def unregistered(known) -> str | None:
     return ', '.join(name for name in REGISTRATION_FIELDS if name not in known) or None
 
 
+async def send_tries(request, home: str, chat_id: str, fields: dict):
+    """Send a message outside a turn (`fields`, with its message ID) with `request`, in up to three tries with the
+    waits of STANDALONE_WAITS. A try follows a service that did not answer, and an answer `recorded: false` with
+    `retry: true`. Each try has the same message ID, so a repeat adds no second message. The last answer of the
+    service, or the failed SendResult (report_outside)."""
+    for wait in (*STANDALONE_WAITS, None):
+        answer = await report_outside(request, home, chat_id, fields)
+        retry = answer.retryable if isinstance(answer, SendResult) else (
+            isinstance(answer, dict) and not answer.get('recorded') and answer.get('retry') is True)
+        if wait is None or not retry:
+            return answer
+        await asyncio.sleep(wait)
+
+
 async def send_standalone(pconfig, chat_id, message, *, thread_id=None, media_files=None, force_document=False,
                           **options) -> dict:
     """The sender of a cron delivery in a process without a gateway (`standalone_sender_fn` of the registration).
@@ -110,14 +124,7 @@ async def send_standalone(pconfig, chat_id, message, *, thread_id=None, media_fi
 
         async def request(route, payload):
             return await asyncio.to_thread(bridge.request, route, payload, STANDALONE_SECONDS)
-        for wait in (*STANDALONE_WAITS, None):
-            answer = await report_outside(request, home, str(chat_id),
-                                          dict(kind='send', message_id=message_id, text=text))
-            retry = answer.retryable if isinstance(answer, SendResult) else (
-                isinstance(answer, dict) and not answer.get('recorded') and answer.get('retry') is True)
-            if wait is None or not retry:
-                break
-            await asyncio.sleep(wait)
+        answer = await send_tries(request, home, str(chat_id), dict(kind='send', message_id=message_id, text=text))
         if isinstance(answer, SendResult):
             status = answer.raw_response.get('status') if isinstance(answer.raw_response, dict) else None
             if status == 404:
@@ -161,6 +168,10 @@ class TeamAdapter(CoconutAdapter):
     # What this Hermes lacks for the team chat (`unregistered`), or None. register_team sets it. With it, each poll
     # names it, the service gives no turn, and the adapter gives no turn to Hermes.
     lacking: str | None = None
+    # The service splits a long text into parts itself (team_turns.parts). Without this mark, Hermes cuts a cron
+    # delivery over 4,000 characters and adds the path of a file on this Mac (gateway/delivery.py,
+    # _cap_oversized_output).
+    splits_long_messages = True
 
     def __init__(self, config):
         super().__init__(config)
@@ -266,6 +277,32 @@ class TeamAdapter(CoconutAdapter):
             LOG.info('Coconut: a send of a stopped turn of the team chat stays in the log.')
             return SendResult(success=True)
         return await super().send(chat_id, content, reply_to=reply_to, metadata=metadata)
+
+    async def _send_outside(self, chat_id: str, content: str, metadata: dict) -> SendResult:
+        """A cron delivery (a send with the `job_id` of Hermes) goes as send_standalone sends it: the same tries, and
+        a failed SendResult when the chat does not show the whole text, so the record of the job shows a failed
+        delivery. A failure without a shown part lets Hermes try send_standalone. A failure after some shown parts
+        is a partial delivery (`partial_overflow`), so Hermes sends nothing again. Each other send outside a turn
+        goes as in the full mode: an answer `recorded: false` is a success there."""
+        if not metadata.get('job_id') or metadata.get('_interim_send'):
+            return await super()._send_outside(chat_id, content, metadata)
+        message_id = OUTSIDE + str(uuid.uuid4())
+
+        async def request(route, payload):
+            return await self._request(route, payload, STANDALONE_SECONDS)
+        answer = await send_tries(request, self._home, chat_id, dict(kind='send', message_id=message_id,
+                                                                     text=content, job_id=str(metadata['job_id'])))
+        if isinstance(answer, SendResult):
+            return answer
+        if isinstance(answer, dict) and answer.get('recorded'):
+            LOG.info('Coconut: a cron delivery went to chat %s (%d characters).', chat_id, len(content))
+            return SendResult(success=True, message_id=message_id)
+        reason = str((answer.get('reason') if isinstance(answer, dict) else None) or 'no reason')
+        LOG.warning('Coconut: chat %s does not show a cron delivery: %s', chat_id, reason)
+        raw = {'coconut_refused': True}
+        if isinstance(answer, dict) and answer.get('shown'):
+            raw['partial_overflow'] = True
+        return SendResult(success=False, error='Coconut did not show this message: ' + reason, raw_response=raw)
 
     async def _request(self, route: str, payload: dict, timeout: float = REQUEST_SECONDS) -> dict:
         """A request to the service. A poll answer can name active turns that the service does not know, for example
