@@ -82,13 +82,17 @@ struct ComposerAttachmentSources: ViewModifier {
                 guard !items.isEmpty else { return }
                 picked = []
                 Task {
-                    for item in items {
+                    let date = Date.now
+                    for (index, item) in items.enumerated() {
                         guard let data = try? await item.loadTransferable(type: Data.self) else {
                             report("The photo did not load.")
                             continue
                         }
                         let ext = item.supportedContentTypes.first?.preferredFilenameExtension ?? "jpg"
-                        photo(PickedFile(data: data, name: FileFit.photoName(ext: ext)))
+                        // The photos of one pick have one time, so each one after the first gets its number.
+                        let name = FileFit.photoName(at: date, ext: ext)
+                        photo(PickedFile(data: data, name: index == 0 ? name
+                                         : (name as NSString).deletingPathExtension + " \(index + 1)." + ext))
                     }
                 }
             }
@@ -130,7 +134,12 @@ struct ComposerAttachmentChips: View {
                             Label(chip.title, systemImage: "xmark.circle.fill")
                                 .font(.footnote).padding(BoardStyle.Space.s).frame(minHeight: 44)
                                 .background(BoardStyle.surface, in: Capsule())
-                        }.accessibilityLabel("Remove attachment \(chip.title)")
+                        }
+                        #if os(macOS)
+                        // A Mac draws a bordered box around a button. The chip is its own capsule.
+                        .buttonStyle(.plain)
+                        #endif
+                        .accessibilityLabel("Remove attachment \(chip.title)")
                     }
                 }
             }
