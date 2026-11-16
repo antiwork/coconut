@@ -22,6 +22,7 @@ from unittest import mock
 import test_gateway_adapter
 from coconut.server import APIServer
 from coconut.team_turns import ASKED, DENIED, chat_id
+from test_team_direct_turns import DirectTurnMacs
 from test_team_turns import TeamTurnMacs
 
 EVENT = '''
@@ -77,6 +78,7 @@ class PlatformEntry:
     platform_hint: str = ""
     max_message_length: int = 0
     emoji: str = ""
+    standalone_sender_fn: Any = None
 '''
 # The middleware kinds of a Hermes that has the middleware of the guard of the direct chats.
 MIDDLEWARE = '''
@@ -147,11 +149,14 @@ class RegistrationTests(unittest.TestCase):
         self.assertNotIn('whole team', team_turns.RULES_DIRECT)
         self.assertIs(options['adapter_factory'], team.TeamAdapter)
         self.assertEqual(options['display_overrides'], plugin.DISPLAY)
+        self.assertIs(options['standalone_sender_fn'], team.send_standalone)
         self.assertIsNone(team.TeamAdapter.lacking)
-        # Without the mode, the plugin registers what it registers for a full install.
+        # Without the mode, the plugin registers what it registers for a full install, and no sender for a cron run
+        # without a gateway: the service of a person's Mac needs the job ID of a delivery.
         full = Context()
         plugin.register(full)
         self.assertEqual((len(full.platforms), len(full.tools)), (1, 29))
+        self.assertNotIn('standalone_sender_fn', full.platforms[0])
         self.assertIn('pre_tool_call', full.hooks)
 
     def test_a_hermes_without_a_field_of_the_adapter_gets_one_log_line_and_no_channel(self):
@@ -187,6 +192,8 @@ class RegistrationTests(unittest.TestCase):
         (options,) = context.platforms
         self.assertIs(options['adapter_factory'], team.TeamAdapter)
         self.assertNotIn('trusted_inbound', options)
+        # A Hermes without the field of the sender registers the channel without it.
+        self.assertNotIn('standalone_sender_fn', options)
         self.assertEqual(team.TeamAdapter.lacking, 'trusted_inbound, display_overrides')
         self.assertEqual(logs.output, ['WARNING:hermes_plugins.coconut:Coconut: the team chat takes no message, '
                                        'because this Hermes lacks trusted_inbound, display_overrides. Update Hermes.'])
@@ -461,14 +468,19 @@ class DirectChatGuardTests(unittest.TestCase):
         self.assertEqual(self.calls, [{'command': 'ls'}])
 
 
+def listen(test):
+    """Serve the routes of the team-only Mac of `test` on a loopback listener, and write its bridge file."""
+    test.server = APIServer(('127.0.0.1', 0), test.only)
+    threading.Thread(target=test.server.serve_forever, kwargs={'poll_interval': .1}, daemon=True).start()
+    test.addCleanup(test.server.server_close)
+    test.addCleanup(test.server.shutdown)
+    test.only.gateway_bridge.publish(f'http://127.0.0.1:{test.server.server_address[1]}')
+
+
 class TeamAdapterTests(TeamTurnMacs, unittest.TestCase):
     def setUp(self):
         super().setUp()
-        self.server = APIServer(('127.0.0.1', 0), self.only)
-        threading.Thread(target=self.server.serve_forever, kwargs={'poll_interval': .1}, daemon=True).start()
-        self.addCleanup(self.server.server_close)
-        self.addCleanup(self.server.shutdown)
-        self.only.gateway_bridge.publish(f'http://127.0.0.1:{self.server.server_address[1]}')
+        listen(self)
         self.loop = asyncio.new_event_loop()
         threading.Thread(target=self.loop.run_forever, daemon=True).start()
         self.addCleanup(lambda: self.loop.call_soon_threadsafe(self.loop.stop))
@@ -680,6 +692,79 @@ class TeamAdapterTests(TeamTurnMacs, unittest.TestCase):
         photo.write_bytes(b'png')
         self.assertFalse(self.complete(self.adapter.send_image_file('chat', str(photo))).success)
         self.assertEqual(list(self.only.root.glob('**/photo.png')), [])
+
+
+class StandaloneSenderTests(DirectTurnMacs, unittest.TestCase):
+    """A cron delivery into a team chat from a process without a gateway (team.send_standalone)."""
+
+    def setUp(self):
+        super().setUp()
+        listen(self)
+
+    def deliver(self, chat, text='The weekly report is ready.', bridge=None, **options):
+        from gateway.config import PlatformConfig
+        config = PlatformConfig({'bridge': str(bridge or self.only.gateway_bridge.address_file), 'mode': 'team'})
+        with mock.patch.dict(os.environ, HERMES_HOME=str(self.home)):
+            return asyncio.run(team.send_standalone(config, chat, text, thread_id=None, **options))
+
+    def sent(self, result):
+        self.assertEqual(set(result) - {'warnings'}, {'success', 'message_id'})
+        self.assertTrue(result['success'])
+        self.assertTrue(result['message_id'].startswith('outside:'))
+
+    def named(self, name='Design'):
+        chat = self.call('POST', f'/v1/team/rooms/{self.room}/chats', {'name': name}, service=self.first)['chat']
+        self.sync()
+        return chat
+
+    def of_chat(self, chat=None):
+        rows = self.call('GET', f'/v1/team/rooms/{self.room}/messages', {'chat': chat} if chat else {},
+                         service=self.first)['messages']
+        return [(row['bot_name'] or row['member_name'], row['text']) for row in reversed(rows)]
+
+    def test_a_delivery_to_the_team_chat_a_named_chat_and_a_direct_chat_is_a_message_of_the_bot(self):
+        design = self.named()
+        with self.assertLogs('hermes_plugins.coconut', logging.DEBUG) as logs:
+            logging.getLogger('hermes_plugins.coconut').debug('start')
+            self.sent(self.deliver(chat_id(self.room, self.bot['id'])))
+            self.sent(self.deliver(chat_id(self.room, self.bot['id'], design), 'Design notes are ready.'))
+            self.sent(self.deliver(self.direct_chat_id(), 'Your summary is ready.'))
+        self.sync()
+        self.assertEqual(self.of_chat(), [('Reporter', 'The weekly report is ready.')])
+        self.assertEqual(self.of_chat(design), [('Reporter', 'Design notes are ready.')])
+        self.assertEqual(self.bot_replies(), ['Your summary is ready.'])
+        # No log line has the text, a name or the token of the bridge.
+        token = json.loads(Path(self.only.gateway_bridge.address_file).read_text())['token']
+        for word in ('ready', 'Ada', 'Reporter', 'Example Team', 'Design', token):
+            self.assertNotIn(word, '\n'.join(logs.output))
+
+    def test_a_refusal_or_an_unreachable_service_is_an_error_and_no_exception(self):
+        design = self.named()
+        self.call('DELETE', f'/v1/team/rooms/{self.room}/chats/{design}', service=self.first)
+        self.sync()
+        with self.assertLogs('hermes_plugins.coconut', logging.WARNING):
+            refused = {
+                'other home': self.deliver('nobody:team:' + self.room),
+                'removed chat': self.deliver(chat_id(self.room, self.bot['id'], design)),
+                'empty text': self.deliver(chat_id(self.room, self.bot['id']), ' \n'),
+                'no service': self.deliver(chat_id(self.room, self.bot['id']), bridge=Path(self.temp.name) / 'none'),
+            }
+        self.assertEqual(refused['other home'], {'error': 'Coconut refused this message: the chat is not a team chat '
+                                                          'of an agent of this Hermes home.'})
+        self.assertEqual(refused['removed chat'], {'error': 'Coconut did not show this message: The agent does not '
+                                                            'answer in this team chat.'})
+        self.assertEqual(refused['empty text'], {'error': 'Coconut sends no empty message into a team chat.'})
+        self.assertEqual(refused['no service'], {'error': 'The Coconut service did not answer.'})
+        self.sync()
+        self.assertEqual([row for row in self.of_chat() if row[0] == 'Reporter'], [])
+
+    def test_files_with_a_text_send_the_text(self):
+        result = self.deliver(chat_id(self.room, self.bot['id']), media_files=[('/tmp/report.pdf', False)])
+        self.sent(result)
+        self.assertEqual(result['warnings'], ['The team chat got the text. Coconut does not send files there from a '
+                                              'cron job.'])
+        self.sync()
+        self.assertEqual(self.of_chat(), [('Reporter', 'The weekly report is ready.')])
 
 
 if __name__ == '__main__':

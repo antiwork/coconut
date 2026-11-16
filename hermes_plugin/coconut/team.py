@@ -19,6 +19,11 @@ never stops the gateway or its other channels. A Hermes without the fields that 
 and no Coconut channel (`missing`). A Hermes without a field of the registration that the chat needs (`unregistered`),
 or without the middleware of the guard, gets a channel that takes no message: the adapter polls, each poll names what
 Hermes lacks, and the service tells the team that Hermes needs an update (backend/coconut/team_turns.py).
+
+A cron job can deliver its result into a chat of the team: `deliver: coconut:<chat ID>`, for example
+`coconut:<bot>:team:<room>`. A cron run can run in a process without a gateway. There Hermes calls the sender of the
+registration (`standalone_sender_fn`, send_standalone), which sends the text as the adapter sends a message outside a
+turn. Only the mode `team` registers it: see send_standalone.
 """
 from __future__ import annotations
 
@@ -27,12 +32,14 @@ import collections
 import dataclasses
 import functools
 import logging
+import os
 import time
+import uuid
 
 from gateway.platforms.base import BasePlatformAdapter, SendResult
 from gateway.platforms.event import MessageEvent, MessageType
 
-from .adapter import REQUEST_SECONDS, RETRY_SECONDS, CoconutAdapter
+from .adapter import DEFAULT_BRIDGE, OUTSIDE, REQUEST_SECONDS, RETRY_SECONDS, Bridge, CoconutAdapter, report_outside
 
 LOG = logging.getLogger(__name__)
 # A running turn stops when the adapter cannot reach the service for this long: its reply can no longer reach the chat,
@@ -62,6 +69,52 @@ def missing() -> str | None:
 def unregistered(known) -> str | None:
     """The fields of REGISTRATION_FIELDS that are not in `known` (the fields of PlatformEntry), or None."""
     return ', '.join(name for name in REGISTRATION_FIELDS if name not in known) or None
+
+
+async def send_standalone(pconfig, chat_id, message, *, thread_id=None, media_files=None, force_document=False,
+                          **options) -> dict:
+    """The sender of a cron delivery in a process without a gateway (`standalone_sender_fn` of the registration).
+
+    It sends the text as the adapter sends a message outside a turn: `kind: send` with the Hermes home of this process
+    and a new message ID, to the service of the bridge file. The service shows it as a message of the bot in the chat
+    `chat_id`. A refusal of the service becomes an `error` with its reason, so the record of the job shows it. A fault
+    never reaches Hermes. The team chat takes no file from this path: the text goes, and the result says that the
+    files did not go.
+
+    Only the mode `team` registers this sender. On a person's Mac, the service drops a cron delivery whose run shows
+    already as a routine task in the chat, by the job ID of the delivery (gateway_chat.py). This call has no job ID,
+    so there the chat could show a run two times."""
+    try:
+        text = str(message or '')
+        if not text.strip():
+            return {'error': 'Coconut sends no empty message into a team chat.'}
+        extra = getattr(pconfig, 'extra', None)
+        bridge = Bridge((extra.get('bridge') if isinstance(extra, dict) else None) or DEFAULT_BRIDGE)
+        from hermes_constants import get_hermes_home
+        home = os.path.realpath(get_hermes_home())
+        message_id = OUTSIDE + str(uuid.uuid4())
+
+        async def request(route, payload):
+            return await asyncio.to_thread(bridge.request, route, payload, REQUEST_SECONDS)
+        answer = await report_outside(request, home, str(chat_id), dict(kind='send', message_id=message_id, text=text))
+        if isinstance(answer, SendResult):
+            status = answer.raw_response.get('status') if isinstance(answer.raw_response, dict) else None
+            if status == 404:
+                return {'error': 'Coconut refused this message: the chat is not a team chat of an agent of this '
+                                 'Hermes home.'}
+            return {'error': answer.error + (f' (HTTP {status})' if status else '')}
+        if not isinstance(answer, dict) or not answer.get('recorded'):
+            reason = answer.get('reason') if isinstance(answer, dict) else None
+            return {'error': 'Coconut did not show this message: ' + str(reason or 'no reason')}
+        result = {'success': True, 'message_id': message_id}
+        if media_files:
+            LOG.warning('Coconut: a cron delivery into a team chat sent its text without its %d files.',
+                        len(media_files))
+            result['warnings'] = ['The team chat got the text. Coconut does not send files there from a cron job.']
+        return result
+    except Exception as error:
+        LOG.warning('Coconut: a cron delivery into a team chat failed (%s).', type(error).__name__)
+        return {'error': f'Coconut did not take this message ({type(error).__name__}).'}
 
 
 def guarded(result=None):
