@@ -217,12 +217,7 @@ struct CoconutHome: View {
 
     @ToolbarContentBuilder
     private func rootToolbar(inbox: Bool) -> some ToolbarContent {
-        // Settings is the one app-wide action, so both tabs show it.
-        ToolbarItem(placement: .topBarLeading) {
-            Button { settingsOpen = true } label: {
-                Image(systemName: "gearshape")
-            }.accessibilityLabel("App settings").accessibilityIdentifier("app-settings")
-        }
+        // Coconut has no settings screen: the Coconut chat at the top of Chats changes it.
         if !inbox {
             ToolbarItem(placement: .topBarTrailing) {
                 Button { createOpen = true } label: {

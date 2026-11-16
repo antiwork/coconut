@@ -909,7 +909,8 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
             raise ServiceError(503, str(error)) from None
 
     def _bot_view(self, bot: dict, catalog: dict | None) -> dict:
-        result = self._public(bot)
+        from .coconut_chat import view
+        result = view(self, bot, self._public(bot))
         if catalog is not None:
             try:
                 route = self.provider.resolve_model(bot, catalog)
@@ -1159,6 +1160,10 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
         parts = path.strip('/').split('/')
         if method == 'PATCH' and len(parts) == 3 and parts[:2] == ['v1', 'bots'] and isinstance(data, dict):
             return self._mutate_native_bot(parts[2], data, key, fingerprint, device_id)
+        if method in ('DELETE', 'POST') and len(parts) >= 3 and parts[:2] == ['v1', 'bots'] and (
+                method == 'DELETE' and len(parts) == 3 or parts[3:] == ['profile', 'delete']):
+            from .coconut_chat import refuse_removal
+            refuse_removal(self, parts[2])
         catalog = self._model_catalog() if path == '/v1/settings/model' or (isinstance(data, dict) and ('model_override' in data or path == '/v1/bots')) else None
         callbacks = []
         with self.transaction():
@@ -1290,6 +1295,8 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
                 bot = self._get('bots', bot_id)
             if bot.get('_deleted'):
                 raise ServiceError(404, 'This agent was deleted.')
+            from .coconut_chat import refuse_removal
+            refuse_removal(self, bot_id, data)
             if 'profile_id' in data and data['profile_id'] != bot['profile_id']:
                 raise ServiceError(409, 'An agent keeps its original Hermes profile ID.')
             for field in ('instructions', 'memory'):
