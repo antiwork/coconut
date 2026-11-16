@@ -161,7 +161,7 @@ A long poll would keep the Durable Object in memory, and Cloudflare bills that t
 | Welcome | At most 1,024 bytes |
 | Body of an entry | 99 bytes to 1 MiB |
 | Kept entries of one member | 512 entries and 64 MiB |
-| Other entries of one member | 64 MiB |
+| Other entries of one member | 512 MiB |
 | All entries of one room | 8 GiB |
 | Retention of an entry that is not kept | 90 days after its last write |
 | Writes of one member | 300 each minute |
@@ -170,6 +170,8 @@ A long poll would keep the Durable Object in memory, and Cloudflare bills that t
 | Room without a request of a member | Deleted after 180 days |
 
 A member that leaves and joins again continues its counts: its entries that are not kept stay on the relay, and so does its count of writes in the minute.
+
+The limit of the other entries of one member has room for the files of a team chat. The two limits of one member add up to 576 MiB. So in a room with more than 14 members, the limit of the room can stop a write before the limit of the member does.
 
 A page can have 512 KiB of content (`MAX_CONTENT` in `backend/coconut/documents.py`), and one entry holds a whole page. JSON can make the content larger, so a save of a team page checks that its payload fits (see [Agents and pages](#agents-and-pages)). Each Mac keeps the full history of the chat in its own store, also after the relay deletes an old `message` entry. The retention time only limits how far back a new member or a Mac that was off for longer than 90 days can read.
 
