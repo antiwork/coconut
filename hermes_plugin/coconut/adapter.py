@@ -180,6 +180,26 @@ class Bridge:
             raise
 
 
+async def report_outside(request, home, chat_id: str, fields: dict):
+    """Report a message outside a turn to the service (`POST /v1/gateway/messages`) with `request`, the request
+    function of an adapter. The answer of the service, or the failed SendResult. The adapter (_outside) and the sender
+    of a cron run without a gateway (team.send_standalone) use it."""
+    try:
+        return await request('/v1/gateway/messages', dict(fields, home=home, chat_id=chat_id))
+    except urllib.error.HTTPError as error:
+        if error.code >= 500:
+            return SendResult(success=False, error='The Coconut service did not answer.', retryable=True)
+        # For example a chat that is not a bot of this profile. A second try or a plain text gets the same answer.
+        LOG.warning('Coconut: the service refused a %s outside a Coconut turn for chat %s (HTTP %s).',
+                    fields['kind'], chat_id, error.code)
+        return SendResult(success=False, error='Coconut refused this message.',
+                          raw_response={'coconut_refused': True, 'status': error.code})
+    except Exception as error:
+        LOG.warning('Coconut: the Coconut service did not take a %s outside a Coconut turn (%s).', fields['kind'],
+                    type(error).__name__)
+        return SendResult(success=False, error='The Coconut service did not answer.', retryable=True)
+
+
 def markdown_image(url, caption=None) -> str:
     """One Markdown image line for a photo: `![caption](url)`. The phone shows the line as a photo, and an app that
     does not know photos shows the image in the text."""
@@ -499,20 +519,9 @@ class CoconutAdapter(BasePlatformAdapter):
 
     async def _outside(self, chat_id: str, fields: dict):
         """Report a message outside a turn to the service. True, or the failed SendResult."""
-        try:
-            answer = await self._request('/v1/gateway/messages', dict(fields, home=self._home, chat_id=chat_id))
-        except urllib.error.HTTPError as error:
-            if error.code >= 500:
-                return SendResult(success=False, error='The Coconut service did not answer.', retryable=True)
-            # For example a chat that is not a bot of this profile. A second try or a plain text gets the same answer.
-            LOG.warning('Coconut: the service refused a %s outside a Coconut turn for chat %s (HTTP %s).',
-                        fields['kind'], chat_id, error.code)
-            return SendResult(success=False, error='Coconut refused this message.',
-                              raw_response={'coconut_refused': True})
-        except Exception as error:
-            LOG.warning('Coconut: the Coconut service did not take a %s outside a Coconut turn (%s).', fields['kind'],
-                        type(error).__name__)
-            return SendResult(success=False, error='The Coconut service did not answer.', retryable=True)
+        answer = await report_outside(self._request, self._home, chat_id, fields)
+        if isinstance(answer, SendResult):
+            return answer
         if fields['kind'] == 'send':
             if answer.get('recorded'):
                 LOG.info('Coconut: a message outside a Coconut turn went to chat %s (%d characters).', chat_id,

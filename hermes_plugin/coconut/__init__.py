@@ -6,7 +6,8 @@ creates it, and the tools and hooks act only in a Coconut chat of the gateway.
 `gateway.platforms.coconut.extra.mode: team` in the profile is the mode of the team chat of a Mac that runs Coconut
 for a team only (team.py). In that mode the plugin registers the guard of the direct chats (privacy.py), the platform
 and its adapter, and nothing else. A fault in that mode turns the channel off with one log line, and the gateway and
-its other channels go on.
+its other channels go on. Only in that mode does the plugin register a sender for a cron run without a gateway
+(team.send_standalone).
 """
 import dataclasses
 import logging
@@ -72,8 +73,9 @@ def register_team(ctx):
             LOG.warning('Coconut: the team chat stays off, because this Hermes lacks %s. Update Coconut or Hermes.',
                         lacking)
             return
+        # standalone_sender_fn delivers a cron result into a team chat from a process without a gateway.
         options = dict(trusted_inbound=True, display_tier='high', display_overrides=DISPLAY, platform_hint=TEAM_HINT,
-                       max_message_length=100_000, emoji='🥥')
+                       max_message_length=100_000, emoji='🥥', standalone_sender_fn=team.send_standalone)
         known = {field.name for field in dataclasses.fields(PlatformEntry)}
         team.TeamAdapter.lacking = ', '.join(filter(None, (team.unregistered(known), unguarded))) or None
         if team.TeamAdapter.lacking:
