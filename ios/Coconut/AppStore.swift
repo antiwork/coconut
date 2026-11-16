@@ -1470,8 +1470,10 @@ final class AppStore {
             error = "Attachments must be between 1 byte and 4 MB."
             return nil
         }
+        // Each upload has its own key, as for a file of a team chat: two equal pastes give two attachments.
         return await write("attachments", payload: AttachmentRequest(botId: bot.id, filename: filename,
-                                                                     contentBase64: data.base64EncodedString()), as: Artifact.self)
+                                                                     contentBase64: data.base64EncodedString()), as: Artifact.self,
+                           idempotencyKey: UUID().uuidString)
     }
 
     func decisionPreviewData(id: String) async throws -> Data {
@@ -1510,7 +1512,10 @@ final class AppStore {
         }
         let request = TeamFileRequest(name: fitted.name, content: fitted.data.base64EncodedString(), type: fitted.type,
                                       width: fitted.width, height: fitted.height)
-        guard let answer = await write("\(chat.path)/files", payload: request, as: TeamFileAnswer.self) else { return nil }
+        // Each upload has its own key. An equal request without an answer would else lend its key, and the Mac would
+        // answer the same draft for two picks of the same file, for example a double Command-V.
+        guard let answer = await write("\(chat.path)/files", payload: request, as: TeamFileAnswer.self,
+                                       idempotencyKey: UUID().uuidString) else { return nil }
         PhotoLoader.shared.keepDraft(fitted.data, id: answer.file.id)
         return answer.file
     }

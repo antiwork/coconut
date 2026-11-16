@@ -353,6 +353,39 @@ final class DirectMessageTests: XCTestCase {
         XCTAssertNil(both.directMessages)
     }
 
+    // MARK: Files
+
+    /// Two uploads of the same bytes at the same time are two drafts: each upload has its own key, so the Mac does not
+    /// answer the draft of the first one two times, and the composer holds two files with two IDs.
+    @MainActor
+    func testTwoEqualUploadsAtOnceAreTwoDrafts() async throws {
+        #if !(DEBUG && targetEnvironment(simulator))
+        throw XCTSkip("This HTTP fixture requires a debug simulator build.")
+        #else
+        var state = try PreviewStateFixture.load()
+        state.cursor = 10; state.syncVersion = 1
+        let server = try DirectServer(state: APIJSON.encoder().encode(state), cursor: state.cursor)
+        let address = try await server.start()
+        defer { server.stop() }
+        try await withPairedStore(address: address) { store in
+            let chat = TeamChatKey(room: "r1")
+            let picked = PickedFile(data: Data("same".utf8), name: "a.txt")
+            var composer = TeamComposerState()
+            let first = try XCTUnwrap(composer.startUpload())
+            let second = try XCTUnwrap(composer.startUpload())
+            async let one = store.uploadTeamFile(chat, picked)
+            async let two = store.uploadTeamFile(chat, picked)
+            let files = await (one, two)
+            composer.finishUpload(first, files.0)
+            composer.finishUpload(second, files.1)
+            XCTAssertEqual(server.uploadKeys.count, 2)
+            XCTAssertEqual(Set(server.uploadKeys).count, 2, "Two requests with two keys.")
+            XCTAssertEqual(composer.files.count, 2)
+            XCTAssertEqual(Set(composer.files.map(\.id)).count, 2, "Two files with two IDs.")
+        }
+        #endif
+    }
+
     // MARK: One store path
 
     /// The direct chat uses the store path of the Team chat with its own key: each request goes to the path of the
@@ -750,6 +783,9 @@ private final class DirectServer: @unchecked Sendable {
     private var recorded: [String] = []
     private var headers: [String] = []
     private var bodies: [[String: Any]] = []
+    private var fileKeys: [String] = []
+    /// The `Idempotency-Key` of each upload of a file.
+    var uploadKeys: [String] { lock.withLock { fileKeys } }
     /// The route of each team request, without its query.
     var routes: [String] { lock.withLock { recorded } }
     /// The value of `X-Coconut-Team` of each list request.
@@ -954,6 +990,15 @@ private final class DirectServer: @unchecked Sendable {
                         messages.append(ChatMessage(first: messages.count + 1, text: sent?["text"] as? String ?? "",
                                                     own: true, replyTo: reply, page: sent?["about_document_id"] as? String))
                         return #"{"room": "r1", \#(key), "message": \#(json(messages[messages.count - 1]))}"#
+                    case "POST /v1/team/rooms/r1/files":
+                        // As the Mac: one draft for each key, so a repeat of a key answers the same draft.
+                        let key = request.components(separatedBy: "\r\n")
+                            .first { $0.lowercased().hasPrefix("idempotency-key:") }?
+                            .split(separator: ":", maxSplits: 1).last?.trimmingCharacters(in: .whitespaces) ?? ""
+                        fileKeys.append(key)
+                        let id = String(key.lowercased().filter(\.isHexDigit).prefix(32))
+                        return #"{"room": "r1", "file": {"id": "\#(id)", "name": "a.txt", "type": "text/plain", "#
+                            + #""size": 4, "width": null, "height": null}}"#
                     case "POST /v1/team/rooms/r1/directs/\(other)/read":
                         read = max(read, sent?["first"] as? Int ?? 0)
                         let unread = messages.filter { !$0.own && $0.first > read }.count
