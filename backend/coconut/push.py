@@ -452,10 +452,13 @@ class PushDelivery:
         self._record_chat('team', room, entry)
 
     def team_notifies(self, room, entry):
-        """Whether a message of the team chat can notify the person: the switch `notifications` of the room is on, or
-        the message names this Mac's person. A mention reaches the person also in a quiet team. This is the one place
-        of that rule."""
-        return bool(room['notifications']) or self.service.team_store.names_member(room['room'], entry, room['member'])
+        """Whether a message of a team chat can notify the person: the switch `notifications` of the room is on and the
+        person did not mute the named chat of the message, or the message names this Mac's person. A mention reaches
+        the person also in a quiet team and in a muted chat. This is the one place of that rule."""
+        store = self.service.team_store
+        if room['notifications'] and not store.in_muted_chat(room['room'], entry):
+            return True
+        return store.names_member(room['room'], entry, room['member'])
 
     def _record_chat(self, kind, room, entry):
         """Queue one item of a chat of a team (CHAT_KINDS) for each phone that allows it."""
@@ -469,9 +472,8 @@ class PushDelivery:
 
     def team_relevant(self, item):
         """Whether a team message still notifies: the room is active, the message shows after the read position of
-        the room, and the switch of the room is on or the message names this Mac's person (team_notifies). So a
-        message that the person read, a removed message, a team that the person left and a quiet team send nothing,
-        except a mention of the person in a quiet team."""
+        its chat, and team_notifies holds. So a message that the person read, a removed message, a team that the person
+        left, a quiet team and a muted chat send nothing, except a mention of the person."""
         store = self.service.team_store
         room = store.room(item['team'])
         if room is None or room['state'] != ACTIVE:

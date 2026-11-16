@@ -94,15 +94,16 @@ struct MacMainWindow: View {
         .frame(minWidth: 920, minHeight: 480)
         .background(BoardStyle.paper)
         .announcesErrors(store.error)
-        .sheet(isPresented: $createOpen) { BotEditorView() }
-        .sheet(isPresented: $pairingOpen) { MacPairingView(model: model).frame(width: 520, height: 600) }
+        // A sheet of the window shows the error itself. While it is open, the notice of the window shows none.
+        .sheet(isPresented: $createOpen) { BotEditorView().sheetShowsError() }
+        .sheet(isPresented: $pairingOpen) { MacPairingView(model: model).frame(width: 520, height: 600).sheetShowsError() }
         .onChange(of: store.setupLink) { _, link in if link != nil { pairingOpen = true } }
         // The sheet waits for each pairing page: the sheet of a link, and the page of a window without a pairing.
         .sheet(item: Binding(get: {
             TeamJoinGate.canShow(store.teamJoin, showing: nil, pairingOpen: pairingOpen || PairingPages.shared.isOpen)
                 ? store.teamJoin : nil
         }, set: { store.teamJoin = $0 })) {
-            TeamJoinView(link: $0.link)
+            TeamJoinView(link: $0.link).sheetShowsError()
         }
         // Each choice in the sidebar starts at its own root, so another bot never shows the last bot's pages.
         .onChange(of: selection) { old, selected in
@@ -117,6 +118,8 @@ struct MacMainWindow: View {
             // The Library row of the sidebar opens the list. A document card sets the page first and then the row.
             if selected != .library { libraryPath = NavigationPath() }
         }
+        // Outside each sheet of the window, so that each sheet and each page gets it.
+        .errorSheetRoot()
     }
 
     private func show(_ place: MacPagePlace) {
@@ -311,6 +314,7 @@ struct MacSidebar: View {
                             PeopleRow(item: item, avatarSize: 32)
                                 .padding(.vertical, BoardStyle.Space.xs)
                                 .tag(MacSelection.team(chat))
+                                .modifier(TeamChatMuteMenu(item: item))
                                 .accessibilityIdentifier(chat.member.map { "sidebar-direct-" + $0 }
                                                          ?? "sidebar-team-" + chat.room + (chat.chat.map { "-" + $0 } ?? ""))
                         }

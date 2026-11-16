@@ -56,6 +56,9 @@ struct TeamNamedChat: Decodable, Identifiable, Equatable, Sendable {
     var mentioned: Bool? = nil
     var mentionFirst: Int? = nil
     var typing: TeamTypingList? = nil
+    /// False when this person muted the chat on this Mac (TeamChatMute). A Mac for a team only and an older service
+    /// send none, and the row then has no action "Mute".
+    var notifications: Bool? = nil
 }
 
 extension TeamRoom {
@@ -92,6 +95,13 @@ extension TeamRoom {
     /// The name of the chat and the name of the team, as the subtitle of a banner and an alert of a message have it:
     /// "Design · Example Team" for a named chat, the name of the team for the Team chat.
     var chatAndTeam: String { shownChat.map { $0.name + " · " + name } ?? name }
+
+    /// A new message of the chat that this room shows notifies this person: the switch of the team is on, and the
+    /// person did not mute the named chat. A mention notifies also without this (MessageBanners).
+    var chatNotifies: Bool { notifiesPhone && shownChat?.notifications != false }
+
+    /// The person muted the named chat that this room shows. The row of the chat then has the mark (TeamChatMute).
+    var shownChatMuted: Bool { shownChat?.notifications == false }
 }
 
 extension TeamRooms {
@@ -100,6 +110,71 @@ extension TeamRooms {
     /// iPhone closes its view, and the Mac sidebar selects the Inbox.
     func has(_ chat: TeamChatKey) -> Bool {
         rooms.contains { $0.room == chat.room && $0.inChat(chat.chat) != nil }
+    }
+}
+
+/// The choice of this person to mute one named chat (docs/team-log.md, "Notifications"). A plain message of a muted
+/// chat notifies nothing. A message that names this person still notifies, and the unread count does not change. Each
+/// member has the action, not only the admin. The Team chat has no action: the switch "Notifications" of the team is
+/// for it and for each chat.
+enum TeamChatMute {
+    static let mute = "Mute"
+    static let unmute = "Unmute"
+    /// The mark at the end of the row of a muted chat.
+    static let mark = "bell.slash"
+
+    /// The label of the action on the row of `chat`, or nil when the row has no action: a team that is not active, a
+    /// Mac for a team only, or an older service.
+    static func action(_ chat: TeamNamedChat, in room: TeamRoom) -> String? {
+        guard room.status == .active, let enabled = chat.notifications else { return nil }
+        return enabled ? mute : unmute
+    }
+
+    /// The symbol of the action in a menu.
+    static func symbol(_ chat: TeamNamedChat) -> String { chat.notifications == false ? "bell" : mark }
+
+    /// True when the row of `chat` shows the mark.
+    static func showsMark(_ chat: TeamNamedChat) -> Bool { chat.notifications == false }
+
+    /// What VoiceOver says for the mark.
+    static let spoken = "Muted"
+
+    /// True while a request to mute or unmute `chat` runs. Its action then waits, as the switch of the team waits.
+    static func waits(_ chat: String, _ choices: [String: Bool]) -> Bool { choices[chat] != nil }
+
+    /// The item "Mute" or "Unmute" of the menu of a row in the Chats list and the Mac sidebar.
+    struct ListAction: Equatable {
+        let room: String
+        let chat: String
+        let label: String
+        let symbol: String
+        /// The value that the request sends: true unmutes.
+        let enabled: Bool
+    }
+
+    /// The item of the menu of a row of the Chats list, or nil. Only a row of a named chat has it, by the rule of the
+    /// Team screen (`action`). The Team chat, a direct chat and an agent have none.
+    static func listAction(_ item: ChatListItem) -> ListAction? {
+        guard case .team(let room) = item, let chat = room.shownChat, let label = action(chat, in: room) else {
+            return nil
+        }
+        return ListAction(room: room.room, chat: chat.id, label: label, symbol: symbol(chat),
+                          enabled: chat.notifications == false)
+    }
+
+    /// The room as the Team screen shows it while requests run: each chat in `choices` has the new choice of the
+    /// person (`notifications`) at once. When a request ends, its choice goes, and the room of the Mac shows again:
+    /// the new state after a success, the old state after a failure.
+    static func applying(_ choices: [String: Bool], to room: TeamRoom) -> TeamRoom {
+        guard !choices.isEmpty, var chats = room.chats else { return room }
+        for index in chats.indices {
+            if let choice = choices[chats[index].id], chats[index].notifications != nil {
+                chats[index].notifications = choice
+            }
+        }
+        var shown = room
+        shown.chats = chats
+        return shown
     }
 }
 
@@ -1676,7 +1751,8 @@ enum TeamRowSpeech {
         let unread = room.unread ?? 0
         return [room.shownChat.map { $0.name + ", " + room.name } ?? room.name, preview,
                 unread > 0 ? UnreadBadge.spoken(unread) : nil,
-                room.showsMentionMark ? named : nil].compactMap { $0 }.joined(separator: ", ")
+                room.showsMentionMark ? named : nil,
+                room.shownChatMuted ? TeamChatMute.spoken : nil].compactMap { $0 }.joined(separator: ", ")
     }
 }
 
@@ -1685,9 +1761,12 @@ enum TeamRowSpeech {
 enum TeamNotificationFooter {
     static let on = "Get notified when someone writes in this team."
     static let off = "You get a notification only when someone names you with @."
+    static let onWithMuted = on + " A muted chat notifies only when someone names you with @."
 
+    /// With the switch on, a team with a muted chat (TeamChatMute) gets the longer text.
     static func text(enabled: Bool, room: TeamRoom) -> String {
-        enabled || !room.knowsPersonMentions ? on : off
+        if enabled { return room.namedChats.contains(where: TeamChatMute.showsMark) ? onWithMuted : on }
+        return room.knowsPersonMentions ? off : on
     }
 }
 

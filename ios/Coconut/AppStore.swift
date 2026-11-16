@@ -67,6 +67,9 @@ final class AppStore {
     @ObservationIgnored private var latestTeamLoad: Task<Bool, Never>?
     /// The number of the latest write that the app started, by room. The answer of an earlier write is older.
     @ObservationIgnored private var teamWrites: [String: Int] = [:]
+    /// The new choice of each named chat whose request to mute or unmute runs now, by the ID of the chat
+    /// (TeamChatMute). The Team screen shows it at once, and the actions of that chat wait until the request ends.
+    private(set) var teamChatMuteChoices: [String: Bool] = [:]
     /// The number of the latest share or stop of each page. Only the answer of that act goes into the list.
     @ObservationIgnored private var pageShareActs: [String: Int] = [:]
     @ObservationIgnored private var pageShareCount = 0
@@ -640,7 +643,7 @@ final class AppStore {
         documents = nil; teamBots = []; latestDocumentLoad = nil; pageShareActs = [:]
         // The teams are the teams of the earlier Mac. A list request of that Mac that is still on its way gets no
         // place to go: its client is not the client of the store.
-        team = nil; teamLoadError = nil; latestTeamLoad = nil; teamWrites = [:]
+        team = nil; teamLoadError = nil; latestTeamLoad = nil; teamWrites = [:]; teamChatMuteChoices = [:]
         teamChats = [:]; teamChatRequests = [:]; teamChatChanges = [:]; teamReadPosted = [:]; teamReadPosting = [:]
         teamChatsOnScreen = []; teamOlderRequests = [:]; teamMessageChanges = [:]; teamTypingPace = [:]
         teamReactionWriters = [:]
@@ -1790,6 +1793,32 @@ final class AppStore {
         var changed = team?.rooms.first { $0.room == room }
         changed?.notifications = answer.notifications
         applyTeamChange(room: changed, write: ticket)
+        return true
+    }
+
+    /// Mutes or unmutes one named chat of a team for this person (TeamChatMute). Return whether the Mac did it.
+    ///
+    /// One request of a chat runs at a time: a second one while the first runs does nothing (TeamChatMute.waits).
+    /// The answer changes only the choice of its own chat in the list as it is now, so a request of another chat or
+    /// of the switch of the team does not drop it. The choice that waits goes only when this request ends: after the
+    /// answer is in the list, or after a failure, which shows the old state again.
+    @discardableResult
+    func setTeamChatNotifications(_ room: String, chat: String, enabled: Bool) async -> Bool {
+        guard !TeamChatMute.waits(chat, teamChatMuteChoices) else { return false }
+        teamChatMuteChoices[chat] = enabled
+        defer { teamChatMuteChoices[chat] = nil }
+        let answer: TeamChatNotificationsAnswer? = await write(
+            "team/rooms/\(room)/chats/\(chat)/notifications", method: "PUT",
+            payload: TeamNotificationsRequest(enabled: enabled), as: TeamChatNotificationsAnswer.self,
+            refreshInBackground: true)
+        guard let answer else { return false }
+        if var list = team, let index = list.rooms.firstIndex(where: { $0.room == room }) {
+            list.rooms[index] = TeamChatMute.applying([answer.chat: answer.notifications], to: list.rooms[index])
+            team = list
+        }
+        // A list that the app asked for before the answer can be older than it, so the list loads again.
+        teamChanges += 1
+        Task { await loadTeam() }
         return true
     }
 
@@ -3185,6 +3214,9 @@ private struct TeamJoinBody: Encodable { let link: String; let memberName: Strin
 private struct TeamProfileRequest: Encodable { let memberName: String }
 private struct TeamNotificationsRequest: Encodable { let enabled: Bool }
 private struct TeamNotificationsAnswer: Decodable, Sendable { let room: String; let notifications: Bool }
+private struct TeamChatNotificationsAnswer: Decodable, Sendable {
+    let room: String; let chat: String; let notifications: Bool
+}
 /// The answer of a share or a stop of a page: the document with its teams.
 private struct PageShareAnswer: Decodable, Sendable { let document: BotDocument }
 /// A nil `mentions` or `aboutDocumentId` is not in the JSON: a message without a mention or a page sends none.

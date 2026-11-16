@@ -55,8 +55,9 @@ enum MessageBanners {
     ///   So a mention reaches the person also in a quiet team, as the push of the iPhone does, also when a plain
     ///   message came after it, and also when the count is at its limit.
     /// - Each other banner needs the unread count to grow, or to be at its limit (TeamRoom.maxUnread), where the
-    ///   service stops the count. A Team chat also needs the switch "Notifications" of its team
-    ///   (TeamRoom.notifiesPhone). A direct chat, also with a bot, needs an active team only.
+    ///   service stops the count. A Team chat also needs the switch "Notifications" of its team, and a named chat
+    ///   also needs that the person did not mute it (TeamRoom.chatNotifies). A direct chat, also with a bot, needs an
+    ///   active team only.
     /// - The first list after a start or a new pairing (`before` is nil) is history and makes no banner.
     /// - A chat has one banner, for its newest message, also after several new messages.
     /// - The banner of a chat with no unread message, and of a chat that left the list, goes away.
@@ -153,9 +154,10 @@ enum MessageBanners {
     }
 
     private static func chats(of room: TeamRoom) -> [Chat] {
-        // The Team chat and each named chat follow the switch of the team (TeamRoom.inChat).
+        // The Team chat and each named chat follow the switch of the team, and a muted named chat notifies only a
+        // mention (TeamRoom.chatNotifies).
         let team = ([room] + room.namedChatRooms).map {
-            Chat(key: $0.chatKey, room: $0, unread: $0.unread ?? 0, last: $0.lastMessage, notifies: $0.notifiesPhone,
+            Chat(key: $0.chatKey, room: $0, unread: $0.unread ?? 0, last: $0.lastMessage, notifies: $0.chatNotifies,
                  mentions: $0.status == .active, mentionFirst: $0.mentionFirst ?? 0)
         }
         return team + room.directList.map {

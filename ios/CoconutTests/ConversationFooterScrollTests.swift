@@ -131,6 +131,31 @@ final class ConversationFooterScrollTests: XCTestCase {
         XCTAssertNil(holders.holder)
     }
 
+    // One error shows at one place: the last open sheet that shows the error itself. The page (nil) and an earlier
+    // sheet show no copy. On an iPad and a Mac the page stays in view next to a sheet.
+    func testOnlyTheLastSheetThatShowsTheErrorShowsIt() {
+        var order = SheetErrorOrder()
+        XCTAssertTrue(order.shows(in: nil))
+        let newAgent = UUID(), character = UUID()
+        order.add(newAgent)
+        XCTAssertFalse(order.shows(in: nil))
+        XCTAssertTrue(order.shows(in: newAgent))
+        // The Character sheet opens over the New agent sheet.
+        order.add(character)
+        XCTAssertFalse(order.shows(in: newAgent))
+        XCTAssertTrue(order.shows(in: character))
+        // It closes: the New agent sheet shows the error again, then the page.
+        order.remove(character)
+        XCTAssertTrue(order.shows(in: newAgent))
+        order.remove(newAgent)
+        XCTAssertTrue(order.shows(in: nil))
+        // A sheet that shows again goes to the end, once.
+        order.add(newAgent)
+        order.add(character)
+        order.add(newAgent)
+        XCTAssertEqual(order.open, [character, newAgent])
+    }
+
     // A page that a stack pushes over a chat covers the chat, so the chat leaves the screen. The column shows the
     // notice, and the covered chat does not hold it.
     func testCoveredChatDoesNotHoldNotice() {
@@ -236,6 +261,42 @@ final class ConversationFooterScrollTests: XCTestCase {
         XCTAssertEqual(ConversationComposer.typed(after: "Line one\nLine two", in: "Line one\nLine two"), "")
         // A draft that the person changed in another way clears.
         XCTAssertEqual(ConversationComposer.typed(after: "Can you check the draft?", in: "Can you"), "")
+    }
+
+    func testOneDraftSendsOneTime() {
+        var send = DraftSend()
+        XCTAssertTrue(send.begin("Can you check the draft?"))
+        // A second Return or a second click before the view updates reads the same draft: it does not send.
+        XCTAssertFalse(send.begin("Can you check the draft?"))
+        XCTAssertFalse(send.begin("Can you check the draft?"))
+        // The view shows the same draft again, for example before the draft clears on a Mac: still no second send.
+        send.shows("Can you check the draft?")
+        XCTAssertFalse(send.begin("Can you check the draft?"))
+    }
+
+    func testTheSameTextSendsAgainAfterTheDraftCleared() {
+        var send = DraftSend()
+        XCTAssertTrue(send.begin("Yes"))
+        send.shows("")
+        XCTAssertNil(send.sent)
+        // The person types the same text again and sends it.
+        XCTAssertTrue(send.begin("Yes"))
+    }
+
+    func testKeysTypedAfterReturnSendAsANewDraft() {
+        var send = DraftSend()
+        XCTAssertTrue(send.begin("Can you check the draft?"))
+        // The draft clears and keeps "ab", which the person typed after Return.
+        send.shows("ab")
+        XCTAssertTrue(send.begin("ab"))
+    }
+
+    func testAFailedSendCanSendTheSameDraftAgain() {
+        var send = DraftSend()
+        XCTAssertTrue(send.begin("Can you check the draft?"))
+        // The send fails before the view updates, and the draft comes back: the view never shows another draft.
+        send.failed()
+        XCTAssertTrue(send.begin("Can you check the draft?"))
     }
 
     func testTheTimerOfAnOlderSendDoesNotEndTheWaitOfANewerOne() {

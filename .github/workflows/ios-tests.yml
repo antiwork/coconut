@@ -4,11 +4,17 @@ on:
   pull_request:
     paths:
       - 'ios/**'
+      # LibraryDocumentTests reads these two files of the repository when it runs.
+      - 'skills/coconut/references/pages.md'
+      - 'backend/tests/fixtures/weak_page.md'
       - '.github/workflows/ios-tests.yml'
   push:
     branches: [main]
     paths:
       - 'ios/**'
+      # LibraryDocumentTests reads these two files of the repository when it runs.
+      - 'skills/coconut/references/pages.md'
+      - 'backend/tests/fixtures/weak_page.md'
       - '.github/workflows/ios-tests.yml'
 
 permissions:
