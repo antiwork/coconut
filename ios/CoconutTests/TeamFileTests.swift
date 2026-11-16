@@ -264,6 +264,16 @@ final class TeamFileTests: XCTestCase {
         XCTAssertEqual(FileFit.fit(jpeg, name: "IMG_3.JPG", removesPosition: false)?.data, jpeg)
     }
 
+    /// ImageIO keeps a GPS position in a GIF too, as XMP data. Such a GIF goes out without it.
+    func testAGIFWithAPositionLosesIt() throws {
+        let gif = try image(width: 40, height: 30, type: .gif, gps: true)
+        XCTAssertTrue(try hasGPS(gif), "A GIF can carry a position.")
+        let fitted = try XCTUnwrap(FileFit.fit(gif, name: "a.gif"))
+        XCTAssertFalse(try hasGPS(fitted.data))
+        XCTAssertEqual([fitted.width, fitted.height], [40, 30])
+        // A GIF without a position stays as it is (testAGIFStaysAsItIs).
+    }
+
     /// The same photo without a position goes out with its own bytes.
     func testAPhotoWithoutAPositionKeepsItsBytes() throws {
         let jpeg = try image(width: 800, height: 600, type: .jpeg)

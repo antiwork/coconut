@@ -225,8 +225,8 @@ enum FileFit {
         if gif || (!heif && longest <= longestSide && data.count <= limit) {
             guard data.count <= limit || !gif else { return nil }
             guard position else { return kept(data, name: name, kind: kind, width: width, height: height) }
-            // A GIF has no EXIF block, and ImageIO reads no GPS data from one in practice. If a GIF ever shows a
-            // position, it goes as a copy without it, else as a JPEG of its first frame.
+            // A GIF has no EXIF block, but it can carry a position in XMP data, and ImageIO reads it. Such a GIF goes
+            // as a copy without the position, else as a JPEG of its first frame.
             if let copy = withoutPosition(source, kind: kind), copy.count <= limit {
                 return kept(copy, name: name, kind: kind, width: width, height: height)
             }
