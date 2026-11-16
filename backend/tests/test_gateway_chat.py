@@ -220,6 +220,46 @@ class HermesNoticeTests(unittest.TestCase):
             with self.subTest(text=text), self.assertLogs('coconut.hermes_notices', 'WARNING'):
                 self.assertEqual(readable_text(text), shown)
 
+    def test_the_model_switch_notice_of_hermes_gets_plain_words(self):
+        # Hermes says "unavailable" when it switches to its fallback model, and a person reads that as an outage of the
+        # provider. Its label "provider failure" names no cause: the model gave an empty reply.
+        notice = '\u26a0\ufe0f Model fallback: {} via {} unavailable ({}); using {} via {}.'
+        retry = ' Primary retry eligible in ~87 s; recovery is not guaranteed.'
+        cases = [
+            (notice.format('gpt-6.1-sol', 'openai-codex', 'provider failure', 'claude-sonnet-5-5', 'anthropic'),
+             '\u26a0\ufe0f gpt-6.1-sol gave no answer. claude-sonnet-5-5 answers this turn.'),
+            (notice.format('gpt-6.1-sol', 'openai-codex', 'incomplete response', 'claude-sonnet-5-5', 'anthropic'),
+             '\u26a0\ufe0f gpt-6.1-sol gave no answer. claude-sonnet-5-5 answers this turn.'),
+            (notice.format('gpt-6.1-sol', 'openai-codex', 'request format rejected', 'claude-sonnet-5-5', 'anthropic'),
+             '\u26a0\ufe0f gpt-6.1-sol gave no answer (request format rejected). claude-sonnet-5-5 answers this turn.'),
+            (notice.format('gpt-6.1-sol', 'openai-codex', 'rate limit', 'claude-sonnet-5-5', 'anthropic') + retry,
+             '\u26a0\ufe0f gpt-6.1-sol gave no answer (rate limit). claude-sonnet-5-5 answers this turn. '
+             'The agent can try gpt-6.1-sol again in about 87 s.'),
+            (notice.format('claude-opus-5-5', 'anthropic', 'provider failure', 'claude-sonnet-5-5', 'anthropic'),
+             '\u26a0\ufe0f claude-opus-5-5 gave no answer. claude-sonnet-5-5 answers this turn.'),
+            # The same model through another provider: the providers tell the two apart.
+            (notice.format('m', 'a', 'provider overloaded', 'm', 'b'),
+             '\u26a0\ufe0f m via a gave no answer (provider overloaded). m via b answers this turn.'),
+            (notice.format('anthropic/claude-sonnet-5-5', 'openrouter', 'provider failure', 'qwen3:32b', 'ollama'),
+             '\u26a0\ufe0f anthropic/claude-sonnet-5-5 gave no answer. qwen3:32b answers this turn.'),
+            # Model names of other forms: a context suffix of Hermes, and a version after an at sign.
+            (notice.format('claude-opus-5[1m]', 'anthropic', 'provider failure', 'claude-sonnet-4@20250514', 'vertex.ai'),
+             '\u26a0\ufe0f claude-opus-5[1m] gave no answer. claude-sonnet-4@20250514 answers this turn.'),
+        ]
+        for text, shown in cases:
+            with self.subTest(text=text), self.assertNoLogs('coconut.hermes_notices', 'WARNING'):
+                self.assertEqual(readable_text(text), shown)
+        # Hermes joins buffered status lines with a blank line. Only the paragraph of the notice changes.
+        other = 'Retrying in 2 s.'
+        self.assertEqual(readable_text(f'{other}\n\n{cases[0][0]}\n\n{other}\n'),
+                         f'{other}\n\n{cases[0][1]}\n\n{other}\n')
+        # A text of another shape, and a notice inside a sentence or a code block, comes back as the same object.
+        whole = cases[0][0]
+        for text in (whole[:-1], whole[3:], notice.format('gpt 6', 'openai-codex', 'provider failure', 'm', 'a'),
+                     'The chat showed: ' + whole, f'```\n{whole}\n```', f'> {whole}', whole + ' More.'):
+            with self.subTest(text=text):
+                self.assertIs(readable_text(text), text)
+
     def test_each_other_text_comes_back_as_the_same_object(self):
         texts = [
             'The chat showed:\n\ngateway.errors.no_credentials',

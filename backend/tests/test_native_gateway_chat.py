@@ -243,6 +243,34 @@ class EmptyReplyFormatTests(unittest.TestCase):
         self.assertEqual((reply.content.strip(), reply.tool_calls, reply.finish_reason),
                          (adapter_text('END_TEXT'), None, 'stop'))
 
+    def test_a_rejected_model_call_logs_its_shape_through_the_middleware_runner_of_hermes(self):
+        # The runner of Hermes wraps an error of the model call before it reaches a middleware
+        # (hermes_cli/middleware.py). The plugin reads the status of the provider's error, logs the shape of the request
+        # and lets the error through unchanged.
+        from types import SimpleNamespace as N
+        from unittest.mock import patch
+        from hermes_cli.middleware import _run_execution_chain
+        import hermes_cli.plugins as plugins
+
+        class Rejected(Exception):
+            status_code = 400
+
+        error = Rejected('Bad Request')
+        def provider(_request):
+            raise error
+        request = {'input': [{'role': 'user', 'content': 'Hello.'}], 'tools': []}
+        manager = N(_middleware={'llm_execution': [self.hooks.end_turn_text]},
+                    _report_hook_failure=lambda *args, **kwargs: self.fail('Hermes took the error as a fault of the plugin.'))
+        with patch.object(plugins, '_delivery_manager', lambda: manager), \
+                self.assertLogs('hermes_plugins.coconut.hooks', 'WARNING') as logs, \
+                self.assertRaises(Rejected) as raised:
+            _run_execution_chain('llm_execution', provider, request=request, api_mode='codex_responses')
+        self.assertIs(raised.exception, error)
+        self.assertEqual(len(logs.output), 1)
+        for part in ('Rejected', 'HTTP 400', 'api_mode codex_responses', '1 items', 'user '):
+            self.assertIn(part, logs.output[0])
+        self.assertNotIn('Hello', logs.output[0])
+
     def test_the_last_item_of_a_request_is_a_tool_result_in_each_format(self):
         # hooks.after_tool_result on the requests that the converters of this Hermes build from the same messages.
         from agent.anthropic_message_convert import convert_messages_to_anthropic
