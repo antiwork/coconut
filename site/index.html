@@ -12,7 +12,8 @@
 <link rel="apple-touch-icon" href="/coconut.png">
 <style>
   * { box-sizing: border-box; margin: 0; }
-  html, body { height: 100%; overflow: hidden; }
+  html, body { overflow-x: hidden; }
+  .hero { position: relative; height: 100vh; min-height: 560px; overflow: hidden; }
   body {
     font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Helvetica Neue", sans-serif;
     background: linear-gradient(#86cff2, #e9f8ff 72%);
@@ -49,10 +50,34 @@
                 background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 800 100' preserveAspectRatio='none'%3E%3Cpath d='M0 50 Q100 28 200 50 T400 50 T600 50 T800 50 V100 H0Z' fill='%23168bc4'/%3E%3C/svg%3E"); }
   @keyframes drift { to { transform: translateX(-50%); } }
 
-  @media (prefers-reduced-motion: reduce) { .wave, .fronds { animation: none; } }
+  /* Below the waves: the rest of the iceberg. The island is the tip, the app is what is under it. */
+  .deep { position: relative; margin-top: -1px; padding: 4vh 24px 18vh;
+          background: linear-gradient(#168bc4, #0b5f92 30%, #06345a 75%, #041f38); overflow: hidden; }
+  .berg { position: relative; width: min(1080px, 100%); margin: 0 auto; display: grid; gap: 56px; }
+  .shot { margin: 0; border-radius: 14px; overflow: hidden; background: #fff;
+          box-shadow: 0 30px 80px rgba(0, 20, 40, .45), 0 0 0 1px rgba(255, 255, 255, .12);
+          animation: bob 7s ease-in-out infinite; }
+  .shot img { display: block; width: 100%; height: auto; filter: saturate(.92) brightness(.97); }
+  .shot:nth-child(2) { width: 88%; justify-self: end; animation-delay: -2.3s; }
+  .shot:nth-child(3) { width: 78%; justify-self: center; animation-delay: -4.6s; }
+  /* The water tints each window more the deeper it sits. */
+  .shot::after { content: ""; position: absolute; inset: 0; pointer-events: none; border-radius: inherit; }
+  .shot { position: relative; }
+  .shot:nth-child(1)::after { background: rgba(22, 139, 196, .06); }
+  .shot:nth-child(2)::after { background: rgba(11, 95, 146, .16); }
+  .shot:nth-child(3)::after { background: rgba(6, 52, 90, .28); }
+  @keyframes bob { 50% { transform: translateY(-10px); } }
+  .bubble { position: absolute; bottom: -20px; border-radius: 50%; border: 1.5px solid rgba(255, 255, 255, .45);
+            animation: rise linear infinite; }
+  @keyframes rise { to { transform: translateY(-120vh); opacity: 0; } }
+  footer { text-align: center; padding-top: 10vh; color: rgba(255, 255, 255, .7); font-size: 15px; }
+  footer a { color: #fff; }
+
+  @media (prefers-reduced-motion: reduce) { .wave, .fronds, .shot, .bubble { animation: none; } }
 </style>
 </head>
 <body>
+<section class="hero">
   <div class="sun" aria-hidden="true"></div>
   <header>
     <h1>Coconut</h1>
@@ -82,6 +107,16 @@
     <div class="wave mid"></div>
     <div class="wave front"></div>
   </div>
+</section>
+
+<section class="deep" id="deep">
+  <div class="berg">
+    <figure class="shot"><img src="/app-chat.jpg" width="1600" height="1030" alt="An agent chat in Coconut on the Mac, with a decision card"></figure>
+    <figure class="shot"><img src="/app-inbox.jpg" width="1600" height="1030" alt="The Coconut Inbox with a decision from an agent" loading="lazy"></figure>
+    <figure class="shot"><img src="/app-library.jpg" width="1600" height="1030" alt="The Coconut Library with pages from agents" loading="lazy"></figure>
+  </div>
+  <footer><a href="https://github.com/antiwork/coconut">github.com/antiwork/coconut</a></footer>
+</section>
 
 <script>
   // Coconuts fall from the crown of the tree, bounce once on the sand, and roll into the sea.
@@ -119,6 +154,19 @@
       if (fade > 0) requestAnimationFrame(step); else nut.remove();
     }
     requestAnimationFrame(step);
+  }
+
+  // Bubbles rise past the windows under the water.
+  if (!reduced) {
+    const deep = document.getElementById('deep');
+    for (let i = 0; i < 18; i++) {
+      const b = document.createElement('span');
+      const size = 4 + Math.random() * 10;
+      b.className = 'bubble';
+      Object.assign(b.style, { left: Math.random() * 100 + '%', width: size + 'px', height: size + 'px',
+        animationDuration: 9 + Math.random() * 10 + 's', animationDelay: -Math.random() * 18 + 's' });
+      deep.appendChild(b);
+    }
   }
 
   if (!reduced) {
