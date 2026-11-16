@@ -24,7 +24,7 @@ struct HomeLaunchView: View {
         let rooms = store.shownTeamRooms
         let filter = ChatFilter.effective(store.chatFilter, rooms: rooms)
         // The tiles of the pinned agents come first. Then the rows (ChatList.rows): the pinned chats of the teams, each
-        // with the pin mark, then the other rows newest activity first.
+        // with the star mark, then the other rows newest activity first.
         let conversations = ChatList.rows(filter, bots: activeBots.filter { !$0.pinned }, latest: latest,
                                           rooms: rooms, local: store.newestLocalMessages)
         let pinned = filter.showsPinned ? pinnedBots : []

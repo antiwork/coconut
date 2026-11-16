@@ -188,7 +188,7 @@ enum TeamChatMute {
     }
 }
 
-/// The choice of this person to pin a chat of a team: the Team chat or a named chat (docs/team-log.md, "Pinned
+/// The choice of this person to pin a chat of a team: the Team chat or a named chat (docs/team-log.md, "Starred
 /// chats"). The words and the symbols are those of a pinned agent. A direct chat has no pin.
 enum TeamChatPin {
     static let pin = "Star"
