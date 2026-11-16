@@ -38,6 +38,8 @@ for a person, because the app shows them.
   and removes a named chat (team_chats.py). The routes of the Team chat take a named chat in `chat`.
 - `PUT /v1/team/rooms/<room>/notifications` with `{enabled}`: the person turns the notifications of the room on or off
   for the phones of this Mac. Only a person's Mac has phones, so a Mac for a team only answers 409.
+- `PUT /v1/team/rooms/<room>/chats/<id>/notifications` with `{enabled}`: the person mutes or unmutes one named chat
+  for the phones of this Mac (team_chats.py), with the rules of the route above.
 - The routes of the direct messages under `/v1/team/rooms/<room>/directs/<member>`, and of a direct chat with a bot
   under `/v1/team/rooms/<room>/directs/<team bot ID>` (team_directs.py). A `GET /v1/team/rooms` with
   `X-Coconut-Team: direct` from a paired device sets the mark of direct messages on this Mac.
@@ -398,6 +400,9 @@ class Team(TeamSync, TeamSocket, TeamPages, TeamMessages, TeamChats, TeamDirects
             return self.team_chat_delete(parts[1], parts[3], device)
         if len(parts) == 3 and parts[0] == 'rooms' and parts[2] == 'notifications' and method == 'PUT':
             return self.team_notifications(parts[1], data)
+        if (len(parts) == 5 and parts[0] == 'rooms' and parts[2] == 'chats' and parts[4] == 'notifications'
+                and method == 'PUT'):
+            return self.team_chat_notifications(parts[1], parts[3], data)
         raise ServiceError(404, 'This route was not found.')
 
     # Reads

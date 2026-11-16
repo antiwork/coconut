@@ -571,6 +571,119 @@ class ChatPushTests(TeamPushMacs, unittest.TestCase):
         self.assertEqual(self.payloads(), [])
 
 
+class ChatMuteTests(TeamPushMacs, unittest.TestCase):
+    """Ada on the second Mac mutes one named chat for her phone. Grace on the first Mac is the admin and writes."""
+
+    def setUp(self):
+        super().setUp()
+        members = {member['name']: member['member'] for member in self.rooms(self.first)[0]['members']}
+        self.ada = members['Ada']
+        self.notices = self.make('Notices')
+        self.second.team_sync_pass()
+
+    def make(self, name: str) -> str:
+        return self.phone(self.first)('POST', f'/v1/team/rooms/{self.room}/chats', {'name': name})['chat']
+
+    def path(self, chat=None):
+        return f'/v1/team/rooms/{self.room}/chats/{chat or self.notices}/notifications'
+
+    def mute(self, enabled=False, chat=None):
+        return self.phone(self.second)('PUT', self.path(chat), {'enabled': enabled})
+
+    def notified(self, text, chat=None, **fields):
+        """Send a message of Grace, and return whether it has an item on the phone of Ada."""
+        sent = self.send(text, chat=chat, **fields)
+        self.second.team_sync_pass()
+        return sent['id'] in [item[6] for item in self.items()]
+
+    def shown(self, service):
+        return {chat['id']: chat.get('notifications') for chat in self.rooms(service)[0]['chats']}
+
+    def test_a_plain_message_of_a_muted_chat_notifies_nothing_and_a_mention_does(self):
+        self.mute()
+        self.assertFalse(self.notified('Build 12 passed.', chat=self.notices))
+        self.assertTrue(self.notified('Ada, look at build 12.', chat=self.notices, mentions=[self.ada]))
+        # The Team chat and a chat that is not muted still notify while the switch of the team is on.
+        self.assertTrue(self.notified('Hello team'))
+        reports = self.make('Reports')
+        self.second.team_sync_pass()
+        self.assertTrue(self.notified('A report', chat=reports))
+        # The unread count of a muted chat does not change: it counts each message.
+        chats = {chat['id']: chat for chat in self.rooms(self.second)[0]['chats']}
+        self.assertEqual(chats[self.notices]['unread'], 2)
+
+    def test_the_switch_of_the_team_off_mutes_each_chat(self):
+        self.phone(self.second)('PUT', f'/v1/team/rooms/{self.room}/notifications', {'enabled': False})
+        self.assertFalse(self.notified('Quiet', chat=self.notices))
+        self.assertFalse(self.notified('Quiet too'))
+        self.assertTrue(self.notified('Ada, for you.', chat=self.notices, mentions=[self.ada]))
+
+    def test_a_waiting_message_drops_when_the_person_mutes_its_chat(self):
+        self.assertTrue(self.notified('Waiting', chat=self.notices))
+        self.assertTrue(self.notified('Ada, waiting.', chat=self.notices, mentions=[self.ada]))
+        self.mute()
+        flush(self.second)
+        self.assertEqual([item[9:] for item in self.items()], [('dropped', 'NoLongerRelevant'), ('sent', None)])
+
+    def test_the_route_and_the_view(self):
+        self.assertEqual(self.shown(self.second), {self.notices: True})
+        cursor = self.second._cursor()
+        self.assertEqual(self.mute(), {'room': self.room, 'chat': self.notices, 'notifications': False})
+        self.assertEqual(self.shown(self.second), {self.notices: False})
+        self.assertTrue(self.second.updates(cursor, 0, collection_deltas=True).get('team_changed'))
+        # The same value again writes nothing.
+        cursor = self.second._cursor()
+        self.mute()
+        self.assertEqual(self.second._cursor(), cursor)
+        # The choice never goes to the relay, and the other Mac keeps its own.
+        self.assertEqual(self.shown(self.first), {self.notices: True})
+        self.assertNotIn('notifications', json.dumps([self.first.team_store.entry(self.room, row[0])['payload'] for row in
+                                                      self.first.db.execute('SELECT id FROM team_entries')]))
+        # Each member mutes a chat, not only the admin.
+        self.phone(self.first)('PUT', self.path(), {'enabled': False})
+        self.assertEqual(self.shown(self.first), {self.notices: False})
+        self.mute(enabled=True)
+        self.assertEqual(self.shown(self.second), {self.notices: True})
+        # Only a paired device calls the route: the token of the bridge file gets 403.
+        self.assertEqual(self.refusal(self.second.team_request, 'PUT', self.path(), {'enabled': True}, '', '')[0], 403)
+        for body in ({}, {'enabled': 'no'}, {'enabled': 0}):
+            self.assertEqual(self.refusal(self.phone(self.second), 'PUT', self.path(), body)[0], 400)
+        for chat in ('f' * 32, 'not-a-chat'):
+            self.assertEqual(self.refusal(self.phone(self.second), 'PUT', self.path(chat), {'enabled': False}),
+                             (404, GONE_CHAT))
+        self.assertEqual(self.refusal(self.phone(self.second), 'PUT',
+                                      f'/v1/team/rooms/{"f" * 64}/chats/{self.notices}/notifications',
+                                      {'enabled': False})[0], 404)
+
+    def test_the_choice_goes_with_the_chat_and_with_the_team(self):
+        self.mute()
+        self.phone(self.first)('DELETE', f'/v1/team/rooms/{self.room}/chats/{self.notices}', {})
+        self.second.team_sync_pass()
+        self.assertEqual(self.second.team_store.muted_chats(self.room), set())
+        self.assertEqual(self.refusal(self.phone(self.second), 'PUT', self.path(), {'enabled': False}),
+                         (404, GONE_CHAT))
+        design = self.make('Design')
+        self.second.team_sync_pass()
+        self.mute(chat=design)
+        self.assertEqual(self.second.team_store.muted_chats(self.room), {design})
+        self.leave(self.second, {'room': self.room})
+        self.assertEqual(self.second.db.execute('SELECT COUNT(*) FROM team_chat_mutes').fetchone()[0], 0)
+
+    def test_a_store_from_before_the_choice_has_no_muted_chat(self):
+        db = sqlite3.connect(':memory:', isolation_level=None)
+        self.addCleanup(db.close)
+        db.executescript(team_store.SCHEMA)
+        db.execute('DROP TABLE team_chat_mutes')
+        db.execute("INSERT INTO team_chats VALUES ('r', ?, 1, 'Notices', 'now')", (DESIGN,))
+        db.executescript(team_store.SCHEMA)
+        store = TeamStore(db)
+        store.migrate()
+        self.assertEqual(store.muted_chats('r'), set())
+        self.assertTrue(store.mute_chat('r', DESIGN, True))
+        self.assertFalse(store.mute_chat('r', DESIGN, True))
+        self.assertEqual(store.muted_chats('r'), {DESIGN})
+
+
 class ChatBotTests(TeamTurnMacs, unittest.TestCase):
     """The bot Reporter of the team-only Mac answers in the named chat where Ada names it."""
 
@@ -583,6 +696,13 @@ class ChatBotTests(TeamTurnMacs, unittest.TestCase):
         rows = self.call('GET', f'/v1/team/rooms/{self.room}/messages', {'chat': chat} if chat else {},
                          service=self.first)['messages']
         return [(row['bot_name'] or row['member_name'], row['text'], row['reply_to']) for row in reversed(rows)]
+
+    def test_a_mac_for_a_team_only_has_no_mute(self):
+        design = self.make()
+        (chat,) = self.call('GET', '/v1/team/rooms')['rooms'][0]['chats']
+        self.assertNotIn('notifications', chat)
+        self.assertEqual(self.refusal(self.call, 'PUT', f'/v1/team/rooms/{self.room}/chats/{design}/notifications',
+                                      {'enabled': False})[0], 409)
 
     def test_the_trigger_the_context_and_the_reply_stay_in_the_chat(self):
         design = self.make()
