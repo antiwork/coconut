@@ -139,13 +139,14 @@ class NativeRoutines:
                 and any(m.get('sender_bot_id') == source['bot_id'] and m.get('text') == delivery.get('text')
                         for m in task.get('_bot_messages', [])))
 
-    def _continuation_turns(self, task):
-        """The turns that an authenticated coconut_continue_work delivery gave this task."""
+    def _continuation_turns(self, task, native_id=None):
+        """The turns that an authenticated coconut_continue_work delivery gave this task, on the card `native_id` if given."""
         turns = set()
         for row in self.db.execute(ROUTINE_DELIVERIES, (task['id'],)):
             delivery = json.loads(row[0])
             receipt = delivery.get('receipt') or {}
             if (isinstance(receipt.get('native_task_id'), str) and isinstance(delivery.get('turn_id'), str)
+                    and native_id in (None, receipt['native_task_id'])
                     and receipt == dict(task_id=task['id'], native_task_id=receipt['native_task_id'], status='queued')
                     and delivery.get('target_bot_id') == task['bot_id'] and self._delivered(task, delivery)):
                 turns.add(delivery['turn_id'])
@@ -199,7 +200,9 @@ class NativeRoutines:
         more. Either way the archived card must be the successor that Board.sync made for an authenticated
         continuation of this task, holding the current input, also authenticated. The worker of an ordinary request
         that another bot relayed can park the original card too, before any continuation. _settled_original_card proves
-        that card and its current input instead. Its last run must be the run of the claim of that input, ended as
+        that card and its current input instead. Migration gives a retained Work item its own card, and a continuation
+        of that card reuses it until it is done or archived. _settled_migrated_card proves that card and its current
+        input instead. Its last run must be the run of the claim of that input, ended as
         scheduled. No run may have completed, and no run or worker may be left. The guards of settled_failed_occurrence
         hold too. completion() reads the card from the adapter. Anything else stays final.
         """
@@ -209,15 +212,18 @@ class NativeRoutines:
         prefix = 'coconut-followup:' + task['id'] + ':'
         routine = any(field in task for field in ROUTINE_PROVENANCE)
         original = not routine and key == 'coconut:' + task['id']
+        work = task.get('_work_context_id')
+        migrated = not routine and isinstance(work, str) and bool(work) and key == 'coconut-outcome:' + work
         if (not turn or claim.get('input') != turn or type(claim.get('run_id')) is not int
                 or task.get('_kanban_started') != claim['run_id'] or card.get('input_id') != turn
                 or task.get('_native_outcome_id') != card.get('id')
                 or (routine and (task.get('_native_occurrence') or {}).get('native_id') in (None, card.get('id')))
-                or not isinstance(key, str) or not (key.startswith(prefix) or original)
+                or not isinstance(key, str) or not (key.startswith(prefix) or original or migrated)
                 or (task.get('_self_recovery') or {}).get('unknown_tools')
                 or not (self._settled_occurrence(task, card, success=True) if routine
                         else self._settled_request(task, card))
                 or not (self._settled_original_card(task, card) if original
+                        else self._settled_migrated_card(task, card) if migrated
                         else {turn, key[len(prefix):]} <= self._continuation_turns(task))):
             return False
         native = completion()
@@ -528,6 +534,28 @@ class NativeRoutines:
                 or receipt.get('task_id') != task['id'] or receipt.get('target_bot_id') != task['bot_id']
                 or not self._created_once(task)):
             return False
+        return self._scheduled_by_claim(task, card)
+
+    def _settled_migrated_card(self, task, card):
+        """Whether the archived card is the card that migration made for this request's Work, parked on this input.
+
+        Board.promote makes that card under the key coconut-outcome:<Work id>, and the request and its Work item both
+        name it. The Work item belongs to this request and bot, and no person hid, merged, cancelled, or dismissed it.
+        The key proves nothing more. The current input must come from an authenticated continuation of this card, and
+        the claim's run must have scheduled the card in that turn (_scheduled_by_claim).
+        """
+        row = self.db.execute('SELECT data FROM artifacts WHERE id=?', (task['_work_context_id'],)).fetchone()
+        item = json.loads(row[0]) if row else {}
+        if (item.get('kind') != 'work' or item.get('task_id') != task['id'] or item.get('bot_id') != task['bot_id']
+                or item.get('_native_outcome_id') != card['id'] or item.get('status') == 'cancelled'
+                or item.get('_hidden') or item.get('_deleted') or item.get('_same_outcome_as')
+                or any(self._setting(prefix + self._work_identity(item)) for prefix in ('work.cancelled.', 'work.dismissed.'))
+                or task['_native_turn_id'] not in self._continuation_turns(task, card['id'])):
+            return False
+        return self._scheduled_by_claim(task, card)
+
+    def _scheduled_by_claim(self, task, card):
+        """Whether the bridge saved a completed kanban_schedule call on the card in the current turn, made by the claim's run."""
         run = task['_kanban_claim']['run_id']
         for record in self._native_task_receipts(task['id'], turn_id=task['_native_turn_id'], state='completed'):
             action = record.get('action') or {}
