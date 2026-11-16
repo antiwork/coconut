@@ -69,3 +69,7 @@ Settings → Parallel work sets how many agents work at once. Automatic lets the
 
 On the Mac, open `~/Coconut/Uninstall Coconut.command`. It stops the service and removes Coconut's data folder and stored work. It removes Coconut's skill and plugin entries from your Hermes profiles. Your Hermes, its profiles, their memories, and their keys stay.
 Delete `~/Coconut` to remove the source files afterward, and delete the iPhone app. See [Remove Coconut](docs/install-and-update.md#remove-coconut).
+
+## License
+
+Coconut is licensed under the [MIT License](LICENSE.md).
