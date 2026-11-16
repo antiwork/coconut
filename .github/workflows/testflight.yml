@@ -37,7 +37,7 @@ on:
 
 permissions:
   contents: read
-  actions: read   # the notes step reads the previous successful run to know which commits are new
+  actions: read   # the gate reads publication history while migrating older release runs
   deployments: write
 
 # Two uploads must not run at the same time: both would read the same highest build number.
@@ -53,6 +53,7 @@ jobs:
     outputs:
       skip: ${{ steps.gate.outputs.skip }}
       sha: ${{ steps.gate.outputs.sha }}
+      previous_sha: ${{ steps.gate.outputs.previous_sha }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -152,11 +153,9 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-          RUN_ID: ${{ github.run_id }}
         run: |
           set -euo pipefail
-          previous="$(gh run list --workflow=testflight.yml --status success --limit 20 \
-            --json databaseId,headSha --jq "[.[] | select(.databaseId != ($RUN_ID | tonumber))][0].headSha" || true)"
+          previous="${{ needs.plan.outputs.previous_sha }}"
           arguments=(--key "$ASC_KEY" --key-id "$ASC_KEY_ID" --issuer "$ASC_ISSUER_ID" --build "$BUILD" --apply)
           if [ -n "${previous:-}" ] && git cat-file -e "${previous}^{commit}" 2>/dev/null; then
             arguments+=(--since "$previous")

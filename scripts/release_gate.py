@@ -92,7 +92,8 @@ def main():
                 changed = diff.stdout.splitlines()
         release, reason = should_release(args.channel, last, now, changed)
         print(reason)
-        output(skip=str(not release).lower(), sha=sha)
+        output(skip=str(not release).lower(), sha=sha,
+               previous_sha=last['sha'] if last and last['state'] == 'success' else '')
     else:
         if cooling_down(last, now):
             raise SystemExit('Another update was published within the last hour.')
