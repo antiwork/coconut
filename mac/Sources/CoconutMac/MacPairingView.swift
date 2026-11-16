@@ -38,6 +38,9 @@ struct MacPairingView: View {
             }
             OnboardingView(firstRun: !store.hasPairing)
         }
+        // As a sheet, the page hides the notice of the window (sheetShowsError), so it shows the error of another
+        // action itself. A failure of the pairing shows only on the page: the store keeps no second copy.
+        .pageErrorBanner()
         .onChange(of: store.hasPairing) { _, paired in if paired { dismiss() } }
     }
 
@@ -53,7 +56,10 @@ struct MacPairingView: View {
         }
         do {
             let setup = try PairingSetup.parse(link)
-            if !(await store.pair(setup: setup)) { failure = store.error ?? "This Mac could not pair." }
+            if !(await store.pair(setup: setup)) {
+                failure = store.error ?? "This Mac could not pair."
+                store.error = nil
+            }
         } catch {
             failure = "This Mac made a pairing link that Coconut cannot read."
         }

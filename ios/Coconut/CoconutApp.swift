@@ -124,11 +124,11 @@ struct CoconutHome: View {
                 onboardingOpen = true
             }
         }
-        .sheet(isPresented: $createOpen) { BotEditorView() }
+        .sheet(isPresented: $createOpen) { BotEditorView().sheetShowsError() }
         .sheet(item: $teamJoin, onDismiss: {
             // A newer link can wait for this sheet to close. Only the link of this sheet goes.
             if store.teamJoin?.id == shownTeamJoin { store.teamJoin = nil }
-        }) { TeamJoinView(link: $0.link) }
+        }) { TeamJoinView(link: $0.link).sheetShowsError() }
         .onChange(of: store.teamJoin, initial: true) { _, _ in showTeamJoin() }
         // A link that came while a pairing page showed opens its sheet after the page, also after a new pairing. The
         // page of Settings has its own state, so the count of the pages decides.
@@ -142,6 +142,8 @@ struct CoconutHome: View {
         .onAppear { openNotification() }
         // VoiceOver reads a new notice when it shows, as on the Mac.
         .announcesErrors(store.error)
+        // Outside each sheet, so that each sheet and each page gets it.
+        .errorSheetRoot()
     }
 
     private func root(tab: HomeTab, path: Binding<NavigationPath>) -> some View {
@@ -158,21 +160,9 @@ struct CoconutHome: View {
                 .navigationBarTitleDisplayMode(.inline)
                 .toolbar { rootToolbar(inbox: tab != .bots) }
                 .topBanners { area in
-                    let notice = store.isDemo ? nil : store.connection.notice
-                    if notice != nil || store.error != nil {
-                        VStack(spacing: 8) {
-                            if let notice {
-                                ConnectionBanner(notice: notice) {
-                                    onboardingFirstRun = false
-                                    onboardingOpen = true
-                                }
-                            }
-                            if let error = store.error {
-                                // The page less the padding under the column.
-                                ErrorBanner(message: error, area: area.map { $0 - 8 }) { store.error = nil }
-                            }
-                        }
-                        .padding(.horizontal, 16).padding(.bottom, 8)
+                    RootBanners(area: area) {
+                        onboardingFirstRun = false
+                        onboardingOpen = true
                     }
                 }
                 .navigationDestination(for: HomeDestination.self) { destination in
@@ -314,6 +304,29 @@ struct CoconutHome: View {
         }
     }
 
+}
+
+/// The banners at the top of a tab root: the connection to the Mac, and the error of an action. A struct of its own,
+/// so that it reads the error where it stands, inside the order of the sheets (ShownError).
+private struct RootBanners: View {
+    @Environment(AppStore.self) private var store
+    @ShownError private var error
+    let area: CGFloat?
+    let pair: () -> Void
+
+    var body: some View {
+        let notice = store.isDemo ? nil : store.connection.notice
+        if notice != nil || error != nil {
+            VStack(spacing: 8) {
+                if let notice { ConnectionBanner(notice: notice, pair: pair) }
+                if let error {
+                    // The page less the padding under the column.
+                    ErrorBanner(message: error, area: area.map { $0 - 8 }) { store.error = nil }
+                }
+            }
+            .padding(.horizontal, 16).padding(.bottom, 8)
+        }
+    }
 }
 
 private struct NativeTabCollapse: ViewModifier {

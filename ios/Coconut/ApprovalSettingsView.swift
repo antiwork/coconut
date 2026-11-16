@@ -2,7 +2,7 @@ import SwiftUI
 
 struct ApprovalSettingsView: View {
     @Environment(AppStore.self) private var store
-    @Environment(\.windowShowsError) private var windowShowsError
+    @ShownError private var shownError
     var botId: String? = nil
     @State private var saving = false
 
@@ -42,7 +42,7 @@ struct ApprovalSettingsView: View {
             } else {
                 Text("Connect to your Mac to read Hermes settings.").foregroundStyle(.secondary)
             }
-            if !windowShowsError, let error = store.error { InlineError(error) }
+            if let error = shownError { InlineError(error) }
         }
         .disabled(saving)
         .settingsBackground()

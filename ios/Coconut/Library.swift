@@ -433,6 +433,8 @@ struct DocumentView: View {
                 ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
+        // Pin, Share, Delete and the load can fail.
+        .pageErrorBanner()
         .background(BoardStyle.paper)
         .navigationTitle("")
         .inlineNavigationTitle()

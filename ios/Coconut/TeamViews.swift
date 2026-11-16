@@ -860,6 +860,7 @@ struct TeamSettingsRow: View {
 /// with the text of the Mac.
 private struct TeamBanners: ViewModifier {
     @Environment(AppStore.self) private var store
+    @ShownError private var shownError
     /// True for a chat: the connection banner stands above the chat, which then starts below it. A chat scrolls its
     /// rows under a top inset, so there an inset would cover a message. The error floats over the chat (ChatErrorNotice).
     let above: Bool
@@ -882,7 +883,7 @@ private struct TeamBanners: ViewModifier {
     /// The banners. The area is the height of the page, or nil above a chat, where no error shows.
     @ViewBuilder private func banners(area: CGFloat?) -> some View {
         let notice = store.isDemo ? nil : store.connection.notice
-        let error = above ? nil : store.error
+        let error = above ? nil : shownError
         if notice != nil || error != nil {
             VStack(spacing: 8) {
                 if let notice { ConnectionBanner(notice: notice) { pairing = true } }

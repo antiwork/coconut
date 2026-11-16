@@ -324,6 +324,8 @@ struct OnboardingView: View {
             return
         } else {
             phase = .failed(store.error ?? "Coconut could not pair with \(setup.name). Send a new message to Hermes.")
+            // The page shows the failure. The store keeps no second copy for a notice next to the page or after it.
+            store.error = nil
         }
     }
 
