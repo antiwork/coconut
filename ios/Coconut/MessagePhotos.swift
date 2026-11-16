@@ -219,8 +219,8 @@ private struct HeldPhoto: View {
         }
         .task(id: photo.url) {
             guard photo.isMacFile else { return }
-            image = PhotoLoader.shared.cached(photo.url, size: .full) ?? PhotoLoader.shared.cached(photo.url, size: .tile)
-            if image == nil { image = await PhotoLoader.shared.image(photo.url, size: .full) }
+            // The preview shows the tile at once. Copy and Share wait for the full image.
+            image = await PhotoLoader.shared.shareImage(photo.url)
         }
     }
 }
@@ -492,6 +492,11 @@ final class PhotoLoader: @unchecked Sendable {
     }
 
     func cached(_ url: URL, size: PhotoSize) -> PlatformImage? { images.object(forKey: Self.key(url, size)) }
+
+    /// The image that Copy and Share give: the full size, never the tile of the chat. For a photo of a team chat the
+    /// full size has each pixel that the Mac got, because the fit step sends at most `PhotoSize.full` pixels on the
+    /// longest side.
+    func shareImage(_ url: URL) async -> PlatformImage? { await image(url, size: .full) }
 
     /// The disk cache keeps the downloaded data, so the second size of a photo does not download it again.
     func image(_ url: URL, size: PhotoSize) async -> PlatformImage? {

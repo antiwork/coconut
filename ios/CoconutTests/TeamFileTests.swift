@@ -274,6 +274,34 @@ final class TeamFileTests: XCTestCase {
         // A GIF without a position stays as it is (testAGIFStaysAsItIs).
     }
 
+    /// A file of two images where only the second one has a position: the check sees it, and the file goes out
+    /// without a position on any image.
+    func testAPositionOnASecondImageCounts() throws {
+        let context = try XCTUnwrap(CGContext(data: nil, width: 60, height: 40, bitsPerComponent: 8, bytesPerRow: 0,
+                                              space: CGColorSpaceCreateDeviceRGB(),
+                                              bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+        context.setFillColor(red: 0, green: 0.5, blue: 0, alpha: 1)
+        context.fill(CGRect(x: 0, y: 0, width: 60, height: 40))
+        let picture = try XCTUnwrap(context.makeImage())
+        let buffer = NSMutableData()
+        let destination = try XCTUnwrap(CGImageDestinationCreateWithData(buffer, UTType.tiff.identifier as CFString,
+                                                                         2, nil))
+        CGImageDestinationAddImage(destination, picture, nil)
+        let position: [CFString: Any] = [kCGImagePropertyGPSDictionary: [
+            kCGImagePropertyGPSLatitude: 52.37, kCGImagePropertyGPSLatitudeRef: "N"]]
+        CGImageDestinationAddImage(destination, picture, position as CFDictionary)
+        XCTAssertTrue(CGImageDestinationFinalize(destination))
+        let tiff = buffer as Data
+        let source = try XCTUnwrap(CGImageSourceCreateWithData(tiff as CFData, nil))
+        XCTAssertEqual(CGImageSourceGetCount(source), 2)
+        let first = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any]
+        XCTAssertNil(first?[kCGImagePropertyGPSDictionary], "The first image has no position.")
+        XCTAssertTrue(FileFit.hasPosition(source))
+        let fitted = try XCTUnwrap(FileFit.fit(tiff, name: "pages.tiff"))
+        XCTAssertFalse(try hasGPS(fitted.data))
+        XCTAssertNotEqual(fitted.data, tiff)
+    }
+
     /// The same photo without a position goes out with its own bytes.
     func testAPhotoWithoutAPositionKeepsItsBytes() throws {
         let jpeg = try image(width: 800, height: 600, type: .jpeg)
@@ -397,6 +425,21 @@ final class TeamFileTests: XCTestCase {
         XCTAssertEqual(again, wide)
         let messages = await asked.messages
         XCTAssertEqual(messages, [first, second])
+    }
+
+    /// Copy and Share of a held photo get the full image, also when the chat has only loaded the tile.
+    func testCopyAndShareGetTheFullImageAfterTheTile() async throws {
+        let png = try image(width: 2400, height: 1600, type: .png)
+        let previous = PhotoLoader.shared.teamFile
+        defer { PhotoLoader.shared.teamFile = previous }
+        PhotoLoader.shared.teamFile = { _ in png }
+        let room = String(UUID().uuidString.lowercased().filter(\.isHexDigit))
+        let address = try XCTUnwrap(TeamFileAddress(room: room, message: String(repeating: "d", count: 32),
+                                                    file: Self.file))
+        let tile = await PhotoLoader.shared.image(address.url, size: .tile)
+        XCTAssertEqual(tile?.size, CGSize(width: 900, height: 600), "The chat shows the tile.")
+        let shared = await PhotoLoader.shared.shareImage(address.url)
+        XCTAssertEqual(shared?.size, CGSize(width: 2400, height: 1600), "Each pixel that the Mac got.")
     }
 
     /// The bytes of a draft show for the message on its way, and become the bytes of the file of the saved message.

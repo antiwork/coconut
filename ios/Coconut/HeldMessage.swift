@@ -196,8 +196,8 @@ struct HeldTeamFile<Header: View>: View {
         .task(id: source) {
             guard file.isReady else { return }
             if file.isImage {
-                self.image = PhotoLoader.shared.cached(source, size: .full) ?? PhotoLoader.shared.cached(source, size: .tile)
-                if self.image == nil { self.image = await PhotoLoader.shared.image(source, size: .full) }
+                // The preview shows the tile at once. Copy and Share wait for the full image.
+                self.image = await PhotoLoader.shared.shareImage(source)
             } else {
                 self.local = await QuickLookFile.url(for: source, name: file.name)
             }
