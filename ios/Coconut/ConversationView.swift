@@ -1146,14 +1146,21 @@ struct ComposerFieldStyle: ViewModifier {
 /// A click anywhere in the box of a composer puts the cursor in its field. A Mac text field takes clicks only on its
 /// line of text, so a click above or below it, or in its padding, did nothing. The area lies behind the field and the
 /// buttons, so they keep their own clicks.
+///
+/// The area is for the Mac only. On an iPhone, its tap gesture took the tap of the Send button, and the message did
+/// not send.
 struct ComposerClickArea<S: Shape>: ViewModifier {
     let shape: S
     let focus: () -> Void
 
     func body(content: Content) -> some View {
+        #if os(macOS)
         content.background {
             shape.fill(Color.clear).contentShape(shape).onTapGesture(perform: focus)
         }
+        #else
+        content
+        #endif
     }
 }
 
