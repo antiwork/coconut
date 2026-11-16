@@ -198,7 +198,7 @@ struct BotTextDraft {
     mutating func markSaved(_ submitted: String) { baseline = submitted }
 }
 
-private struct RoutineEditorView: View {
+struct RoutineEditorView: View {
     @Environment(AppStore.self) private var store
     @ShownError private var shownError
     @Environment(\.dismiss) private var dismiss

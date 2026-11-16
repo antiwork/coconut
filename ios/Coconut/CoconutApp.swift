@@ -46,7 +46,7 @@ struct CoconutApp: App {
     }
 }
 
-enum HomeTab: Hashable { case home, bots, library, business }
+enum HomeTab: Hashable { case home, bots, agents, business }
 
 struct CoconutHome: View {
     @Environment(AppStore.self) private var store
@@ -64,7 +64,7 @@ struct CoconutHome: View {
     @State private var botsPath = NavigationPath()
     @State private var homePath = NavigationPath()
     @State private var cardsShown = false
-    @State private var libraryPath = NavigationPath()
+    @State private var agentsPath = NavigationPath()
     @State private var businessPath = NavigationPath()
     @State private var keyboardVisible = false
     @State private var conversationFooters: [HomeTab: Bool] = [:]
@@ -77,7 +77,7 @@ struct CoconutHome: View {
     private var cardsOnTop: Bool { selectedTab == .home && cardsShown && homePath.count == 1 }
 
     private var tabBarVisibility: Visibility {
-        let activePath = switch selectedTab { case .home: homePath; case .bots: botsPath; case .library: libraryPath; case .business: businessPath }
+        let activePath = switch selectedTab { case .home: homePath; case .bots: botsPath; case .agents: agentsPath; case .business: businessPath }
         return keyboardVisible || (!activePath.isEmpty && conversationCanMinimize == nil && !cardsOnTop) ? .hidden : .automatic
     }
 
@@ -103,20 +103,21 @@ struct CoconutHome: View {
             } label: {
                 Label("Business", systemImage: "square.grid.2x2")
             }.accessibilityIdentifier("home-business")
-            Tab(value: HomeTab.library) {
-                root(tab: .library, path: $libraryPath)
+            Tab(value: HomeTab.agents) {
+                root(tab: .agents, path: $agentsPath)
             } label: {
-                Label { Text("Library") } icon: {
-                    Image(systemName: "rectangle.3.group").environment(\.symbolVariants, .none)
+                Label { Text("Agents") } icon: {
+                    Image(systemName: "square.stack.3d.up").environment(\.symbolVariants, .none)
                 }
-            }.accessibilityIdentifier("home-library")
+            }.accessibilityIdentifier("home-agents")
         }
         .modifier(NativeTabCollapse(enabled: conversationCanMinimize == true && !keyboardVisible))
-        // A document card in a chat opens the document on the Library tab, so Back leads to the Library.
+        // A document card in a chat opens the page on the Agents tab over the page of its agent, so Back leads to the
+        // agent that keeps it.
         .environment(\.openDocument) { id in
-            libraryPath = NavigationPath()
-            libraryPath.append(DocumentRoute(id: id))
-            selectedTab = .library
+            agentsPath = NavigationPath()
+            for route in store.documentPath(id) { agentsPath.append(route) }
+            selectedTab = .agents
         }
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { _ in keyboardVisible = true }
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in keyboardVisible = false }
@@ -170,14 +171,14 @@ struct CoconutHome: View {
                 switch tab {
                 case .home: HomeView { open($0) }
                 case .bots: HomeLaunchView()
-                case .library: LibraryView()
+                case .agents: AgentsView()
                 case .business: BusinessHomeView()
                 }
             }
                 .toolbar(tabBarVisibility, for: .tabBar)
                 .navigationTitle("")
                 .navigationBarTitleDisplayMode(.inline)
-                .toolbar { rootToolbar(create: tab == .bots) }
+                .toolbar { rootToolbar(create: tab == .bots || tab == .agents) }
                 .topBanners { area in
                     RootBanners(area: area) {
                         onboardingFirstRun = false
@@ -216,6 +217,7 @@ struct CoconutHome: View {
                     TeamRoomView(roomId: route.roomId, pushed: true)
                 }
                 .navigationDestination(for: NoticeBoardRoute.self) { NoticeBoardView(roomId: $0.roomId) }
+                .modifier(AgentDestinations())
                 .background(BoardStyle.paper)
         }
         // On the stack itself, so that the pushed pages get it too.
@@ -313,8 +315,8 @@ struct CoconutHome: View {
         case .conversation(let route): homePath.append(route)
         case .teamChat(let chat): homePath.append(TeamChatRoute(chat: chat))
         case .cards(let decisionId): showCards(decisionId)
-        case .agent(let botId): homePath.append(BotSettingsRoute(botId: botId))
-        case .agents: selectedTab = .bots
+        case .agent(let botId): homePath.append(AgentRoute(botId: botId))
+        case .agents: selectedTab = .agents
         case .connection: Task { await store.reconnect() }
         case .notices(let room): homePath.append(NoticeBoardRoute(roomId: room))
         }

@@ -302,7 +302,7 @@ struct DeletePageDialog: ViewModifier {
 }
 
 /// Pins a document in the Library, or removes its pin.
-private struct PinDocumentButton: View {
+struct PinDocumentButton: View {
     @Environment(AppStore.self) private var store
     let document: BotDocument
 
