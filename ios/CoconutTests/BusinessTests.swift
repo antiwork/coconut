@@ -3,6 +3,140 @@ import XCTest
 
 @MainActor
 final class BusinessTests: XCTestCase {
+    func testHomeUsesPublishedNumbersRatherThanRecomputingComparisons() throws {
+        let model = try homeFixture()
+        XCTAssertEqual(model.attention.map(\.id), ["support", "issues", "high-priority"])
+        XCTAssertEqual(model.attention[0].title, "Support · 3 past SLA")
+        XCTAssertEqual(model.attention[0].detail, "Synthetic payout timing question · 29.5h")
+        XCTAssertEqual(model.attention[2].detail, "Synthetic checkout regression")
+        XCTAssertEqual(model.informational.map(\.id), ["risk", "prs"])
+        XCTAssertEqual(model.volume.count, 30)
+        XCTAssertEqual(model.previousVolume.count, 30)
+        // Deliberately unlike the ratio of gmv_30d / gmv_prev_30d in the fixture.
+        XCTAssertEqual(model.change, 7.3)
+        XCTAssertEqual(model.changeLabel, "vs prior 30 days")
+        XCTAssertEqual(model.latest, "Nov 15 · $268.4K")
+        XCTAssertEqual(model.weekdayComparison, "+6.5% vs the same weekday")
+        XCTAssertEqual(model.moneyRows.map(\.value), [12000000, 3200000, 870000])
+        XCTAssertEqual(model.moneyRows.map(\.formattedValue), ["$12.0M", "$3.2M", "$870.0K"])
+        XCTAssertEqual(model.moneyRows.map(\.months.count), [12, 12, 12])
+        XCTAssertEqual(model.moneyRows[1].subtitle, "26.7% margin")
+        XCTAssertEqual(model.moneyRows[2].subtitle, "includes $1.93M non-cash write-off")
+        XCTAssertEqual(model.moneyRows[2].months[7].value, -1700000)
+        XCTAssertEqual(model.closedThrough, "2026-10")
+    }
+
+    func testHomeLegacySnapshotDoesNotInventMoneyOrDeltas() throws {
+        let model = try homeFixture("BusinessOverviewLegacy")
+        XCTAssertNil(model.change)
+        XCTAssertNil(model.changeLabel)
+        XCTAssertNil(model.weekdayComparison)
+        XCTAssertFalse(model.volume.isEmpty)
+        XCTAssertNil(model.gmvNotice)
+        XCTAssertEqual(model.moneyRows.count, 3)
+        XCTAssertTrue(model.moneyRows.allSatisfy { $0.value == nil && $0.subtitle == nil && $0.months.isEmpty })
+        XCTAssertEqual(model.moneyRows.map(\.formattedValue), Array(repeating: "Not published", count: 3))
+    }
+
+    func testHomeFailedGMVSourceHidesEvenPopulatedChartAndComparison() throws {
+        let model = try homeFixture { $0["sections"] = ["gmv": ["ok": false, "as_of": NSNull()]] }
+        XCTAssertEqual(model.gmvNotice, "Unavailable")
+        XCTAssertTrue(model.volume.isEmpty)
+        XCTAssertTrue(model.previousVolume.isEmpty)
+        XCTAssertNil(model.latest)
+        XCTAssertNil(model.change)
+        XCTAssertNil(model.weekdayComparison)
+        XCTAssertEqual(model.moneyRows.count, 3)
+    }
+
+    func testHomeZeroBreachesAreAbsentButFailuresAreNeverAllClear() throws {
+        let clear = try homeFixture { data in
+            data["support"] = ["gumroad_past_sla": 0]
+            data["issues"] = ["past_sla": 0]
+            data["high_priority"] = ["count": 0]
+        }
+        XCTAssertTrue(clear.attention.isEmpty)
+        let failed = try homeFixture { data in
+            data["support"] = ["gumroad_past_sla": 0]
+            data["issues"] = ["past_sla": 0]
+            data["high_priority"] = ["count": 0]
+            data["sections"] = ["support": ["ok": false]]
+        }
+        XCTAssertEqual(failed.attention.count, 1)
+        XCTAssertEqual(failed.attention.first?.title, "Support · Unavailable")
+    }
+
+    func testHomeMissingCountsAndFailedLedgerStayUnknown() throws {
+        let model = try homeFixture { data in
+            data["support"] = [:]
+            data["sections"] = ["ledger": ["ok": false]]
+        }
+        XCTAssertEqual(model.attention.first?.title, "Support · Unknown")
+        XCTAssertEqual(model.sourceNotice("ledger"), "Unavailable")
+        XCTAssertTrue(model.moneyRows.isEmpty)
+        XCTAssertNil(model.closedThrough)
+    }
+
+    func testHomeFreshnessThresholdAndStaleSnapshotRetention() throws {
+        var model = try homeFixture()
+        model.now = try XCTUnwrap("2026-11-16T12:06:00Z".apiDate)
+        XCTAssertEqual(model.freshness, "Updated 6m ago")
+        XCTAssertFalse(model.freshnessWarning)
+        model.now = try XCTUnwrap("2026-11-16T12:46:00Z".apiDate)
+        XCTAssertTrue(model.freshnessWarning)
+        XCTAssertFalse(model.currentStatusUnknown)
+        model.now = try XCTUnwrap("2026-11-16T13:01:00Z".apiDate)
+        XCTAssertEqual(model.freshness, "Updated 61m ago · Stale snapshot")
+        XCTAssertTrue(model.currentStatusUnknown)
+        XCTAssertTrue(model.attention.allSatisfy(\.unavailable))
+        XCTAssertEqual(model.sourceNotice("gmv"), "Stale source · current status unknown")
+        // With no per-source timestamps, keep the old snapshot labelled, not silently discarded.
+        var legacy = try homeFixture("BusinessOverviewLegacy")
+        legacy.now = model.now
+        XCTAssertTrue(legacy.currentStatusUnknown)
+        XCTAssertEqual(legacy.volume.count, 30)
+    }
+
+    func testHomeUnknownTimestampAndRefreshFailureNeverSayAllClear() throws {
+        let full = try homeFixture()
+        let report = BusinessReport(key: "overview", data: full.data, source: full.report.source, generatedAt: nil, ledgerUrl: "")
+        let unknown = BusinessHomePresentation(report: report, now: full.now)
+        XCTAssertEqual(unknown.freshness, "Freshness unknown")
+        XCTAssertTrue(unknown.currentStatusUnknown)
+        XCTAssertTrue(unknown.attention.allSatisfy(\.unavailable))
+        var failed = full
+        failed.refreshFailed = true
+        XCTAssertTrue(failed.currentStatusUnknown)
+        XCTAssertFalse(failed.attention.isEmpty)
+        XCTAssertTrue(failed.attention.allSatisfy(\.unavailable))
+    }
+
+    func testHomeNullOptionalFieldsAndZeroImpairmentAreHidden() throws {
+        let model = try homeFixture { data in
+            var gmv = data["gmv"] as! [String: Any]
+            gmv["change_pct"] = NSNull()
+            gmv["same_weekday_pct"] = NSNull()
+            data["gmv"] = gmv
+            var money = data["money"] as! [String: Any]
+            money["impairment_total"] = 0
+            money["ebitda_margin_pct"] = NSNull()
+            data["money"] = money
+        }
+        XCTAssertNil(model.change)
+        XCTAssertNil(model.weekdayComparison)
+        XCTAssertNil(model.moneyRows[1].subtitle)
+        XCTAssertNil(model.moneyRows[2].subtitle)
+    }
+
+    func testHomeSelectionReadsTheActualPublishedPoint() throws {
+        let model = try homeFixture()
+        XCTAssertNil(model.selectedPoint(at: nil))
+        XCTAssertEqual(model.selectedPoint(at: 28.8)?.date, "2026-11-15")
+        XCTAssertEqual(model.selectedPoint(at: 28.8)?.value, 268400)
+        XCTAssertEqual(model.selectedPoint(at: 0)?.date, "2026-10-17")
+        XCTAssertEqual(model.selectedPoint(at: 0)?.value, 200000)
+    }
+
     func testSharedFunctionsUseThePrivateGumroadProject() async throws {
         let store = AppStore(demo: true)
         try await store.loadBusinessCatalog()
@@ -49,4 +183,15 @@ final class BusinessTests: XCTestCase {
         XCTAssertEqual(stats.p90, 60)
         XCTAssertNil(SupportResolution(closed: values.array, reference: nil).median)
     }
+}
+
+@MainActor
+func homeFixture(_ name: String = "BusinessOverviewFull", mutate: ((inout [String: Any]) -> Void)? = nil) throws -> BusinessHomePresentation {
+    let url = try XCTUnwrap(Bundle(for: BusinessTests.self).url(forResource: name, withExtension: "json"))
+    var envelope = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any])
+    var data = try XCTUnwrap(envelope["data"] as? [String: Any])
+    mutate?(&data)
+    envelope["data"] = data
+    let report = try APIJSON.decoder().decode(BusinessReport.self, from: JSONSerialization.data(withJSONObject: envelope))
+    return BusinessHomePresentation(report: report, now: try XCTUnwrap("2026-11-16T12:06:00Z".apiDate))
 }

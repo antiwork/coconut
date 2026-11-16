@@ -3,26 +3,60 @@ import MarkdownUI
 
 struct BusinessHomeView: View {
     @Environment(AppStore.self) private var store
+    @State private var report: BusinessReport?
+    @State private var error: String?
+    private var shownReport: BusinessReport? { store.businessReports["overview"] ?? report }
+
+    init(initial: BusinessReport? = nil) { _report = State(initialValue: initial) }
 
     var body: some View {
-        VStack(spacing: 0) {
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 12) {
-                    ForEach(BusinessFunction.builtIns) { function in
-                        NavigationLink(value: BusinessRoute.function(function.key)) {
-                            Label(function.name, systemImage: function.symbol).font(.subheadline.weight(.medium))
-                                .padding(.horizontal, 16).padding(.vertical, 10)
-                                .background(BoardStyle.surface, in: Capsule())
-                        }.buttonStyle(.plain).accessibilityIdentifier("business-function-" + function.key)
+        ScrollView {
+            VStack(alignment: .leading, spacing: 24) {
+                if let report = shownReport {
+                    TimelineView(.periodic(from: .now, by: 60)) { context in
+                        BusinessHomeContent(model: BusinessHomePresentation(report: report, now: context.date, refreshFailed: error != nil))
                     }
-                    NavigationLink(value: BusinessRoute.projects) { Label("Projects", systemImage: "square.stack.3d.up") }
-                        .buttonStyle(.plain).font(.subheadline).padding(.horizontal, 8)
-                }.padding(.horizontal, 24).padding(.top, 12)
+                } else if error == nil {
+                    ProgressView("Loading business").frame(maxWidth: .infinity, minHeight: 320)
+                }
+                if let error {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Label("Refresh unavailable", systemImage: "exclamationmark.arrow.trianglehead.2.clockwise.rotate.90")
+                        Text(error).font(.caption)
+                        if shownReport != nil { Text("Showing the last published snapshot; current status is unknown.").font(.caption) }
+                        Button("Try again") { Task { await load() } }
+                    }.accessibilityIdentifier("business-home-refresh-error")
+                }
             }
-            BusinessReportView(key: "overview")
+            .padding(24).frame(maxWidth: 1040, alignment: .leading).frame(maxWidth: .infinity)
         }
         .navigationTitle("Business").background(BoardStyle.paper)
-        .task { try? await store.loadBusinessCatalog() }
+        .toolbar {
+            ToolbarItem(placement: .primaryAction) {
+                Menu {
+                    ForEach(BusinessFunction.builtIns) { function in
+                        NavigationLink(value: BusinessRoute.function(function.key)) {
+                            Label(function.name, systemImage: function.symbol)
+                        }.accessibilityIdentifier("business-function-" + function.key)
+                    }
+                    NavigationLink(value: BusinessRoute.projects) { Label("Projects", systemImage: "square.stack.3d.up") }
+                } label: { Label("Functions", systemImage: "square.grid.2x2") }
+                .accessibilityIdentifier("business-home-functions")
+            }
+        }
+        .task(id: "\(store.connection)/\(store.businessChanges)") { await load() }
+        .onChange(of: store.businessGeneration) { _, _ in report = nil; error = nil }
+        .refreshable { await load() }
+    }
+
+    private func load() async {
+        do {
+            let loaded = try await store.businessReport("overview")
+            guard !Task.isCancelled else { return }
+            report = loaded; error = nil
+            try? await store.loadBusinessCatalog()
+        } catch is CancellationError { }
+        catch { self.error = error.localizedDescription }
     }
 }
 

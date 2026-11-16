@@ -187,8 +187,8 @@ private struct MoneyDashboard: View {
         }
     }
     private var growth: String {
-        guard let current = gmv["gmv_30d"].number, let previous = gmv["gmv_prev_30d"].number, previous > 0 else { return "Previous period unavailable" }
-        return ((current / previous - 1) * 100).formatted(.number.precision(.fractionLength(1)).sign(strategy: .always())) + "% vs previous 30 days"
+        guard let change = gmv["change_pct"].number else { return "Comparison not published" }
+        return BusinessHomePresentation.percent(change, signed: true) + (gmv["change_label"].text.isEmpty ? "" : " " + gmv["change_label"].text)
     }
     private func sum(_ a: BusinessValue, _ b: BusinessValue) -> Double? { guard let a = a.number, let b = b.number else { return nil }; return a + b }
 }
