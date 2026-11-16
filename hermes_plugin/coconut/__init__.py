@@ -91,6 +91,9 @@ def register_team(ctx):
                        max_message_length=100_000, emoji='🥥', standalone_sender_fn=team.send_standalone,
                        cron_deliver_env_var=HOME_CHANNEL)
         known = {field.name for field in dataclasses.fields(PlatformEntry)}
+        if 'standalone_send' in known:
+            from gateway.platforms.send_targets import StandaloneSendPolicy
+            options['standalone_send'] = StandaloneSendPolicy(label='Coconut', media=True)
         team.TeamAdapter.lacking = ', '.join(filter(None, (team.unregistered(known), unguarded))) or None
         if team.TeamAdapter.lacking:
             LOG.warning('Coconut: the team chat takes no message, because this Hermes lacks %s. Update Hermes.',

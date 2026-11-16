@@ -33,7 +33,8 @@ prepare_send_message_platforms()
 chat_id, thread_id, error = resolve_send_target(platform_name, rest, pass_unresolved_references=True)
 pconfig = load_gateway_config().platforms.get(Platform(platform_name))
 result = error or asyncio.run(_send_to_platform(Platform(platform_name), pconfig, chat_id, sys.argv[3],
-                                                thread_id=thread_id))
+                                                thread_id=thread_id,
+                                                media_files=[(sys.argv[4], False)] if len(sys.argv) > 4 else None))
 print(json.dumps({'chat_id': chat_id, 'thread_id': thread_id, 'result': result}))
 '''
 # The delivery of cron in a gateway process: the real _deliver_result with a live adapter of the plugin, connected to
@@ -153,6 +154,26 @@ class NativeTeamCronDeliveryTests(AsThePerson, TeamOnlyMacs, unittest.TestCase):
         self.assertEqual([(row['bot_name'], row['text']) for row in rows], [('Reporter', TEXT)])
         # The log of the delivery has no text of the message.
         self.assertNotIn(TEXT, run.stderr)
+
+    def test_a_cron_file_without_a_gateway_reaches_a_named_chat(self):
+        named = self.call('POST', f'/v1/team/rooms/{self.room}/chats', {'name': 'Notices'}, service=self.first)['chat']
+        self.sync()
+        file = Path(self.temp.name) / 'report.pdf'
+        content = b'%PDF-1.4\nThe scheduled report.'
+        file.write_bytes(content)
+        chat = team_turns.chat_id(self.room, self.bot['id'], named)
+        run = subprocess.run([PYTHON, '-I', '-B', '-c', DELIVER, SOURCE, 'coconut:' + chat, TEXT, str(file)],
+                             env=self.environment, capture_output=True, text=True, timeout=120, cwd=self.temp.name)
+        self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+        answer = json.loads(run.stdout.strip().splitlines()[-1])['result']
+        self.assertTrue(answer.get('success'), answer)
+        self.assertFalse(answer.get('warnings'), answer)
+        self.assertNotIn('error', answer)
+        self.sync()
+        rows = self.call('GET', f'/v1/team/rooms/{self.room}/messages', {'chat': named}, service=self.first)['messages']
+        file_message, = [row for row in rows if row['files']]
+        attachment, = file_message['files']
+        self.assertEqual(self.first.team_file_content(self.room, file_message['id'], attachment['id']).content, content)
 
     def live(self, deliveries):
         """The result of each delivery of LIVE, in a Hermes process with a live adapter."""

@@ -159,7 +159,8 @@ class RegistrationTests(unittest.TestCase):
         # `origin` or a bot-chat token, so they need no variable of a home chat.
         full = Context()
         plugin.register(full)
-        self.assertEqual((len(full.platforms), len(full.tools)), (1, 29))
+        self.assertEqual((len(full.platforms), len(full.tools)), (1, 30))
+        self.assertIn('coconut_settings', full.tools)
         self.assertNotIn('standalone_sender_fn', full.platforms[0])
         self.assertNotIn('cron_deliver_env_var', full.platforms[0])
         self.assertIn('pre_tool_call', full.hooks)
@@ -699,6 +700,35 @@ class TeamAdapterTests(TeamTurnMacs, unittest.TestCase):
         self.assertFalse(self.complete(self.adapter.send_image_file('chat', str(photo))).success)
         self.assertEqual(list(self.only.root.glob('**/photo.png')), [])
 
+    def test_an_agent_file_reaches_the_named_chat_with_its_exact_bytes(self):
+        async def runner(event):
+            return None
+        self.connect(runner)
+        named = self.call('POST', f'/v1/team/rooms/{self.room}/chats', {'name': 'Notices'}, service=self.first)['chat']
+        self.sync()
+        file = Path(self.temp.name) / 'report.pdf'
+        content = b'%PDF-1.4\n' + b'The scheduled report.\n' * 8000
+        file.write_bytes(content)
+        chat = chat_id(self.room, self.bot['id'], named)
+        result = self.complete(self.adapter.send_document(chat, str(file), caption='The report is ready.'))
+        self.assertTrue(result.success, result.error)
+        self.sync()
+        rows = self.call('GET', f'/v1/team/rooms/{self.room}/messages', {'chat': named}, service=self.first)['messages']
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]['text'], 'The report is ready.')
+        self.assertEqual(rows[0]['bot_name'], 'Reporter')
+        attachment, = rows[0]['files']
+        self.assertEqual((attachment['name'], attachment['type'], attachment['size']),
+                         ('report.pdf', 'application/pdf', len(content)))
+        received = self.first.team_file_content(self.room, rows[0]['id'], attachment['id'])
+        self.assertEqual(received.content, content)
+        self.assertFalse(self.complete(self.adapter.send_document(chat, str(file) + '.missing')).success)
+        with mock.patch.object(self.adapter, '_home', str(self.home / 'another-profile')):
+            self.assertFalse(self.complete(self.adapter.send_document(chat, str(file))).success)
+        self.sync()
+        self.assertEqual(len(self.call('GET', f'/v1/team/rooms/{self.room}/messages', {'chat': named},
+                                      service=self.first)['messages']), 1)
+
     def test_a_cron_send_that_the_chat_does_not_show_fails_and_another_send_does_not(self):
         async def runner(event):
             return None
@@ -926,16 +956,23 @@ class StandaloneSenderTests(DirectTurnMacs, unittest.TestCase):
         self.sync()
         self.assertEqual([row for row in self.of_chat() if row[0] == 'Reporter'], [])
 
-    def test_files_with_a_text_send_the_text(self):
-        with self.assertLogs('hermes_plugins.coconut', logging.WARNING) as logs:
-            result = self.deliver(chat_id(self.room, self.bot['id']), media_files=[('/tmp/report.pdf', False)])
-        # No `warnings` of the plugin. Hermes adds its own warning for the files (tools/send_message_tool.py), and the
-        # cron record then shows a failed delivery although the text arrived.
+    def test_files_with_a_text_send_the_text_and_the_file(self):
+        file = Path(self.temp.name) / 'report.pdf'
+        file.write_bytes(b'%PDF-1.4\nThe scheduled report.')
+        result = self.deliver(chat_id(self.room, self.bot['id']), media_files=[(str(file), False)])
         self.sent(result)
-        self.assertEqual(logs.output, ['WARNING:hermes_plugins.coconut.team:Coconut: a cron delivery into a team chat '
-                                       'sent its text without its 1 files.'])
         self.sync()
-        self.assertEqual(self.of_chat(), [('Reporter', 'The weekly report is ready.')])
+        self.assertEqual(self.of_chat(), [('Reporter', 'The weekly report is ready.'), ('Reporter', 'report.pdf')])
+        message = self.call('GET', f'/v1/team/rooms/{self.room}/messages', {}, service=self.first)['messages'][0]
+        attachment, = message['files']
+        self.assertEqual(self.first.team_file_content(self.room, message['id'], attachment['id']).content, file.read_bytes())
+
+    def test_a_failed_file_is_a_failed_delivery_even_when_its_text_arrives(self):
+        result = self.deliver(chat_id(self.room, self.bot['id']), media_files=[('/no-such-report.pdf', False)])
+        self.assertTrue(result['success'])
+        self.assertEqual(result['warnings'], ['The file is not available for delivery.'])
+        self.assertIn('error', self.deliver(chat_id(self.room, self.bot['id']), text='',
+                                          media_files=[('/no-such-report.pdf', False)]))
 
     def test_a_service_that_does_not_answer_gets_three_tries_with_one_message_id(self):
         # A restart of the service, then a bridge file that is missing for a moment.

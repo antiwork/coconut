@@ -1036,6 +1036,10 @@ No log line has a preview.
 
 #### Files
 
+An agent can send a file to the Team chat or a named chat through its Hermes gateway.
+The team-only service checks the agent's home and sends the bytes through the same file transport as a person's Mac.
+The same size and space limits apply. Direct chats do not take files.
+
 A person adds up to 4 files to a message of the Team chat or of a named chat, for example a photo or a PDF. The bytes go into the log as entries of the kind `file`, so the relay and the helper need no change. `backend/coconut/team_files.py` serves the routes, and `TeamStore` keeps the files.
 
 The field `files` of a `message` entry is a list of 1 to 4 items:

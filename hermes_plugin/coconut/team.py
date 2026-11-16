@@ -28,6 +28,7 @@ turn. Only the mode `team` registers it: see send_standalone.
 from __future__ import annotations
 
 import asyncio
+import base64
 import collections
 import dataclasses
 import functools
@@ -39,7 +40,7 @@ import uuid
 from gateway.platforms.base import BasePlatformAdapter, SendResult
 from gateway.platforms.event import MessageEvent, MessageType
 
-from .adapter import DEFAULT_BRIDGE, OUTSIDE, REQUEST_SECONDS, RETRY_SECONDS, Bridge, CoconutAdapter, report_outside
+from .adapter import DEFAULT_BRIDGE, OUTSIDE, PHOTO_LIMIT, REQUEST_SECONDS, RETRY_SECONDS, Bridge, CoconutAdapter, report_outside
 
 LOG = logging.getLogger(__name__)
 # A running turn stops when the adapter cannot reach the service for this long: its reply can no longer reach the chat,
@@ -51,7 +52,7 @@ EVENT_FIELDS = ('text', 'message_type', 'source', 'message_id', 'user_id', 'user
                 'reply_expected', 'channel_context', 'channel_prompt', 'reply_to_message_id', 'reply_to_text',
                 'reply_to_is_own_message')
 # What the adapter calls on the base adapter of Hermes.
-BASE_METHODS = ('build_source', 'handle_message', 'send_image_file', '_mark_connected', '_mark_disconnected')
+BASE_METHODS = ('build_source', 'handle_message', 'validate_media_delivery_path', '_mark_connected', '_mark_disconnected')
 # The fields of the registration (PlatformEntry) without which the team chat does not work. Without
 # `trusted_inbound`, Hermes refuses each member of the team as an unknown user and ends the turn with no reply. Without
 # `display_overrides`, Hermes sends its tool progress into the chat as messages of the bot.
@@ -102,6 +103,26 @@ async def send_tries(request, home: str, chat_id: str, fields: dict):
         await asyncio.sleep(wait)
 
 
+async def send_file(request, home, chat_id, file_path, caption=None, file_name=None) -> SendResult:
+    """Send bytes through the team file transport. A text notice never counts as a delivered file."""
+    path = BasePlatformAdapter.validate_media_delivery_path(file_path)
+    if not path:
+        return SendResult(success=False, error='The file is not available for delivery.')
+    try:
+        with open(path, 'rb') as source:
+            content = source.read(PHOTO_LIMIT + 1)
+        if not 0 < len(content) <= PHOTO_LIMIT:
+            return SendResult(success=False, error='Coconut sends files of between 1 byte and 4 MB.')
+        answer = await request('/v1/gateway/files', dict(home=home, chat_id=str(chat_id),
+            filename=os.path.basename(file_name or path), content_base64=base64.b64encode(content).decode(),
+            caption=caption, message_id=OUTSIDE + str(uuid.uuid4())))
+        if isinstance(answer, dict) and answer.get('message_id'):
+            return SendResult(success=True, message_id=answer['message_id'])
+    except Exception as error:
+        LOG.warning('Coconut: a team file delivery failed (%s).', type(error).__name__)
+    return SendResult(success=False, error='Coconut could not deliver the file to this team chat.')
+
+
 async def send_standalone(pconfig, chat_id, message, *, thread_id=None, media_files=None, force_document=False,
                           **options) -> dict:
     """The sender of a cron delivery in a process without a gateway (`standalone_sender_fn` of the registration).
@@ -111,17 +132,16 @@ async def send_standalone(pconfig, chat_id, message, *, thread_id=None, media_fi
     `chat_id`. A service that does not answer, and an answer `recorded: false` with `retry: true` (the relay did not
     take a part), get up to two more tries with the same message ID. The service derives the entry ID from the
     message ID, so a try that repeats a send that arrived adds no second message. A refusal gets no second try: an
-    HTTP 4xx, `recorded: false` without `retry`, or an empty text. A refusal, and a last try that failed, become an
+    HTTP 4xx, `recorded: false` without `retry`, or a send with no text or file. A refusal and a last failed try become an
     `error` with the reason, so the record of the job shows a failed delivery. A fault never reaches Hermes. The team
-    chat takes no file from this path: the text goes, and a log line says that the files did not go. Hermes itself
-    adds a warning to the result of a send with files, and so records a failed delivery.
+    chat takes files through its file transport. A file that does not arrive adds a warning to the delivery record.
 
     Only the mode `team` registers this sender. On a person's Mac, the service drops a cron delivery whose run shows
     already as a routine task in the chat, by the job ID of the delivery (gateway_chat.py). This call has no job ID,
     so there the chat could show a run two times."""
     try:
         text = str(message or '')
-        if not text.strip():
+        if not text.strip() and not media_files:
             return {'error': 'Coconut sends no empty message into a team chat.'}
         extra = getattr(pconfig, 'extra', None)
         bridge = Bridge((extra.get('bridge') if isinstance(extra, dict) else None) or DEFAULT_BRIDGE)
@@ -131,7 +151,8 @@ async def send_standalone(pconfig, chat_id, message, *, thread_id=None, media_fi
 
         async def request(route, payload):
             return await asyncio.to_thread(bridge.request, route, payload, STANDALONE_SECONDS)
-        answer, _ = await send_tries(request, home, str(chat_id), dict(kind='send', message_id=message_id, text=text))
+        answer, _ = (await send_tries(request, home, str(chat_id), dict(kind='send', message_id=message_id, text=text))
+                     if text.strip() else ({'recorded': True}, 0))
         if isinstance(answer, SendResult):
             status = answer.raw_response.get('status') if isinstance(answer.raw_response, dict) else None
             if status == 404:
@@ -141,10 +162,17 @@ async def send_standalone(pconfig, chat_id, message, *, thread_id=None, media_fi
         if not isinstance(answer, dict) or not answer.get('recorded'):
             reason = answer.get('reason') if isinstance(answer, dict) else None
             return {'error': 'Coconut did not show this message: ' + str(reason or 'no reason')}
-        if media_files:
-            LOG.warning('Coconut: a cron delivery into a team chat sent its text without its %d files.',
-                        len(media_files))
-        return {'success': True, 'message_id': message_id}
+        warnings = []
+        delivered = 0
+        for path, _ in media_files or []:
+            result = await send_file(request, home, chat_id, path)
+            if result.success:
+                delivered += 1
+            else:
+                warnings.append(result.error)
+        if warnings and not text.strip() and not delivered:
+            return {'error': '; '.join(warnings)}
+        return {'success': True, 'message_id': message_id, **({'warnings': warnings} if warnings else {})}
     except Exception as error:
         LOG.warning('Coconut: a cron delivery into a team chat failed (%s).', type(error).__name__)
         return {'error': f'Coconut did not take this message ({type(error).__name__}).'}
@@ -170,7 +198,7 @@ def failed():
 
 class TeamAdapter(CoconutAdapter):
     """The adapter of CoconutAdapter, with group events and without the parts of a phone: no card, no session join,
-    no compression, no photo file and no turn for a run of Hermes."""
+    no compression and no turn for a run of Hermes."""
 
     # What this Hermes lacks for the team chat (`unregistered`), or None. register_team sets it. With it, each poll
     # names it, the service gives no turn, and the adapter gives no turn to Hermes.
@@ -386,9 +414,12 @@ class TeamAdapter(CoconutAdapter):
     @guarded(failed)
     async def send_image_file(self, chat_id: str, image_path: str, caption=None, reply_to=None, metadata=None,
                               **kwargs) -> SendResult:
-        # The team chat has no files. Hermes sends its notice, which does not name the path.
-        return await BasePlatformAdapter.send_image_file(self, chat_id, image_path, caption=caption,
-                                                         reply_to=reply_to, metadata=metadata, **kwargs)
+        return await self.send_document(chat_id, image_path, caption=caption, reply_to=reply_to, metadata=metadata)
+
+    @guarded(failed)
+    async def send_document(self, chat_id: str, file_path: str, caption=None, file_name=None, reply_to=None,
+                            metadata=None, **kwargs) -> SendResult:
+        return await send_file(self._request, self._home, chat_id, file_path, caption, file_name)
 
     @guarded(failed)
     async def send_clarify(self, chat_id: str, question: str, choices, clarify_id: str, session_key: str,

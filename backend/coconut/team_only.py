@@ -39,7 +39,7 @@ Routes, each with the token of the bridge file:
 to its Hermes agent sets it to true. While it is true, the `bot` entry of the bot has `open: true`, so the app offers
 the bot after `@`. A change of `chat` writes the entry again in each team of the bot at the next pass.
 - The routes of team.py, `POST /v1/gateway/document` and `DELETE /v1/gateway/document`.
-- `POST /v1/gateway/poll`, `/v1/gateway/events` and `/v1/gateway/messages` for the adapter of the team mode.
+- `POST /v1/gateway/poll`, `/v1/gateway/events`, `/v1/gateway/messages` and `/v1/gateway/files` for the team adapter.
 """
 from __future__ import annotations
 
@@ -57,7 +57,7 @@ from .service_base import (MODE_MARK, TEAM_MODE, ServiceError, check_data_folder
                            release_data_folder, take_data_folder, uid)
 from .service_restart import ServiceRestart
 from .team import SCHEMA as TEAM_SCHEMA, Team, member_profile
-from .team_store import ACTIVE, unicode_text
+from .team_store import ACTIVE, MAX_TEXT, unicode_text
 from .team_turns import SAID, SAY_FAILED, TeamTurns, parse_chat, parts
 
 MODE = TEAM_MODE
@@ -345,6 +345,38 @@ class TeamOnlyService(TeamTurns, Documents, Team):
         if row is None:
             raise ServiceError(404, UNKNOWN_HOME)
         return row[0]
+
+    def gateway_file(self, data: dict) -> dict:
+        """Send an agent's file through the existing team file transport, with its home and chat checked."""
+        import mimetypes
+        from .team_turns import reply_entry
+        home, chat = data.get('home'), parse_chat(data.get('chat_id'))
+        if not isinstance(home, str) or chat is None:
+            raise ServiceError(400, 'Name the home and the chat.')
+        room, bot_id, named, direct = chat
+        with self.lock:
+            bot = self._team_bot(bot_id) if unicode_text(bot_id) else None
+        if bot is None or bot['home'] != os.path.realpath(home):
+            raise ServiceError(404, 'This chat is not a team chat of an agent of this Hermes home.')
+        if direct is not None:
+            raise ServiceError(409, 'Coconut sends files in team chats only.')
+        name = data.get('filename')
+        draft = self._team_file_upload(room, dict(name=name, content=data.get('content_base64'),
+                                                type=mimetypes.guess_type(name)[0] if isinstance(name, str) else None))['file']
+        trigger = data.get('message_id')
+        if not isinstance(trigger, str) or not trigger:
+            trigger = 'file:' + draft['id']
+        text = data.get('caption') or name
+        if not isinstance(text, str) or len(text) > MAX_TEXT or not unicode_text(text):
+            self._team_drop_drafts(room, [draft])
+            raise ServiceError(400, f'Use valid text of at most {MAX_TEXT:,} characters for a file caption.')
+        try:
+            result = self._team_say(room, bot_id, trigger, 0, text, request=False, chat=named, files=[draft['id']])
+        finally:
+            self._team_drop_drafts(room, [draft])
+        if result != SAID:
+            raise ServiceError(503 if result == SAY_FAILED else 409, 'Coconut could not send the file to this team chat.')
+        return {'id': draft['id'], 'message_id': reply_entry(room, trigger, bot_id, 0)}
 
     def gateway_message(self, data: dict) -> dict:
         """POST /v1/gateway/messages: a send of Hermes in a chat of the team outside a turn of Coconut, for example the

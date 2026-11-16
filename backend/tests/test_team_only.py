@@ -36,7 +36,7 @@ TEAM_ONLY_MODULES = {'coconut', 'coconut.server', 'coconut.service_base', 'cocon
                      'coconut.team_relay', 'coconut.team_socket', 'coconut.team_store', 'coconut.team_sync',
                      'coconut.push_relay', 'coconut.team_turns', 'coconut.team_directs', 'coconut.team_epochs',
                      'coconut.team_typing', 'coconut.team_chats', 'coconut.hermes_notices',
-                     'coconut.team_reactions', 'coconut.team_files'}
+                     'coconut.team_reactions', 'coconut.team_files', 'coconut.team_notices'}
 
 
 def make_hermes_home(home: Path) -> None:
@@ -700,13 +700,15 @@ class ProcessTests(unittest.TestCase):
         # The team routes need the token of the bridge file.
         self.assertEqual(self.request('GET', '/v1/team/rooms')[0], 401)
         self.assertEqual(self.request('GET', '/v1/team/rooms', token='wrong')[0], 401)
+        self.assertEqual(self.request('POST', '/v1/gateway/files', {})[0], 401)
+        self.assertEqual(self.request('POST', '/v1/gateway/files', {}, self.token),
+                         (400, {'error': 'Name the home and the chat.'}))
         # A pair request and each route of the full service answer the refusal of this mode.
         create = {'code': '0123456789', 'device_name': 'iPhone'}
         refusal = {'error': team_only.REFUSAL, 'code': 'team_only'}
         for method, path, body, token in (('POST', '/v1/pair', create, None), ('GET', '/v1/state', None, self.token),
                                           ('POST', '/v1/gateway/tools', {}, self.token),
                                           ('POST', '/v1/gateway/cron', {}, self.token),
-                                          ('POST', '/v1/gateway/files', {}, self.token),
                                           ('DELETE', '/v1/documents/x', {}, self.token),
                                           # Only the page route takes DELETE, and it takes only POST and DELETE.
                                           ('DELETE', '/v1/gateway/poll', {}, self.token),

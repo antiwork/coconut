@@ -37,7 +37,7 @@ GATEWAY_ROUTES = ('/v1/gateway/poll', '/v1/gateway/events', '/v1/gateway/tools',
                   '/v1/gateway/wake', '/v1/gateway/messages', '/v1/gateway/files', PAGE_ROUTE)
 # The routes of the adapter that a team-only service serves: the turns of the team chat (team_turns.py) and the sends
 # of Hermes outside a turn. No tool, no cron and no file of a phone.
-TEAM_GATEWAY_ROUTES = ('/v1/gateway/poll', '/v1/gateway/events', '/v1/gateway/messages')
+TEAM_GATEWAY_ROUTES = ('/v1/gateway/poll', '/v1/gateway/events', '/v1/gateway/messages', '/v1/gateway/files')
 # The routes of the team rooms (team.py). A paired device calls them on each listener. A tool on this Mac calls them
 # on the main listener with the token of the bridge file.
 TEAM_ROUTES = '/v1/team/'

@@ -90,9 +90,14 @@ class TeamFiles:
         it, or DRAFT_SECONDS after its upload: each upload removes the old drafts of each room. It also removes the
         old pieces that no message names (TeamStore.sweep_pieces)."""
         from .service_base import ServiceError
-        from .team_sync import INACTIVE
         if self._team_bot_only:
             raise ServiceError(409, TEAM_ONLY)
+        return self._team_file_upload(room_id, data)
+
+    def _team_file_upload(self, room_id: str, data: dict) -> dict:
+        """Validate and keep a draft after the caller checks who can send it."""
+        from .service_base import ServiceError
+        from .team_sync import INACTIVE
         room = self._team_room(room_id)
         name, kind, width, height = (data.get(field) for field in ('name', 'type', 'width', 'height'))
         if not file_name(name):

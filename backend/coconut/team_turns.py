@@ -465,7 +465,8 @@ class TeamTurns:
                 self._team_stop_turns(room=room, bot=bot)
 
     def _team_say(self, room: str, bot: str, trigger: str, part, text: str, reply_to: str | None = None,
-                  request: bool = True, chat: str | None = None, direct: str | None = None) -> str:
+                  request: bool = True, chat: str | None = None, direct: str | None = None,
+                  files: list[str] | None = None) -> str:
         """Write one message of the bot into `chat` (None for the Team chat), or into its direct chat with the person
         `direct` (a member ID). Nothing when the bot no longer answers there, for example after a removal, a leave or
         the removal of the chat, and nothing when the request is gone: `trigger` names the message that the bot
@@ -490,6 +491,7 @@ class TeamTurns:
                     written = self.team_store.entry(room, entry) is not None
                     gone = chat is not None and self.team_store.chat(room, chat) is None
                     person = self.team_store.member(room, direct) if direct else None
+                    drafts = self._team_send_drafts(room_row, files) if files and share and not gone and not written else []
                 if written:
                     return SAID
                 if share is None or gone:
@@ -506,7 +508,12 @@ class TeamTurns:
                     fields['reply_to'] = reply_to
                 if chat is not None:
                     fields['chat'] = chat
-                self._team_write(room_row, entry, False, fields, tries=3)
+                with self._team_file_space(bool(drafts)):
+                    if drafts:
+                        fields['files'] = self._team_write_pieces(room_row, drafts)
+                    self._team_write(room_row, entry, False, fields, tries=3)
+                if drafts:
+                    self._team_drop_drafts(room, drafts)
                 return SAID
         except ROOM_ERRORS as error:
             log.warning('coconut.team_turns room %s: a message of the bot %s did not reach the relay (%s).',
