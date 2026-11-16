@@ -11,7 +11,8 @@ It needs macOS, the Xcode Command Line Tools, and `npm ci` in relay/.
 scripts/test_tunnel_loopback.py loads this test too, so the Mac app job of CI runs it after its `npm ci`.
 TeamLogVectorTests checks the test vectors of docs/team-log.md with the real helper. TeamDirectTests sends a direct
 message between two of three Macs in one team. TeamTypingTests shows that one person types to the other two.
-TeamReactionTests shows a reaction and its removal in the Team chat and in a direct chat.
+TeamReactionTests shows a reaction and its removal in the Team chat and in a direct chat. TeamFileTests sends a file
+of three pieces and deletes its message.
 """
 from __future__ import annotations
 
@@ -1465,6 +1466,78 @@ class TeamPreviewTests(unittest.TestCase):
         self.assertEqual(shown(grace, f'/v1/team/rooms/{room_id}/directs/{ada_id}/messages', sent['id']), preview)
         self.assertEqual(shown(lin, f'/v1/team/rooms/{room_id}/directs/{ada_id}/messages', sent['id']), 'absent')
         self.assertNotIn('Example page', lin.team_store.entry(room_id, sent['id'])['payload'])
+
+
+@unittest.skipUnless(sys.platform == 'darwin' and shutil.which('xcrun') and shutil.which('node')
+                     and (ROOT / 'relay/node_modules/miniflare').is_dir(),
+                     'The file test needs macOS, the Xcode Command Line Tools, Node, and npm ci in relay/.')
+class TeamFileTests(unittest.TestCase):
+    """Ada sends a file of about 1.5 MB (three pieces) with a text in the Team chat, through the real relay and the
+    real helper. Grace's Mac gets it complete, with the same SHA-256, and serves the same bytes. When Ada deletes the
+    message, Grace's Mac has no bytes of it left. The services run in this process, as in TeamPreviewTests."""
+
+    @classmethod
+    def setUpClass(cls):
+        TeamPushTests.setUpClass.__func__(cls)
+
+    @classmethod
+    def tearDownClass(cls):
+        TeamPushTests.tearDownClass.__func__(cls)
+
+    def test_a_file_of_three_pieces_reaches_the_other_mac_and_goes_with_its_message(self):
+        import hashlib
+        from coconut.providers import FixtureProvider
+        from coconut.service import Service
+        from coconut.team_store import CHUNK
+        os.environ['COCONUT_TEAM_HELPER'] = str(self.helper_path)
+        self.addCleanup(os.environ.pop, 'COCONUT_TEAM_HELPER', None)
+        macs = []
+        for name in ('ada-file', 'grace-file'):
+            root = Path(self.temp.name) / name
+            service = Service(root, FixtureProvider(root), start_workers=False)
+            self.addCleanup(service.close)
+            macs.append(service)
+        ada, grace = macs
+
+        def call(service, method, path, data=None):
+            return service.team_request(method, path, data or {}, '', 'test-device')
+
+        def sync():
+            for _ in range(2):
+                for service in macs:
+                    service.team_sync_pass()
+
+        def pieces(service):
+            return service.db.execute('SELECT COUNT(*) FROM team_file_pieces').fetchone()[0]
+
+        room_id = call(ada, 'POST', '/v1/team/rooms', {'name': 'North team', 'member_name': 'Ada',
+                                                       'relay': self.url})['room']['room']
+        link = call(ada, 'POST', f'/v1/team/rooms/{room_id}/invites', {})['link']
+        call(grace, 'POST', '/v1/team/join', {'link': link, 'member_name': 'Grace'})
+        sync()
+        data = os.urandom(1_500_000)
+        self.assertEqual(-(-len(data) // CHUNK), 3)
+        draft = call(ada, 'POST', f'/v1/team/rooms/{room_id}/files',
+                     {'name': 'photo.jpg', 'type': 'image/jpeg', 'width': 1200, 'height': 800,
+                      'content': base64.b64encode(data).decode()})['file']
+        chat = f'/v1/team/rooms/{room_id}/messages'
+        sent = call(ada, 'POST', chat, {'text': 'The new photo', 'files': [draft['id']]})['message']
+        self.assertTrue(sent['files'][0]['complete'])
+        sync()
+        (message,) = call(grace, 'GET', chat)['messages']
+        self.assertEqual((message['text'], message['files']), ('The new photo', [dict(draft, complete=True)]))
+        content = call(grace, 'GET', f'/v1/team/rooms/{room_id}/files/{draft["id"]}')
+        self.assertEqual(hashlib.sha256(content.content).hexdigest(), hashlib.sha256(data).hexdigest())
+        self.assertEqual((content.content, content.name, content.type), (data, 'photo.jpg', 'image/jpeg'))
+        self.assertEqual(pieces(grace), 3)
+        # The store keeps the bytes once, as a BLOB, and no payload has the base64 text.
+        self.assertIsNone(grace.db.execute("SELECT 1 FROM team_entries WHERE kind='file' AND instr(payload, '\"data\"')")
+                          .fetchone())
+
+        call(ada, 'DELETE', f'{chat}/{sent["id"]}')
+        sync()
+        self.assertEqual(call(grace, 'GET', chat)['messages'], [])
+        self.assertEqual((pieces(ada), pieces(grace)), (0, 0))
 
 
 @unittest.skipUnless(sys.platform == 'darwin' and shutil.which('xcrun') and shutil.which('node')

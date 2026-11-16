@@ -123,6 +123,14 @@ def reply_entry(room: str, trigger: str, bot: str, part) -> str:
     return hashlib.sha256(f'{room}:{trigger}:{bot}:{part}'.encode()).hexdigest()[:32]
 
 
+def file_lines(text: str, files: str | None) -> str:
+    """The text of a trigger with one line for each file of its message: the name, the type and the size. The agent
+    does not get the bytes in this version (docs/team-log.md, "Files")."""
+    lines = [f'[File: {item["name"]}, {item["type"] or "no type"}, {item["size"]:,} bytes]'
+             for item in json.loads(files or '[]')]
+    return '\n'.join(([text] if text else []) + lines)
+
+
 def parts(text: str) -> list[str]:
     """The text in parts of at most MAX_TEXT code points, the most that a `message` entry takes."""
     return [text[start:start + MAX_TEXT] for start in range(0, len(text), MAX_TEXT)]
@@ -310,7 +318,7 @@ class TeamTurns:
             team['reply_to'] = {'id': answered['entry'], 'text': answered['text'],
                                 'own': answered['bot'] == share and answered['member'] == room_row['member']}
         return {'number': row['number'], 'room': room, 'bot': bot, 'entry': row['entry'], 'home': record['home'],
-                'text': request['text'], 'chat_name': chat_name, 'chat': chat, 'direct': person, 'team': team}
+                'text': file_lines(request['text'], request.get('files')), 'chat_name': chat_name, 'chat': chat, 'direct': person, 'team': team}
 
     def _team_page_context(self, room: str, bot: str, page: str | None, name: str) -> str | None:
         """The page that a direct message is about, as quoted context: the title, the key and the current text of the
