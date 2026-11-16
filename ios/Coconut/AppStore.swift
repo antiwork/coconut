@@ -49,6 +49,9 @@ final class AppStore {
     var learning: [LearningGroup] = []
     /// The documents of the Library, newest first, without their content. Nil until the first load.
     var documents: [BotDocument]?
+    var businessCatalog: BusinessCatalog?
+    var businessChanges = 0
+    var demoBusinessWork = BusinessWork.previews
     /// The bots of other Macs that own the team pages in `documents`. They come with each list.
     var teamBots: [TeamBot] = []
     /// Counts the pins and the deletes that the Mac confirmed to this app. A list that the app asked for before such a
@@ -158,7 +161,9 @@ final class AppStore {
     private var savedPairingLocked = false
     @ObservationIgnored private var savedPairingRetry: Task<Void, Never>?
     private var writeCount = 0
-    @ObservationIgnored private var client: APIClient?
+    @ObservationIgnored private var client: APIClient? {
+        didSet { businessCatalog = nil }
+    }
     // The one tunnel socket of a version 2 pairing. Every client of the pairing shares it.
     @ObservationIgnored private var tunnel: TunnelConnection?
     // The relay or the Mac refused this pairing. Automatic polling stays off until a pairing succeeds or the
@@ -1389,6 +1394,14 @@ final class AppStore {
         }
         let response: ModelResponse? = await write("settings/model", method: "PUT", payload: selection, as: ModelResponse.self)
         return response != nil
+    }
+
+    func businessRequest<Response: Decodable & Sendable>(_ path: String, method: String = "GET", body: Data? = nil, requestId: String? = nil) async throws -> Response {
+        guard let client else { throw ServiceError.configuration("Connect your Mac to continue.") }
+        let generation = connectionGeneration
+        let response: Response = try await client.request(path, method: method, body: body, idempotencyKey: requestId, retryTransient: method != "POST")
+        guard generation == connectionGeneration else { throw CancellationError() }
+        return response
     }
 
     func githubStatus() async throws -> GitHubConnectionStatus {

@@ -3,6 +3,7 @@ import SwiftUI
 
 /// What the main window shows in its detail column.
 enum MacSelection: Hashable {
+    case business(BusinessRoute)
     case inbox
     case library
     case bot(String)
@@ -139,6 +140,11 @@ struct MacMainWindow: View {
     // A new case, with or without a stack of its own, needs no code for the notice of the window (MacNoticeArea).
     @ViewBuilder private var detail: some View {
         switch selection {
+        case .business(let route):
+            NavigationStack {
+                BusinessDestinationView(route: route)
+                    .navigationDestination(for: BusinessRoute.self) { BusinessDestinationView(route: $0) }
+            }
         case .inbox, nil:
             MacInboxView(selection: $selection)
         case .library:
@@ -146,6 +152,7 @@ struct MacMainWindow: View {
                 LibraryView()
                     .navigationTitle("Library")
                     .navigationDestination(for: DocumentRoute.self) { DocumentView(documentId: $0.id) }
+                    .navigationDestination(for: BusinessRoute.self) { BusinessDestinationView(route: $0) }
             }
         case .document(let documentId):
             // A page has no links to other pages, so its stack has only the page.
@@ -324,6 +331,26 @@ struct MacSidebar: View {
                 .badge(store.documents?.count ?? 0)
                 .tag(MacSelection.library)
                 .accessibilityIdentifier("sidebar-library")
+            MacSidebarLabel(title: "Business", symbol: "chart.xyaxis.line")
+                .tag(MacSelection.business(.home))
+                .accessibilityIdentifier("sidebar-business")
+            Section("Functions") {
+                ForEach(BusinessFunction.builtIns) { function in
+                    MacSidebarLabel(title: function.name, symbol: function.symbol)
+                        .tag(MacSelection.business(.function(function.key)))
+                        .accessibilityIdentifier("sidebar-function-" + function.key)
+                }
+            }
+            Section("Projects") {
+                MacSidebarLabel(title: "All projects", symbol: "square.stack.3d.up")
+                    .tag(MacSelection.business(.projects))
+                    .accessibilityIdentifier("sidebar-projects")
+                ForEach(store.businessCatalog?.projects ?? []) { project in
+                    MacSidebarLabel(title: project.displayName, symbol: "folder")
+                        .tag(MacSelection.business(.project(project.key)))
+                        .accessibilityIdentifier("sidebar-project-" + project.key)
+                }
+            }
             // The sections of Slack: each one folds with its header, and the Mac keeps the choice. A section without
             // rows does not show.
             if !sections.unread.isEmpty {
@@ -380,7 +407,9 @@ struct MacSidebar: View {
         // list is there. After that, the updates load the list again on each change of a page and on a reset.
         .task(id: store.connection == .connected) {
             if store.documents == nil { await store.loadDocuments(quiet: true) }
+            try? await store.loadBusinessCatalog()
         }
+        .task(id: store.businessChanges) { try? await store.loadBusinessCatalog() }
         .safeAreaInset(edge: .bottom) { MacConnectionFooter() }
     }
 
@@ -566,6 +595,7 @@ private struct MacBotDetails: View {
                 case .library:
                     LibraryView(botId: botId)
                         .navigationDestination(for: DocumentRoute.self) { DocumentView(documentId: $0.id) }
+                    .navigationDestination(for: BusinessRoute.self) { BusinessDestinationView(route: $0) }
                 }
             }
         }

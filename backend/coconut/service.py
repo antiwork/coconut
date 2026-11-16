@@ -323,6 +323,8 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
         self.push = PushDelivery(self)
         from .github_connection import GitHubConnection
         self.github = GitHubConnection(self.root)
+        from .business import GitHubBusiness
+        self.business = GitHubBusiness(self.github)
         self.github_requests = threading.Lock()
         try:
             self._recover_workspace_binding()
@@ -1108,6 +1110,9 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
         except (ValueError, TypeError, AttributeError):
             raise ServiceError(400, 'Supply a UUID in Idempotency-Key.')
         fingerprint = digest(encoded([device_id, method, path, data]))
+        if path.startswith('/v1/business/'):
+            from .business import mutate_business
+            return mutate_business(self, method, path.split('/')[3:], data, key, fingerprint)
         if method == 'POST' and path == '/v1/work/pull-requests':
             with self.pr_follow_lock:
                 with self.lock:

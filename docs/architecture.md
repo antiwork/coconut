@@ -22,13 +22,42 @@ A future execution provider can move work to another host without changing agent
 | Tool and dispatch receipts | Coconut coordination data |
 | Team rooms, their members and the copy of each team log | Coconut SQLite database (`team_*` tables), copied from the relay. See [team log](team-log.md#mac). |
 | Keys and member tokens of the team rooms | One private file for each room in `<data>/team` |
+| Business functions | Reserved GitHub repositories: `accounting`, `marketing`, `support` |
+| Projects | GitHub repositories with the `coconut-project` topic; Gumroad uses `antiwork/gumroad-private` |
+| Business work | Issues in the function repository, scoped by `coconut-project:<repository-key>` labels |
+| Accounting | Canonical Beancount files in `antiwork/accounting`; existing ledger calculations own report totals |
+| Business reports | Published JSON snapshots on GitHub, with source paths, blob versions and freshness |
 
 Coconut retains small projections for phone display. Native files own behavior.
+
 Inbox threads group decisions. They do not restrict an agent's recall of its own conversation.
 The gateway resumes native history and compression continuations. The phone never displays those internal boundaries.
 Model and access defaults resolve from the active native default profile.
 Each agent stores its MCP servers, approval settings and fallback models in its own native configuration, as in Hermes. An agent without its own model uses the default model.
 The Model page shows the fallback chain of the default profile (`fallback_providers`, then the legacy `fallback_model`). Only the model and the provider of each entry leave the Mac. The page sets the first fallback model from the same list as the default model. `PUT /v1/settings/fallback` replaces the whole chain: an entry that the chain has keeps its other keys, and a new entry gets only its provider and model.
+
+## Business
+
+Accounting, Marketing and Support serve every project. A project repository never becomes a function repository.
+The Business screen and Library reports read GitHub through Coconut's connected account. They require no additional
+SaaS connection. `COCONUT_BUSINESS_OWNER` selects the organization (default `antiwork`). Register a project by adding
+the `coconut-project` topic. The native project picker preserves the repository's other topics.
+
+`GET /v1/business` lists the functions and projects. `/v1/business/work` filters issues by function, project and state.
+Creating work writes only to its function repository. A GitHub receipt in the issue body recovers an accepted write
+after a lost response. Coconut's local request receipts coordinate retries; they do not own business records.
+
+`/v1/business/reports/{overview,accounting,support,risk,engineering}` reads complete published JSON snapshots.
+The temporary publisher is `antiwork/dashboards`, `docs/0825/*.json`; `COCONUT_BUSINESS_REPORTS_REPO` selects another
+repository with the same contract. These are company reports, not project-specific allocations. Accounting charts
+use the existing Beancount aggregates without reproducing financial calculations. `/v1/business/ledger` lists canonical
+`.beancount` files and reads a selected file directly from Accounting. Missing amounts stay unknown instead of becoming zero.
+
+The native reports show charts, summary cards and queues, and expose the complete source data. A snapshot older than
+an hour, or one without a timestamp, carries a freshness notice. The dashboards publisher and site remain active
+until ingestion, every source record and every existing visualization have verified replacements. Current gaps
+include Support's activity stream and human-only SLA breakdowns, risk outcome/allowance visuals and the legacy
+publisher's Helper, mail and reporting integrations. Reading their GitHub snapshots does not retire those upstream systems.
 
 ## Native integration
 

@@ -135,7 +135,10 @@ struct LibraryView: View {
                                        botId: botId)
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 0) {
-                if store.documents?.isEmpty == true {
+                if botId == nil {
+                    BusinessReportLibrary().padding(.bottom, 12)
+                }
+                if store.documents?.isEmpty == true && botId != nil {
                     emptyLibrary
                 }
                 if !sections.pinned.isEmpty {
