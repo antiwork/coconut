@@ -287,9 +287,9 @@ struct TeamRoomView: View {
         }
     }
 
-    /// The named chats of the team, each a row that opens the chat. Each member has Mute or Unmute on each row
-    /// (TeamChatMute). The admin also has "New chat", and Rename and Delete on each row (TeamChatManagement). The
-    /// actions are the swipe actions on an iPhone and the menu of the row on both.
+    /// The named chats of the team, each a row that opens the chat. Each member has Mute or Unmute in the menu of each
+    /// row (TeamChatMute). The admin also has "New chat", and Rename and Delete on each row: the swipe actions on an
+    /// iPhone and the menu of the row on both (TeamChatManagement).
     private func chatsSection(_ room: TeamRoom) -> some View {
         let manages = TeamChatManagement.allows(room)
         return Section("Chats") {
@@ -517,9 +517,9 @@ private struct TeamChatNaming: Identifiable {
     let chat: TeamNamedChat?
 }
 
-/// The actions on the row of a named chat: Mute or Unmute for each member, and Rename and Delete for the admin. They
-/// are the swipe actions of an iPhone and the menu of the row. Delete asks first (TeamRoomView). A row without an
-/// action keeps its plain form.
+/// The actions on the row of a named chat. Each member has Mute or Unmute in the menu of the row only. The admin also
+/// has Rename and Delete: the swipe actions of an iPhone and the menu of the row. Delete asks first (TeamRoomView). A
+/// row without an action keeps its plain form.
 private struct TeamChatActions: ViewModifier {
     /// Mute or Unmute (TeamChatMute).
     struct Mute {
@@ -539,9 +539,9 @@ private struct TeamChatActions: ViewModifier {
         if manages || mute != nil {
             content
                 #if os(iOS)
-                // Small buttons with a symbol only, as in Mail and Messages, so the row keeps the name of the chat.
-                // VoiceOver reads the title of each label. Only Delete is red. The other buttons have the neutral
-                // gray of a swipe action: without a tint, the tint of the app draws white on white.
+                // Buttons with a symbol only, as in Mail and Messages. VoiceOver reads the title of each label.
+                // Rename has the neutral gray of a swipe action: without a tint, the tint of the app draws white on
+                // white. A member who is not the admin gets no swipe.
                 .swipeActions(edge: .trailing, allowsFullSwipe: false) {
                     if manages {
                         // No destructive role: that role takes the row away at once, before the confirmation.
@@ -551,12 +551,6 @@ private struct TeamChatActions: ViewModifier {
                         Button(action: rename) { Label("Rename", systemImage: "pencil").labelStyle(.iconOnly) }
                             .tint(.gray)
                             .accessibilityIdentifier("team-chat-rename-swipe")
-                    }
-                    if let mute {
-                        Button(action: mute.action) { Label(mute.label, systemImage: mute.symbol).labelStyle(.iconOnly) }
-                            .tint(.gray)
-                            .disabled(mute.waits)
-                            .accessibilityIdentifier("team-chat-mute-swipe")
                     }
                 }
                 #endif

@@ -865,7 +865,7 @@ The room view of `GET /v1/team/rooms`:
 
 Events: a new, renamed or removed chat adds `team.updated`. A change inside a named chat adds `team_messages.updated` and `team_typing.updated` with `{"team": <room ID>}`, as for the Team chat.
 
-Notifications follow the switch `notifications` of the room, and each member can also mute one named chat (rule 4 of [Notifications](#notifications)). The app shows "Mute" or "Unmute" for each member on the row of a named chat on the Team screen: in the menu of the row, and as a swipe action on an iPhone. A muted chat has the symbol `bell.slash` at the end of its row. A message in a named chat changes three parts of [Notifications](#notifications):
+Notifications follow the switch `notifications` of the room, and each member can also mute one named chat (rule 4 of [Notifications](#notifications)). The app shows "Mute" or "Unmute" for each member in the menu of the row of a named chat: on the Team screen, in the Chats list and in the Mac sidebar. A swipe of the row has no such action. A muted chat has the symbol `bell.slash` at the end of its row. A message in a named chat changes three parts of [Notifications](#notifications):
 
 1. The subtitle of the sealed alert is the name of the chat and the name of the team: "Design · Example Team".
 2. `thread-id` is the room ID, a colon, and the ID of the chat. So the alerts of one chat group together.
