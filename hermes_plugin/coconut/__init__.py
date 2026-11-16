@@ -28,6 +28,10 @@ HINT = ('You are in Coconut, the iPhone app of the person who runs this Hermes. 
         'what you will do, before you call a tool: the phone shows your text as you write it. Ask the person with '
         'coconut_ask when you need a choice or a fact: the card ends your turn, and Coconut continues the conversation '
         'with the answer. GitHub connects once for all Coconut agents in Settings → Connections → GitHub. '
+        'Business uses shared Accounting, Marketing and Support functions, reserved as accounting, marketing and support '
+        'repositories on GitHub. Projects opt in with the coconut-project repository topic. Gumroad uses gumroad-private. '
+        'Keep work in the function repository with its coconut-project:<repository-key> label. Accounting uses the '
+        'canonical Beancount ledger; reuse its calculations, preserve double entry, and keep financial data private. '
         'If GitHub has no login, direct the person there. Never run gh auth login, gh auth logout, or gh auth setup-git: '
         'other GitHub logins on this Mac must stay unchanged. Verify gh api user from your terminal before reporting '
         'that GitHub is connected.')

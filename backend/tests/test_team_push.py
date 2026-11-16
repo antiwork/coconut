@@ -390,11 +390,10 @@ class Alerts(TeamPushMacs, unittest.TestCase):
         self.send('Two')
         self.second.team_sync_pass()
         flush(self.second)
-        (payload,) = self.payloads()
-        self.assertEqual(payload['aps']['alert'], {'title': 'Coconut', 'body': '2 team messages are waiting'})
-        self.assertEqual(payload['aps']['thread-id'], self.room)
-        self.assertEqual(payload['coconut'], {'version': 1, 'device_id': self.phone_id, 'kind': 'group', 'count': 2,
-                                              'team': self.room})
+        # One notification per message, each in the thread of the team.
+        payloads = self.payloads()
+        self.assertEqual([payload['coconut']['kind'] for payload in payloads], ['team', 'team'])
+        self.assertEqual({payload['aps']['thread-id'] for payload in payloads}, {self.room})
 
     def test_a_team_message_waits_and_groups_with_a_card_and_a_bot_reply(self):
         register(self.second, self.phone_id, messages=True)
@@ -410,16 +409,9 @@ class Alerts(TeamPushMacs, unittest.TestCase):
         self.second.team_sync_pass()
         kinds = sorted(item[1] for item in self.items() if item[9] == 'waiting')
         self.assertEqual(kinds, ['decision', 'message', 'team'])
-        # Grouped waits 30 seconds after the first item, for team messages as for bot replies.
-        self.assertFalse(self.second.push.deliver_one())
+        # Each item notifies on its own, with no count.
         flush(self.second)
-        (payload,) = self.payloads()
-        decision = self.second.snapshot()['decisions'][0]
-        self.assertEqual(payload['aps']['alert']['body'], '1 decision, 1 message and 1 team message are waiting')
-        self.assertEqual(payload['aps']['thread-id'], 'coconut-inbox')
-        self.assertEqual({name: payload['coconut'][name] for name in ('kind', 'count', 'bot_id', 'decision_id')},
-                         {'kind': 'group', 'count': 3, 'bot_id': bot['id'], 'decision_id': decision['id']})
-        self.assertNotIn('team', payload['coconut'])
+        self.assertEqual(sorted(payload['coconut']['kind'] for payload in self.payloads()), ['decision', 'message', 'team'])
 
     def test_a_mixed_group_without_a_card_takes_the_fields_from_the_bot_reply(self):
         register(self.second, self.phone_id, messages=True)
@@ -431,11 +423,10 @@ class Alerts(TeamPushMacs, unittest.TestCase):
         with self.second.transaction():
             message = self.second._message(bot['id'], 'Done.', task_id=task['id'])
         flush(self.second)
-        (payload,) = self.payloads()
-        self.assertEqual({name: payload['coconut'][name] for name in ('bot_id', 'task_id', 'decision_id', 'message_id')},
-                         {'bot_id': bot['id'], 'task_id': task['id'], 'decision_id': None, 'message_id': None})
-        self.assertEqual(payload['aps']['alert']['body'], '1 message and 1 team message are waiting')
-        self.assertTrue(message['id'])
+        reply = next(payload for payload in self.payloads() if payload['coconut']['kind'] == 'message')
+        self.assertEqual({name: reply['coconut'][name] for name in ('bot_id', 'task_id', 'message_id')},
+                         {'bot_id': bot['id'], 'task_id': task['id'], 'message_id': message['id']})
+        self.assertEqual(len(self.payloads()), 2)
 
     def test_no_log_line_has_the_text_or_a_name(self):
         records = []

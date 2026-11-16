@@ -102,34 +102,77 @@ def validate_route(route):
         return False
 
 
-def notification_text(value, limit=240, byte_limit=960):
+# The body of one notification: the message itself, as much as the sealed content holds. An expanded notification
+# shows all of it, with its lines and its list items.
+BODY_LIMIT, BODY_BYTES = 1200, 1800
+
+
+def notification_text(value, limit=240, byte_limit=960, lines=False):
+    """Plain text of Markdown for a notification. With `lines`, the text keeps its paragraphs and list items (a bullet
+    becomes "•"), so a long message reads as it does in the chat. Without it, the text is one line."""
     text = str(value or '')
     text = re.sub(r'^\s*(`{3,}|~{3,})[^\n]*$', '', text, flags=re.MULTILINE)
     text = re.sub(r'!?\[([^\]\n]+)\]\([^\n]*?\)', r'\1', text)
-    text = re.sub(r'^\s{0,3}(?:#{1,6}\s+|>\s*|[-*+]\s+|\d+[.)]\s+)', '', text, flags=re.MULTILINE)
+    if lines:
+        text = re.sub(r'^[ \t]{0,3}[-*+][ \t]+', '• ', text, flags=re.MULTILINE)
+        text = re.sub(r'^[ \t]{0,3}(?:#{1,6}[ \t]+|>[ \t]*)', '', text, flags=re.MULTILINE)
+    else:
+        text = re.sub(r'^\s{0,3}(?:#{1,6}\s+|>\s*|[-*+]\s+|\d+[.)]\s+)', '', text, flags=re.MULTILINE)
     for marker in ('**', '__', '~~', '`'):
         text = re.sub(re.escape(marker) + r'(?=\S)(.+?)' + re.escape(marker), r'\1', text)
-    text = ' '.join(text.split())
+    if lines:
+        rows = [' '.join(row.split()) for row in text.split('\n')]
+        text = re.sub(r'\n{3,}', '\n\n', '\n'.join(rows)).strip()
+    else:
+        text = ' '.join(text.split())
     if len(text) > limit or len(text.encode()) > byte_limit:
         text = text[:limit - 1].encode()[:byte_limit - 3].decode(errors='ignore').rstrip() + '…'
     return text
 
 
-def notification_alert(service, job, bot, task, decision):
-    title = notification_text(bot['name'], limit=80, byte_limit=256)
-    if decision:
-        text = decision['title'] + ('\n' + decision['explanation'] if decision.get('explanation') else '')
-        return {'title': title, 'body': notification_text(text)}
-    if job['kind'] == 'failed':
-        # Tool errors can contain credentials. Keep those inside the conversation.
-        return {'title': title, 'subtitle': 'Could not finish', 'body': notification_text(task['title'])}
-    if job.get('message_id'):
-        message = service._get('messages', job['message_id'])
-        text = message['text']
-        if message.get('artifact_id'):
-            artifact = service._get('artifacts', message['artifact_id'])
-            text = artifact.get('preview') or artifact['title']
-        return {'title': title, 'body': notification_text(text)}
+def body_text(value):
+    return notification_text(value, limit=BODY_LIMIT, byte_limit=BODY_BYTES, lines=True)
+
+
+def subject(task, body=''):
+    """The subtitle of a notification of an agent: the work that the message is about, unless the body says it."""
+    title = notification_text(task.get('title'), limit=100, byte_limit=300)
+    return 'Re: ' + title if title and title.casefold() not in body[:len(title) + 20].casefold() else ''
+
+
+def decision_text(decision):
+    """A card in full: its question, why, its risk, and the choices, so the person can decide from the lock screen."""
+    parts = [decision['title']]
+    for field in ('context', 'explanation'):
+        if decision.get(field):
+            parts.append(decision[field])
+    if decision.get('risk'):
+        parts.append('Risk: ' + decision['risk'])
+    labels = [option.get('label') for option in decision.get('options') or [] if isinstance(option, dict)]
+    if labels:
+        parts.append('Choices: ' + ' · '.join(label for label in labels if label))
+    return '\n\n'.join(parts)
+
+
+def message_text(service, message):
+    """The text of a message of an agent. A file card names the file and its preview."""
+    if message.get('artifact_id'):
+        artifact = service._get('artifacts', message['artifact_id'])
+        if artifact.get('kind') == 'file':
+            return 'File: ' + artifact['title']
+        return '\n\n'.join(part for part in (artifact['title'], artifact.get('preview')) if part)
+    return message['text']
+
+
+def with_subject(title, task, body):
+    alert = {'title': title, 'body': body}
+    if subtitle := subject(task, body):
+        alert['subtitle'] = subtitle
+    return alert
+
+
+def turn_replies(service, task, bot):
+    """The replies of the agent in the newest turn of a task that a person sees, newest first."""
     rows = service.db.execute('''SELECT data FROM messages
         WHERE json_extract(data, '$.task_id')=? AND json_extract(data, '$.role')='assistant'
           AND json_extract(data, '$.kind') IN ('text','artifact')
@@ -139,15 +182,30 @@ def notification_alert(service, job, bot, task, decision):
           AND COALESCE(json_extract(data, '$._hidden'), 0)=0
           AND COALESCE(json_extract(data, '$._interim'), 0)=0
         ORDER BY rowid DESC''', (task.get('_result_task_id', task['id']), task.get('_turn_started_at', task['created_at']), bot['id'], bot['id']))
-    for (data,) in rows:
-        message = json.loads(data)
-        text = message['text']
-        if message['kind'] == 'artifact' and message.get('artifact_id'):
-            artifact = service._get('artifacts', message['artifact_id'])
-            text = artifact.get('preview') or artifact['title']
-        body = notification_text(text)
-        if body:
-            return {'title': title, 'body': body}
+    return [json.loads(data) for (data,) in rows]
+
+
+def notification_alert(service, job, bot, task, decision):
+    title = notification_text(bot['name'], limit=80, byte_limit=256)
+    if decision:
+        return {'title': title, 'subtitle': 'Needs your decision', 'body': body_text(decision_text(decision))}
+    if job['kind'] == 'failed':
+        # Tool errors can contain credentials. Keep those inside the conversation.
+        return {'title': title, 'subtitle': 'Could not finish', 'body': notification_text(task['title'])}
+    if job.get('message_id'):
+        message = service._get('messages', job['message_id'])
+        return with_subject(title, task, body_text(message_text(service, message)))
+    rows = turn_replies(service, task, bot)
+    # The newest messages of the turn, oldest first, so the notification reads as the reply does.
+    texts = []
+    for message in rows:
+        text = body_text(message_text(service, message))
+        if text:
+            texts.insert(0, text)
+        if len('\n\n'.join(texts)) >= BODY_LIMIT:
+            break
+    if texts:
+        return with_subject(title, task, body_text('\n\n'.join(texts)))
     return {'title': title, 'subtitle': 'Finished', 'body': notification_text(task['title'])}
 
 
@@ -161,7 +219,7 @@ def team_alert(store, room, entry):
     team = store.room(room)['name']
     team = notification_text(f'{chat["name"]} · {team}' if chat else team, limit=140, byte_limit=512)
     writer = notification_text(message['bot_name'] if message['bot'] else message['member_name'], limit=80, byte_limit=256)
-    body = notification_text(shown_text(message['text'], message['files']))
+    body = body_text(shown_text(message['text'], message['files']))
     if not writer:
         return {'title': team, 'body': body}
     return {'title': writer, 'subtitle': team, 'body': body}
@@ -175,12 +233,20 @@ def direct_alert(store, room, entry):
     writer = notification_text(message['bot_name'] if message['bot'] else message['member_name'], limit=80,
                                byte_limit=256)
     title = writer or notification_text(store.room(room)['name'], limit=80, byte_limit=256)
-    return {'title': title, 'body': notification_text(message['text'])}
+    return {'title': title, 'body': body_text(message['text'])}
 
 
 GROUP_NOUNS = (('decision', 'decision', 'decisions'), ('message', 'message', 'messages'), ('team', 'team message', 'team messages'),
                ('direct', 'direct message', 'direct messages'), ('failed', 'failed task', 'failed tasks'),
                ('completed', 'finished task', 'finished tasks'))
+
+
+def group_lines(lines, total):
+    """The body of a group that the Mac seals: one line for each item, newest last, at most 6, and the count of the
+    rest."""
+    shown = lines[-6:]
+    rest = total - len(shown)
+    return '\n'.join(shown + ([f'and {rest} more'] if rest > 0 else []))
 
 
 def group_text(items):

@@ -11,7 +11,7 @@ struct HomeLaunchView: View {
     var body: some View {
         // The store keeps the newest activity of each bot (ChatSummaries). The list sorts by it one time.
         let latest = store.chatSummaries.newestActivity
-        let activeBots = store.bots.filter { !$0.archived }.sorted {
+        let activeBots = store.bots.agents.filter { !$0.archived }.sorted {
             (latest[$0.id] ?? $0.createdAt.apiDate ?? .distantPast) > (latest[$1.id] ?? $1.createdAt.apiDate ?? .distantPast)
         }
         let archivedCount = store.bots.filter(\.archived).count
@@ -31,6 +31,16 @@ struct HomeLaunchView: View {
         // A list, not a stack, so that a row of an agent has the swipe of the system: swipe left to archive.
         return List {
             // The chips show only for a Mac in a team. A person with bots only sees the list as before.
+            // The Coconut chat comes first: it is where the person changes Coconut.
+            if let coconut = store.bots.coconutChat {
+                Button { pushRoute?(ConversationRoute(botId: coconut.id)) } label: {
+                    CoconutChatRow(bot: coconut)
+                        .padding(.vertical, BoardStyle.Space.m)
+                        .background(BoardStyle.paper)
+                }
+                .buttonStyle(.plain)
+                .homeRow(top: BoardStyle.Space.s)
+            }
             if ChatFilter.showsChips(rooms: rooms) {
                 chips(filter).homeRow(top: BoardStyle.Space.l)
             }

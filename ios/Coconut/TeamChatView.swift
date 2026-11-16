@@ -100,6 +100,8 @@ struct TeamChatView: View {
         Group {
             if let room {
                 chatBody(room)
+                    .modifier(NoticeBannerArea(room: room, shown: chatKey.member == nil && chatKey.bot == nil,
+                                               top: Self.titleHeight))
             } else {
                 QuietEmptyState(symbol: "person.2", title: "Chat unavailable",
                                 message: "This Mac is no longer in this team.")
@@ -659,7 +661,7 @@ struct TeamMessageRow: View {
         VStack(alignment: .leading, spacing: BoardStyle.Space.xs) {
             if row.startsRun && !own && peer == nil { writerLabel }
             if row.files.isEmpty {
-                bubbleRow.modifier(MessageTimestamp(createdAt: row.createdAt))
+                bubbleRow.modifier(MessageTimestamp(createdAt: row.createdAt, trailing: own))
             } else {
                 VStack(alignment: own ? .trailing : .leading, spacing: BoardStyle.Space.xs) {
                     let photos = row.photos(room: room.room)
@@ -673,7 +675,7 @@ struct TeamMessageRow: View {
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: own ? .trailing : .leading)
-                .modifier(MessageTimestamp(createdAt: row.createdAt))
+                .modifier(MessageTimestamp(createdAt: row.createdAt, trailing: own))
                 #if os(iOS)
                 .fullScreenCover(item: $heldFile) { file in
                     if let source = row.address(of: file, room: room.room) { heldView(file, source: source) }

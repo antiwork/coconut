@@ -323,6 +323,8 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
         self.push = PushDelivery(self)
         from .github_connection import GitHubConnection
         self.github = GitHubConnection(self.root)
+        from .business import GitHubBusiness
+        self.business = GitHubBusiness(self.github)
         self.github_requests = threading.Lock()
         try:
             self._recover_workspace_binding()
@@ -591,6 +593,8 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
         if table == 'tasks' and obj.get('status') != 'working':
             # A phase describes only the running turn. The next turn starts without it.
             obj.pop('phase', None)
+            obj.pop('phase_detail', None)
+            obj.pop('phase_started_at', None)
             obj.pop('turn_started_at', None)
         if table == 'decisions' and obj.get('status') == 'pending':
             # The time of the newest revision of a card (decision_sources.source_change). Each write that raises the
@@ -905,7 +909,8 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
             raise ServiceError(503, str(error)) from None
 
     def _bot_view(self, bot: dict, catalog: dict | None) -> dict:
-        result = self._public(bot)
+        from .coconut_chat import view
+        result = view(self, bot, self._public(bot))
         if catalog is not None:
             try:
                 route = self.provider.resolve_model(bot, catalog)
@@ -1108,6 +1113,9 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
         except (ValueError, TypeError, AttributeError):
             raise ServiceError(400, 'Supply a UUID in Idempotency-Key.')
         fingerprint = digest(encoded([device_id, method, path, data]))
+        if path.startswith('/v1/business/'):
+            from .business import mutate_business
+            return mutate_business(self, method, path.split('/')[3:], data, key, fingerprint)
         if method == 'POST' and path == '/v1/work/pull-requests':
             with self.pr_follow_lock:
                 with self.lock:
@@ -1152,6 +1160,10 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
         parts = path.strip('/').split('/')
         if method == 'PATCH' and len(parts) == 3 and parts[:2] == ['v1', 'bots'] and isinstance(data, dict):
             return self._mutate_native_bot(parts[2], data, key, fingerprint, device_id)
+        if method in ('DELETE', 'POST') and len(parts) >= 3 and parts[:2] == ['v1', 'bots'] and (
+                method == 'DELETE' and len(parts) == 3 or parts[3:] == ['profile', 'delete']):
+            from .coconut_chat import refuse_removal
+            refuse_removal(self, parts[2])
         catalog = self._model_catalog() if path == '/v1/settings/model' or (isinstance(data, dict) and ('model_override' in data or path == '/v1/bots')) else None
         callbacks = []
         with self.transaction():
@@ -1283,6 +1295,8 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
                 bot = self._get('bots', bot_id)
             if bot.get('_deleted'):
                 raise ServiceError(404, 'This agent was deleted.')
+            from .coconut_chat import refuse_removal
+            refuse_removal(self, bot_id, data)
             if 'profile_id' in data and data['profile_id'] != bot['profile_id']:
                 raise ServiceError(409, 'An agent keeps its original Hermes profile ID.')
             for field in ('instructions', 'memory'):
@@ -3820,14 +3834,18 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
     def _record_phase(self, task_id: str, payload: dict):
         from .turn_phase import PHASES
         phase = payload.get('phase')
+        detail = payload.get('detail') if isinstance(payload.get('detail'), str) else ''
         if phase not in PHASES:
             return
         with self.transaction():
             task = self._get('tasks', task_id)
-            if task['status'] != 'working' or task.get('phase') == phase:
+            if task['status'] != 'working' or (task.get('phase'), task.get('phase_detail') or '') == (phase, detail):
                 return
             task.setdefault('turn_started_at', now())
             task['phase'] = phase
+            # The command, file or query of the phase, and its start, for the line under the newest message.
+            task['phase_detail'] = detail[:120]
+            task['phase_started_at'] = now()
             self._put('tasks', task)
             self._event('task.updated', self._public(task), task['bot_id'], task_id)
 

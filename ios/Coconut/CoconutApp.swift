@@ -46,7 +46,7 @@ struct CoconutApp: App {
     }
 }
 
-enum HomeTab: Hashable { case bots, inbox, library }
+enum HomeTab: Hashable { case bots, inbox, library, business }
 
 struct CoconutHome: View {
     @Environment(AppStore.self) private var store
@@ -64,6 +64,7 @@ struct CoconutHome: View {
     @State private var botsPath = NavigationPath()
     @State private var inboxPath = NavigationPath()
     @State private var libraryPath = NavigationPath()
+    @State private var businessPath = NavigationPath()
     @State private var keyboardVisible = false
     @State private var conversationFooters: [HomeTab: Bool] = [:]
     @State private var teamJoin: TeamJoinRequest?
@@ -72,7 +73,7 @@ struct CoconutHome: View {
     private var conversationCanMinimize: Bool? { conversationFooters[selectedTab] }
 
     private var tabBarVisibility: Visibility {
-        let activePath = switch selectedTab { case .inbox: inboxPath; case .bots: botsPath; case .library: libraryPath }
+        let activePath = switch selectedTab { case .inbox: inboxPath; case .bots: botsPath; case .library: libraryPath; case .business: businessPath }
         return keyboardVisible || (!activePath.isEmpty && conversationCanMinimize == nil) ? .hidden : .automatic
     }
 
@@ -93,6 +94,11 @@ struct CoconutHome: View {
                     Image(systemName: "bubble.left.and.bubble.right").environment(\.symbolVariants, .none)
                 }
             }.accessibilityIdentifier("home-bots")
+            Tab(value: HomeTab.business) {
+                root(tab: .business, path: $businessPath)
+            } label: {
+                Label("Business", systemImage: "square.grid.2x2")
+            }.accessibilityIdentifier("home-business")
             Tab(value: HomeTab.library) {
                 root(tab: .library, path: $libraryPath)
             } label: {
@@ -161,6 +167,7 @@ struct CoconutHome: View {
                 case .inbox: DecisionInboxView(focusDecisionId: $notificationDecisionId, refreshingDecisionId: PushNotifications.shared.target?.decisionId)
                 case .bots: HomeLaunchView()
                 case .library: LibraryView()
+                case .business: BusinessHomeView()
                 }
             }
                 .toolbar(tabBarVisibility, for: .tabBar)
@@ -186,6 +193,7 @@ struct CoconutHome: View {
                     BotExchangeView(route: route)
                 }
                 .navigationDestination(for: ArchivedAgentsRoute.self) { _ in ArchivedAgentsView() }
+                .navigationDestination(for: BusinessRoute.self) { BusinessDestinationView(route: $0) }
                 .navigationDestination(for: BotSettingsRoute.self) { route in
                     BotSettingsView(botId: route.botId)
                 }
@@ -209,12 +217,7 @@ struct CoconutHome: View {
 
     @ToolbarContentBuilder
     private func rootToolbar(inbox: Bool) -> some ToolbarContent {
-        // Settings is the one app-wide action, so both tabs show it.
-        ToolbarItem(placement: .topBarLeading) {
-            Button { settingsOpen = true } label: {
-                Image(systemName: "gearshape")
-            }.accessibilityLabel("App settings").accessibilityIdentifier("app-settings")
-        }
+        // Coconut has no settings screen: the Coconut chat at the top of Chats changes it.
         if !inbox {
             ToolbarItem(placement: .topBarTrailing) {
                 Button { createOpen = true } label: {

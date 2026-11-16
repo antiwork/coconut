@@ -3,6 +3,7 @@ import SwiftUI
 
 /// What the main window shows in its detail column.
 enum MacSelection: Hashable {
+    case business(BusinessRoute)
     case inbox
     case library
     case bot(String)
@@ -12,6 +13,8 @@ enum MacSelection: Hashable {
     case document(String)
     /// The Team chat of a team, a named chat, or a direct chat with one person or one bot of a team.
     case team(TeamChatKey)
+    /// The notice board of a team, by its room ID.
+    case notices(String)
 }
 
 /// The tabs of the details next to a chat.
@@ -139,6 +142,11 @@ struct MacMainWindow: View {
     // A new case, with or without a stack of its own, needs no code for the notice of the window (MacNoticeArea).
     @ViewBuilder private var detail: some View {
         switch selection {
+        case .business(let route):
+            NavigationStack {
+                BusinessDestinationView(route: route)
+                    .navigationDestination(for: BusinessRoute.self) { BusinessDestinationView(route: $0) }
+            }
         case .inbox, nil:
             MacInboxView(selection: $selection)
         case .library:
@@ -146,6 +154,7 @@ struct MacMainWindow: View {
                 LibraryView()
                     .navigationTitle("Library")
                     .navigationDestination(for: DocumentRoute.self) { DocumentView(documentId: $0.id) }
+                    .navigationDestination(for: BusinessRoute.self) { BusinessDestinationView(route: $0) }
             }
         case .document(let documentId):
             // A page has no links to other pages, so its stack has only the page.
@@ -201,6 +210,8 @@ struct MacMainWindow: View {
             // The pill over the chat names the bot, so the window shows no title of its own. Without this, the title of
             // the bot settings in the details repeats the bot name.
             .toolbar(removing: .title)
+        case .notices(let room):
+            NavigationStack { NoticeBoardView(roomId: room).id(room) }
         case .team(let chat):
             // A team has no details column, so the chat takes the whole detail column and has no control for one.
             NavigationStack(path: $chatPath) {
@@ -304,6 +315,7 @@ struct MacSidebar: View {
     @AppStorage("sidebar-starred-open") private var starredOpen = true
     @AppStorage("sidebar-people-open") private var peopleOpen = true
     @AppStorage("sidebar-agents-open") private var agentsOpen = true
+    @AppStorage("sidebar-notices-open") private var noticesOpen = true
     @State private var archivedOpen = false
 
     /// The bots that are not archived, newest activity first, split into the pinned bots and the other bots.
@@ -311,11 +323,15 @@ struct MacSidebar: View {
     var body: some View {
         // The store keeps the newest activity of each bot (ChatSummaries), so the sidebar reads no message. A pass
         // over the messages for each body cost about 3 ms with 1,500 messages.
-        let sections = ChatSections.make(bots: store.bots, latest: store.chatSummaries.newestActivity,
+        let sections = ChatSections.make(bots: store.bots.agents, latest: store.chatSummaries.newestActivity,
                                          rooms: store.shownTeamRooms, local: store.newestLocalMessages)
         let pins = SidebarPins(pinnedBots: sections.pinned, documents: store.documents ?? [], bots: store.bots,
                                teamBots: store.teamBots)
         return List(selection: $selection) {
+            // The Coconut chat: where the person changes Coconut. Coconut has no settings window for it.
+            if let coconut = store.bots.coconutChat {
+                CoconutChatRow(bot: coconut).tag(MacSelection.bot(coconut.id))
+            }
             MacSidebarLabel(title: "Inbox", symbol: "tray")
                 .badge(store.inboxBadgeCount)
                 .tag(MacSelection.inbox)
@@ -324,6 +340,26 @@ struct MacSidebar: View {
                 .badge(store.documents?.count ?? 0)
                 .tag(MacSelection.library)
                 .accessibilityIdentifier("sidebar-library")
+            MacSidebarLabel(title: "Business", symbol: "chart.xyaxis.line")
+                .tag(MacSelection.business(.home))
+                .accessibilityIdentifier("sidebar-business")
+            Section("Functions") {
+                ForEach(BusinessFunction.builtIns) { function in
+                    MacSidebarLabel(title: function.name, symbol: function.symbol)
+                        .tag(MacSelection.business(.function(function.key)))
+                        .accessibilityIdentifier("sidebar-function-" + function.key)
+                }
+            }
+            Section("Projects") {
+                MacSidebarLabel(title: "All projects", symbol: "square.stack.3d.up")
+                    .tag(MacSelection.business(.projects))
+                    .accessibilityIdentifier("sidebar-projects")
+                ForEach(store.businessCatalog?.projects ?? []) { project in
+                    MacSidebarLabel(title: project.displayName, symbol: "folder")
+                        .tag(MacSelection.business(.project(project.key)))
+                        .accessibilityIdentifier("sidebar-project-" + project.key)
+                }
+            }
             // The sections of Slack: each one folds with its header, and the Mac keeps the choice. A section without
             // rows does not show.
             if !sections.unread.isEmpty {
@@ -346,6 +382,22 @@ struct MacSidebar: View {
                     ForEach(pins.pages) { page in pageRow(page) }
                 }
             }
+            // The notice board of each team: a place of its own, not a chat. The count is the active notices that
+            // the person has not seen.
+            let boards = store.shownTeamRooms.filter { $0.status == .active && $0.notices != nil }
+            if !boards.isEmpty {
+                Section("Notices", isExpanded: $noticesOpen) {
+                    ForEach(boards) { room in
+                        MacSidebarRow(name: room.name, unread: room.unseenNotices) {
+                            Image(systemName: room.bannerNotice?.kind.symbol ?? "megaphone")
+                                .foregroundStyle(room.bannerNotice?.kind.tint ?? .secondary)
+                                .frame(width: 20, height: 20)
+                        }
+                        .tag(MacSelection.notices(room.room))
+                        .accessibilityIdentifier("sidebar-notices-" + room.room)
+                    }
+                }
+            }
             if !sections.people.isEmpty {
                 Section("People", isExpanded: $peopleOpen) {
                     ForEach(sections.people) { item in itemRow(item) }
@@ -357,7 +409,7 @@ struct MacSidebar: View {
                 }
             }
             // The archived agents, closed until the person opens the section. An archived chat stays readable.
-            let archived = store.bots.filter(\.archived).sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+            let archived = store.bots.agents.filter(\.archived).sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
             if !archived.isEmpty {
                 Section("Archived", isExpanded: $archivedOpen) {
                     ForEach(archived) { bot in row(bot) }
@@ -380,7 +432,9 @@ struct MacSidebar: View {
         // list is there. After that, the updates load the list again on each change of a page and on a reset.
         .task(id: store.connection == .connected) {
             if store.documents == nil { await store.loadDocuments(quiet: true) }
+            try? await store.loadBusinessCatalog()
         }
+        .task(id: store.businessChanges) { try? await store.loadBusinessCatalog() }
         .safeAreaInset(edge: .bottom) { MacConnectionFooter() }
     }
 
@@ -566,6 +620,7 @@ private struct MacBotDetails: View {
                 case .library:
                     LibraryView(botId: botId)
                         .navigationDestination(for: DocumentRoute.self) { DocumentView(documentId: $0.id) }
+                    .navigationDestination(for: BusinessRoute.self) { BusinessDestinationView(route: $0) }
                 }
             }
         }

@@ -49,6 +49,9 @@ final class AppStore {
     var learning: [LearningGroup] = []
     /// The documents of the Library, newest first, without their content. Nil until the first load.
     var documents: [BotDocument]?
+    var businessCatalog: BusinessCatalog?
+    var businessChanges = 0
+    var demoBusinessWork = BusinessWork.previews
     /// The bots of other Macs that own the team pages in `documents`. They come with each list.
     var teamBots: [TeamBot] = []
     /// Counts the pins and the deletes that the Mac confirmed to this app. A list that the app asked for before such a
@@ -158,7 +161,9 @@ final class AppStore {
     private var savedPairingLocked = false
     @ObservationIgnored private var savedPairingRetry: Task<Void, Never>?
     private var writeCount = 0
-    @ObservationIgnored private var client: APIClient?
+    @ObservationIgnored private var client: APIClient? {
+        didSet { businessCatalog = nil }
+    }
     // The one tunnel socket of a version 2 pairing. Every client of the pairing shares it.
     @ObservationIgnored private var tunnel: TunnelConnection?
     // The relay or the Mac refused this pairing. Automatic polling stays off until a pairing succeeds or the
@@ -219,9 +224,15 @@ final class AppStore {
             || tasks.contains { $0.botId == bot.id && $0.isRunning }
     }
     // The newest running task describes what the bot does now.
-    private func runningPhase(where matches: (AgentTask) -> Bool) -> (phase: BotPhase, startedAt: Date?)? {
+    private func runningPhase(where matches: (AgentTask) -> Bool) -> (phase: BotPhase, startedAt: Date?, detail: String?)? {
         guard let task = tasks.last(where: { $0.isRunning && matches($0) }) else { return nil }
-        return (task.phase.flatMap(BotPhase.init(rawValue:)) ?? .thinking, task.turnStartedAt?.apiDate)
+        let detail = task.phaseDetail.flatMap { $0.isEmpty ? nil : $0 }
+        return (task.phase.flatMap(BotPhase.init(rawValue:)) ?? .thinking, task.turnStartedAt?.apiDate, detail)
+    }
+    /// The name of the model of an agent, as its settings show it.
+    func modelName(_ botId: String) -> String? {
+        guard let model = bots.first(where: { $0.id == botId })?.effectiveModel else { return nil }
+        return modelCatalog?.name(for: model) ?? model.model
     }
     func botPhase(_ bot: Bot) -> BotPhase? {
         guard isBotActive(bot) else { return nil }
@@ -234,13 +245,16 @@ final class AppStore {
         let streams = messages.filter { $0.botId == botId && $0.role == "assistant" && $0.streaming }
         if !streams.isEmpty {
             if streams.contains(where: TranscriptPresentation.hasStreamingWords) && !reconnecting { return nil }
-            return ConversationActivity(phase: .writing, startedAt: nil, reconnecting: reconnecting)
+            let running = runningPhase(where: { $0.chatBotId == botId })
+            return ConversationActivity(phase: .writing, startedAt: running?.startedAt, reconnecting: reconnecting,
+                                        model: modelName(botId))
         }
         if let running = runningPhase(where: { $0.chatBotId == botId }) {
-            return ConversationActivity(phase: running.phase, startedAt: running.startedAt, reconnecting: reconnecting)
+            return ConversationActivity(phase: running.phase, startedAt: running.startedAt, reconnecting: reconnecting,
+                                        detail: running.detail, model: modelName(botId))
         }
         if outgoingMessages.contains(where: { $0.botId == botId && $0.expectsResponse }) {
-            return ConversationActivity(phase: .thinking, startedAt: nil, reconnecting: reconnecting)
+            return ConversationActivity(phase: .thinking, startedAt: nil, reconnecting: reconnecting, model: modelName(botId))
         }
         return nil
     }
@@ -1393,6 +1407,14 @@ final class AppStore {
         return response != nil
     }
 
+    func businessRequest<Response: Decodable & Sendable>(_ path: String, method: String = "GET", body: Data? = nil, requestId: String? = nil) async throws -> Response {
+        guard let client else { throw ServiceError.configuration("Connect your Mac to continue.") }
+        let generation = connectionGeneration
+        let response: Response = try await client.request(path, method: method, body: body, idempotencyKey: requestId, retryTransient: method != "POST")
+        guard generation == connectionGeneration else { throw CancellationError() }
+        return response
+    }
+
     func githubStatus() async throws -> GitHubConnectionStatus {
         if isDemo { return GitHubConnectionStatus(connected: false, login: nil, needsReconnect: false, pending: nil) }
         guard let client else { throw ServiceError.configuration("Connect your Mac to continue.") }
@@ -1968,6 +1990,51 @@ final class AppStore {
         // A deleted chat leaves the list of the answer, so its messages and its unsent messages go.
         dropTeamChats(teamChats.keys.filter { !teamListHas($0) })
         return answer.chat
+    }
+
+    /// Posts a notice on the board of a team (docs/team-log.md, "Notices"). Return whether the Mac posted it.
+    func postTeamNotice(_ room: TeamRoom, kind: NoticeKind, text: String, endsAt: Date?) async -> Bool {
+        await changeTeamNotices(room, path: "team/rooms/\(room.room)/notices", method: "POST",
+                                payload: TeamNoticeRequest(type: kind.rawValue, text: text,
+                                                           endsAt: endsAt.map(Self.noticeTime)),
+                                key: UUID().uuidString)
+    }
+
+    /// Closes an own notice for each member. It stays on the board as ended.
+    func closeTeamNotice(_ room: TeamRoom, notice: WorkspaceNotice) async -> Bool {
+        await changeTeamNotices(room, path: "team/rooms/\(room.room)/notices/\(notice.id)", method: "PATCH",
+                                payload: TeamNoticeChange(closed: true))
+    }
+
+    /// Removes an own notice from the board of each member.
+    func deleteTeamNotice(_ room: TeamRoom, notice: WorkspaceNotice) async -> Bool {
+        await changeTeamNotices(room, path: "team/rooms/\(room.room)/notices/\(notice.id)", method: "DELETE",
+                                payload: EmptyRequest())
+    }
+
+    /// Tells the team that this person has seen these notices. A notice that the person has seen writes nothing.
+    func markTeamNoticesSeen(_ room: TeamRoom, notices: [WorkspaceNotice]) async {
+        let ids = notices.filter { !$0.seen }.map(\.id)
+        guard !ids.isEmpty, !isDemo else { return }
+        _ = await changeTeamNotices(room, path: "team/rooms/\(room.room)/notices/seen", method: "POST",
+                                    payload: TeamNoticesSeen(notices: ids), quiet: true)
+    }
+
+    private func changeTeamNotices<Payload: Encodable>(_ room: TeamRoom, path: String, method: String,
+                                                       payload: Payload, key: String? = nil,
+                                                       quiet: Bool = false) async -> Bool {
+        let ticket = startTeamWrite(room.room)
+        let answer: TeamRoomAnswer? = await write(path, method: method, payload: payload, as: TeamRoomAnswer.self,
+                                                  quiet: quiet, refreshInBackground: true, idempotencyKey: key)
+        guard let answer else { return false }
+        applyTeamChange(room: answer.room, write: ticket)
+        return true
+    }
+
+    nonisolated static func noticeTime(_ date: Date) -> String {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime]
+        return formatter.string(from: date)
     }
 
     /// Leaves a team, or removes a team that this Mac is no longer in. The Mac deletes its copy and its keys.
@@ -3322,6 +3389,9 @@ private struct TeamReadRequest: Encodable { let first: Int; let chat: String? }
 private struct TeamTypingRequest: Encodable { let chat: String? }
 /// The body of a new chat and of a new name. A delete sends no name.
 private struct TeamChatRequest: Encodable { let name: String? }
+private struct TeamNoticeRequest: Encodable { let type: String; let text: String; let endsAt: String? }
+private struct TeamNoticeChange: Encodable { let closed: Bool }
+private struct TeamNoticesSeen: Encodable { let notices: [String] }
 /// The answer of a change of the named chats: the room, and the ID of the chat.
 private struct TeamChatAnswer: Decodable, Sendable { let room: TeamRoom; let chat: String }
 private struct InstructionsRequest: Encodable { let instructions: String }

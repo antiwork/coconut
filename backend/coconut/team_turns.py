@@ -311,6 +311,13 @@ class TeamTurns:
             rules = RULES.format(where=where)
         else:
             chat_name, rules = f'{name} · {room_row["name"]}', RULES_DIRECT.format(name=name, team=room_row['name'])
+        # The active notices of the team: a freeze, a rule or a deadline reaches each turn of its agents.
+        from .team_notices import notices_text
+        with self.lock:
+            board = notices_text([(room_row['name'],
+                                   self._team_notices_view(room_row, self.team_store.members(room)))])
+        if board:
+            rules += '\n\n' + board
         team = {'member': request['member'], 'member_name': name, 'context': context, 'rules': rules}
         if direct is not None:
             # A quote only of a message of the same chat: the same person and the same bot.

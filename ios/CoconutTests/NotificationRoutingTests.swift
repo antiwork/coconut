@@ -51,12 +51,12 @@ final class NotificationRoutingTests: XCTestCase {
         XCTAssertNil(NotificationTarget(userInfo: ["coconut": ["version": 1, "device_id": "bad", "kind": "group"]]))
     }
 
-    func testLevelDefaultsToGroupedAndOldDecisionsOffBecomesOnlyUrgent() throws {
+    func testLevelDefaultsToEveryAndOldDecisionsOffBecomesOnlyUrgent() throws {
         let isolated = try isolatedDefaults()
         defer { isolated.defaults.removePersistentDomain(forName: isolated.suiteName) }
-        XCTAssertEqual(NotificationLevel.load(from: isolated.defaults), .grouped)
+        XCTAssertEqual(NotificationLevel.load(from: isolated.defaults), .every)
         isolated.defaults.set(true, forKey: "decisionNotifications")
-        XCTAssertEqual(NotificationLevel.load(from: isolated.defaults), .grouped)
+        XCTAssertEqual(NotificationLevel.load(from: isolated.defaults), .every)
         isolated.defaults.set(false, forKey: "decisionNotifications")
         XCTAssertEqual(NotificationLevel.load(from: isolated.defaults), .urgentOnly)
         isolated.defaults.set("every", forKey: "notificationLevel")

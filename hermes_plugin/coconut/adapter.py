@@ -588,9 +588,51 @@ class CoconutAdapter(BasePlatformAdapter):
             if answer.get('id'):
                 return await self.send(chat_id, markdown_image(f'coconut-file://{answer["id"]}', caption),
                                        reply_to=reply_to, metadata=metadata)
-        # A file that is not a photo, too large, or refused gets the notice of Hermes. It does not name the path.
-        return await super().send_image_file(chat_id, image_path, caption=caption, reply_to=reply_to,
-                                             metadata=metadata, **kwargs)
+        # A file that is not photo data, or that the service refused as a photo, goes as a file card instead.
+        return await self.send_document(chat_id, image_path, caption=caption, reply_to=reply_to, metadata=metadata)
+
+    async def send_document(self, chat_id: str, file_path: str, caption=None, file_name=None, reply_to=None,
+                            metadata=None, **kwargs) -> SendResult:
+        """A file that the bot saved on this Mac, for example a PDF or a CSV. The service keeps its bytes as an
+        attachment of the bot and posts it in the chat as a file card that opens it. Hermes's own method only posts
+        "Couldn't deliver the file attachment.", because the platform had no way to send a file."""
+        path = self.validate_media_delivery_path(file_path)
+        name = os.path.basename(file_name or file_path or '') or 'file'
+        if caption:
+            await self.send(chat_id, caption, reply_to=reply_to, metadata=metadata)
+        try:
+            size = os.path.getsize(path) if path else None
+        except OSError:
+            size = None
+        if size is None:
+            return await self.send(chat_id, f'{name} could not be sent: the file is not readable on this Mac.',
+                                   reply_to=reply_to, metadata=metadata)
+        if size > PHOTO_LIMIT:
+            return await self.send(chat_id, f'{name} is {size / 1_048_576:.1f} MB, and Coconut sends files of at most '
+                                   f'{PHOTO_LIMIT // 1_048_576} MB. It stays on this Mac.',
+                                   reply_to=reply_to, metadata=metadata)
+        try:
+            content = Path(path).read_bytes()
+            turn = turn_for_chat(str(chat_id))[1]
+            answer = await self._request('/v1/gateway/files', {
+                'home': self._home, 'chat_id': str(chat_id), 'filename': name, 'document': True,
+                'content_base64': base64.b64encode(content).decode(), **({'turn_id': turn} if turn else {})})
+        except Exception as error:
+            LOG.warning('Coconut: the service did not keep a file for chat %s (%s).', chat_id, type(error).__name__)
+            answer = {}
+        if answer.get('message_id'):
+            return SendResult(success=True, message_id=answer['message_id'])
+        return await self.send(chat_id, f'{name} could not be sent to Coconut.', reply_to=reply_to, metadata=metadata)
+
+    async def send_video(self, chat_id: str, video_path: str, caption=None, reply_to=None, metadata=None,
+                         **kwargs) -> SendResult:
+        # A video goes as a file: the file card plays it.
+        return await self.send_document(chat_id, video_path, caption=caption, reply_to=reply_to, metadata=metadata)
+
+    async def send_voice(self, chat_id: str, audio_path: str, caption=None, reply_to=None, metadata=None,
+                         **kwargs) -> SendResult:
+        # Audio goes as a file too.
+        return await self.send_document(chat_id, audio_path, caption=caption, reply_to=reply_to, metadata=metadata)
 
     async def send_private_notice(self, chat_id: str, user_id, content: str, reply_to=None, metadata=None) -> SendResult:
         # The phone shows the replies of Hermes, not its gateway notices. The gateway log keeps them.

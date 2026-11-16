@@ -62,7 +62,7 @@ MAX_LACKING = 200
 MAX_TEXT = 200_000
 # `delta` stays known: a gateway that still runs the plugin of an earlier version sends partial text for each turn.
 # The bridge drops it (event), so the turn goes on with its complete sends. Remove `delta` when no install has that plugin.
-KINDS = ('typing', 'send', 'edit', 'delete', 'question', 'done', 'delta')
+KINDS = ('typing', 'send', 'edit', 'delete', 'question', 'done', 'delta', 'tool')
 QUESTION_KINDS = ('clarify', 'approval')
 
 # The chat of a turn (gateway_chat.run_gateway_chat). A turn of the bot's conversation runs in the bot's chat
@@ -284,7 +284,8 @@ class GatewayBridge:
             if kind == 'delta':
                 return {'ok': True}
             turn.events.append({key: data[key] for key in ('kind', 'text', 'message_id', 'interim', 'outcome', 'quiet',
-                                                           'question_id', 'question_kind', 'detail', 'choices')
+                                                           'question_id', 'question_kind', 'detail', 'choices',
+                                                           'tool', 'args')
                                 if key in data})
             if kind == 'done':
                 turn.state = 'done'
@@ -500,6 +501,10 @@ class TurnEvents:
             text = readable_text(text)
         if kind == 'typing':
             self._phase('thinking')
+        elif kind == 'tool':
+            # A tool call of the model: what the agent does now, with its command, file or query.
+            from .turn_phase import tool_phase
+            self._phase(*tool_phase(event.get('tool'), event.get('args')))
         elif kind == 'question':
             self.emit('gateway_question', {key: event.get(key) for key in (
                 'question_id', 'question_kind', 'text', 'detail', 'choices')} | {'turn_id': self.turn_id})
@@ -555,11 +560,11 @@ class TurnEvents:
             self.emit('interim_seal', {})
             self.segment, self.text = None, ''
 
-    def _phase(self, phase):
-        if self.phase != phase:
-            self.phase = phase
+    def _phase(self, phase, detail=''):
+        if self.phase != (phase, detail):
+            self.phase = (phase, detail)
             # A phase only labels progress, as in the worker path.
             try:
-                self.emit('phase', {'phase': phase})
+                self.emit('phase', {'phase': phase, 'detail': detail} if detail else {'phase': phase})
             except Exception:
                 pass

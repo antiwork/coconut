@@ -358,6 +358,17 @@ class Handler(BaseHTTPRequestHandler):
                     self._json(200, service.updates(after, wait, collection_deltas=self.headers.get('X-Coconut-Updates') in ('2', '3', '4'),
                         native_events=self.headers.get('X-Coconut-Updates') in ('3', '4'),
                         compact_history=self.headers.get('X-Coconut-Updates') == '4', recent_work=self.recent_work))
+                elif url.path == '/v1/business':
+                    self._json(200, service.business.catalog(fresh=parse_qs(url.query).get('fresh') == ['1']))
+                elif url.path == '/v1/business/work':
+                    query = parse_qs(url.query)
+                    self._json(200, service.business.work(query.get('function', [None])[0], query.get('project', [None])[0], query.get('state', ['open'])[0]))
+                elif url.path.startswith('/v1/business/reports/'):
+                    from .business_reports import report
+                    self._json(200, report(service.business, url.path.rsplit('/', 1)[1]))
+                elif url.path == '/v1/business/ledger':
+                    from .business_reports import ledger
+                    self._json(200, ledger(service.business, parse_qs(url.query).get('path', [None])[0]))
                 elif url.path == '/v1/settings/github':
                     self._json(200, service.github_connection('status'))
                 elif url.path == '/v1/settings/google':
