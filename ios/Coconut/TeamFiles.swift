@@ -201,7 +201,14 @@ enum FileFit {
     /// - A GIF never changes, because a JPEG loses its frames. A GIF over the limit does not fit.
     /// - Each other file must be 1 byte to the limit as it is.
     /// `width` and `height` are the pixels that go to the Mac.
-    static func fit(_ data: Data, name: String, limit: Int = TeamFileRules.largest) -> FittedFile? {
+    ///
+    /// With `removesPosition` (the team chats), no image leaves the phone or the Mac with a GPS position. A new JPEG
+    /// carries no metadata. An image that stays as it is goes as a copy without the GPS data and without a new encode
+    /// of its pixels. When that copy fails or is over the limit, the image becomes a JPEG: never the bytes with the
+    /// position. An image without a position keeps its bytes. The agent chat sends to the Mac of the person and keeps
+    /// the metadata.
+    static func fit(_ data: Data, name: String, limit: Int = TeamFileRules.largest,
+                    removesPosition: Bool = true) -> FittedFile? {
         guard !data.isEmpty else { return nil }
         guard let source = CGImageSourceCreateWithData(data as CFData, nil),
               let identifier = CGImageSourceGetType(source) as String?, let kind = UTType(identifier),
@@ -212,13 +219,17 @@ enum FileFit {
         }
         let (width, height) = size
         let longest = max(width, height)
-        if kind.conforms(to: .gif) {
-            guard data.count <= limit else { return nil }
-            return kept(data, name: name, kind: kind, width: width, height: height)
-        }
+        let position = removesPosition && hasPosition(source)
+        let gif = kind.conforms(to: .gif)
         let heif = kind.conforms(to: .heic) || kind.conforms(to: .heif)
-        if !heif && longest <= longestSide && data.count <= limit {
-            return kept(data, name: name, kind: kind, width: width, height: height)
+        if gif || (!heif && longest <= longestSide && data.count <= limit) {
+            guard data.count <= limit || !gif else { return nil }
+            guard position else { return kept(data, name: name, kind: kind, width: width, height: height) }
+            // A GIF has no EXIF block, and ImageIO reads no GPS data from one in practice. If a GIF ever shows a
+            // position, it goes as a copy without it, else as a JPEG of its first frame.
+            if let copy = withoutPosition(source, kind: kind), copy.count <= limit {
+                return kept(copy, name: name, kind: kind, width: width, height: height)
+            }
         }
         guard let image = downsampledImage(data, largestSide: min(longest, longestSide)) else { return nil }
         for quality in [quality, 0.6, 0.4] {
@@ -228,6 +239,33 @@ enum FileFit {
             }
         }
         return nil
+    }
+
+    /// The image has a GPS position: in its EXIF data (the GPS dictionary of ImageIO) or in its XMP data.
+    static func hasPosition(_ source: CGImageSource) -> Bool {
+        let image = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any]
+        let container = CGImageSourceCopyProperties(source, nil) as? [CFString: Any]
+        if image?[kCGImagePropertyGPSDictionary] != nil || container?[kCGImagePropertyGPSDictionary] != nil {
+            return true
+        }
+        guard let metadata = CGImageSourceCopyMetadataAtIndex(source, 0, nil) else { return false }
+        return [kCGImagePropertyGPSLatitude, kCGImagePropertyGPSLongitude].contains { key in
+            CGImageMetadataCopyTagMatchingImageProperty(metadata, kCGImagePropertyGPSDictionary, key) != nil
+        }
+    }
+
+    /// A copy of the image without its GPS data. ImageIO copies the encoded pixels and leaves out the position. Nil
+    /// when the copy fails, or when it still has a position.
+    private static func withoutPosition(_ source: CGImageSource, kind: UTType) -> Data? {
+        let buffer = NSMutableData()
+        guard let destination = CGImageDestinationCreateWithData(buffer, kind.identifier as CFString,
+                                                                 CGImageSourceGetCount(source), nil),
+              CGImageDestinationCopyImageSource(destination, source,
+                                                [kCGImageMetadataShouldExcludeGPS: true] as CFDictionary, nil)
+        else { return nil }
+        let data = buffer as Data
+        guard let copy = CGImageSourceCreateWithData(data as CFData, nil), !hasPosition(copy) else { return nil }
+        return data
     }
 
     private static func kept(_ data: Data, name: String, kind: UTType, width: Int, height: Int) -> FittedFile {
@@ -265,8 +303,10 @@ enum FileFit {
     }
 
     /// `fit` away from the main thread: a camera photo takes a moment to decode and encode.
-    static func fitted(_ file: PickedFile) async -> FittedFile? {
-        await Task.detached(priority: .userInitiated) { fit(file.data, name: file.name) }.value
+    static func fitted(_ file: PickedFile, removesPosition: Bool = true) async -> FittedFile? {
+        await Task.detached(priority: .userInitiated) {
+            fit(file.data, name: file.name, removesPosition: removesPosition)
+        }.value
     }
 
     /// The name of a photo from the photo library, which has no file name: "Photo 10.42.05.jpg".

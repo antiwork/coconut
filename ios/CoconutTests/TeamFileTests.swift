@@ -114,35 +114,94 @@ final class TeamFileTests: XCTestCase {
         XCTAssertEqual(chat.newestLocal?.text, "Plan.pdf")
     }
 
+    /// A file that is not complete gives a photo that is not ready: its tile opens nothing, and a viewer page waits.
+    /// A later view with the file complete gives the same address, now ready, so the page loads it.
+    func testAPhotoTurnsReadyWithTheSameAddress() throws {
+        let message = String(repeating: "b", count: 32)
+        var file = TeamFile(id: Self.file, name: "a.jpg", type: "image/jpeg", size: 10, complete: false)
+        func photo() throws -> MessagePhoto {
+            let saved = TeamMessage(id: message, first: 1, text: "", createdAt: "2026-11-16T10:00:00Z", files: [file])
+            var chat = TeamChat()
+            chat.messages = [saved]
+            return try XCTUnwrap(TeamChatRow.rows(chat).first?.photos(room: Self.room).first)
+        }
+        let waiting = try photo()
+        file.complete = true
+        let ready = try photo()
+        XCTAssertFalse(waiting.ready)
+        XCTAssertTrue(ready.ready)
+        XCTAssertEqual(waiting.url, ready.url)
+    }
+
     // MARK: Composer
 
     /// Send is on with a text or with a file, and off while a file uploads. The composer takes at most four files, and
     /// a chip removes its draft.
-    func testTheComposerSendsATextOrAFileAndTakesAtMostFour() {
+    func testTheComposerSendsATextOrAFileAndTakesAtMostFour() throws {
         var state = TeamComposerState()
         XCTAssertFalse(state.canSend(enabled: true))
-        XCTAssertTrue(state.startUpload())
+        let first = try XCTUnwrap(state.startUpload())
         XCTAssertFalse(state.canSend(enabled: true), "A file on its way.")
-        state.finishUpload(TeamFile(id: "d1", name: "a.png", size: 1))
+        state.finishUpload(first, TeamFile(id: "d1", name: "a.png", size: 1))
         XCTAssertTrue(state.canSend(enabled: true), "One file and no text.")
         XCTAssertFalse(state.canSend(enabled: false))
         for index in 2...4 {
-            XCTAssertTrue(state.startUpload())
-            state.finishUpload(TeamFile(id: "d\(index)", name: "\(index).png", size: 1))
+            let id = try XCTUnwrap(state.startUpload())
+            state.finishUpload(id, TeamFile(id: "d\(index)", name: "\(index).png", size: 1))
         }
         XCTAssertFalse(state.canAddFile)
-        XCTAssertFalse(state.startUpload(), "A fifth file does not fit.")
+        XCTAssertNil(state.startUpload(), "A fifth file does not fit.")
         XCTAssertEqual(state.uploading, 0)
         XCTAssertEqual(state.removeFile("d2")?.name, "2.png")
         XCTAssertEqual(state.files.map(\.id), ["d1", "d3", "d4"])
-        XCTAssertTrue(state.startUpload(), "A removed chip makes space.")
-        state.finishUpload(nil)
+        let again = try XCTUnwrap(state.startUpload(), "A removed chip makes space.")
+        state.finishUpload(again, nil)
         XCTAssertEqual(state.files.count, 3, "A failed upload adds no chip.")
+        XCTAssertEqual(state.uploading, 0, "A failed upload gives its place back.")
         state.sent()
         XCTAssertEqual(state.files, [])
         XCTAssertFalse(state.canSend(enabled: true))
         state.draft = "Hi"
         XCTAssertTrue(state.canSend(enabled: true))
+    }
+
+    /// Photos count as on their way from the pick, also while they still load: Send stays off, and the limit counts
+    /// them.
+    func testPickedPhotosCountFromThePick() throws {
+        var state = TeamComposerState()
+        state.draft = "Two photos"
+        state.files = [TeamFile(id: "d1", name: "a.png", size: 1), TeamFile(id: "d2", name: "b.png", size: 1)]
+        let one = try XCTUnwrap(state.startUpload())
+        let two = try XCTUnwrap(state.startUpload())
+        XCTAssertFalse(state.canSend(enabled: true), "No load ended yet.")
+        XCTAssertFalse(state.canAddFile, "Two files and two picks are four.")
+        XCTAssertEqual(state.uploading, 2)
+        state.finishUpload(two, nil)
+        XCTAssertFalse(state.canSend(enabled: true), "The first photo still loads.")
+        XCTAssertTrue(state.canAddFile, "A failed load gives its place back.")
+        state.finishUpload(one, TeamFile(id: "d3", name: "c.png", size: 1))
+        XCTAssertTrue(state.canSend(enabled: true))
+        XCTAssertEqual(state.files.map(\.id), ["d1", "d2", "d3"])
+    }
+
+    /// The files keep the order of the picks, also when the first upload ends last.
+    func testTheFilesKeepTheOrderOfThePicks() throws {
+        var state = TeamComposerState()
+        let ids = try (1...3).map { _ in try XCTUnwrap(state.startUpload()) }
+        state.finishUpload(ids[1], TeamFile(id: "d2", name: "2.png", size: 1))
+        state.finishUpload(ids[2], TeamFile(id: "d3", name: "3.png", size: 1))
+        XCTAssertEqual(state.files, [], "The later files wait for the first one.")
+        XCTAssertFalse(state.canSend(enabled: true))
+        state.finishUpload(ids[0], TeamFile(id: "d1", name: "1.png", size: 1))
+        XCTAssertEqual(state.files.map(\.id), ["d1", "d2", "d3"])
+        XCTAssertEqual(state.uploading, 0)
+        // The agent chat composer uses the same order.
+        var uploads = OrderedUploads<String>()
+        let a = uploads.start(), b = uploads.start(), c = uploads.start()
+        XCTAssertEqual(uploads.finish(c, "3"), [])
+        XCTAssertEqual(uploads.finish(a, "1"), ["1"])
+        XCTAssertEqual(uploads.finish(b, nil), ["3"], "A failure leaves no gap.")
+        XCTAssertEqual(uploads.count, 0)
     }
 
     /// An edit needs a text, except for a message with files, which the Mac takes with an empty text.
@@ -159,7 +218,7 @@ final class TeamFileTests: XCTestCase {
 
     // MARK: Fit
 
-    private func image(width: Int, height: Int, type: UTType, noise: Bool = false) throws -> Data {
+    private func image(width: Int, height: Int, type: UTType, noise: Bool = false, gps: Bool = false) throws -> Data {
         let context = try XCTUnwrap(CGContext(data: nil, width: width, height: height, bitsPerComponent: 8,
                                               bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(),
                                               bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
@@ -173,9 +232,52 @@ final class TeamFileTests: XCTestCase {
         }
         let buffer = NSMutableData()
         let destination = try XCTUnwrap(CGImageDestinationCreateWithData(buffer, type.identifier as CFString, 1, nil))
-        CGImageDestinationAddImage(destination, try XCTUnwrap(context.makeImage()), nil)
+        let position: [CFString: Any] = [kCGImagePropertyGPSDictionary: [
+            kCGImagePropertyGPSLatitude: 52.37, kCGImagePropertyGPSLatitudeRef: "N",
+            kCGImagePropertyGPSLongitude: 4.89, kCGImagePropertyGPSLongitudeRef: "E"]]
+        CGImageDestinationAddImage(destination, try XCTUnwrap(context.makeImage()),
+                                   gps ? position as CFDictionary : nil)
         XCTAssertTrue(CGImageDestinationFinalize(destination))
         return buffer as Data
+    }
+
+    private func hasGPS(_ data: Data) throws -> Bool {
+        FileFit.hasPosition(try XCTUnwrap(CGImageSourceCreateWithData(data as CFData, nil)))
+    }
+
+    // MARK: Position
+
+    /// A JPEG within 2400 pixels with a GPS position goes out at the same size without the position.
+    func testAPhotoThatStaysLosesItsPosition() throws {
+        let jpeg = try image(width: 800, height: 600, type: .jpeg, gps: true)
+        XCTAssertTrue(try hasGPS(jpeg), "The test photo has a position.")
+        let fitted = try XCTUnwrap(FileFit.fit(jpeg, name: "IMG_3.JPG"))
+        XCTAssertFalse(try hasGPS(fitted.data))
+        XCTAssertEqual([fitted.width, fitted.height], [800, 600])
+        XCTAssertEqual(fitted.type, "image/jpeg")
+        XCTAssertEqual(fitted.name, "IMG_3.JPG", "A copy, not a new JPEG.")
+        let source = try XCTUnwrap(CGImageSourceCreateWithData(fitted.data as CFData, nil))
+        let properties = try XCTUnwrap(CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any])
+        XCTAssertNil(properties[kCGImagePropertyGPSDictionary])
+        XCTAssertEqual(properties[kCGImagePropertyPixelWidth] as? Int, 800)
+        // The agent chat sends to the Mac of the person and keeps the metadata.
+        XCTAssertEqual(FileFit.fit(jpeg, name: "IMG_3.JPG", removesPosition: false)?.data, jpeg)
+    }
+
+    /// The same photo without a position goes out with its own bytes.
+    func testAPhotoWithoutAPositionKeepsItsBytes() throws {
+        let jpeg = try image(width: 800, height: 600, type: .jpeg)
+        XCTAssertFalse(try hasGPS(jpeg))
+        XCTAssertEqual(FileFit.fit(jpeg, name: "IMG_4.JPG")?.data, jpeg)
+    }
+
+    /// A photo over 2400 pixels becomes a new JPEG, which carries no position.
+    func testALargePhotoWithAPositionLosesIt() throws {
+        let jpeg = try image(width: 3000, height: 2000, type: .jpeg, gps: true)
+        XCTAssertTrue(try hasGPS(jpeg))
+        let fitted = try XCTUnwrap(FileFit.fit(jpeg, name: "IMG_5.JPG"))
+        XCTAssertEqual([fitted.width, fitted.height], [2400, 1600])
+        XCTAssertFalse(try hasGPS(fitted.data))
     }
 
     /// A PNG under the limit goes as it is, with its size in pixels.

@@ -57,8 +57,10 @@ struct ComposerAttachmentSources: ViewModifier {
     let pasteEnabled: Bool
     /// A file of the file importer. The composer reads it, because it knows the limits of its chat.
     let file: (URL) -> Void
-    /// A photo of the photo library.
-    let photo: (PickedFile) -> Void
+    /// A photo of the photo library, at the moment of the pick: the composer counts it as on its way at once, then
+    /// calls the loader. The loader gives nil, after a text for the error banner, when the photo does not load. The
+    /// photos of one pick come in the order of the pick.
+    let photo: (@escaping @MainActor () async -> PickedFile?) -> Void
     /// A file or an image of Command-V on a Mac.
     let paste: (PickedFile) -> Void
     /// A text for the error banner.
@@ -81,18 +83,20 @@ struct ComposerAttachmentSources: ViewModifier {
             .onChange(of: picked) { _, items in
                 guard !items.isEmpty else { return }
                 picked = []
-                Task {
-                    let date = Date.now
-                    for (index, item) in items.enumerated() {
+                let date = Date.now
+                for (index, item) in items.enumerated() {
+                    // A photo from iCloud can take seconds to load. The composer counts it from now on, so Send
+                    // stays off until it is there.
+                    photo {
                         guard let data = try? await item.loadTransferable(type: Data.self) else {
                             report("The photo did not load.")
-                            continue
+                            return nil
                         }
                         let ext = item.supportedContentTypes.first?.preferredFilenameExtension ?? "jpg"
                         // The photos of one pick have one time, so each one after the first gets its number.
                         let name = FileFit.photoName(at: date, ext: ext)
-                        photo(PickedFile(data: data, name: index == 0 ? name
-                                         : (name as NSString).deletingPathExtension + " \(index + 1)." + ext))
+                        return PickedFile(data: data, name: index == 0 ? name
+                                          : (name as NSString).deletingPathExtension + " \(index + 1)." + ext)
                     }
                 }
             }
@@ -111,6 +115,43 @@ extension PickedFile {
               size > 0, size <= TeamFileRules.largestRead,
               let data = try? Data(contentsOf: url, options: .mappedIfSafe) else { return nil }
         return PickedFile(data: data, name: url.lastPathComponent)
+    }
+}
+
+/// The attachments on their way to the Mac, in the order of the picks. Each upload can end at its own time, also a
+/// later one before an earlier one. The results come out in the order of the picks, so a message carries its files in
+/// that order. A failed upload ends its place and gives nothing.
+struct OrderedUploads<Value: Equatable>: Equatable {
+    private var order: [UUID] = []
+    private var ended: [UUID: Value?] = [:]
+
+    /// The uploads that did not come out yet, also ended ones that wait for an earlier one. A failed one gives its
+    /// place back at once.
+    var count: Int {
+        order.filter { id in
+            guard let result = ended[id] else { return true }
+            return result != nil
+        }.count
+    }
+
+    /// A pick: its place in the order.
+    mutating func start() -> UUID {
+        let id = UUID()
+        order.append(id)
+        return id
+    }
+
+    /// An upload ended with its value, or nil for a failure. Returns the values that can come out now, in order.
+    mutating func finish(_ id: UUID, _ value: Value?) -> [Value] {
+        guard order.contains(id) else { return [] }
+        ended[id] = .some(value)
+        var ready: [Value] = []
+        while let first = order.first, let result = ended[first] {
+            order.removeFirst()
+            ended[first] = nil
+            if let result { ready.append(result) }
+        }
+        return ready
     }
 }
 

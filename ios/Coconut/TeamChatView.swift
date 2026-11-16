@@ -1106,8 +1106,8 @@ struct TeamChatComposer: View {
                                             photoLimit: TeamFileRules.limit - state.files.count - state.uploading,
                                             pasteEnabled: files != nil && editing == nil && focused && enabled) { url in
             guard let picked = PickedFile.read(url) else { return report(TeamFileRules.sizeText) }
-            add(picked)
-        } photo: { add($0) } paste: { add($0) } report: { report($0) })
+            add { picked }
+        } photo: { add($0) } paste: { picked in add { picked } } report: { report($0) })
         // A sent or cancelled draft leaves no caret in the old text.
         .onChange(of: text) { _, value in if value.isEmpty { selection = nil } }
         // A new first link drops the old preview at once, and its page loads after a pause in typing. The send never
@@ -1122,14 +1122,15 @@ struct TeamChatComposer: View {
         }
     }
 
-    /// A picked file goes to the Mac as a draft at once. Its chip shows when the Mac has it. A fifth file says why
-    /// it does not fit.
-    private func add(_ picked: PickedFile) {
+    /// A picked file counts as on its way from the pick, and goes to the Mac as a draft when it has loaded. Its chip
+    /// shows when the Mac has it and each earlier pick is done, so the chips keep the order of the picks. The uploads
+    /// run side by side. A fifth file says why it does not fit.
+    private func add(_ load: @escaping @MainActor () async -> PickedFile?) {
         guard let files else { return }
-        guard state.startUpload() else { return report(TeamFileRules.limitText) }
+        guard let id = state.startUpload() else { return report(TeamFileRules.limitText) }
         Task {
-            let file = await files.upload(picked)
-            state.finishUpload(file)
+            let file: TeamFile? = if let picked = await load() { await files.upload(picked) } else { nil }
+            state.finishUpload(id, file)
         }
     }
 

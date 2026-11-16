@@ -696,23 +696,25 @@ struct TeamComposerState: Equatable {
     /// The drafts on the Mac that go with the next message, in the order of the picks. A chip above the field shows
     /// each one.
     var files: [TeamFile] = []
-    /// The picked files that are on their way to the Mac. The plus control shows the hourglass meanwhile.
-    var uploading = 0
+    /// The picked files from the moment of the pick until the Mac has their drafts: a photo that still loads, the fit
+    /// step and the upload. The plus control shows the hourglass meanwhile, and Send is off.
+    var uploads = OrderedUploads<TeamFile>()
+    var uploading: Int { uploads.count }
 
     /// One more file fits the message: the drafts and the uploads count.
     var canAddFile: Bool { files.count + uploading < TeamFileRules.limit }
 
-    /// An upload starts. False when the message already has the most files: the composer then says why.
-    mutating func startUpload() -> Bool {
-        guard canAddFile else { return false }
-        uploading += 1
-        return true
+    /// A pick: its place among the files. Nil when the message already has the most files: the composer then says
+    /// why.
+    mutating func startUpload() -> UUID? {
+        guard canAddFile else { return nil }
+        return uploads.start()
     }
 
-    /// An upload ended: the draft of the Mac, or nil for a failure.
-    mutating func finishUpload(_ file: TeamFile?) {
-        uploading = max(uploading - 1, 0)
-        if let file { files.append(file) }
+    /// An upload ended: the draft of the Mac, or nil for a failure. The drafts take the order of the picks, also when
+    /// a later upload ends first.
+    mutating func finishUpload(_ id: UUID, _ file: TeamFile?) {
+        files += uploads.finish(id, file)
     }
 
     /// The cross of a chip: the draft goes from the message. Returns it, so the Mac can drop it.

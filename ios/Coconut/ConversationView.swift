@@ -849,8 +849,8 @@ struct ConversationComposer: View {
     @State private var importing = false
     @State private var pickingPhotos = false
     @Binding var attachments: [Artifact]
-    /// The attachments on their way to the Mac.
-    @State private var uploads = 0
+    /// The attachments from the pick until the Mac has them, in the order of the picks.
+    @State private var uploads = OrderedUploads<Artifact>()
     @Binding var scheduling: Bool
     @Binding var scheduledAt: Date
     @Binding var mentions: [SelectedBotMention]
@@ -936,10 +936,12 @@ struct ConversationComposer: View {
         .modifier(ComposerAttachmentSources(importing: $importing, pickingPhotos: $pickingPhotos,
                                             pasteEnabled: focused && connected && !uploading) { url in
             upload { await store.uploadAttachment(bot: bot, url: url) }
-        } photo: { picked in
+        } photo: { load in
             upload {
-                // A photo of the library can be a HEIC image or larger than the limit.
-                guard let fitted = await FileFit.fitted(picked) else {
+                guard let picked = await load() else { return nil }
+                // A photo of the library can be a HEIC image or larger than the limit. The Mac of the person gets it
+                // with its metadata, as a file of the file importer.
+                guard let fitted = await FileFit.fitted(picked, removesPosition: false) else {
                     store.error = TeamFileRules.sizeText
                     return nil
                 }
@@ -950,13 +952,15 @@ struct ConversationComposer: View {
         } report: { store.error = $0 })
     }
 
-    private var uploading: Bool { uploads > 0 }
+    private var uploading: Bool { uploads.count > 0 }
 
-    private func upload(_ work: @escaping () async -> Artifact?) {
+    /// The upload counts from the pick. The attachments take the order of the picks, also when a later upload ends
+    /// first.
+    private func upload(_ work: @escaping @MainActor () async -> Artifact?) {
+        let id = uploads.start()
         Task {
-            uploads += 1
-            if let artifact = await work() { attachments.append(artifact) }
-            uploads -= 1
+            let artifact = await work()
+            attachments += uploads.finish(id, artifact)
         }
     }
 
