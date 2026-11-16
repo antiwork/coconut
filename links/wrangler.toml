@@ -1,0 +1,21 @@
+# The web form of an invite link, https://coconut.gumroad.com/i/<token>, and the associated domain file which tells iOS
+# and macOS that the app owns that path (docs/team-log.md, "Invite and join"). The host is a worker route on the zone of
+# the site, and DNS points it at the Worker.
+name = "coconut-links"
+account_id = "7c48de80b2886bfac114048cdb29febb"
+main = "src/worker.js"
+compatibility_date = "2026-09-10"
+workers_dev = true
+
+[[routes]]
+pattern = "https://coconut.gumroad.com/*"
+zone_name = "gumroad.com"
+
+[vars]
+APP_BUNDLE_ID = "com.gumroad.coconut"
+MAC_BUNDLE_ID = "com.gumroad.coconut.mac"
+APPLE_TEAM_ID = "66LJACJ2U7"
+
+# A page about an invite holds a secret, so this Worker keeps no log of a request.
+[observability]
+enabled = false

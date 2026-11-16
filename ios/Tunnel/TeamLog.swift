@@ -12,6 +12,12 @@ enum TeamLog {
     static let version: UInt8 = 1
     /// The version of an invite link.
     static let linkVersion: UInt8 = 1
+    /// The web form of an invite link: `https://coconut.gumroad.com/i/<token>`. It opens the app through the
+    /// associated domain, and its page tells a person without the app what to install. A person shares this form,
+    /// because a mail or a chat keeps an https link (docs/team-log.md, "Invite and join").
+    static let webHost = "coconut.gumroad.com"
+    static let webPath = "/i/"
+    static let webPrefix = "https://coconut.gumroad.com/i/"
     /// A room ID, a member ID (the public member key), a room key and an invite secret have 32 bytes.
     static let longLength = 32
     static let entryLength = 16
@@ -253,8 +259,30 @@ enum TeamLog {
         return linkPrefix + base32(packed)
     }
 
+    /// The web form of the link of an invite: `https://coconut.gumroad.com/i/<token>`. A person shares this one, and
+    /// `invite(link:)` reads it back, so the app, the tool and the service take either form.
+    static func webLink(_ invite: Invite) throws -> String {
+        try webPrefix + String(try link(invite).dropFirst(linkPrefix.count))
+    }
+
+    /// The web form of a link that this code made, without packing the invite again.
+    static func webLink(fromLink link: String) -> String? {
+        guard link.hasPrefix(linkPrefix) else { return nil }
+        return webPrefix + String(link.dropFirst(linkPrefix.count))
+    }
+
+    /// The token of an invite link, in the form of the app or in the web form. A browser adds one slash at the end of
+    /// a path, so the web form takes it.
+    private static func inviteToken(_ link: String) -> String? {
+        let text = link.trimmingCharacters(in: .whitespacesAndNewlines)
+        if text.hasPrefix(linkPrefix) { return String(text.dropFirst(linkPrefix.count)) }
+        guard text.hasPrefix(webPrefix) else { return nil }
+        let token = String(text.dropFirst(webPrefix.count))
+        return token.hasSuffix("/") ? String(token.dropLast()) : token
+    }
+
     static func invite(link: String) throws -> Invite {
-        guard link.hasPrefix(linkPrefix), let packed = bytes(base32: String(link.dropFirst(linkPrefix.count))),
+        guard let token = inviteToken(link), let packed = bytes(base32: token),
               let first = packed.first else { throw Failure.malformed }
         guard first <= linkVersion else { throw Failure.unknownVersion }
         guard first == linkVersion, packed.count >= linkFixed else { throw Failure.malformed }
@@ -271,7 +299,8 @@ enum TeamLog {
                       expires: uint32(packed[expiresStart..<expiresStart + 4]), relay: relay, name: name)
     }
 
-    private static let linkPrefix = "coconut://team/"
+    /// The prefix of the link of an invite, which the app, the Mac tool and the service all read.
+    static let linkPrefix = "coconut://team/"
 
     /// An HTTPS origin without a path or account details, as for a pairing link, and with a host name: not an
     /// address in numbers and not a name without a dot, such as `localhost`. So a changed link cannot send a Mac

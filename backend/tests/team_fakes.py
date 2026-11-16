@@ -193,11 +193,17 @@ class FakeHelper:
 
     def invite(self, link: str) -> dict:
         self._call('invite')
+        # A link comes in the form of the app or in its web form, as the helper reads it (TeamLog.invite).
+        text = link.strip()
+        if text.startswith('https://coconut.gumroad.com/i/'):
+            text = 'coconut://team/' + text.removeprefix('https://coconut.gumroad.com/i/').rstrip('/')
+        if not text.startswith('coconut://team/'):
+            raise TeamFormatError('malformed')
         try:
-            fields = decode(link.removeprefix('coconut://team/'))
+            fields = decode(text.removeprefix('coconut://team/'))
         except ValueError:
             raise TeamFormatError('malformed') from None
-        if not link.startswith('coconut://team/') or not isinstance(fields, dict):
+        if not isinstance(fields, dict):
             raise TeamFormatError('malformed')
         if fields.pop('version') > 1:
             raise TeamFormatError('unknown_version')
