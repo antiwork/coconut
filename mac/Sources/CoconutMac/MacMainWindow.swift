@@ -3,13 +3,16 @@ import SwiftUI
 
 /// What the main window shows in its detail column.
 enum MacSelection: Hashable {
-    case business(BusinessRoute)
     /// Home: what needs attention, what is unread, and what is in progress.
     case home
     /// The cards that wait for an answer. A card row of Home opens them.
     case inbox
     /// The agents as projects. The page of an agent and its pages open on the stack of this place.
     case agents
+    /// The teams, their people and their notice boards.
+    case people
+    /// The person and this device.
+    case profile
     case bot(String)
     /// A To-do of an agent: its chat, with the work item attached.
     case work(String)
@@ -17,8 +20,6 @@ enum MacSelection: Hashable {
     case document(String)
     /// The Team chat of a team, a named chat, or a direct chat with one person or one bot of a team.
     case team(TeamChatKey)
-    /// The notice board of a team, by its room ID.
-    case notices(String)
 }
 
 /// The tabs of the details next to a chat: the settings of the agent, and its pages.
@@ -155,11 +156,12 @@ struct MacMainWindow: View {
         }
     }
 
-    /// The stack of a place that is no chat: the agents, with each page that they open.
+    /// The stack of a place that is no chat: Home, the agents, People or Profile, with each page that they open.
     private func placeStack(@ViewBuilder _ root: () -> some View) -> some View {
         NavigationStack(path: $chatPath) {
             root()
                 .modifier(AgentDestinations())
+                .modifier(ProfileDestinations())
                 .navigationDestination(for: ConversationRoute.self) { route in
                     ConversationView(botId: route.botId, focusDecisionId: route.decisionId,
                                      focusMessageId: route.messageId, attachedWork: route.workContext)
@@ -193,25 +195,24 @@ struct MacMainWindow: View {
             selection = .inbox
         case .agent(let botId): go(.agents, pushing: [AgentRoute(botId: botId)])
         case .agents: go(.agents)
-        case .connection: Task { await store.reconnect() }
-        case .notices(let room): selection = .notices(room)
+        case .connection: go(.profile, pushing: [ProfileRoute.mac])
+        case .notices(let room): go(.people, pushing: [NoticeBoardRoute(roomId: room)])
         }
     }
 
     // A new case, with or without a stack of its own, needs no code for the notice of the window (MacNoticeArea).
     @ViewBuilder private var detail: some View {
         switch selection {
-        case .business(let route):
-            NavigationStack {
-                BusinessDestinationView(route: route)
-                    .navigationDestination(for: BusinessRoute.self) { BusinessDestinationView(route: $0) }
-            }
         case .home, nil:
-            NavigationStack { HomeView { open($0) }.navigationTitle("Home") }
+            placeStack { HomeView { open($0) }.navigationTitle("Home") }
         case .inbox:
             MacInboxView(selection: $selection, first: inboxCard)
         case .agents:
             placeStack { AgentsView(create: { createOpen = true }).navigationTitle("Agents") }
+        case .people:
+            placeStack { PeopleView(openTeamChat: { selection = .team($0) }).navigationTitle("People") }
+        case .profile:
+            placeStack { ProfileView().navigationTitle("Profile") }
         case .document(let documentId):
             // A page has no links to other pages, so its stack has only the page.
             NavigationStack { DocumentView(documentId: documentId).id(documentId) }
@@ -231,7 +232,7 @@ struct MacMainWindow: View {
                 .toolbarBackgroundVisibility(.hidden, for: .windowToolbar)
                 .toolbar(removing: .title)
             } else {
-                NavigationStack { HomeView { open($0) }.navigationTitle("Home") }
+                placeStack { HomeView { open($0) }.navigationTitle("Home") }
             }
         case .bot(let botId):
             // The details are a column of fixed width next to the chat, not an inspector. Next to a chat, the
@@ -266,8 +267,6 @@ struct MacMainWindow: View {
             // The pill over the chat names the bot, so the window shows no title of its own. Without this, the title of
             // the bot settings in the details repeats the bot name.
             .toolbar(removing: .title)
-        case .notices(let room):
-            NavigationStack { NoticeBoardView(roomId: room).id(room) }
         case .team(let chat):
             // A team has no details column, so the chat takes the whole detail column and has no control for one.
             NavigationStack(path: $chatPath) {
@@ -360,18 +359,16 @@ struct DetailColumnBottomInset: NSViewRepresentable {
     }
 }
 
-/// The sidebar: Home, the pinned bots and the pinned pages, and the chats: every other bot and each team, with the
+/// The sidebar: the Coconut chat, then Home, Agents, People and Profile, then the chats: the pinned bots and the pinned pages, and the chats: every other bot and each team, with the
 /// last message.
 struct MacSidebar: View {
     @Environment(AppStore.self) private var store
     @Binding var selection: MacSelection?
     @State private var deleting: Bot?
     @AppStorage("sidebar-unreads-open") private var unreadsOpen = true
-    @AppStorage("sidebar-todos-open") private var todosOpen = true
     @AppStorage("sidebar-starred-open") private var starredOpen = true
     @AppStorage("sidebar-people-open") private var peopleOpen = true
     @AppStorage("sidebar-agents-open") private var agentsOpen = true
-    @AppStorage("sidebar-notices-open") private var noticesOpen = true
     @State private var archivedOpen = false
 
     /// The bots that are not archived, newest activity first, split into the pinned bots and the other bots.
@@ -397,66 +394,30 @@ struct MacSidebar: View {
             MacSidebarLabel(title: "Agents", symbol: "square.stack.3d.up")
                 .tag(MacSelection.agents)
                 .accessibilityIdentifier("sidebar-agents")
-            MacSidebarLabel(title: "Business", symbol: "chart.xyaxis.line")
-                .tag(MacSelection.business(.home))
-                .accessibilityIdentifier("sidebar-business")
-            Section("Functions") {
-                ForEach(BusinessFunction.builtIns) { function in
-                    MacSidebarLabel(title: function.name, symbol: function.symbol)
-                        .tag(MacSelection.business(.function(function.key)))
-                        .accessibilityIdentifier("sidebar-function-" + function.key)
+            MacSidebarLabel(title: "People", symbol: "person.2")
+                .badge(store.shownTeamRooms.reduce(0) { $0 + $1.unseenNotices })
+                .tag(MacSelection.people)
+                .accessibilityIdentifier("sidebar-people")
+            MacSidebarLabel(title: "Profile", symbol: "person.crop.circle")
+                .tag(MacSelection.profile)
+                .accessibilityIdentifier("sidebar-profile")
+            // The chats, in the sections of Slack: each one folds with its header, and the Mac keeps the choice. A
+            // section without rows does not show. Starred comes first.
+            if !pins.isEmpty || !sections.pinnedChats.isEmpty {
+                Section("Starred", isExpanded: $starredOpen) {
+                    ForEach(pins.bots) { bot in row(bot) }
+                    // The pinned chats of the teams, as the same rows that they have in "Team chats".
+                    ForEach(sections.pinnedChats) { item in itemRow(item) }
+                    ForEach(pins.pages) { page in pageRow(page) }
                 }
             }
-            Section("Projects") {
-                MacSidebarLabel(title: "All projects", symbol: "square.stack.3d.up")
-                    .tag(MacSelection.business(.projects))
-                    .accessibilityIdentifier("sidebar-projects")
-                ForEach(store.businessCatalog?.projects ?? []) { project in
-                    MacSidebarLabel(title: project.displayName, symbol: "folder")
-                        .tag(MacSelection.business(.project(project.key)))
-                        .accessibilityIdentifier("sidebar-project-" + project.key)
-                }
-            }
-            // The sections of Slack: each one folds with its header, and the Mac keeps the choice. A section without
-            // rows does not show.
             if !sections.unread.isEmpty {
                 Section("Unreads", isExpanded: $unreadsOpen) {
                     ForEach(sections.unread) { item in itemRow(item) }
                 }
             }
-            // What the agents work on now and next. A To-do leaves the list when its agent finishes it.
-            let todos = AgentTodos.make(artifacts: store.artifacts, bots: store.bots)
-            if !todos.isEmpty {
-                Section("To-dos", isExpanded: $todosOpen) {
-                    ForEach(todos) { item in todoRow(item) }
-                }
-            }
-            if !pins.isEmpty || !sections.pinnedChats.isEmpty {
-                Section("Starred", isExpanded: $starredOpen) {
-                    ForEach(pins.bots) { bot in row(bot) }
-                    // The pinned chats of the teams, as the same rows that they have in "People".
-                    ForEach(sections.pinnedChats) { item in itemRow(item) }
-                    ForEach(pins.pages) { page in pageRow(page) }
-                }
-            }
-            // The notice board of each team: a place of its own, not a chat. The count is the active notices that
-            // the person has not seen.
-            let boards = store.shownTeamRooms.filter { $0.status == .active && $0.notices != nil }
-            if !boards.isEmpty {
-                Section("Notices", isExpanded: $noticesOpen) {
-                    ForEach(boards) { room in
-                        MacSidebarRow(name: room.name, unread: room.unseenNotices) {
-                            Image(systemName: room.bannerNotice?.kind.symbol ?? "megaphone")
-                                .foregroundStyle(room.bannerNotice?.kind.tint ?? .secondary)
-                                .frame(width: 20, height: 20)
-                        }
-                        .tag(MacSelection.notices(room.room))
-                        .accessibilityIdentifier("sidebar-notices-" + room.room)
-                    }
-                }
-            }
             if !sections.people.isEmpty {
-                Section("People", isExpanded: $peopleOpen) {
+                Section("Team chats", isExpanded: $peopleOpen) {
                     ForEach(sections.people) { item in itemRow(item) }
                 }
             }
@@ -489,9 +450,7 @@ struct MacSidebar: View {
         // list is there. After that, the updates load the list again on each change of a page and on a reset.
         .task(id: store.connection == .connected) {
             if store.documents == nil { await store.loadDocuments(quiet: true) }
-            try? await store.loadBusinessCatalog()
         }
-        .task(id: store.businessChanges) { try? await store.loadBusinessCatalog() }
         .safeAreaInset(edge: .bottom) { MacConnectionFooter() }
     }
 
@@ -526,25 +485,6 @@ struct MacSidebar: View {
                 .tint(bot.archived ? .blue : .gray)
             }
             .accessibilityIdentifier("sidebar-bot-\(bot.id)")
-    }
-
-    /// A To-do: its state as a symbol, its title, and the agent that works on it. A click opens the agent's chat with
-    /// the work attached.
-    private func todoRow(_ item: Artifact) -> some View {
-        let agent = store.bots.first { $0.id == item.botId }?.name ?? ""
-        return HStack(spacing: BoardStyle.Space.s) {
-            Image(systemName: AgentTodos.symbol(item.status))
-                .font(.callout).foregroundStyle(item.status == "blocked" ? BoardStyle.destructive : .secondary)
-                .frame(width: 20, height: 20)
-            Text(item.title).lineLimit(1)
-            Spacer(minLength: 0)
-            Text(agent).font(.caption).foregroundStyle(.tertiary).lineLimit(1)
-        }
-        .padding(.vertical, 2)
-        .help(item.preview.isEmpty ? item.title : item.preview)
-        .tag(MacSelection.work(item.id))
-        .accessibilityElement(children: .combine)
-        .accessibilityIdentifier("sidebar-todo-\(item.id)")
     }
 
     /// The row of a chat in any section: an agent, a team, a direct chat with a person, or one with a bot of a team.

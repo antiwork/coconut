@@ -311,6 +311,9 @@ final class AppStore {
             setBadge = { _ in }
             apply(Self.previewSnapshot(), persist: false)
             connection = .preview
+            #if DEBUG && targetEnvironment(simulator)
+            if ProcessInfo.processInfo.arguments.contains("--attention-preview") { applyAttentionPreview() }
+            #endif
             return
         }
         loadSavedPairing()

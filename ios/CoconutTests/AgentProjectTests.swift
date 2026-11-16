@@ -73,6 +73,7 @@ final class AgentProjectTests: XCTestCase {
         input.answering = []
         input.bots[1].health = BotHealth(state: "error", errorCode: nil, until: nil, uncovered: 0)
         XCTAssertEqual(status(input.bots[1]), .cannotRun("Provider error"))
+        XCTAssertEqual(status(input.bots[1]).shortLabel, "Can't run", "A row of the list keeps the state short.")
         XCTAssertEqual(status(input.bots[2]), .archived)
     }
 

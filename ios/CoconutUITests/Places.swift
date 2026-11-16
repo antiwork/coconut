@@ -10,4 +10,15 @@ extension XCUIApplication {
         let review = buttons["home-review-cards"]
         if review.waitForExistence(timeout: 3) { review.tap() }
     }
+
+    /// Opens the list of every page of every agent: the Agents tab, then "All pages". It is the list that the Library
+    /// tab showed.
+    func openAllPages(timeout: TimeInterval = 15) {
+        let agents = tabBars.buttons["Agents"]
+        XCTAssertTrue(agents.waitForExistence(timeout: timeout), "The Agents tab is missing.")
+        agents.tap()
+        let pages = buttons["agents-all-pages"]
+        // With the list open already, the tab keeps it.
+        if pages.waitForExistence(timeout: 3) { pages.tap() }
+    }
 }

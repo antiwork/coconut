@@ -47,6 +47,12 @@ struct AgentProject: Identifiable, Equatable {
             }
         }
 
+        /// The state in two words at most, for a row of the list. The page of the agent shows the whole label.
+        var shortLabel: String {
+            if case .cannotRun = self { return "Can't run" }
+            return label
+        }
+
         var symbol: String {
             switch self {
             case .archived: "archivebox"
@@ -239,7 +245,7 @@ struct AgentProjectRow: View {
             }
             Spacer(minLength: BoardStyle.Space.s)
             VStack(alignment: .trailing, spacing: BoardStyle.Space.line) {
-                AgentStatusLabel(status: project.status)
+                AgentStatusLabel(status: project.status, short: true)
                 if let date = project.lastActivity {
                     CompactAgeLabel(date: date).font(.footnote.monospacedDigit()).foregroundStyle(.secondary)
                 }
@@ -262,13 +268,16 @@ struct AgentProjectRow: View {
 /// The state of an agent as a symbol and a word in the color of the state.
 struct AgentStatusLabel: View {
     let status: AgentProject.Status
+    /// A row of the list shows the short label and never cuts it.
+    var short = false
 
     var body: some View {
         HStack(spacing: BoardStyle.Space.xs) {
             Image(systemName: status.symbol).imageScale(.small).fontWeight(.semibold)
-            Text(status.label).lineLimit(1)
+            Text(short ? status.shortLabel : status.label).lineLimit(1)
         }
         .font(.subheadline).foregroundStyle(status.tint)
+        .fixedSize(horizontal: short, vertical: false)
     }
 }
 
@@ -379,25 +388,34 @@ struct AgentProjectView: View {
 
     private func header(_ project: AgentProject) -> some View {
         let role = project.bot.role.trimmingCharacters(in: .whitespacesAndNewlines)
+        let model = store.modelName(project.bot.id).map {
+            Label($0, systemImage: "cpu").font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
+        }
         return HStack(alignment: .center, spacing: BoardStyle.Space.l) {
             LiveBotAvatar(bot: project.bot, size: 56)
             VStack(alignment: .leading, spacing: BoardStyle.Space.xs) {
                 Text(project.bot.name).font(.title2.weight(.bold)).lineLimit(1)
                 if !role.isEmpty { Text(role).font(.subheadline).foregroundStyle(.secondary).lineLimit(2) }
-                HStack(spacing: BoardStyle.Space.m) {
-                    AgentStatusLabel(status: project.status)
-                    if let model = store.modelName(project.bot.id) {
-                        Label(model, systemImage: "cpu").font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
+                // The state and the model share a line where it fits, as in a Mac window. A narrow iPhone shows the
+                // model under the state, so neither is cut.
+                ViewThatFits(in: .horizontal) {
+                    HStack(spacing: BoardStyle.Space.m) { AgentStatusLabel(status: project.status); model }
+                    VStack(alignment: .leading, spacing: BoardStyle.Space.line) {
+                        AgentStatusLabel(status: project.status)
+                        model
                     }
                 }
                 .accessibilityIdentifier("agent-status")
             }
             Spacer(minLength: 0)
+            // A Mac window has room for the button. On an iPhone the first row of the page opens the chat.
+            #if os(macOS)
             Button { chat(ConversationRoute(botId: project.bot.id)) } label: {
                 Label("Open chat", systemImage: "bubble.left.and.bubble.right")
             }
             .buttonStyle(.borderedProminent)
             .accessibilityIdentifier("agent-chat-button")
+            #endif
         }
     }
 

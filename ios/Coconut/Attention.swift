@@ -203,6 +203,25 @@ extension AppStore {
     }
 }
 
+#if DEBUG && targetEnvironment(simulator)
+extension AppStore {
+    /// Makes the preview data breach three rules, for the UI test of Home: a card that waits for 5 hours, an agent
+    /// with a provider limit, and a blocked To-do.
+    func applyAttentionPreview(now: Date = Date()) {
+        let formatter = ISO8601DateFormatter()
+        if let index = decisions.firstIndex(where: \.isPending) {
+            decisions[index].createdAt = formatter.string(from: now.addingTimeInterval(-5 * 3600))
+        }
+        guard let index = bots.firstIndex(where: { !$0.coconut && !$0.archived }) else { return }
+        bots[index].health = BotHealth(state: "rate_limited", errorCode: nil, until: nil, uncovered: 2)
+        artifacts.append(Artifact(id: "attention-preview-work", botId: bots[index].id, taskId: nil,
+                                  title: "Ship the retry fix", kind: "work", status: "blocked",
+                                  preview: "Waits for a review of the pull request.", url: nil,
+                                  createdAt: formatter.string(from: now.addingTimeInterval(-40 * 60))))
+    }
+}
+#endif
+
 /// "Needs attention" at the top of Home: a red header with the count, then a red card with one row for each rule
 /// that breaches. It draws nothing when no rule breaches.
 struct AttentionCard: View {
@@ -221,10 +240,11 @@ struct AttentionCard: View {
                         .foregroundStyle(.white)
                         .padding(.horizontal, 6).frame(minWidth: 18, minHeight: 18)
                         .background(Self.tint, in: Capsule())
-                        .accessibilityIdentifier("attention-count")
                 }
                 .accessibilityElement(children: .combine)
                 .accessibilityAddTraits(.isHeader)
+                // On the header only: an identifier on the whole card would replace the identifier of each row.
+                .accessibilityIdentifier("attention-card")
                 VStack(spacing: 0) {
                     ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
                         if index > 0 { Divider().overlay(Self.tint.opacity(0.18)).padding(.leading, 44) }
@@ -234,7 +254,6 @@ struct AttentionCard: View {
                 .background(Self.tint.opacity(0.08), in: RoundedRectangle(cornerRadius: BoardStyle.Radius.small))
                 .overlay(RoundedRectangle(cornerRadius: BoardStyle.Radius.small).strokeBorder(Self.tint.opacity(0.22)))
             }
-            .accessibilityIdentifier("attention-card")
         }
     }
 
