@@ -1538,6 +1538,15 @@ class TeamFileTests(unittest.TestCase):
         sync()
         self.assertEqual(call(grace, 'GET', chat)['messages'], [])
         self.assertEqual((pieces(ada), pieces(grace)), (0, 0))
+        # Ada's Mac took its pieces off the relay: Grace's Mac read a `delete` entry over each one, and the space of
+        # Ada in the room counts nothing.
+        from coconut import team_keys
+        from coconut.team_files import file_entry
+        token = team_keys.read(ada.root, room_id)['token']
+        entries = [file_entry(token, room_id, draft['id'], index) for index in range(3)]
+        self.assertEqual([grace.team_store.entry(room_id, entry)['kind'] for entry in entries], ['delete'] * 3)
+        ada_id = ada.team_store.room(room_id)['member']
+        self.assertEqual(ada.team_store.sent_bytes(room_id, ada_id, 0, []), 0)
 
 
 @unittest.skipUnless(sys.platform == 'darwin' and shutil.which('xcrun') and shutil.which('node')

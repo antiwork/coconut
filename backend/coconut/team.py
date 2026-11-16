@@ -227,6 +227,8 @@ class Team(TeamSync, TeamSocket, TeamPages, TeamMessages, TeamChats, TeamDirects
         # of the dict, and takes no other lock while it holds it.
         self._team_replies = {}
         self._team_replies_lock = threading.Lock()
+        # The monotonic time of the last pass of the old pieces of each room (TeamFiles._team_clean_pieces).
+        self._team_cleaned: dict[str, float] = {}
         self._init_team_sync()
         self._init_team_socket()
         self._init_team_pages()
@@ -886,7 +888,7 @@ class Team(TeamSync, TeamSocket, TeamPages, TeamMessages, TeamChats, TeamDirects
             self.team_store.remove_room(room_id)
         team_keys.remove(self.root, room_id)
         for state in (self._team_failures, self._team_status, self._team_announced, self._team_locks,
-                      self._team_refusals, self._team_told):
+                      self._team_refusals, self._team_told, self._team_cleaned):
             state.pop(room_id, None)
         self._team_retried.discard(room_id)
         self._team_unsure.discard(room_id)
