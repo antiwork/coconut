@@ -90,6 +90,20 @@ final class TeamFileTests: XCTestCase {
         XCTAssertNil(TeamFileAddress(room: Self.room, message: "../x", file: Self.file))
     }
 
+    /// Only the types that a chat shows as one picture are tiles. A TIFF, which can hold pages, is a card.
+    func testOnlySixImageTypesAreTiles() {
+        func file(_ type: String) -> TeamFile { TeamFile(id: Self.file, name: "a", type: type, size: 1) }
+        for type in ["image/jpeg", "image/png", "image/gif", "image/heic", "image/heif", "image/webp", "IMAGE/JPEG"] {
+            XCTAssertTrue(file(type).isImage, type)
+        }
+        for type in ["image/tiff", "image/bmp", "image/svg+xml", "application/pdf"] {
+            XCTAssertFalse(file(type).isImage, type)
+        }
+        XCTAssertFalse(TeamFile(id: Self.file, name: "a", size: 1).isImage, "No type.")
+        // The short text keeps the rule of the service.
+        XCTAssertEqual(TeamShortText.text("", files: [file("image/tiff")]), "Photo")
+    }
+
     // MARK: Short text
 
     /// The rule of `shown_text` of the service: the text, else "Photo" for a first image, else the first file name.

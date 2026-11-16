@@ -17,11 +17,14 @@ struct TeamFile: Codable, Identifiable, Hashable, Sendable {
     var height: Int? = nil
     var complete: Bool? = nil
 
-    /// The tile row shows the file: a type of an image that the app can draw. Each other file shows as a card.
-    var isImage: Bool {
-        guard let type = type?.lowercased(), type.hasPrefix("image/") else { return false }
-        return type != "image/svg+xml"
-    }
+    /// The tile row shows the file: a type that a chat shows as one picture. Each other file shows as a card, also a
+    /// TIFF, which can hold several pages: "Preview file" opens it in Quick Look with each page, while a tile, the
+    /// viewer and Copy would show only the first one.
+    var isImage: Bool { type.map { Self.tileTypes.contains($0.lowercased()) } ?? false }
+
+    /// The types of a tile, in lowercase.
+    static let tileTypes: Set<String> = ["image/jpeg", "image/png", "image/gif", "image/heic", "image/heif",
+                                         "image/webp"]
 
     /// The bytes are on this Mac, or on the phone for a draft.
     var isReady: Bool { complete ?? true }
@@ -54,6 +57,10 @@ extension TeamFile {
 /// text, or for an empty text "Photo" when the first file is an image, else the name of the first file. This is the
 /// rule of `shown_text` in backend/coconut/team_store.py, which gives the chat list and the notifications their text.
 /// With files, a text of white space only is an empty text, as the Mac takes it.
+///
+/// "Photo" stands for each type that starts with `image/`, also a TIFF that the chat shows as a card
+/// (TeamFile.isImage). The two rules differ on purpose: this one must give the same text as the chat list and the
+/// notifications, which come from the Mac.
 enum TeamShortText {
     static func text(_ text: String, files: [TeamFile]) -> String {
         guard let first = files.first, text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return text }
