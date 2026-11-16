@@ -806,6 +806,8 @@ final class AppStore {
             if let index = bots.firstIndex(where: { $0.id == bot.id }) { bots[index].unreadCount = 0 }
             return
         }
+        // The badge goes at once. The Mac confirms the read with its next update.
+        if let index = bots.firstIndex(where: { $0.id == bot.id }) { bots[index].unreadCount = 0 }
         let _: Acknowledgement? = await write("bots/\(bot.id)/read", payload: EmptyRequest(), as: Acknowledgement.self, quiet: true)
     }
 
