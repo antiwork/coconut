@@ -342,7 +342,7 @@ class RemoveAndSetUpTests(unittest.TestCase):
         skill = (repository / 'skills/coconut/SKILL.md').read_text()
         docs = (repository / 'docs/install-and-update.md').read_text()
         self.assertNotIn('coconut remove', skill + docs)
-        section = docs[docs.index('### Remove', docs.index('## A Mac without a person')):docs.index('## Releases from CI')]
+        section = docs[docs.index('### Remove', docs.index('## A Mac without a person')):docs.index('## Automatic releases')]
         for step in ('coconut team leave --confirm', 'pkill -x Coconut', 'open -g /Applications/Coconut.app --args --remove',
                      'Service: not installed'):
             self.assertIn(step, section)
