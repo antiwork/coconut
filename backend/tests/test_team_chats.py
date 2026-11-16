@@ -21,7 +21,8 @@ from coconut.team_chats import ADMIN_ONLY, GONE_CHAT, SAME_NAME, TOO_MANY
 from coconut.team_store import MAX_CHATS, REFUSED, STORED, TeamStore
 from test_team_key_change import KeyChangeMacs
 from test_team_messages import ADMIN, AGREEMENT, MEMBER, OTHER, ROOM, START, entry_id
-from test_team_push import TeamPushMacs, flush
+from test_push import RecordingTransport, pair_phone
+from test_team_push import TeamPushMacs, flush, register
 from test_team_turns import TeamTurnMacs, reply
 
 DESIGN, LAUNCH = entry_id(50), entry_id(51)
@@ -655,6 +656,26 @@ class ChatMuteTests(TeamPushMacs, unittest.TestCase):
                                       f'/v1/team/rooms/{"f" * 64}/chats/{self.notices}/notifications',
                                       {'enabled': False})[0], 404)
 
+    def test_a_message_with_a_file_in_a_muted_chat_notifies_nothing(self):
+        self.mute()
+        draft = self.phone(self.first)('POST', f'/v1/team/rooms/{self.room}/files',
+                                       {'name': 'plan.pdf', 'type': 'application/pdf', 'content': 'eA=='})['file']
+        self.assertFalse(self.notified('', chat=self.notices, files=[draft['id']]))
+
+    def test_a_repeat_with_the_key_of_an_earlier_mute_mutes_again(self):
+        """The app sends the key of a write whose answer did not arrive again with the same body. A saved answer of
+        the first mute would then cancel a mute after an unmute."""
+        key, other = str(uuid4()), str(uuid4())
+        for path in (self.path(), f'/v1/team/rooms/{self.room}/notifications'):
+            with self.subTest(path=path):
+                self.phone(self.second)('PUT', path, {'enabled': False}, key)
+                self.phone(self.second)('PUT', path, {'enabled': True}, other)
+                self.assertEqual(self.phone(self.second)('PUT', path, {'enabled': False}, key)['notifications'], False)
+                room = self.rooms(self.second)[0]
+                shown = room['chats'][0]['notifications'] if '/chats/' in path else room['notifications']
+                self.assertIs(shown, False)
+                self.phone(self.second)('PUT', path, {'enabled': True}, other)
+
     def test_the_choice_goes_with_the_chat_and_with_the_team(self):
         self.mute()
         self.phone(self.first)('DELETE', f'/v1/team/rooms/{self.room}/chats/{self.notices}', {})
@@ -696,6 +717,30 @@ class ChatBotTests(TeamTurnMacs, unittest.TestCase):
         rows = self.call('GET', f'/v1/team/rooms/{self.room}/messages', {'chat': chat} if chat else {},
                          service=self.first)['messages']
         return [(row['bot_name'] or row['member_name'], row['text'], row['reply_to']) for row in reversed(rows)]
+
+    def test_a_reply_of_an_agent_in_a_muted_chat_notifies_nothing(self):
+        phone = pair_phone(self.first)
+        self.first.push.transport = RecordingTransport()
+        register(self.first, phone, level='grouped')
+        design = self.make()
+        self.call('PUT', f'/v1/team/rooms/{self.room}/chats/{design}/notifications', {'enabled': False},
+                  service=self.first)
+        self.send('@Reporter what is open?', mentions=[self.mention], chat=design)
+        self.sync()
+        self.serve(reply('3 tasks are open.'))
+        self.run_turns()
+        self.sync()
+        self.assertIn('3 tasks are open.', [text for _, text, _ in self.chat_of(design)])
+        self.assertEqual(self.first.db.execute('SELECT COUNT(*) FROM push_items').fetchone()[0], 0)
+        # The same reply in a chat that is not muted makes one item.
+        self.call('PUT', f'/v1/team/rooms/{self.room}/chats/{design}/notifications', {'enabled': True},
+                  service=self.first)
+        self.send('@Reporter and now?', mentions=[self.mention], chat=design)
+        self.sync()
+        self.serve(reply('2 tasks are open.'))
+        self.run_turns()
+        self.sync()
+        self.assertEqual(self.first.db.execute('SELECT COUNT(*) FROM push_items').fetchone()[0], 1)
 
     def test_a_mac_for_a_team_only_has_no_mute(self):
         design = self.make()

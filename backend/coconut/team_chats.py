@@ -11,7 +11,8 @@ chats in `team_chats`.
 - `PUT /v1/team/rooms/<room>/chats/<id>/notifications` with `{enabled}`: the person mutes or unmutes the chat for
   the phones of this Mac. Each member can do it, and the choice stays on this Mac.
 
-Only a paired device on the admin's Mac calls these routes. The routes of the Team chat take a chat in `chat`
+Only a paired device on the admin's Mac makes, renames and removes a chat. A paired device of each member mutes a
+chat. The routes of the Team chat take a chat in `chat`
 (team_messages.py, team_typing.py), and `GET /v1/team/rooms` gives `chats` and `can_manage_chats` (Team._team_view).
 No log line of this module has the name of a chat.
 """

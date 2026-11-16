@@ -535,6 +535,7 @@ The app sends a write again with the same `Idempotency-Key` when the answer does
 - The answers stay in the memory of the service only, for 10 minutes, and at most 256 of them. The sync thread drops an old answer on its next pass, at most 30 seconds later, also on a Mac without a room. A new answer drops the oldest answer over the limit at once. A stop of the service drops them all. A later repeat runs again.
 - The answer of the invite route has the invite link, so the answers never go to the database or to a log. The `requests` table of the other writes of the phone keeps each answer with no end, so these routes do not use it.
 - A request without a key runs each time, as before. A tool on this Mac sends no key, and the Mac ignores a key from a tool.
+- The routes `.../typing` and `.../notifications` keep no answer, and each request with a key runs. A PUT of a state is safe to repeat by itself. A saved answer of a mute would cancel a later mute with the same key and body after an unmute, because the app sends the key of a write without an answer again.
 
 #### Leave a join that did not finish
 
