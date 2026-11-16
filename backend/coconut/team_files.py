@@ -228,6 +228,11 @@ class TeamFiles:
         from .team_store import files_fields
         files = files_fields(json.loads(message['payload']).get('files')) or []
         if files:
+            # The accept of the message dropped its drafts already. This holds also for a store of a version before
+            # that rule.
+            with self.transaction():
+                for item in files:
+                    self.team_store.drop_draft(room_id, item['id'])
             noted = self._team_noted.setdefault(room_id, {})
             noted.update((item['id'], item['size']) for item in files)
             self.team_wake(room=room_id)
@@ -258,6 +263,10 @@ class TeamFiles:
         if not noted and not hourly:
             return
         try:
+            # A send in the gap between the last read of the sync and this run can have reached the relay without an
+            # answer. Its message can name a noted file, so the store reads it back before the selection. The caller
+            # holds the lock of the room from here to the last write, so no send runs in between.
+            self._team_settle(room_id)
             token = team_keys.read(self.root, room_id)['token']
             with self.lock:
                 room = self.team_store.room(room_id)

@@ -1708,6 +1708,11 @@ class TeamStore:
         for member, file in {(member, file) for member, file, _, _ in files}:
             self._check_file(room, member, file, message)
         own = self.db.execute('SELECT member FROM team_rooms WHERE room=?', (room,)).fetchone()
+        # A draft does not outlive its message: once an own message names its file, no later send can name it again.
+        # Else a send after a delete of that message would skip pieces whose bytes no other Mac has any more.
+        if own is not None:
+            self.db.executemany('DELETE FROM team_file_drafts WHERE room=? AND id=?',
+                                [(room, file) for member, file, _, _ in files if member == own[0]])
         for member, file, _, _ in old - set(files):
             if (own is None or member != own[0]) and not self.file_named(room, member, file):
                 self.db.execute('DELETE FROM team_file_pieces WHERE room=? AND member=? AND file=?', (room, member, file))
