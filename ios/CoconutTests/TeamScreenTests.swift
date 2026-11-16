@@ -305,6 +305,15 @@ final class TeamScreenTests: XCTestCase {
         XCTAssertFalse(PairingSetup.isLink(url))
         XCTAssertFalse(TeamLinkCheck.isLink(try XCTUnwrap(URL(string: "coconut://pair/abc"))))
         XCTAssertFalse(TeamLinkCheck.isLink(try XCTUnwrap(URL(string: "https://example.com/team/abc"))))
+        // The same invite in its web form opens the same sheet, because the domain is an associated domain of the app.
+        let token = link.dropFirst(TeamLog.linkPrefix.count)
+        let web = try XCTUnwrap(URL(string: "https://coconut.gumroad.com/i/" + token))
+        XCTAssertTrue(TeamLinkCheck.isLink(web))
+        XCTAssertEqual(TeamLinkCheck(link: web.absoluteString), .team("Example Team"))
+        XCTAssertEqual(TeamLinkCheck(link: web.absoluteString + "/"), .team("Example Team"))
+        // Another path on the domain, or a page without a token, is not an invite.
+        XCTAssertFalse(TeamLinkCheck.isLink(try XCTUnwrap(URL(string: "https://coconut.gumroad.com/team/abc"))))
+        XCTAssertFalse(TeamLinkCheck.isLink(try XCTUnwrap(URL(string: "https://coconut.gumroad.com/i/"))))
         XCTAssertEqual(TeamLinkCheck(link: link), .team("Example Team"))
         // A pasted link often has a line break after it.
         XCTAssertEqual(TeamLinkCheck(link: "  " + link + "\n"), .team("Example Team"))

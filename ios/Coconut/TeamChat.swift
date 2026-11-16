@@ -1684,7 +1684,12 @@ struct ChatSections: Equatable {
     /// an unread message, as in Slack.
     static func make(bots: [Bot], messages: [Message], rooms: [TeamRoom],
                      local: [TeamChatKey: TeamLastMessage] = [:]) -> ChatSections {
-        let latest = ChatList.lastMessageDates(messages)
+        make(bots: bots, latest: ChatList.lastMessageDates(messages), rooms: rooms, local: local)
+    }
+
+    /// `latest` is the date of the newest message of each bot (ChatList.lastMessageDates).
+    static func make(bots: [Bot], latest: [String: Date], rooms: [TeamRoom],
+                     local: [TeamChatKey: TeamLastMessage] = [:]) -> ChatSections {
         func activity(_ bot: Bot) -> Date { latest[bot.id] ?? bot.createdAt.apiDate ?? .distantPast }
         let active = bots.filter { !$0.archived }.sorted { activity($0) > activity($1) }
         let people = ChatList.people(rooms, local: local)

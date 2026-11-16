@@ -1,9 +1,8 @@
 name: Mac release
 
 # Builds Coconut.app, signs it with the Developer ID Application certificate, notarizes it, staples the ticket, and
-# publishes it in the Sparkle feed of the Worker coconut-updates (updates/). The feed has one channel: each push to main
-# publishes one build, and every Mac gets it. A person can start the workflow to publish the head of main again, for
-# example after a failed run. A run publishes nothing when the feed already has its build or a newer one.
+# publishes it in the Sparkle feed of the Worker coconut-updates (updates/). Pushes coalesce into at most one update
+# per hour. The hourly run picks up changes that arrived during the cooldown. Manual runs use the same gate.
 # The version is in mac/VERSION. The build number is the commit count of main.
 #
 # The environment `mac-release` accepts only the main branch. It holds these secrets:
@@ -15,10 +14,14 @@ name: Mac release
 on:
   push:
     branches: [main]
+  schedule:
+    - cron: '17 * * * *'
   workflow_dispatch:
 
 permissions:
   contents: read
+  deployments: write
+  actions: read
 
 # Two releases must not deploy the feed at the same time: the later one would drop the archive of the earlier one.
 # A push and a person share this group, so each release waits for the release before it. GitHub keeps one waiting run
@@ -29,16 +32,25 @@ concurrency:
 
 jobs:
   plan:
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
       build: ${{ steps.plan.outputs.build }}
       skip: ${{ steps.plan.outputs.skip }}
+      sha: ${{ steps.gate.outputs.sha }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
           fetch-depth: 0 # The build number is the commit count of HEAD.
+          ref: main
+      - name: Check the hourly publication gate
+        id: gate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: python3 scripts/release_gate.py plan --channel mac
       - name: Choose the build
         id: plan
         run: |
@@ -48,7 +60,7 @@ jobs:
             echo "::error::mac/VERSION must have the form 1.2.3."
             exit 1
           fi
-          skip=false
+          skip="${{ steps.gate.outputs.skip }}"
           build="$(git rev-list --count HEAD)"
           live="$(python3 scripts/mac_feed.py latest-build)"
           if [ "$live" -ge "$build" ]; then
@@ -65,11 +77,14 @@ jobs:
     environment: mac-release
     env:
       BUILD: ${{ needs.plan.outputs.build }}
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
           fetch-depth: 0
+          ref: ${{ needs.plan.outputs.sha }}
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: '3.12'
@@ -146,6 +161,9 @@ jobs:
           { echo "ARCHIVE=$archive"; echo "SIGNATURE=$signature"; } >> "$GITHUB_ENV"
       - name: Build the feed
         run: python scripts/mac_feed.py publish --archive "$ARCHIVE" --signature "$SIGNATURE" --output updates/public
+      - name: Record the publication
+        id: publication
+        run: python3 scripts/release_gate.py begin --channel mac
       - name: Deploy the feed to the Worker coconut-updates
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -184,3 +202,6 @@ jobs:
             security delete-keychain "$SIGNING_KEYCHAIN" || true
           fi
           rm -f "$RUNNER_TEMP/identity.p12" "$RUNNER_TEMP/AuthKey.p8"
+      - name: Finish the publication record
+        if: always() && steps.publication.outputs.id != ''
+        run: python3 scripts/release_gate.py finish --id '${{ steps.publication.outputs.id }}' --state '${{ job.status }}'

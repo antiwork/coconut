@@ -93,6 +93,7 @@
 		312E4CE64E3C0963A0812615 /* PreviewState.json in Resources */ = {isa = PBXBuildFile; fileRef = DC18213B09F82C2500E4D504 /* PreviewState.json */; };
 		3163A5494469E07D99C7154F /* TeamNamedChatTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4CC8A411D39CBE7A41852A01 /* TeamNamedChatTests.swift */; };
 		31BFCCAE9AAAD64916F17F6A /* ConversationFooterScrollTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B36D9F5414E1A10AA667E5A5 /* ConversationFooterScrollTests.swift */; };
+		32BB73B8DFBCA8470F8DCE54 /* ChatSummaries.swift in Sources */ = {isa = PBXBuildFile; fileRef = C5F99DD733E95E46E48B7BE0 /* ChatSummaries.swift */; };
 		33A7251327045D42BA8DF9FD /* TeamFiles.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0DB621874B1AF6F5054A82F5 /* TeamFiles.swift */; };
 		3429EE3AAB243969EB014880 /* TunnelFrames.swift in Sources */ = {isa = PBXBuildFile; fileRef = 124BFA46377F786FAC3CB2EE /* TunnelFrames.swift */; };
 		35C202B9C51B20B38223633D /* MacBanners.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB399F2E24791A095A12029D /* MacBanners.swift */; };
@@ -113,6 +114,7 @@
 		45A381A44CEBB15BB093464A /* NotificationPlan.swift in Sources */ = {isa = PBXBuildFile; fileRef = 36D624FBCAF3F69D37E5FA38 /* NotificationPlan.swift */; };
 		47E0B805C6F0533FD94B01A8 /* TranscriptWindow.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0C177466512540E1010ADAD1 /* TranscriptWindow.swift */; };
 		480916CAB418CCDE19B99F6D /* Onboarding.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6676C4B4D2B7F8B8C8248F67 /* Onboarding.swift */; };
+		492D67EE9F463A1E80C0AA2D /* ChatSummaries.swift in Sources */ = {isa = PBXBuildFile; fileRef = C5F99DD733E95E46E48B7BE0 /* ChatSummaries.swift */; };
 		49C602FBB6BEB9B64C1179A4 /* DecisionDeliveryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2D33116A7313ACA1279A8183 /* DecisionDeliveryTests.swift */; };
 		4A3C78102197DC514037EF23 /* WorkTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 402CFAB5390D37A21DC0D546 /* WorkTests.swift */; };
 		4ADB4A00D4BD2B17C9F6D7F8 /* AnswerUndoTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 64498C62692C72803B86A009 /* AnswerUndoTests.swift */; };
@@ -549,6 +551,7 @@
 		C2C7083874709ECCEFB881E4 /* noise-vectors.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "noise-vectors.json"; sourceTree = "<group>"; };
 		C38B2409FAF726BAA1D88006 /* ConversationPerformanceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationPerformanceTests.swift; sourceTree = "<group>"; };
 		C44EF49A1FC16B4DA5221169 /* d3.min.js */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.javascript; path = d3.min.js; sourceTree = "<group>"; };
+		C5F99DD733E95E46E48B7BE0 /* ChatSummaries.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatSummaries.swift; sourceTree = "<group>"; };
 		C77D5CDAA72E7F4867D4E5DA /* TranscriptPresentation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TranscriptPresentation.swift; sourceTree = "<group>"; };
 		C85304C388785794EE366959 /* DecisionSelectionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DecisionSelectionTests.swift; sourceTree = "<group>"; };
 		C88CC267B471365C378EBE32 /* ArchiveAgentFlowTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ArchiveAgentFlowTests.swift; sourceTree = "<group>"; };
@@ -774,6 +777,7 @@
 				BCBA7E17655BED561202EC41 /* BotSettingsView.swift */,
 				9FB796A12D68BA7FB37609B0 /* BotStatusRow.swift */,
 				FC5588CE8E93B2033A90C4CE /* Cards.swift */,
+				C5F99DD733E95E46E48B7BE0 /* ChatSummaries.swift */,
 				F10A7B1CED0436FAEEF28D16 /* Coconut.entitlements */,
 				AC13C2194F02562B923FE8C8 /* CoconutApp.swift */,
 				0E684899AC68B4E471AA26A1 /* CoconutExpression.swift */,
@@ -1285,6 +1289,7 @@
 				38367AB3AD663E17234E46E8 /* BotSettingsView.swift in Sources */,
 				2AC3DA42703F1E091D7C5D31 /* BotStatusRow.swift in Sources */,
 				E093F3F32C71BC4FFF276E7F /* Cards.swift in Sources */,
+				32BB73B8DFBCA8470F8DCE54 /* ChatSummaries.swift in Sources */,
 				1374C513472E49A360E09502 /* CoconutApp.swift in Sources */,
 				6CC6316E0ABC3BCC33825406 /* CoconutExpression.swift in Sources */,
 				FF787ED2C645FD254020FB6E /* ComposerAttachments.swift in Sources */,
@@ -1369,6 +1374,7 @@
 				02913C91F4994541DB0A1D2D /* BotSettingsView.swift in Sources */,
 				9AC5EEB8EE3F8B9C8695BD37 /* BotStatusRow.swift in Sources */,
 				6E47FB1A60D0E8881BA987B0 /* Cards.swift in Sources */,
+				492D67EE9F463A1E80C0AA2D /* ChatSummaries.swift in Sources */,
 				A8E1E20FB19C388ACD17CA87 /* CoconutApp.swift in Sources */,
 				A45C0A39FB65844085CC6467 /* CoconutExpression.swift in Sources */,
 				B0757E4EDC933C2771C8903A /* ComposerAttachments.swift in Sources */,

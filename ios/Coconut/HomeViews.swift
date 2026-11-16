@@ -9,8 +9,8 @@ struct HomeLaunchView: View {
     @State private var deleting: Bot?
 
     var body: some View {
-        // One pass over the messages gives the newest activity of each bot. The list sorts by it one time.
-        let latest = ChatList.lastMessageDates(store.messages)
+        // The store keeps the newest activity of each bot (ChatSummaries). The list sorts by it one time.
+        let latest = store.chatSummaries.newestActivity
         let activeBots = store.bots.filter { !$0.archived }.sorted {
             (latest[$0.id] ?? $0.createdAt.apiDate ?? .distantPast) > (latest[$1.id] ?? $1.createdAt.apiDate ?? .distantPast)
         }
@@ -272,15 +272,8 @@ struct HomePressStyle: ButtonStyle {
 }
 
 func latestConversationMessage(in messages: [Message]) -> Message? {
-    let textMessages = messages.filter {
-        $0.kind == "text" && !$0.streaming && $0.reactionEvent == nil && ["user", "assistant"].contains($0.role)
-            && !TranscriptPresentation.isSilenceControl($0)
-            && !TranscriptPresentation.trimmed($0.text, equals: "")
-    }
-    // Older hosts stored this completion event as a text message.
-    let content = textMessages.filter {
-        !($0.role == "assistant" && TranscriptPresentation.trimmed($0.text, equals: "Ready to review."))
-    }
+    let textMessages = messages.filter(isPreviewText)
+    let content = textMessages.filter { !isCompletionLabel($0) }
     return (content.isEmpty ? textMessages : content).max {
         ($0.createdAt.apiDate ?? .distantPast) < ($1.createdAt.apiDate ?? .distantPast)
     }
@@ -318,24 +311,22 @@ struct BotContactRow: View {
     let bot: Bot
     /// The face of the bot. The iPhone list shows a large face; a Mac sidebar shows a smaller one.
     var avatarSize: CGFloat = BoardStyle.rowFace
-    private var latestMessage: Message? {
-        latestConversationMessage(in: store.messages.filter { $0.botId == bot.id })
-    }
+    /// The row reads the summary of its bot, not the messages, so a streamed word does not redraw it.
+    private var summary: BotChatSummary { store.chatSummaries[bot.id] }
+    private var latestMessage: Message? { summary.latestMessage }
     /// The line under the name: never empty.
     private var preview: String { ChatRowText.line(newestText) }
     private var newestText: String {
         guard let message = latestMessage else {
             return TranscriptPresentation.previewText(
-                TranscriptPresentation.previewFallback(bot.lastMessage, messages: store.messages.filter { $0.botId == bot.id }))
+                TranscriptPresentation.previewFallback(bot.lastMessage, streaming: summary.streaming))
         }
         let sender = message.senderBotId.flatMap { id in id == bot.id ? nil : store.bots.first { $0.id == id }?.name ?? "Deleted agent" }
         let prefix = message.role == "user" ? "You: " : sender.map { $0 + ": " } ?? ""
         let body = AttachmentOnly.isMarker(message.text) ? "Photo" : TranscriptPresentation.previewText(message.text)
         return prefix + (message.photo?.preview ?? body)
     }
-    private var lastMessageDate: Date? {
-        store.messages.filter { $0.botId == bot.id }.compactMap { $0.createdAt.apiDate }.max()
-    }
+    private var lastMessageDate: Date? { summary.newestDate }
     private var phase: BotPhase? { store.botPhase(bot) }
 
     var body: some View {

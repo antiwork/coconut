@@ -1,0 +1,14 @@
+{
+  "name": "coconut-links",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test test/*.test.js",
+    "check": "node --check src/worker.js",
+    "deploy": "wrangler deploy"
+  },
+  "devDependencies": {
+    "miniflare": "5.20260908.0-alpha",
+    "wrangler": "4.130.0"
+  }
+}

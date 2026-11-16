@@ -25,7 +25,8 @@ from .pr_tracking import REVIEW_CHECK_NAMES, GitHubPRTracker, PRTrackingError, p
 from .routines import validate_schedule, next_run
 from .native_conversation import reaction_only_turn
 from .profiles import HermesProfiles, ProfileError, profile_id
-from .state_sync import READ_INDEXES, StateSync, index_exchange_audience
+from .state_sync import CONFIRMED_REQUESTS, READ_INDEXES, StateSync, index_exchange_audience
+from .commit_signal import CommitSignal
 # service_base holds what the team-only service shares with this one. The names stay importable from here.
 from .service_base import (FULL_MODE, ServiceError, check_data_folder, encoded, now, open_store, release_data_folder,
                            require_text, take_data_folder, uid)
@@ -215,6 +216,7 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
         self.dispatch_gate = threading.RLock()
         self.model_settings_lock = threading.Lock()
         self.changed = threading.Condition(self.lock)
+        self.commits = CommitSignal()
         self.db = open_store(self.root)
         for table in self.TABLES:
             self.db.execute(f'CREATE TABLE IF NOT EXISTS {table} (id TEXT PRIMARY KEY, data TEXT NOT NULL)')
@@ -390,6 +392,7 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
                 for bot_id in self.__dict__.pop('_forget_bots_on_commit', set()):
                     self.__dict__.get('_published_bots', {}).pop(bot_id, None)
                 self.changed.notify_all()
+                self.commits.notify()
             except BaseException:
                 self._profile_pending = {}
                 # A rollback removes the bot events of this transaction. Forget what only they said.
@@ -1045,9 +1048,7 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
                     state.update(model_catalog=catalog, model=default.get('model') or '', base_url=default.get('base_url') or '', model_configured=bool(catalog.get('default_configured', False)))
                 elif content_only:
                     state.update(model='', base_url='', model_configured=False, content_only=True, sync_version=1)
-                    receipts = self.db.execute("SELECT json_group_array(DISTINCT json_extract(data,'$.client_request_id')) FROM messages "
-                        "WHERE json_type(data,'$.client_request_id')='text' AND EXISTS(SELECT 1 FROM bots "
-                        "WHERE id=json_extract(messages.data,'$.bot_id') AND NOT COALESCE(json_extract(bots.data,'$._deleted'),0))").fetchone()
+                    receipts = self.db.execute(CONFIRMED_REQUESTS).fetchone()
                     state['confirmed_request_ids'] = json.loads(receipts[0])
                 else:
                     state.update(model=self._setting('model', getattr(self.provider, 'model', '') or ''), base_url=self._setting('base_url', getattr(self.provider, 'base_url', '') or ''), model_configured=bool(getattr(self.provider, 'ready', False)))
@@ -1075,11 +1076,12 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
             raise ServiceError(400, 'The event cursor must be zero or greater.')
         deadline = time.monotonic() + min(max(wait, 0), 25)
         with self._read_view() as view:
+            seen = self.commits.count
             while view._cursor() <= after and not self.stopping.is_set():
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     break
-                self.stopping.wait(min(remaining, .1))
+                seen = self.commits.wait(seen, min(remaining, .1))
             with view._read_transaction():
                 rows = view.db.execute('SELECT seq,type,bot_id,task_id,data,created_at FROM events WHERE seq>? ORDER BY seq LIMIT 500', (after,)).fetchall()
                 result = [dict(seq=r[0], type=r[1], bot_id=r[2], task_id=r[3], data=json.loads(r[4]), created_at=r[5]) for r in rows]
@@ -4441,6 +4443,7 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
 
     def close(self):
         self.stopping.set()
+        self.commits.notify()
         self.pr_refresh_requested.set()
         if hasattr(self.provider, 'subscribe_model_catalog'):
             self.provider.subscribe_model_catalog(None)

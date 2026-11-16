@@ -1,4 +1,5 @@
 import Foundation
+import os
 
 struct Bot: Codable, Identifiable, Equatable, Sendable {
     var id: String
@@ -711,10 +712,39 @@ enum APIJSON {
 }
 
 extension String {
-    var apiDate: Date? {
+    /// The date of a time of the Mac. The lists read the time of each message on each update, and a parse costs about
+    /// 1.5 microseconds, so the app keeps each result.
+    var apiDate: Date? { Self.apiDates.value(for: self) { $0.parsedAPIDate } }
+
+    /// The parsed dates by their text, also for a text that is no date.
+    static let apiDates = TextCache<Date?>(limit: 32_768)
+
+    /// The parse without the cache.
+    var parsedAPIDate: Date? {
         (try? Date.ISO8601FormatStyle(includingFractionalSeconds: true).parse(self))
             ?? (try? Date.ISO8601FormatStyle().parse(self))
     }
+}
+
+/// The results of a function of a text, by the text. The function gives the same result for the same text. The
+/// cache starts again when it holds `limit` texts, so it stays small. Any thread can read it.
+final class TextCache<Value: Sendable>: Sendable {
+    let limit: Int
+    private let values = OSAllocatedUnfairLock(initialState: [String: Value]())
+
+    init(limit: Int) { self.limit = limit }
+
+    func value(for text: String, make: (String) -> Value) -> Value {
+        if let known = values.withLock({ $0[text] }) { return known }
+        let value = make(text)
+        values.withLock {
+            if $0.count >= limit { $0.removeAll(keepingCapacity: true) }
+            $0[text] = value
+        }
+        return value
+    }
+
+    var count: Int { values.withLock(\.count) }
 }
 
 struct ApprovalMode: Codable, Identifiable, Equatable, Sendable {
@@ -785,16 +815,34 @@ struct FallbackRequest: Encodable {
 
 /// The position of the first message with each ID and each client request ID. AppStore makes it again each time its
 /// messages change, so a lookup finds what a scan from the start finds.
-struct MessageIndex: Sendable {
+struct MessageIndex: Equatable, Sendable {
     private var byId: [String: Int] = [:]
     private var byRequest: [String: Int] = [:]
 
     init(_ messages: [Message]) {
         byId.reserveCapacity(messages.count)
-        for (position, message) in messages.enumerated() {
+        add(messages, from: 0)
+    }
+
+    private mutating func add(_ messages: [Message], from start: Int) {
+        for position in start..<messages.count {
+            let message = messages[position]
             if byId[message.id] == nil { byId[message.id] = position }
             if let request = message.clientRequestId, byRequest[request] == nil { byRequest[request] = position }
         }
+    }
+
+    /// Makes this index of `old` the index of `new`. Most updates change the text of a message or add messages at
+    /// the end. Then the IDs keep their places, and the index takes only the new messages. Each other change makes a
+    /// new index.
+    mutating func update(from old: [Message], to new: [Message]) {
+        guard new.count >= old.count,
+              !old.indices.contains(where: { old[$0].id != new[$0].id || old[$0].clientRequestId != new[$0].clientRequestId })
+        else {
+            self = MessageIndex(new)
+            return
+        }
+        add(new, from: old.count)
     }
 
     /// The first position whose message has this ID, or, when `clientRequestId` is set, this client request ID.

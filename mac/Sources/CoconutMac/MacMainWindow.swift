@@ -309,11 +309,10 @@ struct MacSidebar: View {
     /// The bots that are not archived, newest activity first, split into the pinned bots and the other bots.
     /// It reads only its arguments, so it needs no main actor, and a test can call it from any context.
     var body: some View {
-        // One pass over the messages for all sections. A comparison of the sort read every message and parsed its
-        // date, about 3 ms for each body with 1,500 messages.
-        // The choices that wait for the Mac show at once (TeamChatChoices).
-        let sections = ChatSections.make(bots: store.bots, messages: store.messages, rooms: store.shownTeamRooms,
-                                         local: store.newestLocalMessages)
+        // The store keeps the newest activity of each bot (ChatSummaries), so the sidebar reads no message. A pass
+        // over the messages for each body cost about 3 ms with 1,500 messages.
+        let sections = ChatSections.make(bots: store.bots, latest: store.chatSummaries.newestActivity,
+                                         rooms: store.shownTeamRooms, local: store.newestLocalMessages)
         let pins = SidebarPins(pinnedBots: sections.pinned, documents: store.documents ?? [], bots: store.bots,
                                teamBots: store.teamBots)
         return List(selection: $selection) {
