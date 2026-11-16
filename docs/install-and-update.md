@@ -336,11 +336,13 @@ The app reads `--set-up`, `--team-only` and `--remove` only when it starts, so a
 
 GitHub Actions makes every release. No Mac deploys or uploads builds by itself.
 
-- `.github/workflows/mac-release.yml` builds the latest `main` and publishes Coconut.app at most once per hour. The feed has one channel, so every Mac gets each build. A failed build publishes nothing.
+- `.github/workflows/mac-release.yml` builds the latest `main` and normally publishes Coconut.app at most once per hour. The feed has one channel, so every Mac gets each build. A failed build publishes nothing.
 - Sparkle in Coconut.app installs the new build on each Mac.
 - `.github/workflows/testflight.yml` builds and uploads the iPhone app at most once per hour when app inputs change. See [the iPhone setup](iphone-install.md#automatic-testflight-releases).
 
-Pushes during the cooldown coalesce into the next hourly run. Manual runs use the same cooldown. Deployment records
+Pushes during the cooldown coalesce into the next hourly run. Manual runs use the same cooldown by default.
+For an urgent Mac fix, enable `urgent` when you run `Mac release` manually. This skips only the cooldown.
+Signing, notarization, and the check for a newer build still apply. Deployment records
 keep the last publication time and source commit, including attempts that fail after upload. Regression tests run
 locally through the commit hook and the agent's targeted checks.
 

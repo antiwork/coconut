@@ -12,3 +12,4 @@ or native Hermes tests locally when the change needs them. Do not run every suit
 
 GitHub runs only release automation. A successful app build can publish from `main` at most once per hour per app.
 Pushes within that hour coalesce into the next hourly release. No change to app inputs means no new upload.
+An explicit urgent manual Mac release can skip the hourly cooldown.
