@@ -83,7 +83,7 @@ Each payload has these fields:
 | `delete` | `false` | The member of the replaced entry | None. It replaces an entry that its author deletes. |
 | `bot` | `true` | The Mac that runs the agent, one entry for each agent | `name` (1 to 80 characters), `avatar` (at most 80), `color` (at most 20), `open` (`true` for an agent that answers each member, or absent), `direct` (`true` for an agent that answers direct messages, or absent). See [Direct chat with an agent](#direct-chat-with-an-agent). |
 | `page` | `true` | The Mac that runs the agent of the page, one entry for each document | `bot` (the entry ID of the `bot` entry), `key`, `title`, `format`, `summary` (or null), `content`, `version` (the version of the document on its Mac), `expires_at` (or null) |
-| `message` | `false` | Any member | `text` (1 to 16,000 characters), `reply_to` (an entry ID, or absent), `mentions` (at most 16 entry IDs, or absent), `bot` (the entry ID of a `bot` entry of the same member, or absent), `chat` (the entry ID of a `chat` entry, or absent for the Team chat), `preview` (a link preview, or absent). See [Team chat](#team-chat) and [Link previews](#link-previews). |
+| `message` | `false` | Any member | `text` (1 to 16,000 characters), `reply_to` (an entry ID, or absent), `mentions` (at most 16 entry IDs, or absent), `bot` (the entry ID of a `bot` entry of the same member, or absent), `chat` (the entry ID of a `chat` entry, or absent for the Team chat), `preview` (a link preview, or absent), `files` (1 to 4 files, or absent; then `text` can be empty). See [Team chat](#team-chat), [Link previews](#link-previews) and [Files](#files). |
 | `direct` | `false` | A person's Mac, and a Mac for a team only for its agents | `box`: the text of a direct message to one other member, sealed a second time with the pair key of the two members. The box of a message of a chat with an agent also has `bot` (the entry ID of the `bot` entry of the agent) and can have `page`. See [Direct messages](#direct-messages) and [Direct chat with an agent](#direct-chat-with-an-agent). |
 | `remove` | `true` | The admin, one entry for each removed member | `member` (the member ID of the removed member), `name` (the last name that the admin's Mac showed for it, or absent). See [Removal](#removal). |
 | `typing` | `false` | Any member, one entry for its person and one for each of its agents in each room | `on` (`true` or `false`), `bot` (the entry ID of a `bot` entry of the same member, or absent for the person of the Mac), `chat` (the entry ID of a `chat` entry, or absent for the Team chat). See [Typing](#typing). |
@@ -91,10 +91,11 @@ Each payload has these fields:
 | `key` | `true` | The admin, one entry for each new epoch | `epoch` (the new epoch), `agreement` (the public agreement key of the admin), `boxes` (for each member ID, the room key of the new epoch in a box for that member). See [Key change](#key-change). |
 | `erase` | `false` | The admin, one entry for each deleted message | `entry` (the entry ID of a `message` entry of another member). See [The admin deletes a message](#the-admin-deletes-a-message). |
 | `reaction` | `false` | A person's Mac, one entry for each message that its person reacts to | `message` (the entry ID of a `message` entry), `emoji` (one of six emoji, or empty). See [Reactions](#reactions). |
+| `file` | `false` | A person's Mac, one entry for each piece of a file of a message | `file` (the file ID), `index` (0 to 5), `data` (standard base64 of 1 to 737,280 bytes). See [Files](#files). |
 
 The kinds `member`, `delete`, `bot`, `page`, `message`, `direct`, `remove`, `key` and `erase` are complete. See [Agents and pages](#agents-and-pages) for the rules of `bot` and `page`, [Team chat](#team-chat) for `message`, and [Direct messages](#direct-messages) for `direct`. Each other kind gets its fields in the pull request that builds it. A new kind needs no change of the relay and no change of the body.
 
-The kinds `typing`, `chat` and `reaction` are complete too. See [Typing](#typing), [Chats of a team](#chats-of-a-team) and [Reactions](#reactions).
+The kinds `typing`, `chat`, `reaction` and `file` are complete too. See [Typing](#typing), [Chats of a team](#chats-of-a-team), [Reactions](#reactions) and [Files](#files).
 
 A key in a payload is unpadded base64url, as in a pairing setup.
 
@@ -172,6 +173,8 @@ A long poll would keep the Durable Object in memory, and Cloudflare bills that t
 A member that leaves and joins again continues its counts: its entries that are not kept stay on the relay, and so does its count of writes in the minute.
 
 The limit of the other entries of one member has room for the files of a team chat. The two limits of one member add up to 576 MiB. So in a room with more than 14 members, the limit of the room can stop a write before the limit of the member does.
+
+A file of a message has at most 4 MiB, in pieces of at most 720 KiB, so each piece fits in one body. A person's Mac sends at most 320 MiB of files in one room in 90 days (see [Files](#files)).
 
 A page can have 512 KiB of content (`MAX_CONTENT` in `backend/coconut/documents.py`), and one entry holds a whole page. JSON can make the content larger, so a save of a team page checks that its payload fits (see [Agents and pages](#agents-and-pages)). Each Mac keeps the full history of the chat in its own store, also after the relay deletes an old `message` entry. The retention time only limits how far back a new member or a Mac that was off for longer than 90 days can read.
 
@@ -354,7 +357,7 @@ An invite that the admin makes after the change carries the new epoch and the ne
 
 ## What the relay sees
 
-The relay stores the room ID, the member IDs, the hashes of tokens and tickets, and for each entry the fields of the entry table. It sees which member writes, when, and how many bytes. It sees no name, no message, no page, and no room key. For a direct message it sees the same fields as for each other entry, and not the kind, so it does not know that the entry is a direct message or for whom it is. `relay/README.md` allows no plaintext field, and this contract adds none.
+The relay stores the room ID, the member IDs, the hashes of tokens and tickets, and for each entry the fields of the entry table. It sees which member writes, when, and how many bytes. It sees no name, no message, no page, and no room key. For a direct message it sees the same fields as for each other entry, and not the kind, so it does not know that the entry is a direct message or for whom it is. For a file it sees the size of each piece, so it can tell the size of a file, but not its name, its type or its bytes. `relay/README.md` allows no plaintext field, and this contract adds none.
 
 The relay accepts a member ID only with a proof of its key, so one member cannot write as another member. The relay itself can hold back an entry or give an old one. It cannot make an entry, change one, or move one to another member, entry ID or room. The `rev` rule stops an old write of an entry on a Mac that already has a newer one.
 
@@ -614,14 +617,15 @@ The payload of a `message` entry:
 | `mentions` | A list of at most 16 entry IDs of `member` or `bot` entries that the message names, or absent. |
 | `bot` | The entry ID of a `bot` entry of the same member when an agent of that Mac wrote the message, or absent for a message of the person. |
 | `preview` | The link preview of the first link of `text`: `{"url", "title", "site"}`, or absent. See [Link previews](#link-previews). |
+| `files` | The files of the message: a list of 1 to 4 items, or absent. A message with files can have an empty `text`. See [Files](#files). |
 
 - An edit is a new write of the same entry ID with the next `rev`. A removal is a `delete` entry over it. Only the member of a message can do either (rule 3). The admin can also take a message out of the chat with an `erase` entry (see [The admin deletes a message](#the-admin-deletes-a-message)).
 - Only a team-only Mac writes `bot`: one entry for each complete message of an agent that answers in the chat. See [An agent answers](#an-agent-answers). It never edits such a message, so `edited_at` of a message of an agent means an edit of another version.
 
 Rules for a Mac that reads a `message` entry:
 
-1. A message is valid only when `text` has 1 to 16,000 code points of valid Unicode text, `reply_to` and `bot` are entry IDs, and `mentions` is a list of at most 16 entry IDs. A reader takes null as an absent field. A message that does not fit stays in the store and shows nothing.
-2. A field that the reader does not know stays in the payload, and the reader ignores it. So a later field, for example an attachment, does not break a Mac of today. A `preview` that does not fit the rules of [Link previews](#link-previews) is left out, and the message shows without it.
+1. A message is valid only when `text` has 1 to 16,000 code points of valid Unicode text, or `text` is empty and `files` has at least one item that fits, `reply_to` and `bot` are entry IDs, and `mentions` is a list of at most 16 entry IDs. A reader takes null as an absent field. A message that does not fit stays in the store and shows nothing.
+2. A field that the reader does not know stays in the payload, and the reader ignores it. So a later field, for example an attachment, does not break a Mac of today. A `preview` that does not fit the rules of [Link previews](#link-previews) is left out, and the message shows without it. The same holds for `files` that do not fit the rules of [Files](#files).
 3. A message with a `bot` shows only when `bot` names a valid `bot` entry of the same member. The `bot` entry can come after the message, so the check runs when the Mac reads the chat, not when it accepts the entry. A `delete` over the `bot` entry does not hide the messages of the agent that the chat already had.
 4. The newest write of an entry counts, as the relay keeps only that write. A `delete` over a message removes its row. A later `message` write over the `delete` shows the message again, also on a Mac that joins later and reads only that write. A Mac of today never writes it.
 5. The chat sorts the messages by `first`, so an edit keeps its place.
@@ -642,8 +646,8 @@ The routes have the authorization of the other team routes, and a write with an 
 | Request | Answer |
 | --- | --- |
 | `GET /v1/team/rooms/<room>/messages?before=<first>&limit=<n>&chat=<id>` | One page, newest first: `{room, messages, before}`. `limit` is 1 to 100, and 50 without it. `before` of the answer is the `first` to ask for the next page, or null when no older message exists. Also a room that is not `active` has its history. |
-| `POST /v1/team/rooms/<room>/messages`, body `{text, reply_to?, mentions?, chat?, preview?}` | Writes a message of the person and answers `{room, message}`. `preview` is the link preview of the app, or null for none (see [Link previews](#link-previews)). `reply_to` is the `id` of a message that the chat shows. `mentions` is a list of member IDs of `members` and `id` values of `bots` of `GET /v1/team/rooms`. The Mac writes the entry IDs of the contract. With an `Idempotency-Key`, the entry ID of the message comes from the room, the device and the key. So a repeat after a write without an answer finds that write and sends no second message. |
-| `PATCH /v1/team/rooms/<room>/messages/<id>`, body `{text}` | Changes the text of a message of this Mac's person, and answers `{room, message}`. The other fields stay. The link preview stays only while the new text contains its `url`. The same text writes nothing. A message of another member or of an agent answers 403. |
+| `POST /v1/team/rooms/<room>/messages`, body `{text, reply_to?, mentions?, chat?, preview?, files?}` | Writes a message of the person and answers `{room, message}`. `files` are the IDs of drafts of this Mac, and with them `text` can be empty or absent (see [Files](#files)). `preview` is the link preview of the app, or null for none (see [Link previews](#link-previews)). `reply_to` is the `id` of a message that the chat shows. `mentions` is a list of member IDs of `members` and `id` values of `bots` of `GET /v1/team/rooms`. The Mac writes the entry IDs of the contract. With an `Idempotency-Key`, the entry ID of the message comes from the room, the device and the key. So a repeat after a write without an answer finds that write and sends no second message. |
+| `PATCH /v1/team/rooms/<room>/messages/<id>`, body `{text}` | Changes the text of a message of this Mac's person, and answers `{room, message}`. The other fields stay, also `files`. A message with a file takes an empty text. The link preview stays only while the new text contains its `url`. The same text writes nothing. A message of another member or of an agent answers 403. |
 | `DELETE /v1/team/rooms/<room>/messages/<id>` | Removes a message of this Mac's person with a `delete` entry, and answers `{room, id, deleted: true}`. When the entry is already a `delete` entry of this Mac, for example after a delete without an answer, the Mac gives the same answer and writes nothing. An ID that the store does not have answers 404. On the admin's Mac, a message of another member or of an agent gets an `erase` entry (see [The admin deletes a message](#the-admin-deletes-a-message)). On another Mac, an entry of another member answers 403. |
 | `POST /v1/team/rooms/<room>/read`, body `{first, chat?}` | Moves the read position, and answers `{room, read, unread}`. |
 | `PUT /v1/team/rooms/<room>/messages/<id>/reaction`, body `{emoji}` | Sets the reaction of this Mac's person on a message of a team chat, and answers `{room, message}`. See [Reactions](#reactions). |
@@ -664,6 +668,7 @@ A message in an answer:
 | `mentions` | For each mention: the member ID of a member, or the `t-` ID of a team agent. A mention that the store cannot name stays out. |
 | `reactions` | The reactions on the message: one item `{emoji, members, mine}` for each emoji with at least one member, in the order of the six emoji. See [Reactions](#reactions). An older service sends none. |
 | `preview` | The link preview `{url, title, site}`, or null. See [Link previews](#link-previews). An older service sends no key. |
+| `files` | The files of the message, or an empty list. See [Files](#files). An older service sends no key. |
 | `created_at`, `edited_at` | The times of rule 6. `edited_at` is null for a message without an edit. |
 
 When the chat of a room changes on this Mac, the Mac adds one `team_messages.updated` event with `{"team": <room ID>}` in the same transaction: a new message, an edit, a removal, a new time from the relay, a new or changed name in `team_names` of a room with messages (for example a rename, or a `bot` entry that makes a message of its agent show), a new, changed or removed reaction on a message that the chat has, or a new read position, for example from another device of the person. The same name written again adds no event. `GET /v1/updates` then has `team_messages_changed`: the IDs of these rooms. A pass that changes nothing adds no event. The event type is in the `known` set of `GET /v1/updates` and changes no Work row, so an app of today does not read its whole state again.
@@ -961,6 +966,58 @@ A message in an answer with a preview, and one without:
 ```
 
 No log line has a preview.
+
+#### Files
+
+A person adds up to 4 files to a message of the Team chat or of a named chat, for example a photo or a PDF. The bytes go into the log as entries of the kind `file`, so the relay and the helper need no change. `backend/coconut/team_files.py` serves the routes, and `TeamStore` keeps the files.
+
+The field `files` of a `message` entry is a list of 1 to 4 items:
+
+| Field | Value |
+| --- | --- |
+| `id` | The file ID: 16 random bytes in lowercase hex, as an entry ID. |
+| `name` | 1 to 160 code points of valid Unicode text, with no `/`, no `\`, no control character, and not `.` or `..`. |
+| `type` | The media type, for example `image/png`: 1 to 100 printable ASCII characters, or absent. |
+| `size` | The number of bytes: 1 to 4 MiB (4,194,304). |
+| `hash` | The SHA-256 of the bytes: 64 lowercase hex characters. |
+| `width`, `height` | The size of an image in pixels: whole numbers from 1 to 20,000. Both or neither. |
+
+The pieces. A file has `ceil(size / 737,280)` pieces of 720 KiB, and the last one can be shorter. The payload does not carry the number of pieces. Each piece is one `file` entry, not kept: `{"kind": "file", "rev": n, "at": "...", "file": "<file ID>", "index": 0, "data": "<standard base64>"}`. The base64 text of 720 KiB and the seal fit in the 1 MiB of a body. The entry ID is the first 16 bytes of HMAC-SHA256 with the member token of the Mac as the key, over `"coconut room file" | room ID (32 bytes) | file ID (16 bytes) | index (u32 big-endian)`. So a repeat writes the same entry, and no other member can take the ID first.
+
+Rules for a Mac that reads a file:
+
+1. A `file` entry is valid when `file` is a file ID, `index` is a whole number from 0 to 5, and `data` is standard base64 of 1 to 737,280 bytes. A reader checks the length of the text before the decode. An entry that does not fit stays in the store and shows nothing.
+2. An item of `files` fits the table above. A reader takes null as an absent field. A `files` value that does not fit (one bad item, more than 4 items, the same ID two times, null) is left out, as a `preview` that does not fit. A message with an empty `text` is then not valid and shows nothing.
+3. A file of a message is made only of the pieces that the member of the message wrote. A piece of another member never counts.
+4. A file is complete when the Mac has each piece from 0 to n - 1 of that member, each piece but the last has 737,280 bytes, the sizes add up to `size`, and the SHA-256 of the joined bytes is `hash`. Until then, `complete` of the file is false. A piece can come before or after its message. A new piece of a shown file adds the event of its chat.
+5. The Mac keeps the bytes of a piece once, as a BLOB in `team_file_pieces`. The payload of a `file` entry in `team_entries` has no `data`: in its place the Mac stores `size`, the number of bytes of a piece that fits. `team_message_files` keeps the files that each message names, with the size and the hash of each item. In `team_file_pieces` and `team_file_drafts` the BLOB is the last column, because SQLite walks the overflow pages of a large BLOB to read a column after it. An index on `received` gives the sweep of rule 7 the old pieces without a walk of the table.
+6. The Mac checks a file when a piece of it or a message that names it changes, in the transaction of the accept. `checked` of `team_message_files` keeps the hash that passed, or null. So a view, also in a new process after a restart, reads `complete` from that column and never the bytes. Two members can name the same file ID, each with own pieces and an own hash. Each message has its own check, by rule 3.
+7. The Mac removes the bytes of a piece when a `delete` entry replaces it. It removes the bytes of each file of a message when the message no longer shows (its author deleted it, the admin erased it, or the admin removed its chat), or when a new write of the message no longer names the file. A file that another message of the same member names keeps its bytes. The Mac removes the bytes of a piece that no message of the store names 7 days after this Mac got it. That sweep runs when the Mac accepts a new `file` entry or a draft, not on a timer.
+8. A Mac with an older Coconut keeps a `file` entry by rule 5 of a reader, with its base64 text, and ignores `files` by rule 2 of a message. So it shows a message with files and a text without the files, and it shows no message with an empty text.
+
+The update from a version without files: in one step with the new column `files` of `team_messages`, the Mac moves the bytes of each stored `file` entry into `team_file_pieces`, takes `data` out of each payload, and reads each stored message with `files` again. A stop or an error in this pass takes the column back, so the next start does the pass again.
+
+The routes. Each one has the authorization of the other team routes, and a write with an `Idempotency-Key` is safe to repeat (see [Repeat a write](#repeat-a-write)). The token of the bridge file gets 403 on a person's Mac. A Mac for a team only has no person, so the upload answers 409 with "This Mac runs Coconut for a team only, so nobody sends a file here."
+
+| Request | Answer |
+| --- | --- |
+| `POST /v1/team/rooms/<room>/files`, body `{name, content, type?, width?, height?}` | `content` is standard base64. The Mac checks the rules of an item, keeps the bytes as a draft in `team_file_drafts`, and answers `{room, file}`: `{id, name, type, size, width, height}`. Nothing goes to the relay. An empty file or a file over 4 MiB answers 413 with "A file must have between 1 byte and 4 MB." Each upload removes the drafts that are 24 hours old or older, and runs the sweep of rule 7. A room that is not `active` answers 409. |
+| `DELETE /v1/team/rooms/<room>/files/<id>` | Removes a draft of this Mac, and answers `{room, file, deleted: true}`. A draft that this Mac does not have answers 404. |
+| `POST /v1/team/rooms/<room>/messages` with `files` | `files` is a list of 1 to 4 draft IDs of this room. With files, a `text` that is absent, empty or of white space only is an empty text. The Mac writes each piece of each file as a `file` entry, in order, then the `message` entry with the items, then removes the drafts. A piece whose bytes this Mac has with the size of the draft, from a send without an answer, is not written again. A piece without its bytes, for example after the sweep or after the delete of a message, is written again with the next `rev`. A repeat with the same `Idempotency-Key` finds the message before it checks the drafts, so it writes no second message and does not fail because the drafts are gone. A draft that does not exist, or that is 24 hours old or older, answers 400 with "This file is no longer on this Mac. Add it again." |
+| `GET /v1/team/rooms/<room>/messages/<message>/files/<id>` | The bytes of a complete file of that message. The route names the message, because two members can name the same file ID: the answer is only the file of that message, made of the pieces of its member. The content type is `type`, or `application/octet-stream`. `Content-Disposition` names the file as the artifact route does. A message that does not show on this Mac, or that does not name the file, answers 404. A file that is not complete answers 409 with "This file is not on this Mac yet. Try again later." |
+
+- Each message view of a team chat has the key `files`: a list, empty without files, of `{id, name, type, size, width, height, complete}`. An older service sends no key, and the app then knows that this Mac has no files.
+- Each short text of a message for a person shows, for a message with an empty text, "Photo" when the type of the first file starts with `image/`, else the name of the first file: the chat list (`last_message`), the sealed alert of a notification (also of a mention), the quote of a reply in a view (`reply.text`), and for an agent the quote of the answered message (`reply_to`) and the quoted context of the chat.
+- A turn of an agent that a message with files starts gets one line for each file after the text: `[File: <name>, <type>, <size> bytes]`.
+
+The space of a member. The relay keeps 512 MiB for the entries of one member that are not kept, for 90 days after each write. Over that, it refuses each write with 507, also a plain message. A piece of 720 KiB needs a body of about 960 KiB, so the pieces of 320 MiB of files use about 430 MiB, and the rest stays free for messages. Before it writes the pieces, the Mac adds the sizes of the pieces that this member wrote in this room in the last 90 days (the `size` of each stored `file` entry) and the sizes of the new files. Over 320 MiB, it answers 413 with "Your space for files in this team is full. The space of a file is free again 90 days after you sent it." It gives the same answer when the relay answers 507 to a send with files.
+
+What stays for later:
+
+- Direct chats take no file. A direct message with `files` answers 400 with "A direct message cannot have a file yet. Send the file in a team chat." The views of direct messages have no key `files`.
+- An agent gets the name, the type and the size of each file, not the bytes.
+
+No log line has the name of a file or its bytes.
 
 ### Direct messages
 

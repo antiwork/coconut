@@ -105,6 +105,8 @@ class TeamDirects:
         """
         from .service_base import ServiceError
         from .team import team_errors
+        if data.get('files') is not None:
+            raise ServiceError(400, 'A direct message cannot have a file yet. Send the file in a team chat.')
         text = message_text(data.get('text'))
         preview = message_preview(data.get('preview'), text)
         reply_to = data.get('reply_to')

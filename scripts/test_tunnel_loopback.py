@@ -26,8 +26,9 @@ sys.path.insert(0, str(ROOT / 'scripts'))
 import pairing  # noqa: E402
 import tunnel  # noqa: E402
 # The Mac app job of CI runs this file after its `npm ci`, so the team log tests run there too.
-from test_team_log import (TeamChatsTests, TeamDirectTests, TeamEraseTests, TeamKeyChangeTests,  # noqa: E402,F401
-                           TeamLogTests, TeamLogVectorTests, TeamOnlyTests, TeamPreviewTests, TeamPushTests,
+from test_team_log import (TeamChatsTests, TeamDirectTests, TeamEraseTests, TeamFileTests,  # noqa: E402,F401
+                           TeamKeyChangeTests, TeamLogTests, TeamLogVectorTests, TeamOnlyTests, TeamPreviewTests,
+                           TeamPushTests,
                            TeamReactionTests, TeamRemovalTests, TeamSocketTests, TeamTypingTests, start_failure)
 import test_team_log  # noqa: E402
 

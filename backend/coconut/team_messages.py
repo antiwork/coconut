@@ -5,7 +5,8 @@ history in `team_messages` (team_store.py). An edit is a new write of the same e
 removal is a `delete` entry over it. The routes are for the chat of the app:
 
 - `GET /v1/team/rooms/<room>/messages?before=<first>&limit=<n>&chat=<id>`: one page of messages, newest first.
-- `POST /v1/team/rooms/<room>/messages` with `{text, reply_to?, mentions?, chat?, preview?}`: send a message.
+- `POST /v1/team/rooms/<room>/messages` with `{text, reply_to?, mentions?, chat?, preview?, files?}`: send a message.
+  `files` are the IDs of the drafts of team_files.py.
 - `PATCH /v1/team/rooms/<room>/messages/<id>` with `{text}`: change a message of this Mac's person.
 - `DELETE /v1/team/rooms/<room>/messages/<id>`: remove a message of this Mac's person. On the admin's Mac, also a
   message of another member or of a bot: an `erase` entry takes it out of the chat on each Mac.
@@ -28,8 +29,8 @@ from secrets import token_hex
 from . import team_keys
 from .team_pages import team_id, team_ids
 from .team_relay import MAX_NUMBER, number
-from .team_store import (ACTIVE, MAX_MENTIONS, MAX_TEXT, MESSAGES_EVENT, entry_id, preview_fields, preview_view,
-                         reaction_views, unicode_text)
+from .team_store import (ACTIVE, MAX_MENTIONS, MAX_TEXT, MESSAGES_EVENT, entry_id, files_fields, preview_fields,
+                         preview_view, reaction_views, shown_text, unicode_text)
 
 log = logging.getLogger(__name__)
 
@@ -115,7 +116,10 @@ class TeamMessages:
         """
         from .service_base import ServiceError
         from .team import team_errors
-        text = message_text(data.get('text'))
+        drafts = self._team_draft_ids(data.get('files'))
+        text = data.get('text')
+        # A message with a file can have no text. A text of white space only counts as none.
+        text = '' if drafts and (text is None or isinstance(text, str) and not text.strip()) else message_text(text)
         preview = message_preview(data.get('preview'), text)
         reply_to, mentions = data.get('reply_to'), data.get('mentions')
         if reply_to is not None and not entry_id(reply_to):
@@ -142,12 +146,21 @@ class TeamMessages:
                     fields['mentions'] = self._team_mention_entries(room, mentions)
                 if preview is not None:
                     fields['preview'] = preview
-            self._team_write(room, entry, False, fields, tries=2)
+                # The drafts are gone after a send, so this check comes after the check of a repeat above.
+                files = self._team_send_drafts(room, drafts) if drafts else []
+            # The pieces come first, so a Mac that shows the message can get them soon after it.
+            with self._team_file_space(bool(files)):
+                if files:
+                    fields['files'] = self._team_write_pieces(room, files)
+                self._team_write(room, entry, False, fields, tries=2)
+            if files:
+                self._team_drop_drafts(room_id, files)
         return self._team_message_answer(room_id, entry)
 
     def team_edit(self, room_id: str, entry: str, data: dict) -> dict:
-        """Change the text of a message of this Mac's person. The other fields of the message stay. The link preview
-        stays only while the new text still contains its `url`.
+        """Change the text of a message of this Mac's person. The other fields of the message stay, also its files.
+        The link preview stays only while the new text still contains its `url`. A message with a file can get an
+        empty text.
 
         The edit replaces the write of the message on the relay. The store can have that write with the clock of this
         Mac, when the sync did not read it back yet (TeamStore._relay_time). So the Mac first reads the room to its
@@ -155,13 +168,17 @@ class TeamMessages:
         costs one more read of the relay. The read holds the lock of the room and no lock of the service.
         """
         from .team import team_errors
-        text = message_text(data.get('text'))
+        text = data.get('text')
+        if text != '':
+            text = message_text(text)
         self._team_room(room_id)
         with team_errors(), self._team_room_lock(room_id):
             while self._team_read(room_id):
                 pass
             room, existing = self._team_own_message(room_id, entry)
             payload = json.loads(existing['payload'])
+            if not text and not files_fields(payload.get('files')):
+                message_text(text)  # A message without a file needs a text: this raises the 400 of a send.
             fields = {name: value for name, value in payload.items() if name not in ('rev', 'at', 'preview')}
             preview = preview_fields(payload.get('preview'), text)
             if preview is not None:
@@ -318,7 +335,7 @@ class TeamMessages:
             row = answered.get(entry)
             return None if row is None or row['chat'] != chat else {'id': row['entry'], 'member': row['member'], 'member_name': row['member_name'],
                             'bot': team_id(room['room'], row['bot']) if row['bot'] else None,
-                            'bot_name': row['bot_name'], 'text': row['text'][:PREVIEW]}
+                            'bot_name': row['bot_name'], 'text': shown_text(row['text'], row['files'])[:PREVIEW]}
         return [{'id': row['entry'], 'first': row['first'], 'member': row['member'], 'member_name': row['member_name'],
                  'this_mac': row['member'] == room['member'],
                  'bot': team_id(room['room'], row['bot']) if row['bot'] else None, 'bot_name': row['bot_name'],
@@ -327,6 +344,7 @@ class TeamMessages:
                  'mentions': [phone_id(entry) for entry in entries if entry in names],
                  'reactions': reaction_views(reactions.get(row['entry'], []), room['member']),
                  'preview': preview_view(row['preview']),
+                 'files': self.team_store.file_views(room['room'], row['entry'], row['files']),
                  'created_at': row['created_at'], 'edited_at': row['updated_at'] if row['edited'] else None}
                 for row, entries in zip(rows, mentions)]
 
@@ -343,7 +361,7 @@ class TeamMessages:
             last = {'first': row['first'], 'member': row['member'], 'member_name': row['member_name'],
                     'this_mac': row['member'] == room['member'],
                     'bot': team_id(room['room'], row['bot']) if row['bot'] else None, 'bot_name': row['bot_name'],
-                    'text': row['text'][:PREVIEW],
+                    'text': shown_text(row['text'], row['files'])[:PREVIEW],
                     'created_at': row['created_at']}
         mention = store.mention_first(room['room'], room['member'], chat)
         return {'unread': store.unread(room['room'], room['member'], chat), 'last_message': last,
