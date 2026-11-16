@@ -250,6 +250,7 @@
 		BA924B94BF0BB83AFD6D66D7 /* ConversationSendRecoveryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D48C8A0078FDB1346414F800 /* ConversationSendRecoveryTests.swift */; };
 		BACE5E0A905BA2A617FBA5CF /* DirectMessageTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C057BB9BF5981DCE915F6523 /* DirectMessageTests.swift */; };
 		BBDAE9B5F0E31E9B16121672 /* Bloub-LICENSE.txt in Resources */ = {isa = PBXBuildFile; fileRef = 52DB3E8483A7BFF7DE542101 /* Bloub-LICENSE.txt */; };
+		BC051F22B284F252CD05C08B /* MenuBarIcon.swift in Sources */ = {isa = PBXBuildFile; fileRef = D135912E29D2671243192DF8 /* MenuBarIcon.swift */; };
 		BCE599B60805DA307A9878FA /* TestIsolation.swift in Sources */ = {isa = PBXBuildFile; fileRef = DE7D6BDE77246AF7A1CF43CD /* TestIsolation.swift */; };
 		BD247504877389A3D2262E1A /* IncrementalSyncTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 547FF45685223422176EDA75 /* IncrementalSyncTests.swift */; };
 		BE17AA8A5AFFA3A3D953207A /* MessageDraftView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 78004F47AACBEB462A36AA3B /* MessageDraftView.swift */; };
@@ -551,6 +552,7 @@
 		D06723F2DD7E138C71DBE073 /* MacEncryptedNotification.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = MacEncryptedNotification.json; sourceTree = "<group>"; };
 		D077096B1D7594B096B3D215 /* CoconutNotificationService.appex */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = "wrapper.app-extension"; path = CoconutNotificationService.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		D12040C3ADD0A3CAD2CB855F /* TestWaiting.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TestWaiting.swift; sourceTree = "<group>"; };
+		D135912E29D2671243192DF8 /* MenuBarIcon.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MenuBarIcon.swift; sourceTree = "<group>"; };
 		D1BBB7948089F113C0343188 /* CoconutUITests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = CoconutUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		D22BA52C7936F4BC91B34B7B /* TeamLogTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TeamLogTests.swift; sourceTree = "<group>"; };
 		D269D315DF1581B71D7A8B06 /* UnsentMessageTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UnsentMessageTests.swift; sourceTree = "<group>"; };
@@ -613,6 +615,7 @@
 				653162BFCE9CA04A3C7DCC1F /* AppModel.swift */,
 				472D7A7303281C0EF4B4F9C4 /* CoconutApp.swift */,
 				AB399F2E24791A095A12029D /* MacBanners.swift */,
+				D135912E29D2671243192DF8 /* MenuBarIcon.swift */,
 				827E50B0C8764B4452C6036D /* Updater.swift */,
 			);
 			name = CoconutApp;
@@ -1295,6 +1298,7 @@
 				DA6C2A3B59A9DCAAC30A9771 /* MacInboxView.swift in Sources */,
 				57631029437FDE37A71F3830 /* MacMainWindow.swift in Sources */,
 				6FC0F33B81AAB8C90A26D69D /* MacPairingView.swift in Sources */,
+				BC051F22B284F252CD05C08B /* MenuBarIcon.swift in Sources */,
 				1F4A2C4BDB8397C37252D8F0 /* MessageBanners.swift in Sources */,
 				BE17AA8A5AFFA3A3D953207A /* MessageDraftView.swift in Sources */,
 				8A440AF112FF848BDA618795 /* MessagePhotos.swift in Sources */,
