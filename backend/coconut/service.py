@@ -321,6 +321,9 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
         self.source_poller: threading.Thread | None = None
         from .push import PushDelivery
         self.push = PushDelivery(self)
+        from .github_connection import GitHubConnection
+        self.github = GitHubConnection(self.root)
+        self.github_requests = threading.Lock()
         try:
             self._recover_workspace_binding()
             if not getattr(self, '_workspace_recovery_hold', False):
@@ -1121,6 +1124,19 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
             # A delete or a pin is the same each time, so it needs no saved response.
             document_id = path.rsplit('/', 1)[1]
             return self.delete_document(document_id) if method == 'DELETE' else self.pin_document(document_id, data)
+        if method == 'POST' and path in ('/v1/settings/github/start', '/v1/settings/github/disconnect'):
+            # A retried request returns the current status, without starting or disconnecting a second login.
+            with self.github_requests:
+                with self.lock:
+                    previous = self.db.execute('SELECT fingerprint,response FROM requests WHERE key=?', (key,)).fetchone()
+                if previous:
+                    if not hmac.compare_digest(previous[0], fingerprint):
+                        raise ServiceError(409, 'This idempotency key belongs to a different request.')
+                    return self.github.status()
+                result = self.github_connection(path.rsplit('/', 1)[1])
+                with self.transaction():
+                    self.db.execute('INSERT INTO requests(key,fingerprint,response) VALUES (?,?,?)', (key, fingerprint, encoded(result)))
+                return result
         if method == 'POST' and path.startswith('/v1/settings/google/'):
             return self.google_connection(path.rsplit('/', 1)[1], data, device_id, key)
         if method == 'PUT' and path == '/v1/settings/fallback' and hasattr(self.provider, 'native_settings'):
@@ -1466,6 +1482,26 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
             errors.append(error)
         if errors:
             raise ServiceError(503, 'Deletion was recorded, but cleanup is unconfirmed. Retry the exact request.') from errors[0]
+
+    def github_connection(self, action):
+        from .github_connection import GitHubError
+        try:
+            if action == 'status':
+                return self.github.check()
+            if action == 'start':
+                result = self.github.start()
+            elif action == 'disconnect':
+                result = self.github.disconnect()
+            else:
+                raise ServiceError(404, 'This GitHub connection action was not found.')
+        except GitHubError as error:
+            raise ServiceError(409, str(error)) from None
+        with self.lock:
+            self._profile_trackers.clear()
+        with self.transaction():
+            self._event('github.updated', {})
+        return result
+
 
     def google_connection(self, action, data, device, key=None):
         from .google_connection import GoogleConnections, GoogleError
@@ -2971,14 +3007,20 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
             # Remove expired trackers, so their tokens do not stay in memory.
             for key in [key for key, value in self._profile_trackers.items() if value[0] <= time.monotonic()]:
                 del self._profile_trackers[key]
-            cached = self._profile_trackers.get(home)
+        # The shared login from Coconut Settings serves every bot. Without it, each bot keeps its own gh login.
+        # Reading it is a file read. A new or removed shared login uses a new cache entry at once.
+        shared = self.github.token()
+        key = (home, hashlib.sha256(shared.encode()).hexdigest() if shared else None)
+        with self.lock:
+            cached = self._profile_trackers.get(key)
         # Each gh login read starts a process. Keep the tracker for a short time, so each turn does not wait for gh.
         # A tracker without a login expires sooner, so a new gh login takes effect soon.
         if cached and cached[0] > time.monotonic():
             return cached[1]
-        tracker = GitHubPRTracker.for_profile(home, review_check_names=self._setting('review_check_names', REVIEW_CHECK_NAMES))
+        checks = self._setting('review_check_names', REVIEW_CHECK_NAMES)
+        tracker = GitHubPRTracker(token=shared, review_check_names=checks) if shared else GitHubPRTracker.for_profile(home, review_check_names=checks)
         with self.lock:
-            self._profile_trackers[home] = (time.monotonic() + (120 if tracker._token else 30), tracker)
+            self._profile_trackers[key] = (time.monotonic() + (120 if tracker._token else 30), tracker)
         return tracker
 
     def _poll_pull_requests(self):
@@ -4443,6 +4485,7 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
 
     def close(self):
         self.stopping.set()
+        self.github.close()
         self.commits.notify()
         self.pr_refresh_requested.set()
         if hasattr(self.provider, 'subscribe_model_catalog'):

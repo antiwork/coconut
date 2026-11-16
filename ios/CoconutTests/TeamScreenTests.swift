@@ -484,6 +484,43 @@ final class TeamScreenTests: XCTestCase {
         #endif
     }
 
+    /// The person pins the Team chat and the named chat Notices. Each request has its path and body, and each answer
+    /// changes only its own chat in the list.
+    @MainActor
+    func testAPinOfTheTeamChatAndOfANamedChatSendsItsChoice() async throws {
+        #if !(DEBUG && targetEnvironment(simulator))
+        throw XCTSkip("This HTTP fixture requires a debug simulator build.")
+        #else
+        let state = try PreviewStateFixture.load()
+        let server = try TeamServer(state: APIJSON.encoder().encode(state))
+        server.showChat(notifications: true)
+        let address = try await server.start()
+        defer { server.stop() }
+        try await withPairedStore(address: address) { store in
+            await store.loadTeam()
+            XCTAssertEqual(store.team?.rooms.first?.pinned, false)
+            let chat = await store.setTeamChatPinned("r1", chat: "c1", pinned: true)
+            XCTAssertTrue(chat)
+            XCTAssertEqual(store.team?.rooms.first?.namedChats.first?.pinned, true)
+            XCTAssertEqual(store.team?.rooms.first?.pinned, false)
+            let team = await store.setTeamChatPinned("r1", chat: nil, pinned: true)
+            XCTAssertTrue(team)
+            XCTAssertEqual(store.team?.rooms.first?.pinned, true)
+            XCTAssertEqual(server.muteRequests, ["PUT /v1/team/rooms/r1/chats/c1/pin {\"pinned\":true}",
+                                                 "PUT /v1/team/rooms/r1/pin {\"pinned\":true}"])
+            XCTAssertEqual(store.teamChatPinChoices, [:], "The choice goes when its request ends.")
+            XCTAssertEqual(store.shownTeamRooms, store.team?.rooms)
+            // A failed request shows its text, and the list keeps the state of the Mac.
+            server.refuseMutes()
+            let refused = await store.setTeamChatPinned("r1", chat: "c1", pinned: false)
+            XCTAssertFalse(refused)
+            XCTAssertEqual(store.error, "This chat is no longer in the team.")
+            XCTAssertEqual(store.teamChatPinChoices, [:])
+            XCTAssertEqual(store.shownTeamRooms.first?.namedChats.first?.pinned, true)
+        }
+        #endif
+    }
+
     /// A Mac of today that the app asks to share a page answers with an error. The app shows it and keeps the page as
     /// it was.
     @MainActor
@@ -1790,6 +1827,9 @@ private final class TeamServer: @unchecked Sendable {
     var muteRequests: [String] { lock.withLock { muteLines } }
     func showChat(notifications: Bool) { lock.withLock { chatNotifications = notifications } }
     func refuseMutes() { lock.withLock { refusingMutes = true } }
+    /// The pins of the Team chat and of "c1". They show in the list only with the named chat (`showChat`).
+    private var roomPinned = false
+    private var chatPinned = false
     private var holdingShares = false
     private var heldShare: [@Sendable (Double) -> Void] = []
     var heldShares: Int { lock.withLock { heldShare.count } }
@@ -2094,7 +2134,10 @@ private final class TeamServer: @unchecked Sendable {
         return #"{"room": "r1", "name": "Example Team", "state": "active", "is_admin": true, "can_invite": true, "#
             + #""members": [\#(people.joined(separator: ", "))], "bots": [\#(authors)], "#
             + #""sync": {"error": null}, "unread": \#(unread), "last_message": \#(lastMessage())"#
-            + (chatNotifications.map { #", "chats": [{"id": "c1", "name": "Notices", "notifications": \#($0)}]"# } ?? "")
+            + (chatNotifications.map {
+                #", "pinned": \#(roomPinned), "chats": [{"id": "c1", "name": "Notices", "notifications": \#($0), "#
+                    + #""pinned": \#(chatPinned)}]"#
+            } ?? "")
             + "}"
     }
 
@@ -2160,6 +2203,19 @@ private final class TeamServer: @unchecked Sendable {
                         let enabled = sent.contains("true")
                         chatNotifications = enabled
                         return #"{"room": "r1", "chat": "c1", "notifications": \#(enabled)}"#
+                    }
+                case "PUT /v1/team/rooms/r1/pin", "PUT /v1/team/rooms/r1/chats/c1/pin":
+                    let sent = request.components(separatedBy: "\r\n\r\n").dropFirst().joined()
+                    body = lock.withLock {
+                        muteLines.append(route + " " + sent)
+                        if refusingMutes {
+                            status = "404 Not Found"
+                            return #"{"error": "This chat is no longer in the team."}"#
+                        }
+                        let pinned = sent.contains("true")
+                        let chat = route.contains("/chats/") ? #""c1""# : "null"
+                        if chat == "null" { roomPinned = pinned } else { chatPinned = pinned }
+                        return #"{"room": "r1", "chat": \#(chat), "pinned": \#(pinned)}"#
                     }
                 case "GET /v1/documents":
                     body = lock.withLock { #"{"documents": [\#(page())], "team_bots": []}"# }

@@ -1,6 +1,7 @@
 import tempfile
 import threading
 import unittest
+from unittest.mock import patch
 from uuid import uuid4
 
 from coconut.pr_tracking import PRObservation
@@ -171,6 +172,54 @@ class PRServiceTests(unittest.TestCase):
         self.assertEqual(len([m for m in state['messages'] if m['kind'] == 'artifact']), 1)
         self.service.refresh_pull_requests()
         self.assertEqual(tracker.urls, [URL])
+
+    def test_shared_github_login_serves_every_bot(self):
+        from coconut.pr_tracking import GitHubPRTracker
+        self.service.pr_tracker = None
+        with patch.object(type(self.service.github), 'token', return_value='shared-token'), \
+             patch.object(GitHubPRTracker, 'for_profile') as own_login:
+            tracker = self.service._pr_tracker_for(self.bot['id'])
+        self.assertEqual(tracker._token, 'shared-token')
+        own_login.assert_not_called()
+        self.service._profile_trackers.clear()
+        with patch.object(type(self.service.github), 'token', return_value=''), \
+             patch.object(GitHubPRTracker, 'for_profile', return_value=GitHubPRTracker(token='bot-token')) as own_login:
+            self.assertEqual(self.service._pr_tracker_for(self.bot['id'])._token, 'bot-token')
+        own_login.assert_called_once()
+        # A new shared login takes effect at once, although the bot's own tracker is still cached.
+        with patch.object(type(self.service.github), 'token', return_value='new-shared-token'):
+            self.assertEqual(self.service._pr_tracker_for(self.bot['id'])._token, 'new-shared-token')
+
+    def test_retried_github_disconnect_does_not_run_again(self):
+        key = str(uuid4())
+        with patch.object(type(self.service.github), 'disconnect', return_value=dict(connected=False)) as disconnect, \
+             patch.object(type(self.service.github), 'status', return_value=dict(connected=True)):
+            self.assertEqual(self.service.mutate('POST', '/v1/settings/github/disconnect', {}, key, 'phone'), dict(connected=False))
+            # A retry after a lost response returns the current state. A newer connection from another phone stays.
+            self.assertEqual(self.service.mutate('POST', '/v1/settings/github/disconnect', {}, key, 'phone'), dict(connected=True))
+        disconnect.assert_called_once()
+
+    def test_overlapping_github_retries_run_the_action_once(self):
+        key, started, release = str(uuid4()), threading.Event(), threading.Event()
+        def slow_disconnect(connection):
+            started.set()
+            release.wait(5)
+            return dict(connected=False)
+        results = []
+        with patch.object(type(self.service.github), 'disconnect', autospec=True, side_effect=slow_disconnect) as disconnect, \
+             patch.object(type(self.service.github), 'status', return_value=dict(connected=False)):
+            first = threading.Thread(target=lambda: results.append(
+                self.service.mutate('POST', '/v1/settings/github/disconnect', {}, key, 'phone')))
+            first.start()
+            self.assertTrue(started.wait(5))
+            second = threading.Thread(target=lambda: results.append(
+                self.service.mutate('POST', '/v1/settings/github/disconnect', {}, key, 'phone')))
+            second.start()
+            release.set()
+            first.join(5)
+            second.join(5)
+        self.assertEqual(disconnect.call_count, 1)
+        self.assertEqual(results, [dict(connected=False), dict(connected=False)])
 
     def test_poll_skips_deleted_bot(self):
         self.run_task()

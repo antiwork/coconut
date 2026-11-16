@@ -80,6 +80,23 @@ class TerminalSetupTests(unittest.TestCase):
         self.assertEqual(result.split(':').count('/custom/bin'), 1)
         self.assertNotIn('', result.split(':'))
 
+    def test_all_bots_get_the_shared_github_hook(self):
+        with tempfile.TemporaryDirectory(prefix='github profile ') as directory:
+            root = Path(directory)
+            token = root / 'connections/github/token'
+            home = root / 'bots/desk/home'
+            home.mkdir(parents=True)
+            with patch.dict(os.environ, {'COCONUT_GITHUB_TOKEN_FILE': str(token)}):
+                folder = home.parent / 'terminal'
+                files = self.configure(home, ['/custom/startup.sh'])
+                self.assertEqual(files, ['/custom/startup.sh', str(folder / 'coconut-terminal.sh'), str(folder / 'coconut-github.sh')])
+                script = (folder / 'coconut-github.sh').read_text()
+                self.assertIn(f"cat '{token}'", script)
+                self.assertNotIn('gh auth', script)
+                self.assertEqual(self.configure(home, ['/custom/startup.sh']), files)
+                self.assertFalse((home / 'coconut-github.sh').exists())
+            self.assertFalse(token.exists())
+
     def test_all_bots_get_the_same_google_hook_before_connection(self):
         with tempfile.TemporaryDirectory(prefix='google profile ') as directory:
             root = Path(directory)

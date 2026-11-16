@@ -70,6 +70,15 @@ def configure_terminal(home, directory=None):
         command = shlex.join([sys.executable, str(Path(__file__).with_name('google_connection.py')), google_home])
         _write(google_script, '# Managed by Coconut. Google sign-in stays in the phone app.\neval "$(' + command + ')"\n', directory)
         scripts.append(str(google_script))
+    github_token = os.environ.get('COCONUT_GITHUB_TOKEN_FILE')
+    if github_token:
+        try:
+            from .github_connection import shell_hook
+        except ImportError:
+            from github_connection import shell_hook
+        github_script = folder / 'coconut-github.sh'
+        _write(github_script, shell_hook(github_token), directory)
+        scripts.append(str(github_script))
     install_shell_init(scripts)
     for key in CLAUDE_PROFILE_OVERRIDES:
         os.environ.pop(key, None)

@@ -716,6 +716,115 @@ class ChatMuteTests(TeamPushMacs, unittest.TestCase):
         self.assertEqual(store.muted_chats('r'), {DESIGN})
 
 
+class ChatPinTests(TeamPushMacs, unittest.TestCase):
+    """Ada on the second Mac pins the Team chat and a named chat. Grace on the first Mac is the admin."""
+
+    def setUp(self):
+        super().setUp()
+        self.notices = self.make('Notices')
+        self.second.team_sync_pass()
+
+    def make(self, name: str) -> str:
+        return self.phone(self.first)('POST', f'/v1/team/rooms/{self.room}/chats', {'name': name})['chat']
+
+    def path(self, chat=None):
+        return f'/v1/team/rooms/{self.room}' + (f'/chats/{chat}' if chat else '') + '/pin'
+
+    def pin(self, pinned=True, chat=None, key=''):
+        return self.phone(self.second)('PUT', self.path(chat), {'pinned': pinned}, key)
+
+    def shown(self, service):
+        room = self.rooms(service)[0]
+        return room.get('pinned'), {chat['id']: chat.get('pinned') for chat in room['chats']}
+
+    def test_the_route_and_the_view(self):
+        self.assertEqual(self.shown(self.second), (False, {self.notices: False}))
+        cursor = self.second._cursor()
+        self.assertEqual(self.pin(chat=self.notices), {'room': self.room, 'chat': self.notices, 'pinned': True})
+        self.assertEqual(self.pin(), {'room': self.room, 'chat': None, 'pinned': True})
+        self.assertEqual(self.shown(self.second), (True, {self.notices: True}))
+        self.assertTrue(self.second.updates(cursor, 0, collection_deltas=True).get('team_changed'))
+        # The same value again writes nothing.
+        cursor = self.second._cursor()
+        self.pin(chat=self.notices)
+        self.pin()
+        self.assertEqual(self.second._cursor(), cursor)
+        # The choice never goes to the relay, and the other Mac keeps its own.
+        self.assertEqual(self.shown(self.first), (False, {self.notices: False}))
+        self.assertNotIn('pinned', json.dumps([self.first.team_store.entry(self.room, row[0])['payload'] for row in
+                                               self.first.db.execute('SELECT id FROM team_entries')]))
+        # A pin does not touch the mute, and an unpin takes the pin away.
+        self.assertIs(self.rooms(self.second)[0]['chats'][0]['notifications'], True)
+        self.pin(False, chat=self.notices)
+        self.pin(False)
+        self.assertEqual(self.shown(self.second), (False, {self.notices: False}))
+        # Only a paired device calls the route: the token of the bridge file gets 403.
+        self.assertEqual(self.refusal(self.second.team_request, 'PUT', self.path(), {'pinned': True}, '', '')[0], 403)
+        for body in ({}, {'pinned': 'yes'}, {'pinned': 1}):
+            self.assertEqual(self.refusal(self.phone(self.second), 'PUT', self.path(self.notices), body)[0], 400)
+        for chat in ('f' * 32, 'not-a-chat'):
+            self.assertEqual(self.refusal(self.phone(self.second), 'PUT', self.path(chat), {'pinned': True}),
+                             (404, GONE_CHAT))
+        self.assertEqual(self.refusal(self.phone(self.second), 'PUT', f'/v1/team/rooms/{"f" * 64}/pin',
+                                      {'pinned': True})[0], 404)
+
+    def test_an_unpin_adds_the_event_and_works_for_a_team_that_is_not_active(self):
+        self.pin(chat=self.notices)
+        self.pin()
+        cursor = self.second._cursor()
+        self.pin(False)
+        self.assertTrue(self.second.updates(cursor, 0, collection_deltas=True).get('team_changed'))
+        # The team is no longer active on this Mac: the room keeps its pins, and the person can still unpin.
+        with self.second.transaction():
+            self.second.team_store.update_room(self.room, state=team_store.REMOVED)
+        room = self.rooms(self.second, sync=False)[0]
+        self.assertEqual((room['state'], room['pinned'], room['chats'][0]['pinned']), ('removed', False, True))
+        cursor = self.second._cursor()
+        self.assertIs(self.pin(False, chat=self.notices)['pinned'], False)
+        self.assertTrue(self.second.updates(cursor, 0, collection_deltas=True).get('team_changed'))
+        self.assertEqual(self.second.team_store.pinned_chats(self.room), set())
+
+    def test_a_repeat_with_the_key_of_an_earlier_pin_pins_again(self):
+        key, other = str(uuid4()), str(uuid4())
+        for chat in (None, self.notices):
+            with self.subTest(chat=chat):
+                self.pin(True, chat, key)
+                self.pin(False, chat, other)
+                self.assertIs(self.pin(True, chat, key)['pinned'], True)
+                room = self.rooms(self.second)[0]
+                self.assertIs(room['chats'][0]['pinned'] if chat else room['pinned'], True)
+                self.pin(False, chat, other)
+        self.assertTrue(switch_route('PUT', ['rooms', 'r', 'pin']))
+        self.assertTrue(switch_route('PUT', ['rooms', 'r', 'chats', 'c', 'pin']))
+        self.assertFalse(switch_route('PUT', ['rooms', 'r', 'pages', 'pin']))
+
+    def test_the_choice_goes_with_the_chat_and_with_the_team(self):
+        self.pin(chat=self.notices)
+        self.pin()
+        self.phone(self.first)('DELETE', f'/v1/team/rooms/{self.room}/chats/{self.notices}', {})
+        self.second.team_sync_pass()
+        self.assertEqual(self.second.team_store.pinned_chats(self.room), {None})
+        self.assertEqual(self.refusal(self.phone(self.second), 'PUT', self.path(self.notices), {'pinned': True}),
+                         (404, GONE_CHAT))
+        self.leave(self.second, {'room': self.room})
+        self.assertEqual(self.second.db.execute('SELECT COUNT(*) FROM team_chat_pins').fetchone()[0], 0)
+
+    def test_a_store_from_before_the_pin_has_no_pinned_chat(self):
+        db = sqlite3.connect(':memory:', isolation_level=None)
+        self.addCleanup(db.close)
+        db.executescript(team_store.SCHEMA)
+        db.execute('DROP TABLE team_chat_pins')
+        db.execute("INSERT INTO team_chats VALUES ('r', ?, 1, 'Notices', 'now')", (DESIGN,))
+        db.executescript(team_store.SCHEMA)
+        store = TeamStore(db)
+        store.migrate()
+        self.assertEqual(store.pinned_chats('r'), set())
+        self.assertTrue(store.pin_chat('r', None, True))
+        self.assertTrue(store.pin_chat('r', DESIGN, True))
+        self.assertFalse(store.pin_chat('r', DESIGN, True))
+        self.assertEqual(store.pinned_chats('r'), {None, DESIGN})
+
+
 class ChatBotTests(TeamTurnMacs, unittest.TestCase):
     """The bot Reporter of the team-only Mac answers in the named chat where Ada names it."""
 
@@ -755,8 +864,13 @@ class ChatBotTests(TeamTurnMacs, unittest.TestCase):
 
     def test_a_mac_for_a_team_only_has_no_mute(self):
         design = self.make()
-        (chat,) = self.call('GET', '/v1/team/rooms')['rooms'][0]['chats']
+        (room,) = self.call('GET', '/v1/team/rooms')['rooms']
+        (chat,) = room['chats']
         self.assertNotIn('notifications', chat)
+        self.assertNotIn('pinned', chat)
+        self.assertNotIn('pinned', room)
+        for path in (f'/v1/team/rooms/{self.room}/pin', f'/v1/team/rooms/{self.room}/chats/{design}/pin'):
+            self.assertEqual(self.refusal(self.call, 'PUT', path, {'pinned': True})[0], 409)
         self.assertEqual(self.refusal(self.call, 'PUT', f'/v1/team/rooms/{self.room}/chats/{design}/notifications',
                                       {'enabled': False})[0], 409)
 
