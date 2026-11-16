@@ -594,6 +594,65 @@ struct StateSnapshot: Codable, Sendable {
     var workCapacity: ParallelWorkSettings? = nil
     var mcpServers: [MCPServer]? = nil
     var pushConfigured: Bool? = nil
+    /// The alerts feed. A Mac from before the feed sends none.
+    var alerts: AlertFeed? = nil
+}
+
+/// One alert of the alerts feed: an operational notice of the tooling of the Mac (backend/coconut/alerts.py).
+struct FeedAlert: Codable, Identifiable, Equatable, Sendable {
+    enum Level: String, Sendable {
+        case info, notice, critical
+
+        /// The word that the feed shows and VoiceOver says for the level.
+        var label: String {
+            switch self {
+            case .info: "Info"
+            case .notice: "Notice"
+            case .critical: "Critical"
+            }
+        }
+    }
+
+    let id: String
+    /// `info`, `notice` or `critical`. See `severity`.
+    var level: String
+    /// The producer, for example "cron:daily-ledger".
+    var source: String
+    var title: String
+    var body: String
+    var url: String? = nil
+    var createdAt: String
+    var readAt: String? = nil
+    var resolvedAt: String? = nil
+
+    /// The level of the alert. A level that this app does not know shows as a notice.
+    var severity: Level { Level(rawValue: level) ?? .notice }
+    var isUnread: Bool { readAt == nil }
+    var isResolved: Bool { resolvedAt != nil }
+    /// The address that the alert opens. The Mac accepts only http and https, and the app checks it again.
+    var link: URL? {
+        guard let url, let link = URL(string: url), ["http", "https"].contains(link.scheme?.lowercased() ?? ""),
+              link.host() != nil else { return nil }
+        return link
+    }
+}
+
+/// `alerts` of the state: the newest alerts, and the count of all unread alerts on the Mac. The Mac sends the alerts
+/// that are not resolved first, and each part newest first.
+struct AlertFeed: Codable, Equatable, Sendable {
+    var items: [FeedAlert] = []
+    var unread = 0
+
+    /// Changes one alert as a write of this app does, before the Mac confirms it. The count follows the change.
+    mutating func update(_ id: String, _ change: (inout FeedAlert) -> Void) {
+        guard let index = items.firstIndex(where: { $0.id == id }) else { return }
+        let wasUnread = items[index].isUnread
+        change(&items[index])
+        if wasUnread != items[index].isUnread { unread = max(0, unread + (wasUnread ? -1 : 1)) }
+    }
+
+    /// Takes the answer of the Mac for one alert.
+    mutating func replace(_ alert: FeedAlert) { update(alert.id) { $0 = alert } }
 }
 
 struct ServerEvent: Decodable, Sendable {

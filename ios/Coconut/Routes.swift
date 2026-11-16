@@ -17,6 +17,9 @@ struct TeamChatRoute: Hashable {
     let chat: TeamChatKey
 }
 
+/// The alerts feed. The bell of the Inbox opens it.
+struct AlertsRoute: Hashable {}
+
 /// The Team screen of one team. The title of its chat opens it.
 struct TeamScreenRoute: Hashable {
     let roomId: String
