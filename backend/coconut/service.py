@@ -158,6 +158,7 @@ from .hermes_setup import HermesSetup
 from .bot_profiles import BotProfiles
 from .gateway_chat import GatewayChat
 from .documents import SCHEMA as DOCUMENTS_SCHEMA, Documents
+from .alerts import SCHEMA as ALERTS_SCHEMA, AlertFeed
 from .team import SCHEMA as TEAM_SCHEMA, Team
 
 
@@ -188,7 +189,7 @@ def marked(field):
     return f"json_type(data,'$.{field}') IN ('object','true')"
 
 
-class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness, WithdrawalCorrections, WorkRecovery, WorkSources, SilentResponses, TrackedWork, WorkStatus, WorkProgress, PullRequestReviews, DecisionInbox, BackgroundProcesses, NativeExecution, NativeRoutines, ApprovalUpdates, ParallelWorkUpdates, ServiceRestart, WorkspaceRecovery, WorktreeRetirement, SessionMaintenance, DatabaseMaintenance, TechnicalLane, HermesSetup, BotProfiles, GatewayChat, Documents, Team):
+class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness, WithdrawalCorrections, WorkRecovery, WorkSources, SilentResponses, TrackedWork, WorkStatus, WorkProgress, PullRequestReviews, DecisionInbox, BackgroundProcesses, NativeExecution, NativeRoutines, ApprovalUpdates, ParallelWorkUpdates, ServiceRestart, WorkspaceRecovery, WorktreeRetirement, SessionMaintenance, DatabaseMaintenance, TechnicalLane, HermesSetup, BotProfiles, GatewayChat, Documents, AlertFeed, Team):
     ACTIVE = {'queued', 'working', 'scheduled', 'needs_you', 'paused', 'waiting'}
     TABLES = ('bots', 'tasks', 'messages', 'decisions', 'artifacts', 'routines')
     BOT_CHANGE_LIMIT = 8
@@ -220,6 +221,7 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
             self.db.execute(f'CREATE TABLE IF NOT EXISTS {table} (id TEXT PRIMARY KEY, data TEXT NOT NULL)')
         self.db.executescript(TASK_CHANGES_SCHEMA)
         self.db.executescript(DOCUMENTS_SCHEMA)
+        self.db.executescript(ALERTS_SCHEMA)
         self.db.executescript(TEAM_SCHEMA)
         # The committed task states that the writer and the read views share. See task_cache.py.
         self._task_states = TaskStates()
@@ -1040,6 +1042,8 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
                         task = self._get('tasks', decision['task_id'])
                         decision.update(self.decision_origin(task))
                 state.update(cursor=self._cursor(), server_time=now(), provider=getattr(self.provider, 'name', 'unknown'), push_configured=self.push.configured)
+                # The alerts feed of the phone (alerts.py): a small part, on each load.
+                state['alerts'] = self._alerts_state()
                 if catalog is not None:
                     default = catalog.get('default', {})
                     state.update(model_catalog=catalog, model=default.get('model') or '', base_url=default.get('base_url') or '', model_configured=bool(catalog.get('default_configured', False)))

@@ -176,9 +176,22 @@ def direct_alert(store, room, entry):
     return {'title': title, 'body': notification_text(message['text'])}
 
 
+# The characters of the body of an alert that a notification shows.
+ALERT_BODY_LIMIT = 180
+
+
+def feed_alert(alert):
+    """The alert of a critical alert of the alerts feed (alerts.py): its title in the title, its source in the subtitle,
+    and the start of its body in the body. An alert without a body says its level there, because a notification needs
+    a body (PushShared/NotificationContent.swift)."""
+    return {'title': notification_text(alert['title'], limit=120, byte_limit=480),
+            'subtitle': notification_text(alert['source'], limit=80, byte_limit=256),
+            'body': notification_text(alert.get('body'), limit=ALERT_BODY_LIMIT) or 'Critical alert'}
+
+
 GROUP_NOUNS = (('decision', 'decision', 'decisions'), ('message', 'message', 'messages'), ('team', 'team message', 'team messages'),
-               ('direct', 'direct message', 'direct messages'), ('failed', 'failed task', 'failed tasks'),
-               ('completed', 'finished task', 'finished tasks'))
+               ('direct', 'direct message', 'direct messages'), ('alert', 'alert', 'alerts'),
+               ('failed', 'failed task', 'failed tasks'), ('completed', 'finished task', 'finished tasks'))
 
 
 def group_text(items):

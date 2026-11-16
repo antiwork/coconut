@@ -3,7 +3,8 @@
 Each bot event that can notify becomes one item per phone in `push_items`, and so does each fresh message of another
 member in a team chat (`record_team`) or in a direct chat (`record_direct`). A team item and a direct item have the room
 in `team` and the entry ID in `message_id`, and no bot, task or turn. Their kind tells them apart: `team` or `direct`.
-The other member of a direct chat comes from the row of the message. Coconut decides when items notify
+The other member of a direct chat comes from the row of the message. A new critical alert of the alerts feed is one
+urgent item of the kind `alert` (`record_alert`), with the ID of the alert in `message_id`. Coconut decides when items notify
 (`push_schedule.due`) and writes one `push_outbox` row per notification: one urgent card, or one group of the items
 that waited. The row ID is fixed, and a sealed envelope is kept, so a retry never sends a second notification."""
 from __future__ import annotations
@@ -20,7 +21,8 @@ import tempfile
 import threading
 import time
 from uuid import NAMESPACE_URL, uuid5
-from .push_relay import RelayTransport, validate_route, notification_alert, group_text, team_alert, direct_alert
+from .push_relay import (RelayTransport, validate_route, notification_alert, group_text, team_alert, direct_alert,
+                         feed_alert)
 from .team_store import ACTIVE
 from .push_schedule import (LEGACY_SCHEDULE, OUTSIDE, due, holds_urgent, in_window, merge as merge_schedule,
                             stored as stored_schedule)
@@ -46,6 +48,13 @@ TEAM_BODY = 'Your team has a new message.'
 DIRECT_BODY = 'You have a new direct message.'
 # The kinds of the items of the chats of a team: no bot, task or turn.
 CHAT_KINDS = ('team', 'direct')
+# The kind of the item of a critical alert of the alerts feed (alerts.py): no bot, task or turn. Its `message_id` is
+# the ID of the alert.
+ALERT_KIND = 'alert'
+# The text of a critical alert for a phone without a relay route. That phone gets no text of an alert.
+ALERT_BODY = 'Coconut has a critical alert.'
+# The thread of the notifications of the alerts feed.
+ALERT_THREAD = 'coconut-alerts'
 # A phone reaches the Mac only through the relay tunnel, which needs the phone's static key. A device without one is an
 # old version 1 pairing or a tool on this Mac, so it is not paired for notifications.
 PHONES = 'SELECT id FROM devices WHERE peer_key IS NOT NULL'
@@ -386,6 +395,10 @@ class PushDelivery:
         A team message and a direct message need preferences that the phone sent and a level other than Only urgent.
         The switch for bot replies does not decide it. A phone without stored preferences has an app from before team
         notifications."""
+        if kind == ALERT_KIND:
+            # A critical alert is urgent by definition, so no category of the preferences holds it. The work hours of
+            # the phone still decide when it notifies, as for a card that needs attention now (plan).
+            return True
         chosen = self.stored_preferences(device_id)
         if kind == 'decision':
             return bool(urgent) or (chosen or LEGACY_PREFERENCES)['level'] != 'urgent_only'
@@ -405,6 +418,8 @@ class PushDelivery:
                 and bool(message.get('text', '').strip() or message.get('artifact_id')))
 
     def record(self, event_type, data, bot_id, task_id):
+        if event_type == 'alert.created':
+            self.record_alert(data)
         if not task_id:
             return
         message_id = None
@@ -442,6 +457,25 @@ class PushDelivery:
                     (device_id,event_key,kind,bot_id,task_id,decision_id,message_id,turn_id,urgent,created,status)
                     VALUES (?,?,?,?,?,?,?,?,?,?,'waiting')''',
                     (device_id, event_key, kind, bot_id, task_id, decision_id, message_id, turn, urgent, stamp))
+
+    def record_alert(self, alert):
+        """Queue one urgent item for each phone for a new critical alert. An alert of another level waits in the feed.
+        The key of the item is the ID of the alert, so an alert notifies a phone at most once. The caller holds the
+        transaction that adds the alert."""
+        if alert.get('level') != 'critical':
+            return
+        event_key = ':'.join((ALERT_KIND, alert['id']))
+        stamp = time.time()
+        for (device_id,) in self.service.db.execute(f'SELECT device_id FROM push_devices WHERE enabled=1 AND device_id IN ({PHONES})').fetchall():
+            self.service.db.execute('''INSERT OR IGNORE INTO push_items
+                (device_id,event_key,kind,bot_id,task_id,decision_id,message_id,turn_id,urgent,created,status)
+                VALUES (?,?,?,'','',NULL,?,'',1,?,'waiting')''', (device_id, event_key, ALERT_KIND, alert['id'], stamp))
+
+    def alert_of(self, item):
+        """The alert of an item while it still asks for the person: it exists, and it is not read and not resolved."""
+        row = self.service.db.execute('SELECT data FROM alerts WHERE id=?', (item['message_id'],)).fetchone()
+        alert = json.loads(row[0]) if row else None
+        return alert if alert and not alert.get('read_at') and not alert.get('resolved_at') else None
 
     def record_team(self, room, entry):
         """Queue one item for each phone for a fresh team message (TeamStore._note_fresh). The caller holds the
@@ -519,6 +553,8 @@ class PushDelivery:
             return self.allows(item['device_id'], item['kind']) and self.team_relevant(item)
         if item['kind'] == 'direct':
             return self.allows(item['device_id'], item['kind']) and self.direct_relevant(item)
+        if item['kind'] == ALERT_KIND:
+            return self.alert_of(item) is not None
         task = service._get('tasks', item['task_id'])
         bot = service._get('bots', item['bot_id'])
         conversation = service._get('bots', task.get('conversation_bot_id', bot['id']))
@@ -647,10 +683,10 @@ class PushDelivery:
                         'coconut': {'version': 1, 'device_id': device_id, 'kind': 'group', 'count': len(items),
                                     'direct': direct_target(room, member)}}, None
             # Apps before groups need a bot, task, and card to open a notification. They open the first card in Inbox.
-            # A team item and a direct item have none, so they come from another item. A group of such items only has
-            # none.
+            # A team item, a direct item and an alert item have none, so they come from another item. A group of such
+            # items only has none.
             first = next((item for item in items if item['decision_id']), None) or next(
-                (item for item in items if item['kind'] not in CHAT_KINDS), None)
+                (item for item in items if item['kind'] not in CHAT_KINDS + (ALERT_KIND,)), None)
             task = service._get('tasks', first['task_id']) if first else None
             return {'aps': {'alert': {'title': 'Coconut', 'body': group_text(items)}, 'sound': 'default', 'thread-id': 'coconut-inbox'},
                     'coconut': {'version': 1, 'device_id': device_id, 'kind': 'group', 'count': len(items),
@@ -658,6 +694,16 @@ class PushDelivery:
                                 'task_id': task['id'] if task else None,
                                 'decision_id': first['decision_id'] if first else None, 'message_id': None}}, None
         item = items[0]
+        if item['kind'] == ALERT_KIND:
+            # An app from before the alerts feed finds no bot and no task in the payload, so a tap only opens the app.
+            payload = {'aps': {'alert': {'title': 'Coconut', 'body': ALERT_BODY}, 'sound': 'default',
+                               'thread-id': ALERT_THREAD},
+                       'coconut': {'version': 1, 'device_id': device_id, 'kind': ALERT_KIND,
+                                   'alert_id': item['message_id']}}
+            alert = self.alert_of(item)
+            if sealed and alert:
+                payload['aps']['alert'] = feed_alert(alert)
+            return payload, item['message_id']
         if item['kind'] == 'direct':
             room, chat = item['team'], self.direct_chat(item)
             payload = {'aps': {'alert': {'title': 'Coconut', 'body': DIRECT_BODY}, 'sound': 'default',
