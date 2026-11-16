@@ -9,7 +9,7 @@ A team has two kinds of Mac:
 - **A person's Mac** (a full install): its agents are the person's, and nobody else can ask them. The person shares a page of an agent with a team by one act on the page, and stops when they want. The agent of the page is then the author of the page in the team, and nothing more.
 - **A Mac for a team only** (see [Team-only mode](#team-only-mode)): its agents are the team's. Each page that such an agent saves with the audience "team" goes to the teams of the agent.
 
-Status: the relay has the room (`relay/src/room.js`). The Mac backend makes, joins, leaves and copies a room for the tools on the Mac, and it learns of a new entry at once through the socket of the room (see [Mac](#mac)). It shares the pages that a person shares, and the Library of the phone lists the team pages of the other Macs (see [Agents and pages](#agents-and-pages)). It keeps the Team chat and serves it to the phone, and the app lists the team agents and the people that a person can name with `@` (see [Team chat](#team-chat) and [Mentions of a person](#mentions-of-a-person)). An agent of a Mac for a team only answers in the Team chat (see [An agent answers](#an-agent-answers)). A message of another member reaches this Mac through the socket in about one second, and a person's Mac notifies its phones (see [Notifications](#notifications)). The Mac keeps the direct messages between two people and serves them to the phone, and the app shows them (see [Direct messages](#direct-messages)). A person writes to an agent of a Mac for a team only in a direct chat, and the agent answers there (see [Direct chat with an agent](#direct-chat-with-an-agent)). The admin removes a member (see [Removal](#removal)), and the room then gets a new room key (see [Key change](#key-change)). The admin deletes a message of another member (see [The admin deletes a message](#the-admin-deletes-a-message)). The admin makes more chats with a name in a team (see [Chats of a team](#chats-of-a-team)). A person reacts to a message of a team chat or of a direct chat with an emoji (see [Reactions](#reactions)). A message of a person carries the link preview that the app of the sender made (see [Link previews](#link-previews)). This part is not built yet:
+Status: the relay has the room (`relay/src/room.js`). The Mac backend makes, joins, leaves and copies a room for the tools on the Mac, and it learns of a new entry at once through the socket of the room (see [Mac](#mac)). It shares the pages that a person shares, and the Library of the phone lists the team pages of the other Macs (see [Agents and pages](#agents-and-pages)). It keeps the Team chat and serves it to the phone, and the app lists the team agents and the people that a person can name with `@` (see [Team chat](#team-chat) and [Mentions of a person](#mentions-of-a-person)). An agent of a Mac for a team only answers in the Team chat (see [An agent answers](#an-agent-answers)). A message of another member reaches this Mac through the socket in about one second, and a person's Mac notifies its phones (see [Notifications](#notifications)). The Mac keeps the direct messages between two people and serves them to the phone, and the app shows them (see [Direct messages](#direct-messages)). A person writes to an agent of a Mac for a team only in a direct chat, and the agent answers there (see [Direct chat with an agent](#direct-chat-with-an-agent)). The admin removes a member (see [Removal](#removal)), and the room then gets a new room key (see [Key change](#key-change)). The admin deletes a message of another member (see [The admin deletes a message](#the-admin-deletes-a-message)). The admin makes more chats with a name in a team (see [Chats of a team](#chats-of-a-team)). A person reacts to a message of a team chat or of a direct chat with an emoji (see [Reactions](#reactions)). A message of a person carries the link preview that the app of the sender made (see [Link previews](#link-previews)). A message of an agent can be an alert with a type and a level, and the app filters a chat by them (see [Alerts](#alerts)). This part is not built yet:
 
 - A call of `GET .../members` that finds a member that left without a `delete` entry.
 
@@ -83,7 +83,7 @@ Each payload has these fields:
 | `delete` | `false` | The member of the replaced entry | None. It replaces an entry that its author deletes. |
 | `bot` | `true` | The Mac that runs the agent, one entry for each agent | `name` (1 to 80 characters), `avatar` (at most 80), `color` (at most 20), `open` (`true` for an agent that answers each member, or absent), `direct` (`true` for an agent that answers direct messages, or absent). See [Direct chat with an agent](#direct-chat-with-an-agent). |
 | `page` | `true` | The Mac that runs the agent of the page, one entry for each document | `bot` (the entry ID of the `bot` entry), `key`, `title`, `format`, `summary` (or null), `content`, `version` (the version of the document on its Mac), `expires_at` (or null) |
-| `message` | `false` | Any member | `text` (1 to 16,000 characters), `reply_to` (an entry ID, or absent), `mentions` (at most 16 entry IDs, or absent), `bot` (the entry ID of a `bot` entry of the same member, or absent), `chat` (the entry ID of a `chat` entry, or absent for the Team chat), `preview` (a link preview, or absent), `files` (1 to 4 files, or absent; then `text` can be empty). See [Team chat](#team-chat), [Link previews](#link-previews) and [Files](#files). |
+| `message` | `false` | Any member | `text` (1 to 16,000 characters), `reply_to` (an entry ID, or absent), `mentions` (at most 16 entry IDs, or absent), `bot` (the entry ID of a `bot` entry of the same member, or absent), `chat` (the entry ID of a `chat` entry, or absent for the Team chat), `preview` (a link preview, or absent), `files` (1 to 4 files, or absent; then `text` can be empty), `alert` (the type and the level of an alert of an agent, or absent). See [Team chat](#team-chat), [Link previews](#link-previews), [Files](#files) and [Alerts](#alerts). |
 | `direct` | `false` | A person's Mac, and a Mac for a team only for its agents | `box`: the text of a direct message to one other member, sealed a second time with the pair key of the two members. The box of a message of a chat with an agent also has `bot` (the entry ID of the `bot` entry of the agent) and can have `page`. See [Direct messages](#direct-messages) and [Direct chat with an agent](#direct-chat-with-an-agent). |
 | `remove` | `true` | The admin, one entry for each removed member | `member` (the member ID of the removed member), `name` (the last name that the admin's Mac showed for it, or absent). See [Removal](#removal). |
 | `typing` | `false` | Any member, one entry for its person and one for each of its agents in each room | `on` (`true` or `false`), `bot` (the entry ID of a `bot` entry of the same member, or absent for the person of the Mac), `chat` (the entry ID of a `chat` entry, or absent for the Team chat). See [Typing](#typing). |
@@ -407,7 +407,7 @@ Everything else is in `coconut.sqlite3`:
 | `team_page_entries` | The entry ID of each document of this Mac that a room has or had as a `page` entry. One document keeps one entry ID. |
 | `team_bots` | A view of `team_entries`: the valid `bot` entries of the other members with their marks `open` and `direct`, and the `bot` entries of this Mac with the profile that it wrote. |
 | `team_pages` | A view of `team_entries`: the `page` entries of the other members, with the pin of this Mac and the time of the first write that this Mac saw, and the `page` entries of this Mac with the agent and the version that it wrote. |
-| `team_messages` | A view of `team_entries`: one row for each valid `message` entry, with its `first`, member, agent, chat, text, reply, mentions, link preview, the times of the relay, and whether it was edited. An index on the room, the chat and `first` gives a page of messages and the unread count of one chat without a scan of the room. |
+| `team_messages` | A view of `team_entries`: one row for each valid `message` entry, with its `first`, member, agent, chat, text, reply, mentions, link preview, the times of the relay, whether it was edited, and the type and the level of an alert (`alert_type`, `alert_level`, both null for a plain message). An index on the room, the chat and `first` gives a page of messages and the unread count of one chat without a scan of the room. Two more indexes hold only the alerts, by type and by level (see [Alerts](#alerts)). |
 | `team_names` | The last name that the store showed for each member and each agent of a room. A `delete` entry does not remove it. |
 | `team_reads` | The read position of this Mac in the Team chat of each room. |
 | `team_chats` | A view of `team_entries`: the valid `chat` entries of the admin, with the name, the `first` and the time of the first write that this Mac saw. See [Chats of a team](#chats-of-a-team). |
@@ -634,6 +634,7 @@ The payload of a `message` entry:
 | `bot` | The entry ID of a `bot` entry of the same member when an agent of that Mac wrote the message, or absent for a message of the person. |
 | `preview` | The link preview of the first link of `text`: `{"url", "title", "site"}`, or absent. See [Link previews](#link-previews). |
 | `files` | The files of the message: a list of 1 to 4 items, or absent. A message with files can have an empty `text`. See [Files](#files). |
+| `alert` | The alert of a message of an agent: `{"type", "level"}`, or absent. See [Alerts](#alerts). |
 
 - An edit is a new write of the same entry ID with the next `rev`. A removal is a `delete` entry over it. Only the member of a message can do either (rule 3). The admin can also take a message out of the chat with an `erase` entry (see [The admin deletes a message](#the-admin-deletes-a-message)).
 - Only a team-only Mac writes `bot`: one entry for each complete message of an agent that answers in the chat. See [An agent answers](#an-agent-answers). It never edits such a message, so `edited_at` of a message of an agent means an edit of another version.
@@ -641,7 +642,7 @@ The payload of a `message` entry:
 Rules for a Mac that reads a `message` entry:
 
 1. A message is valid only when `text` has 1 to 16,000 code points of valid Unicode text, or `text` is empty and `files` has at least one item that fits, `reply_to` and `bot` are entry IDs, and `mentions` is a list of at most 16 entry IDs. A reader takes null as an absent field. A message that does not fit stays in the store and shows nothing.
-2. A field that the reader does not know stays in the payload, and the reader ignores it. So a later field, for example an attachment, does not break a Mac of today. A `preview` that does not fit the rules of [Link previews](#link-previews) is left out, and the message shows without it. The same holds for `files` that do not fit the rules of [Files](#files).
+2. A field that the reader does not know stays in the payload, and the reader ignores it. So a later field, for example an attachment, does not break a Mac of today. A `preview` that does not fit the rules of [Link previews](#link-previews) is left out, and the message shows without it. The same holds for `files` that do not fit the rules of [Files](#files), and for an `alert` that does not fit the rules of [Alerts](#alerts).
 3. A message with a `bot` shows only when `bot` names a valid `bot` entry of the same member. The `bot` entry can come after the message, so the check runs when the Mac reads the chat, not when it accepts the entry. A `delete` over the `bot` entry does not hide the messages of the agent that the chat already had.
 4. The newest write of an entry counts, as the relay keeps only that write. A `delete` over a message removes its row. A later `message` write over the `delete` shows the message again, also on a Mac that joins later and reads only that write. A Mac of today never writes it.
 5. The chat sorts the messages by `first`, so an edit keeps its place.
@@ -661,7 +662,7 @@ The routes have the authorization of the other team routes, and a write with an 
 
 | Request | Answer |
 | --- | --- |
-| `GET /v1/team/rooms/<room>/messages?before=<first>&limit=<n>&chat=<id>` | One page, newest first: `{room, messages, before}`. `limit` is 1 to 100, and 50 without it. `before` of the answer is the `first` to ask for the next page, or null when no older message exists. Also a room that is not `active` has its history. |
+| `GET /v1/team/rooms/<room>/messages?before=<first>&limit=<n>&chat=<id>` | One page, newest first: `{room, messages, before}`. `limit` is 1 to 100, and 50 without it. `before` of the answer is the `first` to ask for the next page, or null when no older message exists. Also a room that is not `active` has its history. With `alert_type=<type>` or `alert_level=<level>`, the page has only the alerts of that type and that level, and a page without `before` also has `alerts`: the counts of the alerts of the chat (see [Alerts](#alerts)). |
 | `POST /v1/team/rooms/<room>/messages`, body `{text, reply_to?, mentions?, chat?, preview?, files?}` | Writes a message of the person and answers `{room, message}`. `files` are the IDs of drafts of this Mac, and with them `text` can be empty or absent (see [Files](#files)). `preview` is the link preview of the app, or null for none (see [Link previews](#link-previews)). `reply_to` is the `id` of a message that the chat shows. `mentions` is a list of member IDs of `members` and `id` values of `bots` of `GET /v1/team/rooms`. The Mac writes the entry IDs of the contract. With an `Idempotency-Key`, the entry ID of the message comes from the room, the device and the key. So a repeat after a write without an answer finds that write and sends no second message. |
 | `PATCH /v1/team/rooms/<room>/messages/<id>`, body `{text}` | Changes the text of a message of this Mac's person, and answers `{room, message}`. The other fields stay, also `files`. A message with a file takes an empty text. The link preview stays only while the new text contains its `url`. The same text writes nothing. A message of another member or of an agent answers 403. |
 | `DELETE /v1/team/rooms/<room>/messages/<id>` | Removes a message of this Mac's person with a `delete` entry, and answers `{room, id, deleted: true}`. When the entry is already a `delete` entry of this Mac, for example after a delete without an answer, the Mac gives the same answer and writes nothing. An ID that the store does not have answers 404. On the admin's Mac, a message of another member or of an agent gets an `erase` entry (see [The admin deletes a message](#the-admin-deletes-a-message)). On another Mac, an entry of another member answers 403. |
@@ -687,6 +688,7 @@ A message in an answer:
 | `reactions` | The reactions on the message: one item `{emoji, members, mine}` for each emoji with at least one member, in the order of the six emoji. See [Reactions](#reactions). An older service sends none. |
 | `preview` | The link preview `{url, title, site}`, or null. See [Link previews](#link-previews). An older service sends no key. |
 | `files` | The files of the message, or an empty list. See [Files](#files). An older service sends no key. |
+| `alert` | The alert of a message of an agent, `{type, level}`, or null for a plain message. See [Alerts](#alerts). An older service sends no key. |
 | `created_at`, `edited_at` | The times of rule 6. `edited_at` is null for a message without an edit. |
 
 When the chat of a room changes on this Mac, the Mac adds one `team_messages.updated` event with `{"team": <room ID>}` in the same transaction: a new message, an edit, a removal, a new time from the relay, a new or changed name in `team_names` of a room with messages (for example a rename, or a `bot` entry that makes a message of its agent show), a new, changed or removed reaction on a message that the chat has, or a new read position, for example from another device of the person. The same name written again adds no event. `GET /v1/updates` then has `team_messages_changed`: the IDs of these rooms. A pass that changes nothing adds no event. The event type is in the `known` set of `GET /v1/updates` and changes no Work row, so an app of today does not read its whole state again.
@@ -1094,6 +1096,67 @@ What stays for later:
 
 No log line has the name of a file or its bytes.
 
+#### Alerts
+
+An alert is a message of an agent in the Team chat or in a named chat that also carries a type and a level, for example a report of a cron job or of a watchdog. The team keeps its alerts in one place: the admin makes a chat with a name such as "Alerts" (see [Chats of a team](#chats-of-a-team)), each sender writes there, and the app filters that chat by type and by level. An alert is a normal message of its chat in each other way: the same entry, order, unread count, mute, notification, reactions and replies. So the relay and the helper need no change, and a team needs no chat for each kind of alert. `backend/coconut/team_alerts.py` holds these rules.
+
+The alert is the field `alert` of the payload of a `message` entry: `{"type": "risk", "level": "critical"}`. A message without the field is a plain message.
+
+| Field | Value |
+| --- | --- |
+| `type` | A label that the sender chooses, for example `risk`, `deploy`, `payouts` or `infra`: 1 to 32 characters of `a` to `z`, `0` to `9`, `-` and `_`. |
+| `level` | `info`, `notice` or `critical`. Absent means `notice`. |
+
+Rules for a Mac that reads an alert:
+
+1. An alert fits when it is an object, `type` follows the rule above, and `level` is one of the three levels or absent. A reader ignores each other key of the object, so a later version can add one.
+2. Only a message with `bot` reads as an alert. A person writes no alert, and a reader ignores the field in a message of a person.
+3. An alert that does not fit is left out, and the message shows as a plain message. An alert never makes a message invalid. The payload keeps the field as its member wrote it.
+4. `team_messages` keeps the alert in the columns `alert_type` and `alert_level`, both null for a plain message. A store of an older version gets the columns in `migrate`, and in the same step the Mac reads each kept `message` payload with the field again, so an alert that came before the update shows as an alert after it. The pass changes no other column, no read position and no event.
+5. An alert changes no unread count, no read position, no notification and no trigger: the sealed alert of a phone has the text of the message only.
+
+How a sender writes an alert. Only a Mac for a team only writes one, because only its agents write into a team chat (see [An agent answers](#an-agent-answers)). Each way is a send outside a turn to `POST /v1/gateway/messages` with the token of the bridge file (`<data>/gateway/bridge.json`, the fields `url` and `token`):
+
+- **A script on the Mac** adds `alert` to the body of its send:
+
+  ```json
+  {"kind": "send", "message_id": "outside:<an ID that the script makes>", "home": "<the Hermes home of the agent>",
+   "chat_id": "<agent ID>:team:<room ID>:<chat ID>", "text": "Exposure is over the limit of the day.",
+   "alert": {"type": "risk", "level": "critical"}}
+  ```
+
+  The request has the header `Authorization: Bearer <token>`. A repeat with the same `message_id` adds no second message. `level` can be absent.
+- **A cron job of Hermes** names the alert at the end of the chat ID of its target: `deliver: coconut:<chat ID>:alert:<type>` or `deliver: coconut:<chat ID>:alert:<type>:<level>`. See [Cron deliveries into a team chat](#cron-deliveries-into-a-team-chat). Hermes gives a sender only a chat ID and a text: the live adapter also gets the ID of the job, and no sender gets its name. But Hermes gives the chat ID to the plugin as the job has it, so the chat ID carries the alert, and the service reads it (`team_alerts.split_target`). The plugin does not change, and the text of the job stays as it is: no line of the text names a type. The same chat ID works for each other send of Hermes to that target, for example its `send_message` tool.
+- `alert` in the body counts when a send has both.
+- The service trims the type and the level and makes them lower case. Each other value that does not fit answers 400 with "An alert has a type of 1 to 32 characters (a to z, 0 to 9, - and _) and a level: info, notice or critical. Send the message with such an alert, or without one." and writes nothing. So a cron job with a wrong target records a failed delivery, and its text does not arrive as a plain message.
+- A text over 16,000 code points goes into more than one message, and each part carries the alert. So the count of a type counts each part.
+- A direct chat takes no alert: a send to `<agent ID>:team:<room ID>:direct:<member ID>` with an alert writes the text as a plain direct message. A reply of an agent in a turn is never an alert.
+
+The filter of the app. A page of a chat (`GET .../messages`) takes `alert_type=<type>` and `alert_level=<level>`, one or both, and then has only the alerts of that type and that level, newest first, with `before` as for each page. A value that no alert can have answers 400. Each page without `before`, with or without a filter, also has `alerts`, the counts of the shown alerts of the whole chat:
+
+```json
+{"total": 5, "critical": 2, "types": [{"type": "risk", "count": 3, "critical": 1},
+                                      {"type": "deploy", "count": 2, "critical": 1}]}
+```
+
+`types` has the type with the most alerts first, then by name, and at most 64 types. A chat without an alert has `{"total": 0, "critical": 0, "types": []}`. Two indexes of `team_messages` hold only the rows of alerts, by the room, the chat, the type or the level, and `first`. So a page of one type or one level reads about as many rows as it returns, and the counts of a chat without an alert read no row. The counts read each alert of the chat one time: about 60 milliseconds for 80,000 alerts in one chat, measured with a store in memory, inside the lock of the service.
+
+What the app shows (`ios/Coconut/TeamAlerts.swift`, `TeamAlertViews.swift`):
+
+- A row of an alert has a small label above its bubble: the symbol of the level, the type and the level in words. A critical alert has a filled label, a filled symbol and its level in bold, so it differs from the other levels in form and in words, not only in color.
+- A chat with at least one alert has a bar under its title: "All", "Critical" with its count when the chat has a critical alert, and one chip for each type with its count. A tap on a type shows only the alerts of that type, a second tap shows each type again, and "Critical" shows only the critical alerts, alone or with a type. With "Critical" on, each chip counts its critical alerts.
+- A chat without an alert has no bar and looks as before. So does each chat of an older service, which sends no `alerts`.
+- The choice lives in the app. It goes to no Mac and to no other device, and it goes when the chat closes, so a chat always opens with each message. While a choice hides messages, the app moves no read position. A message that the person sends shows each message again.
+
+Older versions:
+
+- An older Mac keeps the field by rule 2 of a `message` entry, relays nothing differently and shows the message as a plain message of the agent. Nothing is dropped. After its update, the pass of rule 4 gives its stored alerts their type and their level.
+- An older app ignores the keys `alert` and `alerts` and shows a plain message.
+- A newer app with an older service gets no key `alerts`, so it shows no bar, and it sends no query of a filter.
+- A member's Mac that is older than the Mac of the sender stores the same entry as each other Mac. The relay never reads a payload.
+
+No log line has the type, the level or the text of an alert.
+
 ### Direct messages
 
 A direct message is a private chat between two people of a team. It is an entry of the kind `direct` in the log that the team has. Its text is sealed a second time, with a key that only the two Macs can make. No second room, no invite and no join is necessary. `backend/coconut/team_directs.py` serves the routes, and `TeamStore` keeps the chats. A person can also write to an agent of a Mac for a team only with the same entries: see [Direct chat with an agent](#direct-chat-with-an-agent).
@@ -1361,8 +1424,9 @@ A Hermes cron job of an agent with its chat connected can deliver its result int
 | The Team chat | `coconut:<bot ID>:team:<room ID>` |
 | A named chat | `coconut:<bot ID>:team:<room ID>:<chat ID>` |
 | The direct chat with a person | `coconut:<bot ID>:team:<room ID>:direct:<member ID>` |
+| The Team chat or a named chat, as an alert | The value of that chat, then `:alert:<type>` or `:alert:<type>:<level>`, for example `coconut:<bot ID>:team:<room ID>:<chat ID>:alert:deploy:critical` |
 
-`<bot ID>` is the ID of the agent on this Mac (`GET /v1/team/bots`), and `<chat ID>` is the entry ID of the named chat. Hermes gives the whole value after `coconut:` to the plugin as the chat ID. The message is a send outside a turn, so rule 5 of [An agent answers](#an-agent-answers) and rule 10 of [The Mac for a team only](#the-mac-for-a-team-only) apply.
+`<bot ID>` is the ID of the agent on this Mac (`GET /v1/team/bots`), and `<chat ID>` is the entry ID of the named chat. A target with `:alert:` delivers the text as an alert of that type, with the level `notice` when it names none (see [Alerts](#alerts)). A type or a level that does not fit fails the delivery, and the record of the job says why. Hermes gives the whole value after `coconut:` to the plugin as the chat ID. The message is a send outside a turn, so rule 5 of [An agent answers](#an-agent-answers) and rule 10 of [The Mac for a team only](#the-mac-for-a-team-only) apply.
 
 A cron run can deliver in a process without the gateway. There the plugin sends with its `standalone_sender_fn` (`hermes_plugin/coconut/team.py`, `send_standalone`), to the same route as the adapter: `POST /v1/gateway/messages`. The two senders answer Hermes in different ways:
 
