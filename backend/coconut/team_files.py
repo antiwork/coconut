@@ -155,7 +155,7 @@ class TeamFiles:
         SPACE_SECONDS, and the new ones. The pieces of the new files that a send without an answer wrote already do
         not count two times. The caller holds the service lock."""
         from .service_base import ServiceError
-        drafts = self.team_store.drafts(room['room'], ids)
+        drafts = self.team_store.drafts(room['room'], ids, DRAFT_SECONDS)
         if len(drafts) != len(ids):
             raise ServiceError(400, GONE_DRAFT)
         since = int((self.team_store.clock() - SPACE_SECONDS) * 1000)
@@ -166,17 +166,20 @@ class TeamFiles:
 
     def _team_write_pieces(self, room: dict, drafts: list[dict]) -> list[dict]:
         """Write each piece of each draft as a `file` entry, in order, and return the items of the message. A piece
-        that the store has as an own `file` entry, from a send without an answer, is not written again. The caller
-        holds the lock of the room."""
+        whose bytes this Mac has with the size of the draft, from a send without an answer, is not written again. The
+        `file` entry alone is not enough: the sweep or the delete of a message can have removed its bytes. Then the
+        Mac writes the piece again with the next `rev`, so each Mac gets the bytes again. The caller holds the lock of
+        the room."""
         token = team_keys.read(self.root, room['room'])['token']
         items = []
         for draft in drafts:
             for index in range(-(-draft['size'] // CHUNK)):
                 entry = file_entry(token, room['room'], draft['id'], index)
+                piece = draft['data'][index * CHUNK:(index + 1) * CHUNK]
                 with self.lock:
                     existing = self.team_store.entry(room['room'], entry)
-                if existing is None or existing['kind'] != 'file':
-                    piece = draft['data'][index * CHUNK:(index + 1) * CHUNK]
+                    stored = self.team_store.piece_size(room['room'], entry)
+                if existing is None or existing['kind'] != 'file' or stored != len(piece):
                     self._team_write(room, entry, False, {'kind': 'file', 'file': draft['id'], 'index': index,
                                                           'data': base64.b64encode(piece).decode()}, tries=2)
             items.append({name: draft[name] for name in ('id', 'name', 'type', 'size', 'hash', 'width', 'height')

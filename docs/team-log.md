@@ -162,7 +162,7 @@ A long poll would keep the Durable Object in memory, and Cloudflare bills that t
 | Welcome | At most 1,024 bytes |
 | Body of an entry | 99 bytes to 1 MiB |
 | Kept entries of one member | 512 entries and 64 MiB |
-| Other entries of one member | 64 MiB |
+| Other entries of one member | 512 MiB |
 | All entries of one room | 8 GiB |
 | Retention of an entry that is not kept | 90 days after its last write |
 | Writes of one member | 300 each minute |
@@ -171,6 +171,8 @@ A long poll would keep the Durable Object in memory, and Cloudflare bills that t
 | Room without a request of a member | Deleted after 180 days |
 
 A member that leaves and joins again continues its counts: its entries that are not kept stay on the relay, and so does its count of writes in the minute.
+
+The limit of the other entries of one member has room for the files of a team chat. The two limits of one member add up to 576 MiB. So in a room with more than 14 members, the limit of the room can stop a write before the limit of the member does.
 
 A file of a message has at most 4 MiB, in pieces of at most 720 KiB, so each piece fits in one body. A person's Mac sends at most 320 MiB of files in one room in 90 days (see [Files](#files)).
 
@@ -1001,7 +1003,7 @@ The routes. Each one has the authorization of the other team routes, and a write
 | --- | --- |
 | `POST /v1/team/rooms/<room>/files`, body `{name, content, type?, width?, height?}` | `content` is standard base64. The Mac checks the rules of an item, keeps the bytes as a draft in `team_file_drafts`, and answers `{room, file}`: `{id, name, type, size, width, height}`. Nothing goes to the relay. An empty file or a file over 4 MiB answers 413 with "A file must have between 1 byte and 4 MB." Each upload removes the drafts that are 24 hours old or older, and runs the sweep of rule 7. A room that is not `active` answers 409. |
 | `DELETE /v1/team/rooms/<room>/files/<id>` | Removes a draft of this Mac, and answers `{room, file, deleted: true}`. A draft that this Mac does not have answers 404. |
-| `POST /v1/team/rooms/<room>/messages` with `files` | `files` is a list of 1 to 4 draft IDs of this room. With files, a `text` that is absent, empty or of white space only is an empty text. The Mac writes each piece of each file as a `file` entry, in order, then the `message` entry with the items, then removes the drafts. A piece that the store has as an own `file` entry is not written again. A repeat with the same `Idempotency-Key` finds the message before it checks the drafts, so it writes no second message and does not fail because the drafts are gone. A draft that does not exist answers 400 with "This file is no longer on this Mac. Add it again." |
+| `POST /v1/team/rooms/<room>/messages` with `files` | `files` is a list of 1 to 4 draft IDs of this room. With files, a `text` that is absent, empty or of white space only is an empty text. The Mac writes each piece of each file as a `file` entry, in order, then the `message` entry with the items, then removes the drafts. A piece whose bytes this Mac has with the size of the draft, from a send without an answer, is not written again. A piece without its bytes, for example after the sweep or after the delete of a message, is written again with the next `rev`. A repeat with the same `Idempotency-Key` finds the message before it checks the drafts, so it writes no second message and does not fail because the drafts are gone. A draft that does not exist, or that is 24 hours old or older, answers 400 with "This file is no longer on this Mac. Add it again." |
 | `GET /v1/team/rooms/<room>/messages/<message>/files/<id>` | The bytes of a complete file of that message. The route names the message, because two members can name the same file ID: the answer is only the file of that message, made of the pieces of its member. The content type is `type`, or `application/octet-stream`. `Content-Disposition` names the file as the artifact route does. A message that does not show on this Mac, or that does not name the file, answers 404. A file that is not complete answers 409 with "This file is not on this Mac yet. Try again later." |
 
 - Each message view of a team chat has the key `files`: a list, empty without files, of `{id, name, type, size, width, height, complete}`. An older service sends no key, and the app then knows that this Mac has no files.
