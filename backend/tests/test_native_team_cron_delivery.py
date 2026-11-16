@@ -12,6 +12,7 @@ from pathlib import Path
 import subprocess
 import threading
 import unittest
+from unittest import mock
 
 from coconut import team_turns
 from coconut.server import APIServer
@@ -36,26 +37,40 @@ result = error or asyncio.run(_send_to_platform(Platform(platform_name), pconfig
 print(json.dumps({'chat_id': chat_id, 'thread_id': thread_id, 'result': result}))
 '''
 # The delivery of cron in a gateway process: the real _deliver_result with a live adapter of the plugin, connected to
-# the service. Each item of argv[2] is a target chat and a text. The output: the error of each delivery (None for a
-# success) and its `last_delivery_unverified` (None when the send gave a message ID).
+# the service. A gateway sets the runner reference (gateway/run.py, _gateway_runner_ref), so the fallback of a failed
+# live send goes through the same adapter (tools/send_message_tool.py, _send_via_adapter), not send_standalone. Each
+# item of argv[2] is a target chat and a text. The output: the error of each delivery (None for a success), its
+# `last_delivery_unverified` (None when the send gave a message ID), and the metadata of each send of the adapter.
 LIVE = '''
-import asyncio, json, sys, threading
+import asyncio, json, sys, threading, weakref
 sys.path.insert(0, sys.argv[1])
 from gateway.config import Platform, load_gateway_config
 from gateway.platform_registry import platform_registry
 from tools.send_message_tool import prepare_send_message_platforms
 prepare_send_message_platforms()
+import gateway.run
 from cron.scheduler_delivery import _deliver_result
 platform = Platform('coconut')
 adapter = platform_registry.get('coconut').adapter_factory(load_gateway_config().platforms[platform])
 loop = asyncio.new_event_loop()
 threading.Thread(target=loop.run_forever, daemon=True).start()
 asyncio.run_coroutine_threadsafe(adapter.connect(), loop).result(30)
+class Runner:
+    adapters = {platform: adapter}
+    _gateway_loop = loop
+runner = Runner()
+gateway.run._gateway_runner_ref = weakref.ref(runner)
+sends, send = [], adapter.send
+async def recorded(chat_id, content, reply_to=None, metadata=None):
+    sends.append(sorted(metadata) if metadata else None)
+    return await send(chat_id, content, reply_to=reply_to, metadata=metadata)
+adapter.send = recorded
 results = []
 for number, (chat, text) in enumerate(json.loads(sys.argv[2])):
     job = {'id': f'job{number}', 'name': 'Weekly report', 'deliver': 'coconut:' + chat}
+    sends.clear()
     error = _deliver_result(job, text, adapters={platform: adapter}, loop=loop)
-    results.append({'error': error, 'unverified': job.get('last_delivery_unverified')})
+    results.append({'error': error, 'unverified': job.get('last_delivery_unverified'), 'sends': list(sends)})
 asyncio.run_coroutine_threadsafe(adapter.disconnect(), loop).result(30)
 print(json.dumps(results))
 '''
@@ -139,6 +154,13 @@ class NativeTeamCronDeliveryTests(AsThePerson, TeamOnlyMacs, unittest.TestCase):
         # The log of the delivery has no text of the message.
         self.assertNotIn(TEXT, run.stderr)
 
+    def live(self, deliveries):
+        """The result of each delivery of LIVE, in a Hermes process with a live adapter."""
+        run = subprocess.run([PYTHON, '-I', '-B', '-c', LIVE, SOURCE, json.dumps(deliveries)],
+                             env=self.environment, capture_output=True, text=True, timeout=300, cwd=self.temp.name)
+        self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+        return json.loads(run.stdout.strip().splitlines()[-1])
+
     def test_a_cron_delivery_through_the_live_adapter_tells_the_truth(self):
         design, removed = (self.call('POST', f'/v1/team/rooms/{self.room}/chats', {'name': name},
                                      service=self.first)['chat'] for name in ('Design', 'Old'))
@@ -150,15 +172,21 @@ class NativeTeamCronDeliveryTests(AsThePerson, TeamOnlyMacs, unittest.TestCase):
         deliveries = [(team_turns.chat_id(self.room, self.bot['id'], design), TEXT),
                       (team_turns.chat_id(self.room, self.bot['id'], design), long_text),
                       (team_turns.chat_id(self.room, self.bot['id'], removed), TEXT)]
-        run = subprocess.run([PYTHON, '-I', '-B', '-c', LIVE, SOURCE, json.dumps(deliveries)],
-                             env=self.environment, capture_output=True, text=True, timeout=300, cwd=self.temp.name)
-        self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
-        normal, long, gone = json.loads(run.stdout.strip().splitlines()[-1])
-        # A normal delivery records success, with a message ID as evidence.
-        self.assertEqual(normal, {'error': None, 'unverified': None})
-        self.assertEqual(long, {'error': None, 'unverified': None})
-        # A removed chat: the live adapter and then send_standalone report the refusal, and the job records it.
+        normal, long, gone = self.live(deliveries)
+        # A normal delivery records success, with a message ID as evidence. The live send carries the job ID.
+        cron = [['job_id', 'notify']]
+        self.assertEqual(normal, {'error': None, 'unverified': None, 'sends': cron})
+        self.assertEqual(long, {'error': None, 'unverified': None, 'sends': cron})
+        # A removed chat: the live send fails, Hermes sends again through the same adapter without metadata, that
+        # send fails too, and the job records the refusal.
+        self.assertEqual(gone['sends'], cron + [None])
         self.assertIn('The agent does not answer in this team chat.', gone['error'])
+        # A relay that fails at each try: no part shows, and the job records the failure.
+        from coconut.team_relay import TeamRelayError
+        with mock.patch.object(self.only.team_relay, 'write', side_effect=TeamRelayError(503, 'The relay answered 503.')):
+            (failed,) = self.live([(team_turns.chat_id(self.room, self.bot['id'], design), 'The relay is down.')])
+        self.assertEqual(failed['sends'], cron + [None])
+        self.assertIn('The team log did not take this message.', failed['error'])
         self.sync()
         rows = self.call('GET', f'/v1/team/rooms/{self.room}/messages', {'chat': design},
                          service=self.first)['messages']

@@ -705,15 +705,66 @@ class TeamAdapterTests(TeamTurnMacs, unittest.TestCase):
         self.connect(runner)
         self.connect(chat=False)
         chat = chat_id(self.room, self.bot['id'])
-        with self.assertLogs('hermes_plugins.coconut', logging.INFO):
+        sent = []
+        real = team.report_outside
+
+        async def report(request, home, chat_id, fields):
+            sent.append(fields['message_id'])
+            return await real(request, home, chat_id, fields)
+        with mock.patch.object(team, 'report_outside', report), \
+                self.assertLogs('hermes_plugins.coconut', logging.INFO):
             cron = self.complete(self.adapter.send(chat, 'The weekly report is ready.', metadata={'job_id': 'job1'}))
             other = self.complete(self.adapter.send(chat, 'The process is done.'))
-        # The job records a failed delivery. Hermes then tries send_standalone, as nothing shows in the chat.
+            # The fallback of Hermes: the same text again, without metadata (_send_via_adapter in a gateway).
+            again = self.complete(self.adapter.send(chat, 'The weekly report is ready.\n'))
+            # The fallback uses its message ID one time. A later send of the same text is a send as before.
+            later = self.complete(self.adapter.send(chat, 'The weekly report is ready.'))
+        # The job records a failed delivery.
         self.assertFalse(cron.success)
         self.assertEqual(cron.error, 'Coconut did not show this message: The agent does not answer in this team chat.')
         self.assertEqual(cron.raw_response, {'coconut_refused': True})
         # A send that is not a cron delivery stays a success, as before.
         self.assertTrue(other.success)
+        # The fallback fails too, with the message ID of the delivery, so the service could add no second copy.
+        self.assertFalse(again.success)
+        self.assertEqual(again.error, cron.error)
+        # (`sent` has only the cron path: the other sends take the path of the full mode.)
+        self.assertEqual(sent, [sent[0]] * 2)
+        self.assertTrue(later.success)
+
+    def test_a_cron_send_whose_later_tries_get_no_answer_keeps_the_shown_parts(self):
+        # Try 1 writes one part. Tries 2 and 3 get no answer. Hermes must not send the whole text again.
+        async def runner(event):
+            return None
+        self.connect(runner)
+        answers = [{'recorded': False, 'shown': 1, 'retry': True, 'reason': 'The chat shows only 1 of 2 parts of this '
+                                                                          'message.'},
+                   team.SendResult(success=False, error='The Coconut service did not answer.', retryable=True),
+                   team.SendResult(success=False, error='The Coconut service did not answer.', retryable=True)]
+
+        async def report(request, home, chat_id, fields):
+            return answers.pop(0)
+        chat = chat_id(self.room, self.bot['id'])
+        with mock.patch.object(team, 'report_outside', report), mock.patch.object(team, 'STANDALONE_WAITS', (0, 0)), \
+                self.assertLogs('hermes_plugins.coconut', logging.WARNING):
+            result = self.complete(self.adapter.send(chat, 'A long report.', metadata={'job_id': 'job1'}))
+        self.assertEqual(answers, [])
+        self.assertFalse(result.success)
+        self.assertEqual(result.raw_response, {'partial_overflow': True})
+        # No fallback message ID: Hermes sends nothing again after a partial delivery.
+        self.assertEqual(self.adapter._cron_failed, {})
+
+    def test_a_cron_delivery_while_a_turn_runs_in_the_chat_is_no_reply_of_that_turn(self):
+        release, chat, turn = self.start_slow_turn()
+        with self.assertLogs('hermes_plugins.coconut', logging.INFO):
+            result = self.complete(self.adapter.send(chat, 'The weekly report is ready.', metadata={'job_id': 'job1'}))
+        self.assertTrue(result.success)
+        self.assertTrue(result.message_id.startswith('outside:'))
+        self.sync()
+        # The chat shows it as a message of the agent without `reply_to`, while the turn still runs.
+        self.assertIn(('Reporter', 'The weekly report is ready.', None), self.chat())
+        self.assertIn(chat, self.adapter._turns)
+        release.set()
 
     def test_a_cron_send_with_only_some_parts_in_the_log_is_a_partial_delivery(self):
         from coconut.team_turns import MAX_TEXT

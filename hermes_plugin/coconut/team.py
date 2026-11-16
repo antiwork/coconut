@@ -66,6 +66,9 @@ STANDALONE_WAITS = RETRY_SECONDS[:2]
 # times that. A later try waits for the lock of the room and finds the entry of an earlier try, so the sender reports
 # a false failure only when all parts together take longer than its tries.
 STANDALONE_SECONDS = 15
+# How long the adapter keeps the message ID of a failed cron delivery for the fallback send of Hermes. Hermes sends the
+# fallback directly after the live send fails, and it waits at most 60 seconds for the live send.
+CRON_FALLBACK_SECONDS = 120
 
 
 def missing() -> str | None:
@@ -85,13 +88,17 @@ async def send_tries(request, home: str, chat_id: str, fields: dict):
     """Send a message outside a turn (`fields`, with its message ID) with `request`, in up to three tries with the
     waits of STANDALONE_WAITS. A try follows a service that did not answer, and an answer `recorded: false` with
     `retry: true`. Each try has the same message ID, so a repeat adds no second message. The last answer of the
-    service, or the failed SendResult (report_outside)."""
+    service or the failed SendResult (report_outside), and the most parts that an answer of a try said the chat shows
+    (`shown`). A later try that gets no answer does not hide the parts that an earlier try showed."""
+    shown = 0
     for wait in (*STANDALONE_WAITS, None):
         answer = await report_outside(request, home, chat_id, fields)
+        if isinstance(answer, dict) and isinstance(answer.get('shown'), int):
+            shown = max(shown, answer['shown'])
         retry = answer.retryable if isinstance(answer, SendResult) else (
             isinstance(answer, dict) and not answer.get('recorded') and answer.get('retry') is True)
         if wait is None or not retry:
-            return answer
+            return answer, shown
         await asyncio.sleep(wait)
 
 
@@ -124,7 +131,7 @@ async def send_standalone(pconfig, chat_id, message, *, thread_id=None, media_fi
 
         async def request(route, payload):
             return await asyncio.to_thread(bridge.request, route, payload, STANDALONE_SECONDS)
-        answer = await send_tries(request, home, str(chat_id), dict(kind='send', message_id=message_id, text=text))
+        answer, _ = await send_tries(request, home, str(chat_id), dict(kind='send', message_id=message_id, text=text))
         if isinstance(answer, SendResult):
             status = answer.raw_response.get('status') if isinstance(answer.raw_response, dict) else None
             if status == 404:
@@ -192,6 +199,8 @@ class TeamAdapter(CoconutAdapter):
         # a weak reference to a task).
         self._reached = time.monotonic()
         self._stop_tasks: set = set()
+        # The cron deliveries that failed with no part shown: (chat ID, text) -> (message ID, monotonic time).
+        self._cron_failed: dict[tuple[str, str], tuple[str, float]] = {}
 
     def _event(self, turn: dict) -> MessageEvent:
         if self.lacking:
@@ -276,33 +285,59 @@ class TeamAdapter(CoconutAdapter):
             # The reply of a stopped turn, or the answer of Hermes to its `/stop`: the turn ended for the chat.
             LOG.info('Coconut: a send of a stopped turn of the team chat stays in the log.')
             return SendResult(success=True)
-        return await super().send(chat_id, content, reply_to=reply_to, metadata=metadata)
+        metadata = metadata or {}
+        if metadata.get('job_id') and not metadata.get('_interim_send'):
+            # A cron delivery is no reply of a turn that runs in the same chat: it goes outside the turn.
+            return await self._cron_send(str(chat_id), str(content), str(metadata['job_id']))
+        again = self._cron_fallback(str(chat_id), str(content))
+        if again is not None:
+            return await self._cron_send(str(chat_id), str(content), None, again)
+        return await super().send(chat_id, content, reply_to=reply_to, metadata=metadata or None)
 
-    async def _send_outside(self, chat_id: str, content: str, metadata: dict) -> SendResult:
-        """A cron delivery (a send with the `job_id` of Hermes) goes as send_standalone sends it: the same tries, and
-        a failed SendResult when the chat does not show the whole text, so the record of the job shows a failed
-        delivery. A failure without a shown part lets Hermes try send_standalone. A failure after some shown parts
-        is a partial delivery (`partial_overflow`), so Hermes sends nothing again. Each other send outside a turn
-        goes as in the full mode: an answer `recorded: false` is a success there."""
-        if not metadata.get('job_id') or metadata.get('_interim_send'):
-            return await super()._send_outside(chat_id, content, metadata)
-        message_id = OUTSIDE + str(uuid.uuid4())
+    def _cron_fallback(self, chat_id: str, content: str) -> str | None:
+        """The message ID of a cron delivery to `chat_id` with the text `content` that failed in the last
+        CRON_FALLBACK_SECONDS, or None. Hermes sends such a delivery again without metadata (its fallback through
+        `_send_via_adapter`). The ID is used one time."""
+        now = time.monotonic()
+        for key, (_, at) in list(self._cron_failed.items()):
+            if now - at > CRON_FALLBACK_SECONDS:
+                del self._cron_failed[key]
+        found = self._cron_failed.pop((chat_id, content.strip()), None)
+        return found[0] if found else None
+
+    async def _cron_send(self, chat_id: str, content: str, job_id: str | None, message_id: str | None = None
+                         ) -> SendResult:
+        """Send a cron delivery as send_standalone sends it: the same tries, and a failed SendResult when the chat does
+        not show the whole text, so the record of the job shows a failed delivery.
+
+        Hermes then sends the same text again through this adapter, without metadata (`_send_via_adapter`). This
+        adapter keeps the message ID of a failed delivery for that send (`_cron_fallback`), so the service writes only
+        the missing parts and adds no second copy, and a failure of that send is a failure too. A failure after some
+        shown parts is a partial delivery (`partial_overflow`): Hermes sends nothing again. Hermes tries no third path
+        and sends no notice of the failure into the chat."""
+        first = message_id is None
+        message_id = message_id or OUTSIDE + str(uuid.uuid4())
+        fields = dict(kind='send', message_id=message_id, text=content)
+        if job_id:
+            fields['job_id'] = job_id
 
         async def request(route, payload):
             return await self._request(route, payload, STANDALONE_SECONDS)
-        answer = await send_tries(request, self._home, chat_id, dict(kind='send', message_id=message_id,
-                                                                     text=content, job_id=str(metadata['job_id'])))
-        if isinstance(answer, SendResult):
-            return answer
+        answer, shown = await send_tries(request, self._home, chat_id, fields)
         if isinstance(answer, dict) and answer.get('recorded'):
             LOG.info('Coconut: a cron delivery went to chat %s (%d characters).', chat_id, len(content))
             return SendResult(success=True, message_id=message_id)
-        reason = str((answer.get('reason') if isinstance(answer, dict) else None) or 'no reason')
-        LOG.warning('Coconut: chat %s does not show a cron delivery: %s', chat_id, reason)
-        raw = {'coconut_refused': True}
-        if isinstance(answer, dict) and answer.get('shown'):
+        if isinstance(answer, SendResult):
+            error, raw = answer.error or 'The Coconut service did not answer.', {}
+        else:
+            reason = str((answer.get('reason') if isinstance(answer, dict) else None) or 'no reason')
+            error, raw = 'Coconut did not show this message: ' + reason, {'coconut_refused': True}
+        LOG.warning('Coconut: chat %s does not show a cron delivery: %s', chat_id, error)
+        if shown:
             raw['partial_overflow'] = True
-        return SendResult(success=False, error='Coconut did not show this message: ' + reason, raw_response=raw)
+        elif first:
+            self._cron_failed[(chat_id, content.strip())] = (message_id, time.monotonic())
+        return SendResult(success=False, error=error, raw_response=raw or None)
 
     async def _request(self, route: str, payload: dict, timeout: float = REQUEST_SECONDS) -> dict:
         """A request to the service. A poll answer can name active turns that the service does not know, for example
