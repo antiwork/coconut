@@ -202,6 +202,26 @@ class SendTests(AlertMacs, unittest.TestCase):
         self.assertEqual(self.payloads()[0]['alert'], {'type': 'risk', 'level': 'fatal'})
 
 
+class NotificationTests(AlertMacs, unittest.TestCase):
+    def test_an_alert_notifies_a_phone_as_a_message_of_the_bot_with_its_text_only(self):
+        from test_push import pair_phone
+        from test_push_relay import EncryptedTransport
+        from test_team_push import ROUTE, flush, register
+        phone = pair_phone(self.first)
+        relay = EncryptedTransport()
+        self.first.push.relay = relay
+        register(self.first, phone, route=ROUTE, level='grouped')
+        self.post(alert={'type': 'risk', 'level': 'critical'})
+        self.sync()
+        flush(self.first)
+        (payload,) = relay.sealed
+        self.assertEqual(payload['aps']['alert'], {'title': 'Reporter', 'subtitle': 'Example Team',
+                                                   'body': 'Exposure is over the limit.'})
+        self.assertEqual(payload['coconut']['kind'], 'team')
+        self.assertNotIn('risk', json.dumps(payload))
+        self.assertNotIn('critical', json.dumps(payload))
+
+
 class DirectChatTests(DirectTurnMacs, unittest.TestCase):
     def test_a_direct_chat_takes_the_text_without_the_alert(self):
         answer = self.only.gateway_message({'kind': 'send', 'message_id': 'outside:1', 'text': 'Only for you.',
