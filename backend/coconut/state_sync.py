@@ -308,7 +308,7 @@ class StateSync:
             settings.update_unconfirmed model_catalog.updated routine.created routine.updated routine.deleted routine.triggered
             routine.reconciliation_required routines.unavailable google.updated device.paired maintenance.withdrawal_corrected
             document.created document.updated document.deleted team.updated team_messages.updated
-            team_directs.updated team_bot_directs.updated team_typing.updated""".split())
+            team_directs.updated team_bot_directs.updated team_typing.updated alert.created alert.updated""".split())
         # The state holds no document, because the phone reads the Library with GET /v1/documents. A document event
         # sends only its task. The save of a turn also adds the message of its card, which has its own event.
         if (after > cursor or len(rows) > 1000 or len(rows) != cursor - after
@@ -419,16 +419,20 @@ class StateSync:
                           # The rooms where who types changed: a person or a bot started, typed on, or ended.
                           team_typing_changed=sorted({json.loads(r[3])['team'] for r in rows
                                                       if r[1] == 'team_typing.updated'}))
+            if any(r[1].startswith('alert.') for r in rows):
+                # The alerts feed changed. Its part of the state is small, so the update sends all of it (alerts.py).
+                result['alerts'] = self._alerts_state()
             if any(m.get('client_request_id') for m in messages):
                 receipts = self.db.execute("SELECT json_group_array(DISTINCT json_extract(data,'$.client_request_id')) FROM messages "
                     "WHERE json_type(data,'$.client_request_id')='text' AND EXISTS(SELECT 1 FROM bots "
                     "WHERE id=json_extract(messages.data,'$.bot_id') AND NOT COALESCE(json_extract(bots.data,'$._deleted'),0))").fetchone()
                 result['confirmed_request_ids'] = json.loads(receipts[0])
-        # Native task changes publish work.updated. Age alone changes no native state. A document event or a team
-        # event changes no Work row and no card.
+        # Native task changes publish work.updated. Age alone changes no native state. A document event, a team
+        # event or an alert event changes no Work row and no card.
         structural = not rows or refresh_activity or any(r[1] not in ('message.created', 'message.updated', 'bot.read', 'bot.updated',
             'document.created', 'document.updated', 'document.deleted', 'team.updated', 'team_messages.updated',
-            'team_directs.updated', 'team_bot_directs.updated', 'team_typing.updated') for r in rows)
+            'team_directs.updated', 'team_bot_directs.updated', 'team_typing.updated', 'alert.created',
+            'alert.updated') for r in rows)
         if structural:
             work_outcomes = set()
             if not collection_deltas:

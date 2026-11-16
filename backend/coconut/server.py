@@ -41,6 +41,9 @@ TEAM_GATEWAY_ROUTES = ('/v1/gateway/poll', '/v1/gateway/events', '/v1/gateway/me
 # The routes of the team rooms (team.py). A paired device calls them on each listener. A tool on this Mac calls them
 # on the main listener with the token of the bridge file.
 TEAM_ROUTES = '/v1/team/'
+# The routes of the alerts feed (alerts.py). A tool of this Mac posts with the token of the bridge file, and the phone
+# reads with the token of its pairing.
+ALERT_ROUTE = '/v1/alerts'
 
 
 # A path segment with a digit and at least 8 characters is an ID. The log keeps the route, not private IDs.
@@ -250,6 +253,12 @@ class Handler(BaseHTTPRequestHandler):
         else:
             self._json(200, answer)
 
+    def _alerts(self, service, method, url):
+        """The routes of the alerts feed. The caller checked the token of a device or of the bridge file. A read or a
+        resolve is the same each time, and a producer repeats a post with its `dedupe_key`, so no route here keeps an
+        `Idempotency-Key`. See alerts.py."""
+        self._json(*service.alert_request(method, url.path, url.query, {} if method == 'GET' else self._body()))
+
     def _team_only(self, service, method, url):
         """The routes of a team-only service (team_only.py): the team routes and the page route (POST saves, DELETE
         deletes), for a tool of this Mac, and the routes of the adapter of the team mode (TEAM_GATEWAY_ROUTES), each
@@ -304,6 +313,12 @@ class Handler(BaseHTTPRequestHandler):
                     and service.gateway_bridge.authorized(self.headers.get('Authorization', ''))):
                 self._team(service, method, url)
                 return
+            alerts = (method in ('GET', 'POST') and (url.path == ALERT_ROUTE or url.path.startswith(ALERT_ROUTE + '/'))
+                      and hasattr(service, 'alert_request'))
+            if (alerts and not self.server.tunnel
+                    and service.gateway_bridge.authorized(self.headers.get('Authorization', ''))):
+                self._alerts(service, method, url)
+                return
             peer = None
             if self.server.tunnel:
                 # Every tunnel request names its phone. A request without the key never reaches a device.
@@ -326,6 +341,9 @@ class Handler(BaseHTTPRequestHandler):
                 # The request log of the tunnel listener keeps the route without its IDs, and never a body, so an
                 # invite link in a join stays out of it.
                 self._team(service, method, url, device)
+                return
+            if alerts:
+                self._alerts(service, method, url)
                 return
             if method == 'POST' and url.path == '/v1/maintenance/workspace-recovery':
                 self._json(200, service.request_workspace_recovery(
