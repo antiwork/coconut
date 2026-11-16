@@ -67,22 +67,19 @@ struct PhotoTileRow<Actions: View, Below: View>: View {
     private let height: CGFloat = 180
 
     var body: some View {
-        ScrollView(.horizontal) {
-            LazyHStack(alignment: .top, spacing: BoardStyle.Space.s) {
-                ForEach(photos.indices, id: \.self) { index in
-                    tile(photos[index], index: index)
+        Group {
+            if trailing {
+                // A row that fits stands on the trailing side and does not scroll. A wider row scrolls as in the
+                // agent chat.
+                ViewThatFits(in: .horizontal) {
+                    HStack(alignment: .top, spacing: BoardStyle.Space.s) { tiles }
+                        .frame(maxWidth: .infinity, alignment: .trailing)
+                    scrollingRow
                 }
+            } else {
+                scrollingRow
             }
-            .scrollTargetLayout()
         }
-        .scrollPosition(id: $scrolled, anchor: .leading)
-        .scrollTargetBehavior(.viewAligned)
-        .scrollIndicators(.hidden)
-        // A row that is narrower than the screen stands on the side of its message.
-        .defaultScrollAnchor(trailing ? .trailing : .leading, for: .alignment)
-        // The row reaches the screen edges, so the next photo shows that the row scrolls.
-        .contentMargins(.horizontal, BoardStyle.Space.l, for: .scrollContent)
-        .padding(.horizontal, -BoardStyle.Space.l)
         .accessibilityIdentifier(identifier + "-carousel")
         #if os(iOS)
         .fullScreenCover(isPresented: $viewerOpen) {
@@ -94,6 +91,25 @@ struct PhotoTileRow<Actions: View, Below: View>: View {
         #else
         .quickLookPreview($lookURL)
         #endif
+    }
+
+    private var tiles: some View {
+        ForEach(photos.indices, id: \.self) { index in
+            tile(photos[index], index: index)
+        }
+    }
+
+    private var scrollingRow: some View {
+        ScrollView(.horizontal) {
+            LazyHStack(alignment: .top, spacing: BoardStyle.Space.s) { tiles }
+                .scrollTargetLayout()
+        }
+        .scrollPosition(id: $scrolled, anchor: .leading)
+        .scrollTargetBehavior(.viewAligned)
+        .scrollIndicators(.hidden)
+        // The row reaches the screen edges, so the next photo shows that the row scrolls.
+        .contentMargins(.horizontal, BoardStyle.Space.l, for: .scrollContent)
+        .padding(.horizontal, -BoardStyle.Space.l)
     }
 
     private func open(_ index: Int) {
