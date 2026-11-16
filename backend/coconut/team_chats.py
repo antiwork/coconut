@@ -116,7 +116,7 @@ class TeamChats:
         from .service_base import ServiceError
         from .team_sync import TEAM_EVENT
         if not self._team_has_phones:
-            raise ServiceError(409, 'This Mac has no person to pin a chat.')
+            raise ServiceError(409, 'This Mac has no person to star a chat.')
         pinned = data.get('pinned')
         if type(pinned) is not bool:
             raise ServiceError(400, 'Supply true or false for pinned.')

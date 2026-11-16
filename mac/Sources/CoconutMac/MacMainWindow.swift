@@ -385,19 +385,6 @@ struct MacSidebar: View {
         .safeAreaInset(edge: .bottom) { MacConnectionFooter() }
     }
 
-    /// The row of a chat of a team. A chat of a team has Pin and Mute in its menu (TeamChatMuteMenu). A direct chat
-    /// has no pin and no delete here. The Team screen has the leave action.
-    @ViewBuilder private func chatRow(_ item: ChatListItem) -> some View {
-        if let chat = item.chat {
-            PeopleRow(item: item, avatarSize: 32)
-                .padding(.vertical, BoardStyle.Space.xs)
-                .tag(MacSelection.team(chat))
-                .modifier(TeamChatMuteMenu(item: item))
-                .accessibilityIdentifier(chat.member.map { "sidebar-direct-" + $0 }
-                                         ?? "sidebar-team-" + chat.room + (chat.chat.map { "-" + $0 } ?? ""))
-        }
-    }
-
     /// A pinned page. Its menu only unpins: the Library and the page itself have the other actions.
     private func pageRow(_ page: BotDocument) -> some View {
         MacPinnedPageRow(page: page)
