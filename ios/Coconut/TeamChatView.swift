@@ -661,7 +661,7 @@ struct TeamMessageRow: View {
         VStack(alignment: .leading, spacing: BoardStyle.Space.xs) {
             if row.startsRun && !own && peer == nil { writerLabel }
             if row.files.isEmpty {
-                bubbleRow.modifier(MessageTimestamp(createdAt: row.createdAt))
+                bubbleRow.modifier(MessageTimestamp(createdAt: row.createdAt, trailing: own))
             } else {
                 VStack(alignment: own ? .trailing : .leading, spacing: BoardStyle.Space.xs) {
                     let photos = row.photos(room: room.room)
@@ -675,7 +675,7 @@ struct TeamMessageRow: View {
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: own ? .trailing : .leading)
-                .modifier(MessageTimestamp(createdAt: row.createdAt))
+                .modifier(MessageTimestamp(createdAt: row.createdAt, trailing: own))
                 #if os(iOS)
                 .fullScreenCover(item: $heldFile) { file in
                     if let source = row.address(of: file, room: room.room) { heldView(file, source: source) }

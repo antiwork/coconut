@@ -5,6 +5,7 @@ struct AppSettingsView: View {
     @ShownError private var shownError
     @Environment(\.dismiss) private var dismiss
     private var paired: Bool { store.hasPairing || store.isDemo }
+    @AppStorage(MessageTimes.key) private var showTimes = true
 
     var body: some View {
         NavigationStack {
@@ -29,6 +30,8 @@ struct AppSettingsView: View {
                         SettingsNavigationLabel(title: "Access", subtitle: store.approvals?.label(for: store.approvals?.defaults) ?? "Hermes default")
                     }
                     NotificationSettingsRow()
+                    Toggle("Show message times", isOn: $showTimes)
+                        .accessibilityIdentifier("show-message-times")
                     NavigationLink { MCPSettingsView() } label: {
                         SettingsNavigationLabel(title: "Connections", subtitle: "Google, GitHub and other tools")
                     }
