@@ -138,4 +138,66 @@ final class TeamNamedChatTests: XCTestCase {
         without.rooms[0].chats = []
         XCTAssertNil(MessageBanners.shownChat(key, rooms: without), "A deleted chat opens nothing.")
     }
+
+    // MARK: Mute
+
+    func testAChatDecodesItsChoiceAndAnOlderServiceSendsNone() throws {
+        let json = """
+        {"rooms": [{"room": "\(room)", "name": "Example Team", "state": "active", "notifications": true,
+          "chats": [{"id": "\(design)", "name": "Design", "notifications": false},
+                    {"id": "\(launch)", "name": "Launch", "notifications": true}]}]}
+        """
+        let decoded = try APIJSON.decoder().decode(TeamRooms.self, from: Data(json.utf8))
+        XCTAssertEqual(decoded.rooms[0].namedChats.map(\.notifications), [false, true])
+        // The fixture of the other tests is an older service: its chats have no `notifications`.
+        XCTAssertEqual(try rooms().rooms[0].namedChats.map(\.notifications), [nil, nil])
+    }
+
+    func testEachMemberOfAnActiveTeamHasMuteOrUnmute() throws {
+        for admin in [true, false] {
+            var room = try XCTUnwrap(try rooms(admin: admin).rooms.first)
+            XCTAssertNil(TeamChatMute.action(room.namedChats[0], in: room), "An older service shows no action.")
+            room.chats?[0].notifications = true
+            XCTAssertEqual(TeamChatMute.action(room.namedChats[0], in: room), "Mute")
+            XCTAssertEqual(TeamChatMute.symbol(room.namedChats[0]), "bell.slash")
+            room.chats?[0].notifications = false
+            XCTAssertEqual(TeamChatMute.action(room.namedChats[0], in: room), "Unmute")
+            XCTAssertEqual(TeamChatMute.symbol(room.namedChats[0]), "bell")
+            room.state = "gone"
+            XCTAssertNil(TeamChatMute.action(room.namedChats[0], in: room), "A team that went has no action.")
+        }
+    }
+
+    func testOnlyAMutedChatHasTheMark() throws {
+        var chat = try XCTUnwrap(try rooms().rooms.first?.namedChats.first)
+        XCTAssertFalse(TeamChatMute.showsMark(chat))
+        chat.notifications = true
+        XCTAssertFalse(TeamChatMute.showsMark(chat))
+        chat.notifications = false
+        XCTAssertTrue(TeamChatMute.showsMark(chat))
+        XCTAssertEqual(TeamChatMute.mark, "bell.slash")
+    }
+
+    func testAMutedChatKeepsItsCountAndMakesABannerOnlyForAMention() throws {
+        let before = try rooms()
+        // A plain message after the mention: the newest message and the count grow, and `mention_first` stays.
+        var after = try rooms()
+        after.rooms[0].chats?[0].lastMessage?.first = 10
+        after.rooms[0].chats?[0].lastMessage?.text = "A plain note"
+        after.rooms[0].chats?[0].unread = 3
+        after.rooms[0].chats?[0].notifications = true
+        XCTAssertEqual(MessageBanners.plan(before: before, after: after).post.count, 1)
+        after.rooms[0].chats?[0].notifications = false
+        XCTAssertEqual(after.rooms[0].inChat(design)?.unread, 3, "A muted chat counts each unread message.")
+        XCTAssertFalse(try XCTUnwrap(after.rooms[0].inChat(design)).chatNotifies)
+        XCTAssertEqual(MessageBanners.plan(before: before, after: after).post, [])
+        // A new mention of this person makes a banner also in a muted chat.
+        after.rooms[0].chats?[0].mentionFirst = 10
+        XCTAssertEqual(MessageBanners.plan(before: before, after: after).post.map(\.body), ["A plain note"])
+        // The switch of the team off makes each chat quiet, also a chat that is not muted.
+        after.rooms[0].chats?[0].mentionFirst = 9
+        after.rooms[0].chats?[0].notifications = true
+        after.rooms[0].notifications = false
+        XCTAssertEqual(MessageBanners.plan(before: before, after: after).post, [])
+    }
 }

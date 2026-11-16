@@ -56,6 +56,9 @@ struct TeamNamedChat: Decodable, Identifiable, Equatable, Sendable {
     var mentioned: Bool? = nil
     var mentionFirst: Int? = nil
     var typing: TeamTypingList? = nil
+    /// False when this person muted the chat on this Mac (TeamChatMute). A Mac for a team only and an older service
+    /// send none, and the row then has no action "Mute".
+    var notifications: Bool? = nil
 }
 
 extension TeamRoom {
@@ -92,6 +95,10 @@ extension TeamRoom {
     /// The name of the chat and the name of the team, as the subtitle of a banner and an alert of a message have it:
     /// "Design · Example Team" for a named chat, the name of the team for the Team chat.
     var chatAndTeam: String { shownChat.map { $0.name + " · " + name } ?? name }
+
+    /// A new message of the chat that this room shows notifies this person: the switch of the team is on, and the
+    /// person did not mute the named chat. A mention notifies also without this (MessageBanners).
+    var chatNotifies: Bool { notifiesPhone && shownChat?.notifications != false }
 }
 
 extension TeamRooms {
@@ -101,6 +108,30 @@ extension TeamRooms {
     func has(_ chat: TeamChatKey) -> Bool {
         rooms.contains { $0.room == chat.room && $0.inChat(chat.chat) != nil }
     }
+}
+
+/// The choice of this person to mute one named chat (docs/team-log.md, "Notifications"). A plain message of a muted
+/// chat notifies nothing. A message that names this person still notifies, and the unread count does not change. Each
+/// member has the action, not only the admin. The Team chat has no action: the switch "Notifications" of the team is
+/// for it and for each chat.
+enum TeamChatMute {
+    static let mute = "Mute"
+    static let unmute = "Unmute"
+    /// The mark at the end of the row of a muted chat.
+    static let mark = "bell.slash"
+
+    /// The label of the action on the row of `chat`, or nil when the row has no action: a team that is not active, a
+    /// Mac for a team only, or an older service.
+    static func action(_ chat: TeamNamedChat, in room: TeamRoom) -> String? {
+        guard room.status == .active, let enabled = chat.notifications else { return nil }
+        return enabled ? mute : unmute
+    }
+
+    /// The symbol of the action in a menu.
+    static func symbol(_ chat: TeamNamedChat) -> String { chat.notifications == false ? "bell" : mark }
+
+    /// True when the row of `chat` shows the mark.
+    static func showsMark(_ chat: TeamNamedChat) -> Bool { chat.notifications == false }
 }
 
 /// Which person makes, renames and deletes the named chats of a team: the admin of an active team, as the service says

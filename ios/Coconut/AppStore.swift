@@ -1793,6 +1793,23 @@ final class AppStore {
         return true
     }
 
+    /// Mutes or unmutes one named chat of a team for this person (TeamChatMute). Return whether the Mac did it.
+    @discardableResult
+    func setTeamChatNotifications(_ room: String, chat: String, enabled: Bool) async -> Bool {
+        let ticket = startTeamWrite(room)
+        let answer: TeamChatNotificationsAnswer? = await write(
+            "team/rooms/\(room)/chats/\(chat)/notifications", method: "PUT",
+            payload: TeamNotificationsRequest(enabled: enabled), as: TeamChatNotificationsAnswer.self,
+            refreshInBackground: true)
+        guard let answer else { return false }
+        var changed = team?.rooms.first { $0.room == room }
+        if let index = changed?.chats?.firstIndex(where: { $0.id == answer.chat }) {
+            changed?.chats?[index].notifications = answer.notifications
+        }
+        applyTeamChange(room: changed, write: ticket)
+        return true
+    }
+
     /// Shares a page of this Mac with a team, or stops (backend/coconut/team_pages.py). Return whether the Mac did it.
     ///
     /// The person can tap again before the Mac answers, and the answers can come in another order. So each act on a page
@@ -3185,6 +3202,9 @@ private struct TeamJoinBody: Encodable { let link: String; let memberName: Strin
 private struct TeamProfileRequest: Encodable { let memberName: String }
 private struct TeamNotificationsRequest: Encodable { let enabled: Bool }
 private struct TeamNotificationsAnswer: Decodable, Sendable { let room: String; let notifications: Bool }
+private struct TeamChatNotificationsAnswer: Decodable, Sendable {
+    let room: String; let chat: String; let notifications: Bool
+}
 /// The answer of a share or a stop of a page: the document with its teams.
 private struct PageShareAnswer: Decodable, Sendable { let document: BotDocument }
 /// A nil `mentions` or `aboutDocumentId` is not in the JSON: a message without a mention or a page sends none.

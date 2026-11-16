@@ -166,6 +166,8 @@ struct TeamRoomView: View {
     @State private var naming: TeamChatNaming?
     /// The chat that the confirmation of a delete asks about.
     @State private var deletingChat: TeamNamedChat?
+    /// The named chats whose choice to mute runs now, so a second tap waits for the answer of the Mac.
+    @State private var mutingChats: Set<String> = []
 
     private var room: TeamRoom? { store.team?.rooms.first { $0.room == roomId } }
 
@@ -286,15 +288,21 @@ struct TeamRoomView: View {
         }
     }
 
-    /// The named chats of the team, each a row that opens the chat. The admin also has "New chat", and Rename and Delete
-    /// on each row: the swipe actions on an iPhone and the menu of the row on both (TeamChatManagement).
+    /// The named chats of the team, each a row that opens the chat. Each member has Mute or Unmute on each row
+    /// (TeamChatMute). The admin also has "New chat", and Rename and Delete on each row (TeamChatManagement). The
+    /// actions are the swipe actions on an iPhone and the menu of the row on both.
     private func chatsSection(_ room: TeamRoom) -> some View {
         let manages = TeamChatManagement.allows(room)
         return Section("Chats") {
             ForEach(room.namedChats) { chat in
                 chatRow(chat, in: room)
-                    .modifier(TeamChatActions(enabled: manages, rename: { naming = TeamChatNaming(chat: chat) },
-                                              delete: { deletingChat = chat }))
+                    .modifier(TeamChatActions(
+                        manages: manages, mute: TeamChatMute.action(chat, in: room).map { label in
+                            TeamChatActions.Mute(label: label, symbol: TeamChatMute.symbol(chat)) {
+                                setMuted(chat, in: room)
+                            }
+                        },
+                        rename: { naming = TeamChatNaming(chat: chat) }, delete: { deletingChat = chat }))
             }
             if manages {
                 Button(TeamChatManagement.newChat) { naming = TeamChatNaming(chat: nil) }
@@ -309,6 +317,13 @@ struct TeamRoomView: View {
         Button { showTeamChat?(TeamChatKey(room: room.room, chat: chat.id)) } label: {
             HStack(spacing: 8) {
                 Text(chat.name).frame(maxWidth: .infinity, alignment: .leading)
+                if TeamChatMute.showsMark(chat) {
+                    // In the font of the name, so the mark is as high as the line of the name.
+                    Image(systemName: TeamChatMute.mark)
+                        .foregroundStyle(.secondary)
+                        .accessibilityLabel("Muted")
+                        .accessibilityIdentifier("team-chat-muted-\(chat.id)")
+                }
                 Image(systemName: "chevron.right")
                     .font(.footnote.weight(.semibold)).foregroundStyle(.tertiary)
                     .accessibilityHidden(true)
@@ -441,6 +456,18 @@ struct TeamRoomView: View {
         }
     }
 
+    /// Mutes or unmutes a named chat. The row shows the state of the Mac when it answers. After a failure the error
+    /// shows in the banner of the screen.
+    private func setMuted(_ chat: TeamNamedChat, in room: TeamRoom) {
+        guard let enabled = chat.notifications, !mutingChats.contains(chat.id) else { return }
+        mutingChats.insert(chat.id)
+        store.error = nil
+        Task {
+            await store.setTeamChatNotifications(room.room, chat: chat.id, enabled: !enabled)
+            mutingChats.remove(chat.id)
+        }
+    }
+
     /// One action at a time. The form stays disabled until the Mac answers.
     private func run(_ action: @escaping () async -> Bool) {
         busy = true
@@ -493,30 +520,51 @@ private struct TeamChatNaming: Identifiable {
     let chat: TeamNamedChat?
 }
 
-/// Rename and Delete on the row of a named chat, for the admin: the swipe actions of an iPhone and the menu of the row.
-/// Delete asks first (TeamRoomView). Each other person sees the plain row.
+/// The actions on the row of a named chat: Mute or Unmute for each member, and Rename and Delete for the admin. They
+/// are the swipe actions of an iPhone and the menu of the row. Delete asks first (TeamRoomView). A row without an
+/// action keeps its plain form.
 private struct TeamChatActions: ViewModifier {
-    let enabled: Bool
+    /// Mute or Unmute (TeamChatMute).
+    struct Mute {
+        let label: String
+        let symbol: String
+        let action: () -> Void
+    }
+
+    let manages: Bool
+    let mute: Mute?
     let rename: () -> Void
     let delete: () -> Void
 
     func body(content: Content) -> some View {
-        if enabled {
+        if manages || mute != nil {
             content
                 #if os(iOS)
                 .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-                    // No destructive role: that role takes the row away at once, before the confirmation.
-                    Button("Delete", action: delete).tint(.red)
-                        .accessibilityIdentifier("team-chat-delete-swipe")
-                    Button("Rename", action: rename)
-                        .accessibilityIdentifier("team-chat-rename-swipe")
+                    if manages {
+                        // No destructive role: that role takes the row away at once, before the confirmation.
+                        Button("Delete", action: delete).tint(.red)
+                            .accessibilityIdentifier("team-chat-delete-swipe")
+                        Button("Rename", action: rename)
+                            .accessibilityIdentifier("team-chat-rename-swipe")
+                    }
+                    if let mute {
+                        Button(mute.label, action: mute.action).tint(.indigo)
+                            .accessibilityIdentifier("team-chat-mute-swipe")
+                    }
                 }
                 #endif
                 .contextMenu {
-                    Button("Rename", systemImage: "pencil", action: rename)
-                        .accessibilityIdentifier("team-chat-rename-menu")
-                    Button("Delete", systemImage: "trash", role: .destructive, action: delete)
-                        .accessibilityIdentifier("team-chat-delete-menu")
+                    if let mute {
+                        Button(mute.label, systemImage: mute.symbol, action: mute.action)
+                            .accessibilityIdentifier("team-chat-mute-menu")
+                    }
+                    if manages {
+                        Button("Rename", systemImage: "pencil", action: rename)
+                            .accessibilityIdentifier("team-chat-rename-menu")
+                        Button("Delete", systemImage: "trash", role: .destructive, action: delete)
+                            .accessibilityIdentifier("team-chat-delete-menu")
+                    }
                 }
         } else {
             content
