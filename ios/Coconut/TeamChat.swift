@@ -1556,20 +1556,45 @@ enum ChatFilter: String, CaseIterable, Identifiable, Sendable {
 /// The sections of the Mac sidebar: the pinned bots, the people (the teams and the direct chats with a person), and
 /// the other bots with the direct chats with a bot of a team. Each one newest activity first.
 struct ChatSections: Equatable {
+    /// The chats with an unread message, as "Unreads" of Slack: the people and the agents that are not starred, newest
+    /// activity first. A chat shows here and not in its own section, so it moves back when the person reads it.
+    var unread: [ChatListItem] = []
     var pinned: [Bot]
     var people: [ChatListItem]
     /// The bots that are not pinned (`.bot`) and the direct chats with a bot of a team (`.botDirect`).
     var bots: [ChatListItem]
 
-    /// One pass over the messages. A section without rows does not show.
+    /// One pass over the messages. A section without rows does not show. A starred agent stays in "Starred", also with
+    /// an unread message, as in Slack.
     static func make(bots: [Bot], messages: [Message], rooms: [TeamRoom],
                      local: [TeamChatKey: TeamLastMessage] = [:]) -> ChatSections {
         let latest = ChatList.lastMessageDates(messages)
         func activity(_ bot: Bot) -> Date { latest[bot.id] ?? bot.createdAt.apiDate ?? .distantPast }
         let active = bots.filter { !$0.archived }.sorted { activity($0) > activity($1) }
-        return ChatSections(pinned: active.filter(\.pinned), people: ChatList.people(rooms, local: local),
-                            bots: ChatList.merge(bots: active.filter { !$0.pinned }, latest: latest,
-                                                 chats: ChatList.botDirects(rooms, local: local)))
+        let people = ChatList.people(rooms, local: local)
+        let others = ChatList.merge(bots: active.filter { !$0.pinned }, latest: latest,
+                                    chats: ChatList.botDirects(rooms, local: local))
+        func itemActivity(_ item: ChatListItem) -> Date {
+            if case .bot(let bot) = item { return activity(bot) }
+            return item.teamActivity
+        }
+        // A stable sort keeps the order of each section for chats of the same time.
+        let unread = (people + others).enumerated().filter { $0.element.unreadCount > 0 }
+            .sorted { (itemActivity($0.element), -$0.offset) > (itemActivity($1.element), -$1.offset) }.map(\.element)
+        return ChatSections(unread: unread, pinned: active.filter(\.pinned),
+                            people: people.filter { $0.unreadCount == 0 }, bots: others.filter { $0.unreadCount == 0 })
+    }
+}
+
+extension ChatListItem {
+    /// The unread messages of the chat. A muted team chat counts none, so it never moves to "Unreads".
+    var unreadCount: Int {
+        switch self {
+        case .bot(let bot): bot.unreadCount
+        case .team(let room): room.shownChatMuted ? 0 : room.unread ?? 0
+        case .direct(_, let direct): direct.unread ?? 0
+        case .botDirect(_, let direct): direct.unread ?? 0
+        }
     }
 }
 
