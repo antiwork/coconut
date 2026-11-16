@@ -18,6 +18,7 @@ from uuid import uuid4
 
 from coconut import team_store, team_turns
 from coconut.team_chats import ADMIN_ONLY, GONE_CHAT, SAME_NAME, TOO_MANY
+from coconut.team import switch_route
 from coconut.team_store import MAX_CHATS, REFUSED, STORED, TeamStore
 from test_team_key_change import KeyChangeMacs
 from test_team_messages import ADMIN, AGREEMENT, MEMBER, OTHER, ROOM, START, entry_id
@@ -661,6 +662,16 @@ class ChatMuteTests(TeamPushMacs, unittest.TestCase):
         draft = self.phone(self.first)('POST', f'/v1/team/rooms/{self.room}/files',
                                        {'name': 'plan.pdf', 'type': 'application/pdf', 'content': 'eA=='})['file']
         self.assertFalse(self.notified('', chat=self.notices, files=[draft['id']]))
+
+    def test_only_the_two_switch_routes_keep_no_saved_answer(self):
+        self.assertTrue(switch_route('PUT', ['rooms', 'r', 'notifications']))
+        self.assertTrue(switch_route('PUT', ['rooms', 'r', 'chats', 'c', 'notifications']))
+        # A route whose last ID only is the word, another method, and another place of the word.
+        self.assertFalse(switch_route('DELETE', ['rooms', 'r', 'members', 'notifications']))
+        self.assertFalse(switch_route('PATCH', ['rooms', 'r', 'messages', 'notifications']))
+        self.assertFalse(switch_route('PUT', ['rooms', 'r', 'pages', 'notifications']))
+        self.assertFalse(switch_route('GET', ['rooms', 'r', 'notifications']))
+        self.assertFalse(switch_route('PUT', ['rooms', 'r', 'directs', 'm', 'notifications']))
 
     def test_a_repeat_with_the_key_of_an_earlier_mute_mutes_again(self):
         """The app sends the key of a write whose answer did not arrive again with the same body. A saved answer of

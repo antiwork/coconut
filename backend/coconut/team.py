@@ -173,6 +173,15 @@ def tool_route(method: str, parts: list[str]) -> bool:
         method == 'DELETE' and len(parts) == 2 and parts[0] == 'rooms')
 
 
+def switch_route(method: str, parts: list[str]) -> bool:
+    """True for a PUT of a notification switch: `rooms/<room>/notifications` or `rooms/<room>/chats/<chat>/notifications`.
+    `parts` are the parts of the route after `/v1/team`, as _team_route reads them. A repeat of such a request keeps no
+    saved answer (team_request)."""
+    return method == 'PUT' and (
+        (len(parts) == 3 and parts[0] == 'rooms' and parts[2] == 'notifications')
+        or (len(parts) == 5 and parts[0] == 'rooms' and parts[2] == 'chats' and parts[4] == 'notifications'))
+
+
 def removal_entry(token: str, room: str, member: str) -> str:
     """The entry ID of the `remove` entry of a member: from the room and the member ID, so a repeat of a removal
     writes the same entry.
@@ -286,7 +295,7 @@ class Team(TeamSync, TeamSocket, TeamPages, TeamMessages, TeamChats, TeamDirects
         from .service_base import ServiceError
         bare = path.rstrip('/')
         if (not key or method == 'GET' or bare == '/v1/team/sync' or bare.endswith('/typing')
-                or bare.endswith('/notifications')):
+                or switch_route(method, bare.strip('/').split('/')[2:])):
             return self._team_route(method, path, data, device=device, direct=direct)
         try:
             UUID(key)
