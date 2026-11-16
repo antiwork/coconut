@@ -279,6 +279,10 @@ struct MacSidebar: View {
     @Environment(AppStore.self) private var store
     @Binding var selection: MacSelection?
     @State private var deleting: Bot?
+    @AppStorage("sidebar-unreads-open") private var unreadsOpen = true
+    @AppStorage("sidebar-starred-open") private var starredOpen = true
+    @AppStorage("sidebar-people-open") private var peopleOpen = true
+    @AppStorage("sidebar-agents-open") private var agentsOpen = true
 
     /// The bots that are not archived, newest activity first, split into the pinned bots and the other bots.
     /// It reads only its arguments, so it needs no main actor, and a test can call it from any context.
@@ -298,48 +302,32 @@ struct MacSidebar: View {
                 .badge(store.documents?.count ?? 0)
                 .tag(MacSelection.library)
                 .accessibilityIdentifier("sidebar-library")
-            // A section without rows does not show.
+            // The sections of Slack: each one folds with its header, and the Mac keeps the choice. A section without
+            // rows does not show.
+            if !sections.unread.isEmpty {
+                Section("Unreads", isExpanded: $unreadsOpen) {
+                    ForEach(sections.unread) { item in itemRow(item) }
+                }
+            }
             if !pins.isEmpty {
-                Section("Pinned") {
+                Section("Starred", isExpanded: $starredOpen) {
                     ForEach(pins.bots) { bot in row(bot) }
                     ForEach(pins.pages) { page in pageRow(page) }
                 }
             }
             if !sections.people.isEmpty {
-                Section("People") {
-                    ForEach(sections.people) { item in
-                        // A team and a direct chat have no pin and no delete here. The Team screen has the leave
-                        // action.
-                        if let chat = item.chat {
-                            PeopleRow(item: item, avatarSize: 32)
-                                .padding(.vertical, BoardStyle.Space.xs)
-                                .tag(MacSelection.team(chat))
-                                .modifier(TeamChatMuteMenu(item: item))
-                                .accessibilityIdentifier(chat.member.map { "sidebar-direct-" + $0 }
-                                                         ?? "sidebar-team-" + chat.room + (chat.chat.map { "-" + $0 } ?? ""))
-                        }
-                    }
+                Section("People", isExpanded: $peopleOpen) {
+                    ForEach(sections.people) { item in itemRow(item) }
                 }
             }
             if !sections.bots.isEmpty {
-                Section("Agents") {
-                    ForEach(sections.bots) { item in
-                        switch item {
-                        case .bot(let bot): row(bot)
-                        default:
-                            // A direct chat with a bot of a team, newest activity first with the bots. It has no pin
-                            // and no delete.
-                            if let chat = item.chat {
-                                PeopleRow(item: item, avatarSize: 32)
-                                    .padding(.vertical, BoardStyle.Space.xs)
-                                    .tag(MacSelection.team(chat))
-                                    .accessibilityIdentifier("sidebar-bot-direct-" + (chat.bot ?? ""))
-                            }
-                        }
-                    }
+                Section("Agents", isExpanded: $agentsOpen) {
+                    ForEach(sections.bots) { item in itemRow(item) }
                 }
             }
         }
+        // Slack's rows: one line each, close together.
+        .environment(\.defaultMinListRowHeight, 26)
         .listStyle(.sidebar)
         .modifier(DeleteBotDialog(bot: $deleting))
         // A deleted bot leaves the list. Its chat closes, and the Inbox shows instead.
@@ -361,24 +349,81 @@ struct MacSidebar: View {
     /// A pinned page. Its menu only unpins: the Library and the page itself have the other actions.
     private func pageRow(_ page: BotDocument) -> some View {
         MacPinnedPageRow(page: page)
-            .padding(.vertical, BoardStyle.Space.xs)
             .tag(MacSelection.document(page.id))
             .contextMenu {
-                Button("Unpin") { Task { await store.pinDocument(page, pinned: false) } }
+                Button("Unstar") { Task { await store.pinDocument(page, pinned: false) } }
             }
             .accessibilityIdentifier("sidebar-page-\(page.key)")
     }
 
     private func row(_ bot: Bot) -> some View {
-        BotContactRow(bot: bot, avatarSize: 32)
-            .padding(.vertical, BoardStyle.Space.xs)
+        MacSidebarRow(name: bot.name, unread: bot.unreadCount) {
+            LiveBotAvatar(bot: bot, size: 20)
+        }
             .tag(MacSelection.bot(bot.id))
             .contextMenu {
-                Button(bot.pinned ? "Unpin" : "Pin") { Task { await store.pinBot(bot, pinned: !bot.pinned) } }
+                Button(bot.pinned ? "Unstar" : "Star") { Task { await store.pinBot(bot, pinned: !bot.pinned) } }
                 Divider()
                 Button("Delete Agent…", role: .destructive) { deleting = bot }
             }
             .accessibilityIdentifier("sidebar-bot-\(bot.id)")
+    }
+
+    /// The row of a chat in any section: an agent, a team, a direct chat with a person, or one with a bot of a team.
+    @ViewBuilder
+    private func itemRow(_ item: ChatListItem) -> some View {
+        switch item {
+        case .bot(let bot): row(bot)
+        case .team(let room):
+            if let chat = item.chat {
+                MacSidebarRow(name: room.title, unread: item.unreadCount, muted: room.shownChatMuted,
+                              mentioned: room.hasChat && room.showsMentionMark) {
+                    TeamFace(room: room, size: 20)
+                }
+                .tag(MacSelection.team(chat))
+                // A team has no star and no delete here. The Team screen has the leave action.
+                .modifier(TeamChatMuteMenu(item: item))
+                .accessibilityIdentifier("sidebar-team-" + chat.room + (chat.chat.map { "-" + $0 } ?? ""))
+            }
+        case .direct(let room, let direct):
+            let peer = room.directPeer(direct.member)
+            MacSidebarRow(name: peer.name, unread: item.unreadCount) { DirectPeerFace(peer: peer, size: 20) }
+                .tag(MacSelection.team(TeamChatKey(room: room.room, member: direct.member)))
+                .modifier(TeamChatMuteMenu(item: item))
+                .accessibilityIdentifier("sidebar-direct-" + direct.member)
+        case .botDirect(let room, let direct):
+            let peer = room.botPeer(direct.bot)
+            MacSidebarRow(name: peer.name, unread: item.unreadCount) { DirectPeerFace(peer: peer, size: 20) }
+                .tag(MacSelection.team(TeamChatKey(room: room.room, bot: direct.bot)))
+                .accessibilityIdentifier("sidebar-bot-direct-" + direct.bot)
+        }
+    }
+}
+
+/// One row of the sidebar, as in Slack: a small face, the name in one line, and the unread count at the end. An
+/// unread chat shows its name in bold and in the text color; a read chat shows it quieter. A muted chat stays quiet.
+private struct MacSidebarRow<Face: View>: View {
+    let name: String
+    let unread: Int
+    var muted = false
+    var mentioned = false
+    @ViewBuilder let face: () -> Face
+
+    var body: some View {
+        let loud = unread > 0 && !muted
+        HStack(spacing: BoardStyle.Space.s) {
+            face().frame(width: 20, height: 20)
+            Text(name)
+                .font(.body.weight(loud ? .semibold : .regular))
+                .foregroundStyle(loud ? .primary : .secondary)
+                .lineLimit(1)
+            Spacer(minLength: 0)
+            if mentioned { MentionBadge() }
+            if loud { UnreadBadge(count: unread) }
+        }
+        .padding(.vertical, 2)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel([name, loud ? UnreadBadge.spoken(unread) : nil].compactMap { $0 }.joined(separator: ", "))
     }
 }
 
@@ -394,15 +439,14 @@ private struct MacPinnedPageRow: View {
     }
 
     var body: some View {
-        ChatRowLayout(name: page.title, unread: 0, date: nil) {
-            Image(systemName: page.symbol)
-                .font(.body).foregroundStyle(.secondary)
-                .frame(width: 32 * BotAvatar.scale, height: 32 * BotAvatar.scale)
-                .background(BoardStyle.surface, in: RoundedRectangle(cornerRadius: BoardStyle.Radius.small, style: .continuous))
-                .accessibilityHidden(true)
-        } subtitle: {
-            Text(owner).font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
+        // One line, as the other rows: the symbol of its kind in the place of a face, and its title.
+        HStack(spacing: BoardStyle.Space.s) {
+            Image(systemName: page.symbol).font(.callout).foregroundStyle(.secondary).frame(width: 20, height: 20)
+            Text(page.title).foregroundStyle(.secondary).lineLimit(1)
+            Spacer(minLength: 0)
         }
+        .padding(.vertical, 2)
+        .help(owner)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("\(page.title), page, \(owner)")
         .accessibilityHint("Opens the page")

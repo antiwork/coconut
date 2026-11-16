@@ -497,6 +497,20 @@ final class TeamChatTests: XCTestCase {
         XCTAssertEqual(sections.bots.map(\.id), ["bot-writer"])
     }
 
+    /// "Unreads" takes each chat with an unread message out of "People" and "Agents", newest first. A starred agent
+    /// stays in "Starred".
+    func testUnreadChatsMoveToTheirOwnSectionOfTheMacSidebar() {
+        var starred = bot("planner", pinned: true); starred.unreadCount = 2
+        var writer = bot("writer"); writer.unreadCount = 1
+        var r2 = room("r2", last: "2026-11-09T00:00:00Z"); r2.unread = 3
+        let sections = ChatSections.make(bots: [starred, writer, bot("reader")], messages: [],
+                                         rooms: [room("r1", last: "2026-11-05T00:00:00Z"), r2])
+        XCTAssertEqual(sections.unread.map(\.id), ["team-r2", "bot-writer"])
+        XCTAssertEqual(sections.pinned.map(\.id), ["planner"])
+        XCTAssertEqual(sections.people.map(\.room), ["r1"])
+        XCTAssertEqual(sections.bots.map(\.id), ["bot-reader"])
+    }
+
     func testTheLettersOfAFace() {
         XCTAssertEqual(LetterFace.letters("Example Team"), "ET")
         XCTAssertEqual(LetterFace.letters("design crew"), "DC")
