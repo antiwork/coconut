@@ -1813,12 +1813,19 @@ class TeamStore:
                                                        draft['hash'], draft['width'], draft['height'], self.clock(),
                                                        data))
 
-    def drafts(self, room: str, ids: list[str]) -> dict[str, dict]:
-        """The drafts of these IDs in the room, with their bytes in `data`, by ID."""
+    def drafts(self, room: str, ids: list[str], seconds: int) -> dict[str, dict]:
+        """The drafts of these IDs in the room, with their bytes in `data`, by ID. A draft older than `seconds` does
+        not count, also when no upload removed it yet (drop_old_drafts)."""
         fields = ('id', 'name', 'type', 'size', 'hash', 'width', 'height', 'data')
         rows = self._rows(fields, f'''SELECT {", ".join(fields)} FROM team_file_drafts WHERE room=?
-            AND id IN (SELECT value FROM json_each(?))''', (room, json.dumps(ids)))
+            AND id IN (SELECT value FROM json_each(?)) AND created>=?''',
+                          (room, json.dumps(ids), self.clock() - seconds))
         return {row['id']: row for row in rows}
+
+    def piece_size(self, room: str, entry: str) -> int | None:
+        """The number of bytes that this Mac has of a piece, or None when it has no bytes of it."""
+        row = self.db.execute('SELECT size FROM team_file_pieces WHERE room=? AND entry=?', (room, entry)).fetchone()
+        return row[0] if row else None
 
     def drop_draft(self, room: str, draft: str) -> bool:
         return self.db.execute('DELETE FROM team_file_drafts WHERE room=? AND id=?', (room, draft)).rowcount > 0
