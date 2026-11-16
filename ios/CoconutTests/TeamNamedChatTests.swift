@@ -409,6 +409,16 @@ final class TeamNamedChatTests: XCTestCase {
         XCTAssertFalse(ChatFilter.people.showsPinned)
     }
 
+    func testUnreadKeepsUnreadStarredChatsAndExcludesReadOrMutedStarredChats() throws {
+        let list = try pinnedRooms(team: true, design: true, launch: true)
+        XCTAssertEqual(ChatList.rows(.unread, bots: [], latest: [:], rooms: list.rooms).map(\.id),
+                       ["team-\(room)-\(design)"])
+        var muted = list.rooms
+        let chat = try XCTUnwrap(muted[0].chats?.firstIndex { $0.id == design })
+        muted[0].chats?[chat].notifications = false
+        XCTAssertTrue(ChatList.rows(.unread, bots: [], latest: [:], rooms: muted).isEmpty)
+    }
+
     func testAStarredUnreadChatStaysInStarredUntilThePersonRemovesItsStar() throws {
         let list = try pinnedRooms(team: false, design: true)
         let id = "team-\(room)-\(design)"

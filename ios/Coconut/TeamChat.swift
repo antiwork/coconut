@@ -1603,7 +1603,7 @@ enum ChatList {
     /// activity first (items). A pinned chat shows in "All" and "People", where its row shows, and never in "Agents".
     static func rows(_ filter: ChatFilter, bots: [Bot], latest: [String: Date], rooms: [TeamRoom],
                      local: [TeamChatKey: TeamLastMessage] = [:]) -> [ChatListItem] {
-        (filter.showsPinnedChats ? pinnedChats(rooms) : [])
+        filter.items(filter.showsPinnedChats ? pinnedChats(rooms) : [])
             + filter.items(items(bots: bots, latest: latest, rooms: rooms, local: local))
     }
 
@@ -1626,29 +1626,27 @@ enum ChatList {
 /// The filter of the Chats list on an iPhone. "People" has the teams and the direct chats with a person. "Bots" has
 /// the bots and the direct chats with a bot of a team.
 enum ChatFilter: String, CaseIterable, Identifiable, Sendable {
-    case all, people, bots
+    case all, unread, people, bots
 
     var id: String { rawValue }
 
     var title: String {
         switch self {
         case .all: "All"
+        case .unread: "Unread"
         case .people: "People"
         case .bots: "Agents"
         }
     }
 
-    /// The chips show only while the paired Mac is a member of a team: an active team, or one that it joins. A team
-    /// that the Mac left (`removed`, `gone`) keeps its history as a row of "All", but it brings no chips. Without them
-    /// the list is "All".
-    static func showsChips(rooms: [TeamRoom]) -> Bool {
-        rooms.contains { $0.status == .active || $0.status == .joining }
+    /// All and Unread work without a team. People and Agents also show when the Mac belongs to a team.
+    static func available(rooms: [TeamRoom]) -> [ChatFilter] {
+        rooms.contains { $0.status == .active || $0.status == .joining } ? allCases : [.all, .unread]
     }
 
-    /// The filter that the list uses: the choice of the person while the chips show, else "All". The store also keeps
-    /// this value after each list of the teams, so a Mac that left its last team starts at "All" when chips return.
+    /// A choice that needs a team returns to All when the Mac leaves its last team.
     static func effective(_ chosen: ChatFilter, rooms: [TeamRoom]) -> ChatFilter {
-        showsChips(rooms: rooms) ? chosen : .all
+        available(rooms: rooms).contains(chosen) ? chosen : .all
     }
 
     /// The pinned agents show in "All" and "Agents", so "People" has none.
@@ -1657,10 +1655,13 @@ enum ChatFilter: String, CaseIterable, Identifiable, Sendable {
     /// The pinned chats of the teams show in "All" and "People", so "Agents" has none.
     var showsPinnedChats: Bool { self != .bots }
 
+    var showsTodos: Bool { self == .all || self == .bots }
+
     /// The rows of the list for this filter, in the order of the list.
     func items(_ items: [ChatListItem]) -> [ChatListItem] {
         switch self {
         case .all: items
+        case .unread: items.filter { $0.unreadCount > 0 }
         case .people: items.filter(\.isPeople)
         case .bots: items.filter { !$0.isPeople }
         }

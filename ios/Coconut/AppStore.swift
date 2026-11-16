@@ -91,7 +91,7 @@ final class AppStore {
     @ObservationIgnored private var pageShareCount = 0
     @ObservationIgnored private var teamWriteCount = 0
     /// The filter chip of the Chats list. It stays while the app runs. A new pairing, an unpair and a Mac without a
-    /// team set it to "All" (`ChatFilter.effective`).
+    /// team set People or Agents to All (`ChatFilter.effective`). Unread also works without a team.
     var chatFilter: ChatFilter = .all
     /// The chats of the teams that the person opened, by chat: the Team chat of a room, or a direct chat. The updates
     /// keep them fresh.

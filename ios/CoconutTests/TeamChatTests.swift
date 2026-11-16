@@ -442,28 +442,43 @@ final class TeamChatTests: XCTestCase {
         XCTAssertFalse(ChatFilter.people.showsPinned, "The pinned tiles are bots.")
     }
 
-    /// The chips show only for a Mac in a team. Without a team the list is "All", also for a choice from before.
-    func testTheChipsShowForATeamAndTheChoiceFallsBackWithout() {
-        XCTAssertFalse(ChatFilter.showsChips(rooms: []))
-        XCTAssertTrue(ChatFilter.showsChips(rooms: [room("r1")]))
+    func testUnreadWorksWithoutATeamAndPeopleFallsBackToAll() {
+        XCTAssertEqual(ChatFilter.available(rooms: []), [.all, .unread])
+        XCTAssertEqual(ChatFilter.available(rooms: [room("r1")]), ChatFilter.allCases)
         XCTAssertEqual(ChatFilter.effective(.bots, rooms: [room("r1")]), .bots)
         XCTAssertEqual(ChatFilter.effective(.people, rooms: []), .all, "A Mac that left its last team is back at All.")
-        XCTAssertEqual(ChatFilter.allCases.map(\.title), ["All", "People", "Agents"])
+        XCTAssertEqual(ChatFilter.effective(.unread, rooms: []), .unread)
+        XCTAssertEqual(ChatFilter.allCases.map(\.title), ["All", "Unread", "People", "Agents"])
     }
 
-    /// A team that the Mac left keeps its row and its history, but brings no chips. A team that the Mac joins does.
-    func testTheChipsShowOnlyForATeamThatTheMacIsIn() {
+    func testPeopleAndAgentsNeedATeamThatTheMacIsIn() {
         func room(_ state: String) -> TeamRoom { TeamRoom(room: state, name: "Example Team", state: state) }
-        XCTAssertFalse(ChatFilter.showsChips(rooms: [room("removed")]))
-        XCTAssertFalse(ChatFilter.showsChips(rooms: [room("gone")]))
-        XCTAssertFalse(ChatFilter.showsChips(rooms: [room("removed"), room("gone")]))
-        XCTAssertTrue(ChatFilter.showsChips(rooms: [room("joining")]), "A join on its way: the team shows in People.")
-        XCTAssertTrue(ChatFilter.showsChips(rooms: [room("removed"), room("active")]))
+        XCTAssertEqual(ChatFilter.available(rooms: [room("removed")]), [.all, .unread])
+        XCTAssertEqual(ChatFilter.available(rooms: [room("gone")]), [.all, .unread])
+        XCTAssertEqual(ChatFilter.available(rooms: [room("removed"), room("gone")]), [.all, .unread])
+        XCTAssertEqual(ChatFilter.available(rooms: [room("joining")]), ChatFilter.allCases)
+        XCTAssertEqual(ChatFilter.available(rooms: [room("removed"), room("active")]), ChatFilter.allCases)
         XCTAssertEqual(ChatFilter.effective(.people, rooms: [room("removed")]), .all,
                        "People must not hide the bots of a Mac that left its last team.")
         let items: [ChatListItem] = [.team(room("removed")), .bot(bot("planner"))]
         XCTAssertEqual(ChatFilter.effective(.people, rooms: [room("removed")]).items(items).map(\.id),
                        ["team-removed", "bot-planner"], "The left team stays a row of All.")
+    }
+
+    func testUnreadUsesTheSharedCountAndKeepsStarredChats() {
+        var read = bot("read"), unread = bot("unread")
+        read.unreadCount = 0; unread.unreadCount = 3
+        var starred = room("starred"), muted = room("muted"), plain = room("plain")
+        starred.unread = 2; starred.pinned = true
+        plain.unread = 1
+        muted.unread = 4
+        muted.shownChat = TeamNamedChat(id: "muted-chat", name: "Notices", notifications: false)
+        let items: [ChatListItem] = [.bot(read), .team(starred), .bot(unread), .team(muted), .team(plain)]
+        XCTAssertEqual(ChatFilter.unread.items(items).map(\.id), ["team-starred", "bot-unread", "team-plain"])
+        XCTAssertFalse(ChatFilter.unread.showsTodos)
+        XCTAssertFalse(ChatFilter.people.showsTodos)
+        XCTAssertTrue(ChatFilter.all.showsTodos)
+        XCTAssertTrue(ChatFilter.bots.showsTodos)
     }
 
     /// The face of a writer comes from the message: the same before and after the writer leaves the team. Only a

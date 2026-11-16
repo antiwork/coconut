@@ -5,6 +5,7 @@ struct HomeLaunchView: View {
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @Environment(\.pushRoute) private var pushRoute
     @ScaledMetric(relativeTo: .subheadline) private var pinWidth = 108
+    @ScaledMetric(relativeTo: .title3) private var todoIconWidth = 24
 
     @State private var deleting: Bot?
 
@@ -27,12 +28,13 @@ struct HomeLaunchView: View {
         // with the star mark, then the other rows newest activity first.
         let conversations = ChatList.rows(filter, bots: activeBots.filter { !$0.pinned }, latest: latest,
                                           rooms: rooms, local: store.newestLocalMessages)
-        let pinned = filter.showsPinned ? pinnedBots : []
+        let pinned = filter.showsPinned ? pinnedBots.filter { filter != .unread || $0.unreadCount > 0 } : []
+        let todos = filter.showsTodos ? AgentTodos.make(artifacts: store.artifacts, bots: activeBots) : []
+        let coconut = store.bots.coconutChat
         // A list, not a stack, so that a row of an agent has the swipe of the system: swipe left to archive.
         return List {
-            // The chips show only for a Mac in a team. A person with bots only sees the list as before.
             // The Coconut chat comes first: it is where the person changes Coconut.
-            if let coconut = store.bots.coconutChat {
+            if let coconut, filter != .unread || coconut.unreadCount > 0 {
                 Button { pushRoute?(ConversationRoute(botId: coconut.id)) } label: {
                     CoconutChatRow(bot: coconut)
                         .padding(.vertical, BoardStyle.Space.m)
@@ -41,8 +43,20 @@ struct HomeLaunchView: View {
                 .buttonStyle(.plain)
                 .homeRow(top: BoardStyle.Space.s)
             }
-            if ChatFilter.showsChips(rooms: rooms) {
-                chips(filter).homeRow(top: BoardStyle.Space.l)
+            chips(filter, rooms: rooms).homeRow(top: BoardStyle.Space.l)
+            if !todos.isEmpty {
+                Section {
+                    ForEach(todos) { item in todoRow(item).homeRow() }
+                } header: {
+                    Text("To-dos").font(.subheadline.weight(.semibold)).textCase(nil)
+                }
+            }
+            if conversations.isEmpty && pinned.isEmpty && filter == .unread && (coconut?.unreadCount ?? 0) == 0 {
+                Text("No unread messages.")
+                    .font(.subheadline).foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity).padding(.vertical, 45)
+                    .accessibilityIdentifier("chats-empty")
+                    .homeRow()
             }
             if conversations.isEmpty && pinned.isEmpty && filter == .bots {
                 // The quiet line of the Team screen for a Mac without bots.
@@ -92,7 +106,7 @@ struct HomeLaunchView: View {
                 }
             }
             // The archived agents wait behind one row at the end, as the archived chats of WhatsApp.
-            if archivedCount > 0 && filter != .people {
+            if archivedCount > 0 && filter != .people && filter != .unread {
                 Button { pushRoute?(ArchivedAgentsRoute()) } label: {
                     HStack(spacing: BoardStyle.Space.m) {
                         Image(systemName: "archivebox").foregroundStyle(.secondary)
@@ -111,7 +125,7 @@ struct HomeLaunchView: View {
         .listStyle(.plain)
         .scrollContentBackground(.hidden)
         .environment(\.defaultMinListRowHeight, 0)
-        .contentMargins(.top, pinned.isEmpty || ChatFilter.showsChips(rooms: rooms) ? BoardStyle.Space.l : 0, for: .scrollContent)
+        .contentMargins(.top, BoardStyle.Space.l, for: .scrollContent)
         .contentMargins(.bottom, BoardStyle.Space.xl, for: .scrollContent)
         .background(BoardStyle.paper)
         .refreshable { await store.reconnect() }
@@ -128,8 +142,8 @@ struct HomeLaunchView: View {
 
     /// The row of filter chips, as the chips of WhatsApp. When large text does not fit one row, the chips stand one
     /// under the other, so no chip is cut.
-    private func chips(_ selected: ChatFilter) -> some View {
-        let chips = ForEach(ChatFilter.allCases) { filter in
+    private func chips(_ selected: ChatFilter, rooms: [TeamRoom]) -> some View {
+        let chips = ForEach(ChatFilter.available(rooms: rooms)) { filter in
             ChipButton(title: filter.title, selected: filter == selected) { store.chatFilter = filter }
                 .accessibilityIdentifier("chats-filter-\(filter.rawValue)")
         }
@@ -138,6 +152,35 @@ struct HomeLaunchView: View {
             VStack(alignment: .leading, spacing: 0) { chips }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func todoRow(_ item: Artifact) -> some View {
+        let agent = store.bots.first { $0.id == item.botId }?.name ?? ""
+        return Button {
+            pushRoute?(ConversationRoute(botId: item.botId, workContext: WorkReference(id: item.id, title: item.title)))
+        } label: {
+            HStack(spacing: BoardStyle.Space.m) {
+                Image(systemName: AgentTodos.symbol(item.status))
+                    .font(.title3)
+                    .foregroundStyle(item.status == "blocked" ? BoardStyle.destructive : .secondary)
+                    .frame(width: todoIconWidth)
+                    .accessibilityHidden(true)
+                VStack(alignment: .leading, spacing: BoardStyle.Space.xs) {
+                    Text(item.title).font(.body).foregroundStyle(.primary)
+                        .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 2)
+                    Text("\(agent) · \(item.status.capitalized)").font(.subheadline).foregroundStyle(.secondary)
+                }
+                Spacer(minLength: 0)
+            }
+            .frame(minHeight: 44, alignment: .leading)
+            .padding(.vertical, BoardStyle.Space.m)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(BoardStyle.paper)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(HomePressStyle())
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier("chats-todo-\(item.id)")
     }
 
     private func pinnedTiles(_ pinned: [Bot]) -> some View {

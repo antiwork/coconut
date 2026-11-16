@@ -3,6 +3,76 @@ import XCTest
 /// Swipe left on an agent in Chats archives it. The row "Archived" lists it, and a swipe there brings it back.
 final class ArchiveAgentFlowTests: XCTestCase {
     @MainActor
+    func testToDosOpenTheirWorkAndUnreadKeepsOnlyUnreadChats() throws {
+        let app = try launchChats()
+        let working = app.buttons["chats-todo-working"]
+        XCTAssertTrue(working.waitForExistence(timeout: 10))
+        let blocked = app.buttons["chats-todo-blocked"]
+        XCTAssertTrue(blocked.exists)
+        XCTAssertLessThan(working.frame.minY, blocked.frame.minY)
+        XCTAssertFalse(app.buttons["chats-todo-completed"].exists)
+        XCTAssertFalse(app.buttons["chats-todo-archived"].exists)
+        capture("To-dos above the Chats list")
+        working.tap()
+        XCTAssertTrue(app.staticTexts["work-context-preview"].waitForExistence(timeout: 10))
+        XCTAssertEqual(app.staticTexts["work-context-preview"].label, "Prepare the next release")
+        XCTAssertTrue(app.buttons["Remove work context"].exists)
+        capture("The To-do opens its agent with work attached")
+        app.navigationBars.buttons.element(boundBy: 0).tap()
+        app.buttons["chats-filter-people"].tap()
+        XCTAssertFalse(working.exists)
+        app.buttons["chats-filter-bots"].tap()
+        XCTAssertTrue(working.waitForExistence(timeout: 5))
+        app.buttons["chats-filter-unread"].tap()
+        XCTAssertTrue(app.buttons["chats-filter-unread"].isSelected)
+        XCTAssertFalse(working.exists)
+        let room = String(repeating: "a", count: 64)
+        XCTAssertTrue(app.buttons["team-chat-\(room)"].exists)
+        XCTAssertTrue(app.buttons["team-chat-\(room)-reports"].exists)
+        XCTAssertFalse(app.buttons["team-chat-\(room)-notices"].exists)
+        XCTAssertFalse(app.buttons["team-chat-\(room)-design"].exists)
+        XCTAssertFalse(app.buttons["bot-conversation-00000000-0000-4000-8000-000000000001"].exists)
+        let starred = app.buttons["pinned-bot-00000000-0000-4000-8000-000000000002"]
+        XCTAssertTrue(starred.exists)
+        capture("Unread includes starred chats and excludes muted chats")
+        starred.tap()
+        XCTAssertTrue(app.navigationBars.buttons.element(boundBy: 0).waitForExistence(timeout: 5))
+        app.navigationBars.buttons.element(boundBy: 0).tap()
+        XCTAssertTrue(starred.waitForNonExistence(timeout: 5))
+        capture("Reading the starred agent removes it from Unread")
+    }
+
+    @MainActor
+    func testToDosAndFiltersRemainReachableAtLargeText() throws {
+        let app = try launchChats(largeText: true)
+        let working = app.buttons["chats-todo-working"]
+        XCTAssertTrue(working.waitForExistence(timeout: 10))
+        XCTAssertTrue(working.isHittable)
+        capture("To-dos with large text in dark mode")
+        app.buttons["chats-filter-unread"].tap()
+        XCTAssertTrue(app.buttons["chats-filter-unread"].isSelected)
+        capture("Unread with large text in dark mode")
+    }
+
+    @MainActor
+    private func launchChats(largeText: Bool = false) throws -> XCUIApplication {
+        guard let url = ProcessInfo.processInfo.environment["COCONUT_CHATS_TEST_URL"] else {
+            throw XCTSkip("Run scripts/chats_milestone.py.")
+        }
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launchEnvironment = ["COCONUT_SERVER_URL": url, "COCONUT_PAIR_CODE": "chats-test"]
+        if largeText {
+            app.launchArguments = ["-AppleInterfaceStyle", "Dark", "-UIPreferredContentSizeCategoryName",
+                                   "UICTContentSizeCategoryAccessibilityXXXL"]
+        }
+        app.launch()
+        XCTAssertTrue(app.tabBars.buttons["Chats"].waitForExistence(timeout: 15))
+        app.tabBars.buttons["Chats"].tap()
+        return app
+    }
+
+    @MainActor
     func testSwipeLeftArchivesAnAgentAndArchivedBringsItBack() throws {
         continueAfterFailure = false
         let app = XCUIApplication()

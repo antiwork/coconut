@@ -2,6 +2,8 @@
 
 Work directly on `main` and push after the local checks pass. Do not open pull requests unless the user asks.
 Fetch before pushing, preserve other changes, and never force-push `main`.
+Before pushing, require a clean autoreview and resolve all merge conflicts.
+Promptly revert a change that causes a confirmed fault.
 
 Install the local commit hook once per clone: `git config core.hooksPath .githooks`.
 The hook runs three service smoke cases for backend changes and the tests next to changed modules or test files.
