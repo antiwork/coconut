@@ -64,7 +64,7 @@ test('An invite that is past its end says so, and a link that is not an invite s
   assert.equal(past.status, 410);
   assert.match(await past.text(), /This invite has expired/);
   // The app refuses these forms too, so the page does not promise more than the app does.
-  for (const bad of [token().toUpperCase(), 'x', token({ version: 2 }), token().slice(0, 60)]) {
+  for (const bad of [token().toUpperCase(), 'x', token({ version: 2 }), token().slice(0, 60), '%E0%A4%A']) {
     const response = await get('/i/' + bad);
     assert.equal(response.status, 400, bad.slice(0, 12));
   }

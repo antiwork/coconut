@@ -107,8 +107,15 @@ export default {
       return page({ title: 'Coconut', body }, url.pathname === '/' ? 200 : 404);
     }
 
-    // A browser adds one slash at the end of a path, and the app takes that form too.
-    const found = invite(decodeURIComponent(match[1]).replace(/\/+$/, ''));
+    // A browser adds one slash at the end of a path, and the app takes that form too. A path with a broken percent
+    // escape is not an invite either.
+    let token;
+    try {
+      token = decodeURIComponent(match[1]);
+    } catch {
+      token = '';
+    }
+    const found = invite(token.replace(/\/+$/, ''));
     if (!found) {
       return page(
         { title: 'Invite link not valid', body: '<h1>This invite link is not valid.</h1><p>Ask an admin of the team for a new link.</p>' },
