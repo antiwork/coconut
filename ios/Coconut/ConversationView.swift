@@ -791,11 +791,28 @@ struct ReactionMenuRow: View {
     var body: some View {
         ControlGroup {
             ForEach(emoji, id: \.self) { emoji in
-                Toggle(isOn: Binding(get: { marked(emoji) }, set: { _ in pick(emoji) })) { Text(emoji) }
-                    .accessibilityLabel(label(emoji))
+                // A palette in a menu draws only the image of a label. macOS 27 draws a Text label as an empty cell,
+                // and a marked Text item as a check mark. So each emoji goes in as an image, and the system draws the
+                // mark of a marked item around it.
+                Toggle(isOn: Binding(get: { marked(emoji) }, set: { _ in pick(emoji) })) {
+                    Image(nsImage: Self.image(of: emoji))
+                }
+                .accessibilityLabel(label(emoji))
             }
         }
         .controlGroupStyle(.palette)
+    }
+
+    /// An emoji drawn in the center of a square of 26 points. The image is not a template, so the emoji keeps its
+    /// colors.
+    static func image(of emoji: String) -> NSImage {
+        let side: CGFloat = 26
+        return NSImage(size: NSSize(width: side, height: side), flipped: false) { _ in
+            let text = NSAttributedString(string: emoji, attributes: [.font: NSFont.systemFont(ofSize: 16)])
+            let size = text.size()
+            text.draw(at: NSPoint(x: (side - size.width) / 2, y: (side - size.height) / 2))
+            return true
+        }
     }
 }
 #endif
