@@ -651,6 +651,11 @@ struct AlertFeed: Codable, Equatable, Sendable {
         if wasUnread != items[index].isUnread { unread = max(0, unread + (wasUnread ? -1 : 1)) }
     }
 
+    /// The alert that the row of the Chats list shows: the one that came last.
+    var newest: FeedAlert? {
+        items.max { ($0.createdAt.apiDate ?? .distantPast) < ($1.createdAt.apiDate ?? .distantPast) }
+    }
+
     /// Takes the answer of the Mac for one alert.
     mutating func replace(_ alert: FeedAlert) { update(alert.id) { $0 = alert } }
 }

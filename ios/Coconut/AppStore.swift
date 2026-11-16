@@ -188,7 +188,8 @@ final class AppStore {
     var isBusy: Bool { writeCount > 0 }
     var pendingDecisions: [Decision] { decisions.filter(\.isPending) }
     var inboxBadgeCount: Int { pendingDecisions.filter { !answeringDecisionIds.contains($0.id) }.count }
-    /// The unread alerts of the feed, for the bell of the Inbox. The badge of the Inbox tab counts only decisions.
+    /// The unread alerts of the feed, for the Notices row of the Chats list. The badge of the Inbox tab counts only
+    /// decisions.
     var unreadAlertCount: Int { alertFeed.unread }
     var reconciledBadgeCount: Int? { lastSync.map { _ in inboxBadgeCount } }
     @ObservationIgnored var setBadge: (Int) -> Void = { PushNotifications.shared.setBadgeCount($0) }
@@ -2447,23 +2448,26 @@ final class AppStore {
         return true
     }
 
-    /// Mark an alert of the feed as read. The feed shows the change at once, and takes it back when the Mac refuses.
-    func markAlertRead(_ alert: FeedAlert) async {
-        guard alert.isUnread else { return }
-        await changeAlert(alert, action: "read") { $0.readAt = $0.readAt ?? Self.alertStamp() }
-    }
-
-    /// Resolve an alert of the feed: its cause is gone. A resolved alert is read too.
+    /// Resolve an alert of the feed: its cause is gone. A resolved alert is read too. The feed shows the change at
+    /// once, and takes it back when the Mac refuses.
     func resolveAlert(_ alert: FeedAlert) async {
         guard !alert.isResolved else { return }
-        await changeAlert(alert, action: "resolve") {
+        var feed = alertFeed
+        feed.update(alert.id) {
             let stamp = Self.alertStamp()
             $0.resolvedAt = stamp
             $0.readAt = $0.readAt ?? stamp
         }
+        setAlertFeed(feed)
+        guard !isDemo else { return }
+        let saved = await write("alerts/\(alert.id)/resolve", payload: EmptyRequest(), as: FeedAlert.self,
+                                refreshInBackground: true)
+        var current = alertFeed
+        if let saved { current.replace(saved) } else if alertFeed == feed { current.replace(alert) }
+        setAlertFeed(current)
     }
 
-    /// Mark each alert of the feed as read.
+    /// Mark each alert of the feed as read. The open Notices chat does it, as an open chat reads its messages.
     func markAllAlertsRead() async {
         guard unreadAlertCount > 0 else { return }
         let before = alertFeed
@@ -2477,18 +2481,6 @@ final class AppStore {
                                  refreshInBackground: true)
         // An update that arrived during the request has the feed of the Mac, so only the feed of this write goes back.
         if answer == nil, alertFeed == feed { setAlertFeed(before) }
-    }
-
-    private func changeAlert(_ alert: FeedAlert, action: String, _ change: (inout FeedAlert) -> Void) async {
-        var feed = alertFeed
-        feed.update(alert.id, change)
-        setAlertFeed(feed)
-        guard !isDemo else { return }
-        let saved = await write("alerts/\(alert.id)/\(action)", payload: EmptyRequest(), as: FeedAlert.self,
-                                refreshInBackground: true)
-        var current = alertFeed
-        if let saved { current.replace(saved) } else if alertFeed == feed { current.replace(alert) }
-        setAlertFeed(current)
     }
 
     /// The saved state has the feed too: the next update starts from it (StateUpdates.applying).

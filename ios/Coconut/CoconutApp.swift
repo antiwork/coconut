@@ -189,8 +189,8 @@ struct CoconutHome: View {
                 .navigationDestination(for: TeamScreenRoute.self) { route in
                     TeamRoomView(roomId: route.roomId, pushed: true)
                 }
-                .navigationDestination(for: AlertsRoute.self) { _ in
-                    AlertsView()
+                .navigationDestination(for: NoticesRoute.self) { _ in
+                    NoticesView()
                 }
                 .background(BoardStyle.paper)
         }
@@ -306,9 +306,9 @@ struct CoconutHome: View {
             botsPath = NavigationPath()
         case .alerts:
             notificationDecisionId = nil
-            selectedTab = .inbox
-            inboxPath = NavigationPath()
-            inboxPath.append(AlertsRoute())
+            selectedTab = .bots
+            botsPath = NavigationPath()
+            botsPath.append(NoticesRoute())
         }
     }
 

@@ -44,6 +44,18 @@ struct HomeLaunchView: View {
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, BoardStyle.Space.xl)
                 }
+                // The tooling of the Mac writes here. A Mac without a notice has no such chat.
+                if filter == .all && !store.alertFeed.items.isEmpty {
+                    NavigationLink(value: NoticesRoute()) {
+                        NoticesContactRow()
+                            .padding(.vertical, BoardStyle.Space.m)
+                            .background(BoardStyle.paper)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(HomePressStyle())
+                    .accessibilityIdentifier("notices-chat")
+                    .padding(.horizontal, BoardStyle.Space.l)
+                }
                 ForEach(conversations) { item in
                     switch item {
                     case .bot(let bot):

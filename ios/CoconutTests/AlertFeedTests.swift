@@ -63,7 +63,7 @@ final class AlertFeedTests: XCTestCase {
     }
 
     @MainActor
-    func testTheDemoHasFiveAlertsAndTheBellCountsTheUnreadOnes() async {
+    func testTheDemoHasFiveAlertsAndTheNoticesRowCountsTheUnreadOnes() async {
         let store = AppStore(demo: true)
         XCTAssertEqual(store.alertFeed.items.count, 5)
         XCTAssertEqual(store.alertFeed.items.filter(\.isUnread).map(\.level), ["critical", "notice", "info"])
@@ -71,15 +71,12 @@ final class AlertFeedTests: XCTestCase {
         // The badge of the Inbox tab stays about decisions.
         let inbox = store.inboxBadgeCount
 
-        await store.markAlertRead(store.alertFeed.items[0])
-        XCTAssertEqual(store.unreadAlertCount, 2)
-        await store.markAlertRead(store.alertFeed.items[0])
-        XCTAssertEqual(store.unreadAlertCount, 2)
-
         await store.resolveAlert(store.alertFeed.items[1])
-        XCTAssertEqual(store.unreadAlertCount, 1)
+        XCTAssertEqual(store.unreadAlertCount, 2)
         XCTAssertTrue(store.alertFeed.items[1].isResolved)
         XCTAssertFalse(store.alertFeed.items[1].isUnread)
+        await store.resolveAlert(store.alertFeed.items[1])
+        XCTAssertEqual(store.unreadAlertCount, 2)
 
         await store.markAllAlertsRead()
         XCTAssertEqual(store.unreadAlertCount, 0)
@@ -87,32 +84,48 @@ final class AlertFeedTests: XCTestCase {
         XCTAssertEqual(store.inboxBadgeCount, inbox)
     }
 
-    func testTheFeedGroupsItsAlertsByDayWithTheOpenOnesFirst() {
+    func testTheChatShowsTheNoticesOldestFirstWithADayAndAProducerAboveEachRun() {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = TimeZone(identifier: "UTC")!
-        let now = "2026-11-16T15:00:00Z".apiDate!
-        let days = AlertDay.days(of: [
+        var other = alert("afternoon", created: "2026-11-16T14:00:00Z")
+        other.source = "watchdog:x"
+        // The order of the Mac: the open ones first, each part newest first.
+        let rows = NoticeRow.rows(of: [
+            other,
             alert("morning", created: "2026-11-16T08:00:00Z"),
-            alert("noon-resolved", created: "2026-11-16T12:00:00Z", read: "2026-11-16T12:01:00Z", resolved: "2026-11-16T12:01:00Z"),
-            alert("afternoon", created: "2026-11-16T14:00:00Z"),
             alert("yesterday", created: "2026-11-15T23:59:00Z"),
-            alert("last-week", created: "2026-11-05T10:00:00Z"),
-        ], now: now, calendar: calendar)
-        XCTAssertEqual(days.map(\.alerts).map { $0.map(\.id) },
-                       [["afternoon", "morning", "noon-resolved"], ["yesterday"], ["last-week"]])
-        XCTAssertEqual(days.map(\.label).prefix(2), ["Today", "Yesterday"])
+            alert("noon-resolved", created: "2026-11-16T12:00:00Z", read: "2026-11-16T12:01:00Z", resolved: "2026-11-16T12:01:00Z"),
+            alert("last-week", created: "2026-11-05T10:00:00Z", read: "2026-11-05T10:01:00Z", resolved: "2026-11-05T10:01:00Z"),
+        ], calendar: calendar)
+        XCTAssertEqual(rows.map(\.id), ["last-week", "yesterday", "morning", "noon-resolved", "afternoon"])
+        XCTAssertEqual(rows.map(\.startsDay), [true, true, true, false, false])
+        // The producer stands above the first notice of a day, and above a notice of another producer.
+        XCTAssertEqual(rows.map(\.startsRun), [true, true, true, false, true])
     }
 
-    func testVoiceOverReadsTheLevelTheTitleTheSourceAndTheAge() {
+    func testTheRowOfTheChatsListShowsTheNoticeThatCameLast() {
+        let feed = AlertFeed(items: [
+            alert("open-old", created: "2026-11-16T08:00:00Z"),
+            alert("resolved-new", created: "2026-11-16T12:00:00Z", read: "2026-11-16T12:01:00Z", resolved: "2026-11-16T12:01:00Z"),
+        ], unread: 1)
+        XCTAssertEqual(feed.newest?.id, "resolved-new")
+        XCTAssertNil(AlertFeed().newest)
+    }
+
+    func testVoiceOverReadsTheLevelTheTitleTheBodyTheSourceAndTheAge() {
         let now = "2026-11-16T12:05:00Z".apiDate!
-        let spoken = AlertSpeech.row(alert("a1", level: "critical"), now: now)
-        XCTAssertTrue(spoken.hasPrefix("critical, Alert a1, cron:test, "), spoken)
-        XCTAssertEqual(spoken, "critical, Alert a1, cron:test, " + AlertSpeech.relative("2026-11-16T12:00:00Z".apiDate!, now: now))
-        // An alert from a Mac whose clock is ahead never reads as a time in the future.
-        XCTAssertEqual(AlertSpeech.relative(now.addingTimeInterval(30), now: now), AlertSpeech.relative(now, now: now))
+        let age = NoticeSpeech.relative("2026-11-16T12:00:00Z".apiDate!, now: now)
+        XCTAssertEqual(NoticeSpeech.row(alert("a1", level: "critical"), now: now), "critical, Alert a1, cron:test, " + age)
+        var long = alert("a2")
+        long.body = "The ledger is not posted."
+        XCTAssertEqual(NoticeSpeech.row(long, now: now), "info, Alert a2, The ledger is not posted., cron:test, " + age)
+        XCTAssertEqual(NoticeSpeech.copy(long), "Alert a2\n\nThe ledger is not posted.")
+        XCTAssertEqual(NoticeSpeech.copy(alert("a1")), "Alert a1")
+        // A notice from a Mac whose clock is ahead never reads as a time in the future.
+        XCTAssertEqual(NoticeSpeech.relative(now.addingTimeInterval(30), now: now), NoticeSpeech.relative(now, now: now))
     }
 
-    func testTheNotificationOfACriticalAlertOpensTheFeed() throws {
+    func testTheNotificationOfACriticalAlertOpensTheNoticesChat() throws {
         let payload: [AnyHashable: Any] = ["coconut": ["version": 1, "device_id": device, "kind": "alert",
                                                          "alert_id": "a1e5c0de-0000-4000-8000-000000000001"]]
         let target = try XCTUnwrap(NotificationTarget(userInfo: payload))

@@ -393,7 +393,7 @@ enum NotificationDestination: Equatable {
     case chat(TeamChatKey)
     /// The Chats list: a team notification of a team that the app no longer has.
     case chatList
-    /// The alerts feed: the notification of a critical alert.
+    /// The Notices chat: the notification of a critical alert.
     case alerts
 
     /// The place of the chat of a team: the Team chat, a named chat or a direct chat.
@@ -428,7 +428,7 @@ struct NotificationTarget: Equatable, Sendable {
     var bot: String? = nil
     /// The named chat of a team message, or of a group of the messages of one named chat. An older Mac sends none.
     var named: String? = nil
-    /// A critical alert of the alerts feed. It names no bot and no task, and opens the feed.
+    /// A critical alert of the alerts feed. It names no bot and no task, and opens the Notices chat.
     var alert = false
 
     var conversationRoute: ConversationRoute { ConversationRoute(botId: botId, decisionId: decisionId, messageId: messageId) }

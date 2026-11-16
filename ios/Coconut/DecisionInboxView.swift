@@ -144,11 +144,6 @@ struct DecisionInboxView: View {
         } else {
             ToolbarItem(placement: .trailingBar) { undoButton }
         }
-        #if os(iOS)
-        // The Inbox has what needs the person. The alerts feed is its informational sibling, one tap away. It comes
-        // last, so it keeps the edge of the bar and Undo shows next to it.
-        ToolbarItem(placement: .trailingBar) { AlertsBell() }
-        #endif
     }
 
     private var undoButton: some View {
