@@ -117,8 +117,9 @@ class TeamMessages:
         from .service_base import ServiceError
         from .team import team_errors
         drafts = self._team_draft_ids(data.get('files'))
-        # A message with a file can have no text.
-        text = '' if drafts and data.get('text') in (None, '') else message_text(data.get('text'))
+        text = data.get('text')
+        # A message with a file can have no text. A text of white space only counts as none.
+        text = '' if drafts and (text is None or isinstance(text, str) and not text.strip()) else message_text(text)
         preview = message_preview(data.get('preview'), text)
         reply_to, mentions = data.get('reply_to'), data.get('mentions')
         if reply_to is not None and not entry_id(reply_to):
@@ -334,7 +335,7 @@ class TeamMessages:
             row = answered.get(entry)
             return None if row is None or row['chat'] != chat else {'id': row['entry'], 'member': row['member'], 'member_name': row['member_name'],
                             'bot': team_id(room['room'], row['bot']) if row['bot'] else None,
-                            'bot_name': row['bot_name'], 'text': row['text'][:PREVIEW]}
+                            'bot_name': row['bot_name'], 'text': shown_text(row['text'], row['files'])[:PREVIEW]}
         return [{'id': row['entry'], 'first': row['first'], 'member': row['member'], 'member_name': row['member_name'],
                  'this_mac': row['member'] == room['member'],
                  'bot': team_id(room['room'], row['bot']) if row['bot'] else None, 'bot_name': row['bot_name'],
@@ -343,7 +344,7 @@ class TeamMessages:
                  'mentions': [phone_id(entry) for entry in entries if entry in names],
                  'reactions': reaction_views(reactions.get(row['entry'], []), room['member']),
                  'preview': preview_view(row['preview']),
-                 'files': self.team_store.file_views(room['room'], row['member'], row['files']),
+                 'files': self.team_store.file_views(room['room'], row['entry'], row['files']),
                  'created_at': row['created_at'], 'edited_at': row['updated_at'] if row['edited'] else None}
                 for row, entries in zip(rows, mentions)]
 

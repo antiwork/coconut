@@ -1526,7 +1526,7 @@ class TeamFileTests(unittest.TestCase):
         sync()
         (message,) = call(grace, 'GET', chat)['messages']
         self.assertEqual((message['text'], message['files']), ('The new photo', [dict(draft, complete=True)]))
-        content = call(grace, 'GET', f'/v1/team/rooms/{room_id}/files/{draft["id"]}')
+        content = call(grace, 'GET', f'{chat}/{sent["id"]}/files/{draft["id"]}')
         self.assertEqual(hashlib.sha256(content.content).hexdigest(), hashlib.sha256(data).hexdigest())
         self.assertEqual((content.content, content.name, content.type), (data, 'photo.jpg', 'image/jpeg'))
         self.assertEqual(pieces(grace), 3)

@@ -15,6 +15,8 @@ import sqlite3
 import threading
 import time
 import unittest
+from secrets import token_hex
+from unittest import mock
 from uuid import uuid4
 
 from coconut import team_files, team_keys, team_store
@@ -168,7 +170,7 @@ class FileStoreTests(unittest.TestCase):
 
     def views(self, number: int = 1) -> list[dict]:
         row = self.store.message(ROOM, entry_id(number))
-        return self.store.file_views(ROOM, row['member'], row['files'])
+        return self.store.file_views(ROOM, row['entry'], row['files'])
 
     def complete(self, number: int = 1) -> bool:
         return self.views(number)[0]['complete']
@@ -265,7 +267,7 @@ class FileStoreTests(unittest.TestCase):
                 else:
                     self.write(chat, {'kind': 'delete', 'rev': 2})
                 self.assertEqual(self.stored_pieces(), 0)
-                self.assertIsNone(self.store.shown_file(ROOM, file))
+                self.assertIsNone(self.store.message_file(ROOM, entry_id(number), file))
 
     def test_a_file_that_another_message_of_the_member_names_keeps_its_bytes(self):
         data = b'e'
@@ -274,6 +276,94 @@ class FileStoreTests(unittest.TestCase):
         self.message(2, [item(data)])
         self.write(entry_id(1), {'kind': 'delete', 'rev': 2})
         self.assertTrue(self.complete(2))
+
+    def test_two_members_name_the_same_file_id_and_each_message_has_its_own_file(self):
+        mine, theirs = b'bytes of Ada', b'other bytes of Lin'
+        self.piece(0, mine, member=ADMIN)
+        self.message(1, [item(mine)], member=ADMIN)
+        self.piece(0, theirs, member=OTHER)
+        self.message(2, [item(theirs)], member=OTHER)
+        for number, member, data in ((1, ADMIN, mine), (2, OTHER, theirs)):
+            row, found = self.store.message_file(ROOM, entry_id(number), FILE)
+            self.assertEqual((row['member'], found['hash']), (member, hashlib.sha256(data).hexdigest()))
+            self.assertEqual(self.store.file_bytes(ROOM, row['member'], found), data)
+            self.assertTrue(self.complete(number))
+        self.assertIsNone(self.store.message_file(ROOM, entry_id(1), 'e' * 32))
+        self.assertIsNone(self.store.message_file(ROOM, entry_id(3), FILE))
+
+    def test_a_check_that_passed_stays_after_a_restart_and_a_view_reads_no_bytes(self):
+        data = b'k' * (CHUNK + 3)
+        self.send(data)
+        self.assertTrue(self.complete())
+        again = TeamStore(self.db)
+        again.migrate()
+        row = again.message(ROOM, entry_id(1))
+        refuse = mock.Mock(side_effect=AssertionError('A view hashed the bytes.'))
+        with mock.patch.object(team_store, 'hashlib', mock.Mock(sha256=refuse)):
+            self.assertTrue(again.file_views(ROOM, row['entry'], row['files'])[0]['complete'])
+        # A change of a piece checks the file again.
+        self.piece(1, b'x' * 3, rev=2)
+        self.assertFalse(self.complete())
+        self.piece(1, data[CHUNK:], rev=3)
+        self.assertTrue(self.complete())
+
+    def test_a_piece_with_a_lone_surrogate_in_an_unused_field_goes_into_the_store(self):
+        data = b'surrogate'
+        payload = {'kind': 'file', 'rev': 1, 'file': FILE, 'index': 0, 'data': base64.b64encode(data).decode(),
+                   'extra': '\ud800', '\udfff': {'deep': ['\ud800']}}
+        self.assertEqual(self.write(piece_id(0), payload), (STORED, None))
+        stored = self.store.entry(ROOM, piece_id(0))['payload']
+        self.assertTrue(stored.isascii())
+        self.assertEqual(json.loads(stored)['\udfff'], {'deep': ['\ud800']})
+        self.assertEqual(self.message(1, [item(data)]), (STORED, None))
+        self.assertTrue(self.complete())
+
+    def test_a_check_hashes_the_bytes_one_time_for_each_size(self):
+        data = b'h' * 50
+        self.piece(0, data)
+        right = hashlib.sha256(data).hexdigest()
+        hashes = [right] + [f'{number:064x}' for number in range(1, 20)]
+        for number, file_hash in enumerate(hashes, start=1):
+            self.message(number, [dict(item(data), hash=file_hash)])
+        calls, statements = [], []
+        real = hashlib.sha256
+
+        def counted(*arguments):
+            calls.append(1)
+            return real(*arguments)
+        with mock.patch.object(team_store, 'hashlib', mock.Mock(sha256=counted)):
+            self.piece(0, data, rev=2)
+            self.assertEqual(len(calls), 1, 'A change of a piece hashes one time.')
+            calls.clear()
+            self.db.set_trace_callback(statements.append)
+            self.message(21, [dict(item(data), hash=right)])
+            self.db.set_trace_callback(None)
+            self.assertEqual(len(calls), 1, 'A new message hashes one time.')
+        updates = [text for text in statements if text.lstrip().startswith('UPDATE team_message_files')]
+        self.assertEqual(len(updates), 1, 'A new message checks only its own row.')
+        complete = [number for number in range(1, 22) if self.complete(number)]
+        self.assertEqual(complete, [1, 21])
+
+    def test_the_count_of_the_space_reads_each_payload_with_python(self):
+        rows = ((MEMBER, '{"kind":"file","file":"%s","size":7,"x":NaN}' % FILE),
+                (MEMBER, '{"kind":"file","file":"%s","size":5}' % ('e' * 32)),
+                (OTHER, '{"kind":"file","file":"%s","size":9,"x":NaN}' % FILE))
+        for number, (member, payload) in enumerate(rows, start=700):
+            self.db.execute('INSERT INTO team_entries (room, id, seq, first, member, kind, rev, at, kept, payload) '
+                            "VALUES (?, ?, 0, 0, ?, 'file', 1, ?, 0, ?)", (ROOM, entry_id(number), member, START,
+                                                                           payload))
+        self.assertEqual(self.store.sent_bytes(ROOM, MEMBER, START, []), 12)
+        self.assertEqual(self.store.sent_bytes(ROOM, MEMBER, START, ['e' * 32]), 7)
+        self.assertEqual(self.store.sent_bytes(ROOM, MEMBER, START + 1, []), 0)
+
+    def test_the_sweep_uses_the_index_on_the_time(self):
+        plan = ' '.join(row[3] for row in self.db.execute('EXPLAIN QUERY PLAN ' + team_store.SWEEP_PIECES, (0,)))
+        self.assertIn('team_file_pieces_received', plan)
+        self.assertNotRegex(plan, r'SCAN team_file_pieces\b')
+        # The BLOB is the last column of each table with bytes.
+        for table in ('team_file_pieces', 'team_file_drafts'):
+            columns = [row[1] for row in self.db.execute(f'PRAGMA table_info({table})')]
+            self.assertEqual(columns[-1], 'data', table)
 
     def test_the_sweep_of_pieces_that_no_message_names(self):
         self.piece(0, b'old', file='e' * 32)
@@ -325,6 +415,19 @@ class FileStoreTests(unittest.TestCase):
         changes = db.total_changes
         TeamStore(db).migrate()
         self.assertEqual(db.total_changes, changes, 'A second start changes nothing.')
+
+    def test_an_older_store_with_a_lone_surrogate_in_a_piece_starts(self):
+        db = self.older_store()
+        payload = {'kind': 'file', 'rev': 1, 'file': 'e' * 32, 'index': 0, 'data': base64.b64encode(b'x').decode(),
+                   'extra': '\ud800', '\udfff': ['\ud800']}
+        db.execute('INSERT INTO team_entries (room, id, seq, first, member, kind, rev, at, kept, payload) '
+                   "VALUES (?, ?, 9, 9, ?, 'file', 1, ?, 0, ?)", (ROOM, entry_id(11), ADMIN, START + 9,
+                                                                  json.dumps(payload)))
+        store = TeamStore(db)
+        store.migrate()
+        self.assertIn('files', {row[1] for row in db.execute('PRAGMA table_info(team_messages)')})
+        self.assertEqual(db.execute('SELECT COUNT(*) FROM team_file_pieces').fetchone()[0], 2)
+        self.assertNotIn('data', json.loads(store.entry(ROOM, entry_id(11))['payload']))
 
     def test_a_stop_in_the_pass_leaves_the_store_of_before(self):
         db = self.older_store()
@@ -378,8 +481,8 @@ class FileMacs(TeamMacs):
     def drafts(self, service) -> int:
         return service.db.execute('SELECT COUNT(*) FROM team_file_drafts').fetchone()[0]
 
-    def content(self, service, file: str):
-        return self.phone(service)('GET', self.path(f'files/{file}'), {})
+    def content(self, service, message: str, file: str):
+        return self.phone(service)('GET', self.path(f'messages/{message}/files/{file}'), {})
 
 
 class FileRouteTests(FileMacs, unittest.TestCase):
@@ -437,7 +540,7 @@ class FileRouteTests(FileMacs, unittest.TestCase):
         self.sync()
         (seen,) = self.phone(self.second)('GET', self.path(), {})['messages']
         self.assertEqual(seen['files'], [dict(draft, complete=True)])
-        answer = self.content(self.second, draft['id'])
+        answer = self.content(self.second, sent['id'], draft['id'])
         self.assertEqual(answer, FileContent(data, 'report.pdf', 'application/octet-stream'))
         # A message without files has the key with an empty list.
         plain = self.phone(self.first)('POST', self.path(), {'text': 'Hi'})['message']
@@ -456,6 +559,14 @@ class FileRouteTests(FileMacs, unittest.TestCase):
         self.assertEqual(writes, [])
         self.sync()
         self.assertEqual(len(self.phone(self.second)('GET', self.path(), {})['messages']), 1)
+
+    def test_a_text_of_white_space_with_a_file_is_no_text(self):
+        sent = self.send(self.first, [self.upload(self.first, b'abc')['id']], ' \n\t ')
+        self.assertEqual(sent['text'], '')
+        self.assertEqual(json.loads(self.first.team_store.entry(self.room, sent['id'])['payload'])['text'], '')
+        # Without a file, the same text is no message.
+        self.assertEqual(self.refusal(self.phone(self.first), 'POST', self.path(), {'text': ' \n\t '}),
+                         (400, 'Write a message.'))
 
     def test_the_space_of_a_member_and_a_507_of_the_relay(self):
         ada = self.first.team_store.room(self.room)['member']
@@ -500,22 +611,23 @@ class FileRouteTests(FileMacs, unittest.TestCase):
                                       {'text': ''})[0], 400)
 
     def test_the_download_route(self):
-        self.assertEqual(self.refusal(self.content, self.first, 'e' * 32), (404, GONE_FILE))
         data = b'q' * (CHUNK + 1)
         draft = self.upload(self.first, data, 'notes.txt', type='text/plain')
         sent = self.send(self.first, [draft['id']], 'Notes')
+        plain = self.phone(self.first)('POST', self.path(), {'text': 'Hi'})['message']
+        # Grace gets the message without its last piece: the relay lost it.
+        del self.relay.rooms[self.room]['entries'][file_entry(self.token(self.first), self.room, draft['id'], 1)]
         self.sync()
-        # Grace has the message without its last piece.
-        with self.second.transaction():
-            self.second.db.execute('DELETE FROM team_file_pieces WHERE piece=1')
-        self.second.team_store.verified.clear()
-        self.assertEqual(self.refusal(self.content, self.second, draft['id']), (409, NOT_COMPLETE))
-        self.assertEqual(self.content(self.first, draft['id']), FileContent(data, 'notes.txt', 'text/plain'))
+        self.assertEqual(self.refusal(self.content, self.second, sent['id'], draft['id']), (409, NOT_COMPLETE))
+        self.assertEqual(self.content(self.first, sent['id'], draft['id']), FileContent(data, 'notes.txt', 'text/plain'))
+        # A message that does not name the file, and a file ID that the message does not have.
+        self.assertEqual(self.refusal(self.content, self.first, plain['id'], draft['id']), (404, GONE_FILE))
+        self.assertEqual(self.refusal(self.content, self.first, sent['id'], 'e' * 32), (404, GONE_FILE))
         self.phone(self.first)('DELETE', self.path(f'messages/{sent["id"]}'), {})
         self.sync()
         for service in self.macs:
             with self.subTest(mac=service.root.name):
-                self.assertEqual(self.refusal(self.content, service, draft['id']), (404, GONE_FILE))
+                self.assertEqual(self.refusal(self.content, service, sent['id'], draft['id']), (404, GONE_FILE))
                 self.assertEqual(service.db.execute('SELECT COUNT(*) FROM team_file_pieces').fetchone()[0], 0)
 
     def test_the_admin_erases_a_message_and_its_bytes_go(self):
@@ -526,6 +638,39 @@ class FileRouteTests(FileMacs, unittest.TestCase):
         self.sync()
         for service in self.macs:
             self.assertEqual(service.db.execute('SELECT COUNT(*) FROM team_file_pieces').fetchone()[0], 0)
+
+    def test_two_messages_with_the_same_file_id_each_answer_their_own_bytes(self):
+        ada_draft = self.upload(self.first, b'bytes of Ada')
+        ada = self.send(self.first, [ada_draft['id']], 'Mine')
+        # Grace's Mac names the same file ID with its own pieces and another hash, as a Mac of another version can.
+        grace_data = b'other bytes of Grace'
+        room = self.second.team_store.room(self.room)
+        token = self.token(self.second)
+        with self.second._team_room_lock(self.room):
+            self.second._team_write(room, file_entry(token, self.room, ada_draft['id'], 0), False, {
+                'kind': 'file', 'file': ada_draft['id'], 'index': 0, 'data': base64.b64encode(grace_data).decode()})
+            grace = token_hex(16)
+            self.second._team_write(room, grace, False, {'kind': 'message', 'text': 'Theirs', 'files': [
+                {'id': ada_draft['id'], 'name': 'report.pdf', 'size': len(grace_data),
+                 'hash': hashlib.sha256(grace_data).hexdigest()}]})
+        self.sync()
+        for service in self.macs:
+            with self.subTest(mac=service.root.name):
+                self.assertEqual(self.content(service, ada['id'], ada_draft['id']).content, b'bytes of Ada')
+                self.assertEqual(self.content(service, grace, ada_draft['id']).content, grace_data)
+                views = {row['id']: row['files'] for row in self.phone(service)('GET', self.path(), {})['messages']}
+                self.assertEqual((views[ada['id']][0]['size'], views[grace][0]['size']), (12, len(grace_data)))
+                self.assertTrue(views[ada['id']][0]['complete'] and views[grace][0]['complete'])
+
+    def test_the_quote_of_a_reply_to_a_message_with_only_a_file(self):
+        image = self.upload(self.first, b'png', 'cat.png', type='image/png')
+        sent = self.send(self.first, [image['id']])
+        other = self.upload(self.first, b'pdf', 'plan.pdf')
+        second = self.send(self.first, [other['id']])
+        self.sync()
+        for message, text in ((sent, 'Photo'), (second, 'plan.pdf')):
+            answer = self.phone(self.second)('POST', self.path(), {'text': 'Nice', 'reply_to': message['id']})
+            self.assertEqual(answer['message']['reply']['text'], text)
 
     def test_the_list_shows_photo_or_the_name(self):
         image = self.upload(self.first, b'png', 'cat.png', type='image/png', width=2, height=2)
@@ -564,8 +709,8 @@ class FileListenerTests(FileMacs, unittest.TestCase):
         mac = ListenerMac(self, self.first)
         data = bytes(range(256)) * 3
         draft = self.upload(self.first, data, 'Q3 plan é.pdf', type='application/pdf')
-        self.send(self.first, [draft['id']])
-        path = self.path(f'files/{draft["id"]}')
+        sent = self.send(self.first, [draft['id']])
+        path = self.path(f'messages/{sent["id"]}/files/{draft["id"]}')
         for server, token, headers in ((mac.server, mac.device, {}), (mac.tunnel, mac.phone, PHONE)):
             connection = http.client.HTTPConnection('127.0.0.1', server.server_port, timeout=5)
             self.addCleanup(connection.close)
@@ -577,7 +722,8 @@ class FileListenerTests(FileMacs, unittest.TestCase):
         # A file that is not there answers JSON with the text for a person.
         connection = http.client.HTTPConnection('127.0.0.1', mac.server.server_port, timeout=5)
         self.addCleanup(connection.close)
-        connection.request('GET', self.path(f'files/{"e" * 32}'), headers={'Authorization': f'Bearer {mac.device}'})
+        connection.request('GET', self.path(f'messages/{sent["id"]}/files/{"e" * 32}'),
+                           headers={'Authorization': f'Bearer {mac.device}'})
         response = connection.getresponse()
         self.assertEqual((response.status, json.load(response)), (404, {'error': GONE_FILE}))
 
@@ -609,6 +755,20 @@ class FileTeamOnlyTests(TeamTurnMacs, unittest.TestCase):
         self.run_turns()
         (turn,) = turns
         self.assertEqual(turn['text'], '@Reporter look\n[File: plan.pdf, application/pdf, 1 bytes]')
+
+    def test_the_agent_gets_a_short_text_for_a_message_with_only_a_file(self):
+        image = self.call('POST', f'/v1/team/rooms/{self.room}/files',
+                          {'name': 'cat.png', 'type': 'image/png', 'content': 'eA=='}, service=self.first)['file']
+        photo = self.send('', files=[image['id']])
+        turns = []
+        self.serve(lambda turn: (turns.append(turn), reply('Seen.')(turn))[1])
+        self.send('@Reporter what is this?', mentions=[self.mention], reply_to=photo['id'])
+        self.sync()
+        self.run_turns()
+        (turn,) = turns
+        # The quote of the answered message and the quoted context name the photo.
+        self.assertEqual(turn['team']['reply_to']['text'], 'Photo')
+        self.assertIn('> Photo', turn['team']['context'])
 
 
 if __name__ == '__main__':

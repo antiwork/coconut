@@ -38,7 +38,7 @@ import threading
 import time
 
 from .gateway_bridge import GatewayBusy, GatewayUnavailable
-from .team_store import ACTIVE, MAX_TEXT, TRIGGER_SECONDS
+from .team_store import ACTIVE, MAX_TEXT, TRIGGER_SECONDS, shown_text
 from .team_sync import ROOM_ERRORS
 from .team_typing import BotTyping
 
@@ -143,7 +143,7 @@ def quoted(rows: list[dict]) -> str | None:
     lines = [CONTEXT]
     for row in rows:
         lines.append(f'{row["bot_name"] or row["member_name"] or "A member"} wrote:')
-        lines += ['> ' + line for line in row['text'].splitlines() or ['']]
+        lines += ['> ' + line for line in shown_text(row['text'], row.get('files')).splitlines() or ['']]
     return '\n'.join(lines)
 
 
@@ -315,7 +315,7 @@ class TeamTurns:
                 team['reply_to'] = {'id': answered['entry'], 'text': answered['text'],
                                     'own': answered['writer'] == room_row['member']}
         elif answered is not None and answered['chat'] == chat:
-            team['reply_to'] = {'id': answered['entry'], 'text': answered['text'],
+            team['reply_to'] = {'id': answered['entry'], 'text': shown_text(answered['text'], answered['files']),
                                 'own': answered['bot'] == share and answered['member'] == room_row['member']}
         return {'number': row['number'], 'room': room, 'bot': bot, 'entry': row['entry'], 'home': record['home'],
                 'text': file_lines(request['text'], request.get('files')), 'chat_name': chat_name, 'chat': chat, 'direct': person, 'team': team}
