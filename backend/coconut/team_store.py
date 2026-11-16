@@ -54,12 +54,17 @@ Each table has the room ID in its key, because a Mac can be in more than one roo
   row. `peer` and `bot` name the direct chat of such a box, as `member` and `bot` of `team_directs` do, and both are
   null for a reaction in a team chat. A view takes the row with the highest `seq` for each message, member and chat.
 - `team_file_pieces`: the bytes of each valid `file` entry, one row for each entry (docs/team-log.md, "Files"), with the
-  member and the file of the piece and the time when this Mac got it. The payload of the entry in `team_entries` has
-  no `data`.
-- `team_message_files`: the files that each message of `team_messages` names, with the member of the message. A piece
-  of a file that no row names goes 7 days after this Mac got it.
+  member and the file of the piece, its size, and the time when this Mac got it. The payload of the entry in
+  `team_entries` has no `data`.
+- `team_message_files`: the files that each message of `team_messages` names, with the member of the message, and the
+  size and the hash of its item. `checked` is the hash that the joined pieces had at the last check, or null, so a
+  view knows that a file is complete without a read of its bytes. A piece of a file that no row names goes 7 days
+  after this Mac got it.
 - `team_file_drafts`: the files that this Mac's person added to a message that is not sent yet. A draft goes when its
   message is sent, or 24 hours after its upload.
+
+In the two tables with bytes, the BLOB is the last column. SQLite keeps a large BLOB in overflow pages, and a read of a
+column after it walks these pages, so each read of a small column stays cheap.
 
 Who types in a chat is in memory only (`TeamStore.typing` and `TeamStore.direct_typing`), not in a table: a restart of
 the service forgets it.
@@ -138,14 +143,16 @@ CREATE TABLE IF NOT EXISTS team_chats (room TEXT NOT NULL, entry TEXT NOT NULL, 
 CREATE TABLE IF NOT EXISTS team_chat_reads (room TEXT NOT NULL, chat TEXT NOT NULL, first INTEGER NOT NULL,
     PRIMARY KEY (room, chat));
 CREATE TABLE IF NOT EXISTS team_file_pieces (room TEXT NOT NULL, entry TEXT NOT NULL, member TEXT NOT NULL,
-    file TEXT NOT NULL, piece INTEGER NOT NULL, data BLOB NOT NULL, received REAL NOT NULL, PRIMARY KEY (room, entry));
+    file TEXT NOT NULL, piece INTEGER NOT NULL, size INTEGER NOT NULL, received REAL NOT NULL, data BLOB NOT NULL,
+    PRIMARY KEY (room, entry));
 CREATE INDEX IF NOT EXISTS team_file_pieces_file ON team_file_pieces (room, member, file, piece);
+CREATE INDEX IF NOT EXISTS team_file_pieces_received ON team_file_pieces (received);
 CREATE TABLE IF NOT EXISTS team_message_files (room TEXT NOT NULL, message TEXT NOT NULL, member TEXT NOT NULL,
-    file TEXT NOT NULL, PRIMARY KEY (room, message, file));
+    file TEXT NOT NULL, size INTEGER NOT NULL, hash TEXT NOT NULL, checked TEXT, PRIMARY KEY (room, message, file));
 CREATE INDEX IF NOT EXISTS team_message_files_file ON team_message_files (room, member, file);
 CREATE TABLE IF NOT EXISTS team_file_drafts (room TEXT NOT NULL, id TEXT NOT NULL, name TEXT NOT NULL, type TEXT,
-    size INTEGER NOT NULL, hash TEXT NOT NULL, width INTEGER, height INTEGER, data BLOB NOT NULL,
-    created REAL NOT NULL, PRIMARY KEY (room, id));
+    size INTEGER NOT NULL, hash TEXT NOT NULL, width INTEGER, height INTEGER, created REAL NOT NULL,
+    data BLOB NOT NULL, PRIMARY KEY (room, id));
 -- A store from before team_names gets the names that it shows now. A later accept keeps them current.
 INSERT OR IGNORE INTO team_names (room, entry, member, kind, name)
     SELECT room, entry, member, 'member', name FROM team_members;
@@ -279,6 +286,11 @@ MAX_SIDE = 20000
 MAX_PIECE_TEXT = 4 * -(-CHUNK // 3)
 # A piece that no message of the store names goes this long after this Mac got it (TeamStore.sweep_pieces).
 PIECE_SECONDS = 7 * 86400
+# The sweep of the old pieces that no message names. The value is the oldest time to keep. The index
+# team_file_pieces_received finds the old rows, and team_message_files_file each check of a name.
+SWEEP_PIECES = '''DELETE FROM team_file_pieces WHERE received<? AND NOT EXISTS (
+    SELECT 1 FROM team_message_files f WHERE f.room=team_file_pieces.room AND f.member=team_file_pieces.member
+    AND f.file=team_file_pieces.file)'''
 # The unread count of a room stops here, so the count reads at most this many rows.
 MAX_UNREAD = 99
 # The check of a mention (`mention_first`) reads at most this many rows of the index after the read position, the
@@ -855,9 +867,6 @@ class TeamStore:
         self.direct_typing: dict[tuple[str, str, str], float] = {}
         self.typed: set[str] = set()
         self.clock = time.time
-        # The files whose joined pieces had the SHA-256 of their item, as (room, member, file ID, hash). A view reads
-        # the bytes of a file one time, not for each page. A change of a piece of the file takes its rows out.
-        self.verified: set[tuple[str, str, str, str]] = set()
 
     def migrate(self) -> None:
         """Add the columns that a store of an older version lacks. A room of that version has its notifications on.
@@ -1663,68 +1672,83 @@ class TeamStore:
                         (room, entry['id'], entry['first'], entry['member'], message['bot'], message['text'],
                          message['reply_to'], json.dumps(message['mentions']), at, at, int(rev > 1), message['chat'],
                          stored_preview(message.get('preview')), stored_files(message['files'])))
-        self._name_files(room, entry['id'], [(entry['member'], item['id']) for item in message['files']])
+        self._name_files(room, entry['id'], [(entry['member'], item['id'], item['size'], item['hash'])
+                                             for item in message['files']])
         return True
 
     # Files (docs/team-log.md, "Files")
 
-    def _name_files(self, room: str, message: str, files: list[tuple[str, str]]) -> None:
-        """Set the files that a message names, each as (member, file ID). The bytes of a file that the message no
-        longer names go, unless another message of the same member names it: the message no longer shows (its author
-        deleted it, the admin erased it, or the admin removed its chat), or a new write has other files."""
-        old = set(self.db.execute('SELECT member, file FROM team_message_files WHERE room=? AND message=?',
+    def _name_files(self, room: str, message: str, files: list[tuple[str, str, int, str]]) -> None:
+        """Set the files that a message names, each as (member, file ID, size, hash), and check each new one
+        (_check_file). The bytes of a file that the message no longer names go, unless another message of the same
+        member names it: the message no longer shows (its author deleted it, the admin erased it, or the admin removed
+        its chat), or a new write has other files."""
+        old = set(self.db.execute('SELECT member, file, size, hash FROM team_message_files WHERE room=? AND message=?',
                                   (room, message)).fetchall())
         if old == set(files):
             return
         self.db.execute('DELETE FROM team_message_files WHERE room=? AND message=?', (room, message))
-        self.db.executemany('INSERT INTO team_message_files (room, message, member, file) VALUES (?, ?, ?, ?)',
-                            [(room, message, member, file) for member, file in files])
-        for member, file in old - set(files):
+        self.db.executemany('INSERT INTO team_message_files (room, message, member, file, size, hash) '
+                            'VALUES (?, ?, ?, ?, ?, ?)', [(room, message, *file) for file in files])
+        for member, file in {(member, file) for member, file, _, _ in files}:
+            self._check_file(room, member, file)
+        for member, file, _, _ in old - set(files):
             if not self._file_named(room, member, file):
                 self.db.execute('DELETE FROM team_file_pieces WHERE room=? AND member=? AND file=?', (room, member, file))
-                self._forget_check(room, member, file)
 
     def _file_named(self, room: str, member: str, file: str) -> bool:
         return self.db.execute('SELECT 1 FROM team_message_files WHERE room=? AND member=? AND file=? LIMIT 1',
                                (room, member, file)).fetchone() is not None
 
-    def _forget_check(self, room: str, member: str, file: str) -> None:
-        self.verified = {key for key in self.verified if key[:3] != (room, member, file)}
+    def _check_file(self, room: str, member: str, file: str) -> None:
+        """Set `checked` of each message of `member` that names the file: the hash of its item when the file is
+        complete (file_bytes), else null. The check runs when a piece or a message changes, in the transaction of the
+        accept, so a view and a new process read the result and never the bytes. The pieces get one hash for each
+        size and hash of an item."""
+        rows = self.db.execute('SELECT message, size, hash FROM team_message_files WHERE room=? AND member=? AND file=?',
+                               (room, member, file)).fetchall()
+        results = {}
+        for message, size, file_hash in rows:
+            if (size, file_hash) not in results:
+                item = dict(id=file, size=size, hash=file_hash)
+                results[size, file_hash] = self.file_bytes(room, member, item) is not None
+            self.db.execute('UPDATE team_message_files SET checked=? WHERE room=? AND message=? AND file=?',
+                            (file_hash if results[size, file_hash] else None, room, message, file))
 
     def _show_piece(self, room: str, entry: dict, piece: dict | None) -> None:
         """Set the row of the bytes of a `file` entry, or remove it. `piece` is what read_entry found valid, or None
         for a piece that does not fit and for a `delete` entry over a piece. A change of a piece of a file that a
-        message names changes the chat: the file can be complete now, or no longer."""
+        message names checks the file again and changes the chat: the file can be complete now, or no longer."""
         old = self.db.execute('SELECT member, file FROM team_file_pieces WHERE room=? AND entry=?',
                               (room, entry['id'])).fetchone()
         files = {tuple(old)} if old else set()
         if piece is None:
             self.db.execute('DELETE FROM team_file_pieces WHERE room=? AND entry=?', (room, entry['id']))
         else:
-            self.db.execute('''INSERT INTO team_file_pieces (room, entry, member, file, piece, data, received)
-                VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT (room, entry) DO UPDATE SET member=excluded.member,
-                file=excluded.file, piece=excluded.piece, data=excluded.data, received=excluded.received''',
-                            (room, entry['id'], entry['member'], piece['file'], piece['index'], piece['data'],
-                             self.clock()))
+            self.db.execute('''INSERT INTO team_file_pieces (room, entry, member, file, piece, size, received, data)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (room, entry) DO UPDATE SET member=excluded.member,
+                file=excluded.file, piece=excluded.piece, size=excluded.size, received=excluded.received,
+                data=excluded.data''',
+                            (room, entry['id'], entry['member'], piece['file'], piece['index'], len(piece['data']),
+                             self.clock(), piece['data']))
             files.add((entry['member'], piece['file']))
         for member, file in files:
-            self._forget_check(room, member, file)
             if self._file_named(room, member, file):
+                self._check_file(room, member, file)
                 self.chatted.add(room)
 
     def sweep_pieces(self) -> None:
         """Remove the bytes of each piece that no message of the store names, PIECE_SECONDS after this Mac got it. A
-        piece can come before its message, so a piece without a message waits that long. The caller holds the
-        transaction."""
-        self.db.execute('''DELETE FROM team_file_pieces WHERE received<? AND NOT EXISTS (
-            SELECT 1 FROM team_message_files f WHERE f.room=team_file_pieces.room AND f.member=team_file_pieces.member
-            AND f.file=team_file_pieces.file)''', (self.clock() - PIECE_SECONDS,))
+        piece can come before its message, so a piece without a message waits that long. The index on `received`
+        finds the old pieces, so the sweep reads no other row. The caller holds the transaction."""
+        self.db.execute(SWEEP_PIECES, (self.clock() - PIECE_SECONDS,))
 
     def _pieces_fit(self, room: str, member: str, item: dict) -> bool:
         """True when this Mac has each piece from 0 to n - 1 of a file of `member`, each piece but the last has CHUNK
-        bytes, and the sizes add up to `size`. A piece with a higher index does not count."""
+        bytes, and the sizes add up to `size`. A piece with a higher index does not count. The query reads the
+        column `size`, not the bytes."""
         count = -(-item['size'] // CHUNK)
-        sizes = self.db.execute('''SELECT piece, length(data) FROM team_file_pieces
+        sizes = self.db.execute('''SELECT piece, size FROM team_file_pieces
             WHERE room=? AND member=? AND file=? AND piece<? ORDER BY piece''', (room, member, item['id'], count)).fetchall()
         return ([piece for piece, _ in sizes] == list(range(count)) and sum(size for _, size in sizes) == item['size']
                 and all(size == CHUNK for _, size in sizes[:-1]))
@@ -1738,30 +1762,24 @@ class TeamStore:
         data = b''.join(row[0] for row in self.db.execute('''SELECT data FROM team_file_pieces
             WHERE room=? AND member=? AND file=? AND piece<? ORDER BY piece''',
                                                           (room, member, item['id'], -(-item['size'] // CHUNK))))
-        if hashlib.sha256(data).hexdigest() != item['hash']:
-            return None
-        self.verified.add((room, member, item['id'], item['hash']))
-        return data
+        return data if hashlib.sha256(data).hexdigest() == item['hash'] else None
 
-    def file_complete(self, room: str, member: str, item: dict) -> bool:
-        """True when the file is complete (file_bytes). A file that had its hash once needs only the cheap check."""
-        if (room, member, item['id'], item['hash']) in self.verified:
-            return self._pieces_fit(room, member, item)
-        return self.file_bytes(room, member, item) is not None
-
-    def file_views(self, room: str, member: str, files: str | None) -> list[dict]:
-        """The `files` of a message view: each item without its hash, and `complete`. `files` is the column."""
+    def file_views(self, room: str, message: str, files: str | None) -> list[dict]:
+        """The `files` of a message view: each item without its hash, and `complete` from `checked`. `files` is the
+        column. The view reads no bytes."""
+        if not files:
+            return []
+        checked = dict(self.db.execute('SELECT file, checked=hash FROM team_message_files WHERE room=? AND message=?',
+                                       (room, message)).fetchall())
         return [{name: item[name] for name in ('id', 'name', 'type', 'size', 'width', 'height')}
-                | {'complete': self.file_complete(room, member, item)} for item in json.loads(files or '[]')]
+                | {'complete': bool(checked.get(item['id']))} for item in json.loads(files)]
 
-    def shown_file(self, room: str, file: str) -> tuple[dict, dict] | None:
-        """The first shown message that names a file, and the item of the file, or None."""
-        for (message,) in self.db.execute('SELECT message FROM team_message_files WHERE room=? AND file=? '
-                                          'ORDER BY message', (room, file)).fetchall():
-            row = self.message(room, message)
-            if row is not None:
-                return row, next(item for item in json.loads(row['files']) if item['id'] == file)
-        return None
+    def message_file(self, room: str, message: str, file: str) -> tuple[dict, dict] | None:
+        """A shown message and the item of one of its files, or None when the message does not show or does not name
+        the file. Only the message decides, so a file ID of another message never gives its bytes."""
+        row = self.message(room, message)
+        item = next((item for item in json.loads(row['files'] or '[]') if item['id'] == file), None) if row else None
+        return (row, item) if item else None
 
     def sent_bytes(self, room: str, member: str, since: int, leave_out: list[str]) -> int:
         """The bytes of the pieces of `member` in the room with an `at` from `since` on, from the `size` of each stored
@@ -1773,10 +1791,10 @@ class TeamStore:
                                (room, member, since, json.dumps(leave_out))).fetchone()[0]
 
     def add_draft(self, room: str, draft: dict, data: bytes) -> None:
-        self.db.execute('''INSERT INTO team_file_drafts (room, id, name, type, size, hash, width, height, data, created)
+        self.db.execute('''INSERT INTO team_file_drafts (room, id, name, type, size, hash, width, height, created, data)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''', (room, draft['id'], draft['name'], draft['type'], draft['size'],
-                                                       draft['hash'], draft['width'], draft['height'], data,
-                                                       self.clock()))
+                                                       draft['hash'], draft['width'], draft['height'], self.clock(),
+                                                       data))
 
     def drafts(self, room: str, ids: list[str]) -> dict[str, dict]:
         """The drafts of these IDs in the room, with their bytes in `data`, by ID."""

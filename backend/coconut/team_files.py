@@ -7,7 +7,8 @@ A person adds a file to a message of the Team chat or of a named chat. The route
 - `DELETE /v1/team/rooms/<room>/files/<id>`: remove an own draft.
 - `POST /v1/team/rooms/<room>/messages` with `files`: the IDs of the drafts. TeamMessages.team_send writes each piece
   of each file as a `file` entry, then the `message` entry with the items of the files (_team_write_pieces).
-- `GET /v1/team/rooms/<room>/files/<id>`: the bytes of a complete file of a message that shows on this Mac.
+- `GET /v1/team/rooms/<room>/messages/<message>/files/<id>`: the bytes of a complete file of a message that shows on
+  this Mac. The route names the message, because two members can name the same file ID, each with own pieces.
 
 A piece is a `file` entry, not kept, with at most CHUNK bytes. The writer derives its entry ID from the file and the
 index, so a repeat writes the same entry. The relay refuses each write of a member over 512 MiB of entries that are
@@ -115,15 +116,16 @@ class TeamFiles:
                 raise ServiceError(404, GONE_DRAFT)
         return {'room': room_id, 'file': file, 'deleted': True}
 
-    def team_file_content(self, room_id: str, file: str) -> FileContent:
-        """The bytes of a complete file of a message that shows on this Mac. A file that this Mac does not know, or
-        whose message no longer shows, answers 404. A file whose pieces did not all come answers 409."""
+    def team_file_content(self, room_id: str, message: str, file: str) -> FileContent:
+        """The bytes of a complete file of one message that shows on this Mac. A message that does not show, or that
+        does not name the file, answers 404. A file whose pieces did not all come answers 409. Only the pieces of the
+        member of that message count, so the bytes are always the file of that message."""
         from .service_base import ServiceError
         self._team_room(room_id)
-        if not entry_id(file):
+        if not entry_id(message) or not entry_id(file):
             raise ServiceError(404, GONE_FILE)
         with self.lock:
-            found = self.team_store.shown_file(room_id, file)
+            found = self.team_store.message_file(room_id, message, file)
             if found is None:
                 raise ServiceError(404, GONE_FILE)
             message, item = found
