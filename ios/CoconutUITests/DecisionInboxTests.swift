@@ -8,8 +8,8 @@ final class DecisionInboxTests: XCTestCase {
         let app = XCUIApplication()
         app.launchEnvironment = ["COCONUT_SERVER_URL": address, "COCONUT_PAIR_CODE": "layout-test"]
         app.launch()
-        XCTAssertTrue(app.tabBars.buttons["Inbox"].waitForExistence(timeout: 15))
-        app.tabBars.buttons["Inbox"].tap()
+        XCTAssertTrue(app.tabBars.buttons["Home"].waitForExistence(timeout: 15))
+        app.openCards()
         XCTAssertTrue(app.staticTexts["Medium risk"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.staticTexts["Customers can read an incorrect date."].exists)
         XCTAssertTrue(app.staticTexts["The release time remains undecided."].exists)
@@ -42,8 +42,8 @@ final class DecisionInboxTests: XCTestCase {
         let app = XCUIApplication()
         app.launchEnvironment = ["COCONUT_SERVER_URL": address, "COCONUT_PAIR_CODE": "layout-test"]
         app.launch()
-        XCTAssertTrue(app.tabBars.buttons["Inbox"].waitForExistence(timeout: 15))
-        app.tabBars.buttons["Inbox"].tap()
+        XCTAssertTrue(app.tabBars.buttons["Home"].waitForExistence(timeout: 15))
+        app.openCards()
         app.buttons["decision-option-option-0-0"].tap()
         XCTAssertTrue(app.staticTexts["Keep the retry fix?"].waitForExistence(timeout: 1))
         XCTAssertFalse(app.buttons["undo-inbox-dismiss"].exists)
@@ -78,7 +78,7 @@ final class DecisionInboxTests: XCTestCase {
         XCTAssertTrue(app.tabBars.buttons["Chats"].waitForExistence(timeout: 15))
         app.tabBars.buttons["Chats"].tap()
         XCTAssertTrue(app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "bot-conversation-")).firstMatch.waitForExistence(timeout: 15))
-        app.tabBars.buttons["Inbox"].tap()
+        app.openCards()
         let first = app.staticTexts["Publish the release notes?"]
         XCTAssertTrue(first.waitForExistence(timeout: 5))
         for index in 0..<4 {
@@ -153,8 +153,8 @@ final class DecisionInboxTests: XCTestCase {
         let app = XCUIApplication()
         app.launchEnvironment = ["COCONUT_SERVER_URL": address, "COCONUT_PAIR_CODE": "layout-test"]
         app.launch()
-        XCTAssertTrue(app.tabBars.buttons["Inbox"].waitForExistence(timeout: 15))
-        app.tabBars.buttons["Inbox"].tap()
+        XCTAssertTrue(app.tabBars.buttons["Home"].waitForExistence(timeout: 15))
+        app.openCards()
         app.buttons["3 decisions left. Show all"].tap()
         app.buttons.containing(.staticText, identifier: "Review the onboarding copy?").firstMatch.tap()
         app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "inbox-context-")).firstMatch.tap()
@@ -183,8 +183,8 @@ final class DecisionInboxTests: XCTestCase {
         let app = XCUIApplication()
         app.launchEnvironment = ["COCONUT_SERVER_URL": address, "COCONUT_PAIR_CODE": "layout-test"]
         app.launch()
-        XCTAssertTrue(app.tabBars.buttons["Inbox"].waitForExistence(timeout: 15))
-        app.tabBars.buttons["Inbox"].tap()
+        XCTAssertTrue(app.tabBars.buttons["Home"].waitForExistence(timeout: 15))
+        app.openCards()
         let card = app.scrollViews["inbox-card-scroll"]
         let originalFrame = card.frame
         let original = app.staticTexts["Publish the release notes?"]
@@ -220,8 +220,8 @@ final class DecisionInboxTests: XCTestCase {
         let app = XCUIApplication()
         app.launchEnvironment = ["COCONUT_SERVER_URL": address, "COCONUT_PAIR_CODE": "layout-test"]
         app.launch()
-        XCTAssertTrue(app.tabBars.buttons["Inbox"].waitForExistence(timeout: 15))
-        app.tabBars.buttons["Inbox"].tap()
+        XCTAssertTrue(app.tabBars.buttons["Home"].waitForExistence(timeout: 15))
+        app.openCards()
         let card = app.scrollViews["inbox-card-scroll"]
         card.swipeLeft()
         let second = app.staticTexts["Keep the retry fix?"]
@@ -255,8 +255,8 @@ final class DecisionInboxTests: XCTestCase {
         let app = XCUIApplication()
         app.launchEnvironment = ["COCONUT_SERVER_URL": address, "COCONUT_PAIR_CODE": "layout-test"]
         app.launch()
-        XCTAssertTrue(app.tabBars.buttons["Inbox"].waitForExistence(timeout: 15))
-        app.tabBars.buttons["Inbox"].tap()
+        XCTAssertTrue(app.tabBars.buttons["Home"].waitForExistence(timeout: 15))
+        app.openCards()
         XCTAssertFalse(app.buttons["decision-option-option-0-0"].label.contains("Recommended"))
         app.scrollViews["inbox-card-scroll"].swipeLeft()
         XCTAssertTrue(app.staticTexts["Keep the retry fix?"].waitForExistence(timeout: 3))
@@ -287,8 +287,8 @@ final class DecisionInboxTests: XCTestCase {
         let app = XCUIApplication()
         app.launchEnvironment = ["COCONUT_SERVER_URL": address, "COCONUT_PAIR_CODE": "layout-test"]
         app.launch()
-        XCTAssertTrue(app.tabBars.buttons["Inbox"].waitForExistence(timeout: 15))
-        app.tabBars.buttons["Inbox"].tap()
+        XCTAssertTrue(app.tabBars.buttons["Home"].waitForExistence(timeout: 15))
+        app.openCards()
         app.scrollViews["inbox-card-scroll"].swipeRight()
         XCTAssertTrue(app.staticTexts["Keep the retry fix?"].waitForExistence(timeout: 3))
         app.buttons["undo-inbox-dismiss"].tap()
@@ -336,8 +336,8 @@ final class DecisionInboxTests: XCTestCase {
         let app = XCUIApplication()
         app.launchEnvironment = ["COCONUT_SERVER_URL": address, "COCONUT_PAIR_CODE": "layout-test"]
         app.launch()
-        XCTAssertTrue(app.tabBars.buttons["Inbox"].waitForExistence(timeout: 15))
-        app.tabBars.buttons["Inbox"].tap()
+        XCTAssertTrue(app.tabBars.buttons["Home"].waitForExistence(timeout: 15))
+        app.openCards()
         call("/test/start-stale")
         call("/test/stale-ready", method: "GET")
         app.scrollViews["inbox-card-scroll"].swipeLeft()
@@ -364,8 +364,8 @@ final class DecisionInboxTests: XCTestCase {
         let app = XCUIApplication()
         app.launchEnvironment = ["COCONUT_SERVER_URL": address, "COCONUT_PAIR_CODE": "layout-test"]
         app.launch()
-        XCTAssertTrue(app.tabBars.buttons["Inbox"].waitForExistence(timeout: 15))
-        app.tabBars.buttons["Inbox"].tap()
+        XCTAssertTrue(app.tabBars.buttons["Home"].waitForExistence(timeout: 15))
+        app.openCards()
         app.scrollViews["inbox-card-scroll"].swipeLeft()
         XCTAssertTrue(app.staticTexts["Keep the retry fix?"].waitForExistence(timeout: 3))
         let undo = app.buttons["undo-inbox-dismiss"]
@@ -414,16 +414,16 @@ final class DecisionInboxTests: XCTestCase {
         collapsed.name = "Native tabs collapsed"; collapsed.lifetime = .keepAlways; add(collapsed)
         XCTAssertEqual(app.tabBars.buttons["Chats"].value as? String, "Collapsed")
         app.tabBars.buttons["Chats"].tap()
-        XCTAssertTrue(app.tabBars.buttons["Inbox"].waitForExistence(timeout: 5))
-        app.tabBars.buttons["Inbox"].tap()
+        XCTAssertTrue(app.tabBars.buttons["Home"].waitForExistence(timeout: 5))
+        app.openCards()
         XCTAssertTrue(app.staticTexts["All caught up."].waitForExistence(timeout: 5))
         app.tabBars.buttons["Chats"].tap()
         let bot = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "bot-conversation-")).firstMatch
         bot.tap()
         XCTAssertTrue(app.buttons["bot-settings"].waitForExistence(timeout: 5))
-        XCTAssertFalse(app.tabBars.buttons["Inbox"].isHittable)
+        XCTAssertFalse(app.tabBars.buttons["Home"].isHittable)
         app.buttons["Back"].tap()
-        XCTAssertTrue(app.tabBars.buttons["Inbox"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.tabBars.buttons["Home"].waitForExistence(timeout: 5))
     }
 
     @MainActor
@@ -432,8 +432,8 @@ final class DecisionInboxTests: XCTestCase {
         let app = XCUIApplication()
         app.launchArguments = ["--demo"]
         app.launch()
-        let inbox = app.tabBars.buttons["Inbox"]
-        XCTAssertTrue(inbox.waitForExistence(timeout: 10)); inbox.tap()
+        let inbox = app.tabBars.buttons["Home"]
+        XCTAssertTrue(inbox.waitForExistence(timeout: 10)); app.openCards()
         let context = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "inbox-context-")).firstMatch
         XCTAssertTrue(context.waitForExistence(timeout: 5))
         let id = String(context.identifier.dropFirst("inbox-context-".count))
@@ -463,8 +463,8 @@ final class DecisionInboxTests: XCTestCase {
         let app = XCUIApplication()
         app.launchEnvironment = ["COCONUT_SERVER_URL": address, "COCONUT_PAIR_CODE": code]
         app.launch()
-        XCTAssertTrue(app.tabBars.buttons["Inbox"].waitForExistence(timeout: 15))
-        app.tabBars.buttons["Inbox"].tap()
+        XCTAssertTrue(app.tabBars.buttons["Home"].waitForExistence(timeout: 15))
+        app.openCards()
         let field = app.textFields["decision-reply-" + id]
         XCTAssertTrue(field.waitForExistence(timeout: 5))
         field.tap(); field.typeText("What did you verify?")
@@ -474,8 +474,8 @@ final class DecisionInboxTests: XCTestCase {
         app.terminate()
         app.launchEnvironment.removeValue(forKey: "COCONUT_PAIR_CODE")
         app.launch()
-        XCTAssertTrue(app.tabBars.buttons["Inbox"].waitForExistence(timeout: 15))
-        app.tabBars.buttons["Inbox"].tap()
+        XCTAssertTrue(app.tabBars.buttons["Home"].waitForExistence(timeout: 15))
+        app.openCards()
         XCTAssertTrue(app.staticTexts["All caught up."].waitForExistence(timeout: 5))
         var request = URLRequest(url: URL(string: address + "/test/continue")!)
         request.httpMethod = "POST"
@@ -519,8 +519,8 @@ final class DecisionInboxTests: XCTestCase {
         let app = XCUIApplication()
         app.launchArguments = ["--demo"]
         app.launch()
-        XCTAssertTrue(app.tabBars.buttons["Inbox"].waitForExistence(timeout: 10))
-        app.tabBars.buttons["Inbox"].tap()
+        XCTAssertTrue(app.tabBars.buttons["Home"].waitForExistence(timeout: 10))
+        app.openCards()
         XCTAssertFalse(app.buttons["undo-inbox-dismiss"].exists)
         XCTAssertFalse(app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "decision-menu-")).firstMatch.exists)
         XCTAssertFalse(app.buttons["Preview retry-fix-notes.md"].exists)
@@ -541,8 +541,8 @@ final class DecisionInboxTests: XCTestCase {
         let app = XCUIApplication()
         app.launchArguments = ["--demo"]
         app.launch()
-        XCTAssertTrue(app.tabBars.buttons["Inbox"].waitForExistence(timeout: 10))
-        app.tabBars.buttons["Inbox"].tap()
+        XCTAssertTrue(app.tabBars.buttons["Home"].waitForExistence(timeout: 10))
+        app.openCards()
         let card = app.scrollViews["inbox-card-scroll"]
         let originalFrame = card.frame
         let question = app.staticTexts["Save the retry fix?"]
@@ -568,8 +568,8 @@ final class DecisionInboxTests: XCTestCase {
         let app = XCUIApplication()
         app.launchArguments = ["--demo"]
         app.launch()
-        XCTAssertTrue(app.tabBars.buttons["Inbox"].waitForExistence(timeout: 10))
-        app.tabBars.buttons["Inbox"].tap()
+        XCTAssertTrue(app.tabBars.buttons["Home"].waitForExistence(timeout: 10))
+        app.openCards()
         app.scrollViews["inbox-card-scroll"].swipeRight()
         let undo = app.buttons["undo-inbox-dismiss"]
         XCTAssertTrue(undo.waitForExistence(timeout: 5))
@@ -582,8 +582,8 @@ final class DecisionInboxTests: XCTestCase {
         let app = XCUIApplication()
         app.launchArguments = ["--demo"]
         app.launch()
-        XCTAssertTrue(app.tabBars.buttons["Inbox"].waitForExistence(timeout: 10))
-        app.tabBars.buttons["Inbox"].tap()
+        XCTAssertTrue(app.tabBars.buttons["Home"].waitForExistence(timeout: 10))
+        app.openCards()
         app.scrollViews["inbox-card-scroll"].swipeLeft()
         XCTAssertTrue(app.buttons["undo-inbox-dismiss"].waitForExistence(timeout: 5))
         app.buttons["inbox-review-later"].tap()
@@ -603,8 +603,8 @@ final class DecisionInboxTests: XCTestCase {
         let app = XCUIApplication()
         app.launchArguments = ["--demo"]
         app.launch()
-        XCTAssertTrue(app.tabBars.buttons["Inbox"].waitForExistence(timeout: 10))
-        app.tabBars.buttons["Inbox"].tap()
+        XCTAssertTrue(app.tabBars.buttons["Home"].waitForExistence(timeout: 10))
+        app.openCards()
         let question = app.staticTexts["Save the retry fix?"]
         XCTAssertTrue(question.waitForExistence(timeout: 5))
         question.tap()
@@ -613,7 +613,7 @@ final class DecisionInboxTests: XCTestCase {
         XCTAssertTrue(app.buttons["inbox-review-later"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.buttons["undo-inbox-dismiss"].waitForExistence(timeout: 5))
         app.tabBars.buttons["Chats"].tap()
-        app.tabBars.buttons["Inbox"].tap()
+        app.openCards()
         XCTAssertFalse(app.buttons["undo-inbox-dismiss"].exists)
         app.buttons["inbox-review-later"].tap()
         XCTAssertTrue(question.waitForExistence(timeout: 5))

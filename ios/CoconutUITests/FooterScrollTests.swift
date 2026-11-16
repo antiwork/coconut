@@ -10,14 +10,14 @@ final class FooterScrollTests: XCTestCase {
         let app = XCUIApplication()
         app.launchEnvironment = ["COCONUT_SERVER_URL": url, "COCONUT_PAIR_CODE": "layout-test"]
         app.launch()
-        let inbox = app.tabBars.buttons["Inbox"]
+        let inbox = app.tabBars.buttons["Home"]
         XCTAssertTrue(inbox.waitForExistence(timeout: 15))
-        XCTAssertTrue(inbox.isSelected, "Inbox must be the launch screen.")
+        XCTAssertTrue(inbox.isSelected, "Home must be the launch screen.")
         XCTAssertLessThan(inbox.frame.minX, app.tabBars.buttons["Chats"].frame.minX)
         app.tabBars.buttons["Chats"].tap()
         app.scrollViews.firstMatch.swipeUp()
         XCTAssertTrue(inbox.isHittable, "Scrolling the Bots list must keep both tabs available.")
-        inbox.tap()
+        app.openCards()
         app.scrollViews.firstMatch.swipeUp()
         XCTAssertTrue(app.tabBars.buttons["Chats"].isHittable, "Reading a card must not minimize the footer.")
         app.tabBars.buttons["Chats"].tap()

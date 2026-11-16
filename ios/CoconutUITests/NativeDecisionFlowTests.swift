@@ -93,11 +93,11 @@ final class NativeDecisionFlowTests: XCTestCase {
         app.launchArguments = ["--demo", "-UIPreferredContentSizeCategoryName", "UICTContentSizeCategoryAccessibilityXXXL"]
         app.launch()
 
-        let inbox = app.tabBars.buttons["Inbox"]
+        let inbox = app.tabBars.buttons["Home"]
         XCTAssertTrue(inbox.waitForExistence(timeout: 10))
         XCTAssertTrue(inbox.isHittable)
         capture("Home with accessibility text")
-        inbox.tap()
+        app.openCards()
         XCTAssertFalse(app.buttons["inbox-filter-needsYou"].exists)
         let openChat = app.buttons["inbox-context-00000000-0000-4000-8000-000000000031"]
         XCTAssertTrue(openChat.waitForExistence(timeout: 5))
@@ -149,7 +149,7 @@ final class NativeDecisionFlowTests: XCTestCase {
         app.navigationBars.buttons.element(boundBy: 0).tap()
         XCTAssertTrue(pinnedForge.waitForExistence(timeout: 5))
 
-        app.tabBars.buttons["Inbox"].tap()
+        app.openCards()
         XCTAssertFalse(app.buttons["inbox-filter-all"].exists)
         XCTAssertFalse(app.buttons["inbox-filter-done"].exists)
         XCTAssertFalse(app.buttons["inbox-filter-needsYou"].exists)

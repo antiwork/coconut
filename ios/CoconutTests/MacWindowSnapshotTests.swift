@@ -21,6 +21,7 @@ final class MacWindowSnapshotTests: XCTestCase {
         let botId = try XCTUnwrap(store.bots.first?.id)
         store.team = try APIJSON.decoder().decode(TeamRooms.self, from: Data(TeamNoticeTests.rooms.utf8))
         let windows: [(String, AnyView)] = [
+            ("home", AnyView(NavigationStack { HomeView { _ in } })),
             ("notices", AnyView(NavigationStack { NoticeBoardView(roomId: "example") })),
             ("coconut", AnyView(NavigationStack { ConversationView(botId: coconutId) })),
             ("chat", AnyView(NavigationStack { ConversationView(botId: botId) })),
@@ -31,6 +32,7 @@ final class MacWindowSnapshotTests: XCTestCase {
             let selection: MacSelection = switch name {
             case "chat": .bot(botId)
             case "inbox": .inbox
+            case "home": .home
             case "notices": .notices("example")
             case "coconut": .bot(coconutId)
             default: .library

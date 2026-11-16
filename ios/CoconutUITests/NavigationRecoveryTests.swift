@@ -36,7 +36,7 @@ final class NavigationRecoveryTests: XCTestCase {
             app.navigationBars.buttons.element(boundBy: 0).tap()
             XCTAssertTrue(bot.waitForExistence(timeout: 3))
             XCTAssertTrue(app.buttons["app-settings"].waitForExistence(timeout: 3) && app.buttons["app-settings"].isHittable)
-            app.tabBars.buttons["Inbox"].tap()
+            app.openCards()
             app.tabBars.buttons["Chats"].tap()
             XCTAssertTrue(app.buttons["app-settings"].waitForExistence(timeout: 3))
             if attempt == 2 {

@@ -4,6 +4,9 @@ import SwiftUI
 /// What the main window shows in its detail column.
 enum MacSelection: Hashable {
     case business(BusinessRoute)
+    /// Home: what needs attention, what is unread, and what is in progress.
+    case home
+    /// The cards that wait for an answer. A card row of Home opens them.
     case inbox
     case library
     case bot(String)
@@ -28,7 +31,9 @@ enum InspectorTab: Hashable {
 struct MacMainWindow: View {
     @Environment(AppStore.self) private var store
     @ObservedObject var model: AppModel
-    @State private var selection: MacSelection? = .inbox
+    @State private var selection: MacSelection? = .home
+    // The card that the Inbox shows first: the card of the row of Home that opened it.
+    @State private var inboxCard: String?
     @State private var inspectorShown = true
     @State private var inspectorTab = InspectorTab.details
     @State private var createOpen = false
@@ -139,6 +144,27 @@ struct MacMainWindow: View {
         }
     }
 
+    /// Opens the place of a row of Home. Each place is a choice of the window, so the sidebar shows where it is.
+    private func open(_ target: HomeTarget) {
+        switch target {
+        case .conversation(let route):
+            // A To-do opens the chat with the work attached.
+            if let work = route.workContext, store.artifacts.contains(where: { $0.id == work.id }) {
+                selection = .work(work.id)
+            } else {
+                selection = .bot(route.botId)
+            }
+        case .teamChat(let chat): selection = .team(chat)
+        case .cards(let decisionId):
+            inboxCard = decisionId
+            selection = .inbox
+        case .agent(let botId): selection = .bot(botId)
+        case .agents: break
+        case .connection: Task { await store.reconnect() }
+        case .notices(let room): selection = .notices(room)
+        }
+    }
+
     // A new case, with or without a stack of its own, needs no code for the notice of the window (MacNoticeArea).
     @ViewBuilder private var detail: some View {
         switch selection {
@@ -147,8 +173,10 @@ struct MacMainWindow: View {
                 BusinessDestinationView(route: route)
                     .navigationDestination(for: BusinessRoute.self) { BusinessDestinationView(route: $0) }
             }
-        case .inbox, nil:
-            MacInboxView(selection: $selection)
+        case .home, nil:
+            NavigationStack { HomeView { open($0) }.navigationTitle("Home") }
+        case .inbox:
+            MacInboxView(selection: $selection, first: inboxCard)
         case .library:
             NavigationStack(path: $libraryPath) {
                 LibraryView()
@@ -175,7 +203,7 @@ struct MacMainWindow: View {
                 .toolbarBackgroundVisibility(.hidden, for: .windowToolbar)
                 .toolbar(removing: .title)
             } else {
-                MacInboxView(selection: $selection)
+                NavigationStack { HomeView { open($0) }.navigationTitle("Home") }
             }
         case .bot(let botId):
             // The details are a column of fixed width next to the chat, not an inspector. Next to a chat, the
@@ -304,7 +332,7 @@ struct DetailColumnBottomInset: NSViewRepresentable {
     }
 }
 
-/// The sidebar: the Inbox, the pinned bots and the pinned pages, and the chats: every other bot and each team, with the
+/// The sidebar: Home, the pinned bots and the pinned pages, and the chats: every other bot and each team, with the
 /// last message.
 struct MacSidebar: View {
     @Environment(AppStore.self) private var store
@@ -327,15 +355,17 @@ struct MacSidebar: View {
                                          rooms: store.shownTeamRooms, local: store.newestLocalMessages)
         let pins = SidebarPins(pinnedBots: sections.pinned, documents: store.documents ?? [], bots: store.bots,
                                teamBots: store.teamBots)
-        return List(selection: $selection) {
+        // The cards are a page of Home, so Home stays marked while they show.
+        let marked = Binding<MacSelection?>(get: { selection == .inbox ? .home : selection }, set: { selection = $0 })
+        return List(selection: marked) {
             // The Coconut chat: where the person changes Coconut. Coconut has no settings window for it.
             if let coconut = store.bots.coconutChat {
                 CoconutChatRow(bot: coconut).tag(MacSelection.bot(coconut.id))
             }
-            MacSidebarLabel(title: "Inbox", symbol: "tray")
-                .badge(store.inboxBadgeCount)
-                .tag(MacSelection.inbox)
-                .accessibilityIdentifier("sidebar-inbox")
+            MacSidebarLabel(title: "Home", symbol: "house")
+                .badge(HomeFeed.badge(store.homeUnread))
+                .tag(MacSelection.home)
+                .accessibilityIdentifier("sidebar-home")
             MacSidebarLabel(title: "Library", symbol: "rectangle.3.group")
                 .badge(store.documents?.count ?? 0)
                 .tag(MacSelection.library)
@@ -420,13 +450,13 @@ struct MacSidebar: View {
         .environment(\.defaultMinListRowHeight, 26)
         .listStyle(.sidebar)
         .modifier(DeleteBotDialog(bot: $deleting))
-        // A deleted bot leaves the list. Its chat closes, and the Inbox shows instead.
+        // A deleted bot leaves the list. Its chat closes, and Home shows instead.
         .onChange(of: store.bots.map(\.id)) { _, ids in
-            if case .bot(let id) = selection, !ids.contains(id) { selection = .inbox }
+            if case .bot(let id) = selection, !ids.contains(id) { selection = .home }
         }
         // A team that this Mac removed leaves the list too, and so does a named chat that the admin deleted.
         .onChange(of: store.team) { _, team in
-            if case .team(let chat) = selection, let team, !team.has(chat) { selection = .inbox }
+            if case .team(let chat) = selection, let team, !team.has(chat) { selection = .home }
         }
         // The pinned pages need the list without a visit to the Library: one quiet load when the Mac connects and no
         // list is there. After that, the updates load the list again on each change of a page and on a reset.
