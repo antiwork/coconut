@@ -299,6 +299,15 @@ final class TeamChatTests: XCTestCase {
         chat.merge(page([message("1", 1, at: "2026-11-10T09:00:00Z"), message("srv", 2, own: true, at: "2026-11-10T09:07:01Z")],
                         before: nil), requested: nil)
         XCTAssertEqual(TeamChatRow.rows(chat, calendar: Self.utc).map(\.listID), ["1", "pending-p"])
+        // A reaction of this person on its way, and a link preview from the Mac, change the row and keep its identity.
+        chat.reacting["srv"] = TeamOwnReaction(emoji: "👍", member: "m-ada")
+        var withPreview = message("srv", 2, own: true, at: "2026-11-10T09:07:01Z")
+        withPreview.preview = TeamLinkPreview(url: "https://example.com/report", title: "Report", site: "example.com")
+        chat.putEdit(withPreview)
+        let changed = TeamChatRow.rows(chat, calendar: Self.utc)
+        XCTAssertEqual(changed.map(\.listID), ["1", "pending-p"])
+        XCTAssertEqual(changed.last?.message?.preview?.title, "Report")
+        XCTAssertNotEqual(changed.last?.message, after.last?.message)
     }
 
     func testTheAuthorOfAQuote() {
