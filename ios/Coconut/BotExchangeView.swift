@@ -204,6 +204,8 @@ struct BotExchangeView: View {
                 }.frame(minHeight: 44).padding(.horizontal, 16).background(.bar)
             }
         }
+        // "Load earlier messages" can fail.
+        .pageErrorBanner()
         .toolbar {
             ToolbarItem(placement: .principal) {
                 HStack(spacing: 8) {

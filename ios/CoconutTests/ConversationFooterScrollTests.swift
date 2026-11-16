@@ -131,6 +131,25 @@ final class ConversationFooterScrollTests: XCTestCase {
         XCTAssertNil(holders.holder)
     }
 
+    // A sheet that shows the error itself, for example the Character sheet: while it is open, neither a chat nor the
+    // column shows the notice of the window. When it closes, the chat holds the notice again.
+    func testOpenSheetThatShowsTheErrorHidesTheNotice() {
+        var holders = NoticeHolders()
+        let chat = UUID(), sheet = UUID()
+        holders.add(chat)
+        holders.addSheet(sheet)
+        XCTAssertNil(holders.holder)
+        XCTAssertFalse(holders.columnShowsNotice)
+        holders.removeSheet(sheet)
+        XCTAssertEqual(holders.holder, chat)
+        // Without a chat on the screen, the column shows the notice again when the sheet closes.
+        holders.remove(chat)
+        holders.addSheet(sheet)
+        XCTAssertFalse(holders.columnShowsNotice)
+        holders.removeSheet(sheet)
+        XCTAssertTrue(holders.columnShowsNotice)
+    }
+
     // A page that a stack pushes over a chat covers the chat, so the chat leaves the screen. The column shows the
     // notice, and the covered chat does not hold it.
     func testCoveredChatDoesNotHoldNotice() {

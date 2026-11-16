@@ -127,11 +127,20 @@ extension EnvironmentValues {
 struct NoticeHolders: Equatable {
     /// The chats on the screen, in the order that they came on the screen.
     private(set) var chats: [UUID] = []
+    /// The open sheets that show the error themselves (SheetShowsError).
+    private(set) var sheets: Set<UUID> = []
 
-    /// The chat that shows the notice: the chat that came on the screen last. Nil when no chat is on the screen.
-    var holder: UUID? { chats.last }
-    /// True when no chat is on the screen, so the detail column shows the notice.
-    var columnShowsNotice: Bool { chats.isEmpty }
+    /// The chat that shows the notice: the chat that came on the screen last. Nil when no chat is on the screen, and
+    /// while a sheet shows the error.
+    var holder: UUID? { sheets.isEmpty ? chats.last : nil }
+    /// True when no chat is on the screen and no sheet shows the error, so the detail column shows the notice.
+    var columnShowsNotice: Bool { chats.isEmpty && sheets.isEmpty }
+
+    /// A sheet that shows the error itself opens.
+    mutating func addSheet(_ sheet: UUID) { sheets.insert(sheet) }
+
+    /// The sheet closes.
+    mutating func removeSheet(_ sheet: UUID) { sheets.remove(sheet) }
 
     /// A chat comes on the screen.
     mutating func add(_ chat: UUID) {
@@ -296,11 +305,53 @@ private struct TopBanners<Banners: View>: ViewModifier {
     }
 }
 
+/// The notice of an action that failed, at the top of a page that a stack pushes, as on a tab root. The pushed page
+/// covers the tab root and its banners, so without this banner the error showed nowhere. A sheet can use it too
+/// (SheetShowsError). In the main window of a Mac, the notice of the window shows each error (windowShowsError), so
+/// there a pushed page shows none.
+private struct PageErrorBanner: ViewModifier {
+    @Environment(AppStore.self) private var store
+    @Environment(\.windowShowsError) private var windowShowsError
+
+    func body(content: Content) -> some View {
+        content.topBanners { area in
+            if !windowShowsError, let error = store.error {
+                // The page less the padding under the banner, as on a tab root.
+                ErrorBanner(message: error, area: area.map { $0 - 8 }) { store.error = nil }
+                    .padding(.horizontal, 16).padding(.bottom, 8)
+            }
+        }
+    }
+}
+
+/// A sheet has no notice over it, so it shows the error itself: inline, or in its own PageErrorBanner. The page behind
+/// the sheet must not show a second copy. On an iPhone the sheet covers the page. A sheet of the Mac window covers most
+/// of the notice of the window, and the edge of the notice showed next to it. While the sheet is open, the notice of
+/// the window shows nothing.
+private struct SheetShowsError: ViewModifier {
+    @Environment(\.windowNotice) private var windowNotice
+    @State private var sheet = UUID()
+
+    func body(content: Content) -> some View {
+        content
+            .environment(\.windowShowsError, false)
+            .onAppear { windowNotice?.holders.addSheet(sheet) }
+            .onDisappear { windowNotice?.holders.removeSheet(sheet) }
+    }
+}
+
 extension View {
     /// Puts the banners above the page, in their own space. The closure gets the height of the page.
     func topBanners<Banners: View>(@ViewBuilder _ banners: @escaping (_ area: CGFloat?) -> Banners) -> some View {
         modifier(TopBanners(banners: banners))
     }
+
+    /// Shows the error of an action at the top of a pushed page or a sheet (PageErrorBanner). A pushed page that has no
+    /// other place for the error needs only this line.
+    func pageErrorBanner() -> some View { modifier(PageErrorBanner()) }
+
+    /// Tells a sheet that it shows the error itself (SheetShowsError).
+    func sheetShowsError() -> some View { modifier(SheetShowsError()) }
 
     /// VoiceOver reads each new error of an action when it shows.
     func announcesErrors(_ error: String?) -> some View {

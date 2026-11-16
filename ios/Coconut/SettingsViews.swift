@@ -228,9 +228,14 @@ struct BotIdentityFields: View {
                 NavigationStack {
                     Form { BotAppearancePicker(avatar: $avatar, color: $color, identity: identity) }
                         .settingsBackground()
+                        // In the bot settings a pick saves at once, and the save can fail. The sheet covers the page and
+                        // its error, so the sheet shows the error at its top. It stays in view at each scroll position.
+                        .pageErrorBanner()
                         .navigationTitle("Character").inlineNavigationTitle()
                         .toolbar { Button("Done") { appearanceOpen = false } }
-                }.presentationDetents([.large])
+                }
+                .sheetShowsError()
+                .presentationDetents([.large])
             }
         }
         Section("Name") {

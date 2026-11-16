@@ -62,7 +62,7 @@ struct BotSettingsView: View {
         .onDisappear(perform: save)
         // A sheet has no notice over it, so it shows the error itself.
         .sheet(isPresented: $routineOpen) {
-            NavigationStack { RoutineEditorView(botId: botId) }.environment(\.windowShowsError, false)
+            NavigationStack { RoutineEditorView(botId: botId) }.sheetShowsError()
         }
     }
 
