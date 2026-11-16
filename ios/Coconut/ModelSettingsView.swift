@@ -7,14 +7,11 @@ struct ModelSettingsView: View {
     @State private var useDefault = true
     @State private var selectionKey = ""
     @State private var effort: String?
-    @State private var original: ModelOverride?
-    @State private var originalUseDefault = true
+    @State private var saves = ModelSettingsSaves()
     @State private var loaded = false
     @State private var refreshed = false
-    @State private var saving = false
     @State private var edited = false
-    /// A choice that the person made while an earlier one saved. It saves when that save ends.
-    @State private var pendingSave = false
+    private var saving: Bool { saves.inFlight != nil }
 
     private var bot: Bot? { store.bots.first { $0.id == botId } }
     private var catalog: ModelCatalog? { store.modelCatalog }
@@ -35,10 +32,6 @@ struct ModelSettingsView: View {
     }
     private var canEdit: Bool { store.connection == .connected || store.isDemo }
     private var isBot: Bool { botId != nil }
-    private var changed: Bool {
-        if isBot, useDefault { return !originalUseDefault }
-        return (isBot && originalUseDefault) || selection != original
-    }
     private var valid: Bool {
         if isBot, useDefault { return catalog?.defaults.supported != false }
         return selection.map { catalog?.contains($0) == true } ?? false
@@ -179,9 +172,9 @@ struct ModelSettingsView: View {
 
     private func load() {
         guard let catalog else { return }
-        original = isBot ? bot?.modelOverride : current
-        originalUseDefault = isBot && bot?.modelOverride == nil && bot?.modelError == nil
-        useDefault = originalUseDefault
+        useDefault = isBot && bot?.modelOverride == nil && bot?.modelError == nil
+        saves = ModelSettingsSaves(saved: ModelSettingsChoice(selection: isBot ? bot?.modelOverride : current,
+                                                              useDefault: useDefault))
         selectionKey = current.flatMap { catalog.entry(for: $0)?.selectionKey } ?? ""
         effort = current?.reasoningEffort
         loaded = true
@@ -191,35 +184,64 @@ struct ModelSettingsView: View {
     // Each change saves when it is valid. A model without a choice waits until the person picks one. A change during a
     // save waits for it, so the last choice wins.
     private func save() {
-        guard loaded, canEdit, valid, changed, !(isBot && bot == nil) else { return }
-        if saving { pendingSave = true; return }
-        let submitted = isBot && useDefault ? nil : selection
-        saving = true
+        guard loaded, canEdit, valid, !(isBot && bot == nil) else { return }
+        let choice = ModelSettingsChoice(selection: isBot && useDefault ? nil : selection, useDefault: useDefault)
+        guard let submitted = saves.begin(choice) else {
+            if !saving { edited = false }
+            return
+        }
+        edited = true
         store.error = nil
         Task {
             let accepted: Bool
             if let botId {
-                accepted = await store.updateBotModel(botId: botId, selection: submitted)
-            } else if let submitted {
-                accepted = await store.setModel(submitted)
+                accepted = await store.updateBotModel(botId: botId, selection: submitted.selection)
+            } else if let selection = submitted.selection {
+                accepted = await store.setModel(selection)
             } else {
                 accepted = false
             }
-            saving = false
-            if accepted {
-                // The page keeps the choice. A reload here showed the old model for a moment until the update came.
-                original = submitted
-                originalUseDefault = isBot && useDefault
+            if saves.finish(accepted: accepted) {
+                save()
+            } else if accepted {
                 edited = false
-                if pendingSave { pendingSave = false; save() }
             } else {
                 // A failed save returns the page to the saved choice, so choosing the same model again retries it.
-                pendingSave = false
                 load()
             }
         }
     }
 
+}
+
+struct ModelSettingsChoice: Equatable {
+    let selection: ModelOverride?
+    let useDefault: Bool
+}
+
+/// Serializes saves while the picker stays usable. A return to the saved choice during a write still queues a save:
+/// the write in flight can replace that choice before it finishes.
+struct ModelSettingsSaves {
+    var saved: ModelSettingsChoice?
+    private(set) var inFlight: ModelSettingsChoice?
+    private var pending = false
+
+    init(saved: ModelSettingsChoice? = nil) { self.saved = saved }
+
+    mutating func begin(_ choice: ModelSettingsChoice) -> ModelSettingsChoice? {
+        if inFlight != nil { pending = true; return nil }
+        guard choice != saved else { return nil }
+        inFlight = choice
+        return choice
+    }
+
+    /// A later choice gets its turn even if the earlier save failed.
+    mutating func finish(accepted: Bool) -> Bool {
+        if accepted { saved = inFlight }
+        inFlight = nil
+        defer { pending = false }
+        return pending
+    }
 }
 
 enum ModelPresentation {

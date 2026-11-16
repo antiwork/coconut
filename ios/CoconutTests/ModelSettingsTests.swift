@@ -2,6 +2,46 @@ import XCTest
 @testable import Coconut
 
 final class ModelSettingsTests: XCTestCase {
+    func testReturningToTheOriginalModelDuringASaveStillSavesTheLastChoice() {
+        let original = ModelSettingsChoice(selection: ModelOverride(model: "a", provider: "provider"), useDefault: false)
+        let next = ModelSettingsChoice(selection: ModelOverride(model: "b", provider: "provider"), useDefault: false)
+        var saves = ModelSettingsSaves(saved: original)
+        XCTAssertEqual(saves.begin(next), next)
+        XCTAssertNil(saves.begin(original))
+        XCTAssertTrue(saves.finish(accepted: true))
+        XCTAssertEqual(saves.begin(original), original)
+        XCTAssertFalse(saves.finish(accepted: true))
+        XCTAssertEqual(saves.saved, original)
+    }
+
+    func testReturningToDefaultWhileACustomModelSavesUsesTheSubmittedChoice() {
+        let inherited = ModelSettingsChoice(selection: nil, useDefault: true)
+        let custom = ModelSettingsChoice(selection: ModelOverride(model: "a", provider: "provider"), useDefault: false)
+        var saves = ModelSettingsSaves(saved: inherited)
+        XCTAssertEqual(saves.begin(custom), custom)
+        XCTAssertNil(saves.begin(inherited))
+        XCTAssertTrue(saves.finish(accepted: true))
+        XCTAssertEqual(saves.saved, custom)
+        XCTAssertEqual(saves.begin(inherited), inherited)
+        XCTAssertFalse(saves.finish(accepted: true))
+        XCTAssertEqual(saves.saved, inherited)
+    }
+
+    func testAFailedSaveKeepsTheSavedModelAndLetsTheLatestChoiceSave() {
+        let original = ModelSettingsChoice(selection: ModelOverride(model: "a", provider: "provider"), useDefault: false)
+        let next = ModelSettingsChoice(selection: ModelOverride(model: "b", provider: "provider"), useDefault: false)
+        let latest = ModelSettingsChoice(selection: ModelOverride(model: "c", provider: "provider"), useDefault: false)
+        var saves = ModelSettingsSaves(saved: original)
+        XCTAssertEqual(saves.begin(next), next)
+        XCTAssertNil(saves.begin(latest))
+        XCTAssertTrue(saves.finish(accepted: false))
+        XCTAssertEqual(saves.saved, original)
+        XCTAssertEqual(saves.begin(latest), latest)
+        XCTAssertFalse(saves.finish(accepted: true))
+        XCTAssertEqual(saves.saved, latest)
+        XCTAssertNil(saves.begin(latest))
+    }
+
     func testFallbackChoiceReplacesOnlyTheFirstModel() {
         let a = FallbackModel(model: "model-a", provider: "provider-a")
         let b = FallbackModel(model: "model-b", provider: "provider-b")
