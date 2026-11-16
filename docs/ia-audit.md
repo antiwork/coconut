@@ -73,3 +73,43 @@ Rules of "Needs attention" live in one type, `AttentionRules`, with named thresh
 
 Steps, one commit each: this audit; `AttentionRules` and the banner; Home; Agents and the agent page; People and
 Profile with the five tabs and the new sidebar; screenshots and the iPhone flow test; the result below.
+
+## Result
+
+Landed on `main` in these commits:
+
+| Commit | Step |
+| --- | --- |
+| `fc44acf` | This audit and the plan. |
+| `660d977` | `AttentionRules` and the red card `AttentionCard` (`ios/Coconut/Attention.swift`). |
+| `6efcd0f` | Home (`Home.swift`, `BoardSection.swift`) in the place of the Inbox tab and the Inbox row. |
+| `c1c134d` | Agents and the page of an agent (`AgentProject.swift`) in the place of the Library. |
+| `3a5afa7` | People (`PeopleView.swift`) and Profile (`ProfileView.swift`), the five tabs and the new sidebar. |
+| `d7ea362` | The new files in the committed Xcode project, which the Mac release builds. |
+
+What each place is now:
+
+- **Home** — `HomeView`. "Needs attention" from `AttentionRules` (thresholds `cardWait` 4 h, `workWindow` 24 h,
+  `staleSync` 10 min, `deadlineWindow` 24 h), "Unread" from `HomeFeed.unread`, "In progress" from
+  `HomeFeed.inProgress`. A card row and "Review cards" open the card views (`DecisionInboxView`, `MacInboxView`).
+- **Chats** — unchanged on the iPhone. On the Mac the sidebar under the five places: Starred, Unreads, Team chats,
+  Agent chats, Archived.
+- **Agents** — `AgentsView` lists `AgentProject.list`. `AgentProjectView` has the header and the five sections of
+  `AgentSection`. "All pages" keeps the whole Library one row away, also for the pages of team agents.
+- **People** — `PeopleView` from `PeopleSections`. Without a team it shows the Team screen, which makes or joins one.
+- **Profile** — `ProfileView`. It has the rows of the Settings sheet, so `AppSettingsView` is gone. Business opens
+  from here.
+
+Moved, not removed: the Inbox (Home), the Library (agent pages and "All pages"), the To-dos of the sidebar (Home and
+agent pages), the Notices of the sidebar (People), Business with its functions and projects (Profile), Model, Access,
+Connections and Parallel work (Profile).
+
+Not done:
+
+- The Mac app still has Coconut > Settings with the Team screen. People shows the same, so the scene can go once
+  somebody can check the menu in a running app.
+- Eleven UI test files still tap the gear `app-settings`, which was gone before this work. They need Profile as
+  their entry. `SettingsAccessTests` is rewritten; the others are not.
+- `PageShareFlowTests` taps Agents and "All pages" now, but it needs a paired test Mac and did not run here.
+- A pushed page on the iPhone hides the tab bar, also the page of an agent. Only the cards keep it.
+- The Mac window was checked in rendered images (`MacWindowSnapshotTests`), not in the running app.
