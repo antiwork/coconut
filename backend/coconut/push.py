@@ -599,7 +599,9 @@ class PushDelivery:
             alone = lambda item: item['urgent'] and not item['held']
             waiting = [item for item in items if not alone(item)]
             # Only urgent has no timing of its own: its held urgent cards wait as One summary at a time.
-            timing = level if level in ('every', 'grouped') else 'grouped'
+            # Each item notifies on its own, at once: one notification per message, card or task, never a count.
+            # Work hours still hold items until they open.
+            timing = 'every'
             # The gap counts from the last delivered notification. With Grouped, new items also wait while a group retries.
             # Every card has no gap, so a retrying group does not hold its new items.
             last = db.execute("SELECT MAX(sent) FROM push_outbox WHERE device_id=? AND status='accepted'", (device_id,)).fetchone()[0]
@@ -617,17 +619,18 @@ class PushDelivery:
                 if alone(item) and not item.get('dropped'):
                     self._queue(device_id, 'item:' + item['event_key'], [item], current)
             group = [item for item in ready if not alone(item) and not item.get('dropped')]
-            if level == 'every':
-                # Every card: an item that arrived inside work hours notifies alone. Items held from outside them notify as one group.
-                for item in [item for item in group if in_window(schedule, item['created']) or not schedule['enabled']]:
-                    self._queue(device_id, 'item:' + item['event_key'], [item], current)
-                    group.remove(item)
-            if group:
-                self._queue(device_id, 'group:' + group[0]['event_key'], group, current)
+            # One notification per item, also for items that waited for work hours: a list of single notifications
+            # reads better than one count.
+            for item in group:
+                self._queue(device_id, 'item:' + item['event_key'], [item], current)
 
     def _payload(self, device_id, items, sealed):
         """The notification for one item, or the count of several. Items are rechecked when the text is written."""
         service = self.service
+        if len(items) > 1 and sealed:
+            payload, subject = self._payload(device_id, items, False)
+            payload['aps']['alert'] = self._group_alert(device_id, items, payload['aps']['alert'])
+            return payload, subject
         if len(items) > 1:
             # One chat: its kind, its room, and for a direct chat its other member or for a team item its named chat.
             # The kind decides, because a team item and a direct item of one room are two chats.
@@ -684,13 +687,38 @@ class PushDelivery:
         conversation = service._get('bots', task.get('conversation_bot_id', bot['id']))
         decision = service._get('decisions', item['decision_id']) if item['decision_id'] else None
         bodies = {'message': 'An agent sent you a message.', 'decision': 'An agent needs your decision.', 'completed': 'An agent finished its task.', 'failed': 'An agent could not finish its task.'}
+        # A tap opens the chat at the message that the notification shows. A finished task shows its newest reply, so it
+        # names that reply: before, the tap opened the chat at its end, which can be far below the reply.
+        message_id = item['message_id']
+        if message_id is None and item['kind'] == 'completed':
+            from .push_relay import turn_replies
+            replies = turn_replies(service, task, bot)
+            message_id = replies[0]['id'] if replies else None
         payload = {'aps': {'alert': {'title': 'Coconut', 'body': bodies[item['kind']]}, 'sound': 'default',
                            'thread-id': task.get('thread_id', task['id'])},
                    'coconut': {'version': 1, 'device_id': device_id, 'bot_id': task['bot_id'] if task.get('source_bot_id') else conversation['id'],
-                               'task_id': task['id'], 'decision_id': item['decision_id'], 'message_id': item['message_id'], 'kind': item['kind']}}
+                               'task_id': task['id'], 'decision_id': item['decision_id'], 'message_id': message_id, 'kind': item['kind']}}
         if sealed:
             payload['aps']['alert'] = notification_alert(service, item, bot, task, decision)
         return payload, item['decision_id'] or item['message_id'] or task['id']
+
+    def _group_alert(self, device_id, items, alert):
+        """A group in detail for a sealed notification: the count in the title and one line per item, the agent or
+        the writer and the start of its text. An item that no longer reads keeps the count only."""
+        from .push_relay import group_lines, notification_text
+        lines = []
+        for item in items:
+            try:
+                one, _ = self._payload(device_id, [item], True)
+            except Exception:
+                continue
+            part = one['aps']['alert']
+            text = notification_text(part.get('body'), limit=110, byte_limit=330)
+            lines.append(f'{part["title"]}: {text}' if part.get('title') and part['title'] != 'Coconut' else text)
+        if not lines:
+            return alert
+        return {'title': f'{len(items)} new in Coconut', 'subtitle': notification_text(alert['body'], limit=120),
+                'body': group_lines(lines, len(items))}
 
     def deliver_one(self):
         if not self.configured:

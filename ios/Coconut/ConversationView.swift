@@ -626,7 +626,7 @@ struct TranscriptMessageRow: View {
             MessageBubble(message: message, scrollToDecision: scrollToDecision, onReply: onReply.map { reply in { reply(message) } })
         }
         }
-        .modifier(MessageTimestamp(createdAt: message.createdAt))
+        .modifier(MessageTimestamp(createdAt: message.createdAt, trailing: message.role == "user"))
         }
     }
 

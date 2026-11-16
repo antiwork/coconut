@@ -37,7 +37,7 @@ struct NotificationSettingsView: View {
             }
             Section {
                 Picker("During work hours", selection: $push.notificationLevel) {
-                    ForEach(NotificationLevel.allCases, id: \.self) { level in
+                    ForEach(NotificationLevel.shown, id: \.self) { level in
                         Text(level.title).tag(level).accessibilityIdentifier("notification-level-" + level.rawValue)
                     }
                 }
@@ -249,17 +249,21 @@ enum NotificationLevel: String, Codable, CaseIterable, Sendable {
     var detail: String {
         switch self {
         case .every: "Each card notifies you at once, in its own notification."
-        case .grouped: "After a new card, Coconut waits 30 seconds, so that cards from the same agent run come together. "
-            + "Then one notification shows the card, or counts the cards. The next notification waits at least 10 minutes. "
-            + "Urgent cards do not wait."
+        case .grouped: "Each card notifies you at once, in its own notification."
         case .urgentOnly: "Only urgent cards notify you. Other cards wait in Inbox without a notification."
         }
     }
 
-    /// The saved level. Before levels existed, turning decisions off meant only urgent cards.
+    /// The choices of the app. The Mac sends one notification per item, so a summary is no choice any more.
+    static let shown: [NotificationLevel] = [.every, .urgentOnly]
+
+    /// The saved level. Before levels existed, turning decisions off meant only urgent cards. A saved summary is now
+    /// one notification per card.
     static func load(from defaults: UserDefaults = .standard) -> NotificationLevel {
-        if let saved = defaults.string(forKey: "notificationLevel"), let level = NotificationLevel(rawValue: saved) { return level }
-        return defaults.object(forKey: "decisionNotifications") as? Bool == false ? .urgentOnly : .grouped
+        if let saved = defaults.string(forKey: "notificationLevel"), let level = NotificationLevel(rawValue: saved) {
+            return level == .grouped ? .every : level
+        }
+        return defaults.object(forKey: "decisionNotifications") as? Bool == false ? .urgentOnly : .every
     }
 }
 

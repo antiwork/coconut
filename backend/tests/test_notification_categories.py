@@ -135,13 +135,12 @@ class NotificationCategoryTests(unittest.TestCase):
         task.update(_native_turn_id=str(uuid4()), status='working')
         self.service._put('tasks', task)
         self.flush()
-        # Both replies arrived together, so they notify once as a group.
-        self.assertEqual([c[2]['coconut'].get('count') for c in self.transport.calls], [2])
-        self.assertEqual(self.transport.calls[0][2]['aps']['alert']['body'], '2 messages are waiting')
+        # Each reply notifies on its own.
+        self.assertEqual([c[2]['coconut']['message_id'] for c in self.transport.calls], [first['id'], second['id']])
         self.assertEqual(self.service.db.execute("SELECT message_id FROM push_items WHERE status='sent' ORDER BY created,rowid").fetchall(),
                          [(first['id'],), (second['id'],)])
         alert = notification_alert(self.service, {'kind': 'message', 'message_id': first['id']}, self.bot, task, None)
-        self.assertEqual(alert, {'title': 'Desk', 'body': 'First reply'})
+        self.assertEqual(alert, {'title': 'Desk', 'subtitle': 'Re: Hello', 'body': 'First reply'})
 
     def test_preferences_survive_restart_and_do_not_change_another_phone(self):
         self.preferences(messages=False)
@@ -164,7 +163,7 @@ class NotificationCategoryTests(unittest.TestCase):
         task = self.task()
         message = self.message(task, 'Private reply preview')
         self.flush()
-        self.assertEqual(relay.sealed[0]['aps']['alert'], dict(title='Desk', body='Private reply preview'))
+        self.assertEqual(relay.sealed[0]['aps']['alert'], dict(title='Desk', subtitle='Re: Hello', body='Private reply preview'))
         self.assertEqual(relay.sealed[0]['coconut']['message_id'], message['id'])
         self.assertNotIn('Private reply', json.dumps(relay.sent))
         self.assertNotIn(message['id'], json.dumps(relay.sent))
