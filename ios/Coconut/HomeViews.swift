@@ -18,7 +18,8 @@ struct HomeLaunchView: View {
             let second = $1.createdAt.apiDate ?? .distantPast
             return first == second ? $0.id < $1.id : first < second
         }
-        let rooms = store.team?.rooms ?? []
+        // The choices that wait for the Mac show at once (TeamChatChoices).
+        let rooms = store.shownTeamRooms
         let filter = ChatFilter.effective(store.chatFilter, rooms: rooms)
         // The tiles of the pinned agents come first. Then the rows (ChatList.rows): the pinned chats of the teams, each
         // with the pin mark, then the other rows newest activity first.
@@ -60,8 +61,8 @@ struct HomeLaunchView: View {
                             .accessibilityIdentifier("bot-conversation-\(bot.id)")
                             .padding(.horizontal, BoardStyle.Space.l)
                     case .team, .direct, .botDirect:
-                        // A team and a direct chat have no pin and no delete here. The Team screen has the leave
-                        // action.
+                        // A chat of a team has Pin and Mute in its menu (TeamChatMuteMenu). A direct chat has no
+                        // menu. None has a delete here: the Team screen has the leave action.
                         if let chat = item.chat {
                             NavigationLink(value: TeamChatRoute(chat: chat)) {
                                 PeopleRow(item: item, pinMark: item.isPinnedChat)

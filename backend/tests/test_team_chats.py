@@ -768,6 +768,22 @@ class ChatPinTests(TeamPushMacs, unittest.TestCase):
         self.assertEqual(self.refusal(self.phone(self.second), 'PUT', f'/v1/team/rooms/{"f" * 64}/pin',
                                       {'pinned': True})[0], 404)
 
+    def test_an_unpin_adds_the_event_and_works_for_a_team_that_is_not_active(self):
+        self.pin(chat=self.notices)
+        self.pin()
+        cursor = self.second._cursor()
+        self.pin(False)
+        self.assertTrue(self.second.updates(cursor, 0, collection_deltas=True).get('team_changed'))
+        # The team is no longer active on this Mac: the room keeps its pins, and the person can still unpin.
+        with self.second.transaction():
+            self.second.team_store.update_room(self.room, state=team_store.REMOVED)
+        room = self.rooms(self.second, sync=False)[0]
+        self.assertEqual((room['state'], room['pinned'], room['chats'][0]['pinned']), ('removed', False, True))
+        cursor = self.second._cursor()
+        self.assertIs(self.pin(False, chat=self.notices)['pinned'], False)
+        self.assertTrue(self.second.updates(cursor, 0, collection_deltas=True).get('team_changed'))
+        self.assertEqual(self.second.team_store.pinned_chats(self.room), set())
+
     def test_a_repeat_with_the_key_of_an_earlier_pin_pins_again(self):
         key, other = str(uuid4()), str(uuid4())
         for chat in (None, self.notices):

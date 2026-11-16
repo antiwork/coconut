@@ -205,10 +205,14 @@ enum TeamChatPin {
         let pinned: Bool
     }
 
-    /// The item of the menu of the row of a chat of a team, or nil: a direct chat, an agent, a team that is not active,
-    /// a Mac for a team only and an older service have none.
+    /// The item of the menu of the row of a chat of a team, or nil. "Unpin" shows in each state of the team, so a
+    /// pinned chat of a team that this Mac left can leave the top of the list without a removal of its history.
+    /// "Pin" shows only for an active team. A direct chat, an agent, a Mac for a team only and an older service have
+    /// none.
     static func listAction(_ item: ChatListItem) -> ListAction? {
-        guard case .team(let room) = item, room.status == .active, let choice = room.chatPinChoice else { return nil }
+        guard case .team(let room) = item, let choice = room.chatPinChoice, choice || room.status == .active else {
+            return nil
+        }
         return ListAction(room: room.room, chat: room.shownChat?.id, label: choice ? unpin : pin,
                           symbol: choice ? "pin.slash" : "pin", pinned: !choice)
     }
@@ -218,6 +222,49 @@ enum TeamChatPin {
 
     /// True while a request to pin or unpin the chat runs. Its item then waits.
     static func waits(_ key: String, _ choices: [String: Bool]) -> Bool { choices[key] != nil }
+
+    /// What VoiceOver says for a pinned chat.
+    static let spoken = "Pinned"
+}
+
+/// The choices of the person that wait for the Mac, applied to the list of the teams: each chat shows its new mute
+/// (TeamChatMute) and its new pin (TeamChatPin) at once. This is the one rule for the Chats list, the Mac sidebar and
+/// the Team screen. When a request ends, its choice goes, and the list of the Mac shows again: the new state after a
+/// success, the old state after a failure.
+enum TeamChatChoices {
+    static func applying(mutes: [String: Bool], pins: [String: Bool], to rooms: [TeamRoom]) -> [TeamRoom] {
+        guard !mutes.isEmpty || !pins.isEmpty else { return rooms }
+        return rooms.map { room in
+            var shown = TeamChatMute.applying(mutes, to: room)
+            if let pin = pins[TeamChatPin.key(room: room.room, chat: nil)], shown.pinned != nil { shown.pinned = pin }
+            if var chats = shown.chats {
+                for index in chats.indices {
+                    if let pin = pins[chats[index].id], chats[index].pinned != nil { chats[index].pinned = pin }
+                }
+                shown.chats = chats
+            }
+            return shown
+        }
+    }
+}
+
+/// The items of the menu of the row of a chat of a team in the Chats list and the Mac sidebar, in their order: "Pin"
+/// or "Unpin" first, as on the row of an agent, then "Mute" or "Unmute" for a named chat.
+enum TeamChatMenuItem: Equatable {
+    case pin(TeamChatPin.ListAction)
+    case mute(TeamChatMute.ListAction)
+
+    static func items(_ item: ChatListItem) -> [TeamChatMenuItem] {
+        [TeamChatPin.listAction(item).map(TeamChatMenuItem.pin),
+         TeamChatMute.listAction(item).map(TeamChatMenuItem.mute)].compactMap { $0 }
+    }
+
+    var label: String {
+        switch self {
+        case .pin(let action): action.label
+        case .mute(let action): action.label
+        }
+    }
 }
 
 /// Which person makes, renames and deletes the named chats of a team: the admin of an active team, as the service says
@@ -1815,14 +1862,15 @@ extension TeamRoom {
 enum TeamRowSpeech {
     static let named = "You are named"
 
-    /// The name (for a named chat: the name of the chat and of the team), the newest message, the unread count, and
-    /// "You are named" while the row shows the mark.
+    /// The name (for a named chat: the name of the chat and of the team), the newest message, the unread count,
+    /// "You are named" while the row shows the mark, "Muted" for a muted chat and "Pinned" for a pinned chat.
     static func label(_ room: TeamRoom, preview: String?) -> String {
         let unread = room.unread ?? 0
         return [room.shownChat.map { $0.name + ", " + room.name } ?? room.name, preview,
                 unread > 0 ? UnreadBadge.spoken(unread) : nil,
                 room.showsMentionMark ? named : nil,
-                room.shownChatMuted ? TeamChatMute.spoken : nil].compactMap { $0 }.joined(separator: ", ")
+                room.shownChatMuted ? TeamChatMute.spoken : nil,
+                room.chatPinned ? TeamChatPin.spoken : nil].compactMap { $0 }.joined(separator: ", ")
     }
 }
 

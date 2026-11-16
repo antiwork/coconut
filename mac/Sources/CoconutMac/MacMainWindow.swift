@@ -285,7 +285,8 @@ struct MacSidebar: View {
     var body: some View {
         // One pass over the messages for all sections. A comparison of the sort read every message and parsed its
         // date, about 3 ms for each body with 1,500 messages.
-        let sections = ChatSections.make(bots: store.bots, messages: store.messages, rooms: store.team?.rooms ?? [],
+        // The choices that wait for the Mac show at once (TeamChatChoices).
+        let sections = ChatSections.make(bots: store.bots, messages: store.messages, rooms: store.shownTeamRooms,
                                          local: store.newestLocalMessages)
         let pins = SidebarPins(pinnedBots: sections.pinned, documents: store.documents ?? [], bots: store.bots,
                                teamBots: store.teamBots)

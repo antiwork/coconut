@@ -1532,39 +1532,42 @@ struct DirectPeerFace: View {
     }
 }
 
-/// The menu of a row of a named chat in the Chats list and the Mac sidebar, as WhatsApp has it: "Mute" or "Unmute"
-/// (TeamChatMute.listAction). Each other row keeps its plain form. A failure shows in the banner of the screen.
+/// The menu of the row of a chat of a team in the Chats list and the Mac sidebar, as WhatsApp has it: "Pin" or
+/// "Unpin" for the Team chat and each named chat, then "Mute" or "Unmute" for a named chat (TeamChatMenuItem). A row
+/// without an item keeps its plain form. Each item waits while a request of its chat runs. A failure shows in the
+/// banner of the screen.
 struct TeamChatMuteMenu: ViewModifier {
     @Environment(AppStore.self) private var store
     let item: ChatListItem
 
     func body(content: Content) -> some View {
-        let pin = TeamChatPin.listAction(item)
-        let mute = TeamChatMute.listAction(item)
-        if pin != nil || mute != nil {
+        let items = TeamChatMenuItem.items(item)
+        if items.isEmpty {
+            content
+        } else {
             content.contextMenu {
-                // "Pin" comes first, as on the row of an agent.
-                if let pin {
-                    Button(pin.label, systemImage: pin.symbol) {
-                        store.error = nil
-                        Task { await store.setTeamChatPinned(pin.room, chat: pin.chat, pinned: pin.pinned) }
+                ForEach(items.indices, id: \.self) { index in
+                    switch items[index] {
+                    case .pin(let pin):
+                        Button(pin.label, systemImage: pin.symbol) {
+                            store.error = nil
+                            Task { await store.setTeamChatPinned(pin.room, chat: pin.chat, pinned: pin.pinned) }
+                        }
+                        .disabled(TeamChatPin.waits(TeamChatPin.key(room: pin.room, chat: pin.chat),
+                                                    store.teamChatPinChoices))
+                        .accessibilityIdentifier("chat-row-pin-menu")
+                    case .mute(let mute):
+                        Button(mute.label, systemImage: mute.symbol) {
+                            store.error = nil
+                            Task {
+                                await store.setTeamChatNotifications(mute.room, chat: mute.chat, enabled: mute.enabled)
+                            }
+                        }
+                        .disabled(TeamChatMute.waits(mute.chat, store.teamChatMuteChoices))
+                        .accessibilityIdentifier("chat-row-mute-menu")
                     }
-                    // One request of a chat at a time.
-                    .disabled(TeamChatPin.waits(TeamChatPin.key(room: pin.room, chat: pin.chat),
-                                                store.teamChatPinChoices))
-                    .accessibilityIdentifier("chat-row-pin-menu")
-                }
-                if let mute {
-                    Button(mute.label, systemImage: mute.symbol) {
-                        store.error = nil
-                        Task { await store.setTeamChatNotifications(mute.room, chat: mute.chat, enabled: mute.enabled) }
-                    }
-                    .disabled(TeamChatMute.waits(mute.chat, store.teamChatMuteChoices))
-                    .accessibilityIdentifier("chat-row-mute-menu")
                 }
             }
-        } else {
-            content
         }
     }
 }

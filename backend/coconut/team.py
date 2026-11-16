@@ -294,7 +294,7 @@ class Team(TeamSync, TeamSocket, TeamPages, TeamMessages, TeamChats, TeamDirects
         waits for it. A failure keeps no answer, because the person tries again. A request without a key, for example
         of a tool on this Mac, runs as before. `POST /v1/team/sync` and the reads need no key. The route of typing needs
         none too: a repeat writes nothing new, and its many calls would push the other answers out of the memory. The
-        routes `.../notifications` keep no answer either: a PUT of a state is safe to repeat by itself, and a saved
+        routes of a choice of the person, `.../notifications` and `.../pin` (switch_route), keep no answer either: a PUT of a state is safe to repeat by itself, and a saved
         answer would cancel a later request with the same key and body after a change back (the app sends the key of
         a write whose answer did not arrive again).
         """

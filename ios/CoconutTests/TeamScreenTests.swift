@@ -500,6 +500,14 @@ final class TeamScreenTests: XCTestCase {
             XCTAssertEqual(server.muteRequests, ["PUT /v1/team/rooms/r1/chats/c1/pin {\"pinned\":true}",
                                                  "PUT /v1/team/rooms/r1/pin {\"pinned\":true}"])
             XCTAssertEqual(store.teamChatPinChoices, [:], "The choice goes when its request ends.")
+            XCTAssertEqual(store.shownTeamRooms, store.team?.rooms)
+            // A failed request shows its text, and the list keeps the state of the Mac.
+            server.refuseMutes()
+            let refused = await store.setTeamChatPinned("r1", chat: "c1", pinned: false)
+            XCTAssertFalse(refused)
+            XCTAssertEqual(store.error, "This chat is no longer in the team.")
+            XCTAssertEqual(store.teamChatPinChoices, [:])
+            XCTAssertEqual(store.shownTeamRooms.first?.namedChats.first?.pinned, true)
         }
         #endif
     }
@@ -2191,6 +2199,10 @@ private final class TeamServer: @unchecked Sendable {
                     let sent = request.components(separatedBy: "\r\n\r\n").dropFirst().joined()
                     body = lock.withLock {
                         muteLines.append(route + " " + sent)
+                        if refusingMutes {
+                            status = "404 Not Found"
+                            return #"{"error": "This chat is no longer in the team."}"#
+                        }
                         let pinned = sent.contains("true")
                         let chat = route.contains("/chats/") ? #""c1""# : "null"
                         if chat == "null" { roomPinned = pinned } else { chatPinned = pinned }

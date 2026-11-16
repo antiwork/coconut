@@ -72,6 +72,12 @@ final class AppStore {
     private(set) var teamChatMuteChoices: [String: Bool] = [:]
     /// The new choice of each chat whose request to pin or unpin runs now, by TeamChatPin.key. Its item waits.
     private(set) var teamChatPinChoices: [String: Bool] = [:]
+
+    /// The teams as the Chats list and the Mac sidebar show them: with each choice that waits for the Mac
+    /// (TeamChatChoices).
+    var shownTeamRooms: [TeamRoom] {
+        TeamChatChoices.applying(mutes: teamChatMuteChoices, pins: teamChatPinChoices, to: team?.rooms ?? [])
+    }
     /// The number of the latest share or stop of each page. Only the answer of that act goes into the list.
     @ObservationIgnored private var pageShareActs: [String: Int] = [:]
     @ObservationIgnored private var pageShareCount = 0
