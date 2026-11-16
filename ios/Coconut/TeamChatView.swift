@@ -328,6 +328,8 @@ struct TeamChatView: View {
             }
         }
         #else
+        // The window moves with a drag in the band above the chat, under the title.
+        .overlay(alignment: .top) { WindowDragStrip() }
         // The title floats over the top of the chat, as the title of a bot does. It opens the Team screen in the
         // Settings window.
         .overlay(alignment: .top) {
