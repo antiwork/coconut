@@ -67,6 +67,10 @@ class RelayPushTests(unittest.TestCase):
         self.assertEqual(payload['aps']['alert'], {'title': 'Private bot name', 'subtitle': 'Re: Private task content',
                                                    'body': 'The independent task is done.'})
         self.assertEqual(payload['coconut']['task_id'], task['id'])
+        # A tap opens the chat at the reply that the notification shows.
+        reply = next(m for m in self.service._task_messages(task['id'])
+                     if m['role'] == 'assistant' and m['text'] == 'The independent task is done.')
+        self.assertEqual((payload['coconut']['kind'], payload['coconut']['message_id']), ('completed', reply['id']))
         self.assertNotIn('Private', json.dumps(self.relay.sent))
 
     def test_legacy_completion_preview_does_not_publish_interim_text(self):
@@ -77,6 +81,8 @@ class RelayPushTests(unittest.TestCase):
         task = self.run_task('Check the test')
         self.flush()
         self.assertEqual(self.relay.sealed[0]['coconut']['kind'], 'completed')
+        # Without a reply to show, the tap opens the chat at its end.
+        self.assertIsNone(self.relay.sealed[0]['coconut']['message_id'])
         self.assertEqual(self.relay.sealed[0]['aps']['alert'],
                          {'title': 'Private bot name', 'subtitle': 'Finished', 'body': task['title']})
 

@@ -171,6 +171,20 @@ def with_subject(title, task, body):
     return alert
 
 
+def turn_replies(service, task, bot):
+    """The replies of the agent in the newest turn of a task that a person sees, newest first."""
+    rows = service.db.execute('''SELECT data FROM messages
+        WHERE json_extract(data, '$.task_id')=? AND json_extract(data, '$.role')='assistant'
+          AND json_extract(data, '$.kind') IN ('text','artifact')
+          AND json_extract(data, '$.created_at')>=?
+          AND COALESCE(json_extract(data, '$.sender_bot_id'), ?)=?
+          AND COALESCE(json_array_length(data, '$.recipient_bot_ids'), 0)=0
+          AND COALESCE(json_extract(data, '$._hidden'), 0)=0
+          AND COALESCE(json_extract(data, '$._interim'), 0)=0
+        ORDER BY rowid DESC''', (task.get('_result_task_id', task['id']), task.get('_turn_started_at', task['created_at']), bot['id'], bot['id']))
+    return [json.loads(data) for (data,) in rows]
+
+
 def notification_alert(service, job, bot, task, decision):
     title = notification_text(bot['name'], limit=80, byte_limit=256)
     if decision:
@@ -181,19 +195,11 @@ def notification_alert(service, job, bot, task, decision):
     if job.get('message_id'):
         message = service._get('messages', job['message_id'])
         return with_subject(title, task, body_text(message_text(service, message)))
-    rows = service.db.execute('''SELECT data FROM messages
-        WHERE json_extract(data, '$.task_id')=? AND json_extract(data, '$.role')='assistant'
-          AND json_extract(data, '$.kind') IN ('text','artifact')
-          AND json_extract(data, '$.created_at')>=?
-          AND COALESCE(json_extract(data, '$.sender_bot_id'), ?)=?
-          AND COALESCE(json_array_length(data, '$.recipient_bot_ids'), 0)=0
-          AND COALESCE(json_extract(data, '$._hidden'), 0)=0
-          AND COALESCE(json_extract(data, '$._interim'), 0)=0
-        ORDER BY rowid DESC''', (task.get('_result_task_id', task['id']), task.get('_turn_started_at', task['created_at']), bot['id'], bot['id']))
+    rows = turn_replies(service, task, bot)
     # The newest messages of the turn, oldest first, so the notification reads as the reply does.
     texts = []
-    for (data,) in rows:
-        text = body_text(message_text(service, json.loads(data)))
+    for message in rows:
+        text = body_text(message_text(service, message))
         if text:
             texts.insert(0, text)
         if len('\n\n'.join(texts)) >= BODY_LIMIT:

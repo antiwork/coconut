@@ -687,10 +687,17 @@ class PushDelivery:
         conversation = service._get('bots', task.get('conversation_bot_id', bot['id']))
         decision = service._get('decisions', item['decision_id']) if item['decision_id'] else None
         bodies = {'message': 'An agent sent you a message.', 'decision': 'An agent needs your decision.', 'completed': 'An agent finished its task.', 'failed': 'An agent could not finish its task.'}
+        # A tap opens the chat at the message that the notification shows. A finished task shows its newest reply, so it
+        # names that reply: before, the tap opened the chat at its end, which can be far below the reply.
+        message_id = item['message_id']
+        if message_id is None and item['kind'] == 'completed':
+            from .push_relay import turn_replies
+            replies = turn_replies(service, task, bot)
+            message_id = replies[0]['id'] if replies else None
         payload = {'aps': {'alert': {'title': 'Coconut', 'body': bodies[item['kind']]}, 'sound': 'default',
                            'thread-id': task.get('thread_id', task['id'])},
                    'coconut': {'version': 1, 'device_id': device_id, 'bot_id': task['bot_id'] if task.get('source_bot_id') else conversation['id'],
-                               'task_id': task['id'], 'decision_id': item['decision_id'], 'message_id': item['message_id'], 'kind': item['kind']}}
+                               'task_id': task['id'], 'decision_id': item['decision_id'], 'message_id': message_id, 'kind': item['kind']}}
         if sealed:
             payload['aps']['alert'] = notification_alert(service, item, bot, task, decision)
         return payload, item['decision_id'] or item['message_id'] or task['id']
