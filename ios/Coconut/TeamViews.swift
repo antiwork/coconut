@@ -233,6 +233,16 @@ struct TeamRoomView: View {
             if TeamChatManagement.showsSection(room) {
                 chatsSection(room)
             }
+            // The notice board of the team, apart from its chats.
+            if room.notices != nil {
+                Section {
+                    NavigationLink { NoticeBoardView(roomId: room.room) } label: {
+                        Label("Notices", systemImage: "megaphone")
+                            .badge(room.unseenNotices)
+                    }
+                    .accessibilityIdentifier("team-notices")
+                }
+            }
             Section("Members") {
                 ForEach(room.people) { member in memberRow(member, in: room) }
             }

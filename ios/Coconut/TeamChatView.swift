@@ -100,6 +100,8 @@ struct TeamChatView: View {
         Group {
             if let room {
                 chatBody(room)
+                    .modifier(NoticeBannerArea(room: room, shown: chatKey.member == nil && chatKey.bot == nil,
+                                               top: Self.titleHeight))
             } else {
                 QuietEmptyState(symbol: "person.2", title: "Chat unavailable",
                                 message: "This Mac is no longer in this team.")

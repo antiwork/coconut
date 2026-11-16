@@ -70,6 +70,8 @@ struct TeamRoom: Decodable, Identifiable, Equatable, Sendable {
     /// agent"). Only a service that serves them sends it, for an app that asks with the header
     /// `X-Coconut-Team: direct`.
     var botDirects: [TeamBotDirect]? = nil
+    /// The notice board of the team (docs/team-log.md, "Notices"): the active notices first. An older service sends none.
+    var notices: [WorkspaceNotice]? = nil
     /// The named chat that this copy of the room shows (TeamRoom.inChat). Nil for the room itself: the Team chat. The
     /// Mac never sends it.
     var shownChat: TeamNamedChat? = nil
@@ -107,6 +109,70 @@ struct TeamRoom: Decodable, Identifiable, Equatable, Sendable {
     /// The people of the team: each member that is not a Mac for a team only. This is the one place of that rule.
     /// The section "Members", the count in the list of teams and the line of who is in the chat read it.
     var people: [TeamMember] { memberList.filter { !$0.isBotOnly } }
+    var noticeList: [WorkspaceNotice] { notices ?? [] }
+    /// The active notices that this person has not seen yet. The sidebar shows the count.
+    var unseenNotices: Int { noticeList.filter { $0.active && !$0.seen }.count }
+    /// The notice that a chat of the team shows above its messages: the newest active Status or Deadline.
+    var bannerNotice: WorkspaceNotice? { noticeList.first { $0.active && $0.kind.isBanner } }
+}
+
+/// One notice of a team: what the whole team must know for a while. It stays on the board until it ends or its author
+/// closes it.
+struct WorkspaceNotice: Decodable, Identifiable, Equatable, Sendable {
+    var id: String
+    var type: String
+    var text: String
+    var postedAt: String
+    var updatedAt: String? = nil
+    var endsAt: String? = nil
+    var closed: Bool
+    var active: Bool
+    var author: String
+    var authorName: String
+    var own: Bool
+    var seen: Bool
+    var seenBy: [String]
+
+    var kind: NoticeKind { NoticeKind(rawValue: type) ?? .announcement }
+}
+
+/// The four kinds of a notice. Each has one color and one symbol, so a board reads at a glance.
+enum NoticeKind: String, CaseIterable, Identifiable, Sendable {
+    case announcement, status, rule, deadline
+
+    var id: String { rawValue }
+    var label: String {
+        switch self {
+        case .announcement: "Announcement"
+        case .status: "Status"
+        case .rule: "Rule"
+        case .deadline: "Deadline"
+        }
+    }
+    var symbol: String {
+        switch self {
+        case .announcement: "megaphone.fill"
+        case .status: "exclamationmark.triangle.fill"
+        case .rule: "checkmark.seal.fill"
+        case .deadline: "clock.fill"
+        }
+    }
+    /// A Status and a Deadline hold the work of the team now, so the chats of the team show them in a banner.
+    var isBanner: Bool { self == .status || self == .deadline }
+    /// A Deadline needs an end. The others end when their author closes them, or at an optional end.
+    var needsEnd: Bool { self == .deadline }
+}
+
+/// The time to the end of a notice, to the second when it is close: "2d 04h", "3h 05m", "4m 09s", "Ended".
+enum NoticeCountdown {
+    static func text(until end: Date, now: Date) -> String {
+        let total = Int(end.timeIntervalSince(now))
+        guard total > 0 else { return "Ended" }
+        let (days, hours, minutes, seconds) = (total / 86_400, total / 3600 % 24, total / 60 % 60, total % 60)
+        if days > 0 { return String(format: "%dd %02dh", days, hours) }
+        if hours > 0 { return String(format: "%dh %02dm", hours, minutes) }
+        return String(format: "%dm %02ds", minutes, seconds)
+    }
 }
 
 struct TeamMember: Decodable, Identifiable, Equatable, Sendable {

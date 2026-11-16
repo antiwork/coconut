@@ -771,6 +771,7 @@ class GatewayChat:
         records = turn_records(task) if own is not None else []
         if own is not None:
             records += self._instructions_record(bot, own)
+            records += self._notices_record()
         # The attached images of the turn go to Hermes as images, so the model sees a pasted screenshot.
         if images is None:
             images = turn_images(task.get('attachments', []))
@@ -820,6 +821,20 @@ class GatewayChat:
             self._gateway_wait_summary(task['id'], None)
             if context_id is None:
                 self._close_gateway_questions(task['id'])
+
+    def _notices_record(self) -> list[dict]:
+        """The active notices of the teams of this Mac as one data record (team_notices.notices_text). Its ID changes
+        with the text, so a session gets the board again only when a notice changes."""
+        reader = getattr(self, 'team_active_notices', None)
+        try:
+            text = reader() if reader is not None else None
+        except Exception as error:
+            LOG.warning('The notices of the teams did not reach the turn (%s).', type(error).__name__)
+            return []
+        if not text:
+            return []
+        import hashlib
+        return [{'id': 'notices:' + hashlib.sha256(text.encode()).hexdigest()[:16], 'text': text}]
 
     def _instructions_record(self, bot: dict, own: str) -> list[dict]:
         """The record of the bot's SOUL.md, as a list of one record, or none without a readable SOUL.md. A continuing

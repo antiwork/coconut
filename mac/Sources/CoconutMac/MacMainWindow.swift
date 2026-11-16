@@ -13,6 +13,8 @@ enum MacSelection: Hashable {
     case document(String)
     /// The Team chat of a team, a named chat, or a direct chat with one person or one bot of a team.
     case team(TeamChatKey)
+    /// The notice board of a team, by its room ID.
+    case notices(String)
 }
 
 /// The tabs of the details next to a chat.
@@ -208,6 +210,8 @@ struct MacMainWindow: View {
             // The pill over the chat names the bot, so the window shows no title of its own. Without this, the title of
             // the bot settings in the details repeats the bot name.
             .toolbar(removing: .title)
+        case .notices(let room):
+            NavigationStack { NoticeBoardView(roomId: room).id(room) }
         case .team(let chat):
             // A team has no details column, so the chat takes the whole detail column and has no control for one.
             NavigationStack(path: $chatPath) {
@@ -311,6 +315,7 @@ struct MacSidebar: View {
     @AppStorage("sidebar-starred-open") private var starredOpen = true
     @AppStorage("sidebar-people-open") private var peopleOpen = true
     @AppStorage("sidebar-agents-open") private var agentsOpen = true
+    @AppStorage("sidebar-notices-open") private var noticesOpen = true
     @State private var archivedOpen = false
 
     /// The bots that are not archived, newest activity first, split into the pinned bots and the other bots.
@@ -371,6 +376,22 @@ struct MacSidebar: View {
                     // The pinned chats of the teams, as the same rows that they have in "People".
                     ForEach(sections.pinnedChats) { item in itemRow(item) }
                     ForEach(pins.pages) { page in pageRow(page) }
+                }
+            }
+            // The notice board of each team: a place of its own, not a chat. The count is the active notices that
+            // the person has not seen.
+            let boards = store.shownTeamRooms.filter { $0.status == .active && $0.notices != nil }
+            if !boards.isEmpty {
+                Section("Notices", isExpanded: $noticesOpen) {
+                    ForEach(boards) { room in
+                        MacSidebarRow(name: room.name, unread: room.unseenNotices) {
+                            Image(systemName: room.bannerNotice?.kind.symbol ?? "megaphone")
+                                .foregroundStyle(room.bannerNotice?.kind.tint ?? .secondary)
+                                .frame(width: 20, height: 20)
+                        }
+                        .tag(MacSelection.notices(room.room))
+                        .accessibilityIdentifier("sidebar-notices-" + room.room)
+                    }
                 }
             }
             if !sections.people.isEmpty {

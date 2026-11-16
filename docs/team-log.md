@@ -95,7 +95,7 @@ Each payload has these fields:
 
 The kinds `member`, `delete`, `bot`, `page`, `message`, `direct`, `remove`, `key` and `erase` are complete. See [Agents and pages](#agents-and-pages) for the rules of `bot` and `page`, [Team chat](#team-chat) for `message`, and [Direct messages](#direct-messages) for `direct`. Each other kind gets its fields in the pull request that builds it. A new kind needs no change of the relay and no change of the body.
 
-The kinds `typing`, `chat`, `reaction` and `file` are complete too. See [Typing](#typing), [Chats of a team](#chats-of-a-team), [Reactions](#reactions) and [Files](#files).
+The kinds `typing`, `chat`, `reaction`, `file`, `notice` and `seen` are complete too. See [Typing](#typing), [Chats of a team](#chats-of-a-team), [Notices](#notices), [Reactions](#reactions) and [Files](#files).
 
 A key in a payload is unpadded base64url, as in a pairing setup.
 
@@ -824,6 +824,32 @@ What the phone gets:
 - The app shows one row under the newest message, above the composer: the small face of each subject, the text, and three dots. The texts are "Grace is typing", "Grace and Lin are typing", and for three or more "3 people are typing". An agent counts as one subject with its name. The row of the team in the Chats list and in the Mac sidebar shows the same text in place of the newest message.
 
 No log line has a name. A `typing` entry is sealed only with the room key, so it would tell each member that two people talk. So a direct chat has no `typing` entry. In a direct chat of a person with an agent, the Mac for a team only writes the typing sign of the agent as a `direct` entry with a box that only the person's Mac opens (rule 12 of [The Mac for a team only](#the-mac-for-a-team-only)). The typing of a person in a direct chat is not sent.
+
+#### Notices
+
+A notice is what the whole team must know and what stays true for a while: a freeze, an outage, a rule, a deadline. It is not a message: it stays on the board of the team until it ends or its author closes it, and each member sees who has seen it. `backend/coconut/team_notices.py` serves the routes.
+
+The payload of a `notice` entry: `{"kind": "notice", "rev": n, "at": "...", "type": "status", "text": "...", "posted_at": "...", "ends_at": "...", "closed": true}`. The entry is kept. Its ID is 16 random bytes, or for a request with an `Idempotency-Key` it comes from the room, the device and the key, as for a chat.
+
+- Each member writes notices. Only the author changes one: rule 3 of a reader refuses another member's write. A removal is a `delete` entry over it.
+- `type` is `announcement`, `status`, `rule` or `deadline`. `text` has 1 to 500 code points of valid Unicode text. `posted_at` is the UTC time of the first write and stays the same in each later write. `ends_at` is an optional UTC time. `closed` is true or absent. A reader takes null as an absent field. An entry that does not fit stays in the store and shows nothing.
+- A notice is active while it is not closed and its `ends_at`, if any, is still ahead.
+- At most 50 active notices in a room. The Mac of the writer refuses the 51st.
+
+The payload of a `seen` entry: `{"kind": "seen", "rev": n, "at": "...", "notices": ["<entry ID>", ...]}`. The entry is kept: one for each member and room, with at most 200 entry IDs, the newest notices first. The entry ID is the first 16 bytes of HMAC-SHA256 with the member token as the key, over `"coconut room seen" | room ID (32 bytes)`, so another member cannot take it first. Only the newest write counts, also one that does not fit.
+
+Both kinds are written again after a key change (see [The kept entries again](#the-kept-entries-again)). A Mac with an older Coconut keeps both by rule 5 of a reader and shows nothing.
+
+The room view of `GET /v1/team/rooms` has `notices`: the active ones first, the newest first in each group, each with `id`, `type`, `text`, `posted_at`, `updated_at`, `ends_at`, `closed`, `active`, `author`, `author_name`, `own`, `seen` (the person of this Mac has seen it, or wrote it) and `seen_by` (the names of the other members that have seen it). Only a paired device writes:
+
+| Request | Answer |
+| --- | --- |
+| `POST /v1/team/rooms/<room>/notices`, body `{type, text, ends_at?}` | Posts a notice, and answers `{room, notice}`. The author has seen it. |
+| `PATCH /v1/team/rooms/<room>/notices/<id>`, body `{text?, ends_at?, closed?}` | Changes or closes an own notice. Another member's notice answers 403. |
+| `DELETE /v1/team/rooms/<room>/notices/<id>` | Removes an own notice. A repeat answers the same and writes nothing. |
+| `POST /v1/team/rooms/<room>/notices/seen`, body `{notices}` | Adds the notices to the own `seen` entry. Notices that it names already write nothing. |
+
+The token of the bridge file gets 403 for each write, so an agent cannot post a notice on its own. Each turn of an agent gets the active notices of the teams of its Mac as data: a turn in a team chat in the rules of its chat, and a turn of a person's agent as one record whose ID changes with the text.
 
 #### Chats of a team
 

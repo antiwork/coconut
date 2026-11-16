@@ -357,10 +357,18 @@ MAX_BOX = 1024
 # The epoch of a body is a 32-bit number.
 MAX_EPOCH = 2 ** 32 - 1
 # The kinds of the kept entries that a Mac writes again with the room key of a new epoch (TeamEpochs).
-WRITTEN_AGAIN = ('member', 'bot', 'page', 'chat')
+WRITTEN_AGAIN = ('member', 'bot', 'page', 'chat', 'notice', 'seen')
 # The most Unicode code points of the name of a chat, and the most chats of a room (docs/team-log.md, "Chats of a team").
 MAX_CHAT_NAME = 50
 MAX_CHATS = 20
+# Notices of a team (docs/team-log.md, "Notices"): the four kinds, the most code points of a text, the most active
+# notices of a room, and the most notices that one `seen` entry names.
+NOTICE_TYPES = ('announcement', 'status', 'rule', 'deadline')
+MAX_NOTICE_TEXT = 500
+MAX_NOTICES = 50
+MAX_SEEN = 200
+# A time of a notice: UTC text such as 2026-11-20T17:00:00Z, at most this long.
+MAX_NOTICE_TIME = 40
 
 
 def unicode_text(value) -> bool:
@@ -634,6 +642,48 @@ def message_fields(fields: dict) -> dict | None:
                 preview=preview_fields(fields.get('preview'), text), files=files)
 
 
+def notice_time(value) -> str | None:
+    """A time of a notice as UTC text, or None when it is absent or does not read as a time with a zone."""
+    if not isinstance(value, str) or not 0 < len(value) <= MAX_NOTICE_TIME:
+        return None
+    try:
+        moment = datetime.fromisoformat(value.replace('Z', '+00:00'))
+    except ValueError:
+        return None
+    if moment.tzinfo is None:
+        return None
+    return moment.astimezone(timezone.utc).isoformat(timespec='seconds').replace('+00:00', 'Z')
+
+
+def notice_fields(fields: dict) -> dict | None:
+    """The fields of a `notice` payload, or None when they do not fit (docs/team-log.md, "Notices"). `type` is one of
+    NOTICE_TYPES, `text` has 1 to MAX_NOTICE_TEXT code points, `posted_at` is the time of the first write, `ends_at` is
+    an optional time after which the notice is no longer active, and `closed` is true when its author closed it. A
+    reader takes null as an absent field."""
+    kind, text = fields.get('type'), fields.get('text')
+    if kind not in NOTICE_TYPES or not unicode_text(text) or not 0 < len(text) <= MAX_NOTICE_TEXT:
+        return None
+    posted = notice_time(fields.get('posted_at'))
+    if posted is None:
+        return None
+    ends = fields.get('ends_at')
+    if ends is not None and notice_time(ends) is None:
+        return None
+    closed = fields.get('closed')
+    if closed is not None and type(closed) is not bool:
+        return None
+    return dict(type=kind, text=text, posted_at=posted, ends_at=notice_time(ends) if ends is not None else None,
+                closed=bool(closed))
+
+
+def seen_fields(fields: dict) -> dict | None:
+    """The notices that a `seen` payload names, or None when it does not fit: a list of at most MAX_SEEN entry IDs."""
+    notices = fields.get('notices')
+    if not isinstance(notices, list) or len(notices) > MAX_SEEN or not all(entry_id(item) for item in notices):
+        return None
+    return dict(notices=list(dict.fromkeys(notices)))
+
+
 def chat_fields(fields: dict) -> dict | None:
     """The name of a `chat` payload, or None when it does not fit (docs/team-log.md, "Chats of a team"). A reader takes
     each name of 1 to MAX_CHAT_NAME code points of valid Unicode text. The admin's Mac writes a name by a stricter rule
@@ -801,7 +851,7 @@ def key_fields(fields: dict, epoch) -> dict | None:
 
 SHOWN = {'member': member_fields, 'bot': bot_fields, 'page': page_fields, 'message': message_fields,
          'remove': remove_fields, 'erase': erase_fields, 'typing': typing_fields, 'chat': chat_fields,
-         'reaction': reaction_fields, 'file': piece_fields}
+         'reaction': reaction_fields, 'file': piece_fields, 'notice': notice_fields, 'seen': seen_fields}
 
 
 def same_name(first: str, second: str) -> bool:
@@ -1301,6 +1351,10 @@ class TeamStore:
         if 'chat' in kinds and self._show_chat(room['room'], entry, shown if fields['kind'] == 'chat' else None,
                                                fresh=True):
             self.changed.add(room['room'])
+        # A notice, or the notices that a member has seen, changes the board of the room. Both are read from the store
+        # each time (notices, seen), so they keep no table of their own.
+        if kinds & {'notice', 'seen'}:
+            self.changed.add(room['room'])
         # A `remove` entry of the admin takes a member out. Rule 4 checked the writer above.
         if 'remove' in kinds:
             self._show_removal(room, entry, shown if fields['kind'] == 'remove' else None)
@@ -1469,6 +1523,28 @@ class TeamStore:
             ORDER BY m.first''', (room, chat)).fetchall()
         for entry, first, member, at, bot in rows:
             self._note_fresh(room_row, dict(id=entry, first=first, member=member, at=at), dict(bot=bot, chat=chat))
+
+    def notices(self, room: str) -> list[dict]:
+        """The notices of the room that fit, the newest first: `entry`, `member` (the author), `first`, the time of the
+        newest write in `updated_at`, and the fields of notice_fields."""
+        rows = self.db.execute("SELECT id, member, first, at, payload FROM team_entries WHERE room=? AND kind='notice' "
+                               'ORDER BY first DESC', (room,)).fetchall()
+        notices = []
+        for entry, member, first, at, payload in rows:
+            fields = stored_fields('notice', payload)
+            if fields is not None:
+                notices.append(dict(fields, entry=entry, member=member, first=first, updated_at=relay_time(at)))
+        return notices
+
+    def seen(self, room: str) -> dict[str, set[str]]:
+        """The notices that each member has seen, by member: the newest `seen` entry of each member counts."""
+        seen: dict[str, set[str]] = {}
+        for member, payload in self.db.execute(
+                "SELECT member, payload FROM team_entries WHERE room=? AND kind='seen' ORDER BY seq", (room,)):
+            fields = stored_fields('seen', payload)
+            if fields is not None:
+                seen[member] = set(fields['notices'])
+        return seen
 
     def chats(self, room: str) -> list[dict]:
         """The named chats of the room that this Mac shows, in the order of `first`: `entry`, `first`, `name` and

@@ -15,13 +15,20 @@ final class MacWindowSnapshotTests: XCTestCase {
         }
         if !store.bots.isEmpty { store.bots[0].pinned = true }
         let botId = try XCTUnwrap(store.bots.first?.id)
+        store.team = try APIJSON.decoder().decode(TeamRooms.self, from: Data(TeamNoticeTests.rooms.utf8))
         let windows: [(String, AnyView)] = [
+            ("notices", AnyView(NavigationStack { NoticeBoardView(roomId: "example") })),
             ("chat", AnyView(NavigationStack { ConversationView(botId: botId) })),
             ("inbox", AnyView(MacInboxView(selection: .constant(.inbox)))),
             ("library", AnyView(NavigationStack { LibraryView().navigationTitle("Library") })),
         ]
         for (name, detail) in windows {
-            let selection: MacSelection = name == "chat" ? .bot(botId) : name == "inbox" ? .inbox : .library
+            let selection: MacSelection = switch name {
+            case "chat": .bot(botId)
+            case "inbox": .inbox
+            case "notices": .notices("example")
+            default: .library
+            }
             let view = HStack(spacing: 0) {
                 MacSidebar(selection: .constant(selection)).frame(width: 260)
                 Divider()

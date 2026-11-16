@@ -74,6 +74,7 @@ from .team_chats import TeamChats
 from .team_directs import TeamDirects
 from .team_epochs import TeamEpochs
 from .team_files import TeamFiles
+from .team_notices import TeamNotices
 from .team_keys import ROOM_ID, TeamKeysError
 from .team_messages import TeamMessages
 from .team_pages import TeamPages
@@ -229,7 +230,7 @@ def team_errors():
 
 
 class Team(TeamSync, TeamSocket, TeamPages, TeamMessages, TeamChats, TeamDirects, TeamEpochs, TeamTyping,
-           TeamReactions, TeamFiles):
+           TeamReactions, TeamFiles, TeamNotices):
     """The team rooms of this Mac: the routes of the tools, and the thread that copies each log."""
 
     def _init_team(self):
@@ -418,6 +419,14 @@ class Team(TeamSync, TeamSocket, TeamPages, TeamMessages, TeamChats, TeamDirects
             return self.team_chat_rename(parts[1], parts[3], data, device)
         if len(parts) == 4 and parts[0] == 'rooms' and parts[2] == 'chats' and method == 'DELETE':
             return self.team_chat_delete(parts[1], parts[3], device)
+        if len(parts) == 4 and parts[0] == 'rooms' and parts[2] == 'notices' and parts[3] == 'seen' and method == 'POST':
+            return self.team_notices_seen(parts[1], data, device)
+        if len(parts) == 3 and parts[0] == 'rooms' and parts[2] == 'notices' and method == 'POST':
+            return self.team_notice_post(parts[1], data, device, repeat)
+        if len(parts) == 4 and parts[0] == 'rooms' and parts[2] == 'notices' and method == 'PATCH':
+            return self.team_notice_change(parts[1], parts[3], data, device)
+        if len(parts) == 4 and parts[0] == 'rooms' and parts[2] == 'notices' and method == 'DELETE':
+            return self.team_notice_delete(parts[1], parts[3], device)
         if len(parts) == 3 and parts[0] == 'rooms' and parts[2] == 'notifications' and method == 'PUT':
             return self.team_notifications(parts[1], data)
         if (len(parts) == 5 and parts[0] == 'rooms' and parts[2] == 'chats' and parts[4] == 'notifications'
@@ -472,6 +481,8 @@ class Team(TeamSync, TeamSocket, TeamPages, TeamMessages, TeamChats, TeamDirects
                 # The named chats. The fields above stay the fields of the Team chat, so an older app works. Only the
                 # admin of an active room changes the chats, and the app shows the actions only with this field.
                 'chats': self._team_chats_view(room, members), 'can_manage_chats': removes,
+                # The notice board of the team (team_notices.py). Each member posts; an older app ignores the field.
+                'notices': self._team_notices_view(room, members),
                 'sync': {'seq': room['seq'], 'entries': entries, 'waiting': waiting,
                          'synced_at': status.get('synced_at'), 'error': status.get('error'), 'refused': refused,
                          'socket': self.team_socket_open(room['room'])}}
