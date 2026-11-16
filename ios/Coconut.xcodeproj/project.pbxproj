@@ -1141,9 +1141,9 @@
 			targets = (
 				7F2F5A68FD83C168A0C2DF7F /* Coconut */,
 				7787C3C6ED299383A1BC9BDE /* CoconutMac */,
+				8124A316F0E783806D3D6A14 /* CoconutMacTests */,
 				7BCB11B2D6BED2E788C53C6C /* CoconutNotificationService */,
 				7AE693619F5460E3FEF996C4 /* CoconutTests */,
-				8124A316F0E783806D3D6A14 /* CoconutMacTests */,
 				C374E2559992E75C45F981FE /* CoconutUITests */,
 			);
 		};

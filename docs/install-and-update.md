@@ -111,7 +111,7 @@ A Mac with no person at it can join a team from a message, as `coconut pair <cod
 | Command | What it does |
 |---|---|
 | `coconut team` | Prints the teams of this Mac: the name, the ID, the state, the admin, the members, the agents, and the sync error. `--json` prints the answer of the service. |
-| `coconut team join [--name <text>]` | Joins a team with the invite link on standard input. `--name` is the name of this Mac in the member list. Without it, the service uses "Member". |
+| `coconut team join [--name <text>]` | Joins a team with the invite link on standard input, in the form of the app (`coconut://team/<token>`) or its web form (`https://coconut.gumroad.com/i/<token>`). `--name` is the name of this Mac in the member list. Without it, the service uses "Member". |
 | `coconut team new-agent <name> [--home <path>]` | On a team-only Mac: declares an agent for the Hermes home that it stands for. See [A Mac without a person](#a-mac-without-a-person). |
 | `coconut team add-agent <agent> [--team <name or ID>]` | On a Mac for a team only: adds an agent of this Mac to the team. `<agent>` is the ID or the name of the agent. Case does not matter. On a person's Mac it prints how to share a page in the Library. |
 | `coconut team remove-agent <agent> [--team <name or ID>]` | On a Mac for a team only: removes an agent of this Mac from the team. On a person's Mac it prints how to share a page. |
@@ -236,7 +236,7 @@ If macOS asks to allow Coconut in Login Items, allow it in System Settings → G
 
 ### Join a team and add an agent
 
-1. Run `coconut team join --name "Reporter Mac"`, then paste the invite link when the command asks for it. An agent pipes the link to the command instead. Expect `This Mac joined the team Example Team.`
+1. Run `coconut team join --name "Reporter Mac"`, then paste the invite link when the command asks for it. An agent pipes the link to the command instead. The link comes as a `coconut://team/<token>` link or as its web form, `https://coconut.gumroad.com/i/<token>`: on an iPhone, tapping that link opens Coconut on the join sheet. Expect `This Mac joined the team Example Team.`
 2. Run `coconut team new-agent Reporter --home ~/.hermes`. Give the Hermes home of your agent.
 3. Run `coconut team add-agent Reporter --team "Example Team"`.
 

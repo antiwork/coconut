@@ -188,6 +188,16 @@ class TeamRoomTests(TeamMacs, unittest.TestCase):
         self.assertEqual(self.refusal(self.join, self.first, link)[0], 409)
         self.assertEqual(len(self.relay.rooms[room['room']]['members']), 2)
 
+    def test_a_mac_joins_with_the_web_form_of_an_invite_link(self):
+        room = self.create()
+        link = self.invite(room, uses=2)['link']
+        # A person shares https://coconut.gumroad.com/i/<token>, because a mail or a chat keeps that form.
+        web = 'https://coconut.gumroad.com/i/' + link.removeprefix('coconut://team/')
+        self.assertEqual(self.join(self.second, web)['name'], 'Example Team')
+        # The slash that a browser adds at the end of a path, and a line break after the link, change nothing.
+        self.assertEqual(self.join(self.third, web + '/\n')['name'], 'Example Team')
+        self.assertEqual(len(self.relay.rooms[room['room']]['members']), 3)
+
     def test_a_link_that_is_not_an_invite_or_is_past_its_end_is_refused_before_the_relay(self):
         room = self.create()
         link = self.first.team_helper.invite(self.invite(room)['link'])

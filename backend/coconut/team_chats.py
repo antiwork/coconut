@@ -10,6 +10,8 @@ chats in `team_chats`.
 - `DELETE /v1/team/rooms/<room>/chats/<id>`: remove it.
 - `PUT /v1/team/rooms/<room>/chats/<id>/notifications` with `{enabled}`: the person mutes or unmutes the chat for
   the phones of this Mac. Each member can do it, and the choice stays on this Mac.
+- `PUT /v1/team/rooms/<room>/chats/<id>/pin` with `{pinned}`, and `PUT /v1/team/rooms/<room>/pin` for the Team chat:
+  the person pins or unpins the chat. Each member can do it, and the choice stays on this Mac.
 
 Only a paired device on the admin's Mac makes, renames and removes a chat. A paired device of each member mutes a
 chat. The routes of the Team chat take a chat in `chat`
@@ -106,6 +108,28 @@ class TeamChats:
                 self._event(TEAM_EVENT, {'team': room_id})
         return {'room': room_id, 'chat': chat, 'notifications': enabled}
 
+    def team_chat_pin(self, room_id: str, chat: str | None, data: dict) -> dict:
+        """Pin or unpin a chat for the person of this Mac: the Team chat (`chat` None) or a named chat. The choice is
+        the person's, so it stays on this Mac and never goes into the log. The route has the rules of the mute
+        (team_chat_notifications): only a person's Mac has it, and an unknown chat answers 404. TEAM_EVENT tells the
+        other devices of the person."""
+        from .service_base import ServiceError
+        from .team_sync import TEAM_EVENT
+        if not self._team_has_phones:
+            raise ServiceError(409, 'This Mac has no person to star a chat.')
+        pinned = data.get('pinned')
+        if type(pinned) is not bool:
+            raise ServiceError(400, 'Supply true or false for pinned.')
+        self._team_room(room_id)
+        with self.transaction():
+            if self.team_store.room(room_id) is None:
+                raise ServiceError(404, 'This Mac is not in this team.')
+            if chat is not None:
+                self._team_chat_named(room_id, chat)
+            if self.team_store.pin_chat(room_id, chat, pinned):
+                self._event(TEAM_EVENT, {'team': room_id})
+        return {'room': room_id, 'chat': chat, 'pinned': pinned}
+
     # Steps
 
     @staticmethod
@@ -151,8 +175,10 @@ class TeamChats:
         """`chats` of a room view: each named chat with the fields that the room has for the Team chat. On a person's
         Mac each chat also has `notifications`: false when the person muted it. The caller holds the service lock."""
         muted = self.team_store.muted_chats(room['room']) if self._team_has_phones else None
+        pinned = self.team_store.pinned_chats(room['room']) if self._team_has_phones else None
         return [dict(id=chat['entry'], name=chat['name'], created_at=chat['created_at'],
                      **self._team_chat_summary(room, chat['entry']),
                      typing=self._team_typing_view(room, members, chat['entry']),
-                     **({'notifications': chat['entry'] not in muted} if muted is not None else {}))
+                     **({'notifications': chat['entry'] not in muted, 'pinned': chat['entry'] in pinned}
+                        if muted is not None else {}))
                 for chat in self.team_store.chats(room['room'])]
