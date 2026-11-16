@@ -545,7 +545,7 @@ final class TranscriptPresentationTests: XCTestCase {
         let check = { (text: String) in TranscriptPresentation.isPublicWebAddress(URL(string: text)!) }
         XCTAssertTrue(check("https://www.apple.com/iphone/"))
         for address in ["http://apple.com", "https://192.168.1.4/x", "https://[::1]/x", "https://localhost/x",
-                        "https://mini.local/x", "https://coconut-mac-mini.tail361cbe.ts.net/x", "https://router.lan/"] {
+                        "https://mini.local/x", "https://mac-mini.tail1234.ts.net/x", "https://router.lan/"] {
             XCTAssertFalse(check(address), address)
         }
     }

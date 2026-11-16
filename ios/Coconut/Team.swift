@@ -51,7 +51,7 @@ struct TeamRoom: Decodable, Identifiable, Equatable, Sendable {
     /// team only and an older service send none, and the Team screen then has no switch.
     var notifications: Bool? = nil
     /// True when this person pinned the Team chat on this Mac (TeamChatPin). A Mac for a team only and an older service
-    /// send none, and the row then has no action "Pin".
+    /// send none, and the row then has no action "Star".
     var pinned: Bool? = nil
     /// The direct chats of this person in the team, newest first. Only a service that serves direct messages sends it,
     /// for an app that asks with the header `X-Coconut-Team: direct`.

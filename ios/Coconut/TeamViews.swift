@@ -981,3 +981,31 @@ extension View {
         #endif
     }
 }
+
+/// Makes a new invite link of a team and opens the share sheet with it. The team chat and the menu of the team's row
+/// in the chat list have it, so an invite needs no visit to the Team screen. Each link lets one person join, for one day.
+struct TeamInviteButton<Label: View>: View {
+    @Environment(AppStore.self) private var store
+    let room: TeamRoom
+    @ViewBuilder let label: (_ inviting: Bool) -> Label
+    @State private var inviting = false
+
+    var body: some View {
+        Button {
+            inviting = true
+            Task {
+                defer { inviting = false }
+                if let link = await store.teamInviteLink(room) { SystemShare.present(link) }
+            }
+        } label: { label(inviting) }
+        .disabled(inviting)
+        .accessibilityIdentifier("team-invite-\(room.room)")
+    }
+}
+
+extension TeamInviteButton where Label == SwiftUI.Label<Text, Image> {
+    /// "Invite someone" with the symbol of a person and a plus, for a menu.
+    init(room: TeamRoom) {
+        self.init(room: room) { _ in SwiftUI.Label("Invite someone", systemImage: "person.badge.plus") }
+    }
+}

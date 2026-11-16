@@ -403,6 +403,15 @@ struct ConversationView: View {
                     }
                 }
                 .onAppear { isVisible = true; footerScroll.reset() }
+                #if os(macOS)
+                // A click on a chat in the sidebar puts the cursor in the message field, so the person can type at once.
+                // An iPhone keeps the keyboard closed: it would cover the latest messages.
+                .task(id: botId) {
+                    try? await Task.sleep(for: .milliseconds(150))
+                    guard !Task.isCancelled else { return }
+                    composerFocused = true
+                }
+                #endif
                 .onReceive(DaySeparator.changes) { _ in dayReference = Date() }
                 .onDisappear { isVisible = false; composerFocused = false; footerScroll.reset() }
                 // "Ask the bot about this page" opens the chat with the page quoted in the composer.
@@ -448,6 +457,8 @@ struct ConversationView: View {
                     #endif
                 }
                 #if os(macOS)
+                // The window moves with a drag in the band above the chat, under the pill.
+                .overlay(alignment: .top) { WindowDragStrip() }
                 // A Mac toolbar groups its items into one glass bar. The bot gets a pill of its own over the top of the
                 // chat instead. Next to an inspector it shows and hides the details; elsewhere it opens the settings.
                 .overlay(alignment: .top) {

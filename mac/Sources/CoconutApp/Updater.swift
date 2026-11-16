@@ -28,7 +28,7 @@ final class Updater: NSObject, ObservableObject, SPUUpdaterDelegate {
         automaticUpdates = preferences.automaticUpdates
         lastResult = preferences.lastResult
         super.init()
-        controller = SPUStandardUpdaterController(startingUpdater: true, updaterDelegate: self, userDriverDelegate: nil)
+        controller = SPUStandardUpdaterController(startingUpdater: !TestIsolation.active, updaterDelegate: self, userDriverDelegate: nil)
         observation = controller.updater.observe(\.canCheckForUpdates, options: [.initial, .new]) { [weak self] updater, _ in
             let value = updater.canCheckForUpdates
             Task { @MainActor in self?.canCheckForUpdates = value }

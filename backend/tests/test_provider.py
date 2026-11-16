@@ -165,10 +165,12 @@ class ProviderTests(unittest.TestCase):
         self.assertNotIn('PRIVATE_RECEIPT_MEMORY', prompt)
 
     def test_attachments_supply_text_and_mark_binary_limits(self):
-        self.task['attachments'] = [{'title': 'note.txt', 'content_base64': base64.b64encode(b'Private task input').decode()}, {'title': 'photo.png', 'content_base64': base64.b64encode(b'\xff\xff').decode()}]
+        self.task['attachments'] = [{'title': 'note.txt', 'content_base64': base64.b64encode(b'Private task input').decode()}, {'title': 'photo.png', 'content_base64': base64.b64encode(b'\xff\xff').decode()}, {'title': 'data.bin', 'content_base64': base64.b64encode(b'\xff\xfe').decode()}]
         prompt, _ = turn_input({'operation': 'start', 'task': self.task, 'history': []})
         self.assertIn('Private task input', prompt)
-        self.assertIn('This attachment is binary', prompt)
+        # The turn carries an image as an image (native_conversation.turn_images). Another binary file stays unread.
+        self.assertIn('Attached file: photo.png\nThis image is attached to this message.', prompt)
+        self.assertIn('Attached file: data.bin\nThis attachment is binary', prompt)
 
     def configure_peer(self, *, budget=8):
         peer = {'id': str(uuid4()), 'name': 'Lin', 'role': 'Check calculations'}

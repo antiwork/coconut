@@ -41,3 +41,6 @@ extension EnvironmentValues {
 enum HomeDestination: Hashable {
     case inbox
 }
+
+/// The archived agents of the Chats list.
+struct ArchivedAgentsRoute: Hashable {}

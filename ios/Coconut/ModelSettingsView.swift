@@ -13,6 +13,8 @@ struct ModelSettingsView: View {
     @State private var refreshed = false
     @State private var saving = false
     @State private var edited = false
+    /// A choice that the person made while an earlier one saved. It saves when that save ends.
+    @State private var pendingSave = false
 
     private var bot: Bot? { store.bots.first { $0.id == botId } }
     private var catalog: ModelCatalog? { store.modelCatalog }
@@ -60,7 +62,7 @@ struct ModelSettingsView: View {
                                 .accessibilityIdentifier("inherited-effort")
                         }
                     }
-                    .disabled(saving || !canEdit)
+                    .disabled(!canEdit)
                 }
                 if (!isBot || !useDefault) && (catalog.models.isEmpty || current.map { catalog.entry(for: $0) == nil } == true) {
                     Section {
@@ -87,9 +89,7 @@ struct ModelSettingsView: View {
                     Section {
                         Picker("Model", selection: Binding(get: { selectionKey }, set: { chooseModel($0) })) {
                             if selectedModel == nil { Text("Choose a model").tag("") }
-                            ForEach(catalog.models, id: \.selectionKey) { model in
-                                ModelRow(name: model.name, provider: model.provider).tag(model.selectionKey)
-                            }
+                            ModelChoices(models: catalog.models)
                         }
                         .pagePickerStyle()
                         .accessibilityIdentifier("model-picker")
@@ -111,7 +111,8 @@ struct ModelSettingsView: View {
                     } footer: {
                         if !isBot { Text("Hermes default. Shared by agents using the default model. Changes save when you make them.") }
                     }
-                    .disabled(saving || !canEdit)
+                    // The picker stays usable while a choice saves, so it does not grey out and back at each change.
+                    .disabled(!canEdit)
                 }
             } else {
                 Section {
@@ -187,9 +188,11 @@ struct ModelSettingsView: View {
         edited = false
     }
 
-    // Each change saves when it is valid. A model without a choice waits until the person picks one.
+    // Each change saves when it is valid. A model without a choice waits until the person picks one. A change during a
+    // save waits for it, so the last choice wins.
     private func save() {
-        guard !saving, loaded, canEdit, valid, changed, !(isBot && bot == nil) else { return }
+        guard loaded, canEdit, valid, changed, !(isBot && bot == nil) else { return }
+        if saving { pendingSave = true; return }
         let submitted = isBot && useDefault ? nil : selection
         saving = true
         store.error = nil
@@ -203,8 +206,17 @@ struct ModelSettingsView: View {
                 accepted = false
             }
             saving = false
-            // A failed save returns the page to the saved choice, so choosing the same model again retries it.
-            load()
+            if accepted {
+                // The page keeps the choice. A reload here showed the old model for a moment until the update came.
+                original = submitted
+                originalUseDefault = isBot && useDefault
+                edited = false
+                if pendingSave { pendingSave = false; save() }
+            } else {
+                // A failed save returns the page to the saved choice, so choosing the same model again retries it.
+                pendingSave = false
+                load()
+            }
         }
     }
 
@@ -214,6 +226,29 @@ enum ModelPresentation {
     static func effortName(_ value: String?) -> String {
         guard let value else { return "Auto" }
         return value == "none" ? "Off" : value.capitalized
+    }
+}
+
+/// The models of a picker. A Mac menu shows one line for each model under a header for its provider; a menu item
+/// of two lines made the menu and its closed button tall and uneven. The iPhone list shows the provider under the name.
+private struct ModelChoices: View {
+    let models: [ModelCatalogEntry]
+
+    var body: some View {
+        #if os(macOS)
+        let providers = models.reduce(into: [String]()) { if !$0.contains($1.provider) { $0.append($1.provider) } }
+        ForEach(providers, id: \.self) { provider in
+            Section(provider) {
+                ForEach(models.filter { $0.provider == provider }, id: \.selectionKey) { model in
+                    Text(model.name).tag(model.selectionKey)
+                }
+            }
+        }
+        #else
+        ForEach(models, id: \.selectionKey) { model in
+            ModelRow(name: model.name, provider: model.provider).tag(model.selectionKey)
+        }
+        #endif
     }
 }
 
@@ -247,9 +282,7 @@ private struct FallbackSection: View {
                     if let first = chain.first, catalog?.entry(for: first.selection) == nil {
                         ModelRow(name: first.model, provider: first.provider).tag(first.selectionKey)
                     }
-                    ForEach(choices(catalog, first: chain.first), id: \.selectionKey) { model in
-                        ModelRow(name: model.name, provider: model.provider).tag(model.selectionKey)
-                    }
+                    ModelChoices(models: choices(catalog, first: chain.first))
                 } label: {
                     HStack {
                         Text("Fallback model")

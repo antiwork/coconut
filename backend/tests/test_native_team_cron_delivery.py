@@ -12,6 +12,7 @@ from pathlib import Path
 import subprocess
 import threading
 import unittest
+from unittest import mock
 
 from coconut import team_turns
 from coconut.server import APIServer
@@ -34,6 +35,75 @@ pconfig = load_gateway_config().platforms.get(Platform(platform_name))
 result = error or asyncio.run(_send_to_platform(Platform(platform_name), pconfig, chat_id, sys.argv[3],
                                                 thread_id=thread_id))
 print(json.dumps({'chat_id': chat_id, 'thread_id': thread_id, 'result': result}))
+'''
+# The delivery of cron in a gateway process: the real _deliver_result with a live adapter of the plugin, connected to
+# the service. A gateway sets the runner reference (gateway/run.py, _gateway_runner_ref), so the fallback of a failed
+# live send goes through the same adapter (tools/send_message_tool.py, _send_via_adapter), not send_standalone. Each
+# item of argv[2] is a target chat and a text. The output: the error of each delivery (None for a success), its
+# `last_delivery_unverified` (None when the send gave a message ID), and the metadata of each send of the adapter.
+LIVE = '''
+import asyncio, json, sys, threading, weakref
+sys.path.insert(0, sys.argv[1])
+from gateway.config import Platform, load_gateway_config
+from gateway.platform_registry import platform_registry
+from tools.send_message_tool import prepare_send_message_platforms
+prepare_send_message_platforms()
+import gateway.run
+from cron.scheduler_delivery import _deliver_result
+platform = Platform('coconut')
+adapter = platform_registry.get('coconut').adapter_factory(load_gateway_config().platforms[platform])
+loop = asyncio.new_event_loop()
+threading.Thread(target=loop.run_forever, daemon=True).start()
+asyncio.run_coroutine_threadsafe(adapter.connect(), loop).result(30)
+class Runner:
+    adapters = {platform: adapter}
+    _gateway_loop = loop
+runner = Runner()
+gateway.run._gateway_runner_ref = weakref.ref(runner)
+sends, send = [], adapter.send
+async def recorded(chat_id, content, reply_to=None, metadata=None):
+    sends.append(sorted(metadata) if metadata else None)
+    return await send(chat_id, content, reply_to=reply_to, metadata=metadata)
+adapter.send = recorded
+results = []
+for number, (chat, text) in enumerate(json.loads(sys.argv[2])):
+    job = {'id': f'job{number}', 'name': 'Weekly report', 'deliver': 'coconut:' + chat}
+    sends.clear()
+    error = _deliver_result(job, text, adapters={platform: adapter}, loop=loop)
+    results.append({'error': error, 'unverified': job.get('last_delivery_unverified'), 'sends': list(sends)})
+asyncio.run_coroutine_threadsafe(adapter.disconnect(), loop).result(30)
+print(json.dumps(results))
+'''
+# The preflight that the scheduler runs before each job with an agent (_preflight_or_block). A job whose `deliver` or
+# `failure_deliver` names a platform that the preflight does not know does not run, with all its targets. A fallback
+# chain in the config skips the check of the provider key, because this test has no key.
+PREFLIGHT = '''
+import json, sys
+sys.path.insert(0, sys.argv[1])
+from cron.scheduler_preflight import _preflight_check_delivery, _preflight_job_config
+from hermes_cli.config import load_config
+job = {'id': 'weekly', 'name': 'weekly', 'deliver': sys.argv[2], 'failure_deliver': sys.argv[2]}
+config = dict(load_config(), fallback_providers=[{'provider': 'openrouter', 'model': 'neutral/model'}])
+print(json.dumps({'delivery': _preflight_check_delivery(job), 'job': _preflight_job_config(job, config)}))
+'''
+# A due job with a script and no agent (no model call), run as the scheduler runs one due job (run_one_job): the
+# script prints the text, and the scheduler delivers its output to each target of `deliver`.
+SCHEDULED = '''
+import json, os, shlex, sys
+sys.path.insert(0, sys.argv[1])
+from hermes_constants import get_hermes_home
+scripts = os.path.join(get_hermes_home(), 'scripts')
+os.makedirs(scripts, exist_ok=True)
+with open(os.path.join(scripts, 'report.sh'), 'w') as script:
+    script.write('#!/bin/sh\\necho ' + shlex.quote(sys.argv[3]) + '\\n')
+from cron.jobs import create_job, get_job
+from cron.scheduler import run_one_job
+job = create_job(None, 'every 1h', name='weekly', script='report.sh', no_agent=True, deliver=sys.argv[2],
+                 failure_deliver=sys.argv[2])
+processed = run_one_job(job)
+stored = get_job(job['id'])
+print(json.dumps({'processed': processed, 'status': stored.get('last_status'), 'error': stored.get('last_error'),
+                  'delivery_error': stored.get('last_delivery_error')}))
 '''
 
 
@@ -83,6 +153,76 @@ class NativeTeamCronDeliveryTests(AsThePerson, TeamOnlyMacs, unittest.TestCase):
         self.assertEqual([(row['bot_name'], row['text']) for row in rows], [('Reporter', TEXT)])
         # The log of the delivery has no text of the message.
         self.assertNotIn(TEXT, run.stderr)
+
+    def live(self, deliveries):
+        """The result of each delivery of LIVE, in a Hermes process with a live adapter."""
+        run = subprocess.run([PYTHON, '-I', '-B', '-c', LIVE, SOURCE, json.dumps(deliveries)],
+                             env=self.environment, capture_output=True, text=True, timeout=300, cwd=self.temp.name)
+        self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+        return json.loads(run.stdout.strip().splitlines()[-1])
+
+    def test_a_cron_delivery_through_the_live_adapter_tells_the_truth(self):
+        design, removed = (self.call('POST', f'/v1/team/rooms/{self.room}/chats', {'name': name},
+                                     service=self.first)['chat'] for name in ('Design', 'Old'))
+        self.sync()
+        self.call('DELETE', f'/v1/team/rooms/{self.room}/chats/{removed}', service=self.first)
+        self.sync()
+        long_text = 'Line of the long report. ' * 360  # 9,000 characters, over the cut of Hermes at 4,000.
+        self.assertEqual(len(long_text), 9000)
+        deliveries = [(team_turns.chat_id(self.room, self.bot['id'], design), TEXT),
+                      (team_turns.chat_id(self.room, self.bot['id'], design), long_text),
+                      (team_turns.chat_id(self.room, self.bot['id'], removed), TEXT)]
+        normal, long, gone = self.live(deliveries)
+        # A normal delivery records success, with a message ID as evidence. The live send carries the job ID.
+        cron = [['job_id', 'notify']]
+        self.assertEqual(normal, {'error': None, 'unverified': None, 'sends': cron})
+        self.assertEqual(long, {'error': None, 'unverified': None, 'sends': cron})
+        # A removed chat: the live send fails, Hermes sends again through the same adapter without metadata, that
+        # send fails too, and the job records the refusal.
+        self.assertEqual(gone['sends'], cron + [None])
+        self.assertIn('The agent does not answer in this team chat.', gone['error'])
+        # A relay that fails at each try: no part shows, and the job records the failure.
+        from coconut.team_relay import TeamRelayError
+        with mock.patch.object(self.only.team_relay, 'write', side_effect=TeamRelayError(503, 'The relay answered 503.')):
+            (failed,) = self.live([(team_turns.chat_id(self.room, self.bot['id'], design), 'The relay is down.')])
+        self.assertEqual(failed['sends'], cron + [None])
+        self.assertIn('The team log did not take this message.', failed['error'])
+        self.sync()
+        rows = self.call('GET', f'/v1/team/rooms/{self.room}/messages', {'chat': design},
+                         service=self.first)['messages']
+        texts = [row['text'] for row in reversed(rows)]
+        self.assertEqual(len(texts), 2)
+        self.assertIn(TEXT, texts[0])
+        # The whole text arrives, without the cut of Hermes and without a file path of this Mac.
+        self.assertTrue(long_text.strip() in texts[1], texts[1][-200:])
+        self.assertNotIn('truncated', texts[1])
+
+    def hermes(self, script, *arguments):
+        """The last line of a Hermes process that runs `script`, as JSON."""
+        run = subprocess.run([PYTHON, '-I', '-B', '-c', script, SOURCE, *arguments], env=self.environment,
+                             capture_output=True, text=True, timeout=120, cwd=self.temp.name)
+        self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+        return json.loads(run.stdout.strip().splitlines()[-1]), run
+
+    def test_the_preflight_of_the_scheduler_lets_a_job_with_a_team_chat_target_run(self):
+        # Without cron_deliver_env_var, the preflight gave "delivery platform 'coconut' is not a known cron delivery
+        # target", and the scheduler skipped the job with its other targets.
+        target = 'coconut:' + team_turns.chat_id(self.room, self.bot['id'])
+        answer, _ = self.hermes(PREFLIGHT, target)
+        self.assertEqual(answer, {'delivery': None, 'job': None})
+
+    def test_a_due_script_job_delivers_into_a_named_chat(self):
+        design = self.call('POST', f'/v1/team/rooms/{self.room}/chats', {'name': 'Design'}, service=self.first)['chat']
+        self.sync()
+        answer, run = self.hermes(SCHEDULED, 'coconut:' + team_turns.chat_id(self.room, self.bot['id'], design), TEXT)
+        self.assertEqual(answer, {'processed': True, 'status': 'ok', 'error': None, 'delivery_error': None},
+                         run.stderr[-3000:])
+        self.sync()
+        rows = self.call('GET', f'/v1/team/rooms/{self.room}/messages', {'chat': design},
+                         service=self.first)['messages']
+        self.assertEqual([row['bot_name'] for row in rows], ['Reporter'])
+        # The scheduler puts a header and a footer around the output of the job.
+        self.assertIn(TEXT, rows[0]['text'])
 
 
 if __name__ == '__main__':

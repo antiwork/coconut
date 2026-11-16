@@ -20,7 +20,7 @@ struct CoconutApp: App {
         // The chat client starts with the app, not with a view: the app can start without its main window, and the
         // banners need the lists of the teams also then. A team-only Mac has no pairing, so its chat client has
         // nothing to connect to.
-        if model.mode == .full {
+        if model.mode == .full && !TestIsolation.active {
             banners.start()
             store.start()
         }
@@ -68,7 +68,7 @@ struct CoconutApp: App {
         } label: {
             // The label shows while the app runs, also without a window, so it gives the banners the action that opens
             // the main window.
-            Image(systemName: model.status.service == .running ? "network" : "network.slash")
+            Image(nsImage: model.status.service == .running ? MenuBarIcon.running : MenuBarIcon.stopped)
                 .modifier(BannerWindowOpener(banners: banners))
         }
         .menuBarExtraStyle(.menu)

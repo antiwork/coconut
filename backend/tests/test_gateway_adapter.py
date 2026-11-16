@@ -84,6 +84,8 @@ class MessageEvent:
     reply_expected: Optional[bool] = None
     # Hermes marks its own inputs, for example the completion of a background process (gateway/run_inbound.py).
     internal: bool = False
+    media_urls: list = field(default_factory=list)
+    media_types: list = field(default_factory=list)
 ''',
     'gateway/platforms/base.py': '''
 import asyncio
@@ -97,6 +99,15 @@ class SendResult:
     error: Optional[str] = None
     raw_response: Any = None
     retryable: bool = False
+def cache_image_from_bytes(data, ext=".jpg"):
+    # As Hermes: only image bytes go into the cache.
+    import os, tempfile
+    if not (data.startswith(b"\\x89PNG") or data.startswith(b"\\xff\\xd8")):
+        raise ValueError("Refusing to cache non-image data")
+    fd, path = tempfile.mkstemp(suffix=ext)
+    os.write(fd, data)
+    os.close(fd)
+    return path
 class BasePlatformAdapter:
     gateway_runner = None
     def __init__(self, config, platform):
@@ -337,6 +348,25 @@ class GatewayAdapterTests(unittest.TestCase):
         turn = {'id': 'turn', 'chat_id': self.bot['id'], 'text': 'Reaction added: 👍'}
         self.assertIsNone(adapter._event(turn).reply_expected)
         self.assertIs(adapter._event(dict(turn, silent=True)).reply_expected, False)
+
+    def test_an_attached_image_reaches_hermes_as_an_image_of_the_message(self):
+        import base64
+        from gateway.config import PlatformConfig
+        adapter = self.adapter_module.CoconutAdapter(PlatformConfig({'bridge': str(self.service.gateway_bridge.address_file)}))
+        png = b'\x89PNG\r\n\x1a\n' + b'\x00' * 32
+        turn = {'id': 'turn-i', 'chat_id': self.bot['id'], 'text': 'What is in this screenshot?',
+                'images': [{'title': 'Pasted image 09.04.07.png', 'type': 'image/png',
+                            'content_base64': base64.b64encode(png).decode()}]}
+        event = adapter._event(turn)
+        self.assertEqual(event.media_types, ['image/png'])
+        self.assertEqual(Path(event.media_urls[0]).read_bytes(), png)
+        self.assertEqual(event.text, 'What is in this screenshot?')
+        # Bytes that are no image stay out, and the model learns that it did not get the image.
+        bad = dict(turn, id='turn-j', images=[dict(turn['images'][0], content_base64=base64.b64encode(b'nope').decode())])
+        event = adapter._event(bad)
+        self.assertEqual(event.media_urls, [])
+        self.assertIn('could not be opened', event.text)
+        self.assertEqual(adapter._event(dict(turn, id='turn-k', images=None)).media_urls, [])
 
     def test_a_streamed_reply_and_its_interim_message_reach_coconut(self):
         async def runner(event):

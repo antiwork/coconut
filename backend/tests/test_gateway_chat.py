@@ -677,7 +677,27 @@ class ServiceRoutingTests(unittest.TestCase):
                                           {'kind': 'done', 'outcome': 'success'}])
         self.assertTrue(text.startswith('Read these.'))
         self.assertIn('Attached file: notes.txt\n<attachment_content>\nThe cache is warm.\n</attachment_content>', text)
-        self.assertIn('Attached file: photo.png\nThis attachment is binary.', text)
+        self.assertIn('Attached file: photo.png\nThis image is attached to this message.', text)
+        self.assertEqual(self.read('tasks', task['id'])['status'], 'completed')
+
+    def test_an_attached_image_goes_to_the_gateway_as_an_image(self):
+        import base64
+        png = base64.b64encode(b'\x89PNG\r\n\x1a\n\x00').decode()
+        image = self.write('POST', '/v1/attachments', {'bot_id': self.bot['id'], 'filename': 'Pasted image 09.04.07.png',
+                                                       'content_base64': png})
+        archive = self.write('POST', '/v1/attachments', {'bot_id': self.bot['id'], 'filename': 'logs.zip',
+                                                         'content_base64': base64.b64encode(b'PK\x03\x04\xff\xfe').decode()})
+        task = self.write('POST', f'/v1/bots/{self.bot["id"]}/messages',
+                          {'text': 'What is wrong here?', 'attachment_ids': [image['id'], archive['id']]})
+        adapter = Adapter(self.service.gateway_bridge, self.home, [{'kind': 'send', 'message_id': 'm:1', 'text': 'A typo.'},
+                                                                   {'kind': 'done', 'outcome': 'success'}])
+        adapter.start()
+        self.service._run_task(task['id'])
+        adapter.join(5)
+        self.assertEqual(adapter.turns[0]['images'], [{'title': 'Pasted image 09.04.07.png', 'type': 'image/png',
+                                                       'content_base64': png}])
+        # A file that is no image stays a file that the bot cannot read.
+        self.assertIn('Attached file: logs.zip\nThis attachment is binary.', adapter.turns[0]['text'])
         self.assertEqual(self.read('tasks', task['id'])['status'], 'completed')
 
     def published(self, task, *types):

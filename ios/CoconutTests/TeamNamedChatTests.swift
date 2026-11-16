@@ -294,7 +294,7 @@ final class TeamNamedChatTests: XCTestCase {
     }
 
     /// The one rule of the choices that wait: a new pin and a new mute show at once in the list, and the list of the
-    /// Mac shows again when the requests end. VoiceOver says "Pinned" and "Muted".
+    /// Mac shows again when the requests end. VoiceOver says "Starred" and "Muted".
     func testTheChoicesThatWaitShowAtOnceAndVoiceOverSaysThem() throws {
         var list = try pinnedRooms(team: false, design: false)
         list.rooms[0].chats?[0].notifications = true
@@ -309,9 +309,9 @@ final class TeamNamedChatTests: XCTestCase {
         let old = try rooms().rooms
         XCTAssertEqual(TeamChatChoices.applying(mutes: [design: false], pins: [design: true], to: old), old)
         let row = try XCTUnwrap(shown[0].inChat(design))
-        XCTAssertTrue(TeamRowSpeech.label(row, preview: nil).hasSuffix("You are named, Muted, Pinned"))
+        XCTAssertTrue(TeamRowSpeech.label(row, preview: nil).hasSuffix("You are named, Muted, Starred"))
         XCTAssertFalse(TeamRowSpeech.label(try XCTUnwrap(list.rooms[0].inChat(design)), preview: nil)
-            .contains("Pinned"))
+            .contains("Starred"))
     }
 
     func testARoomDecodesItsPinsAndAnOlderServiceSendsNone() throws {
@@ -334,29 +334,29 @@ final class TeamNamedChatTests: XCTestCase {
         XCTAssertNil(TeamChatPin.listAction(.team(old)), "An older service shows no item.")
         let room = try pinnedRooms(team: false, design: true).rooms[0]
         XCTAssertEqual(TeamChatPin.listAction(.team(room)),
-                       TeamChatPin.ListAction(room: self.room, chat: nil, label: "Pin", symbol: "pin", pinned: true))
+                       TeamChatPin.ListAction(room: self.room, chat: nil, label: "Star", symbol: "star", pinned: true))
         XCTAssertEqual(TeamChatPin.listAction(.team(try XCTUnwrap(room.inChat(design)))),
-                       TeamChatPin.ListAction(room: self.room, chat: design, label: "Unpin", symbol: "pin.slash",
+                       TeamChatPin.ListAction(room: self.room, chat: design, label: "Unstar", symbol: "star.slash",
                                               pinned: false))
         // The Team chat has no mute, so its menu has Pin only.
         XCTAssertNil(TeamChatMute.listAction(.team(room)))
         XCTAssertNil(TeamChatPin.listAction(.direct(room, TeamDirect(member: "m-grace"))), "A direct chat has none.")
         XCTAssertNil(TeamChatPin.listAction(.botDirect(room, TeamBotDirect(bot: "t-r-e"))), "An agent has none.")
-        // A team that is not active: "Pin" goes, "Unpin" stays, so a pinned chat can leave the top of the list.
+        // A team that is not active: "Star" goes, "Unstar" stays, so a pinned chat can leave the top of the list.
         for state in ["gone", "removed"] {
             var left = room
             left.state = state
             XCTAssertNil(TeamChatPin.listAction(.team(left)), "\(state): no Pin")
-            XCTAssertEqual(TeamChatPin.listAction(.team(try XCTUnwrap(left.inChat(design))))?.label, "Unpin")
-            XCTAssertEqual(TeamChatMenuItem.items(.team(try XCTUnwrap(left.inChat(design)))).map(\.label), ["Unpin"],
+            XCTAssertEqual(TeamChatPin.listAction(.team(try XCTUnwrap(left.inChat(design))))?.label, "Unstar")
+            XCTAssertEqual(TeamChatMenuItem.items(.team(try XCTUnwrap(left.inChat(design)))).map(\.label), ["Unstar"],
                            "\(state): no Mute either")
             XCTAssertEqual(ChatList.pinnedChats([left]).map(\.id), ["team-\(self.room)-\(design)"])
         }
-        // The menu has "Pin" above "Mute" for a named chat, and "Pin" only for the Team chat.
+        // The menu has "Star" above "Mute" for a named chat, and "Star" only for the Team chat.
         var both = room
         both.chats?[1].notifications = true
-        XCTAssertEqual(TeamChatMenuItem.items(.team(try XCTUnwrap(both.inChat(launch)))).map(\.label), ["Pin", "Mute"])
-        XCTAssertEqual(TeamChatMenuItem.items(.team(both)).map(\.label), ["Pin"])
+        XCTAssertEqual(TeamChatMenuItem.items(.team(try XCTUnwrap(both.inChat(launch)))).map(\.label), ["Star", "Mute"])
+        XCTAssertEqual(TeamChatMenuItem.items(.team(both)).map(\.label), ["Star"])
         XCTAssertEqual(TeamChatMenuItem.items(.direct(both, TeamDirect(member: "m-grace"))), [])
         XCTAssertEqual(TeamChatPin.key(room: self.room, chat: nil), self.room)
         XCTAssertEqual(TeamChatPin.key(room: self.room, chat: design), design)
@@ -372,7 +372,8 @@ final class TeamNamedChatTests: XCTestCase {
         XCTAssertEqual(ChatList.items(bots: [], latest: [:], rooms: list.rooms).map(\.id), ["team-\(room)-\(design)"])
         let sections = ChatSections.make(bots: [], messages: [], rooms: list.rooms)
         XCTAssertEqual(sections.pinnedChats.map(\.id), ["team-\(room)", "team-\(room)-\(launch)"])
-        XCTAssertEqual(sections.people.map(\.id), ["team-\(room)-\(design)"])
+        XCTAssertEqual(sections.people, [])
+        XCTAssertEqual(sections.unread.map(\.id), ["team-\(room)-\(design)"])
         XCTAssertTrue(sections.pinnedChats.allSatisfy(\.isPinnedChat))
         // Without a pin, nothing moves.
         let none = try pinnedRooms(team: false, design: false)
@@ -395,7 +396,7 @@ final class TeamNamedChatTests: XCTestCase {
         other.name = "Second Team"
         let two = ChatList.pinnedChats([other, list.rooms[0]]).map(\.id)
         XCTAssertEqual(two, ["team-\(other.room)", "team-\(other.room)-\(launch)"] + pinnedIds)
-        // The Mac section "Pinned" with a pinned chat and no pinned agent.
+        // The Mac section "Starred" with a pinned chat and no pinned agent.
         let onlyChat = try pinnedRooms(team: false, design: true)
         let macSections = ChatSections.make(bots: [bot], messages: [], rooms: onlyChat.rooms)
         XCTAssertEqual(macSections.pinned, [])
@@ -406,5 +407,26 @@ final class TeamNamedChatTests: XCTestCase {
         XCTAssertTrue(ChatFilter.people.showsPinnedChats)
         XCTAssertFalse(ChatFilter.bots.showsPinnedChats)
         XCTAssertFalse(ChatFilter.people.showsPinned)
+    }
+
+    func testAStarredUnreadChatStaysInStarredUntilThePersonRemovesItsStar() throws {
+        let list = try pinnedRooms(team: false, design: true)
+        let id = "team-\(room)-\(design)"
+        let starred = ChatSections.make(bots: [], messages: [], rooms: list.rooms)
+        XCTAssertEqual(starred.pinnedChats.map(\.id), [id])
+        XCTAssertEqual(starred.pinnedChats.first?.unreadCount, 2)
+        XCTAssertFalse((starred.unread + starred.people + starred.bots).contains { $0.id == id })
+
+        let unstarred = TeamChatChoices.applying(mutes: [:], pins: [design: false], to: list.rooms)
+        let unread = ChatSections.make(bots: [], messages: [], rooms: unstarred)
+        XCTAssertTrue(unread.pinnedChats.isEmpty)
+        XCTAssertEqual(unread.unread.map(\.id), [id])
+        XCTAssertFalse(unread.people.contains { $0.id == id })
+
+        var readRooms = unstarred
+        readRooms[0].chats?[0].unread = 0
+        let read = ChatSections.make(bots: [], messages: [], rooms: readRooms)
+        XCTAssertTrue(read.unread.isEmpty)
+        XCTAssertEqual(read.people.filter { $0.id == id }.count, 1)
     }
 }

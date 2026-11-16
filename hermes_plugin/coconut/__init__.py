@@ -15,6 +15,9 @@ import os
 
 NAME = 'coconut'
 TEAM = 'team'
+# The variable of the home chat of a cron delivery to a bare `coconut` (cron_deliver_env_var). Only the mode `team`
+# registers it.
+HOME_CHANNEL = 'COCONUT_HOME_CHANNEL'
 LOG = logging.getLogger(__name__)
 # The hint of each session of the platform: the Team chat, a named chat and a direct chat. The rules of each turn
 # (team_turns.RULES and RULES_DIRECT) say who can write and who reads, and that Coconut shows Markdown without cards.
@@ -74,8 +77,12 @@ def register_team(ctx):
                         lacking)
             return
         # standalone_sender_fn delivers a cron result into a team chat from a process without a gateway.
+        # cron_deliver_env_var makes `coconut` a known cron target: without it, the preflight of the scheduler
+        # skips each job with a `coconut:` target, also its other targets. A target `coconut:<chat ID>` needs no
+        # value in the variable. The variable is only the home chat of a bare `deliver: coconut`.
         options = dict(trusted_inbound=True, display_tier='high', display_overrides=DISPLAY, platform_hint=TEAM_HINT,
-                       max_message_length=100_000, emoji='🥥', standalone_sender_fn=team.send_standalone)
+                       max_message_length=100_000, emoji='🥥', standalone_sender_fn=team.send_standalone,
+                       cron_deliver_env_var=HOME_CHANNEL)
         known = {field.name for field in dataclasses.fields(PlatformEntry)}
         team.TeamAdapter.lacking = ', '.join(filter(None, (team.unregistered(known), unguarded))) or None
         if team.TeamAdapter.lacking:
@@ -98,6 +105,8 @@ def register(ctx):
         register_team(ctx)
         return
     from gateway.platform_registry import PlatformEntry
+    # No cron_deliver_env_var here: the service shows a cron run as a routine task, and its jobs deliver with
+    # `origin` or a bot-chat token, which the preflight of the scheduler does not check.
     options = dict(
         # Only the Coconut service on this Mac sends messages, and only for the person's paired phones.
         trusted_inbound=True, display_tier='high', display_overrides=DISPLAY, platform_hint=platform_hint(),

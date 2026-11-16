@@ -56,6 +56,19 @@ BASE_METHODS = ('build_source', 'handle_message', 'send_image_file', '_mark_conn
 # `trusted_inbound`, Hermes refuses each member of the team as an unknown user and ends the turn with no reply. Without
 # `display_overrides`, Hermes sends its tool progress into the chat as messages of the bot.
 REGISTRATION_FIELDS = ('trusted_inbound', 'display_overrides')
+# A cron delivery without a gateway (send_standalone) tries three times: the waits between the tries are the first two
+# waits of the adapter. A refused connection fails at once, so the tries cover about 3 seconds of a service that is
+# down or a bridge file that is missing: a short gap, not a whole restart of the service.
+STANDALONE_WAITS = RETRY_SECONDS[:2]
+# Each try waits this long for the service: one relay try of the service (team_relay.TIMEOUT_SECONDS). All tries take
+# at most 3 x 15 + 1 + 2 = 48 seconds, under the bound of 60 seconds of Hermes (`cron.standalone_send_timeout_seconds`).
+# One part can take the service about 46 seconds when the relay does not answer (3 x 15 + 2 x 0.5), and n parts n
+# times that. A later try waits for the lock of the room and finds the entry of an earlier try, so the sender reports
+# a false failure only when all parts together take longer than its tries.
+STANDALONE_SECONDS = 15
+# How long the adapter keeps the message ID of a failed cron delivery for the fallback send of Hermes. Hermes sends the
+# fallback directly after the live send fails, and it waits at most 60 seconds for the live send.
+CRON_FALLBACK_SECONDS = 120
 
 
 def missing() -> str | None:
@@ -71,15 +84,37 @@ def unregistered(known) -> str | None:
     return ', '.join(name for name in REGISTRATION_FIELDS if name not in known) or None
 
 
+async def send_tries(request, home: str, chat_id: str, fields: dict):
+    """Send a message outside a turn (`fields`, with its message ID) with `request`, in up to three tries with the
+    waits of STANDALONE_WAITS. A try follows a service that did not answer, and an answer `recorded: false` with
+    `retry: true`. Each try has the same message ID, so a repeat adds no second message. The last answer of the
+    service or the failed SendResult (report_outside), and the most parts that an answer of a try said the chat shows
+    (`shown`). A later try that gets no answer does not hide the parts that an earlier try showed."""
+    shown = 0
+    for wait in (*STANDALONE_WAITS, None):
+        answer = await report_outside(request, home, chat_id, fields)
+        if isinstance(answer, dict) and isinstance(answer.get('shown'), int):
+            shown = max(shown, answer['shown'])
+        retry = answer.retryable if isinstance(answer, SendResult) else (
+            isinstance(answer, dict) and not answer.get('recorded') and answer.get('retry') is True)
+        if wait is None or not retry:
+            return answer, shown
+        await asyncio.sleep(wait)
+
+
 async def send_standalone(pconfig, chat_id, message, *, thread_id=None, media_files=None, force_document=False,
                           **options) -> dict:
     """The sender of a cron delivery in a process without a gateway (`standalone_sender_fn` of the registration).
 
     It sends the text as the adapter sends a message outside a turn: `kind: send` with the Hermes home of this process
     and a new message ID, to the service of the bridge file. The service shows it as a message of the bot in the chat
-    `chat_id`. A refusal of the service becomes an `error` with its reason, so the record of the job shows it. A fault
-    never reaches Hermes. The team chat takes no file from this path: the text goes, and the result says that the
-    files did not go.
+    `chat_id`. A service that does not answer, and an answer `recorded: false` with `retry: true` (the relay did not
+    take a part), get up to two more tries with the same message ID. The service derives the entry ID from the
+    message ID, so a try that repeats a send that arrived adds no second message. A refusal gets no second try: an
+    HTTP 4xx, `recorded: false` without `retry`, or an empty text. A refusal, and a last try that failed, become an
+    `error` with the reason, so the record of the job shows a failed delivery. A fault never reaches Hermes. The team
+    chat takes no file from this path: the text goes, and a log line says that the files did not go. Hermes itself
+    adds a warning to the result of a send with files, and so records a failed delivery.
 
     Only the mode `team` registers this sender. On a person's Mac, the service drops a cron delivery whose run shows
     already as a routine task in the chat, by the job ID of the delivery (gateway_chat.py). This call has no job ID,
@@ -95,8 +130,8 @@ async def send_standalone(pconfig, chat_id, message, *, thread_id=None, media_fi
         message_id = OUTSIDE + str(uuid.uuid4())
 
         async def request(route, payload):
-            return await asyncio.to_thread(bridge.request, route, payload, REQUEST_SECONDS)
-        answer = await report_outside(request, home, str(chat_id), dict(kind='send', message_id=message_id, text=text))
+            return await asyncio.to_thread(bridge.request, route, payload, STANDALONE_SECONDS)
+        answer, _ = await send_tries(request, home, str(chat_id), dict(kind='send', message_id=message_id, text=text))
         if isinstance(answer, SendResult):
             status = answer.raw_response.get('status') if isinstance(answer.raw_response, dict) else None
             if status == 404:
@@ -106,12 +141,10 @@ async def send_standalone(pconfig, chat_id, message, *, thread_id=None, media_fi
         if not isinstance(answer, dict) or not answer.get('recorded'):
             reason = answer.get('reason') if isinstance(answer, dict) else None
             return {'error': 'Coconut did not show this message: ' + str(reason or 'no reason')}
-        result = {'success': True, 'message_id': message_id}
         if media_files:
             LOG.warning('Coconut: a cron delivery into a team chat sent its text without its %d files.',
                         len(media_files))
-            result['warnings'] = ['The team chat got the text. Coconut does not send files there from a cron job.']
-        return result
+        return {'success': True, 'message_id': message_id}
     except Exception as error:
         LOG.warning('Coconut: a cron delivery into a team chat failed (%s).', type(error).__name__)
         return {'error': f'Coconut did not take this message ({type(error).__name__}).'}
@@ -142,6 +175,10 @@ class TeamAdapter(CoconutAdapter):
     # What this Hermes lacks for the team chat (`unregistered`), or None. register_team sets it. With it, each poll
     # names it, the service gives no turn, and the adapter gives no turn to Hermes.
     lacking: str | None = None
+    # The service splits a long text into parts itself (team_turns.parts). Without this mark, Hermes cuts a cron
+    # delivery over 4,000 characters and adds the path of a file on this Mac (gateway/delivery.py,
+    # _cap_oversized_output).
+    splits_long_messages = True
 
     def __init__(self, config):
         super().__init__(config)
@@ -162,6 +199,8 @@ class TeamAdapter(CoconutAdapter):
         # a weak reference to a task).
         self._reached = time.monotonic()
         self._stop_tasks: set = set()
+        # The cron deliveries that failed with no part shown: (chat ID, text) -> (message ID, monotonic time).
+        self._cron_failed: dict[tuple[str, str], tuple[str, float]] = {}
 
     def _event(self, turn: dict) -> MessageEvent:
         if self.lacking:
@@ -246,7 +285,59 @@ class TeamAdapter(CoconutAdapter):
             # The reply of a stopped turn, or the answer of Hermes to its `/stop`: the turn ended for the chat.
             LOG.info('Coconut: a send of a stopped turn of the team chat stays in the log.')
             return SendResult(success=True)
-        return await super().send(chat_id, content, reply_to=reply_to, metadata=metadata)
+        metadata = metadata or {}
+        if metadata.get('job_id') and not metadata.get('_interim_send'):
+            # A cron delivery is no reply of a turn that runs in the same chat: it goes outside the turn.
+            return await self._cron_send(str(chat_id), str(content), str(metadata['job_id']))
+        again = self._cron_fallback(str(chat_id), str(content))
+        if again is not None:
+            return await self._cron_send(str(chat_id), str(content), None, again)
+        return await super().send(chat_id, content, reply_to=reply_to, metadata=metadata or None)
+
+    def _cron_fallback(self, chat_id: str, content: str) -> str | None:
+        """The message ID of a cron delivery to `chat_id` with the text `content` that failed in the last
+        CRON_FALLBACK_SECONDS, or None. Hermes sends such a delivery again without metadata (its fallback through
+        `_send_via_adapter`). The ID is used one time."""
+        now = time.monotonic()
+        for key, (_, at) in list(self._cron_failed.items()):
+            if now - at > CRON_FALLBACK_SECONDS:
+                del self._cron_failed[key]
+        found = self._cron_failed.pop((chat_id, content.strip()), None)
+        return found[0] if found else None
+
+    async def _cron_send(self, chat_id: str, content: str, job_id: str | None, message_id: str | None = None
+                         ) -> SendResult:
+        """Send a cron delivery as send_standalone sends it: the same tries, and a failed SendResult when the chat does
+        not show the whole text, so the record of the job shows a failed delivery.
+
+        Hermes then sends the same text again through this adapter, without metadata (`_send_via_adapter`). This
+        adapter keeps the message ID of a failed delivery for that send (`_cron_fallback`), so the service writes only
+        the missing parts and adds no second copy, and a failure of that send is a failure too. A failure after some
+        shown parts is a partial delivery (`partial_overflow`): Hermes sends nothing again. Hermes tries no third path
+        and sends no notice of the failure into the chat."""
+        first = message_id is None
+        message_id = message_id or OUTSIDE + str(uuid.uuid4())
+        fields = dict(kind='send', message_id=message_id, text=content)
+        if job_id:
+            fields['job_id'] = job_id
+
+        async def request(route, payload):
+            return await self._request(route, payload, STANDALONE_SECONDS)
+        answer, shown = await send_tries(request, self._home, chat_id, fields)
+        if isinstance(answer, dict) and answer.get('recorded'):
+            LOG.info('Coconut: a cron delivery went to chat %s (%d characters).', chat_id, len(content))
+            return SendResult(success=True, message_id=message_id)
+        if isinstance(answer, SendResult):
+            error, raw = answer.error or 'The Coconut service did not answer.', {}
+        else:
+            reason = str((answer.get('reason') if isinstance(answer, dict) else None) or 'no reason')
+            error, raw = 'Coconut did not show this message: ' + reason, {'coconut_refused': True}
+        LOG.warning('Coconut: chat %s does not show a cron delivery: %s', chat_id, error)
+        if shown:
+            raw['partial_overflow'] = True
+        elif first:
+            self._cron_failed[(chat_id, content.strip())] = (message_id, time.monotonic())
+        return SendResult(success=False, error=error, raw_response=raw or None)
 
     async def _request(self, route: str, payload: dict, timeout: float = REQUEST_SECONDS) -> dict:
         """A request to the service. A poll answer can name active turns that the service does not know, for example

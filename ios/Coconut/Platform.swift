@@ -343,7 +343,7 @@ extension TranscriptWindow {
 }
 
 extension LibrarySections {
-    /// The iPhone Library has a section "Pinned". A Mac sidebar shows the pinned pages, so the Library of a Mac keeps
+    /// The iPhone Library has a section "Starred". A Mac sidebar shows the pinned pages, so the Library of a Mac keeps
     /// each pinned page in the group of its bot, with a pin mark.
     static var platformShowsPinned: Bool {
         #if os(macOS)
@@ -362,3 +362,20 @@ enum Haptics {
         #endif
     }
 }
+
+#if os(macOS)
+/// The band at the top of a chat on a Mac where the window title bar would be. The chat runs up under the title bar,
+/// so without this band a drag there scrolled nothing and moved nothing: the window could not move. The band moves the
+/// window, as the title bar of each Mac app does. It lies under the floating title, which keeps its own clicks.
+struct WindowDragStrip: View {
+    var body: some View {
+        Color.clear
+            .frame(maxWidth: .infinity)
+            .frame(height: 52)
+            .contentShape(Rectangle())
+            .gesture(WindowDragGesture())
+            .allowsWindowActivationEvents(true)
+            .accessibilityHidden(true)
+    }
+}
+#endif

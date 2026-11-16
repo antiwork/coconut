@@ -3,6 +3,7 @@ import SwiftUI
 struct HomeLaunchView: View {
     @Environment(AppStore.self) private var store
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @Environment(\.pushRoute) private var pushRoute
     @ScaledMetric(relativeTo: .subheadline) private var pinWidth = 108
 
     @State private var deleting: Bot?
@@ -13,6 +14,7 @@ struct HomeLaunchView: View {
         let activeBots = store.bots.filter { !$0.archived }.sorted {
             (latest[$0.id] ?? $0.createdAt.apiDate ?? .distantPast) > (latest[$1.id] ?? $1.createdAt.apiDate ?? .distantPast)
         }
+        let archivedCount = store.bots.filter(\.archived).count
         let pinnedBots = activeBots.filter(\.pinned).sorted {
             let first = $0.createdAt.apiDate ?? .distantPast
             let second = $1.createdAt.apiDate ?? .distantPast
@@ -26,64 +28,92 @@ struct HomeLaunchView: View {
         let conversations = ChatList.rows(filter, bots: activeBots.filter { !$0.pinned }, latest: latest,
                                           rooms: rooms, local: store.newestLocalMessages)
         let pinned = filter.showsPinned ? pinnedBots : []
-        return ScrollView {
-            LazyVStack(spacing: 0) {
-                // The chips show only for a Mac in a team. A person with bots only sees the list as before.
-                if ChatFilter.showsChips(rooms: rooms) {
-                    chips(filter)
+        // A list, not a stack, so that a row of an agent has the swipe of the system: swipe left to archive.
+        return List {
+            // The chips show only for a Mac in a team. A person with bots only sees the list as before.
+            if ChatFilter.showsChips(rooms: rooms) {
+                chips(filter).homeRow(top: BoardStyle.Space.l)
+            }
+            if conversations.isEmpty && pinned.isEmpty && filter == .bots {
+                // The quiet line of the Team screen for a Mac without bots.
+                Text("This Mac has no agents yet.")
+                    .font(.subheadline).foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity).padding(.vertical, 45)
+                    .accessibilityIdentifier("chats-empty")
+                    .homeRow()
+            }
+            if !pinned.isEmpty {
+                ViewThatFits(in: .horizontal) {
+                    pinnedTiles(pinned)
+                    ScrollView(.horizontal, showsIndicators: false) { pinnedTiles(pinned) }
                 }
-                if conversations.isEmpty && pinned.isEmpty && filter == .bots {
-                    // The quiet line of the Team screen for a Mac without bots.
-                    Text("This Mac has no agents yet.")
-                        .font(.subheadline).foregroundStyle(.secondary)
-                        .frame(maxWidth: .infinity).padding(.vertical, 45)
-                        .accessibilityIdentifier("chats-empty")
-                }
-                if !pinned.isEmpty {
-                    ViewThatFits(in: .horizontal) {
-                        pinnedTiles(pinned)
-                        ScrollView(.horizontal, showsIndicators: false) { pinnedTiles(pinned) }
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, BoardStyle.Space.xl)
+                .homeRow(inset: 0)
+            }
+            ForEach(conversations) { item in
+                switch item {
+                case .bot(let bot):
+                    Button { pushRoute?(ConversationRoute(botId: bot.id)) } label: {
+                        BotContactRow(bot: bot)
+                            .padding(.vertical, BoardStyle.Space.m)
+                            .background(BoardStyle.paper)
+                            .contentShape(Rectangle())
+                            .contextMenu { botActions(bot) }
                     }
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, BoardStyle.Space.xl)
-                }
-                ForEach(conversations) { item in
-                    switch item {
-                    case .bot(let bot):
-                        NavigationLink(value: ConversationRoute(botId: bot.id)) {
-                            BotContactRow(bot: bot)
+                        .buttonStyle(HomePressStyle())
+                        .accessibilityIdentifier("bot-conversation-\(bot.id)")
+                        .swipeActions(edge: .trailing, allowsFullSwipe: true) { archiveButton(bot) }
+                        .homeRow()
+                case .team, .direct, .botDirect:
+                    // A team chat has Star and Mute in its menu. The Team screen has the leave action.
+                    if let chat = item.chat {
+                        Button { pushRoute?(TeamChatRoute(chat: chat)) } label: {
+                            PeopleRow(item: item, pinMark: item.isPinnedChat)
                                 .padding(.vertical, BoardStyle.Space.m)
                                 .background(BoardStyle.paper)
                                 .contentShape(Rectangle())
-                                .contextMenu { botActions(bot) }
+                                .modifier(TeamChatMuteMenu(item: item))
                         }
                             .buttonStyle(HomePressStyle())
-                            .accessibilityIdentifier("bot-conversation-\(bot.id)")
-                            .padding(.horizontal, BoardStyle.Space.l)
-                    case .team, .direct, .botDirect:
-                        // A chat of a team has Pin and Mute in its menu (TeamChatMuteMenu). A direct chat has no
-                        // menu. None has a delete here: the Team screen has the leave action.
-                        if let chat = item.chat {
-                            NavigationLink(value: TeamChatRoute(chat: chat)) {
-                                PeopleRow(item: item, pinMark: item.isPinnedChat)
-                                    .padding(.vertical, BoardStyle.Space.m)
-                                    .background(BoardStyle.paper)
-                                    .contentShape(Rectangle())
-                                    .modifier(TeamChatMuteMenu(item: item))
-                            }
-                                .buttonStyle(HomePressStyle())
-                                .accessibilityIdentifier(Self.identifier(chat))
-                                .padding(.horizontal, BoardStyle.Space.l)
-                        }
+                            .accessibilityIdentifier(Self.identifier(chat))
+                            .homeRow()
                     }
                 }
             }
-            .padding(.top, pinned.isEmpty || ChatFilter.showsChips(rooms: rooms) ? BoardStyle.Space.l : 0)
-            .padding(.bottom, BoardStyle.Space.xl)
+            // The archived agents wait behind one row at the end, as the archived chats of WhatsApp.
+            if archivedCount > 0 && filter != .people {
+                Button { pushRoute?(ArchivedAgentsRoute()) } label: {
+                    HStack(spacing: BoardStyle.Space.m) {
+                        Image(systemName: "archivebox").foregroundStyle(.secondary)
+                        Text("Archived").foregroundStyle(.primary)
+                        Spacer(minLength: 0)
+                        Text("\(archivedCount)").font(.subheadline.monospacedDigit()).foregroundStyle(.secondary)
+                    }
+                    .padding(.vertical, BoardStyle.Space.m)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(HomePressStyle())
+                .accessibilityIdentifier("chats-archived")
+                .homeRow()
+            }
         }
+        .listStyle(.plain)
+        .scrollContentBackground(.hidden)
+        .environment(\.defaultMinListRowHeight, 0)
+        .contentMargins(.top, pinned.isEmpty || ChatFilter.showsChips(rooms: rooms) ? BoardStyle.Space.l : 0, for: .scrollContent)
+        .contentMargins(.bottom, BoardStyle.Space.xl, for: .scrollContent)
         .background(BoardStyle.paper)
         .refreshable { await store.reconnect() }
         .modifier(DeleteBotDialog(bot: $deleting))
+    }
+
+    private func archiveButton(_ bot: Bot) -> some View {
+        Button { Task { await store.archiveBot(bot, archived: true) } } label: {
+            Label("Archive", systemImage: "archivebox")
+        }
+        .tint(.gray)
+        .accessibilityIdentifier("archive-bot-\(bot.id)")
     }
 
     /// The row of filter chips, as the chips of WhatsApp. When large text does not fit one row, the chips stand one
@@ -98,13 +128,12 @@ struct HomeLaunchView: View {
             VStack(alignment: .leading, spacing: 0) { chips }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.horizontal, BoardStyle.Space.l)
     }
 
     private func pinnedTiles(_ pinned: [Bot]) -> some View {
         HStack(spacing: BoardStyle.Space.xl) {
             ForEach(pinned) { bot in
-                NavigationLink(value: ConversationRoute(botId: bot.id)) {
+                Button { pushRoute?(ConversationRoute(botId: bot.id)) } label: {
                     VStack(spacing: BoardStyle.Space.s) {
                         LiveBotAvatar(bot: bot, size: 76)
                             // The badge sits on the top right corner of the face, not next to the name.
@@ -140,12 +169,71 @@ struct HomeLaunchView: View {
 
     @ViewBuilder
     private func botActions(_ bot: Bot) -> some View {
-        Button(bot.pinned ? "Unpin agent" : "Pin agent", systemImage: bot.pinned ? "pin.slash" : "pin") {
+        Button(bot.pinned ? "Unstar agent" : "Star agent", systemImage: bot.pinned ? "star.slash" : "star") {
             Task { await store.pinBot(bot, pinned: !bot.pinned) }
         }
+        Button("Archive agent", systemImage: "archivebox") { Task { await store.archiveBot(bot, archived: true) } }
         Button("Delete agent", systemImage: "trash", role: .destructive) { deleting = bot }
     }
 
+}
+
+/// The archived agents: swipe left or hold a row to bring an agent back. A row opens the conversation, which keeps its
+/// history.
+struct ArchivedAgentsView: View {
+    @Environment(AppStore.self) private var store
+    @Environment(\.pushRoute) private var pushRoute
+    @State private var deleting: Bot?
+
+    var body: some View {
+        let archived = store.bots.filter(\.archived).sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+        List {
+            if archived.isEmpty {
+                Text("No archived agents.")
+                    .font(.subheadline).foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity).padding(.vertical, 45)
+                    .homeRow()
+            }
+            ForEach(archived) { bot in
+                Button { pushRoute?(ConversationRoute(botId: bot.id)) } label: {
+                    BotContactRow(bot: bot)
+                        .padding(.vertical, BoardStyle.Space.m)
+                        .background(BoardStyle.paper)
+                        .contentShape(Rectangle())
+                        .contextMenu {
+                            Button("Unarchive", systemImage: "tray.and.arrow.up") {
+                                Task { await store.archiveBot(bot, archived: false) }
+                            }
+                            Button("Delete agent", systemImage: "trash", role: .destructive) { deleting = bot }
+                        }
+                }
+                .buttonStyle(HomePressStyle())
+                .accessibilityIdentifier("archived-bot-\(bot.id)")
+                .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+                    Button { Task { await store.archiveBot(bot, archived: false) } } label: {
+                        Label("Unarchive", systemImage: "tray.and.arrow.up")
+                    }
+                    .tint(.blue)
+                }
+                .homeRow()
+            }
+        }
+        .listStyle(.plain)
+        .scrollContentBackground(.hidden)
+        .environment(\.defaultMinListRowHeight, 0)
+        .background(BoardStyle.paper)
+        .navigationTitle("Archived")
+        .modifier(DeleteBotDialog(bot: $deleting))
+    }
+}
+
+extension View {
+    /// A row of the Chats list: the paper behind it, no line under it, and the side space of the page.
+    func homeRow(inset: CGFloat = BoardStyle.Space.l, top: CGFloat = 0) -> some View {
+        listRowInsets(EdgeInsets(top: top, leading: inset, bottom: 0, trailing: inset))
+            .listRowSeparator(.hidden)
+            .listRowBackground(BoardStyle.paper)
+    }
 }
 
 /// A text chip that one of a few choices selects: the filters of the Chats list, and the tabs of the bot details on
@@ -366,7 +454,7 @@ struct ChatRowLayout<Face: View, Subtitle: View>: View {
     private var badges: some View {
         HStack(spacing: BoardStyle.Space.xs) {
             if muted { MutedMark() }
-            if pinned { MutedMark(symbol: "pin") }
+            if pinned { MutedMark(symbol: "star") }
             if mentioned { MentionBadge() }
             if unread > 0 { UnreadBadge(count: unread) }
         }

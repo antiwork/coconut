@@ -882,17 +882,26 @@ An agent of a Mac for a team only answers in the chat where a person names it (s
 
 No log line has the name of a chat.
 
-#### Pinned chats
+#### Starred chats
 
-A person pins a chat of a team, as the person pins an agent: the Team chat and each named chat. A direct chat has no pin.
+A person stars the Team chat or a named chat, as the person stars an agent. A direct chat has no star.
 
-- The choice is the person's: it never goes into the log or to the relay. The Mac keeps it in `team_chat_pins`. When the chat goes (a `delete` entry over it, a new write that does not fit, a leave of the team), its row goes too.
-- `GET /v1/team/rooms` gives `pinned` for the room (the Team chat) and for each named chat, on a person's Mac only. A Mac for a team only and an older service send none, and the app then shows no action.
-- `PUT /v1/team/rooms/<room>/pin` (the Team chat) and `PUT /v1/team/rooms/<room>/chats/<id>/pin` change it, with the rules of the mute: only a paired device, 409 on a Mac for a team only, 404 for a chat that the store does not show, and a change adds `team.updated`. The same value again writes nothing. These routes keep no answer for an `Idempotency-Key` (see [Repeat a write](#repeat-a-write)).
-- The app shows "Pin" or "Unpin" (the symbols `pin` and `pin.slash`, as for an agent) in the menu of the row of the chat in the Chats list and in the Mac sidebar, above "Mute" for a named chat. The row of the Team chat has "Pin" only. "Pin" shows only for an `active` team. "Unpin" shows in each state, so a pinned chat of a team that this Mac left leaves the top without a removal of its history. The row shows a new choice at once, and a failed request shows the old state again with the error. VoiceOver says "Pinned" for a pinned chat.
-- A pinned chat leaves its normal place and keeps one fixed order: the teams in the order of the Mac, and in each team the Team chat, then the named chats in their order. A new message does not move it.
-- On the iPhone, the top of the Chats list has the tiles of the pinned agents, then the row of each pinned chat with a pin mark (the line symbol `pin`, in the form of the mute mark), then the other rows newest activity first, as WhatsApp has it. A pinned chat shows in "All" and "People", where its row shows, and never in "Agents".
-- On the Mac, the section "Pinned" of the sidebar has the pinned agents, then the pinned chats as the same rows that they have in "People" (with the unread count and the mute mark), then the pinned pages.
+- The choice stays on this Mac in `team_chat_pins`. It never goes into the log or to the relay.
+- The Mac deletes the choice when it removes the chat or leaves the team.
+- `GET /v1/team/rooms` gives `pinned` for the Team chat and each named chat on a person's Mac.
+- A Mac for a team only and an older service send no `pinned` field. The app then shows no action.
+- `PUT /v1/team/rooms/<room>/pin` changes the Team chat choice with `{"pinned": true}` or `{"pinned": false}`.
+- `PUT /v1/team/rooms/<room>/chats/<id>/pin` changes a named chat choice with the same body.
+- Only a paired device can change the choice. A Mac for a team only returns 409. An unknown chat returns 404.
+- A change adds `team.updated`. The same value again writes nothing. These routes keep no answer for an `Idempotency-Key`.
+- The menu shows "Star" or "Unstar" with `star` or `star.slash`, above "Mute" for a named chat.
+- "Star" shows only for an active team. "Unstar" shows in each state, so the person can remove a star without deleting history.
+- The row shows the new choice at once. A failed request restores the old state and shows the error.
+- VoiceOver says "Starred" for a starred chat.
+- Starred chats keep one order: teams in the Mac order, then the Team chat before each named chat in its order.
+- On iPhone, starred chats show below the starred agent tiles, with a `star` mark, before the other rows.
+- A starred chat shows in "All" and "People". It never shows in "Agents".
+- On Mac, "Starred" shows starred agents, starred chats, then starred pages. An unread message does not move a starred chat.
 
 #### Reactions
 
@@ -1317,7 +1326,38 @@ A Hermes cron job of an agent with its chat connected can deliver its result int
 
 `<bot ID>` is the ID of the agent on this Mac (`GET /v1/team/bots`), and `<chat ID>` is the entry ID of the named chat. Hermes gives the whole value after `coconut:` to the plugin as the chat ID. The message is a send outside a turn, so rule 5 of [An agent answers](#an-agent-answers) and rule 10 of [The Mac for a team only](#the-mac-for-a-team-only) apply.
 
-A cron run can deliver in a process without the gateway. There the plugin sends with its `standalone_sender_fn` (`hermes_plugin/coconut/team.py`, `send_standalone`), to the same route as the adapter: `POST /v1/gateway/messages`. A refusal comes back to Hermes as an error with its reason, so the record of the job shows why. The team chat takes no file from this path: the text goes, and the result has a warning. See [Messages outside a Coconut turn](architecture.md#messages-outside-a-coconut-turn).
+A cron run can deliver in a process without the gateway. There the plugin sends with its `standalone_sender_fn` (`hermes_plugin/coconut/team.py`, `send_standalone`), to the same route as the adapter: `POST /v1/gateway/messages`. The two senders answer Hermes in different ways:
+
+- A cron delivery through the live adapter of the gateway carries the `job_id` of the job in the metadata of the send (`cron/scheduler_delivery.py`, `_live_route_metadata`). The adapter of the mode `team` sends it with the tries of `send_standalone` (`team.send_tries`). For an answer `recorded: false`, and for a service that does not answer, it gives Hermes a failed send with the reason. When no part shows, Hermes then sends the same text again (`cron/scheduler_delivery.py`, `_deliver_standalone`). In a gateway process that send goes through the same live adapter, without metadata (`tools/send_message_tool.py`, `_send_via_adapter`), not through `send_standalone`. The adapter keeps the message ID of the failed delivery for 120 seconds (`team.CRON_FALLBACK_SECONDS`). A send of the same text to the same chat in that time uses that message ID, so the service writes only the missing parts and the chat shows no second copy. Its failure is a failure too, so the record of the job shows a delivery error. Hermes then tries no third path and sends no notice into the chat. When some parts show, after any try, the failed send has `partial_overflow`, so Hermes sends nothing again and the chat shows no part two times.
+- A cron delivery while a turn of the agent runs in the same chat goes outside that turn: it is a message of the agent without `reply_to`, and it does not end or change the turn.
+- Each other send of the live adapter outside a turn, for example after a background process, gives Hermes success for an answer `recorded: false`, and the adapter writes the reason in its log. Only an HTTP error (for example a 404) and a service that does not answer are errors there. The full mode (a person's Mac) does not change: there `recorded: false` for a cron delivery means that a routine task shows the run already, and it stays a success.
+- `send_standalone` gives Hermes an error with the reason for each refusal: a 404, an answer `recorded: false`, and an empty text. The record of the job then shows a failed delivery and why.
+
+Hermes cuts a cron delivery over 4,000 characters in the live lane, and adds the path of a file on the Mac, unless the adapter says that it splits long messages (`gateway/delivery.py`, `_cap_oversized_output`, which reads `splits_long_messages`). The adapter of the mode `team` sets `splits_long_messages`, because the service splits a long text into parts itself. So the chat shows the whole text. The adapter of the full mode does not set it: on a person's Mac, a cron delivery over 4,000 characters through the live adapter still arrives cut. The service of the full mode takes a text of at most 200,000 characters (`gateway_bridge.MAX_TEXT`), so the same mark there would turn a longer text into a refusal.
+
+The service answers `recorded: false` when the log does not have each part of the text. A text over 16,000 code points has more than one part. The service writes the parts in order and stops at the first part that the log does not take, so the chat shows no later part before it. This applies to both senders: before, the live adapter showed the later parts after a gap. When only some parts are in the log, the answer is `recorded: false` with the reason "The chat shows only k of n parts of this message.", because the chat does not show the whole text. A repeat with the same message ID writes only the missing parts: the entry ID of each part comes from the message ID.
+
+A failure of the relay or of the helper adds `retry: true` to `recorded: false`, because a repeat can write the missing parts. The service writes a part again only when the relay gives no answer, up to three times. A relay that answers with an error, for example a 429 or a 503, fails the part at once. An agent that does not answer in the chat, a removed chat and a person who left give `recorded: false` without `retry`.
+
+`send_standalone` makes up to three tries with the same message ID, with waits of 1 and 2 seconds between them (the first two retry waits of the adapter). It tries again when the service does not answer (a refused connection, a missing bridge file, a 5xx answer or a timeout), and when the answer has `retry: true`. It does not try again after a refusal. A refused connection fails at once, so the tries cover a gap of about 3 seconds, not a whole restart of the service.
+
+Each try waits 15 seconds for the service, as long as one relay try of the service. All tries take at most 3 × 15 + 1 + 2 = 48 seconds. Hermes stops a standalone send after 60 seconds (`cron.standalone_send_timeout_seconds`), or after 30 seconds when it must run the send in a thread (`cron/scheduler_delivery.py`, `_standalone_send`). The service can take longer than one try:
+
+- One part, with a relay that does not answer: about 46 seconds (three relay tries of 15 seconds and two waits of 0.5 seconds).
+- n parts: the sum over the parts, up to about n × 46 seconds. For example, five parts at 10 seconds each take 50 seconds.
+
+A later try waits for the lock of the room and finds the entries of the earlier try, so it gets `recorded: true` when the earlier try ends in time. When all parts together take longer than 48 seconds (30 seconds in the thread case), Hermes records a failed delivery, and the chat still shows the text later.
+
+The team chat takes no file from this path: the text goes, and the plugin writes a log line. The result of the plugin has no `warnings`. But Hermes adds its own warning to the result of a send with files (`tools/send_message_tool.py`), so the record of a run with files shows a failed delivery, although the text arrived. See [Messages outside a Coconut turn](architecture.md#messages-outside-a-coconut-turn).
+
+Before the scheduler runs a job with an agent, its preflight checks each platform of `deliver` and `failure_deliver`. A platform that it does not know stops the whole job, with its other targets, for example a Telegram target. The plugin registers `cron_deliver_env_var: COCONUT_HOME_CHANNEL` in the mode `team`, so `coconut` is a known target. The block of `connect-chat` (`enabled: true`) makes `coconut` a connected platform, so the second check of the preflight also passes. A target with a chat ID needs no value in the variable.
+
+`COCONUT_HOME_CHANNEL` is only the home chat of a bare `deliver: coconut`:
+
+- Without a value, a bare `coconut` resolves to no chat. The job runs, and its record has the delivery error "no delivery target resolved for deliver=coconut".
+- With a value `<bot ID>:team:<room ID>[:<chat ID>]` in the `.env` of the Hermes home, a bare `coconut` delivers to that chat. Then `deliver: all` also delivers to that chat. `deliver: origin` of a job without an origin delivers there when no built-in platform of Hermes has a home chat.
+
+Coconut sets no value. A full Coconut registers no variable: the service shows a cron run as a routine task, and its jobs deliver with `origin` or a bot-chat token, which the preflight does not check.
 
 The plugin of the Hermes home is the link `<home>/plugins/coconut` to `<install folder>/hermes_plugin/coconut`, which `coconut team connect-chat --confirm` writes (`team_chat_config.py`). An update of Coconut replaces the files of that folder and keeps the link, so each Hermes process that starts after the update loads the new plugin: also a cron process, with no restart of the gateway. A gateway that runs keeps the plugin that it loaded until its next restart.
 
