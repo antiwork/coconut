@@ -36,7 +36,7 @@ Coconut runs on the Hermes that you already use. It does not install its own cop
 - **Coconut.app** is a menu bar app. Its login items run the service and the relay sidecar. It updates itself with Sparkle. Each merge to `main` publishes a build that every Mac gets. Run `coconut update` to install it at once, and `coconut status` to see the version, the last update, the service, the relay, and Hermes. See [mac/README.md](mac/README.md).
 - **Each update** sets Coconut's own entries in your Hermes profiles again: the skill folder and the gateway plugin. It changes no other setting.
 - **Hermes** updates with `hermes update`. Coconut sees the new Hermes and restarts itself after the running turns finish.
-- **The iPhone app** ships through TestFlight. CI uploads a build when the app changes.
+- **The iPhone app** ships through TestFlight. Successful release builds upload app changes at most once per hour.
 
 ## Development
 
@@ -48,7 +48,13 @@ xcodegen generate --spec ios/project.yml
 open ios/Coconut.xcodeproj
 ```
 
-Run tests without installing Hermes:
+Work directly on `main` and enable the local regression hook:
+
+```sh
+git config core.hooksPath .githooks
+```
+
+The agent chooses additional checks for the change. Full local checks are available without installing Hermes:
 
 ```sh
 python3 -m pip install Pillow==12.3.0  # The image decoder also ships with Hermes.
@@ -58,7 +64,8 @@ swift test --package-path mac
 python3 scripts/test_tunnel_loopback.py  # iPhone, relay, and sidecar end to end
 ```
 
-Tests that need Hermes skip without it. CI runs them against the minimum and the latest supported Hermes. Run `CoconutTests` from Xcode for iOS checks.
+Tests that need Hermes skip without it. Check supported Hermes versions locally when the contract changes.
+Run `CoconutTests` from Xcode for iOS checks. GitHub runs only hourly-throttled app releases; it runs no regression CI.
 See [architecture](docs/architecture.md) for implementation details, [relay transport](docs/relay-transport.md) for the relay, and [relay](relay/README.md) to deploy it.
 
 ## Parallel work
