@@ -1407,6 +1407,11 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
         self._attach_profile(bot, profile)
         self._put('bots', bot)
         self._event('bot.created', bot | (audit or {}), bot['id'], (audit or {}).get('source_task_id'))
+        if profile is None and 'avatar' not in data:
+            # A new agent gets an icon of its own from the image backend of Hermes. The thread waits for this
+            # transaction (the service lock), and the fruit face shows until the icon is there (agent_icons.py).
+            from .agent_icons import start
+            start(self, bot['id'])
         return bot
 
     def _bot_deletion_scope(self, bot_id: str) -> set[str]:

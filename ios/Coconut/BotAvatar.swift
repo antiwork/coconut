@@ -21,6 +21,8 @@ struct BotAvatar: View {
     /// A phase also ends when the connection drops. Only an online end is a finished turn.
     var online = true
     var animated = true
+    /// The icon that the image backend made for the agent (`coconut-file://<id>`). It covers the fruit once it loads.
+    var image: URL? = nil
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.scenePhase) private var scenePhase
     @State private var blinking = false
@@ -49,6 +51,7 @@ struct BotAvatar: View {
          online: Bool = true, animated: Bool = true) {
         self.init(symbol: bot.avatar, color: bot.color, size: size, identity: bot.id, phase: phase, mood: mood,
                   newestCardAt: newestCardAt, online: online, animated: animated)
+        self.image = bot.avatarImage.flatMap { URL(string: "coconut-file://" + $0) }
     }
 
     private var isThinking: Bool { phase != nil }
@@ -68,6 +71,7 @@ struct BotAvatar: View {
                         mood: shownMood ?? targetMood)
         }
         .frame(width: size, height: size)
+        .overlay { if let image { AvatarIcon(url: image, size: size / Self.scale) } }
         .accessibilityHidden(true)
         .onChange(of: isThinking, initial: true) { _, _ in updateThinking() }
         .onChange(of: gesture) { old, _ in
@@ -156,3 +160,30 @@ struct LiveBotAvatar: View {
     }
 }
 
+
+/// The generated icon of an agent, in a rounded square like an app icon. Nothing shows until it loads, so the fruit
+/// face stays visible while the bytes come from the Mac.
+struct AvatarIcon: View {
+    let url: URL
+    let size: CGFloat
+    @State private var image: PlatformImage?
+
+    init(url: URL, size: CGFloat) {
+        self.url = url
+        self.size = size
+        _image = State(initialValue: PhotoLoader.shared.cached(url, size: .tile))
+    }
+
+    var body: some View {
+        Group {
+            if let image {
+                Image(platformImage: image).resizable().scaledToFill()
+                    .frame(width: size, height: size)
+                    .clipShape(RoundedRectangle(cornerRadius: size * 0.24, style: .continuous))
+            }
+        }
+        .task(id: url) {
+            if image == nil { image = await PhotoLoader.shared.image(url, size: .tile) }
+        }
+    }
+}
