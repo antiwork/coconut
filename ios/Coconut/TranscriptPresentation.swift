@@ -3,9 +3,19 @@ import Foundation
 struct MessagePhoto: Equatable, Sendable {
     let url: URL
     let caption: String
-    var label: String { caption.isEmpty ? "Photo" : caption }
-    /// A photo that a bot saved on the Mac. The phone loads it through the paired Mac.
-    var isMacFile: Bool { url.scheme == "coconut-file" }
+    /// The file name of a photo of a team chat. VoiceOver reads it, and Quick Look on a Mac shows it.
+    var name: String? = nil
+    /// False while the bytes are not on the Mac yet: the tile shows its loading state and loads nothing.
+    var ready = true
+    var label: String { name ?? (caption.isEmpty ? "Photo" : caption) }
+    /// A photo that a bot saved on the Mac, or a photo of a team chat. The phone loads it through the paired Mac, so
+    /// it has no public address: Copy and Share take its image.
+    var isMacFile: Bool { PhotoLoader.isMacFile(url) }
+    /// The name of the file that Quick Look shows on a Mac.
+    var fileName: String {
+        let last = name ?? url.lastPathComponent
+        return last.isEmpty || last == "/" ? "Photo.jpg" : last
+    }
     var preview: String { caption.isEmpty ? "Photo" : "Photo: " + caption }
 }
 

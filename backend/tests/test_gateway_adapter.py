@@ -736,6 +736,73 @@ class GatewayAdapterTests(unittest.TestCase):
                 hooks.register(ctx)
             self.assertEqual(registered, expected)
 
+    def test_the_model_switch_notice_reaches_the_chat_in_plain_words(self):
+        notice = ('⚠️ Model fallback: gpt-6.1-sol via openai-codex unavailable (provider failure); '
+                  'using claude-sonnet-5-5 via anthropic.')
+        expected = '⚠️ gpt-6.1-sol gave no answer. claude-sonnet-5-5 answers this turn.'
+        async def runner(event):
+            await self.adapter.send(event.source.chat_id, notice, metadata={'_interim_send': True})
+            return 'The answer.'
+        self.connect(runner)
+        task = self.write('POST', f'/v1/bots/{self.bot["id"]}/messages', {'text': 'Answer.'})
+        self.service._run_task(task['id'])
+        self.assertEqual(self.replies(task), [(expected, True), ('The answer.', False)])
+        # Outside a turn, a send without the interim mark goes to the chat too.
+        self.assertTrue(self.complete(self.adapter.send(self.bot['id'], notice)).success)
+        self.assertEqual(self.outside(), [(expected, False)])
+
+    def rejected_call(self, request, status=400, on_response=False):
+        """A model call through the execution middleware whose provider answers with an HTTP error. The error."""
+        hooks = sys.modules['hermes_plugins.coconut.hooks']
+        error = RuntimeError('Bad Request')
+        if status is not None:
+            if on_response:
+                error.response = types.SimpleNamespace(status_code=status)
+            else:
+                error.status_code = status
+        def next_call(_request):
+            raise error
+        with self.assertRaises(RuntimeError) as raised:
+            hooks.end_turn_text(request=request, next_call=next_call, api_mode='codex_responses')
+        self.assertIs(raised.exception, error)
+        return error
+
+    def test_a_model_call_that_the_provider_rejects_logs_the_shape_of_its_request(self):
+        logger = 'hermes_plugins.coconut.hooks'
+        marker = 'SECRET-MARKER'
+        request = {'model': 'gpt-6.1-sol', 'instructions': f'Rules {marker}.',
+                   'tools': [{'type': 'function', 'name': 'terminal', 'parameters': {}}],
+                   'input': [{'role': 'user', 'content': f'Hello {marker}.'},
+                             {'type': 'function_call', 'name': 'terminal', 'call_id': 'c1', 'arguments': '{}'},
+                             {'type': 'function_call_output', 'call_id': 'c1', 'output': f'out\x00\x01 {marker}'}]}
+        with self.assertLogs(logger, 'WARNING') as logs:
+            self.rejected_call(request)
+        self.assertEqual(len(logs.output), 1)
+        line = logs.output[0]
+        self.assertNotIn(marker, line)
+        self.assertNotIn('Rules', line)
+        size = len(json.dumps(request, default=str, ensure_ascii=False).encode())
+        for part in ('turn none', 'api_mode codex_responses', 'RuntimeError', 'HTTP 400', f'{size} bytes', 'utf8=yes',
+                     'keys input,instructions,model,tools', '3 items', '1 tools', 'user ', 'function_call:terminal ',
+                     'function_call_output ', 'nul=1 c0=1'):
+            self.assertIn(part, line)
+        # A lone surrogate makes the request text fail as UTF-8.
+        with self.assertLogs(logger, 'WARNING') as logs:
+            self.rejected_call({'messages': [{'role': 'tool', 'content': 'a\ud800b'}]}, on_response=True)
+        self.assertIn('utf8=no', logs.output[0])
+        self.assertIn('surrogates=1', logs.output[0])
+        # A shape that fails still lets the error of the provider through.
+        circular = {'messages': []}
+        circular['messages'].append(circular)
+        with self.assertLogs(logger, 'WARNING') as logs:
+            self.rejected_call(circular)
+        self.assertIn('ValueError', logs.output[0])
+
+    def test_a_model_call_with_another_error_logs_no_shape(self):
+        for status in (429, 500, None):
+            with self.subTest(status=status), self.assertNoLogs('hermes_plugins.coconut.hooks', 'WARNING'):
+                self.rejected_call({'messages': []}, status=status)
+
     @staticmethod
     def reply(content=None, tool_calls=None):
         """A model response in the chat format."""

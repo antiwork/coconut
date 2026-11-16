@@ -283,8 +283,25 @@ def end_turn_text(request=None, next_call=None, api_mode='', **_):
 
     An empty reply without a tool result before it, in a turn without the mark, stays as it is: a typed question keeps
     the retries and the fallback model of Hermes. A reply with text or with a tool call stays as it is. The chat does
-    not show END_TEXT (adapter.ends_quietly)."""
-    response = next_call(request)
+    not show END_TEXT (adapter.ends_quietly).
+
+    When the provider rejects the call with HTTP 400, the log gets one line with the shape of the request
+    (request_shape), and the error goes on to Hermes unchanged."""
+    try:
+        response = next_call(request)
+    except Exception as error:
+        # Hermes wraps an error of the model call before a middleware gets it, and unwraps it after
+        # (hermes_cli/middleware.py, _DownstreamExecutionError). The wrapped error is the error of the provider.
+        cause = getattr(error, 'original', error)
+        status = getattr(cause, 'status_code', None) or getattr(getattr(cause, 'response', None), 'status_code', None)
+        if status == 400:
+            try:
+                turn = _turn()[1]
+            except Exception:
+                turn = None
+            LOG.warning('Coconut: the provider rejected a model call of turn %s (api_mode %s, %s, HTTP 400): %s',
+                        turn or 'none', api_mode or 'none', type(cause).__name__, request_shape(request))
+        raise
     from .adapter import CLOSED, HERMES_RUNS, NUDGED, PAUSED, WAITED
     _holder, turn = _turn()
     if turn is None:
@@ -307,6 +324,51 @@ def end_turn_text(request=None, next_call=None, api_mode='', **_):
     CLOSED.add(turn)
     LOG.info('Coconut: the model wrote no text in turn %s. The turn ends with its closing text.', turn)
     return closed
+
+
+# The characters that a strict JSON parser or a text field of a provider can reject.
+REJECTED_CHARACTERS = (('surrogates', re.compile('[\ud800-\udfff]')), ('nul', re.compile('\x00')),
+                       ('c0', re.compile('[\x01-\x08\x0b\x0c\x0e-\x1f]')))
+
+
+def _strings(value):
+    """The strings in a request item: its keys and values, at each depth."""
+    if isinstance(value, str):
+        yield value
+    elif isinstance(value, dict):
+        for key, item in value.items():
+            yield from _strings(key)
+            yield from _strings(item)
+    elif isinstance(value, (list, tuple)):
+        for item in value:
+            yield from _strings(item)
+
+
+def request_shape(request) -> str:
+    """The shape of a model request for the log: sizes, counts and names of fields, kinds and tools. No text of the
+    conversation, of a tool or of the instructions. It never raises."""
+    try:
+        text = json.dumps(request, default=str, ensure_ascii=False)
+        lone = len(REJECTED_CHARACTERS[0][1].findall(text))
+        key = items_key(request)
+        items = request[key] if key else []
+        parts = [f'{len(text.encode("utf-8", "surrogatepass"))} bytes', f'utf8={"no" if lone else "yes"}',
+                 'keys ' + ','.join(sorted(map(str, request))), f'{len(items)} items',
+                 f'{len(request.get("tools") or [])} tools']
+        for item in items[-8:]:
+            if not isinstance(item, dict):
+                parts.append(type(item).__name__)
+                continue
+            calls = [item] if item.get('type') == 'function_call' else item.get('tool_calls') or []
+            names = map(_tool_name, calls)
+            kind = ':'.join([str(item.get('type') or item.get('role')), *filter(None, names)])
+            raw = ''.join(_strings(item))
+            counts = ''.join(f' {name}={len(found)}' for name, pattern in REJECTED_CHARACTERS
+                             if (found := pattern.findall(raw)))
+            parts.append(f'{kind} {len(json.dumps(item, default=str, ensure_ascii=False))}c{counts}')
+        return '; '.join(parts)
+    except Exception as failure:
+        return f'no shape ({type(failure).__name__})'
 
 
 def after_tool_result(request):

@@ -28,6 +28,8 @@ struct HeldBubbleView<Header: View, Preview: View>: View {
     let share: HeldShare?
     /// The actions after Share. A destructive action is the last row.
     var afterShare: [HeldAction] = []
+    /// False for a message whose bytes are not here yet, for example a file that is not on the Mac yet: no Share row.
+    var showsShare = true
     /// The row above the message. It gets a function that closes the view and then runs an action.
     @ViewBuilder let header: (_ close: @escaping (@escaping () -> Void) -> Void) -> Header
     /// The message, at most the given height.
@@ -47,6 +49,7 @@ struct HeldBubbleView<Header: View, Preview: View>: View {
                     preview(previewHeight).fixedSize(horizontal: false, vertical: true)
                     VStack(alignment: .leading, spacing: 0) {
                         ForEach(actions, content: actionRow)
+                        if showsShare {
                         Group {
                             switch share {
                             case nil: row("Share", systemImage: "square.and.arrow.up").foregroundStyle(.secondary)
@@ -59,6 +62,7 @@ struct HeldBubbleView<Header: View, Preview: View>: View {
                             }
                         }
                         .buttonStyle(.plain)
+                        }
                         ForEach(afterShare, content: actionRow)
                     }
                     .padding(.vertical, BoardStyle.Space.s)
@@ -153,6 +157,51 @@ struct HeldTextPreview: View {
             .background(own ? BoardStyle.userBubble : BoardStyle.surface)
             .clipShape(RoundedRectangle(cornerRadius: BoardStyle.Radius.large))
             .frame(maxWidth: 340, alignment: own ? .trailing : .leading)
+    }
+}
+
+/// A held file of a team chat: the row above it, the image or the card, then Reply, Copy, Share and the actions after
+/// Share. Copy and Share take the image or the file, so they wait until it has loaded.
+struct HeldTeamFile<Header: View>: View {
+    let file: TeamFile
+    let source: URL
+    let own: Bool
+    let reply: HeldAction?
+    let afterShare: [HeldAction]
+    @ViewBuilder let header: (_ close: @escaping (@escaping () -> Void) -> Void) -> Header
+    @State private var image: UIImage?
+    @State private var local: URL?
+
+    var body: some View {
+        let image = image
+        let local = local
+        var actions = reply.map { [$0] } ?? []
+        let copy: (() -> Void)? = file.isImage ? image.map { image in { Pasteboard.copy(image) } }
+            : local.map { url in { Pasteboard.copyFile(url) } }
+        // A file that is not on the Mac yet has no bytes to copy or share, so it shows no such rows.
+        if file.isReady { actions.append(HeldAction(title: "Copy", systemImage: "doc.on.doc", perform: copy)) }
+        let share: HeldShare? = file.isImage ? image.map { .image($0, file.name) } : local.map { .url($0) }
+        return HeldBubbleView(trailing: own, actions: actions, share: share, afterShare: afterShare,
+                              showsShare: file.isReady) { close in
+            header(close)
+        } preview: { maxHeight in
+            if file.isImage {
+                PhotoMenuPreview(url: source, maxHeight: maxHeight)
+                    .clipShape(RoundedRectangle(cornerRadius: BoardStyle.Radius.small))
+                    .accessibilityLabel(file.name)
+            } else {
+                ChatFileCard(file: file, source: nil).frame(width: ChatFileCard.width).allowsHitTesting(false)
+            }
+        }
+        .task(id: source) {
+            guard file.isReady else { return }
+            if file.isImage {
+                // The preview shows the tile at once. Copy and Share wait for the full image.
+                self.image = await PhotoLoader.shared.shareImage(source)
+            } else {
+                self.local = await QuickLookFile.url(for: source, name: file.name)
+            }
+        }
     }
 }
 

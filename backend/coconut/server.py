@@ -27,6 +27,7 @@ from urllib.parse import parse_qs, unquote, urlsplit
 
 # The modules of the full service load in main, so a team-only service (team_only.py) never imports them.
 from .service_base import ServiceError
+from .team_files import FileContent
 
 PEER_KEY = re.compile(r'[0-9a-f]{64}')
 # The page route of the tooling of the Mac. POST saves a page, and DELETE deletes it.
@@ -168,6 +169,19 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(content)
 
+    def _bytes(self, content, filename, content_type, fallback):
+        """Send the bytes of a file as an attachment. The name in the header keeps only safe ASCII characters."""
+        self.status = 200
+        safe_filename = ''.join(c for c in filename if c.isascii() and c.isalnum() or c in '._- ')[:160] or fallback
+        self.send_response(200)
+        self.send_header('Content-Type', content_type)
+        self.send_header('Content-Disposition', f'attachment; filename="{safe_filename}"')
+        self.send_header('Content-Length', str(len(content)))
+        self.send_header('Cache-Control', 'no-store')
+        self.send_header('X-Content-Type-Options', 'nosniff')
+        self.end_headers()
+        self.wfile.write(content)
+
     def _body(self):
         if self.headers.get('Transfer-Encoding'):
             raise ServiceError(400, 'Use Content-Length for request bodies.')
@@ -230,7 +244,11 @@ class Handler(BaseHTTPRequestHandler):
                 else self._body())
         # An app that knows direct messages says so on each read of the rooms (docs/team-log.md, "Direct messages").
         direct = bool(device) and self.headers.get('X-Coconut-Team') == 'direct'
-        self._json(200, service.team_request(method, url.path, data, key, device, direct))
+        answer = service.team_request(method, url.path, data, key, device, direct)
+        if isinstance(answer, FileContent):
+            self._bytes(answer.content, answer.name, answer.type, 'file')
+        else:
+            self._json(200, answer)
 
     def _team_only(self, service, method, url):
         """The routes of a team-only service (team_only.py): the team routes and the page route (POST saves, DELETE
@@ -367,16 +385,7 @@ class Handler(BaseHTTPRequestHandler):
                     if len(parts) != 4:
                         raise ServiceError(404, 'This artifact was not found.')
                     content, filename = service.artifact_content(parts[2])
-                    self.status = 200
-                    safe_filename = ''.join(c for c in filename if c.isascii() and c.isalnum() or c in '._- ')[:160] or 'artifact'
-                    self.send_response(200)
-                    self.send_header('Content-Type', 'application/octet-stream')
-                    self.send_header('Content-Disposition', f'attachment; filename="{safe_filename}"')
-                    self.send_header('Content-Length', str(len(content)))
-                    self.send_header('Cache-Control', 'no-store')
-                    self.send_header('X-Content-Type-Options', 'nosniff')
-                    self.end_headers()
-                    self.wfile.write(content)
+                    self._bytes(content, filename, 'application/octet-stream', 'artifact')
                 else:
                     raise ServiceError(404, 'This route was not found.')
                 return

@@ -9,6 +9,8 @@ import re
 import subprocess
 from urllib.parse import urlsplit
 
+from .team_store import shown_text
+
 # The release uses one public relay. No user supplies Apple credentials.
 RELAY_URL = 'https://coconut-push.gumroad.workers.dev'
 MAX_CONTENT_BYTES = 2200
@@ -159,7 +161,7 @@ def team_alert(store, room, entry):
     team = store.room(room)['name']
     team = notification_text(f'{chat["name"]} · {team}' if chat else team, limit=140, byte_limit=512)
     writer = notification_text(message['bot_name'] if message['bot'] else message['member_name'], limit=80, byte_limit=256)
-    body = notification_text(message['text'])
+    body = notification_text(shown_text(message['text'], message['files']))
     if not writer:
         return {'title': team, 'body': body}
     return {'title': writer, 'subtitle': team, 'body': body}

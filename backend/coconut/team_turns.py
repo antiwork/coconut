@@ -38,7 +38,7 @@ import threading
 import time
 
 from .gateway_bridge import GatewayBusy, GatewayUnavailable
-from .team_store import ACTIVE, MAX_TEXT, TRIGGER_SECONDS
+from .team_store import ACTIVE, MAX_TEXT, TRIGGER_SECONDS, shown_text
 from .team_sync import ROOM_ERRORS
 from .team_typing import BotTyping
 
@@ -123,6 +123,14 @@ def reply_entry(room: str, trigger: str, bot: str, part) -> str:
     return hashlib.sha256(f'{room}:{trigger}:{bot}:{part}'.encode()).hexdigest()[:32]
 
 
+def file_lines(text: str, files: str | None) -> str:
+    """The text of a trigger with one line for each file of its message: the name, the type and the size. The agent
+    does not get the bytes in this version (docs/team-log.md, "Files")."""
+    lines = [f'[File: {item["name"]}, {item["type"] or "no type"}, {item["size"]:,} bytes]'
+             for item in json.loads(files or '[]')]
+    return '\n'.join(([text] if text else []) + lines)
+
+
 def parts(text: str) -> list[str]:
     """The text in parts of at most MAX_TEXT code points, the most that a `message` entry takes."""
     return [text[start:start + MAX_TEXT] for start in range(0, len(text), MAX_TEXT)]
@@ -135,7 +143,7 @@ def quoted(rows: list[dict]) -> str | None:
     lines = [CONTEXT]
     for row in rows:
         lines.append(f'{row["bot_name"] or row["member_name"] or "A member"} wrote:')
-        lines += ['> ' + line for line in row['text'].splitlines() or ['']]
+        lines += ['> ' + line for line in shown_text(row['text'], row.get('files')).splitlines() or ['']]
     return '\n'.join(lines)
 
 
@@ -307,10 +315,10 @@ class TeamTurns:
                 team['reply_to'] = {'id': answered['entry'], 'text': answered['text'],
                                     'own': answered['writer'] == room_row['member']}
         elif answered is not None and answered['chat'] == chat:
-            team['reply_to'] = {'id': answered['entry'], 'text': answered['text'],
+            team['reply_to'] = {'id': answered['entry'], 'text': shown_text(answered['text'], answered['files']),
                                 'own': answered['bot'] == share and answered['member'] == room_row['member']}
         return {'number': row['number'], 'room': room, 'bot': bot, 'entry': row['entry'], 'home': record['home'],
-                'text': request['text'], 'chat_name': chat_name, 'chat': chat, 'direct': person, 'team': team}
+                'text': file_lines(request['text'], request.get('files')), 'chat_name': chat_name, 'chat': chat, 'direct': person, 'team': team}
 
     def _team_page_context(self, room: str, bot: str, page: str | None, name: str) -> str | None:
         """The page that a direct message is about, as quoted context: the title, the key and the current text of the
