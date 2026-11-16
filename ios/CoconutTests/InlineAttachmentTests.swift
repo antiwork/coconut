@@ -16,6 +16,21 @@ final class InlineAttachmentTests: XCTestCase {
         XCTAssertNil(attachment("notes.pdf").photo, "Another file keeps its card.")
     }
 
+    /// A message of images alone has the marker text, which the chat hides; the images show.
+    func testTheMarkerOfImagesAloneDoesNotShow() {
+        let marker = Message(id: "m-text", botId: "bot", taskId: "t", role: "user", kind: "text", text: AttachmentOnly.text,
+                             decisionId: nil, artifactId: nil, createdAt: "2026-11-16T20:38:03Z", streaming: false)
+        let visible = TranscriptPresentation.visibleMessages([marker, attachment("a.png")], artifacts: [])
+        XCTAssertEqual(visible.map(\.id), ["m-a1"])
+    }
+
+    func testAnImageAloneIsANewDraftEachTime() {
+        var send = DraftSend()
+        XCTAssertTrue(send.begin("\u{0}a1"))
+        send.shows("")
+        XCTAssertTrue(send.begin("\u{0}a2"), "A second image alone sends too.")
+    }
+
     func testTwoPastedImagesShareOneRow() {
         let entries = TranscriptEntry.grouped([attachment("a.png", id: "a1"), attachment("b.jpg", id: "a2")])
         XCTAssertEqual(entries.count, 1)
