@@ -79,6 +79,7 @@ class PlatformEntry:
     max_message_length: int = 0
     emoji: str = ""
     standalone_sender_fn: Any = None
+    cron_deliver_env_var: str = ""
 '''
 # The middleware kinds of a Hermes that has the middleware of the guard of the direct chats.
 MIDDLEWARE = '''
@@ -150,13 +151,17 @@ class RegistrationTests(unittest.TestCase):
         self.assertIs(options['adapter_factory'], team.TeamAdapter)
         self.assertEqual(options['display_overrides'], plugin.DISPLAY)
         self.assertIs(options['standalone_sender_fn'], team.send_standalone)
+        # The variable makes `coconut` a known target for the preflight of the cron scheduler.
+        self.assertEqual(options['cron_deliver_env_var'], 'COCONUT_HOME_CHANNEL')
         self.assertIsNone(team.TeamAdapter.lacking)
         # Without the mode, the plugin registers what it registers for a full install, and no sender for a cron run
-        # without a gateway: the service of a person's Mac needs the job ID of a delivery.
+        # without a gateway: the service of a person's Mac needs the job ID of a delivery. Its jobs deliver with
+        # `origin` or a bot-chat token, so they need no variable of a home chat.
         full = Context()
         plugin.register(full)
         self.assertEqual((len(full.platforms), len(full.tools)), (1, 29))
         self.assertNotIn('standalone_sender_fn', full.platforms[0])
+        self.assertNotIn('cron_deliver_env_var', full.platforms[0])
         self.assertIn('pre_tool_call', full.hooks)
 
     def test_a_hermes_without_a_field_of_the_adapter_gets_one_log_line_and_no_channel(self):
@@ -194,6 +199,7 @@ class RegistrationTests(unittest.TestCase):
         self.assertNotIn('trusted_inbound', options)
         # A Hermes without the field of the sender registers the channel without it.
         self.assertNotIn('standalone_sender_fn', options)
+        self.assertNotIn('cron_deliver_env_var', options)
         self.assertEqual(team.TeamAdapter.lacking, 'trusted_inbound, display_overrides')
         self.assertEqual(logs.output, ['WARNING:hermes_plugins.coconut:Coconut: the team chat takes no message, '
                                        'because this Hermes lacks trusted_inbound, display_overrides. Update Hermes.'])

@@ -59,6 +59,37 @@ for number, (chat, text) in enumerate(json.loads(sys.argv[2])):
 asyncio.run_coroutine_threadsafe(adapter.disconnect(), loop).result(30)
 print(json.dumps(results))
 '''
+# The preflight that the scheduler runs before each job with an agent (_preflight_or_block). A job whose `deliver` or
+# `failure_deliver` names a platform that the preflight does not know does not run, with all its targets. A fallback
+# chain in the config skips the check of the provider key, because this test has no key.
+PREFLIGHT = '''
+import json, sys
+sys.path.insert(0, sys.argv[1])
+from cron.scheduler_preflight import _preflight_check_delivery, _preflight_job_config
+from hermes_cli.config import load_config
+job = {'id': 'weekly', 'name': 'weekly', 'deliver': sys.argv[2], 'failure_deliver': sys.argv[2]}
+config = dict(load_config(), fallback_providers=[{'provider': 'openrouter', 'model': 'neutral/model'}])
+print(json.dumps({'delivery': _preflight_check_delivery(job), 'job': _preflight_job_config(job, config)}))
+'''
+# A due job with a script and no agent (no model call), run as the scheduler runs one due job (run_one_job): the
+# script prints the text, and the scheduler delivers its output to each target of `deliver`.
+SCHEDULED = '''
+import json, os, shlex, sys
+sys.path.insert(0, sys.argv[1])
+from hermes_constants import get_hermes_home
+scripts = os.path.join(get_hermes_home(), 'scripts')
+os.makedirs(scripts, exist_ok=True)
+with open(os.path.join(scripts, 'report.sh'), 'w') as script:
+    script.write('#!/bin/sh\\necho ' + shlex.quote(sys.argv[3]) + '\\n')
+from cron.jobs import create_job, get_job
+from cron.scheduler import run_one_job
+job = create_job(None, 'every 1h', name='weekly', script='report.sh', no_agent=True, deliver=sys.argv[2],
+                 failure_deliver=sys.argv[2])
+processed = run_one_job(job)
+stored = get_job(job['id'])
+print(json.dumps({'processed': processed, 'status': stored.get('last_status'), 'error': stored.get('last_error'),
+                  'delivery_error': stored.get('last_delivery_error')}))
+'''
 
 
 @needs_hermes
@@ -137,6 +168,33 @@ class NativeTeamCronDeliveryTests(AsThePerson, TeamOnlyMacs, unittest.TestCase):
         # The whole text arrives, without the cut of Hermes and without a file path of this Mac.
         self.assertTrue(long_text.strip() in texts[1], texts[1][-200:])
         self.assertNotIn('truncated', texts[1])
+
+    def hermes(self, script, *arguments):
+        """The last line of a Hermes process that runs `script`, as JSON."""
+        run = subprocess.run([PYTHON, '-I', '-B', '-c', script, SOURCE, *arguments], env=self.environment,
+                             capture_output=True, text=True, timeout=120, cwd=self.temp.name)
+        self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+        return json.loads(run.stdout.strip().splitlines()[-1]), run
+
+    def test_the_preflight_of_the_scheduler_lets_a_job_with_a_team_chat_target_run(self):
+        # Without cron_deliver_env_var, the preflight gave "delivery platform 'coconut' is not a known cron delivery
+        # target", and the scheduler skipped the job with its other targets.
+        target = 'coconut:' + team_turns.chat_id(self.room, self.bot['id'])
+        answer, _ = self.hermes(PREFLIGHT, target)
+        self.assertEqual(answer, {'delivery': None, 'job': None})
+
+    def test_a_due_script_job_delivers_into_a_named_chat(self):
+        design = self.call('POST', f'/v1/team/rooms/{self.room}/chats', {'name': 'Design'}, service=self.first)['chat']
+        self.sync()
+        answer, run = self.hermes(SCHEDULED, 'coconut:' + team_turns.chat_id(self.room, self.bot['id'], design), TEXT)
+        self.assertEqual(answer, {'processed': True, 'status': 'ok', 'error': None, 'delivery_error': None},
+                         run.stderr[-3000:])
+        self.sync()
+        rows = self.call('GET', f'/v1/team/rooms/{self.room}/messages', {'chat': design},
+                         service=self.first)['messages']
+        self.assertEqual([row['bot_name'] for row in rows], ['Reporter'])
+        # The scheduler puts a header and a footer around the output of the job.
+        self.assertIn(TEXT, rows[0]['text'])
 
 
 if __name__ == '__main__':

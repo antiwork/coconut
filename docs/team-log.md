@@ -1325,6 +1325,15 @@ A later try waits for the lock of the room and finds the entries of the earlier 
 
 The team chat takes no file from this path: the text goes, and the plugin writes a log line. The result of the plugin has no `warnings`. But Hermes adds its own warning to the result of a send with files (`tools/send_message_tool.py`), so the record of a run with files shows a failed delivery, although the text arrived. See [Messages outside a Coconut turn](architecture.md#messages-outside-a-coconut-turn).
 
+Before the scheduler runs a job with an agent, its preflight checks each platform of `deliver` and `failure_deliver`. A platform that it does not know stops the whole job, with its other targets, for example a Telegram target. The plugin registers `cron_deliver_env_var: COCONUT_HOME_CHANNEL` in the mode `team`, so `coconut` is a known target. The block of `connect-chat` (`enabled: true`) makes `coconut` a connected platform, so the second check of the preflight also passes. A target with a chat ID needs no value in the variable.
+
+`COCONUT_HOME_CHANNEL` is only the home chat of a bare `deliver: coconut`:
+
+- Without a value, a bare `coconut` resolves to no chat. The job runs, and its record has the delivery error "no delivery target resolved for deliver=coconut".
+- With a value `<bot ID>:team:<room ID>[:<chat ID>]` in the `.env` of the Hermes home, a bare `coconut` delivers to that chat. Then `deliver: all` also delivers to that chat. `deliver: origin` of a job without an origin delivers there when no built-in platform of Hermes has a home chat.
+
+Coconut sets no value. A full Coconut registers no variable: the service shows a cron run as a routine task, and its jobs deliver with `origin` or a bot-chat token, which the preflight does not check.
+
 The plugin of the Hermes home is the link `<home>/plugins/coconut` to `<install folder>/hermes_plugin/coconut`, which `coconut team connect-chat --confirm` writes (`team_chat_config.py`). An update of Coconut replaces the files of that folder and keeps the link, so each Hermes process that starts after the update loads the new plugin: also a cron process, with no restart of the gateway. A gateway that runs keeps the plugin that it loaded until its next restart.
 
 ## Test vectors
