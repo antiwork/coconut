@@ -14,6 +14,12 @@ A piece is a `file` entry, not kept, with at most CHUNK bytes. The writer derive
 index, so a repeat writes the same entry. The relay refuses each write of a member over 512 MiB of entries that are
 not kept, also a plain message. So the Mac sends files only up to FILE_BUDGET in 90 days, and keeps the rest of the
 space for messages. A Mac for a team only has no person, so it answers 409. A direct chat takes no file in this version.
+
+Only the writer of a piece can replace it, so each Mac takes its own pieces off the relay with a `delete` entry over
+each one. The relay then frees their space, each other Mac removes their bytes, and the count of the space no longer
+counts them. One place writes these entries: a pass of the sync of a room (_team_clean_pieces), after a read of the
+room to its end. It takes the noted files of a deleted own message at once (_team_note_pieces), and each other own
+piece that no message names after 24 hours.
 """
 from __future__ import annotations
 
@@ -21,7 +27,10 @@ import base64
 from contextlib import contextmanager
 import hashlib
 import hmac
+import json
+import logging
 from secrets import token_hex
+import time
 from typing import NamedTuple
 
 from . import team_keys
@@ -45,6 +54,12 @@ SPACE_FULL = ('Your space for files in this team is full. The space of a file is
 GONE_DRAFT = 'This file is no longer on this Mac. Add it again.'
 GONE_FILE = 'This file is no longer in the chat.'
 NOT_COMPLETE = 'This file is not on this Mac yet. Try again later.'
+# The pass of the old own pieces (_team_clean_pieces) runs at most one time in CLEAN_SECONDS for each room, and writes at
+# most CLEAN_LIMIT `delete` entries in one run. The relay takes 300 writes a minute of one member.
+CLEAN_SECONDS = 3600
+CLEAN_LIMIT = 48
+
+log = logging.getLogger(__name__)
 
 
 class FileContent(NamedTuple):
@@ -201,3 +216,94 @@ class TeamFiles:
             if files and error.status == 507:
                 raise ServiceError(413, SPACE_FULL) from None
             raise
+
+    # The pieces of this Mac that no message names
+
+    def _team_note_pieces(self, room_id: str, message: dict) -> None:
+        """Note the files of an own message that this Mac's person deleted, and ask for a pass of the sync of the
+        room. The route writes no `delete` over a piece: the store can lack a later own message that names the same
+        file, for example after a send without an answer and a restart. So only the pass (_team_clean_pieces), after a
+        read of the room to its end, writes these entries. The note is in memory only. A restart loses it, and then
+        the hourly pass takes the pieces off after 24 hours, as each other orphan."""
+        from .team_store import files_fields
+        files = files_fields(json.loads(message['payload']).get('files')) or []
+        if files:
+            # The accept of the message dropped its drafts already. This holds also for a store of a version before
+            # that rule.
+            with self.transaction():
+                for item in files:
+                    self.team_store.drop_draft(room_id, item['id'])
+            noted = self._team_noted.setdefault(room_id, {})
+            noted.update((item['id'], item['size']) for item in files)
+            self.team_wake(room=room_id)
+
+    def _team_clean_pieces(self, room_id: str) -> None:
+        """Write a `delete` entry over the own pieces that no message of this Mac names, at most CLEAN_LIMIT in one
+        run. Two kinds of work, in this order:
+
+        1. The noted files of the deleted own messages (_team_note_pieces), at each run, with no rule of 24 hours: the
+           person removed the message. A file leaves the note when each of its pieces is done, or when a message names
+           it. After an error it stays for the next run.
+        2. At most one time in CLEAN_SECONDS for each room, the other own pieces that no message names and that are
+           older than DRAFT_SECONDS. A send takes no older draft, so no later message can name such a piece. A piece
+           older than SPACE_SECONDS is gone from the relay already, so the pass leaves it. This finishes the work of a
+           lost note, and takes off the pieces of a send that failed, of a message that the admin erased, and of a
+           chat that the admin removed. The time of the last run is in memory only. A run that does not start sets no
+           time, and a run that an error ends keeps its time, so the next one is at most one hour later.
+
+        The store must have each own message that the relay has, else a piece of a shown message looks like an orphan,
+        and its `delete` cannot be taken back. So the sync calls this only after it read the room to its end, never
+        while the service stops, and with the lock of the room. A pending body of this member (a body that waits for
+        its room key) can be such a message, so a room with one has no run."""
+        from .team_sync import ROOM_ERRORS
+        now = time.monotonic()
+        last = self._team_cleaned.get(room_id)
+        hourly = last is None or now - last >= CLEAN_SECONDS
+        noted = self._team_noted.get(room_id, {})
+        if not noted and not hourly:
+            return
+        try:
+            # A send in the gap between the last read of the sync and this run can have reached the relay without an
+            # answer. Its message can name a noted file, so the store reads it back before the selection. The caller
+            # holds the lock of the room from here to the last write, so no send runs in between.
+            self._team_settle(room_id)
+            token = team_keys.read(self.root, room_id)['token']
+            with self.lock:
+                room = self.team_store.room(room_id)
+                if room is None or room['state'] != ACTIVE or self.team_store.pending_of(room_id, room['member']):
+                    return
+                work, done = [], []
+                for file, size in list(noted.items()):
+                    if self.team_store.file_named(room_id, room['member'], file):
+                        done.append(file)
+                        continue
+                    pieces = [entry for entry in (file_entry(token, room_id, file, index)
+                                                  for index in range(-(-size // CHUNK)))
+                              if self.team_store.own_piece(room_id, room['member'], entry)]
+                    work.append((file, pieces))
+                for file in done:
+                    noted.pop(file, None)
+                budget = CLEAN_LIMIT - sum(len(pieces) for _, pieces in work)
+                orphans = []
+                if hourly and budget > 0:
+                    clock = self.team_store.clock()
+                    noted_pieces = {entry for _, pieces in work for entry in pieces}
+                    orphans = [entry for entry in self.team_store.orphan_pieces(
+                        room_id, room['member'], int((clock - SPACE_SECONDS) * 1000),
+                        int((clock - DRAFT_SECONDS) * 1000), CLEAN_LIMIT) if entry not in noted_pieces][:budget]
+            if hourly:
+                self._team_cleaned[room_id] = now
+            written = 0
+            for file, pieces in work:
+                for entry in pieces:
+                    if self.stopping.is_set() or written == CLEAN_LIMIT:
+                        return
+                    self._team_write(room, entry, False, {'kind': 'delete'})
+                    written += 1
+                noted.pop(file, None)
+            for entry in orphans:
+                if self.stopping.is_set():
+                    return
+                self._team_write(room, entry, False, {'kind': 'delete'})
+        except ROOM_ERRORS as error:
+            log.warning('coconut.team_log room %s: the old pieces wait for the next pass. %s', room_id[:8], error)

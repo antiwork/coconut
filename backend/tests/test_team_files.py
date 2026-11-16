@@ -365,6 +365,12 @@ class FileStoreTests(unittest.TestCase):
             columns = [row[1] for row in self.db.execute(f'PRAGMA table_info({table})')]
             self.assertEqual(columns[-1], 'data', table)
 
+    def test_the_query_of_the_orphans_uses_an_index(self):
+        plan = ' '.join(row[3] for row in self.db.execute('EXPLAIN QUERY PLAN ' + team_store.ORPHAN_PIECES,
+                                                          (ROOM, MEMBER, 0, 1)))
+        self.assertIn('team_entries_kind', plan)
+        self.assertNotRegex(plan, r'SCAN team_entries\b')
+
     def test_the_sweep_of_pieces_that_no_message_names(self):
         self.piece(0, b'old', file='e' * 32)
         self.send(b'named')
@@ -615,33 +621,58 @@ class FileRouteTests(FileMacs, unittest.TestCase):
         self.assertEqual(writes, [])
         self.assertEqual(self.phone(self.first)('GET', self.path(), {})['messages'], [])
 
-    def test_a_send_again_after_a_lost_answer_and_a_delete_writes_the_pieces_again(self):
+    def test_a_draft_goes_when_its_message_comes_back_and_a_send_after_the_delete_answers_400(self):
         data = b'p' * (CHUNK + 5)
         draft = self.upload(self.first, data)
         self.fail_messages(TeamRelayError(0, 'The relay did not answer.'), after=True)
         self.assertEqual(self.refusal(self.send, self.first, [draft['id']], 'First')[0], 503)
         self.restore()
+        self.assertEqual(self.drafts(self.first), 1, 'The store does not have the message yet.')
+        # The accept of the own message in the sync drops the draft: a draft does not outlive its message.
         self.sync()
         (lost,) = self.phone(self.first)('GET', self.path(), {})['messages']
-        self.assertEqual(self.drafts(self.first), 1, 'The drafts stay after a send without an answer.')
-        # The person deletes the message, and its bytes go on each Mac. The `file` entries stay in the store.
+        self.assertEqual(self.drafts(self.first), 0)
+        # The person deletes the message: its bytes go on each Mac, and `delete` entries replace its pieces.
         self.phone(self.first)('DELETE', self.path(f'messages/{lost["id"]}'), {})
         self.sync()
         self.assertEqual((self.pieces(self.first), self.pieces(self.second)), (0, 0))
-        token = self.token(self.first)
-        entries = [file_entry(token, self.room, draft['id'], index) for index in (0, 1)]
-        self.assertEqual([self.first.team_store.entry(self.room, entry)['kind'] for entry in entries], ['file', 'file'])
-        writes = self.writes()
-        sent = self.send(self.first, [draft['id']], 'Again')
-        self.assertEqual(writes, [*entries, sent['id']])
-        self.assertEqual([self.first.team_store.entry(self.room, entry)['rev'] for entry in entries], [2, 2])
-        self.assertTrue(sent['files'][0]['complete'])
-        self.sync()
-        self.assertEqual(self.content(self.second, sent['id'], draft['id']).content, data)
-        self.assertEqual(self.pieces(self.second), 2)
-        # The space counts each piece one time: one entry of each entry ID.
+        entries = [file_entry(self.token(self.first), self.room, draft['id'], index) for index in (0, 1)]
+        for service in self.macs:
+            self.assertEqual([service.team_store.entry(self.room, entry)['kind'] for entry in entries],
+                             ['delete', 'delete'])
         ada = self.first.team_store.room(self.room)['member']
-        self.assertEqual(self.first.team_store.sent_bytes(self.room, ada, 0, []), len(data))
+        self.assertEqual(self.first.team_store.sent_bytes(self.room, ada, 0, []), 0)
+        # A send of the same draft cannot name the file again.
+        writes = self.writes()
+        self.assertEqual(self.refusal(self.send, self.first, [draft['id']], 'Again'), (400, GONE_DRAFT))
+        self.assertEqual(writes, [])
+
+    def test_the_delete_of_a_message_drops_the_drafts_of_its_files(self):
+        draft = self.upload(self.first, b'abc')
+        sent = self.send(self.first, [draft['id']])
+        # A store of a version before the drop at the accept can still have the draft.
+        with self.first.transaction():
+            self.first.db.execute("INSERT INTO team_file_drafts (room, id, name, size, hash, created, data) "
+                                  "VALUES (?, ?, 'a', 3, ?, ?, x'616263')",
+                                  (self.room, draft['id'], hashlib.sha256(b'abc').hexdigest(), time.time()))
+        self.phone(self.first)('DELETE', self.path(f'messages/{sent["id"]}'), {})
+        self.assertEqual(self.drafts(self.first), 0)
+
+    def test_an_honest_repeat_after_a_lost_answer_gets_the_same_message(self):
+        draft = self.upload(self.first, b'repeat')
+        key = str(uuid4())
+        self.fail_messages(TeamRelayError(0, 'The relay did not answer.'), after=True)
+        self.assertEqual(self.refusal(self.send, self.first, [draft['id']], 'Once', key)[0], 503)
+        self.restore()
+        # The repeat reads back the write without an answer (the accept drops the draft), then finds the message
+        # before it checks the drafts.
+        writes = self.writes()
+        again = self.send(self.first, [draft['id']], 'Once', key)
+        self.assertEqual((again['text'], writes), ('Once', []))
+        self.assertEqual(self.drafts(self.first), 0)
+        self.sync()
+        (seen,) = self.phone(self.second)('GET', self.path(), {})['messages']
+        self.assertTrue(seen['files'][0]['complete'])
 
     def test_the_space_of_a_member_and_a_507_of_the_relay(self):
         ada = self.first.team_store.room(self.room)['member']
@@ -711,8 +742,11 @@ class FileRouteTests(FileMacs, unittest.TestCase):
         self.sync()
         self.phone(self.first)('DELETE', self.path(f'messages/{sent["id"]}'), {})
         self.sync()
-        for service in self.macs:
-            self.assertEqual(service.db.execute('SELECT COUNT(*) FROM team_file_pieces').fetchone()[0], 0)
+        # The bytes of a piece of another member go at once. The writer keeps the bytes of its own pieces until its
+        # `delete` over them (FileCleanTests), because its store can lack a later message that names the file.
+        self.assertEqual(self.pieces(self.first), 0)
+        self.assertEqual(self.pieces(self.second), 1)
+        self.assertEqual(self.phone(self.second)('GET', self.path(), {})['messages'], [])
 
     def test_two_messages_with_the_same_file_id_each_answer_their_own_bytes(self):
         ada_draft = self.upload(self.first, b'bytes of Ada')
@@ -769,6 +803,250 @@ class FileRouteTests(FileMacs, unittest.TestCase):
                          400)
         sent = self.phone(self.first)('POST', direct, {'text': 'Hi'})['message']
         self.assertNotIn('files', sent)
+
+
+class FileCleanTests(FileMacs, unittest.TestCase):
+    """Each Mac takes its own pieces off the relay with `delete` entries: at once when its person deletes a message,
+    and in a pass of the sync for each other own piece that no message names after 24 hours."""
+
+    def setUp(self):
+        super().setUp()
+        self.clock = [time.time()]
+        for service in self.macs:
+            service.team_store.clock = lambda: self.clock[0]
+
+    def later(self, seconds: float) -> None:
+        """Move the clock of each store, and let the pass of the old pieces run again at once."""
+        self.clock[0] += seconds
+        for service in self.macs:
+            service._team_cleaned.clear()
+
+    def kinds(self, service, entries: list[str]) -> list[str]:
+        return [service.team_store.entry(self.room, entry)['kind'] for entry in entries]
+
+    def relay_kinds(self, entries: list[str]) -> list[str]:
+        """What a reader of the relay gets for each entry: the kind of its newest write."""
+        state = self.relay.rooms[self.room]['entries']
+        return [json.loads(base64.b64decode(json.loads(base64.b64decode(state[entry]['body']))['payload']))['kind']
+                for entry in entries]
+
+    def entries(self, service, draft: dict) -> list[str]:
+        return [file_entry(self.token(service), self.room, draft['id'], index)
+                for index in range(-(-draft['size'] // CHUNK))]
+
+    def member(self, service) -> str:
+        return service.team_store.room(self.room)['member']
+
+    def test_a_delete_of_a_message_takes_its_pieces_off_the_relay(self):
+        data = b'd' * (CHUNK + 9)
+        draft = self.upload(self.first, data)
+        sent = self.send(self.first, [draft['id']], 'A photo')
+        self.sync()
+        entries = self.entries(self.first, draft)
+        writes = self.writes()
+        self.phone(self.first)('DELETE', self.path(f'messages/{sent["id"]}'), {})
+        # The route writes one entry: the `delete` over the message. It asks for a pass of the sync of the room.
+        self.assertEqual(writes, [sent['id']])
+        self.assertEqual(self.relay_kinds(entries), ['file', 'file'])
+        self.assertIn(self.room, self.first._team_take_wakes()[1])
+        # One pass after a read to the end writes a `delete` over each piece, with no wait of 24 hours.
+        self.first.team_sync_pass()
+        self.assertEqual(writes, [sent['id'], *entries])
+        self.sync()
+        self.assertEqual(self.relay_kinds(entries), ['delete', 'delete'])
+        for service in self.macs:
+            self.assertEqual(self.kinds(service, entries), ['delete', 'delete'])
+            self.assertEqual(self.pieces(service), 0)
+        self.assertEqual(self.first.team_store.sent_bytes(self.room, self.member(self.first), 0, []), 0)
+        # A repeat of the route writes nothing.
+        writes.clear()
+        self.phone(self.first)('DELETE', self.path(f'messages/{sent["id"]}'), {})
+        self.assertEqual(writes, [])
+
+    def test_a_failed_piece_delete_keeps_the_note_and_the_next_sync_finishes_it(self):
+        draft = self.upload(self.first, b'e' * 10)
+        sent = self.send(self.first, [draft['id']])
+        entries = self.entries(self.first, draft)
+        answer = self.phone(self.first)('DELETE', self.path(f'messages/{sent["id"]}'), {})
+        self.assertEqual(answer, {'room': self.room, 'id': sent['id'], 'deleted': True})
+        write = self.relay.write
+
+        def refuse_pieces(relay, room, token, entry, kept, body, tries=1):
+            if entry in entries:
+                raise TeamRelayError(413, 'The relay answered 413.')
+            return write(relay, room, token, entry, kept, body, tries)
+        self.relay.write = refuse_pieces
+        self.first.team_sync_pass()
+        self.relay.write = write
+        self.assertEqual(self.relay_kinds(entries), ['file'])
+        self.assertEqual(list(self.first._team_noted[self.room]), [draft['id']])
+        # The next sync, in the same hour and with no wait of 24 hours, finishes the work and empties the note.
+        self.first.team_sync_pass()
+        self.assertEqual(self.relay_kinds(entries), ['delete'])
+        self.assertEqual(self.first._team_noted[self.room], {})
+        self.sync()
+        self.assertEqual(self.kinds(self.second, entries), ['delete'])
+
+    def test_a_send_again_before_the_message_comes_back_gives_two_complete_messages(self):
+        data = b'twice' * 100
+        draft = self.upload(self.first, data)
+        # The first send loses its answer. The store does not have the message yet, so the draft is still usable.
+        self.fail_messages(TeamRelayError(0, 'The relay did not answer.'), after=True)
+        self.refusal(self.send, self.first, [draft['id']], 'One')
+        self.restore()
+        self.first._team_unsure.clear()  # A restart forgets that a write got no answer.
+        second = self.send(self.first, [draft['id']], 'Two')
+        self.sync()
+        for service in self.macs:
+            views = self.phone(service)('GET', self.path(), {})['messages']
+            self.assertEqual([view['text'] for view in views], ['Two', 'One'])
+            self.assertTrue(all(view['files'][0]['complete'] for view in views))
+        # A delete of one of them keeps the pieces: the other message names the file.
+        first = next(view for view in self.phone(self.first)('GET', self.path(), {})['messages']
+                     if view['text'] == 'One')
+        self.phone(self.first)('DELETE', self.path(f'messages/{first["id"]}'), {})
+        self.sync()
+        self.assertEqual(self.relay_kinds(self.entries(self.first, draft)), ['file'])
+        for service in self.macs:
+            self.assertEqual(self.content(service, second['id'], draft['id']).content, data)
+
+    def test_the_pass_reads_back_a_write_without_an_answer_before_it_selects(self):
+        data = b'gap'
+        draft = self.upload(self.first, data)
+        sent = self.send(self.first, [draft['id']], 'One')
+        files = json.loads(self.first.team_store.entry(self.room, sent['id'])['payload'])['files']
+        self.phone(self.first)('DELETE', self.path(f'messages/{sent["id"]}'), {})
+        # In the gap between the last read of the sync and the pass, a message that names the same file reaches the
+        # relay without an answer (a Mac of another version, or a write by hand).
+        room = self.first.team_store.room(self.room)
+        self.fail_messages(TeamRelayError(0, 'The relay did not answer.'), after=True)
+        with self.first._team_room_lock(self.room), self.assertRaises(TeamRelayError):
+            self.first._team_write(room, token_hex(16), False, {'kind': 'message', 'text': 'Two', 'files': files})
+        self.restore()
+        self.assertIn(self.room, self.first._team_unsure)
+        with self.first._team_room_lock(self.room):
+            self.first._team_clean_pieces(self.room)
+        self.assertEqual(self.relay_kinds(self.entries(self.first, draft)), ['file'])
+        (two,) = self.phone(self.first)('GET', self.path(), {})['messages']
+        self.assertEqual((two['text'], two['files'][0]['complete']), ('Two', True))
+
+    def test_a_young_piece_without_a_message_stays_for_24_hours(self):
+        draft = self.upload(self.first, b'young')
+        self.fail_messages(TeamRelayError(413, 'The relay answered 413.'), after=False)
+        self.refusal(self.send, self.first, [draft['id']])
+        self.restore()
+        entries = self.entries(self.first, draft)
+        self.later(team_files.DRAFT_SECONDS - 60)
+        self.sync()
+        self.assertEqual(self.relay_kinds(entries), ['file'], 'A send can still use the draft.')
+        self.later(120)
+        self.sync()
+        self.assertEqual(self.relay_kinds(entries), ['delete'])
+        self.assertEqual(self.first.team_store.sent_bytes(self.room, self.member(self.first), 0, []), 0)
+
+    def test_one_pass_writes_at_most_48_deletes_and_runs_one_time_in_an_hour(self):
+        ada = self.member(self.first)
+        at = int((self.clock[0] - 2 * 86400) * 1000)
+        orphans = [entry_id(number + 5000) for number in range(team_files.CLEAN_LIMIT + 2)]
+        with self.first.transaction():
+            for number, entry in enumerate(orphans):
+                self.first.db.execute('INSERT INTO team_entries (room, id, seq, first, member, kind, rev, at, kept, '
+                                      "payload) VALUES (?, ?, 0, 0, ?, 'file', 1, ?, 0, ?)",
+                                      (self.room, entry, ada, at + number, json.dumps(
+                                          {'kind': 'file', 'file': entry_id(number + 6000), 'index': 0, 'size': 1})))
+        self.later(0)
+        self.first.team_sync_pass()
+        self.assertEqual(self.kinds(self.first, orphans).count('delete'), team_files.CLEAN_LIMIT)
+        self.first.team_sync_pass()
+        self.assertEqual(self.kinds(self.first, orphans).count('delete'), team_files.CLEAN_LIMIT, 'One run an hour.')
+        self.later(0)
+        self.first.team_sync_pass()
+        self.assertEqual(self.kinds(self.first, orphans), ['delete'] * len(orphans))
+
+    def test_the_pieces_of_an_erased_message_leave_the_relay(self):
+        draft = self.upload(self.second, b'grace')
+        sent = self.send(self.second, [draft['id']])
+        self.sync()
+        self.phone(self.first)('DELETE', self.path(f'messages/{sent["id"]}'), {})
+        self.sync()
+        entries = self.entries(self.second, draft)
+        self.assertEqual(self.relay_kinds(entries), ['file'], 'Only the writer replaces a piece.')
+        self.later(team_files.DRAFT_SECONDS + 60)
+        self.sync()
+        self.assertEqual(self.relay_kinds(entries), ['delete'])
+        self.assertEqual(self.second.team_store.sent_bytes(self.room, self.member(self.second), 0, []), 0)
+        self.assertEqual(self.pieces(self.second), 0, 'The bytes of the writer go with its delete.')
+
+    def test_a_read_that_a_stop_ends_early_deletes_no_piece(self):
+        data = b's' * (CHUNK + 1)
+        draft = self.upload(self.first, data)
+        # The send reaches the relay, and its answer is lost: the store has the pieces and not the message.
+        self.fail_messages(TeamRelayError(0, 'The relay did not answer.'), after=True)
+        self.refusal(self.send, self.first, [draft['id']], 'Still here')
+        self.restore()
+        entries = self.entries(self.first, draft)
+        self.first._team_unsure.discard(self.room)
+        # The relay gives the two pieces on the first page and the message on the second. The service stops after the
+        # first page, a day after the send.
+        self.relay.page = 2
+        self.later(team_files.DRAFT_SECONDS + 60)
+        read = self.first._team_read
+
+        def read_then_stop(room_id):
+            more = read(room_id)
+            self.first.stopping.set()
+            return more
+        self.first._team_read = read_then_stop
+        writes = self.writes()
+        try:
+            self.first.team_sync_room(self.room)
+        finally:
+            self.first.stopping.clear()
+            self.first._team_read = read
+        self.assertEqual(writes, [])
+        self.assertEqual(self.relay_kinds(entries), ['file', 'file'])
+        # A full read brings the message, and the pass still writes nothing.
+        self.later(0)
+        self.sync()
+        self.assertEqual(writes, [])
+        (message,) = self.phone(self.first)('GET', self.path(), {})['messages']
+        self.assertTrue(message['files'][0]['complete'])
+        self.assertEqual(self.content(self.second, message['id'], draft['id']).content, data)
+
+    def test_a_room_with_a_pending_own_body_has_no_run(self):
+        draft = self.upload(self.first, b'pending')
+        self.fail_messages(TeamRelayError(413, 'The relay answered 413.'), after=False)
+        self.refusal(self.send, self.first, [draft['id']])
+        self.restore()
+        ada = self.member(self.first)
+        with self.first.transaction():
+            self.first.db.execute('INSERT INTO team_pending (room, id, seq, first, member, at, kept, body, reason) '
+                                  "VALUES (?, ?, 1, 1, ?, 0, 0, x'00', 'epoch')", (self.room, entry_id(77), ada))
+        self.later(team_files.DRAFT_SECONDS + 60)
+        writes = self.writes()
+        self.first.team_sync_pass()
+        self.assertEqual(writes, [])
+        # Once the body is no longer pending, the next run (no hour wait: no run started) takes the piece off.
+        with self.first.transaction():
+            self.first.db.execute('DELETE FROM team_pending')
+        self.first.team_sync_pass()
+        self.assertEqual(self.relay_kinds(self.entries(self.first, draft)), ['delete'])
+
+    def test_a_file_that_another_own_message_names_keeps_its_pieces(self):
+        data = b'kept'
+        draft = self.upload(self.first, data)
+        first = self.send(self.first, [draft['id']], 'One')
+        payload = json.loads(self.first.team_store.entry(self.room, first['id'])['payload'])
+        room = self.first.team_store.room(self.room)
+        second = token_hex(16)
+        with self.first._team_room_lock(self.room):
+            self.first._team_write(room, second, False, {'kind': 'message', 'text': 'Two', 'files': payload['files']})
+        self.phone(self.first)('DELETE', self.path(f'messages/{first["id"]}'), {})
+        self.later(team_files.DRAFT_SECONDS + 60)
+        self.sync()
+        entries = self.entries(self.first, draft)
+        self.assertEqual(self.relay_kinds(entries), ['file'])
+        self.assertEqual(self.content(self.second, second, draft['id']).content, data)
 
 
 class FileListenerTests(FileMacs, unittest.TestCase):

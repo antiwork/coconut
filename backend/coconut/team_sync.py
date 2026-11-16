@@ -238,8 +238,9 @@ class TeamSync:
     def team_sync_room(self, room: str) -> None:
         """Read the room until the store has each entry of the relay, and take each new room key (TeamEpochs). Then
         make sure that the log shows this Mac, that the admin made the key change after a removal, that the log has the
-        bots and the pages that this Mac shares (TeamPages._team_publish), and that each kept entry of this Mac has the
-        room key of its epoch."""
+        bots and the pages that this Mac shares (TeamPages._team_publish), that each kept entry of this Mac has the
+        room key of its epoch, and that the relay keeps no old own piece of a file that no message names
+        (TeamFiles._team_clean_pieces)."""
         lock = self._team_room_lock(room)
         if room not in self._team_retried:
             with lock:
@@ -259,6 +260,9 @@ class TeamSync:
             self._team_change_key(room)
             self._team_publish(room)
             self._team_write_again(room)
+            # Only a read to the end of the room shows each own message that names a piece.
+            if not more and not self.stopping.is_set():
+                self._team_clean_pieces(room)
 
     def _team_read(self, room_id: str) -> bool:
         """Read one answer of the relay after the saved `seq`, and store it. Return True when the relay has more."""

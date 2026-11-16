@@ -203,6 +203,8 @@ class TeamMessages:
             room, existing, own = self._team_deletable(room_id, entry)
             if own and existing['kind'] != 'delete':
                 self._team_write(room, entry, False, {'kind': 'delete'}, tries=2)
+                # The chat changed with the write above. The pass of the sync takes the pieces of its files off the relay.
+                self._team_note_pieces(room_id, existing)
             elif not own and existing['kind'] == 'message':
                 with self.lock:
                     done = self.team_store.erased(room_id, entry)

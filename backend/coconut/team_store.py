@@ -147,6 +147,8 @@ CREATE TABLE IF NOT EXISTS team_file_pieces (room TEXT NOT NULL, entry TEXT NOT 
     PRIMARY KEY (room, entry));
 CREATE INDEX IF NOT EXISTS team_file_pieces_file ON team_file_pieces (room, member, file, piece);
 CREATE INDEX IF NOT EXISTS team_file_pieces_received ON team_file_pieces (received);
+-- The own pieces of a time span (TeamStore.orphan_pieces), without a walk of the other entries of the room.
+CREATE INDEX IF NOT EXISTS team_entries_kind ON team_entries (room, kind, member, at);
 CREATE TABLE IF NOT EXISTS team_message_files (room TEXT NOT NULL, message TEXT NOT NULL, member TEXT NOT NULL,
     file TEXT NOT NULL, size INTEGER NOT NULL, hash TEXT NOT NULL, checked TEXT, PRIMARY KEY (room, message, file));
 CREATE INDEX IF NOT EXISTS team_message_files_file ON team_message_files (room, member, file);
@@ -291,6 +293,10 @@ PIECE_SECONDS = 7 * 86400
 SWEEP_PIECES = '''DELETE FROM team_file_pieces WHERE received<? AND NOT EXISTS (
     SELECT 1 FROM team_message_files f WHERE f.room=team_file_pieces.room AND f.member=team_file_pieces.member
     AND f.file=team_file_pieces.file)'''
+# The own `file` entries of a time span: the room, the member, the start and the end. The index team_entries_kind has
+# these columns in this order.
+ORPHAN_PIECES = '''SELECT id, payload FROM team_entries WHERE room=? AND kind='file' AND member=? AND at>=? AND at<?
+    ORDER BY at'''
 # The unread count of a room stops here, so the count reads at most this many rows.
 MAX_UNREAD = 99
 # The check of a mention (`mention_first`) reads at most this many rows of the index after the read position, the
@@ -1686,7 +1692,12 @@ class TeamStore:
         """Set the files that a message names, each as (member, file ID, size, hash), and check each new one
         (_check_file). The bytes of a file that the message no longer names go, unless another message of the same
         member names it: the message no longer shows (its author deleted it, the admin erased it, or the admin removed
-        its chat), or a new write has other files."""
+        its chat), or a new write has other files.
+
+        The own pieces of this Mac keep their bytes here. The store can lack a later own message that names the same
+        file, and the relay does not send an own piece again. So the bytes of an own piece go only with the `delete`
+        entry over it (TeamFiles._team_clean_pieces), which comes after a read of the room to its end, or with the
+        sweep of 7 days."""
         old = set(self.db.execute('SELECT member, file, size, hash FROM team_message_files WHERE room=? AND message=?',
                                   (room, message)).fetchall())
         if old == set(files):
@@ -1696,11 +1707,17 @@ class TeamStore:
                             'VALUES (?, ?, ?, ?, ?, ?)', [(room, message, *file) for file in files])
         for member, file in {(member, file) for member, file, _, _ in files}:
             self._check_file(room, member, file, message)
+        own = self.db.execute('SELECT member FROM team_rooms WHERE room=?', (room,)).fetchone()
+        # A draft does not outlive its message: once an own message names its file, no later send can name it again.
+        # Else a send after a delete of that message would skip pieces whose bytes no other Mac has any more.
+        if own is not None:
+            self.db.executemany('DELETE FROM team_file_drafts WHERE room=? AND id=?',
+                                [(room, file) for member, file, _, _ in files if member == own[0]])
         for member, file, _, _ in old - set(files):
-            if not self._file_named(room, member, file):
+            if (own is None or member != own[0]) and not self.file_named(room, member, file):
                 self.db.execute('DELETE FROM team_file_pieces WHERE room=? AND member=? AND file=?', (room, member, file))
 
-    def _file_named(self, room: str, member: str, file: str) -> bool:
+    def file_named(self, room: str, member: str, file: str) -> bool:
         return self.db.execute('SELECT 1 FROM team_message_files WHERE room=? AND member=? AND file=? LIMIT 1',
                                (room, member, file)).fetchone() is not None
 
@@ -1739,7 +1756,7 @@ class TeamStore:
                              self.clock(), piece['data']))
             files.add((entry['member'], piece['file']))
         for member, file in files:
-            if self._file_named(room, member, file):
+            if self.file_named(room, member, file):
                 self._check_file(room, member, file)
                 self.chatted.add(room)
 
@@ -1821,6 +1838,30 @@ class TeamStore:
             AND id IN (SELECT value FROM json_each(?)) AND created>=?''',
                           (room, json.dumps(ids), self.clock() - seconds))
         return {row['id']: row for row in rows}
+
+    def orphan_pieces(self, room: str, member: str, since: int, until: int, limit: int) -> list[str]:
+        """The entry IDs of the `file` entries of `member` with an `at` from `since` to before `until` whose file no
+        message of the store names, in the order of `at`, at most `limit`. The index team_entries_kind finds the rows,
+        and the query reads the small payload of each such entry, never the bytes. Python reads the payload, as in
+        sent_bytes."""
+        orphans = []
+        for entry, payload in self.db.execute(ORPHAN_PIECES, (room, member, since, until)):
+            file = json.loads(payload).get('file')
+            if not entry_id(file) or not self.file_named(room, member, file):
+                orphans.append(entry)
+                if len(orphans) == limit:
+                    break
+        return orphans
+
+    def own_piece(self, room: str, member: str, entry: str) -> bool:
+        """True when the store has the entry as a `file` entry of `member`."""
+        return self.db.execute("SELECT 1 FROM team_entries WHERE room=? AND id=? AND kind='file' AND member=?",
+                               (room, entry, member)).fetchone() is not None
+
+    def pending_of(self, room: str, member: str) -> bool:
+        """True when the room has a body of `member` that this Mac keeps and cannot open yet (team_pending)."""
+        return self.db.execute('SELECT 1 FROM team_pending WHERE room=? AND member=? LIMIT 1',
+                               (room, member)).fetchone() is not None
 
     def piece_size(self, room: str, entry: str) -> int | None:
         """The number of bytes that this Mac has of a piece, or None when it has no bytes of it."""
