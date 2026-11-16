@@ -139,7 +139,7 @@ struct LiveBotAvatar: View {
     /// A provider problem makes the bot sad. A bot with no message for two days is sleepy.
     private var mood: CoconutMood {
         if bot.health != nil { return .sad }
-        let latest = store.messages.lazy.filter { $0.botId == bot.id }.compactMap { $0.createdAt.apiDate }.max()
+        let latest = store.chatSummaries[bot.id].newestDate
         return Date().timeIntervalSince(latest ?? bot.createdAt.apiDate ?? .now) > 2 * 86_400 ? .sleepy : .neutral
     }
     private var newestCardAt: Date? {
