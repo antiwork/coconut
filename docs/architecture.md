@@ -22,6 +22,7 @@ A future execution provider can move work to another host without changing agent
 | Tool and dispatch receipts | Coconut coordination data |
 | Team rooms, their members and the copy of each team log | Coconut SQLite database (`team_*` tables), copied from the relay. See [team log](team-log.md#mac). |
 | Keys and member tokens of the team rooms | One private file for each room in `<data>/team` |
+| Alerts of the alerts feed: operational notices of the tooling of the Mac | Coconut SQLite database (`alerts` table). `scripts/alerts.py` posts one through `POST /v1/alerts`. The store keeps 30 days and at most 500 alerts. |
 
 Coconut retains small projections for phone display. Native files own behavior.
 Inbox threads group decisions. They do not restrict an agent's recall of its own conversation.
