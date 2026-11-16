@@ -132,7 +132,7 @@ Ask an admin of the team for a new link.</p>`,
     return page({
       title: `Join ${found.name} on Coconut`,
       body: `<h1>Join ${escape(found.name)} on Coconut</h1>
-<p>This invite works once, and expires ${escape(new Date(found.expires * 1000).toUTCString())}.</p>
+<p>This invite ends ${escape(new Date(found.expires * 1000).toUTCString())}.</p>
 <a class="btn" href="coconut://team/${escape(found.token)}">Open Coconut</a>
 <p class="small">Nothing happened? Make sure Coconut is installed, then tap the button again.
 <a href="${DOWNLOAD}">Download Coconut for Mac</a></p>`,

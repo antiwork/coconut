@@ -46,6 +46,8 @@ test('The page of an invite names the team and opens the app without keeping a c
   assert.equal(response.status, 200);
   const html = await response.text();
   assert.match(html, /<h1>Join Example Team on Coconut<\/h1>/);
+  // An invite can have more than one use, so the page names only its end.
+  assert.match(html, /This invite ends /);
   assert.match(html, new RegExp(`href="coconut://team/${link}"`));
   // A browser adds one slash at the end of a path, and the app takes that form too.
   assert.equal((await get('/i/' + link + '/')).status, 200);
