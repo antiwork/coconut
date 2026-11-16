@@ -89,12 +89,13 @@ struct CoconutHome: View {
     }
 
     var body: some View {
+        // The tab bar shows filled symbols, as the system tab bars do.
         TabView(selection: $selectedTab) {
             Tab(value: HomeTab.home) {
                 root(tab: .home, path: $homePath)
             } label: {
                 Label { Text("Home") } icon: {
-                    Image(systemName: "house").environment(\.symbolVariants, .none)
+                    Image(systemName: "house.fill")
                 }
             }.badge(HomeFeed.badge(store.homeUnread))
                 .accessibilityIdentifier("home-home")
@@ -102,21 +103,21 @@ struct CoconutHome: View {
                 root(tab: .chats, path: $chatsPath)
             } label: {
                 Label { Text("Chats") } icon: {
-                    Image(systemName: "bubble.left.and.bubble.right").environment(\.symbolVariants, .none)
+                    Image(systemName: "bubble.left.and.bubble.right.fill")
                 }
             }.accessibilityIdentifier("home-chats")
             Tab(value: HomeTab.agents) {
                 root(tab: .agents, path: $agentsPath)
             } label: {
                 Label { Text("Agents") } icon: {
-                    Image(systemName: "square.stack.3d.up").environment(\.symbolVariants, .none)
+                    Image(systemName: "square.stack.3d.up.fill")
                 }
             }.accessibilityIdentifier("home-agents")
             Tab(value: HomeTab.people) {
                 root(tab: .people, path: $peoplePath)
             } label: {
                 Label { Text("People") } icon: {
-                    Image(systemName: "person.2").environment(\.symbolVariants, .none)
+                    Image(systemName: "person.2.fill")
                 }
             }.badge(store.shownTeamRooms.reduce(0) { $0 + $1.unseenNotices })
                 .accessibilityIdentifier("home-people")
@@ -124,7 +125,7 @@ struct CoconutHome: View {
                 root(tab: .profile, path: $profilePath)
             } label: {
                 Label { Text("Profile") } icon: {
-                    Image(systemName: "person.crop.circle").environment(\.symbolVariants, .none)
+                    Image(systemName: "person.crop.circle.fill")
                 }
             }.accessibilityIdentifier("home-profile")
         }
