@@ -107,9 +107,16 @@ struct PhotoTileRow<Actions: View, Below: View>: View {
         .scrollPosition(id: $scrolled, anchor: .leading)
         .scrollTargetBehavior(.viewAligned)
         .scrollIndicators(.hidden)
+        // The row of an own message opens at its trailing end: the last photo ends where the own bubbles end, and
+        // the earlier photos are to its left. Each other row opens at its first photo.
+        .defaultScrollAnchor(trailing ? .trailing : nil, for: .initialOffset)
         // The row reaches the screen edges, so the next photo shows that the row scrolls.
         .contentMargins(.horizontal, BoardStyle.Space.l, for: .scrollContent)
         .padding(.horizontal, -BoardStyle.Space.l)
+        // In an own row, other photos make a new row: a reused row, or a message on its way that the Mac saved, opens at
+        // its trailing end again and keeps no old offset. Each other row keeps its offset when a photo joins it, as in
+        // the agent chat.
+        .id(trailing ? photos.map(\.url) : [])
     }
 
     private func open(_ index: Int) {
