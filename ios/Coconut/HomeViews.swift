@@ -20,10 +20,13 @@ struct HomeLaunchView: View {
             let second = $1.createdAt.apiDate ?? .distantPast
             return first == second ? $0.id < $1.id : first < second
         }
-        let rooms = store.team?.rooms ?? []
+        // The choices that wait for the Mac show at once (TeamChatChoices).
+        let rooms = store.shownTeamRooms
         let filter = ChatFilter.effective(store.chatFilter, rooms: rooms)
-        let conversations = filter.items(ChatList.items(bots: activeBots.filter { !$0.pinned }, latest: latest,
-                                                        rooms: rooms, local: store.newestLocalMessages))
+        // The tiles of the pinned agents come first. Then the rows (ChatList.rows): the pinned chats of the teams, each
+        // with the star mark, then the other rows newest activity first.
+        let conversations = ChatList.rows(filter, bots: activeBots.filter { !$0.pinned }, latest: latest,
+                                          rooms: rooms, local: store.newestLocalMessages)
         let pinned = filter.showsPinned ? pinnedBots : []
         // A list, not a stack, so that a row of an agent has the swipe of the system: swipe left to archive.
         return List {
@@ -63,11 +66,10 @@ struct HomeLaunchView: View {
                         .swipeActions(edge: .trailing, allowsFullSwipe: true) { archiveButton(bot) }
                         .homeRow()
                 case .team, .direct, .botDirect:
-                    // A team and a direct chat have no pin, no archive and no delete here. The Team screen has the
-                    // leave action.
+                    // A team chat has Star and Mute in its menu. The Team screen has the leave action.
                     if let chat = item.chat {
                         Button { pushRoute?(TeamChatRoute(chat: chat)) } label: {
-                            PeopleRow(item: item)
+                            PeopleRow(item: item, pinMark: item.isPinnedChat)
                                 .padding(.vertical, BoardStyle.Space.m)
                                 .background(BoardStyle.paper)
                                 .contentShape(Rectangle())
@@ -167,7 +169,7 @@ struct HomeLaunchView: View {
 
     @ViewBuilder
     private func botActions(_ bot: Bot) -> some View {
-        Button(bot.pinned ? "Unpin agent" : "Pin agent", systemImage: bot.pinned ? "pin.slash" : "pin") {
+        Button(bot.pinned ? "Unstar agent" : "Star agent", systemImage: bot.pinned ? "star.slash" : "star") {
             Task { await store.pinBot(bot, pinned: !bot.pinned) }
         }
         Button("Archive agent", systemImage: "archivebox") { Task { await store.archiveBot(bot, archived: true) } }
@@ -384,6 +386,8 @@ struct ChatRowLayout<Face: View, Subtitle: View>: View {
     var mentioned = false
     /// The person muted the chat (TeamChatMute).
     var muted = false
+    /// The chat is pinned and shows at the top of the list (TeamChatPin).
+    var pinned = false
     @ViewBuilder let face: () -> Face
     @ViewBuilder let subtitle: () -> Subtitle
 
@@ -428,7 +432,7 @@ struct ChatRowLayout<Face: View, Subtitle: View>: View {
         .frame(minHeight: 52)
     }
 
-    private var hasBadges: Bool { unread > 0 || mentioned || muted }
+    private var hasBadges: Bool { unread > 0 || mentioned || muted || pinned }
 
     private var nameText: some View {
         Text(name).font(.body.weight(unread > 0 ? .semibold : .regular)).lineLimit(1)
@@ -442,6 +446,7 @@ struct ChatRowLayout<Face: View, Subtitle: View>: View {
     private var badges: some View {
         HStack(spacing: BoardStyle.Space.xs) {
             if muted { MutedMark() }
+            if pinned { MutedMark(symbol: "star") }
             if mentioned { MentionBadge() }
             if unread > 0 { UnreadBadge(count: unread) }
         }
@@ -451,8 +456,11 @@ struct ChatRowLayout<Face: View, Subtitle: View>: View {
 /// The mark of a muted chat in the secondary color, as WhatsApp has it: in the font of the line under the name, so it
 /// is as high as that line. The label of the row says it to VoiceOver (TeamRowSpeech), so the mark itself is silent.
 struct MutedMark: View {
+    /// The mark of a pinned chat at the top of the list uses the same form with the line symbol `pin`.
+    var symbol = TeamChatMute.mark
+
     var body: some View {
-        Image(systemName: TeamChatMute.mark)
+        Image(systemName: symbol)
             .font(.subheadline)
             .foregroundStyle(.secondary)
             .accessibilityHidden(true)

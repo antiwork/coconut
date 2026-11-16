@@ -1477,6 +1477,7 @@ struct TeamContactRow: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let room: TeamRoom
     var avatarSize: CGFloat = BoardStyle.rowFace
+    var pinMark = false
 
     /// The time of the last look at who types: the arrival of a list, or the end of a subject.
     @State private var typingClock = Date()
@@ -1492,7 +1493,8 @@ struct TeamContactRow: View {
         // An older service sends no chat. The row then has the name only, centered on the face. It has no "@" mark,
         // because the mark stands on the second line.
         return ChatRowLayout(name: room.title, unread: unread, date: date,
-                             mentioned: room.hasChat && room.showsMentionMark, muted: room.shownChatMuted) {
+                             mentioned: room.hasChat && room.showsMentionMark, muted: room.shownChatMuted,
+                             pinned: pinMark) {
             TeamFace(room: room, size: avatarSize)
         } subtitle: {
             Group {
@@ -1565,25 +1567,42 @@ struct DirectPeerFace: View {
     }
 }
 
-/// The menu of a row of a named chat in the Chats list and the Mac sidebar, as WhatsApp has it: "Mute" or "Unmute"
-/// (TeamChatMute.listAction). Each other row keeps its plain form. A failure shows in the banner of the screen.
+/// The menu of the row of a chat of a team in the Chats list and the Mac sidebar, as WhatsApp has it: "Star" or
+/// "Unstar" for the Team chat and each named chat, then "Mute" or "Unmute" for a named chat (TeamChatMenuItem). A row
+/// without an item keeps its plain form. Each item waits while a request of its chat runs. A failure shows in the
+/// banner of the screen.
 struct TeamChatMuteMenu: ViewModifier {
     @Environment(AppStore.self) private var store
     let item: ChatListItem
 
     func body(content: Content) -> some View {
-        if let action = TeamChatMute.listAction(item) {
-            content.contextMenu {
-                Button(action.label, systemImage: action.symbol) {
-                    store.error = nil
-                    Task { await store.setTeamChatNotifications(action.room, chat: action.chat, enabled: action.enabled) }
-                }
-                // One request of a chat at a time.
-                .disabled(TeamChatMute.waits(action.chat, store.teamChatMuteChoices))
-                .accessibilityIdentifier("chat-row-mute-menu")
-            }
-        } else {
+        let items = TeamChatMenuItem.items(item)
+        if items.isEmpty {
             content
+        } else {
+            content.contextMenu {
+                ForEach(items.indices, id: \.self) { index in
+                    switch items[index] {
+                    case .pin(let pin):
+                        Button(pin.label, systemImage: pin.symbol) {
+                            store.error = nil
+                            Task { await store.setTeamChatPinned(pin.room, chat: pin.chat, pinned: pin.pinned) }
+                        }
+                        .disabled(TeamChatPin.waits(TeamChatPin.key(room: pin.room, chat: pin.chat),
+                                                    store.teamChatPinChoices))
+                        .accessibilityIdentifier("chat-row-pin-menu")
+                    case .mute(let mute):
+                        Button(mute.label, systemImage: mute.symbol) {
+                            store.error = nil
+                            Task {
+                                await store.setTeamChatNotifications(mute.room, chat: mute.chat, enabled: mute.enabled)
+                            }
+                        }
+                        .disabled(TeamChatMute.waits(mute.chat, store.teamChatMuteChoices))
+                        .accessibilityIdentifier("chat-row-mute-menu")
+                    }
+                }
+            }
         }
     }
 }
@@ -1593,10 +1612,12 @@ struct TeamChatMuteMenu: ViewModifier {
 struct PeopleRow: View {
     let item: ChatListItem
     var avatarSize: CGFloat = BoardStyle.rowFace
+    /// The row shows the pin mark: a pinned chat at the top of the list (TeamChatPin).
+    var pinMark = false
 
     var body: some View {
         switch item {
-        case .team(let room): TeamContactRow(room: room, avatarSize: avatarSize)
+        case .team(let room): TeamContactRow(room: room, avatarSize: avatarSize, pinMark: pinMark)
         case .direct(let room, let direct):
             DirectContactRow(peer: room.directPeer(direct.member), unread: direct.unread ?? 0,
                              lastMessage: direct.lastMessage, avatarSize: avatarSize)

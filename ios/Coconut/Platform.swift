@@ -343,7 +343,7 @@ extension TranscriptWindow {
 }
 
 extension LibrarySections {
-    /// The iPhone Library has a section "Pinned". A Mac sidebar shows the pinned pages, so the Library of a Mac keeps
+    /// The iPhone Library has a section "Starred". A Mac sidebar shows the pinned pages, so the Library of a Mac keeps
     /// each pinned page in the group of its bot, with a pin mark.
     static var platformShowsPinned: Bool {
         #if os(macOS)

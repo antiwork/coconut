@@ -139,9 +139,9 @@ struct LibraryView: View {
                     emptyLibrary
                 }
                 if !sections.pinned.isEmpty {
-                    header("Pinned") {
+                    header("Starred") {
                         // The frame of a bot's avatar, so the title sits in one line with the names of the bots.
-                        Image(systemName: "pin.fill").font(.footnote).foregroundStyle(.secondary)
+                        Image(systemName: "star.fill").font(.footnote).foregroundStyle(.secondary)
                             .frame(width: 24 * BotAvatar.scale, height: 24 * BotAvatar.scale)
                             .accessibilityHidden(true)
                     }
@@ -179,7 +179,7 @@ struct LibraryView: View {
         .accessibilityAddTraits(.isHeader)
     }
 
-    /// `pinMark` marks a pinned document in the group of its bot, in a Library without a section "Pinned".
+    /// `pinMark` marks a pinned document in the group of its bot, in a Library without a section "Starred".
     private func row(_ document: BotDocument, pinMark: Bool = false) -> some View {
         NavigationLink(value: DocumentRoute(id: document.id)) {
             DocumentRow(document: document, pinMark: pinMark && document.isPinned)
@@ -210,11 +210,11 @@ struct LibraryView: View {
 }
 
 /// The documents of the Library in the order of the list. A pinned document shows once: with the pinned documents, or
-/// in the group of its bot with a pin mark where the Library has no section "Pinned".
+/// in the group of its bot with a pin mark where the Library has no section "Starred".
 struct LibrarySections {
     let pinned: [BotDocument]
     let groups: [(owner: LibraryOwner, documents: [BotDocument])]
-    /// The Library has a section "Pinned". Without it, `pinned` is empty and each pinned document is in its group.
+    /// The Library has a section "Starred". Without it, `pinned` is empty and each pinned document is in its group.
     let showsPinned: Bool
 
     /// `botId` keeps the documents of one bot of this Mac. A team page has the ID of a team bot, so it never shows
@@ -237,7 +237,7 @@ struct LibrarySections {
     }
 }
 
-/// The section "Pinned" of the Mac sidebar: the pinned bots, then the pinned pages in the order of the pinned list of
+/// The section "Starred" of the Mac sidebar: the pinned bots, then the pinned pages in the order of the pinned list of
 /// the Library. As in the Library, a page of an owner that the app does not know stays hidden. The section shows when
 /// it has a bot or a page.
 struct SidebarPins {
@@ -307,7 +307,7 @@ private struct PinDocumentButton: View {
         // The menu of a row can keep the document of an earlier list. The current list has the current pin.
         let document = store.documents?.first { $0.id == self.document.id } ?? self.document
         Button { Task { await store.pinDocument(document, pinned: !document.isPinned) } } label: {
-            Label(document.isPinned ? "Unpin" : "Pin", systemImage: document.isPinned ? "pin.slash" : "pin")
+            Label(document.isPinned ? "Unstar" : "Star", systemImage: document.isPinned ? "star.slash" : "star")
         }
         .accessibilityIdentifier("document-pin")
     }
@@ -328,8 +328,8 @@ private struct DocumentRow: View {
                 HStack(spacing: BoardStyle.Space.xs) {
                     Text(document.title).font(.body).foregroundStyle(.primary).lineLimit(1)
                     if pinMark {
-                        Image(systemName: "pin.fill").font(.footnote).foregroundStyle(.secondary)
-                            .accessibilityLabel("Pinned")
+                        Image(systemName: "star.fill").font(.footnote).foregroundStyle(.secondary)
+                            .accessibilityLabel("Starred")
                     }
                 }
                 Text(document.detail).font(.subheadline).foregroundStyle(.secondary).lineLimit(1)

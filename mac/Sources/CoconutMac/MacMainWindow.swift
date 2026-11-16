@@ -312,7 +312,7 @@ struct MacSidebar: View {
         // The store keeps the newest activity of each bot (ChatSummaries), so the sidebar reads no message. A pass
         // over the messages for each body cost about 3 ms with 1,500 messages.
         let sections = ChatSections.make(bots: store.bots, latest: store.chatSummaries.newestActivity,
-                                         rooms: store.team?.rooms ?? [], local: store.newestLocalMessages)
+                                         rooms: store.shownTeamRooms, local: store.newestLocalMessages)
         let pins = SidebarPins(pinnedBots: sections.pinned, documents: store.documents ?? [], bots: store.bots,
                                teamBots: store.teamBots)
         return List(selection: $selection) {
@@ -338,9 +338,11 @@ struct MacSidebar: View {
                     ForEach(todos) { item in todoRow(item) }
                 }
             }
-            if !pins.isEmpty {
+            if !pins.isEmpty || !sections.pinnedChats.isEmpty {
                 Section("Starred", isExpanded: $starredOpen) {
                     ForEach(pins.bots) { bot in row(bot) }
+                    // The pinned chats of the teams, as the same rows that they have in "People".
+                    ForEach(sections.pinnedChats) { item in itemRow(item) }
                     ForEach(pins.pages) { page in pageRow(page) }
                 }
             }
@@ -446,8 +448,9 @@ struct MacSidebar: View {
                     TeamFace(room: room, size: 20)
                 }
                 .tag(MacSelection.team(chat))
-                // A team has no star and no delete here. The Team screen has the leave action.
+                // The Team screen has the leave action.
                 .modifier(TeamChatMuteMenu(item: item))
+                .accessibilityLabel(TeamRowSpeech.label(room, preview: nil))
                 .accessibilityIdentifier("sidebar-team-" + chat.room + (chat.chat.map { "-" + $0 } ?? ""))
             }
         case .direct(let room, let direct):
@@ -483,6 +486,7 @@ private struct MacSidebarRow<Face: View>: View {
                 .foregroundStyle(loud ? .primary : .secondary)
                 .lineLimit(1)
             Spacer(minLength: 0)
+            if muted { MutedMark() }
             if mentioned { MentionBadge() }
             if loud { UnreadBadge(count: unread) }
         }
