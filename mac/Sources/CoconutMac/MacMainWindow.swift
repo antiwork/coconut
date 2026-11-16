@@ -304,6 +304,7 @@ struct MacSidebar: View {
     @AppStorage("sidebar-starred-open") private var starredOpen = true
     @AppStorage("sidebar-people-open") private var peopleOpen = true
     @AppStorage("sidebar-agents-open") private var agentsOpen = true
+    @State private var archivedOpen = false
 
     /// The bots that are not archived, newest activity first, split into the pinned bots and the other bots.
     /// It reads only its arguments, so it needs no main actor, and a test can call it from any context.
@@ -353,6 +354,13 @@ struct MacSidebar: View {
                     ForEach(sections.bots) { item in itemRow(item) }
                 }
             }
+            // The archived agents, closed until the person opens the section. An archived chat stays readable.
+            let archived = store.bots.filter(\.archived).sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+            if !archived.isEmpty {
+                Section("Archived", isExpanded: $archivedOpen) {
+                    ForEach(archived) { bot in row(bot) }
+                }
+            }
         }
         // Slack's rows: one line each, close together.
         .environment(\.defaultMinListRowHeight, 26)
@@ -390,9 +398,19 @@ struct MacSidebar: View {
         }
             .tag(MacSelection.bot(bot.id))
             .contextMenu {
-                Button(bot.pinned ? "Unstar" : "Star") { Task { await store.pinBot(bot, pinned: !bot.pinned) } }
+                if !bot.archived {
+                    Button(bot.pinned ? "Unstar" : "Star") { Task { await store.pinBot(bot, pinned: !bot.pinned) } }
+                }
+                Button(bot.archived ? "Unarchive" : "Archive") { Task { await store.archiveBot(bot, archived: !bot.archived) } }
                 Divider()
                 Button("Delete Agent…", role: .destructive) { deleting = bot }
+            }
+            // A swipe to the left on the trackpad archives the agent, as in the Chats list of the iPhone.
+            .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+                Button { Task { await store.archiveBot(bot, archived: !bot.archived) } } label: {
+                    Label(bot.archived ? "Unarchive" : "Archive", systemImage: bot.archived ? "tray.and.arrow.up" : "archivebox")
+                }
+                .tint(bot.archived ? .blue : .gray)
             }
             .accessibilityIdentifier("sidebar-bot-\(bot.id)")
     }

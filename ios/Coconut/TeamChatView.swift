@@ -276,6 +276,14 @@ struct TeamChatView: View {
         // The person can no longer write, for example because the bot left the team: the closed line takes the place
         // of the composer, and the page goes with it.
         .onChange(of: closedReason(room) != nil) { _, closed in if closed { composer.close() } }
+        #if os(macOS)
+        // A click on a room in the sidebar puts the cursor in the message field, as in a bot chat.
+        .task(id: chatKey) {
+            try? await Task.sleep(for: .milliseconds(150))
+            guard !Task.isCancelled else { return }
+            composerFocused = true
+        }
+        #endif
         // A chat that closes keeps its newest page only, so it opens again without stale older pages.
         .onDisappear { isVisible = false; composerFocused = false; store.closeTeamChat(chatKey) }
         .onReceive(DaySeparator.changes) { _ in dayReference = Date() }
@@ -326,6 +334,14 @@ struct TeamChatView: View {
                     .simultaneousGesture(TapGesture().onEnded { composerFocused = false })
                 }
             }
+            if peer(room) == nil, room.showsInvite {
+                ToolbarItem(placement: .topBarTrailing) {
+                    TeamInviteButton(room: room) { inviting in
+                        if inviting { ProgressView() } else { Image(systemName: "person.badge.plus") }
+                    }
+                    .accessibilityLabel("Invite someone")
+                }
+            }
         }
         #else
         // The window moves with a drag in the band above the chat, under the title.
@@ -354,6 +370,23 @@ struct TeamChatView: View {
                 .help("Team settings")
                 .accessibilityLabel(TeamTitle.spoken(room))
                 .accessibilityIdentifier("team-chat-title")
+            }
+        }
+        // Invite floats at the top right, across from the title, as a round button of the same height.
+        .overlay(alignment: .topTrailing) {
+            if peer(room) == nil, room.showsInvite {
+                TeamInviteButton(room: room) { inviting in
+                    Group {
+                        if inviting { ProgressView().controlSize(.small) } else { Image(systemName: "person.badge.plus") }
+                    }
+                    .frame(width: Self.titlePillHeight, height: Self.titlePillHeight)
+                    .modifier(FloatingCapsule())
+                    .contentShape(Circle())
+                }
+                .buttonStyle(.plain)
+                .padding(.top, 8).padding(.trailing, 12)
+                .help("Invite someone to \(room.name)")
+                .accessibilityLabel("Invite someone")
             }
         }
         #endif

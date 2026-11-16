@@ -177,6 +177,7 @@ struct CoconutHome: View {
                 .navigationDestination(for: BotExchangeRoute.self) { route in
                     BotExchangeView(route: route)
                 }
+                .navigationDestination(for: ArchivedAgentsRoute.self) { _ in ArchivedAgentsView() }
                 .navigationDestination(for: BotSettingsRoute.self) { route in
                     BotSettingsView(botId: route.botId)
                 }

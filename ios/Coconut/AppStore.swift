@@ -766,6 +766,16 @@ final class AppStore {
         let _: Bot? = await write("bots/\(bot.id)", method: "PATCH", payload: PinRequest(pinned: pinned), as: Bot.self)
     }
 
+    /// Archives an agent, or brings it back. An archived agent leaves the Chats list and the sidebar, and its routines
+    /// stop. The section "Archived" lists it, with its conversation.
+    func archiveBot(_ bot: Bot, archived: Bool) async {
+        if isDemo {
+            if let index = bots.firstIndex(where: { $0.id == bot.id }) { bots[index].archived = archived }
+            return
+        }
+        let _: Bot? = await write("bots/\(bot.id)", method: "PATCH", payload: ArchiveRequest(archived: archived), as: Bot.self)
+    }
+
     func deleteBot(_ bot: Bot) async {
         if isDemo {
             bots.removeAll { $0.id == bot.id }; tasks.removeAll { $0.botId == bot.id }; messages.removeAll { $0.botId == bot.id }
@@ -3209,6 +3219,7 @@ private struct EmptyRequest: Encodable {}
 private struct Acknowledgement: Decodable, Sendable { let ok: Bool }
 private struct BotRequest: Encodable { let name: String; let role: String; let avatar: String; let color: String; let instructions: String; let memory: String; let pinned: Bool? }
 private struct PinRequest: Encodable { let pinned: Bool }
+private struct ArchiveRequest: Encodable { let archived: Bool }
 private struct TeamCreateRequest: Encodable { let name: String; let memberName: String }
 private struct TeamJoinBody: Encodable { let link: String; let memberName: String }
 private struct TeamProfileRequest: Encodable { let memberName: String }

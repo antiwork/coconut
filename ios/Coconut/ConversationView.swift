@@ -403,6 +403,15 @@ struct ConversationView: View {
                     }
                 }
                 .onAppear { isVisible = true; footerScroll.reset() }
+                #if os(macOS)
+                // A click on a chat in the sidebar puts the cursor in the message field, so the person can type at once.
+                // An iPhone keeps the keyboard closed: it would cover the latest messages.
+                .task(id: botId) {
+                    try? await Task.sleep(for: .milliseconds(150))
+                    guard !Task.isCancelled else { return }
+                    composerFocused = true
+                }
+                #endif
                 .onReceive(DaySeparator.changes) { _ in dayReference = Date() }
                 .onDisappear { isVisible = false; composerFocused = false; footerScroll.reset() }
                 // "Ask the bot about this page" opens the chat with the page quoted in the composer.
