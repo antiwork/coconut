@@ -611,7 +611,7 @@ struct TranscriptMessageRow: View {
         }
         Group {
         if !photos.isEmpty {
-            PhotoCarousel(messages: photoMessages, photos: photos, onReply: onReply)
+            PhotoCarousel(messages: photoMessages, photos: photos, trailing: message.role == "user", onReply: onReply)
         } else if message.kind == "decision", let id = message.decisionId,
            let decision = store.decisions.first(where: { $0.id == id }) {
             DecisionCard(decision: decision, onViewPrevious: scrollToDecision)

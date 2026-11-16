@@ -22,6 +22,12 @@ struct MessagePhoto: Equatable, Sendable {
 extension Message {
     /// The photo of a finished bot message that has nothing else to show, such as a quote or a card.
     var photo: MessagePhoto? {
+        // An image that the person attached, such as a pasted screenshot, shows as the image itself, not as a file
+        // card that needs a click. The bytes come through the paired Mac, as a photo that a bot saved there.
+        if role == "user", kind == "artifact", let id = artifactId, TranscriptPresentation.isImageName(text),
+           let url = URL(string: "coconut-file://" + id) {
+            return MessagePhoto(url: url, caption: "", name: text)
+        }
         guard role == "assistant", kind == "text", !streaming, decisionId == nil, artifactId == nil, replyTo == nil,
               workContext == nil else { return nil }
         return TranscriptPresentation.photo(in: text)
@@ -32,6 +38,11 @@ extension Message {
 }
 
 enum TranscriptPresentation {
+    /// A file name of an image that the chat can show: the formats of the attachments that the agents see as images.
+    static func isImageName(_ name: String) -> Bool {
+        ["png", "jpg", "jpeg", "gif", "webp", "heic"].contains((name as NSString).pathExtension.lowercased())
+    }
+
     static func previewFallback(_ text: String, messages: [Message]) -> String {
         if messages.contains(where: \.streaming) || trimmed(text, equals: "[SILENT]")
             || isLegacySettingsNotice(text) { return "" }
