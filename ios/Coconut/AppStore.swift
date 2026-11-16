@@ -219,9 +219,15 @@ final class AppStore {
             || tasks.contains { $0.botId == bot.id && $0.isRunning }
     }
     // The newest running task describes what the bot does now.
-    private func runningPhase(where matches: (AgentTask) -> Bool) -> (phase: BotPhase, startedAt: Date?)? {
+    private func runningPhase(where matches: (AgentTask) -> Bool) -> (phase: BotPhase, startedAt: Date?, detail: String?)? {
         guard let task = tasks.last(where: { $0.isRunning && matches($0) }) else { return nil }
-        return (task.phase.flatMap(BotPhase.init(rawValue:)) ?? .thinking, task.turnStartedAt?.apiDate)
+        let detail = task.phaseDetail.flatMap { $0.isEmpty ? nil : $0 }
+        return (task.phase.flatMap(BotPhase.init(rawValue:)) ?? .thinking, task.turnStartedAt?.apiDate, detail)
+    }
+    /// The name of the model of an agent, as its settings show it.
+    func modelName(_ botId: String) -> String? {
+        guard let model = bots.first(where: { $0.id == botId })?.effectiveModel else { return nil }
+        return modelCatalog?.name(for: model) ?? model.model
     }
     func botPhase(_ bot: Bot) -> BotPhase? {
         guard isBotActive(bot) else { return nil }
@@ -234,13 +240,16 @@ final class AppStore {
         let streams = messages.filter { $0.botId == botId && $0.role == "assistant" && $0.streaming }
         if !streams.isEmpty {
             if streams.contains(where: TranscriptPresentation.hasStreamingWords) && !reconnecting { return nil }
-            return ConversationActivity(phase: .writing, startedAt: nil, reconnecting: reconnecting)
+            let running = runningPhase(where: { $0.chatBotId == botId })
+            return ConversationActivity(phase: .writing, startedAt: running?.startedAt, reconnecting: reconnecting,
+                                        model: modelName(botId))
         }
         if let running = runningPhase(where: { $0.chatBotId == botId }) {
-            return ConversationActivity(phase: running.phase, startedAt: running.startedAt, reconnecting: reconnecting)
+            return ConversationActivity(phase: running.phase, startedAt: running.startedAt, reconnecting: reconnecting,
+                                        detail: running.detail, model: modelName(botId))
         }
         if outgoingMessages.contains(where: { $0.botId == botId && $0.expectsResponse }) {
-            return ConversationActivity(phase: .thinking, startedAt: nil, reconnecting: reconnecting)
+            return ConversationActivity(phase: .thinking, startedAt: nil, reconnecting: reconnecting, model: modelName(botId))
         }
         return nil
     }

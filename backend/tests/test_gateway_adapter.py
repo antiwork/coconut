@@ -2098,7 +2098,8 @@ class GatewayAdapterTests(unittest.TestCase):
                                                              'coconut_kanban_request_review', 'coconut_kanban_link',
                                                              'coconut_kanban_unblock'])
         self.assertEqual(hook_names, ['pre_gateway_dispatch', 'on_session_start', 'on_interim_message', 'post_llm_call', 'on_session_end',
-                                      'pre_tool_call', 'post_tool_call', 'post_api_request', 'on_session_reset'])
+                                      'pre_tool_call', 'pre_tool_call', 'post_tool_call', 'post_api_request',
+                                      'on_session_reset'])
         # The card tool states the order rule, as the worker's tool does.
         self.assertIn('must be the first item of options',
                       schemas['coconut_ask']['parameters']['properties']['recommended_option_id']['description'])

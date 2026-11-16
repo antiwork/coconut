@@ -218,6 +218,9 @@ struct AgentTask: Codable, Identifiable, Equatable, Sendable {
     var sourceBotId: String? = nil
     var phase: String? = nil
     var turnStartedAt: String? = nil
+    /// The command, file or query of the phase, and when the phase started.
+    var phaseDetail: String? = nil
+    var phaseStartedAt: String? = nil
 
     var chatBotId: String { sourceBotId != nil ? botId : (conversationBotId ?? botId) }
     var isRunning: Bool { ["working", "running"].contains(status) }
