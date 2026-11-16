@@ -68,7 +68,7 @@ struct CoconutApp: App {
         } label: {
             // The label shows while the app runs, also without a window, so it gives the banners the action that opens
             // the main window.
-            Image(systemName: model.status.service == .running ? "network" : "network.slash")
+            Image(nsImage: model.status.service == .running ? MenuBarIcon.running : MenuBarIcon.stopped)
                 .modifier(BannerWindowOpener(banners: banners))
         }
         .menuBarExtraStyle(.menu)
