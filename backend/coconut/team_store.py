@@ -1842,6 +1842,11 @@ class TeamStore:
                     break
         return orphans
 
+    def pending_of(self, room: str, member: str) -> bool:
+        """True when the room has a body of `member` that this Mac keeps and cannot open yet (team_pending)."""
+        return self.db.execute('SELECT 1 FROM team_pending WHERE room=? AND member=? LIMIT 1',
+                               (room, member)).fetchone() is not None
+
     def piece_size(self, room: str, entry: str) -> int | None:
         """The number of bytes that this Mac has of a piece, or None when it has no bytes of it."""
         row = self.db.execute('SELECT size FROM team_file_pieces WHERE room=? AND entry=?', (room, entry)).fetchone()

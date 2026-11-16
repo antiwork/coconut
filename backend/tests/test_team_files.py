@@ -904,6 +904,61 @@ class FileCleanTests(FileMacs, unittest.TestCase):
         self.assertEqual(self.relay_kinds(entries), ['delete'])
         self.assertEqual(self.second.team_store.sent_bytes(self.room, self.member(self.second), 0, []), 0)
 
+    def test_a_read_that_a_stop_ends_early_deletes_no_piece(self):
+        data = b's' * (CHUNK + 1)
+        draft = self.upload(self.first, data)
+        # The send reaches the relay, and its answer is lost: the store has the pieces and not the message.
+        self.fail_messages(TeamRelayError(0, 'The relay did not answer.'), after=True)
+        self.refusal(self.send, self.first, [draft['id']], 'Still here')
+        self.restore()
+        entries = self.entries(self.first, draft)
+        self.first._team_unsure.discard(self.room)
+        # The relay gives the two pieces on the first page and the message on the second. The service stops after the
+        # first page, a day after the send.
+        self.relay.page = 2
+        self.later(team_files.DRAFT_SECONDS + 60)
+        read = self.first._team_read
+
+        def read_then_stop(room_id):
+            more = read(room_id)
+            self.first.stopping.set()
+            return more
+        self.first._team_read = read_then_stop
+        writes = self.writes()
+        try:
+            self.first.team_sync_room(self.room)
+        finally:
+            self.first.stopping.clear()
+            self.first._team_read = read
+        self.assertEqual(writes, [])
+        self.assertEqual(self.relay_kinds(entries), ['file', 'file'])
+        # A full read brings the message, and the pass still writes nothing.
+        self.later(0)
+        self.sync()
+        self.assertEqual(writes, [])
+        (message,) = self.phone(self.first)('GET', self.path(), {})['messages']
+        self.assertTrue(message['files'][0]['complete'])
+        self.assertEqual(self.content(self.second, message['id'], draft['id']).content, data)
+
+    def test_a_room_with_a_pending_own_body_has_no_run(self):
+        draft = self.upload(self.first, b'pending')
+        self.fail_messages(TeamRelayError(413, 'The relay answered 413.'), after=False)
+        self.refusal(self.send, self.first, [draft['id']])
+        self.restore()
+        ada = self.member(self.first)
+        with self.first.transaction():
+            self.first.db.execute('INSERT INTO team_pending (room, id, seq, first, member, at, kept, body, reason) '
+                                  "VALUES (?, ?, 1, 1, ?, 0, 0, x'00', 'epoch')", (self.room, entry_id(77), ada))
+        self.later(team_files.DRAFT_SECONDS + 60)
+        writes = self.writes()
+        self.first.team_sync_pass()
+        self.assertEqual(writes, [])
+        # Once the body is no longer pending, the next run (no hour wait: no run started) takes the piece off.
+        with self.first.transaction():
+            self.first.db.execute('DELETE FROM team_pending')
+        self.first.team_sync_pass()
+        self.assertEqual(self.relay_kinds(self.entries(self.first, draft)), ['delete'])
+
     def test_a_file_that_another_own_message_names_keeps_its_pieces(self):
         data = b'kept'
         draft = self.upload(self.first, data)

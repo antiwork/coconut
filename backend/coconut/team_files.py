@@ -255,23 +255,30 @@ class TeamFiles:
 
         The pass finishes a delete of a message that stopped half way, and it takes off the pieces of a send that
         failed, of a message that the admin erased, and of a chat that the admin removed. The time of the last run is
-        in memory only, so a start of the service runs the pass again. A failure ends the run, and the next run tries
-        again. The sync of the room calls this with the lock of the room."""
+        in memory only, so a start of the service runs the pass again. A failure ends the run, and the next run, one hour
+        later, tries again. A run that does not start sets no time.
+
+        The store must have each own message that the relay has, else a piece of a shown message looks like an orphan,
+        and its `delete` cannot be taken back. So the sync calls this only after it read the room to its end, never
+        while the service stops, and with the lock of the room. A pending body of this member (a body that waits for
+        its room key) can be such a message, so a room with one has no run."""
         from .team_sync import ROOM_ERRORS
         now = time.monotonic()
         last = self._team_cleaned.get(room_id)
         if last is not None and now - last < CLEAN_SECONDS:
             return
-        self._team_cleaned[room_id] = now
         with self.lock:
             room = self.team_store.room(room_id)
-            if room is None or room['state'] != ACTIVE:
+            if room is None or room['state'] != ACTIVE or self.team_store.pending_of(room_id, room['member']):
                 return
             clock = self.team_store.clock()
             orphans = self.team_store.orphan_pieces(room_id, room['member'], int((clock - SPACE_SECONDS) * 1000),
                                                     int((clock - DRAFT_SECONDS) * 1000), CLEAN_LIMIT)
+        self._team_cleaned[room_id] = now
         try:
             for entry in orphans:
+                if self.stopping.is_set():
+                    return
                 self._team_write(room, entry, False, {'kind': 'delete'})
         except ROOM_ERRORS as error:
             log.warning('coconut.team_log room %s: the old pieces wait for the next pass. %s', room_id[:8], error)

@@ -260,7 +260,9 @@ class TeamSync:
             self._team_change_key(room)
             self._team_publish(room)
             self._team_write_again(room)
-            self._team_clean_pieces(room)
+            # Only a read to the end of the room shows each own message that names a piece.
+            if not more and not self.stopping.is_set():
+                self._team_clean_pieces(room)
 
     def _team_read(self, room_id: str) -> bool:
         """Read one answer of the relay after the saved `seq`, and store it. Return True when the relay has more."""
