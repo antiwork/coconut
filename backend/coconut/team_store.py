@@ -21,7 +21,8 @@ Each table has the room ID in its key, because a Mac can be in more than one roo
   this Mac and the time of the first write that this Mac saw.
 - `team_messages`: a view of `team_entries` for the chats: one row for each valid `message` entry, in the order of
   `first`. `chat` is the entry ID of the named chat of the message, or null for the Team chat. `preview` is the link
-  preview of the message as JSON, or null.
+  preview of the message as JSON, or null. `alert_type` and `alert_level` are the alert of a message of a bot
+  (team_alerts.py), or both null.
 - `team_chats`: a view of `team_entries`: the valid `chat` entries of the admin, the named chats of the room.
 - `team_names`: the last name that the store showed for each member and each bot. It stays after a `delete` entry,
   so a message of a member that left keeps a name, and a message of a bot can still name a valid `bot` entry.
@@ -88,6 +89,7 @@ import re
 import time
 import unicodedata
 
+from .team_alerts import alert_fields, stored_alert, summary_view
 from .team_relay import HEX32, HEX64, number
 
 log = logging.getLogger(__name__)
@@ -216,7 +218,7 @@ LIBRARY_BOT = ('room', 'entry', 'name', 'avatar', 'color', 'team', 'member', 'me
 TEAM_BOT = ('entry', 'member', 'name', 'avatar', 'color', 'open', 'direct')
 # What the chat of the phone gets for a message. TeamStore.messages reads these rows.
 MESSAGE_FIELDS = ('entry', 'first', 'member', 'member_name', 'bot', 'bot_name', 'text', 'reply_to', 'mentions',
-                  'created_at', 'updated_at', 'edited', 'chat', 'preview', 'files')
+                  'created_at', 'updated_at', 'edited', 'chat', 'preview', 'files', 'alert_type', 'alert_level')
 # A message shows only when its `bot` is null or names a `bot` entry of the same member that the store showed once.
 # The bot entry can come after the message, because the relay keeps only its newest write, so the check runs at read
 # time. team_names keeps the bot after a `delete`, so the history of a bot that the team no longer has stays. The same
@@ -627,7 +629,8 @@ def message_fields(fields: dict) -> dict | None:
     `bot` and `chat` are entry IDs, and `mentions` is a list of at most MAX_MENTIONS entry IDs. A reader takes null as
     an absent field, so a later writer can write either. Fields that this version does not know stay in the payload,
     and nothing reads them. `preview` is the link preview of preview_fields, or None. `files` are the items of
-    files_fields, or an empty list for a value that does not fit.
+    files_fields, or an empty list for a value that does not fit. `alert` is the alert of a message of a bot
+    (team_alerts.alert_fields), or None: a person writes no alert.
     """
     text, reply_to, mentions, bot, chat = (fields.get(name) for name in ('text', 'reply_to', 'mentions', 'bot', 'chat'))
     files = files_fields(fields.get('files')) or []
@@ -639,7 +642,8 @@ def message_fields(fields: dict) -> dict | None:
     if not isinstance(mentions, list) or len(mentions) > MAX_MENTIONS or not all(map(entry_id, mentions)):
         return None
     return dict(text=text, reply_to=reply_to, mentions=list(dict.fromkeys(mentions)), bot=bot, chat=chat,
-                preview=preview_fields(fields.get('preview'), text), files=files)
+                preview=preview_fields(fields.get('preview'), text), files=files,
+                alert=alert_fields(fields.get('alert')) if bot is not None else None)
 
 
 def notice_time(value) -> str | None:
@@ -996,6 +1000,25 @@ class TeamStore:
         for table in ('team_messages', 'team_directs'):
             if 'preview' not in {row[1] for row in self.db.execute(f'PRAGMA table_info({table})')}:
                 self.db.execute(f'ALTER TABLE {table} ADD COLUMN preview TEXT')
+        if 'alert_type' not in {row[1] for row in self.db.execute('PRAGMA table_info(team_messages)')}:
+            # The new columns and the pass are one step, as for the column `chat` above. They come before the pass of
+            # the files, which writes each row of a message with all its columns (_show_message).
+            self.db.execute('SAVEPOINT team_alert_columns')
+            try:
+                self.db.execute('ALTER TABLE team_messages ADD COLUMN alert_type TEXT')
+                self.db.execute('ALTER TABLE team_messages ADD COLUMN alert_level TEXT')
+                self._read_alerts_again()
+            except BaseException:
+                self.db.execute('ROLLBACK TO team_alert_columns')
+                self.db.execute('RELEASE team_alert_columns')
+                raise
+            self.db.execute('RELEASE team_alert_columns')
+        # The alerts of one chat by type and by level, each in the order of `first`: a page of one type or one level
+        # and the counts of the filter read only rows of alerts. A plain message has no row in these indexes.
+        self.db.execute('''CREATE INDEX IF NOT EXISTS team_messages_alert_type ON team_messages
+            (room, chat, alert_type, first) WHERE alert_type IS NOT NULL''')
+        self.db.execute('''CREATE INDEX IF NOT EXISTS team_messages_alert_level ON team_messages
+            (room, chat, alert_level, first) WHERE alert_level IS NOT NULL''')
         if 'files' not in {row[1] for row in self.db.execute('PRAGMA table_info(team_messages)')}:
             # The new column and the pass are one step, as for the column `chat` above.
             self.db.execute('SAVEPOINT team_files_column')
@@ -1151,6 +1174,20 @@ class TeamStore:
             reaction = reaction_fields(read[1]) if read else None
             if reaction is not None:
                 self._show_reaction(room, dict(id=entry, seq=seq, member=member), dict(reaction, peer=None, bot=None))
+
+    def _read_alerts_again(self) -> None:
+        """Read the alerts of a store of an older version, one time (docs/team-log.md, "Alerts"). That version ignored
+        the field `alert` of a message and showed the message as a plain one. The pass gives each such row its type
+        and its level with the reader of a message. It changes no other column, no read position and no event."""
+        rows = self.db.execute('''SELECT m.room, m.entry, e.payload FROM team_messages m
+            JOIN team_entries e ON e.room=m.room AND e.id=m.entry
+            WHERE e.kind='message' AND instr(e.payload, '"alert"')>0''').fetchall()
+        for room, entry, payload in rows:
+            read = read_payload(payload.encode())
+            message = message_fields(read[1]) if read else None
+            if message is not None and message['alert'] is not None:
+                self.db.execute('UPDATE team_messages SET alert_type=?, alert_level=? WHERE room=? AND entry=?',
+                                (*stored_alert(message['alert']), room, entry))
 
     def _read_files_again(self) -> None:
         """Read the files of a store of an older version, one time (docs/team-log.md, "Files"). That version kept each
@@ -1790,13 +1827,16 @@ class TeamStore:
             self._name_files(room, entry['id'], [])
             return removed.rowcount > 0
         self.db.execute('''INSERT INTO team_messages (room, entry, first, member, bot, text, reply_to, mentions,
-            created_at, updated_at, edited, chat, preview, files) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            created_at, updated_at, edited, chat, preview, files, alert_type, alert_level)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT (room, entry) DO UPDATE SET first=excluded.first, bot=excluded.bot, text=excluded.text,
             reply_to=excluded.reply_to, mentions=excluded.mentions, updated_at=excluded.updated_at,
-            edited=excluded.edited, chat=excluded.chat, preview=excluded.preview, files=excluded.files''',
+            edited=excluded.edited, chat=excluded.chat, preview=excluded.preview, files=excluded.files,
+            alert_type=excluded.alert_type, alert_level=excluded.alert_level''',
                         (room, entry['id'], entry['first'], entry['member'], message['bot'], message['text'],
                          message['reply_to'], json.dumps(message['mentions']), at, at, int(rev > 1), message['chat'],
-                         stored_preview(message.get('preview')), stored_files(message['files'])))
+                         stored_preview(message.get('preview')), stored_files(message['files']),
+                         *stored_alert(message.get('alert'))))
         self._name_files(room, entry['id'], [(entry['member'], item['id'], item['size'], item['hash'])
                                              for item in message['files']])
         return True
@@ -2445,18 +2485,32 @@ class TeamStore:
 
     # The Team chat
 
-    def messages(self, room: str, before: int | None = None, limit: int = 50, chat: str | None = None) -> list[dict]:
+    def messages(self, room: str, before: int | None = None, limit: int = 50, chat: str | None = None,
+                 alert_type: str | None = None, alert_level: str | None = None) -> list[dict]:
         """The shown messages of one chat of a room (None for the Team chat) before the `first` of `before`, newest
-        first, at most `limit`."""
-        return self._rows(MESSAGE_FIELDS, *self._page(room, chat, before, limit))
+        first, at most `limit`. With `alert_type` or `alert_level`, only the alerts of that type and that level."""
+        return self._rows(MESSAGE_FIELDS, *self._page(room, chat, before, limit, alert_type, alert_level))
 
-    def _page(self, room: str, chat: str | None, before: int | None, limit: int) -> tuple[str, tuple]:
+    def _page(self, room: str, chat: str | None, before: int | None, limit: int, alert_type: str | None = None,
+              alert_level: str | None = None) -> tuple[str, tuple]:
         """The statement and the values of one page. A page with `before` has `m.first<?` as a plain term, so the
         index team_messages_chat starts its search at `before`, and a page reads about `limit` rows in any chat. A
-        term such as `(? IS NULL OR m.first<?)` would make SQLite walk the index from the newest row."""
-        if before is None:
-            return self._message_sql('m.chat IS ? ORDER BY m.first DESC LIMIT ?'), (room, chat, limit)
-        return self._message_sql('m.chat IS ? AND m.first<? ORDER BY m.first DESC LIMIT ?'), (room, chat, before, limit)
+        term such as `(? IS NULL OR m.first<?)` would make SQLite walk the index from the newest row. A page of one
+        type or one level of alert has that term as a plain term too, for the indexes of the alerts."""
+        terms, values = ['m.chat IS ?'], [room, chat]
+        for term, value in (('m.alert_type=?', alert_type), ('m.alert_level=?', alert_level), ('m.first<?', before)):
+            if value is not None:
+                terms.append(term)
+                values.append(value)
+        return self._message_sql(' AND '.join(terms) + ' ORDER BY m.first DESC LIMIT ?'), (*values, limit)
+
+    def alert_counts(self, room: str, chat: str | None = None) -> dict:
+        """The shown alerts of one chat for the filter of the app (team_alerts.summary_view): how many, how many
+        critical, and the count of each type. The index team_messages_alert_type gives the rows, so a chat without an
+        alert reads no row."""
+        return summary_view(self.db.execute(f'''SELECT m.alert_type, COUNT(*), SUM(m.alert_level='critical')
+            FROM team_messages m WHERE m.room=? AND m.chat IS ? AND m.alert_type IS NOT NULL AND {SHOWN_MESSAGE}
+            GROUP BY m.alert_type''', (room, chat)).fetchall())
 
     def message(self, room: str, entry: str) -> dict | None:
         """One shown message, or None."""
@@ -2476,7 +2530,8 @@ class TeamStore:
     def _message_sql(where: str) -> str:
         # The name of a member or a bot is the last one that the store showed, also after a `delete` (team_names).
         return f'''SELECT m.entry, m.first, m.member, n.name, m.bot, k.name, m.text,
-            m.reply_to, m.mentions, m.created_at, m.updated_at, m.edited, m.chat, m.preview, m.files FROM team_messages m
+            m.reply_to, m.mentions, m.created_at, m.updated_at, m.edited, m.chat, m.preview, m.files, m.alert_type,
+            m.alert_level FROM team_messages m
             LEFT JOIN team_names n ON n.room=m.room AND n.member=m.member AND n.kind='member'
             LEFT JOIN team_names k ON k.room=m.room AND k.entry=m.bot AND k.kind='bot'
             WHERE m.room=? AND {SHOWN_MESSAGE} AND {where}'''

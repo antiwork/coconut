@@ -5,6 +5,7 @@ history in `team_messages` (team_store.py). An edit is a new write of the same e
 removal is a `delete` entry over it. The routes are for the chat of the app:
 
 - `GET /v1/team/rooms/<room>/messages?before=<first>&limit=<n>&chat=<id>`: one page of messages, newest first.
+  With `alert_type` or `alert_level`, the page has only the alerts of that type and that level (team_alerts.py).
 - `POST /v1/team/rooms/<room>/messages` with `{text, reply_to?, mentions?, chat?, preview?, files?}`: send a message.
   `files` are the IDs of the drafts of team_files.py.
 - `PATCH /v1/team/rooms/<room>/messages/<id>` with `{text}`: change a message of this Mac's person.
@@ -27,6 +28,7 @@ import logging
 from secrets import token_hex
 
 from . import team_keys
+from .team_alerts import alert_view, filter_fields
 from .team_pages import team_id, team_ids
 from .team_relay import MAX_NUMBER, number
 from .team_store import (ACTIVE, MAX_MENTIONS, MAX_TEXT, MESSAGES_EVENT, entry_id, files_fields, preview_fields,
@@ -95,16 +97,29 @@ class TeamMessages:
 
     def team_messages(self, room_id: str, data: dict) -> dict:
         """One page of the chat, newest first. `before` is the `first` of the oldest message that the app has, and
-        the answer has the `before` of the next page, or null when no older message exists."""
+        the answer has the `before` of the next page, or null when no older message exists.
+
+        `alert_type` and `alert_level` filter the page to the alerts of one type and one level (docs/team-log.md,
+        "Alerts"). The newest page, with or without a filter, also has `alerts`: the counts of all alerts of the chat,
+        for the filter of the app. A filter changes no read position."""
+        from .service_base import ServiceError
         room = self._team_room(room_id)
         before = query_number(data, 'before', None, 1, MAX_NUMBER, 'Use a whole number for before.')
         limit = query_number(data, 'limit', PAGE, 1, MAX_PAGE, f'Ask for 1 to {MAX_PAGE} messages.')
+        try:
+            alert_type, alert_level = filter_fields(data)
+        except ValueError as error:
+            raise ServiceError(400, str(error)) from None
         with self.lock:
             chat = self._team_chat_named(room_id, data.get('chat'))
-            rows = self.team_store.messages(room_id, before, limit + 1, chat)
+            rows = self.team_store.messages(room_id, before, limit + 1, chat, alert_type, alert_level)
             messages = self._team_message_views(room, rows[:limit])
+            alerts = self.team_store.alert_counts(room_id, chat) if before is None else None
         older = rows[limit - 1]['first'] if len(rows) > limit else None
-        return {'room': room_id, 'messages': messages, 'before': older}
+        answer = {'room': room_id, 'messages': messages, 'before': older}
+        if alerts is not None:
+            answer['alerts'] = alerts
+        return answer
 
     def team_send(self, room_id: str, data: dict, repeat: str = '') -> dict:
         """Write a new message of this Mac's person, and return it as the chat shows it.
@@ -347,6 +362,7 @@ class TeamMessages:
                  'reactions': reaction_views(reactions.get(row['entry'], []), room['member']),
                  'preview': preview_view(row['preview']),
                  'files': self.team_store.file_views(room['room'], row['entry'], row['files']),
+                 'alert': alert_view(row['alert_type'], row['alert_level']),
                  'created_at': row['created_at'], 'edited_at': row['updated_at'] if row['edited'] else None}
                 for row, entries in zip(rows, mentions)]
 

@@ -465,13 +465,15 @@ class TeamTurns:
                 self._team_stop_turns(room=room, bot=bot)
 
     def _team_say(self, room: str, bot: str, trigger: str, part, text: str, reply_to: str | None = None,
-                  request: bool = True, chat: str | None = None, direct: str | None = None) -> str:
+                  request: bool = True, chat: str | None = None, direct: str | None = None,
+                  alert: dict | None = None) -> str:
         """Write one message of the bot into `chat` (None for the Team chat), or into its direct chat with the person
         `direct` (a member ID). Nothing when the bot no longer answers there, for example after a removal, a leave or
         the removal of the chat, and nothing when the request is gone: `trigger` names the message that the bot
         answers, and it must still show with its member in the list (`request`). A direct message goes only to a
         member in the list, and has no `reply_to`. A failure of the relay or of the helper leaves a log line, and the
-        chat shows nothing.
+        chat shows nothing. `alert` is the checked alert of a send outside a turn (team_alerts.alert_request): the
+        message carries it in a team chat, and a direct message carries none.
 
         The result: SAID when the log has the entry of this message after the call (this call or an earlier one wrote
         it), NOT_SAID when the bot no longer answers there or the request is gone, and SAY_FAILED when the relay or
@@ -506,6 +508,8 @@ class TeamTurns:
                     fields['reply_to'] = reply_to
                 if chat is not None:
                     fields['chat'] = chat
+                if alert is not None:
+                    fields['alert'] = alert
                 self._team_write(room_row, entry, False, fields, tries=3)
                 return SAID
         except ROOM_ERRORS as error:

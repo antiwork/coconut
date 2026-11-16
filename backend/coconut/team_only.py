@@ -57,6 +57,7 @@ from .service_base import (MODE_MARK, TEAM_MODE, ServiceError, check_data_folder
                            release_data_folder, take_data_folder, uid)
 from .service_restart import ServiceRestart
 from .team import SCHEMA as TEAM_SCHEMA, Team, member_profile
+from .team_alerts import alert_request, split_target
 from .team_store import ACTIVE, unicode_text
 from .team_turns import SAID, SAY_FAILED, TeamTurns, parse_chat, parts
 
@@ -354,10 +355,20 @@ class TeamOnlyService(TeamTurns, Documents, Team):
         the bot to the person of the chat, while that person is in the member list (TeamTurns._team_say). The answer is
         `recorded: false` with a reason when the log does not have each part of the text. After a failure of the relay
         or the helper it also has `retry: true`: a repeat with the same message ID can write the missing parts. The
-        sender of a cron run without a gateway repeats then, and gives the reason of a last failure to Hermes."""
-        home, chat, message_id = data.get('home'), parse_chat(data.get('chat_id')), data.get('message_id')
+        sender of a cron run without a gateway repeats then, and gives the reason of a last failure to Hermes.
+
+        A send can be an alert (docs/team-log.md, "Alerts"): `alert` with a type and a level, or the same at the end
+        of the chat ID, which a cron job of Hermes can name (team_alerts.split_target). `alert` counts when a send has
+        both. An alert that does not fit answers 400 and writes nothing. Each part of a long text carries the alert.
+        A direct chat takes no alert: the text goes as a plain direct message."""
+        target, named_alert = split_target(data.get('chat_id'))
+        home, chat, message_id = data.get('home'), parse_chat(target), data.get('message_id')
         if not isinstance(home, str) or chat is None or not isinstance(message_id, str):
             raise ServiceError(400, 'Name the home, the chat and the message.')
+        try:
+            alert = alert_request(data['alert'] if data.get('alert') is not None else named_alert)
+        except ValueError as error:
+            raise ServiceError(400, str(error)) from None
         room, bot_id, named, direct = chat
         with self.lock:
             bot = self._team_bot(bot_id) if unicode_text(bot_id) else None
@@ -380,7 +391,8 @@ class TeamOnlyService(TeamTurns, Documents, Team):
         for number, piece in enumerate(pieces):
             # A send outside a turn answers no message, so no request must still stand: only the bot must answer.
             # A part that the log did not take stops the send, so the chat shows no later part before it.
-            result = self._team_say(room, bot_id, message_id, number, piece, request=False, chat=named, direct=direct)
+            result = self._team_say(room, bot_id, message_id, number, piece, request=False, chat=named, direct=direct,
+                                    alert=alert)
             if result != SAID:
                 break
             shown += 1
