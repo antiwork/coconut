@@ -230,6 +230,14 @@ final class ConversationFooterScrollTests: XCTestCase {
         XCTAssertFalse(scroll.waits)
     }
 
+    func testKeysAfterReturnStayInTheDraft() {
+        // Return, then "ab" before the draft clears: "ab" stays, as when the draft clears at once.
+        XCTAssertEqual(ConversationComposer.typed(after: "Can you check the draft?", in: "Can you check the draft?ab"), "ab")
+        XCTAssertEqual(ConversationComposer.typed(after: "Line one\nLine two", in: "Line one\nLine two"), "")
+        // A draft that the person changed in another way clears.
+        XCTAssertEqual(ConversationComposer.typed(after: "Can you check the draft?", in: "Can you"), "")
+    }
+
     func testTheTimerOfAnOlderSendDoesNotEndTheWaitOfANewerOne() {
         var scroll = SentMessageScroll()
         let first = Date(timeIntervalSinceReferenceDate: 1_000)

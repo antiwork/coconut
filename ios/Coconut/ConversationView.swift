@@ -1004,8 +1004,16 @@ struct ConversationComposer: View {
 
     private var canSend: Bool { connected && !uploading && !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
 
-    private func clearDraft() {
-        text = ""; mentions = []; selection = nil; attachments = []; scheduling = false; replyTo = nil; workContext = nil
+    /// Clears the draft. `sent` is the text that the clear follows: what the person typed after it stays.
+    private func clearDraft(after sent: String? = nil) {
+        text = sent.map { Self.typed(after: $0, in: text) } ?? ""
+        mentions = []; selection = nil; attachments = []; scheduling = false; replyTo = nil; workContext = nil
+    }
+
+    /// What the person typed after `sent`, the text of a send, when the draft clears later than the send. A draft that
+    /// does not start with the sent text was changed in another way, and nothing of it stays.
+    static func typed(after sent: String, in draft: String) -> String {
+        draft.hasPrefix(sent) ? String(draft.dropFirst(sent.count)) : ""
     }
 
     private func send() {
@@ -1027,7 +1035,8 @@ struct ConversationComposer: View {
             #if os(macOS)
             // On a Mac the draft clears in the same update as the row of the message comes. When the composer got short
             // first, a chat at its newest row went down by the height that the composer lost, and then up to the row.
-            clearDraft()
+            // Keys that the person typed after Return stay.
+            clearDraft(after: submittedText)
             #endif
             let success = await store.send(bot: bot, text: submittedText,
                                            attachments: submittedAttachments,
