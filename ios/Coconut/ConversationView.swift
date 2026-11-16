@@ -847,8 +847,10 @@ struct ConversationComposer: View {
     let task: AgentTask?
     @Binding var text: String
     @State private var importing = false
+    @State private var pickingPhotos = false
     @Binding var attachments: [Artifact]
-    @State private var uploading = false
+    /// The attachments on their way to the Mac.
+    @State private var uploads = 0
     @Binding var scheduling: Bool
     @Binding var scheduledAt: Date
     @Binding var mentions: [SelectedBotMention]
@@ -882,48 +884,27 @@ struct ConversationComposer: View {
                     .accessibilityIdentifier("reply-preview")
             }
             BotMentionControls(text: $text, selection: $selection, selected: $mentions, bots: store.bots, focused: focused) { focused = true }
-            if !attachments.isEmpty {
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack {
-                        ForEach(attachments) { artifact in
-                            Button { attachments.removeAll { $0.id == artifact.id } } label: {
-                                Label(artifact.title, systemImage: "xmark.circle.fill")
-                                    .font(.footnote).padding(BoardStyle.Space.s).frame(minHeight: 44)
-                                    .background(BoardStyle.surface, in: Capsule())
-                            }.accessibilityLabel("Remove attachment \(artifact.title)")
-                        }
-                    }
-                }
+            ComposerAttachmentChips(chips: attachments.map { ComposerChip(id: $0.id, title: $0.title) }) { id in
+                attachments.removeAll { $0.id == id }
             }
             if scheduling {
                 DatePicker("Start", selection: $scheduledAt, in: Date()...)
                     .font(.footnote)
             }
-            HStack(alignment: .bottom, spacing: 8) {
-                Menu {
+            HStack(alignment: .bottom, spacing: BoardStyle.Space.s) {
+                ComposerPlusMenu(uploading: uploading, enabled: connected) {
                     Button("Mention an agent", systemImage: "at") {
                         text += text.isEmpty || text.last?.isWhitespace == true ? "@" : " @"
                         selection = TextSelection(insertionPoint: text.endIndex)
                         focused = true
                     }
-                    Button("Attach file", systemImage: "paperclip") { importing = true }
+                    AttachMenuItems(importing: $importing, pickingPhotos: $pickingPhotos)
                     if workContext == nil {
                         Button(scheduling ? "Send now" : "Schedule task", systemImage: "clock") {
                             scheduling.toggle()
                         }
                     }
-                } label: {
-                    Image(systemName: uploading ? "hourglass" : "plus").font(.title3)
-                        .foregroundStyle(.secondary).frame(width: 46, height: 46)
-                        .contentShape(Circle())
                 }
-                #if os(macOS)
-                // A Mac draws a menu as a pull-down button with an arrow. The composer shows only its icon.
-                .menuStyle(.button).buttonStyle(.plain).menuIndicator(.hidden).fixedSize()
-                #endif
-                .modifier(ComposerSurface(shape: Circle()))
-                .disabled(!connected || uploading)
-                .accessibilityLabel("More options")
                 HStack(alignment: .bottom, spacing: 4) {
                 TextField("Message \(bot.name)", text: $text, selection: $selection, axis: .vertical)
                     .focused($focused)
@@ -952,27 +933,30 @@ struct ConversationComposer: View {
         .padding(.top, 4)
         .padding(.bottom, 8)
         .modifier(ComposerBackdrop())
-        #if os(macOS)
-        .modifier(PasteAttachmentMonitor(enabled: focused && connected && !uploading) { pasted in
-            Task {
-                uploading = true
-                if let artifact = await store.uploadAttachment(bot: bot, data: pasted.data, filename: pasted.filename) {
-                    attachments.append(artifact)
+        .modifier(ComposerAttachmentSources(importing: $importing, pickingPhotos: $pickingPhotos,
+                                            pasteEnabled: focused && connected && !uploading) { url in
+            upload { await store.uploadAttachment(bot: bot, url: url) }
+        } photo: { picked in
+            upload {
+                // A photo of the library can be a HEIC image or larger than the limit.
+                guard let fitted = await FileFit.fitted(picked) else {
+                    store.error = TeamFileRules.sizeText
+                    return nil
                 }
-                uploading = false
+                return await store.uploadAttachment(bot: bot, data: fitted.data, filename: fitted.name)
             }
-        })
-        #endif
-        .fileImporter(isPresented: $importing, allowedContentTypes: [.item]) { result in
-            if case .success(let url) = result {
-                Task {
-                    uploading = true
-                    if let artifact = await store.uploadAttachment(bot: bot, url: url) { attachments.append(artifact) }
-                    uploading = false
-                }
-            } else if case .failure(let error) = result {
-                store.error = error.localizedDescription
-            }
+        } paste: { pasted in
+            upload { await store.uploadAttachment(bot: bot, data: pasted.data, filename: pasted.name) }
+        } report: { store.error = $0 })
+    }
+
+    private var uploading: Bool { uploads > 0 }
+
+    private func upload(_ work: @escaping () async -> Artifact?) {
+        Task {
+            uploads += 1
+            if let artifact = await work() { attachments.append(artifact) }
+            uploads -= 1
         }
     }
 

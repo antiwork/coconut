@@ -89,6 +89,12 @@ final class APIClient: @unchecked Sendable {
         return try await transfer("artifacts/\(id)/content")
     }
 
+    /// The bytes of a file of a message of a team chat. The route names the message, so the Mac never answers with
+    /// the bytes of another message (docs/team-log.md, "Files").
+    func teamFileContent(_ address: TeamFileAddress) async throws -> Data {
+        try await transfer(address.path)
+    }
+
     // Short foreground reads fail fast. Writes, long polls, and full downloads get the longer budget.
     static func isShortRead(_ path: String, method: String) -> Bool {
         let wait = URLComponents(string: path)?.queryItems?.first(where: { $0.name == "wait" })?.value.flatMap(Double.init) ?? 0

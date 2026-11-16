@@ -156,6 +156,49 @@ struct HeldTextPreview: View {
     }
 }
 
+/// A held file of a team chat: the row above it, the image or the card, then Reply, Copy, Share and the actions after
+/// Share. Copy and Share take the image or the file, so they wait until it has loaded.
+struct HeldTeamFile<Header: View>: View {
+    let file: TeamFile
+    let source: URL
+    let own: Bool
+    let reply: HeldAction?
+    let afterShare: [HeldAction]
+    @ViewBuilder let header: (_ close: @escaping (@escaping () -> Void) -> Void) -> Header
+    @State private var image: UIImage?
+    @State private var local: URL?
+
+    var body: some View {
+        let image = image
+        let local = local
+        var actions = reply.map { [$0] } ?? []
+        let copy: (() -> Void)? = file.isImage ? image.map { image in { Pasteboard.copy(image) } }
+            : local.map { url in { Pasteboard.copyFile(url) } }
+        actions.append(HeldAction(title: "Copy", systemImage: "doc.on.doc", perform: copy))
+        let share: HeldShare? = file.isImage ? image.map { .image($0, file.name) } : local.map { .url($0) }
+        return HeldBubbleView(trailing: own, actions: actions, share: share, afterShare: afterShare) { close in
+            header(close)
+        } preview: { maxHeight in
+            if file.isImage {
+                PhotoMenuPreview(url: source, maxHeight: maxHeight)
+                    .clipShape(RoundedRectangle(cornerRadius: BoardStyle.Radius.small))
+                    .accessibilityLabel(file.name)
+            } else {
+                ChatFileCard(file: file, source: nil).frame(width: ChatFileCard.width).allowsHitTesting(false)
+            }
+        }
+        .task(id: source) {
+            guard file.isReady else { return }
+            if file.isImage {
+                self.image = PhotoLoader.shared.cached(source, size: .full) ?? PhotoLoader.shared.cached(source, size: .tile)
+                if self.image == nil { self.image = await PhotoLoader.shared.image(source, size: .full) }
+            } else {
+                self.local = await QuickLookFile.url(for: source, name: file.name)
+            }
+        }
+    }
+}
+
 /// A held message of a bot chat: its reactions above, the message, then Reply, Copy and Share. Text messages and photos
 /// share it.
 struct HeldMessageView<Preview: View>: View {
