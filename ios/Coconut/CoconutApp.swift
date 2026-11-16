@@ -1,3 +1,4 @@
+import Foundation
 import SwiftUI
 
 @main
@@ -17,6 +18,13 @@ struct CoconutApp: App {
                     if PairingSetup.isLink(url) { store.setupLink = url.absoluteString }
                     // An invite link of a team opens the join sheet. The link stays in memory only.
                     if TeamLinkCheck.isLink(url) { store.teamJoin = TeamJoinRequest(link: url.absoluteString) }
+                }
+                // The web form of an invite link, https://coconut.gumroad.com/i/<token>, arrives as a browsing
+                // activity, because coconut.gumroad.com is an associated domain of the app. The same invite as a
+                // coconut:// link arrives above.
+                .onContinueUserActivity(NSUserActivityTypeBrowsingWeb) { activity in
+                    guard let url = activity.webpageURL, TeamLinkCheck.isLink(url) else { return }
+                    store.teamJoin = TeamJoinRequest(link: url.absoluteString)
                 }
                 .onChange(of: store.reconciledBadgeCount, initial: true) { _, _ in
                     if !store.isDemo { store.reconcileBadge() }

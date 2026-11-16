@@ -1850,13 +1850,13 @@ final class AppStore {
     }
 
     /// Asks the Mac for a new invite link. The link is a secret: the caller gives it to the share sheet and keeps no
-    /// copy.
+    /// copy. The person shares the web form, which a mail or a chat keeps and which opens the app.
     func teamInviteLink(_ room: TeamRoom) async -> URL? {
         // Each tap makes a new link, so a request never reuses the key of an earlier one.
         let invite: TeamInvite? = await write("team/rooms/\(room.room)/invites", payload: EmptyRequest(),
                                               as: TeamInvite.self, refreshInBackground: true,
                                               idempotencyKey: UUID().uuidString)
-        return invite.flatMap { URL(string: $0.link) }
+        return invite.flatMap { TeamLog.webLink(fromLink: $0.link) }.flatMap { URL(string: $0) }
     }
 
     /// The admin takes another member out of a team (backend/coconut/team.py, `team_remove`). Return whether the Mac

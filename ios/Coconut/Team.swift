@@ -262,7 +262,12 @@ enum TeamLinkCheck: Equatable {
         }
     }
 
-    static func isLink(_ url: URL) -> Bool { url.scheme?.lowercased() == "coconut" && url.host?.lowercased() == "team" }
+    static func isLink(_ url: URL) -> Bool {
+        if url.scheme?.lowercased() == "coconut" { return url.host?.lowercased() == "team" }
+        // The web form of the same invite, which the system opens in the app through the associated domain.
+        return url.scheme?.lowercased() == "https" && url.host?.lowercased() == TeamLog.webHost
+            && url.path.hasPrefix(TeamLog.webPath) && url.path.count > TeamLog.webPath.count
+    }
 }
 
 /// The pairing pages on screen: the first run, "Pair with your Mac" in Settings, and the Mac window. Each page counts
