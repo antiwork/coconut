@@ -52,9 +52,13 @@ NEW_EXCHANGE = ''.join(statement + ';\n' for statement in exchange_inserts('(SEL
 # Service.__init__ creates these. message_exchange_audience lists, for each bot, the positions (rowids) of the exchange
 # rows that its conversation shows, in rowid order. So a page of one bot reads only its newest exchange rows, without a
 # sort. Triggers keep the list with the messages. A full VACUUM can renumber rowids, so maintenance builds it again.
-# messages_client_request holds only the messages with a confirmed request.
+# messages_client_request_bot holds only the messages with a confirmed request, each with its request and its bot.
+# CONFIRMED_REQUESTS reads both from the index and opens no message. The index before it held only the request, so
+# the read opened each message for its bot: 40 ms for 14,000 sent messages.
 READ_INDEXES = f"""
-CREATE INDEX IF NOT EXISTS messages_client_request ON messages (json_extract(data,'$.client_request_id'))
+DROP INDEX IF EXISTS messages_client_request;
+CREATE INDEX IF NOT EXISTS messages_client_request_bot ON messages
+    (json_extract(data,'$.client_request_id'), json_extract(data,'$.bot_id'))
     WHERE json_type(data,'$.client_request_id')='text';
 CREATE TABLE IF NOT EXISTS message_exchange_audience (
     bot_id TEXT NOT NULL, position INTEGER NOT NULL, PRIMARY KEY (bot_id, position)) WITHOUT ROWID;
@@ -73,6 +77,15 @@ CREATE TRIGGER IF NOT EXISTS message_exchange_delete AFTER DELETE ON messages BE
 DELETE FROM message_exchange_audience WHERE position=OLD.rowid;
 END;
 """
+
+
+# The requests of the stored messages of the bots that exist, each once, in the order of the index. The inner SELECT
+# names the two expressions of messages_client_request_bot, so SQLite takes their values from the index. As the
+# argument of json_group_array, SQLite read the request from the message.
+CONFIRMED_REQUESTS = (
+    "SELECT json_group_array(request) FROM (SELECT DISTINCT json_extract(data,'$.client_request_id') AS request "
+    "FROM messages WHERE json_type(data,'$.client_request_id')='text' AND EXISTS(SELECT 1 FROM bots "
+    "WHERE id=json_extract(messages.data,'$.bot_id') AND NOT COALESCE(json_extract(bots.data,'$._deleted'),0)))")
 
 
 def index_exchange_audience(db, rebuild=False):
@@ -203,11 +216,15 @@ class StateSync:
         query = query.strip()[:200]
         if not query:
             return {'bot_ids': []}
+        needle = query.casefold()
         with self._read_view() as view, view._read_transaction():
             visible = {b['id'] for b in view._all('bots') if not b.get('_deleted')}
-            return {'bot_ids': sorted({m['bot_id'] for m in view._all('messages')
-                if m['bot_id'] in visible and not m.get('_hidden') and not m.get('_deleted')
-                and m['kind'] == 'text' and query.casefold() in m['text'].casefold()})}
+            # The answer names bots, so the read of a bot stops at its first match. SQLite gives only the text of
+            # each row, through the messages_chat index. A read of every message as JSON took 125 ms for 28,000.
+            return {'bot_ids': [bot_id for bot_id in sorted(visible) if any(needle in text.casefold() for (text,) in view.db.execute(
+                "SELECT json_extract(data,'$.text') FROM messages WHERE json_extract(data,'$.bot_id')=? "
+                "AND json_extract(data,'$.kind')='text' AND NOT COALESCE(json_extract(data,'$._hidden'),0) "
+                "AND NOT COALESCE(json_extract(data,'$._deleted'),0)", (bot_id,)))]}
 
     def card(self, identity):
         from .service import ServiceError, now
@@ -279,11 +296,13 @@ class StateSync:
             raise ServiceError(400, 'The event cursor must be zero or greater.')
         deadline = time.monotonic() + min(max(wait, 0), 25)
         with self._read_view() as view:
+            # The number is read before the cursor, so a commit between the read of the cursor and the wait ends the wait.
+            seen = self.commits.count
             while view._cursor() == after and not self.stopping.is_set():
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     break
-                self.stopping.wait(min(remaining, .1))
+                seen = self.commits.wait(seen, min(remaining, .1))
             with view._read_transaction():
                 result = view._replay_changes(after, collection_deltas=collection_deltas, native_events=native_events)
             if result is not None:
@@ -420,9 +439,7 @@ class StateSync:
                           team_typing_changed=sorted({json.loads(r[3])['team'] for r in rows
                                                       if r[1] == 'team_typing.updated'}))
             if any(m.get('client_request_id') for m in messages):
-                receipts = self.db.execute("SELECT json_group_array(DISTINCT json_extract(data,'$.client_request_id')) FROM messages "
-                    "WHERE json_type(data,'$.client_request_id')='text' AND EXISTS(SELECT 1 FROM bots "
-                    "WHERE id=json_extract(messages.data,'$.bot_id') AND NOT COALESCE(json_extract(bots.data,'$._deleted'),0))").fetchone()
+                receipts = self.db.execute(CONFIRMED_REQUESTS).fetchone()
                 result['confirmed_request_ids'] = json.loads(receipts[0])
         # Native task changes publish work.updated. Age alone changes no native state. A document event or a team
         # event changes no Work row and no card.

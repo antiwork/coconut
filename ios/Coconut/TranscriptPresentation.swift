@@ -44,7 +44,12 @@ enum TranscriptPresentation {
     }
 
     static func previewFallback(_ text: String, messages: [Message]) -> String {
-        if messages.contains(where: \.streaming) || trimmed(text, equals: "[SILENT]")
+        previewFallback(text, streaming: messages.contains(where: \.streaming))
+    }
+
+    /// `streaming` says whether a message of the chat streams in.
+    static func previewFallback(_ text: String, streaming: Bool) -> String {
+        if streaming || trimmed(text, equals: "[SILENT]")
             || isLegacySettingsNotice(text) { return "" }
         return text
     }
@@ -108,6 +113,16 @@ enum TranscriptPresentation {
     /// code marks, and link text without its address. Code in a fence stays as it is. Fence and rule lines are
     /// dropped, and lines join with spaces.
     static func previewText(_ markdown: String) -> String {
+        // A preview shows one or two lines, so the start of a long message is enough.
+        previews.value(for: String(markdown.prefix(1000)), make: plainPreview)
+    }
+
+    /// The previews by the start of their text. Each row of the Chats list and of the Mac sidebar parsed the Markdown
+    /// of its newest message for each redraw.
+    static let previews = TextCache<String>(limit: 512)
+
+    /// `previewText` without the cache.
+    static func plainPreview(_ markdown: String) -> String {
         var parts: [String] = []
         var prose: [String] = []
         var fenced = false
@@ -119,8 +134,7 @@ enum TranscriptPresentation {
             let plain = (try? AttributedString(markdown: text, options: options)).map { String($0.characters) } ?? text
             parts += plain.split(whereSeparator: \.isNewline).map { $0.trimmingCharacters(in: .whitespaces) }
         }
-        // A preview shows one or two lines, so the start of a long message is enough.
-        for line in markdown.prefix(1000).split(omittingEmptySubsequences: false, whereSeparator: \.isNewline) {
+        for line in markdown.split(omittingEmptySubsequences: false, whereSeparator: \.isNewline) {
             let text = line.trimmingCharacters(in: .whitespaces)
             if text.hasPrefix("```") || text.hasPrefix("~~~") {
                 flush()
