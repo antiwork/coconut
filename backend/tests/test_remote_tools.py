@@ -21,6 +21,7 @@ import pairing
 class RemoteToolsTests(unittest.TestCase):
     def fixture(self, root):
         for name in remote.TOP_FILES | {"backend/coconut/service.py", "backend/coconut/hermes_versions.json",
+                                        "backend/coconut/assets/agent-sprites.png",
                                         "scripts/host.py", "docs/setup.md"}:
             path = root / name
             path.parent.mkdir(parents=True, exist_ok=True)
