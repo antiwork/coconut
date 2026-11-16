@@ -1692,7 +1692,12 @@ class TeamStore:
         """Set the files that a message names, each as (member, file ID, size, hash), and check each new one
         (_check_file). The bytes of a file that the message no longer names go, unless another message of the same
         member names it: the message no longer shows (its author deleted it, the admin erased it, or the admin removed
-        its chat), or a new write has other files."""
+        its chat), or a new write has other files.
+
+        The own pieces of this Mac keep their bytes here. The store can lack a later own message that names the same
+        file, and the relay does not send an own piece again. So the bytes of an own piece go only with the `delete`
+        entry over it (TeamFiles._team_clean_pieces), which comes after a read of the room to its end, or with the
+        sweep of 7 days."""
         old = set(self.db.execute('SELECT member, file, size, hash FROM team_message_files WHERE room=? AND message=?',
                                   (room, message)).fetchall())
         if old == set(files):
@@ -1702,8 +1707,9 @@ class TeamStore:
                             'VALUES (?, ?, ?, ?, ?, ?)', [(room, message, *file) for file in files])
         for member, file in {(member, file) for member, file, _, _ in files}:
             self._check_file(room, member, file, message)
+        own = self.db.execute('SELECT member FROM team_rooms WHERE room=?', (room,)).fetchone()
         for member, file, _, _ in old - set(files):
-            if not self.file_named(room, member, file):
+            if (own is None or member != own[0]) and not self.file_named(room, member, file):
                 self.db.execute('DELETE FROM team_file_pieces WHERE room=? AND member=? AND file=?', (room, member, file))
 
     def file_named(self, room: str, member: str, file: str) -> bool:
@@ -1841,6 +1847,11 @@ class TeamStore:
                 if len(orphans) == limit:
                     break
         return orphans
+
+    def own_piece(self, room: str, member: str, entry: str) -> bool:
+        """True when the store has the entry as a `file` entry of `member`."""
+        return self.db.execute("SELECT 1 FROM team_entries WHERE room=? AND id=? AND kind='file' AND member=?",
+                               (room, entry, member)).fetchone() is not None
 
     def pending_of(self, room: str, member: str) -> bool:
         """True when the room has a body of `member` that this Mac keeps and cannot open yet (team_pending)."""

@@ -723,8 +723,11 @@ class FileRouteTests(FileMacs, unittest.TestCase):
         self.sync()
         self.phone(self.first)('DELETE', self.path(f'messages/{sent["id"]}'), {})
         self.sync()
-        for service in self.macs:
-            self.assertEqual(service.db.execute('SELECT COUNT(*) FROM team_file_pieces').fetchone()[0], 0)
+        # The bytes of a piece of another member go at once. The writer keeps the bytes of its own pieces until its
+        # `delete` over them (FileCleanTests), because its store can lack a later message that names the file.
+        self.assertEqual(self.pieces(self.first), 0)
+        self.assertEqual(self.pieces(self.second), 1)
+        self.assertEqual(self.phone(self.second)('GET', self.path(), {})['messages'], [])
 
     def test_two_messages_with_the_same_file_id_each_answer_their_own_bytes(self):
         ada_draft = self.upload(self.first, b'bytes of Ada')
@@ -823,7 +826,12 @@ class FileCleanTests(FileMacs, unittest.TestCase):
         entries = self.entries(self.first, draft)
         writes = self.writes()
         self.phone(self.first)('DELETE', self.path(f'messages/{sent["id"]}'), {})
-        # The message first, so the chat changes at once, then each piece.
+        # The route writes one entry: the `delete` over the message. It asks for a pass of the sync of the room.
+        self.assertEqual(writes, [sent['id']])
+        self.assertEqual(self.relay_kinds(entries), ['file', 'file'])
+        self.assertIn(self.room, self.first._team_take_wakes()[1])
+        # One pass after a read to the end writes a `delete` over each piece, with no wait of 24 hours.
+        self.first.team_sync_pass()
         self.assertEqual(writes, [sent['id'], *entries])
         self.sync()
         self.assertEqual(self.relay_kinds(entries), ['delete', 'delete'])
@@ -836,27 +844,57 @@ class FileCleanTests(FileMacs, unittest.TestCase):
         self.phone(self.first)('DELETE', self.path(f'messages/{sent["id"]}'), {})
         self.assertEqual(writes, [])
 
-    def test_a_failed_piece_delete_does_not_fail_the_route_and_the_pass_finishes_it(self):
+    def test_a_failed_piece_delete_keeps_the_note_and_the_next_sync_finishes_it(self):
         draft = self.upload(self.first, b'e' * 10)
         sent = self.send(self.first, [draft['id']])
         entries = self.entries(self.first, draft)
+        answer = self.phone(self.first)('DELETE', self.path(f'messages/{sent["id"]}'), {})
+        self.assertEqual(answer, {'room': self.room, 'id': sent['id'], 'deleted': True})
         write = self.relay.write
 
         def refuse_pieces(relay, room, token, entry, kept, body, tries=1):
             if entry in entries:
-                raise TeamRelayError(0, 'The relay did not answer.')
+                raise TeamRelayError(413, 'The relay answered 413.')
             return write(relay, room, token, entry, kept, body, tries)
         self.relay.write = refuse_pieces
-        answer = self.phone(self.first)('DELETE', self.path(f'messages/{sent["id"]}'), {})
-        self.assertEqual(answer, {'room': self.room, 'id': sent['id'], 'deleted': True})
+        self.first.team_sync_pass()
         self.relay.write = write
-        self.assertEqual(self.phone(self.first)('GET', self.path(), {})['messages'], [])
         self.assertEqual(self.relay_kinds(entries), ['file'])
-        # The pass of the sync takes the piece off the relay one day later.
-        self.later(team_files.DRAFT_SECONDS + 60)
-        self.sync()
+        self.assertEqual(list(self.first._team_noted[self.room]), [draft['id']])
+        # The next sync, in the same hour and with no wait of 24 hours, finishes the work and empties the note.
+        self.first.team_sync_pass()
         self.assertEqual(self.relay_kinds(entries), ['delete'])
+        self.assertEqual(self.first._team_noted[self.room], {})
+        self.sync()
         self.assertEqual(self.kinds(self.second, entries), ['delete'])
+
+    def test_a_delete_before_the_read_of_a_later_message_with_the_same_file_deletes_no_piece(self):
+        data = b'twice' * 100
+        draft = self.upload(self.first, data)
+        # The first send loses its answer, so the draft stays. The sync brings the message.
+        self.fail_messages(TeamRelayError(0, 'The relay did not answer.'), after=True)
+        self.refusal(self.send, self.first, [draft['id']], 'One')
+        self.restore()
+        self.sync()
+        (first,) = self.phone(self.first)('GET', self.path(), {})['messages']
+        # A second send of the same draft reaches the relay, and the service stops before it stores the message.
+        self.fail_messages(TeamRelayError(0, 'The relay did not answer.'), after=True)
+        self.refusal(self.send, self.first, [draft['id']], 'Two')
+        self.restore()
+        self.first._team_unsure.clear()  # A restart forgets that a write got no answer.
+        entries = self.entries(self.first, draft)
+        writes = self.writes()
+        self.phone(self.first)('DELETE', self.path(f'messages/{first["id"]}'), {})
+        self.assertEqual(writes, [first['id']])
+        # The sync reads the room to its end, finds the second message, and writes no `delete` over a piece.
+        self.sync()
+        self.assertEqual(writes, [first['id']])
+        self.assertEqual(self.relay_kinds(entries), ['file'])
+        for service in self.macs:
+            (second,) = self.phone(service)('GET', self.path(), {})['messages']
+            self.assertEqual(second['text'], 'Two')
+            self.assertTrue(second['files'][0]['complete'])
+        self.assertEqual(self.first._team_noted[self.room], {})
 
     def test_a_young_piece_without_a_message_stays_for_24_hours(self):
         draft = self.upload(self.first, b'young')
@@ -903,6 +941,7 @@ class FileCleanTests(FileMacs, unittest.TestCase):
         self.sync()
         self.assertEqual(self.relay_kinds(entries), ['delete'])
         self.assertEqual(self.second.team_store.sent_bytes(self.room, self.member(self.second), 0, []), 0)
+        self.assertEqual(self.pieces(self.second), 0, 'The bytes of the writer go with its delete.')
 
     def test_a_read_that_a_stop_ends_early_deletes_no_piece(self):
         data = b's' * (CHUNK + 1)
