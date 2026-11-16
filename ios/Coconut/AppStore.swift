@@ -99,6 +99,11 @@ final class AppStore {
     /// The chats of the teams that the person opened, by chat: the Team chat of a room, or a direct chat. The updates
     /// keep them fresh.
     var teamChats: [TeamChatKey: TeamChat] = [:]
+    /// The choice of the person in the filter of the alerts of a chat on screen, and the alerts of that choice
+    /// (TeamAlertFilters). "All" has no entry. Both live in this app only, and both go when the chat closes.
+    var teamAlertFilters: [TeamChatKey: TeamAlertFilter] = [:]
+    var teamAlertChats: [TeamChatKey: TeamChat] = [:]
+    @ObservationIgnored private var teamAlertRequests: [TeamChatKey: Int] = [:]
     /// The number of the latest request of the newest page, by chat. Only its answer goes into the chat.
     @ObservationIgnored private var teamChatRequests: [TeamChatKey: Int] = [:]
     @ObservationIgnored private var teamChatRequestCount = 0
@@ -680,6 +685,7 @@ final class AppStore {
         teamChats = [:]; teamChatRequests = [:]; teamChatChanges = [:]; teamReadPosted = [:]; teamReadPosting = [:]
         teamChatsOnScreen = []; teamOlderRequests = [:]; teamMessageChanges = [:]; teamTypingPace = [:]
         teamReactionWriters = [:]
+        teamAlertFilters = [:]; teamAlertChats = [:]; teamAlertRequests = [:]
         chatFilter = .all
         approvals = nil; parallelWork = nil; fallback = nil; workCapacity = nil; mcpServers = []
         optimisticUpdates.reset()
@@ -1838,6 +1844,8 @@ final class AppStore {
     private func reloadTeamChats(_ chats: Set<TeamChatKey>) {
         for chat in chats where teamChats[chat] != nil {
             Task { await loadTeamChat(chat) }
+            // The alerts of a choice of the filter change with the chat.
+            if teamAlertFilters[chat] != nil { Task { await loadTeamAlerts(chat) } }
         }
     }
 
@@ -2168,6 +2176,7 @@ final class AppStore {
             teamReadPosted[chat] = nil
             teamReadPosting[chat] = nil
             teamChatsOnScreen.remove(chat)
+            dropTeamAlertFilter(chat)
         }
         if pending { try? saveOutgoing() }
     }
@@ -2333,6 +2342,85 @@ final class AppStore {
         teamChatsOnScreen.remove(chat)
         teamOlderRequests[chat] = nil
         teamChats[chat]?.keepNewestPage()
+        // A chat opens with each message, so a message of a notification is never behind a filter.
+        dropTeamAlertFilter(chat)
+    }
+
+    // MARK: Alerts of a team chat
+
+    /// The filter that a chat uses: the choice of the person while the chat offers it, else "All".
+    func teamAlertFilter(_ chat: TeamChatKey) -> TeamAlertFilter {
+        TeamAlertFilters.effective(teamAlertFilters[chat] ?? .all, summary: teamChats[chat]?.alerts)
+    }
+
+    /// The person chose a filter of the alerts of a chat. The chat shows the alerts of the choice that the app has at
+    /// once, and reads the newest page of the choice from the Mac. The choice changes no read position and goes to no
+    /// Mac.
+    func setTeamAlertFilter(_ chat: TeamChatKey, _ filter: TeamAlertFilter) {
+        guard filter != teamAlertFilters[chat] ?? .all else { return }
+        guard !filter.isAll else { return dropTeamAlertFilter(chat) }
+        teamAlertRequests[chat] = nil
+        teamAlertFilters[chat] = filter
+        var start = TeamAlertFilters.start(from: teamChats[chat], filter: filter)
+        // The preview has no Mac to ask.
+        if isDemo { start.loaded = true }
+        teamAlertChats[chat] = start
+        Task { await loadTeamAlerts(chat) }
+    }
+
+    private func dropTeamAlertFilter(_ chat: TeamChatKey) {
+        teamAlertRequests[chat] = nil
+        if teamAlertFilters[chat] != nil { teamAlertFilters[chat] = nil }
+        if teamAlertChats[chat] != nil { teamAlertChats[chat] = nil }
+    }
+
+    /// Reads the newest page of the alerts of the choice of a chat. Only the answer of the latest request of the
+    /// same choice goes into the chat.
+    @discardableResult
+    func loadTeamAlerts(_ chat: TeamChatKey) async -> Bool {
+        guard !isDemo, let client, let filter = teamAlertFilters[chat] else { return false }
+        teamChatRequestCount += 1
+        let request = teamChatRequestCount
+        teamAlertRequests[chat] = request
+        let page: TeamMessagePage
+        do {
+            page = try await client.request("\(chat.path)/messages?limit=\(Self.teamPage)\(chat.query)\(filter.query)")
+        } catch {
+            guard self.client === client, teamAlertRequests[chat] == request else { return false }
+            if !(error is CancellationError) { teamAlertChats[chat]?.error = Self.teamMessage(error) }
+            return false
+        }
+        guard self.client === client, teamAlertRequests[chat] == request, teamAlertFilters[chat] == filter,
+              teamListHas(chat) else { return false }
+        var merged = teamAlertChats[chat] ?? TeamChat()
+        merged.merge(page, requested: nil)
+        merged.error = nil
+        if teamAlertChats[chat] != merged { teamAlertChats[chat] = merged }
+        return true
+    }
+
+    /// Reads the next older page of the alerts of the choice of a chat.
+    @discardableResult
+    func loadEarlierTeamAlerts(_ chat: TeamChatKey) async -> Bool {
+        guard !isDemo, let client, let filter = teamAlertFilters[chat], let before = teamAlertChats[chat]?.before,
+              teamAlertChats[chat]?.loadingEarlier == false else { return false }
+        teamAlertChats[chat]?.loadingEarlier = true
+        defer { if self.client === client { teamAlertChats[chat]?.loadingEarlier = false } }
+        let page: TeamMessagePage
+        do {
+            page = try await client.request(
+                "\(chat.path)/messages?before=\(before)&limit=\(Self.teamPage)\(chat.query)\(filter.query)")
+        } catch {
+            guard self.client === client else { return false }
+            if !(error is CancellationError) { report(error) }
+            return false
+        }
+        // A new choice, or a newer page that started the list again, leaves this page without a place.
+        guard self.client === client, teamAlertFilters[chat] == filter, teamAlertChats[chat]?.before == before else {
+            return false
+        }
+        teamAlertChats[chat]?.merge(page, requested: before)
+        return true
     }
 
     /// The messages of one page. The chat reads the newest page first, and one more for each "Load earlier messages".

@@ -251,11 +251,19 @@ extension View {
 struct ChipButton: View {
     let title: String
     let selected: Bool
+    /// A count after the title, for a chip of the filter of the alerts. Nil for a chip without one.
+    var count: String? = nil
+    /// A symbol before the title. Nil for a chip without one.
+    var symbol: String? = nil
     let action: () -> Void
 
     var body: some View {
         Button(action: action) {
-            Text(title)
+            HStack(spacing: BoardStyle.Space.xs) {
+                if let symbol { Image(systemName: symbol).imageScale(.small) }
+                Text(title)
+                if let count { Text(count).monospacedDigit().fontWeight(.regular).foregroundStyle(.secondary) }
+            }
                 .font(.body.weight(selected ? .semibold : .regular))
                 .foregroundStyle(selected ? .primary : .secondary)
                 .lineLimit(1)
