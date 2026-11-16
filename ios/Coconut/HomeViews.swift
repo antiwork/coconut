@@ -380,7 +380,7 @@ struct ChatRowLayout<Face: View, Subtitle: View>: View {
     private var badges: some View {
         HStack(spacing: BoardStyle.Space.xs) {
             if muted { MutedMark() }
-            if pinned { MutedMark(symbol: "pin.fill") }
+            if pinned { MutedMark(symbol: "pin") }
             if mentioned { MentionBadge() }
             if unread > 0 { UnreadBadge(count: unread) }
         }
@@ -390,7 +390,7 @@ struct ChatRowLayout<Face: View, Subtitle: View>: View {
 /// The mark of a muted chat in the secondary color, as WhatsApp has it: in the font of the line under the name, so it
 /// is as high as that line. The label of the row says it to VoiceOver (TeamRowSpeech), so the mark itself is silent.
 struct MutedMark: View {
-    /// The mark of a pinned chat at the top of the list uses the same form with `pin.fill`.
+    /// The mark of a pinned chat at the top of the list uses the same form with the line symbol `pin`.
     var symbol = TeamChatMute.mark
 
     var body: some View {
