@@ -545,7 +545,8 @@ private struct TeamChatActions: ViewModifier {
                         // No destructive role: that role takes the row away at once, before the confirmation.
                         Button("Delete", action: delete).tint(.red)
                             .accessibilityIdentifier("team-chat-delete-swipe")
-                        Button("Rename", action: rename)
+                        // The neutral tint of a swipe action. Without it, the tint of the app draws white on white.
+                        Button("Rename", action: rename).tint(.gray)
                             .accessibilityIdentifier("team-chat-rename-swipe")
                     }
                     if let mute {
