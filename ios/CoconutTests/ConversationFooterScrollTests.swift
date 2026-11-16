@@ -225,8 +225,24 @@ final class ConversationFooterScrollTests: XCTestCase {
         XCTAssertTrue(scroll.laidOut(inset: 116, now: sent.addingTimeInterval(SentMessageScroll.limit + 0.01)))
         // No layout at all: the timer of the chat ends the wait, one time.
         scroll.sent(now: sent)
-        XCTAssertTrue(scroll.timedOut())
-        XCTAssertFalse(scroll.timedOut())
+        XCTAssertTrue(scroll.timedOut(sentAt: sent))
+        XCTAssertFalse(scroll.timedOut(sentAt: sent))
+        XCTAssertFalse(scroll.waits)
+    }
+
+    func testTheTimerOfAnOlderSendDoesNotEndTheWaitOfANewerOne() {
+        var scroll = SentMessageScroll()
+        let first = Date(timeIntervalSinceReferenceDate: 1_000)
+        let second = first.addingTimeInterval(0.06)
+        _ = scroll.laidOut(inset: 56, now: first)
+        scroll.sent(now: first)
+        // A second message comes while the first one waits. The timer of the first send wakes up later.
+        scroll.sent(now: second)
+        XCTAssertFalse(scroll.timedOut(sentAt: first))
+        XCTAssertTrue(scroll.waits)
+        // The layout of the second row, with the tall composer, still waits. Then its own timer ends the wait.
+        XCTAssertFalse(scroll.laidOut(inset: 116, now: second.addingTimeInterval(0.02)))
+        XCTAssertTrue(scroll.timedOut(sentAt: second))
         XCTAssertFalse(scroll.waits)
     }
 }

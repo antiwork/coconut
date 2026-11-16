@@ -64,10 +64,11 @@ struct SentMessageScroll: Equatable {
         return true
     }
 
-    /// The end of the wait without a layout. True when a scroll waited.
-    mutating func timedOut() -> Bool {
-        guard sentAt != nil else { return false }
-        sentAt = nil
+    /// The end of the wait of the send at `sentAt` without a layout. True when that scroll waited. The timer of an
+    /// older send does not end the wait of a newer one.
+    mutating func timedOut(sentAt: Date?) -> Bool {
+        guard let sentAt, self.sentAt == sentAt else { return false }
+        self.sentAt = nil
         return true
     }
 }
@@ -91,9 +92,11 @@ struct SentMessageMove: ViewModifier {
                 if goes && follows() { move() }
             }
             .task(id: scroll.sentAt) {
-                guard scroll.waits else { return }
+                let sentAt = scroll.sentAt
+                guard sentAt != nil else { return }
                 try? await Task.sleep(for: .seconds(SentMessageScroll.limit))
-                guard scroll.timedOut() else { return }
+                // A new send cancels the timer of the older one. That timer must not end the new wait.
+                guard !Task.isCancelled, scroll.timedOut(sentAt: sentAt) else { return }
                 if follows() { move() }
             }
     }
