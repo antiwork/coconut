@@ -16,10 +16,10 @@ A small client is easy to keep up to date with Hermes releases. This matters mor
 
 ## Changes
 
-- Make one focused change per PR.
-- Write the PR title as one imperative sentence that describes the behavior, for example "Delete the recovery-question flow".
-- In the PR body, state the problem, the fix, what stays the same, and how you verified it. Give real numbers for speed changes.
-- `docs/` holds only setup, architecture and the relay protocol. Fix a page there in the same PR when your change makes it wrong. Do not add pages for reports, plans or one change; put that in the PR description.
+- Work directly on `main`. Push after the local regressions pass; do not open a pull request unless asked.
+- Make each commit one focused change and describe the resulting behavior in its message.
+- Choose the smallest regression check that covers the change. Give real numbers for speed changes.
+- `docs/` holds only setup, architecture and the relay protocol. Fix a page there when your change makes it wrong. Do not add pages for reports, plans or one change.
 - Write docs and comments in short, plain sentences in the present tense.
 
 ## Code
@@ -32,7 +32,15 @@ A small client is easy to keep up to date with Hermes releases. This matters mor
 
 ## Tests
 
-Run each backend test file in its own process. Module names collide otherwise.
+Install the local pre-commit hook with `git config core.hooksPath .githooks`. It runs three service smoke tests for
+backend changes and the tests of changed modules or test files. Python 3.11 or newer is required; set
+`COCONUT_TEST_PYTHON` to choose its executable. App-only and documentation commits run no service tests.
+
+The agent runs additional targeted checks locally when needed. GitHub runs no regression CI. Only the Mac and
+TestFlight release jobs remain: they build before publishing, skip unchanged app inputs, and publish at most once
+per hour per app. The hourly schedule picks up commits that arrived during the cooldown.
+
+When a change needs the full backend suite, run each file in its own process. Module names collide otherwise.
 
 ```sh
 (for test in backend/tests/test_*.py; do
@@ -40,12 +48,13 @@ Run each backend test file in its own process. Module names collide otherwise.
 done)
 ```
 
-- Name each backend test file `test_*.py`. CI runs every such file.
-- A test that needs Hermes also goes in the `native-kanban` job of `.github/workflows/hermes-compatibility.yml`.
+- Name each backend test file `test_*.py`.
 - A test that needs Hermes uses `backend/tests/hermes_env.py`. It skips without a Hermes. To run it, see [Supported Hermes versions](docs/supported-hermes-versions.md#run-the-native-tests-locally).
 - Run the relay tests with `(cd relay && npm ci && npm test)`.
 - Run `CoconutTests` from Xcode for iOS changes.
 
 ## Hermes versions
 
-Coconut runs on the Hermes that the person installed. `backend/coconut/hermes_versions.json` names the minimum and the tested Hermes releases, and CI checks the minimum and the latest release. To support a new Hermes release, follow [Supported Hermes versions](docs/supported-hermes-versions.md#support-a-new-hermes-release).
+Coconut runs on the Hermes that the person installed. `backend/coconut/hermes_versions.json` names the minimum and
+the tested Hermes releases. Check compatibility locally when the Hermes contract changes. To support a new release,
+follow [Supported Hermes versions](docs/supported-hermes-versions.md#support-a-new-hermes-release).

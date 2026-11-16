@@ -30,7 +30,7 @@ struct AppSettingsView: View {
                     }
                     NotificationSettingsRow()
                     NavigationLink { MCPSettingsView() } label: {
-                        SettingsNavigationLabel(title: "Connections", subtitle: "Google and other tools")
+                        SettingsNavigationLabel(title: "Connections", subtitle: "Google, GitHub and other tools")
                     }
                     .accessibilityIdentifier("mcp-settings")
                     TeamSettingsRow()

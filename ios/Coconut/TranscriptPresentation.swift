@@ -37,6 +37,13 @@ extension Message {
     var photoSender: [String] { [senderBotId ?? botId] + (recipientBotIds ?? []) }
 }
 
+/// The text of a message of attachments only. The Mac needs a text for each message, so the app sends this one and
+/// shows the attachments alone. Agents read it as a message without words.
+enum AttachmentOnly {
+    static let text = "[attachment]"
+    static func isMarker(_ text: String) -> Bool { text.trimmingCharacters(in: .whitespacesAndNewlines) == Self.text }
+}
+
 enum TranscriptPresentation {
     /// A file name of an image that the chat can show: the formats of the attachments that the agents see as images.
     static func isImageName(_ name: String) -> Bool {
@@ -191,6 +198,7 @@ enum TranscriptPresentation {
                 return !isLabel(message.text, in: genericProgress)
             }
             if message.kind == "text" && trimmed(message.text, equals: "") { return false }
+            if message.kind == "text" && message.role == "user" && AttachmentOnly.isMarker(message.text) { return false }
             guard message.kind == "artifact", let id = message.artifactId,
                   let artifact = byID[id], artifact.kind == "task", artifact.status == "completed",
                   artifact.url == nil, !artifact.preview.isEmpty,

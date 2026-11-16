@@ -321,6 +321,25 @@ final class TeamLogTests: XCTestCase {
         }
     }
 
+    func testTheWebFormOfTheLinkOfTheContract() throws {
+        let invite = TeamLog.Invite(room: room, secret: secret, expires: 1_800_000_000, relay: "https://relay.example", name: "Example Team")
+        let token = String(link.dropFirst(TeamLog.linkPrefix.count))
+        let web = "https://coconut.gumroad.com/i/" + token
+        // A person shares the web form, and the app makes it from the link that the Mac sends.
+        XCTAssertEqual(try TeamLog.webLink(invite), web)
+        XCTAssertEqual(try XCTUnwrap(TeamLog.webLink(fromLink: link)), web)
+        XCTAssertNil(TeamLog.webLink(fromLink: web))
+        // The app, the tool and the service read either form, also with a line break or the slash that a browser adds.
+        XCTAssertEqual(try TeamLog.invite(link: web), invite)
+        XCTAssertEqual(try TeamLog.invite(link: " \(web)\n"), invite)
+        XCTAssertEqual(try TeamLog.invite(link: web + "/"), invite)
+        // Another host, another path or a token that runs on are not the web form of an invite.
+        XCTAssertEqual(failure { _ = try TeamLog.invite(link: "https://example.com/i/\(token)") }, .malformed)
+        XCTAssertEqual(failure { _ = try TeamLog.invite(link: "https://coconut.gumroad.com/i/") }, .malformed)
+        XCTAssertEqual(failure { _ = try TeamLog.invite(link: "https://coconut.gumroad.com/i/\(token)extra") }, .malformed)
+        XCTAssertEqual(failure { _ = try TeamLog.invite(link: "https://coconut.gumroad.com/join/\(token)") }, .malformed)
+    }
+
     func testItRefusesALinkThatIsNotAnInvite() throws {
         let token = String(link.dropFirst("coconut://team/".count))
         XCTAssertEqual(failure { _ = try TeamLog.invite(link: "coconut://pair/\(token)") }, .malformed)

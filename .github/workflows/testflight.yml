@@ -1,7 +1,7 @@
 name: TestFlight
 
-# Archives the iPhone app and uploads it to TestFlight for internal testers only. It runs on each push to main that
-# changes an input of the app, and when a person starts it.
+# Archives the iPhone app and uploads it to TestFlight for internal testers only. Pushes coalesce into at most one
+# update per hour. Hourly and manual runs use the same gate, and skip when no app input changed.
 #
 # Signing needs no certificate secret. The job archives without a signature, and scripts/testflight.py signs the
 # archive ad hoc with the entitlements of the project. Then xcodebuild exports it with automatic signing: through the
@@ -29,12 +29,16 @@ on:
       - 'scripts/iphone.py'
       - 'scripts/push-envelope.swift'
       - 'scripts/testflight.py'
+      - 'scripts/release_gate.py'
       - '.github/workflows/testflight.yml'
+  schedule:
+    - cron: '17 * * * *'
   workflow_dispatch:
 
 permissions:
   contents: read
-  actions: read   # the notes step reads the previous successful run to know which commits are new
+  actions: read   # the gate reads publication history while migrating older release runs
+  deployments: write
 
 # Two uploads must not run at the same time: both would read the same highest build number.
 concurrency:
@@ -42,16 +46,43 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  plan:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      skip: ${{ steps.gate.outputs.skip }}
+      sha: ${{ steps.gate.outputs.sha }}
+      previous_sha: ${{ steps.gate.outputs.previous_sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+          ref: main
+      - name: Check the hourly publication gate
+        id: gate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: python3 scripts/release_gate.py plan --channel iphone
+
   upload:
+    needs: plan
+    if: needs.plan.outputs.skip != 'true'
     runs-on: macos-latest
     timeout-minutes: 90
     environment: mac-release
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
           # The notes list the commits since the previous upload, so the job needs the history.
           fetch-depth: 0
+          ref: ${{ needs.plan.outputs.sha }}
       - name: Write the App Store Connect API key
         env:
           ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
@@ -97,6 +128,9 @@ jobs:
             CURRENT_PROJECT_VERSION="$BUILD"
       - name: Sign the archive ad hoc with its entitlements
         run: python3 scripts/testflight.py sign --archive "$RUNNER_TEMP/Coconut.xcarchive" --build "$BUILD"
+      - name: Record the publication
+        id: publication
+        run: python3 scripts/release_gate.py begin --channel iphone
       - name: Sign for distribution and upload
         run: |
           set -euo pipefail
@@ -119,11 +153,9 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-          RUN_ID: ${{ github.run_id }}
         run: |
           set -euo pipefail
-          previous="$(gh run list --workflow=testflight.yml --status success --limit 20 \
-            --json databaseId,headSha --jq "[.[] | select(.databaseId != ($RUN_ID | tonumber))][0].headSha" || true)"
+          previous="${{ needs.plan.outputs.previous_sha }}"
           arguments=(--key "$ASC_KEY" --key-id "$ASC_KEY_ID" --issuer "$ASC_ISSUER_ID" --build "$BUILD" --apply)
           if [ -n "${previous:-}" ] && git cat-file -e "${previous}^{commit}" 2>/dev/null; then
             arguments+=(--since "$previous")
@@ -132,3 +164,6 @@ jobs:
       - name: Remove the API key
         if: always()
         run: rm -f "$RUNNER_TEMP/AuthKey.p8"
+      - name: Finish the publication record
+        if: always() && steps.publication.outputs.id != ''
+        run: python3 scripts/release_gate.py finish --id '${{ steps.publication.outputs.id }}' --state '${{ job.status }}'

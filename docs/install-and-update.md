@@ -111,7 +111,7 @@ A Mac with no person at it can join a team from a message, as `coconut pair <cod
 | Command | What it does |
 |---|---|
 | `coconut team` | Prints the teams of this Mac: the name, the ID, the state, the admin, the members, the agents, and the sync error. `--json` prints the answer of the service. |
-| `coconut team join [--name <text>]` | Joins a team with the invite link on standard input. `--name` is the name of this Mac in the member list. Without it, the service uses "Member". |
+| `coconut team join [--name <text>]` | Joins a team with the invite link on standard input, in the form of the app (`coconut://team/<token>`) or its web form (`https://coconut.gumroad.com/i/<token>`). `--name` is the name of this Mac in the member list. Without it, the service uses "Member". |
 | `coconut team new-agent <name> [--home <path>]` | On a team-only Mac: declares an agent for the Hermes home that it stands for. See [A Mac without a person](#a-mac-without-a-person). |
 | `coconut team add-agent <agent> [--team <name or ID>]` | On a Mac for a team only: adds an agent of this Mac to the team. `<agent>` is the ID or the name of the agent. Case does not matter. On a person's Mac it prints how to share a page in the Library. |
 | `coconut team remove-agent <agent> [--team <name or ID>]` | On a Mac for a team only: removes an agent of this Mac from the team. On a person's Mac it prints how to share a page. |
@@ -127,37 +127,25 @@ A Mac with no person at it can join a team from a message, as `coconut pair <cod
 
 The tool calls the team routes of the service with the token of `<data>/gateway/bridge.json`. See [the team log](team-log.md#mac). A person makes a team and an invite on the Team screen of the app.
 
-## GitHub access for an agent
+## GitHub access for agents
 
-Agents use the GitHub CLI login of the Mac account, as your normal Mac Terminal does.
-An agent that had its own GitHub login before this version keeps it: the profile's `.env` sets `GH_CONFIG_DIR` to the agent's own folder.
-Coconut does not copy tokens between agents.
+Open **Settings → Connections → GitHub** in Coconut, choose **Connect GitHub**, copy the code, and approve Coconut
+on GitHub. The Antiwork organization owns the Coconut OAuth app. One connection serves all Coconut agents.
 
-From an agent's terminal, run:
+Coconut stores its own access and refresh tokens on the Mac with owner-only permissions. Expiring tokens refresh
+before expiry. A revoked or expired refresh token shows **Reconnect GitHub** in Settings. **Disconnect GitHub**
+removes both local tokens and stops future use of that connection.
 
-```sh
-gh auth login --hostname github.com --git-protocol https --web --skip-ssh-key
-```
-
-Open the device authorization URL on your phone and enter the displayed code. Keep the login process running until authorization finishes.
-Then verify access from the same agent's terminal:
+Verify the account from an agent's terminal:
 
 ```sh
 gh api user --jq .login
 ```
 
-To run these commands from the Mac's normal Terminal, first find the agent's profile ID:
-
-```sh
-sqlite3 ~/Coconut/.runtime/host/coconut.sqlite3 "SELECT json_extract(data, '$.name'), id FROM bots"
-```
-
-For an agent with its own login, read `GH_CONFIG_DIR` from `.runtime/host/bots/PROFILE_ID/home/.env` in the Coconut folder. Prefix each `gh` command with that value.
-Replace `PROFILE_ID` with that agent's ID. Do not change the shell's `HOME` or paste a token into chat.
-If the Keychain is locked or unavailable, GitHub CLI supports `--insecure-storage`.
-This stores the token unencrypted with owner-only permissions. Use it only if you accept that storage method.
-Reauthorize if GitHub expires or revokes the token.
-See [GitHub CLI authentication](https://cli.github.com/manual/gh_auth_login).
+Agents must not run `gh auth login`, `gh auth logout`, or `gh auth setup-git`: those commands can change another
+GitHub login on the Mac. Coconut changes no other GitHub login or Git config. Without a Coconut connection, existing
+profile logins work as before. A Git rule that rewrites GitHub HTTPS URLs to SSH can still select the Mac account's
+SSH key; remove that rule if Coconut must own all GitHub Git traffic.
 
 ## CLI login from chat
 
@@ -248,7 +236,7 @@ If macOS asks to allow Coconut in Login Items, allow it in System Settings → G
 
 ### Join a team and add an agent
 
-1. Run `coconut team join --name "Reporter Mac"`, then paste the invite link when the command asks for it. An agent pipes the link to the command instead. Expect `This Mac joined the team Example Team.`
+1. Run `coconut team join --name "Reporter Mac"`, then paste the invite link when the command asks for it. An agent pipes the link to the command instead. The link comes as a `coconut://team/<token>` link or as its web form, `https://coconut.gumroad.com/i/<token>`: on an iPhone, tapping that link opens Coconut on the join sheet. Expect `This Mac joined the team Example Team.`
 2. Run `coconut team new-agent Reporter --home ~/.hermes`. Give the Hermes home of your agent.
 3. Run `coconut team add-agent Reporter --team "Example Team"`.
 
@@ -344,13 +332,17 @@ Coconut.app updates itself, as on every Mac. The Mac stays in team-only mode. To
 
 The app reads `--set-up`, `--team-only` and `--remove` only when it starts, so a command for an app that runs does nothing. The app keeps the mode in its preference `InstallMode` (`team`) and registers two login items: the app and the service. In this mode the app has no Dock icon and opens no window. The service runs with `COCONUT_MODE=team` (see [team-only mode](team-log.md#team-only-mode)). An update of this mode runs no Hermes check, no skill or plugin step, no notification build and no relay sidecar step, and checks health on the main listener. The data folder decides too: when its store has the mark of a team-only service, the app and the tool take team-only mode, and `deploy.py`, `scripts/hermes_skills.py` and `scripts/setup_coconut.py` stop before they touch Hermes (`service_base.team_folder`). `coconut pair`, `coconut migrate` and `coconut install-source --set-up` refuse on this Mac with one line.
 
-## Releases from CI
+## Automatic releases
 
 GitHub Actions makes every release. No Mac deploys or uploads builds by itself.
 
-- `.github/workflows/mac-release.yml` publishes one Coconut.app build on each push to `main`. The feed has one channel, so every Mac gets each build.
+- `.github/workflows/mac-release.yml` builds the latest `main` and publishes Coconut.app at most once per hour. The feed has one channel, so every Mac gets each build. A failed build publishes nothing.
 - Sparkle in Coconut.app installs the new build on each Mac.
-- `.github/workflows/testflight.yml` uploads the iPhone app to TestFlight on each push to `main` that changes the app. See [the iPhone setup](iphone-install.md#testflight-releases-from-ci).
+- `.github/workflows/testflight.yml` builds and uploads the iPhone app at most once per hour when app inputs change. See [the iPhone setup](iphone-install.md#automatic-testflight-releases).
+
+Pushes during the cooldown coalesce into the next hourly run. Manual runs use the same cooldown. Deployment records
+keep the last publication time and source commit, including attempts that fail after upload. Regression tests run
+locally through the commit hook and the agent's targeted checks.
 
 ## Update the backend
 

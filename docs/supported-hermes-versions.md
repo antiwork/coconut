@@ -6,8 +6,8 @@ Coconut runs on the Hermes that the person installed. Coconut does not install H
 
 `backend/coconut/hermes_versions.json` has two fields:
 
-- `minimum` is the oldest Hermes release that the compatibility CI checks.
-- `tested` lists the Hermes releases that passed the compatibility CI. It includes `minimum`.
+- `minimum` is the oldest Hermes release that local compatibility checks cover.
+- `tested` lists the Hermes releases that passed local compatibility checks. It includes `minimum`.
 
 The contract check decides whether Coconut runs. The service runs `hermes_contract.verify_contract()` against the installed Hermes at each start. When the check passes, Coconut runs, also on a version outside the tested range. When the check fails, Coconut starts in refuse mode.
 
@@ -20,30 +20,13 @@ The version file decides only whether Coconut reports the version as tested:
 
 Before 0.21.6, Hermes used calendar versions, such as 2026.9.24. Coconut treats each calendar version as older than every 0.x release.
 
-## Compatibility CI
+## Local compatibility checks
 
-`.github/workflows/hermes-compatibility.yml` has these jobs:
+Regression checks run locally. The commit hook selects small service checks for staged changes. When the Hermes
+contract changes, the agent also runs the contract and relevant native tests against the minimum and latest supported
+Hermes releases. A broad compatibility change can require every backend test file, each in its own process.
 
-- `contracts` runs every backend test file, each in its own process, on Python 3.11 without Hermes. The native tests skip there.
-- `native-kanban (Hermes <minimum>, part 1)`, `part 2`, and `part 3` check the `minimum` release.
-- `native-kanban (latest Hermes release, part 1)`, `part 2`, and `part 3` check the latest stable Hermes release.
-- `native-kanban` passes only when all six parts above pass.
-- `native-kanban (Hermes main, part 1)`, `part 2`, and `part 3` run each night against the tip of Hermes `main`.
-
-Each part installs Hermes with the official installer, as a person does, into a temporary `HERMES_HOME`. Then Coconut finds that Hermes with `hermes_runtime.find()` and runs the contract check. Then the part runs its share of the native test files under the Python of that Hermes. The three parts of a leg run at the same time. Each part has about one third of the test time. When you add a native test file, put it in the part with the least time.
-
-A failure of the nightly `main` leg is a warning in the run summary, not a failed check run. A change of Hermes `main` is not a fault of the Coconut commit.
-
-On a pull request, the `changes` job first reads the changed files. `scripts/ci_changes.py` has the rule, and `scripts/test_ci_changes.py` tests it. When each changed file is an app file that no test of these jobs reads, `contracts` and the Hermes legs do not run. Then `contracts` reports a skipped job, and `native-kanban` passes. In all other cases, all checks run:
-
-- A pull request that changes `backend/`, `hermes_plugin/`, `scripts/`, `skills/`, `docs/`, or a file outside the known app folders.
-- A pull request that changes a file in an app folder that a test reads, such as `ios/Tunnel/`.
-- A push to `main` and a manual run. The nightly run does not use the rule either.
-- A failure of the `changes` job.
-
-When a new test reads a file outside the service folders, add that file to `NEEDED` in `scripts/ci_changes.py`.
-
-When the latest release is not in `tested`, its leg prints a warning. Add that release to `tested` when its leg passes.
+GitHub runs only app release builds. There is no hosted compatibility matrix or nightly regression job.
 
 ## Run the native tests locally
 
@@ -53,13 +36,13 @@ The native tests use `backend/tests/hermes_env.py` to find Hermes:
 2. Set `COCONUT_HERMES_ROOT` to the Hermes source folder and `COCONUT_HERMES_PYTHON` to its Python. Without these variables, `hermes_env.py` uses the Hermes that `hermes_runtime` finds, but only when the tests run under the Python of that Hermes.
 3. Run each test file with that Python, for example `PYTHONPATH=backend "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_native_kanban.py`.
 
-Without a Hermes, the native tests skip. The native CI legs set `COCONUT_REQUIRE_NATIVE=1`. Then a missing Hermes stops each native test module, so no native test can skip there.
+Without a Hermes, the native tests skip. Set `COCONUT_REQUIRE_NATIVE=1` for a local compatibility check that must not skip. A missing Hermes then stops each native test module.
 
 ## Support a new Hermes release
 
-1. Wait for the latest-release leg to run on a pull request or on `main`.
-2. If the leg passes, add the release to `tested` in its own pull request.
-3. If the leg fails, fix only what the new release breaks, in its own pull request. Then add the release to `tested`.
+1. Run the contract check and relevant native tests locally against the release.
+2. If the checks pass, add the release to `tested` and commit to `main`.
+3. If a check fails, fix what the release breaks, rerun it, then add the release to `tested`.
 4. To stop the support of an old release, change `minimum` to a newer release in `tested`. Remove the older releases from `tested`.
 
 These checks require no model credentials. The tests make no network calls. Cache successful contract checks for unchanged hashes. Run them again after a source change, a Hermes change, or a new failure.

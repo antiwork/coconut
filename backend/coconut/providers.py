@@ -346,6 +346,9 @@ class HermesProvider(FixtureProvider):
         # process for this bot (work sources and session checks) must use the same logins.
         env.update(login_folders(home))
         env['COCONUT_GOOGLE_HOME'] = str(self.data_dir / 'connections' / 'google' / 'home')
+        from .github_connection import bot_environment, token_path
+        env['COCONUT_GITHUB_TOKEN_FILE'] = str(token_path(self.data_dir))
+        env = bot_environment(env, token_path(self.data_dir))
         env.update(COCONUT_DATA_DIR=str(self.data_dir), COCONUT_BOT_ID=bot_id, COCONUT_BOT_DIR=str(root))
         env.update(HERMES_HOME=str(home), TMPDIR=str(root / 'tmp'), PYTHONPATH=str(self.hermes_root), PYTHONUNBUFFERED='1', COCONUT_BROWSER_PROFILE=str(root / 'browser'), HERMES_DISABLE_TELEMETRY='1', HOMEBREW_XDG_CONFIG_HOME=str(shared_config))
         from .hermes_runtime import NO_LAZY_INSTALLS

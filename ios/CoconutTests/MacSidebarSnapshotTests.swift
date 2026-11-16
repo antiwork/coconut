@@ -14,7 +14,12 @@ final class MacSidebarSnapshotTests: XCTestCase {
         for (index, unread) in [3, 0, 1].enumerated() where index < store.bots.count {
             store.bots[index].unreadCount = unread
         }
-        if store.bots.count > 3 { store.bots[3].pinned = true }
+        if !store.bots.isEmpty { store.bots[0].pinned = true }
+        store.team = try APIJSON.decoder().decode(TeamRooms.self, from: Data(#"""
+        {"rooms": [{"room": "example", "name": "Example Team", "state": "active", "pinned": true,
+          "unread": 2, "chats": [{"id": "notices", "name": "Notices", "pinned": true,
+          "notifications": false, "unread": 3}, {"id": "design", "name": "Design", "unread": 1}]}]}
+        """#.utf8))
         let owner = store.bots.first?.id ?? ""
         let states = [("Rebase the Pages PR on main", "working"), ("Review the model picker fix", "ready"),
                       ("Wait for the TestFlight build", "waiting"), ("Fix click-drag on the Mac window", "blocked")]
@@ -23,7 +28,7 @@ final class MacSidebarSnapshotTests: XCTestCase {
                      preview: "", url: nil, createdAt: "2026-11-16T0\(index):00:00Z")
         }
         for scheme in [ColorScheme.light, .dark] {
-            let view = MacSidebar(selection: .constant(.inbox))
+            let view = MacSidebar(selection: .constant(nil))
                 .environment(store)
                 .frame(width: 280, height: 760)
                 .background(.background)

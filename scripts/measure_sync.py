@@ -30,7 +30,7 @@ def median_ms(work, runs=15):
 
 
 def fill(service):
-    bots = [service.mutate('POST', '/v1/bots', {'name': f'Bot {index + 1}'}, str(uuid4())) for index in range(len(HISTORY))]
+    bots = [service.mutate('POST', '/v1/bots', {'name': f'Agent {index + 1}'}, str(uuid4())) for index in range(len(HISTORY))]
     for bot, count in zip(bots, HISTORY):
         with service.transaction():
             for index in range(count):

@@ -870,3 +870,10 @@ class OutsideTurnPageTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class LibraryRuleTests(unittest.TestCase):
+    def test_an_unrequested_page_is_proposed_with_a_card_first(self):
+        from coconut.card_tools import LIBRARY_INSTRUCTIONS
+        self.assertIn('propose it first with coconut_suggest and wait for approval', LIBRARY_INSTRUCTIONS)
+        self.assertNotIn('on your own, without a request', LIBRARY_INSTRUCTIONS)

@@ -159,6 +159,8 @@ struct OrderedUploads<Value: Equatable>: Equatable {
 struct ComposerChip: Identifiable, Equatable {
     let id: String
     let title: String
+    /// The image of an attached photo, through the paired Mac. Nil for another file, which shows its name.
+    var image: URL? = nil
 }
 
 /// The attachments of the next message above the field. A tap on a chip removes it.
@@ -171,6 +173,23 @@ struct ComposerAttachmentChips: View {
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack {
                     ForEach(chips) { chip in
+                        if let image = chip.image {
+                            // A photo shows as itself, as in Slack and Messages, with a small remove button on it.
+                            RemotePhoto(url: image)
+                                .frame(width: 72, height: 72)
+                                .clipShape(RoundedRectangle(cornerRadius: BoardStyle.Radius.small, style: .continuous))
+                                .overlay(alignment: .topTrailing) {
+                                    Button { remove(chip.id) } label: {
+                                        Image(systemName: "xmark.circle.fill").font(.body)
+                                            .symbolRenderingMode(.palette).foregroundStyle(.white, .black.opacity(0.6))
+                                            .padding(4).contentShape(Rectangle())
+                                    }
+                                    .buttonStyle(.plain)
+                                    .accessibilityLabel("Remove attachment \(chip.title)")
+                                }
+                                .help(chip.title)
+                                .padding(.top, BoardStyle.Space.xs)
+                        } else {
                         Button { remove(chip.id) } label: {
                             Label(chip.title, systemImage: "xmark.circle.fill")
                                 .font(.footnote).padding(BoardStyle.Space.s).frame(minHeight: 44)
@@ -181,6 +200,7 @@ struct ComposerAttachmentChips: View {
                         .buttonStyle(.plain)
                         #endif
                         .accessibilityLabel("Remove attachment \(chip.title)")
+                        }
                     }
                 }
             }

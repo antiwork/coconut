@@ -3,293 +3,128 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Coconut for Hermes</title>
-<meta name="description" content="Coconut is a native iPhone app for your Hermes agents. Your Mac runs Hermes. Your phone reaches it through an end-to-end encrypted relay, with no VPN and no open port.">
-<meta property="og:title" content="Coconut for Hermes">
-<meta property="og:description" content="A native iPhone app for your Hermes agents. Chat, approve, and get notified, end to end encrypted.">
-<meta property="og:image" content="https://coconut.antiwork.com/coconut.png">
-<meta property="og:type" content="website">
+<title>Coconut</title>
+<meta name="description" content="Coconut: work with your agents and your team, on your own Mac.">
+<meta property="og:title" content="Coconut">
+<meta property="og:description" content="Work with your agents and your team, on your own Mac.">
+<meta property="og:image" content="https://workcoconut.com/coconut.png">
 <link rel="icon" type="image/png" href="/coconut.png">
 <link rel="apple-touch-icon" href="/coconut.png">
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
 <style>
-:root {
-  --bg: #fffdf8;
-  --surface: #ffffff;
-  --ink: #1b140e;
-  --muted: #6b5f55;
-  --line: #ece4d8;
-  --husk: #8a4b1f;
-  --husk-deep: #5c3012;
-  --gold: #fbbf24;
-  --gold-ink: #7a5000;
-  --code-bg: #1b140e;
-  --code-ink: #f6ecd9;
-  --radius: 16px;
-}
-@media (prefers-color-scheme: dark) {
-  :root:not([data-theme="light"]) {
-    --bg: #110d0a;
-    --surface: #1b1510;
-    --ink: #f6ecd9;
-    --muted: #b9a996;
-    --line: #2d2219;
-    --husk: #d9865a;
-    --husk-deep: #f0b58e;
-    --gold-ink: #fbbf24;
-    --code-bg: #060403;
-    --code-ink: #f6ecd9;
+  * { box-sizing: border-box; margin: 0; }
+  html, body { height: 100%; overflow: hidden; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Helvetica Neue", sans-serif;
+    background: linear-gradient(#86cff2, #e9f8ff 72%);
+    color: #3b2614;
   }
-}
-:root[data-theme="dark"] {
-  --bg: #110d0a;
-  --surface: #1b1510;
-  --ink: #f6ecd9;
-  --muted: #b9a996;
-  --line: #2d2219;
-  --husk: #d9865a;
-  --husk-deep: #f0b58e;
-  --gold-ink: #fbbf24;
-  --code-bg: #060403;
-  --code-ink: #f6ecd9;
-}
-* { box-sizing: border-box; }
-html { scroll-behavior: smooth; }
-body {
-  margin: 0;
-  background: var(--bg);
-  color: var(--ink);
-  font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-  font-size: 17px;
-  line-height: 1.55;
-  -webkit-font-smoothing: antialiased;
-}
-a { color: var(--husk); text-decoration: none; }
-a:hover { text-decoration: underline; }
-.wrap { max-width: 1040px; margin: 0 auto; padding: 0 16px; }
-header {
-  display: flex; align-items: center; justify-content: space-between;
-  padding: 20px 0;
-}
-.brand { display: flex; align-items: center; gap: 10px; font-weight: 600; color: var(--ink); }
-.brand img { width: 32px; height: 32px; }
-nav { display: flex; gap: 22px; font-size: 15px; font-weight: 500; }
-nav a { color: var(--muted); }
-nav a:hover { color: var(--ink); text-decoration: none; }
-.hero {
-  display: grid; grid-template-columns: 1.15fr 0.85fr; gap: 40px; align-items: center;
-  padding: 56px 0 72px;
-}
-.eyebrow {
-  display: inline-flex; align-items: center; gap: 8px;
-  font-size: 13px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase;
-  color: var(--gold-ink); background: color-mix(in srgb, var(--gold) 18%, transparent);
-  padding: 6px 12px; border-radius: 999px; margin-bottom: 20px;
-}
-.eyebrow::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--gold); }
-h1 {
-  font-size: clamp(38px, 6vw, 60px); line-height: 1.04; letter-spacing: -0.03em;
-  margin: 0 0 20px; font-weight: 700;
-}
-h1 em { font-style: normal; color: var(--husk); }
-.lede { font-size: 20px; color: var(--muted); margin: 0 0 32px; max-width: 34ch; }
-.cta { display: flex; gap: 12px; flex-wrap: wrap; }
-.btn {
-  display: inline-flex; align-items: center; gap: 8px;
-  padding: 13px 20px; border-radius: 12px; font-weight: 600; font-size: 16px;
-  border: 1px solid transparent; transition: transform .12s ease, background .12s ease;
-}
-.btn:hover { text-decoration: none; transform: translateY(-1px); }
-.btn-primary { background: var(--ink); color: var(--bg); }
-.btn-secondary { background: var(--surface); color: var(--ink); border-color: var(--line); }
-.hero-art { display: flex; justify-content: center; }
-.hero-art img {
-  width: min(100%, 360px); height: auto;
-  filter: drop-shadow(0 30px 40px rgba(60, 30, 10, .25));
-  animation: float 6s ease-in-out infinite;
-}
-@keyframes float { 0%, 100% { transform: translateY(0) rotate(-2deg); } 50% { transform: translateY(-12px) rotate(1deg); } }
-@media (prefers-reduced-motion: reduce) { .hero-art img { animation: none; } }
-section { padding: 56px 0; border-top: 1px solid var(--line); }
-h2 { font-size: clamp(26px, 3.6vw, 34px); letter-spacing: -0.02em; margin: 0 0 10px; }
-.sub { color: var(--muted); margin: 0 0 32px; max-width: 60ch; }
-.grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
-.card {
-  background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius);
-  padding: 22px;
-}
-.card .icon {
-  width: 38px; height: 38px; border-radius: 10px; display: grid; place-items: center;
-  background: color-mix(in srgb, var(--gold) 22%, transparent); color: var(--gold-ink);
-  margin-bottom: 14px;
-}
-.card h3 { margin: 0 0 6px; font-size: 17px; }
-.card p { margin: 0; color: var(--muted); font-size: 15px; }
-.steps { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; counter-reset: step; }
-.step { position: relative; padding: 22px 22px 22px 22px; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); }
-.step::before {
-  counter-increment: step; content: counter(step);
-  display: inline-grid; place-items: center; width: 30px; height: 30px; border-radius: 50%;
-  background: var(--husk); color: #fff; font-weight: 700; font-size: 14px; margin-bottom: 14px;
-}
-.step h3 { margin: 0 0 6px; font-size: 17px; }
-.step p { margin: 0; color: var(--muted); font-size: 15px; }
-pre {
-  margin: 20px 0 0; background: var(--code-bg); color: var(--code-ink);
-  padding: 16px 18px; border-radius: 12px; overflow-x: auto;
-  font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 14px; line-height: 1.6;
-}
-pre .c { color: #a89580; }
-.flow {
-  display: grid; grid-template-columns: 1fr auto 1fr auto 1fr; gap: 12px; align-items: center;
-  background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 24px;
-}
-.node { text-align: center; }
-.node strong { display: block; font-size: 16px; margin-bottom: 4px; }
-.node span { color: var(--muted); font-size: 14px; }
-.link { height: 2px; background: repeating-linear-gradient(90deg, var(--gold) 0 8px, transparent 8px 14px); min-width: 48px; position: relative; }
-.link::after {
-  content: "encrypted"; position: absolute; top: 8px; left: 50%; transform: translateX(-50%);
-  font-size: 11px; color: var(--gold-ink); letter-spacing: .06em; text-transform: uppercase; white-space: nowrap;
-}
-ul.plain { list-style: none; padding: 0; margin: 24px 0 0; display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px 24px; }
-ul.plain li { padding-left: 26px; position: relative; color: var(--muted); font-size: 15px; }
-ul.plain li::before { content: "✓"; position: absolute; left: 0; color: var(--husk); font-weight: 700; }
-footer { border-top: 1px solid var(--line); padding: 32px 0 48px; color: var(--muted); font-size: 14px; display: flex; justify-content: space-between; flex-wrap: wrap; gap: 12px; }
-footer a { color: var(--muted); }
-@media (max-width: 820px) {
-  .hero { grid-template-columns: 1fr; padding: 32px 0 48px; }
-  .hero-art { order: -1; }
-  .hero-art img { width: min(60%, 240px); }
-  .grid, .steps { grid-template-columns: 1fr; }
-  .flow { grid-template-columns: 1fr; }
-  .link { width: 2px; min-width: 0; height: 36px; margin: 0 auto; background: repeating-linear-gradient(180deg, var(--gold) 0 8px, transparent 8px 14px); }
-  .link::after { top: 50%; left: 14px; transform: translateY(-50%); }
-  ul.plain { grid-template-columns: 1fr; }
-  nav { display: none; }
-}
+  header { position: absolute; top: 9vh; width: 100%; text-align: center; z-index: 5; padding: 0 16px; }
+  h1 { font-size: clamp(44px, 7vw, 78px); font-weight: 700; letter-spacing: -0.03em; }
+  header p { margin-top: 6px; font-size: clamp(15px, 2vw, 19px); opacity: .75; }
+  header a { color: inherit; }
+  .sun { position: absolute; top: 7vh; right: 12vw; width: 96px; height: 96px; border-radius: 50%;
+         background: radial-gradient(#fff7cc, #ffd767 58%, rgba(255, 215, 103, 0) 72%); }
+
+  .scene { position: absolute; left: 50%; bottom: 0; width: min(900px, 100vw); height: 100%; transform: translateX(-50%); }
+  .island { position: absolute; left: 50%; bottom: 12vh; width: 340px; height: 74px; transform: translateX(-50%);
+            border-radius: 50% 50% 0 0 / 100% 100% 0 0;
+            background: linear-gradient(#f4d79f, #e0b872); z-index: 2; }
+  .tree { position: absolute; left: 50%; bottom: calc(12vh + 52px); width: 260px; transform: translateX(-36%); z-index: 3; }
+  .tree svg { display: block; width: 100%; height: auto; overflow: visible; }
+  .fronds { transform-origin: 112px 64px; animation: sway 5s ease-in-out infinite; }
+  @keyframes sway { 50% { transform: rotate(3deg); } }
+
+  /* The coconut of the app icon, cut out of its white square. */
+  .coconut { position: absolute; left: 0; top: 0; width: 52px; height: 52px; z-index: 4;
+             pointer-events: none; will-change: transform, opacity; }
+
+  .sea { position: absolute; left: 0; right: 0; bottom: 0; height: 17vh; z-index: 6; overflow: hidden; }
+  .wave { position: absolute; left: 0; width: 200%; height: 100%; background-repeat: repeat-x;
+          background-size: 50% 100%; animation: drift linear infinite; }
+  .wave.back  { bottom: 22px; opacity: .55; animation-duration: 14s; animation-direction: reverse;
+                background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 800 100' preserveAspectRatio='none'%3E%3Cpath d='M0 40 Q100 10 200 40 T400 40 T600 40 T800 40 V100 H0Z' fill='%234cb6e6'/%3E%3C/svg%3E"); }
+  .wave.mid   { bottom: 10px; opacity: .85; animation-duration: 10s;
+                background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 800 100' preserveAspectRatio='none'%3E%3Cpath d='M0 45 Q100 20 200 45 T400 45 T600 45 T800 45 V100 H0Z' fill='%232c9fd6'/%3E%3C/svg%3E"); }
+  .wave.front { bottom: 0; animation-duration: 7s; animation-direction: reverse;
+                background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 800 100' preserveAspectRatio='none'%3E%3Cpath d='M0 50 Q100 28 200 50 T400 50 T600 50 T800 50 V100 H0Z' fill='%23168bc4'/%3E%3C/svg%3E"); }
+  @keyframes drift { to { transform: translateX(-50%); } }
+
+  @media (prefers-reduced-motion: reduce) { .wave, .fronds { animation: none; } }
 </style>
 </head>
 <body>
-<div class="wrap">
+  <div class="sun" aria-hidden="true"></div>
   <header>
-    <a class="brand" href="/"><img src="/coconut.png" alt="" width="32" height="32"> Coconut</a>
-    <nav>
-      <a href="#how">How it works</a>
-      <a href="#setup">Setup</a>
-      <a href="#privacy">Privacy</a>
-      <a href="https://github.com/antiwork/coconut">GitHub</a>
-    </nav>
+    <h1>Coconut</h1>
+    <p>Your agents and your team, on your own Mac. <a href="https://github.com/antiwork/coconut">GitHub</a></p>
   </header>
 
-  <main>
-    <div class="hero">
-      <div>
-        <div class="eyebrow">Private beta</div>
-        <h1>Your <em>Hermes</em> agents,<br>in your pocket.</h1>
-        <p class="lede">Coconut is a native iPhone app for the Hermes agents running on your Mac. Chat, approve, and get notified. No VPN, no open port.</p>
-        <div class="cta">
-          <a class="btn btn-primary" href="#setup">Set it up</a>
-          <a class="btn btn-secondary" href="https://github.com/antiwork/coconut">View on GitHub</a>
-        </div>
-      </div>
-      <div class="hero-art"><img src="/coconut.png" alt="Coconut app icon" width="360" height="360"></div>
+  <div class="scene" id="scene" aria-hidden="true">
+    <div class="tree">
+      <svg viewBox="0 0 240 300">
+        <path d="M118 300 C112 230 100 160 112 64" stroke="#8a5a2b" stroke-width="16" fill="none" stroke-linecap="round"/>
+        <path d="M118 300 C112 230 100 160 112 64" stroke="#a97039" stroke-width="16" fill="none" stroke-dasharray="3 14"/>
+        <g class="fronds">
+          <path d="M112 64 C80 30 40 30 6 58 C44 44 78 50 112 70Z" fill="#3f9b4a"/>
+          <path d="M112 64 C140 26 186 24 232 52 C190 42 150 50 112 70Z" fill="#3f9b4a"/>
+          <path d="M112 64 C96 20 70 0 34 2 C66 14 90 36 108 68Z" fill="#4fb35a"/>
+          <path d="M112 64 C132 18 162 2 200 6 C166 18 136 38 116 68Z" fill="#4fb35a"/>
+          <path d="M112 64 C90 70 60 96 46 132 C70 104 92 86 114 72Z" fill="#358a3f"/>
+          <path d="M112 64 C138 72 168 96 182 132 C158 104 134 86 110 72Z" fill="#358a3f"/>
+        </g>
+      </svg>
     </div>
+    <div class="island"></div>
+  </div>
 
-    <section id="features">
-      <h2>Everything your agents do, from your phone.</h2>
-      <p class="sub">Each bot in Coconut is one of your Hermes profiles, with its own instructions, memory, skills, and routines. Coconut keeps the Hermes source unchanged.</p>
-      <div class="grid">
-        <div class="card">
-          <div class="icon">💬</div>
-          <h3>Chat with bots</h3>
-          <p>Send messages, attach files, and follow a bot's progress as it works. Tag other bots with @ and inspect their exchanges.</p>
-        </div>
-        <div class="card">
-          <div class="icon">✅</div>
-          <h3>One inbox for decisions</h3>
-          <p>Answer pending approvals, questions, and decisions from a single inbox, without opening a terminal.</p>
-        </div>
-        <div class="card">
-          <div class="icon">🔔</div>
-          <h3>Encrypted notifications</h3>
-          <p>Message previews and task links arrive as push notifications. They are encrypted on your Mac before they leave it.</p>
-        </div>
-        <div class="card">
-          <div class="icon">🕒</div>
-          <h3>Routines</h3>
-          <p>Scheduled work runs in your Hermes gateway as Coconut turns, so the Mac keeps working while your phone is asleep.</p>
-        </div>
-        <div class="card">
-          <div class="icon">⚙️</div>
-          <h3>Native settings</h3>
-          <p>The default model, approvals, and MCP servers are those of your Hermes profile. Change them in the app or with the Hermes CLI.</p>
-        </div>
-        <div class="card">
-          <div class="icon">🥥</div>
-          <h3>Hermes knows Coconut</h3>
-          <p>Coconut ships a Hermes skill, so your agent can update, pair, and repair Coconut by itself.</p>
-        </div>
-      </div>
-    </section>
+  <div class="sea" aria-hidden="true">
+    <div class="wave back"></div>
+    <div class="wave mid"></div>
+    <div class="wave front"></div>
+  </div>
 
-    <section id="how">
-      <h2>How it works</h2>
-      <p class="sub">Your Mac runs Hermes and Coconut and stores the work. Your iPhone reaches the Mac through a shared Cloudflare relay, end to end encrypted.</p>
-      <div class="flow">
-        <div class="node"><strong>iPhone</strong><span>Native SwiftUI app</span></div>
-        <div class="link"></div>
-        <div class="node"><strong>Relay</strong><span>Forwards ciphertext only</span></div>
-        <div class="link"></div>
-        <div class="node"><strong>Your Mac</strong><span>Hermes + Coconut, loopback only</span></div>
-      </div>
-      <ul class="plain">
-        <li>Coconut listens only on 127.0.0.1. The Mac opens no port.</li>
-        <li>A sidecar keeps an outgoing connection to the relay. No VPN.</li>
-        <li>The relay sees route IDs, timing, and sizes. Never content.</li>
-        <li>Notifications ride the same relay, so you need no Apple push keys.</li>
-      </ul>
-    </section>
+<script>
+  // Coconuts fall from the crown of the tree, bounce once on the sand, and roll into the sea.
+  const scene = document.getElementById('scene');
+  const reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
 
-    <section id="setup">
-      <h2>Setup is one message.</h2>
-      <p class="sub">If you already use Hermes, onboarding is one screen on the iPhone. It shows a single command to send to your Hermes agent, for example in Telegram.</p>
-      <div class="steps">
-        <div class="step">
-          <h3>Install the iPhone app</h3>
-          <p>Coconut ships through TestFlight. The app opens onboarding on first launch.</p>
-        </div>
-        <div class="step">
-          <h3>Send one message to Hermes</h3>
-          <p>Paste the command from the onboarding screen into any chat with your Hermes agent. It installs Coconut.app on the Mac.</p>
-        </div>
-        <div class="step">
-          <h3>Pair</h3>
-          <p>The Mac seals a setup for your iPhone with a one-time code. The phone opens it and pairs by itself.</p>
-        </div>
-      </div>
-<pre><span class="c"># The message the iPhone shows. Hermes runs it on the Mac.</span>
-curl -fsSL https://coconut-updates.gumroad.workers.dev/install | bash -s &lt;code&gt;</pre>
-    </section>
+  function drop() {
+    const box = scene.getBoundingClientRect();
+    const tree = scene.querySelector('.tree').getBoundingClientRect();
+    const island = scene.querySelector('.island').getBoundingClientRect();
+    const sea = document.querySelector('.sea').getBoundingClientRect();
+    const nut = document.createElement('img');
+    nut.src = '/coconut-small.png';
+    nut.alt = '';
+    nut.className = 'coconut';
+    scene.appendChild(nut);
 
-    <section id="privacy">
-      <h2>Your Mac keeps the work.</h2>
-      <p class="sub">Coconut runs on the Hermes you already use. It does not install its own copy. Bots are Hermes profiles, so a bot in Coconut and <code>hermes -p name</code> in Terminal are the same agent.</p>
-      <ul class="plain">
-        <li>Pairing uses Noise IKpsk2 with a one-time secret. Sessions use Noise IK.</li>
-        <li>Only the paired Mac can finish a handshake. Only paired iPhones are answered.</li>
-        <li>Model keys stay in Hermes. Coconut never prints a key.</li>
-        <li>Uninstall removes Coconut's data. Your Hermes, profiles, and memories stay.</li>
-      </ul>
-    </section>
-  </main>
+    let x = tree.left - box.left + tree.width * (0.36 + Math.random() * 0.18);
+    let y = tree.top - box.top + tree.height * 0.18;
+    const ground = island.top - box.top - 34;
+    const side = Math.random() < 0.5 ? -1 : 1;
+    const shore = island.left - box.left + (side < 0 ? -30 : island.width + 30);
+    const surface = sea.top - box.top + sea.height * 0.35;
+    let vx = side * (0.3 + Math.random() * 0.5), vy = 0, spin = Math.random() * 360, landed = false;
 
-  <footer>
-    <div>Coconut is a thin client over <a href="https://github.com/NousResearch/hermes-agent">Hermes</a>. Not affiliated with Nous Research.</div>
-    <div>Made by <a href="https://antiwork.com">Antiwork</a> · <a href="https://github.com/antiwork/coconut">Source</a></div>
-  </footer>
-</div>
+    function step() {
+      vy += 0.45;
+      x += vx; y += vy; spin += vx * 5;
+      if (!landed && y >= ground) {
+        y = ground; vy = -vy * 0.35; vx = (shore - x) / 45; landed = true;
+      }
+      const fade = y > surface ? Math.max(0, 1 - (y - surface) / 30) : 1;
+      nut.style.opacity = fade;
+      nut.style.transform = `translate(${x - 26}px, ${y}px) rotate(${spin}deg)`;
+      if (fade > 0) requestAnimationFrame(step); else nut.remove();
+    }
+    requestAnimationFrame(step);
+  }
+
+  if (!reduced) {
+    setTimeout(drop, 500);
+    setInterval(() => { if (!document.hidden) drop(); }, 2000);
+  }
+</script>
 </body>
 </html>

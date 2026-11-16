@@ -50,6 +50,9 @@ struct TeamRoom: Decodable, Identifiable, Equatable, Sendable {
     /// Whether a new message of the team notifies this phone. It is a choice of the person on this Mac. A Mac for a
     /// team only and an older service send none, and the Team screen then has no switch.
     var notifications: Bool? = nil
+    /// True when this person pinned the Team chat on this Mac (TeamChatPin). A Mac for a team only and an older service
+    /// send none, and the row then has no action "Star".
+    var pinned: Bool? = nil
     /// The direct chats of this person in the team, newest first. Only a service that serves direct messages sends it,
     /// for an app that asks with the header `X-Coconut-Team: direct`.
     var directs: [TeamDirect]? = nil
@@ -262,7 +265,12 @@ enum TeamLinkCheck: Equatable {
         }
     }
 
-    static func isLink(_ url: URL) -> Bool { url.scheme?.lowercased() == "coconut" && url.host?.lowercased() == "team" }
+    static func isLink(_ url: URL) -> Bool {
+        if url.scheme?.lowercased() == "coconut" { return url.host?.lowercased() == "team" }
+        // The web form of the same invite, which the system opens in the app through the associated domain.
+        return url.scheme?.lowercased() == "https" && url.host?.lowercased() == TeamLog.webHost
+            && url.path.hasPrefix(TeamLog.webPath) && url.path.count > TeamLog.webPath.count
+    }
 }
 
 /// The pairing pages on screen: the first run, "Pair with your Mac" in Settings, and the Mac window. Each page counts
