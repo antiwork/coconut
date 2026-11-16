@@ -66,6 +66,7 @@ struct HomeLaunchView: View {
                                     .padding(.vertical, BoardStyle.Space.m)
                                     .background(BoardStyle.paper)
                                     .contentShape(Rectangle())
+                                    .modifier(TeamChatMuteMenu(item: item))
                             }
                                 .buttonStyle(HomePressStyle())
                                 .accessibilityIdentifier(Self.identifier(chat))

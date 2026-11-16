@@ -166,9 +166,6 @@ struct TeamRoomView: View {
     @State private var naming: TeamChatNaming?
     /// The chat that the confirmation of a delete asks about.
     @State private var deletingChat: TeamNamedChat?
-    /// The new choice of each named chat whose request to mute or unmute runs now (TeamChatMute.applying). The row
-    /// shows it at once, and a second tap waits for the answer of the Mac.
-    @State private var muteChoices: [String: Bool] = [:]
 
     private var room: TeamRoom? { store.team?.rooms.first { $0.room == roomId } }
 
@@ -176,7 +173,7 @@ struct TeamRoomView: View {
         Group {
             if let room {
                 // A choice to mute shows at once, while its request runs.
-                Form { sections(TeamChatMute.applying(muteChoices, to: room)) }
+                Form { sections(TeamChatMute.applying(store.teamChatMuteChoices, to: room)) }
                     .teamForm()
                     .disabled(busy)
                     .refreshable { await store.loadTeam() }
@@ -300,7 +297,8 @@ struct TeamRoomView: View {
                 chatRow(chat, in: room)
                     .modifier(TeamChatActions(
                         manages: manages, mute: TeamChatMute.action(chat, in: room).map { label in
-                            TeamChatActions.Mute(label: label, symbol: TeamChatMute.symbol(chat)) {
+                            TeamChatActions.Mute(label: label, symbol: TeamChatMute.symbol(chat),
+                                                 waits: TeamChatMute.waits(chat.id, store.teamChatMuteChoices)) {
                                 setMuted(chat, in: room)
                             }
                         },
@@ -458,17 +456,13 @@ struct TeamRoomView: View {
         }
     }
 
-    /// Mutes or unmutes a named chat, as the switch of the team saves its choice: the row shows the new state at once.
-    /// Then it shows the state of the Mac: the new one after a success, and the old one after a failure, with the error
-    /// in the banner of the screen.
+    /// Mutes or unmutes a named chat, as the switch of the team saves its choice: the row shows the new state at once
+    /// (AppStore.teamChatMuteChoices), and the action of the chat waits. Then the row shows the state of the Mac: the
+    /// new one after a success, and the old one after a failure, with the error in the banner of the screen.
     private func setMuted(_ chat: TeamNamedChat, in room: TeamRoom) {
-        guard let enabled = chat.notifications, muteChoices[chat.id] == nil else { return }
-        muteChoices[chat.id] = !enabled
+        guard let enabled = chat.notifications else { return }
         store.error = nil
-        Task {
-            await store.setTeamChatNotifications(room.room, chat: chat.id, enabled: !enabled)
-            muteChoices[chat.id] = nil
-        }
+        Task { await store.setTeamChatNotifications(room.room, chat: chat.id, enabled: !enabled) }
     }
 
     /// One action at a time. The form stays disabled until the Mac answers.
@@ -531,6 +525,8 @@ private struct TeamChatActions: ViewModifier {
     struct Mute {
         let label: String
         let symbol: String
+        /// A request of this chat runs: the action waits for it.
+        let waits: Bool
         let action: () -> Void
     }
 
@@ -543,17 +539,23 @@ private struct TeamChatActions: ViewModifier {
         if manages || mute != nil {
             content
                 #if os(iOS)
+                // Small buttons with a symbol only, as in Mail and Messages, so the row keeps the name of the chat.
+                // VoiceOver reads the title of each label. Only Delete is red. The other buttons have the neutral
+                // gray of a swipe action: without a tint, the tint of the app draws white on white.
                 .swipeActions(edge: .trailing, allowsFullSwipe: false) {
                     if manages {
                         // No destructive role: that role takes the row away at once, before the confirmation.
-                        Button("Delete", action: delete).tint(.red)
+                        Button(action: delete) { Label("Delete", systemImage: "trash").labelStyle(.iconOnly) }
+                            .tint(.red)
                             .accessibilityIdentifier("team-chat-delete-swipe")
-                        // The neutral tint of a swipe action. Without it, the tint of the app draws white on white.
-                        Button("Rename", action: rename).tint(.gray)
+                        Button(action: rename) { Label("Rename", systemImage: "pencil").labelStyle(.iconOnly) }
+                            .tint(.gray)
                             .accessibilityIdentifier("team-chat-rename-swipe")
                     }
                     if let mute {
-                        Button(mute.label, action: mute.action).tint(.indigo)
+                        Button(action: mute.action) { Label(mute.label, systemImage: mute.symbol).labelStyle(.iconOnly) }
+                            .tint(.gray)
+                            .disabled(mute.waits)
                             .accessibilityIdentifier("team-chat-mute-swipe")
                     }
                 }
@@ -561,6 +563,7 @@ private struct TeamChatActions: ViewModifier {
                 .contextMenu {
                     if let mute {
                         Button(mute.label, systemImage: mute.symbol, action: mute.action)
+                            .disabled(mute.waits)
                             .accessibilityIdentifier("team-chat-mute-menu")
                     }
                     if manages {

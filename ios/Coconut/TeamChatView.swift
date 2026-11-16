@@ -1530,6 +1530,29 @@ struct DirectPeerFace: View {
     }
 }
 
+/// The menu of a row of a named chat in the Chats list and the Mac sidebar, as WhatsApp has it: "Mute" or "Unmute"
+/// (TeamChatMute.listAction). Each other row keeps its plain form. A failure shows in the banner of the screen.
+struct TeamChatMuteMenu: ViewModifier {
+    @Environment(AppStore.self) private var store
+    let item: ChatListItem
+
+    func body(content: Content) -> some View {
+        if let action = TeamChatMute.listAction(item) {
+            content.contextMenu {
+                Button(action.label, systemImage: action.symbol) {
+                    store.error = nil
+                    Task { await store.setTeamChatNotifications(action.room, chat: action.chat, enabled: action.enabled) }
+                }
+                // One request of a chat at a time.
+                .disabled(TeamChatMute.waits(action.chat, store.teamChatMuteChoices))
+                .accessibilityIdentifier("chat-row-mute-menu")
+            }
+        } else {
+            content
+        }
+    }
+}
+
 /// The row of a chat of a team in the Chats list and the Mac sidebar: a team, a direct chat, or a direct chat with a
 /// bot.
 struct PeopleRow: View {

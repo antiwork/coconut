@@ -464,10 +464,12 @@ final class TeamScreenTests: XCTestCase {
             XCTAssertTrue(muted)
             XCTAssertEqual(server.muteRequests, ["PUT /v1/team/rooms/r1/chats/c1/notifications {\"enabled\":false}"])
             XCTAssertEqual(store.team?.rooms.first?.namedChats.first?.notifications, false)
+            XCTAssertEqual(store.teamChatMuteChoices, [:], "The choice goes when its request ends.")
             server.refuseMutes()
             let unmuted = await store.setTeamChatNotifications("r1", chat: "c1", enabled: true)
             XCTAssertFalse(unmuted)
             XCTAssertEqual(store.error, "This chat is no longer in the team.")
+            XCTAssertEqual(store.teamChatMuteChoices, [:])
             XCTAssertEqual(store.team?.rooms.first?.namedChats.first?.notifications, false)
         }
         #endif

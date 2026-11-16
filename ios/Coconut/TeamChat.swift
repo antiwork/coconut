@@ -139,6 +139,29 @@ enum TeamChatMute {
     /// What VoiceOver says for the mark.
     static let spoken = "Muted"
 
+    /// True while a request to mute or unmute `chat` runs. Its action then waits, as the switch of the team waits.
+    static func waits(_ chat: String, _ choices: [String: Bool]) -> Bool { choices[chat] != nil }
+
+    /// The item "Mute" or "Unmute" of the menu of a row in the Chats list and the Mac sidebar.
+    struct ListAction: Equatable {
+        let room: String
+        let chat: String
+        let label: String
+        let symbol: String
+        /// The value that the request sends: true unmutes.
+        let enabled: Bool
+    }
+
+    /// The item of the menu of a row of the Chats list, or nil. Only a row of a named chat has it, by the rule of the
+    /// Team screen (`action`). The Team chat, a direct chat and an agent have none.
+    static func listAction(_ item: ChatListItem) -> ListAction? {
+        guard case .team(let room) = item, let chat = room.shownChat, let label = action(chat, in: room) else {
+            return nil
+        }
+        return ListAction(room: room.room, chat: chat.id, label: label, symbol: symbol(chat),
+                          enabled: chat.notifications == false)
+    }
+
     /// The room as the Team screen shows it while requests run: each chat in `choices` has the new choice of the
     /// person (`notifications`) at once. When a request ends, its choice goes, and the room of the Mac shows again:
     /// the new state after a success, the old state after a failure.

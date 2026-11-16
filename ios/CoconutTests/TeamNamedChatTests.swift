@@ -178,6 +178,48 @@ final class TeamNamedChatTests: XCTestCase {
         XCTAssertEqual(TeamChatMute.mark, "bell.slash")
     }
 
+    /// Chat A waits while chat B starts and ends: the choice of A stays until its own request ends, and only the
+    /// action of a chat that waits is off.
+    func testEachChatKeepsItsOwnChoiceAndOnlyItsActionWaits() throws {
+        var room = try XCTUnwrap(try rooms().rooms.first)
+        room.chats?[0].notifications = true
+        room.chats?[1].notifications = true
+        var choices = [design: false, launch: false]
+        XCTAssertEqual(TeamChatMute.applying(choices, to: room).namedChats.map(\.notifications), [false, false])
+        XCTAssertTrue(TeamChatMute.waits(design, choices))
+        XCTAssertTrue(TeamChatMute.waits(launch, choices))
+        // The request of Launch ends, and its answer is in the list. Design still waits and still shows its choice.
+        choices[launch] = nil
+        room.chats?[1].notifications = false
+        XCTAssertEqual(TeamChatMute.applying(choices, to: room).namedChats.map(\.notifications), [false, false])
+        XCTAssertTrue(TeamChatMute.waits(design, choices))
+        XCTAssertFalse(TeamChatMute.waits(launch, choices))
+        // The answer of Design changes only Design in the list as it is now.
+        let answered = TeamChatMute.applying([design: false], to: room)
+        XCTAssertEqual(answered.namedChats.map(\.notifications), [false, false])
+        XCTAssertEqual(answered.notifications, room.notifications, "The switch of the team does not change.")
+    }
+
+    func testOnlyTheRowOfANamedChatInTheListHasMuteInItsMenu() throws {
+        var room = try XCTUnwrap(try rooms().rooms.first)
+        let design = try XCTUnwrap(room.inChat(self.design))
+        XCTAssertNil(TeamChatMute.listAction(.team(design)), "An older service shows no item.")
+        room.chats?[0].notifications = true
+        XCTAssertEqual(TeamChatMute.listAction(.team(try XCTUnwrap(room.inChat(self.design)))),
+                       TeamChatMute.ListAction(room: self.room, chat: self.design, label: "Mute", symbol: "bell.slash",
+                                               enabled: false))
+        room.chats?[0].notifications = false
+        XCTAssertEqual(TeamChatMute.listAction(.team(try XCTUnwrap(room.inChat(self.design)))),
+                       TeamChatMute.ListAction(room: self.room, chat: self.design, label: "Unmute", symbol: "bell",
+                                               enabled: true))
+        XCTAssertNil(TeamChatMute.listAction(.team(room)), "The Team chat has no item.")
+        XCTAssertNil(TeamChatMute.listAction(.direct(room, TeamDirect(member: "m-grace"))), "A direct chat has none.")
+        XCTAssertNil(TeamChatMute.listAction(.botDirect(room, TeamBotDirect(bot: "t-r-e"))), "An agent has none.")
+        room.state = "gone"
+        XCTAssertNil(TeamChatMute.listAction(.team(try XCTUnwrap(room.inChat(self.design)))),
+                     "A team that went has no item.")
+    }
+
     func testTheFooterOfTheSwitchNamesAMutedChat() throws {
         var room = try XCTUnwrap(try rooms().rooms.first)
         XCTAssertEqual(TeamNotificationFooter.text(enabled: true, room: room), TeamNotificationFooter.on)

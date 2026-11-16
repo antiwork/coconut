@@ -311,6 +311,7 @@ struct MacSidebar: View {
                             PeopleRow(item: item, avatarSize: 32)
                                 .padding(.vertical, BoardStyle.Space.xs)
                                 .tag(MacSelection.team(chat))
+                                .modifier(TeamChatMuteMenu(item: item))
                                 .accessibilityIdentifier(chat.member.map { "sidebar-direct-" + $0 }
                                                          ?? "sidebar-team-" + chat.room + (chat.chat.map { "-" + $0 } ?? ""))
                         }
