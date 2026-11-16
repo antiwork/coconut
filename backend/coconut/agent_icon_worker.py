@@ -7,10 +7,14 @@ from __future__ import annotations
 
 import json
 import sys
+from pathlib import Path
 
-PROMPT = ('A single app icon for an AI agent called "{name}"{role}. One bold, simple object that stands for what it '
-          'does, centered on a soft, plain, warm background, flat illustration with gentle shading, like a modern '
-          'macOS app icon. No text, no letters, no logos, no people, no border.')
+# The fruit faces of Coconut, as one sprite sheet: the style of every agent. They are inspiration, never the answer.
+SPRITES = Path(__file__).with_name('assets') / 'agent-sprites.png'
+PROMPT = ('A new character for an AI agent called "{name}"{role}, in exactly the style of the attached sprite sheet: a '
+          'flat, friendly character with the same small dot eyes, simple smile, soft muted colors, gentle shapes and '
+          'no outlines. Do not copy any character of the sheet. Invent a new one whose shape or props show what this '
+          'agent does. One character, centered, on a plain white background, square. No text, no letters, no logos.')
 
 
 def provider():
@@ -41,7 +45,12 @@ def main() -> None:
         return
     role = str(request.get('role') or '').strip()
     prompt = PROMPT.format(name=str(request.get('name') or 'Agent')[:80], role=f', which {role[:160]}' if role else '')
-    result = backend.generate(prompt, aspect_ratio='square')
+    references = [str(SPRITES)] if SPRITES.is_file() else []
+    try:
+        result = backend.generate(prompt, aspect_ratio='square', reference_image_urls=references)
+    except TypeError:
+        # A backend without reference images still gets the style in words.
+        result = backend.generate(prompt, aspect_ratio='square')
     image = result.get('image') if isinstance(result, dict) else None
     if not result.get('success') or not isinstance(image, str) or image.startswith(('http://', 'https://')):
         print(json.dumps({'error': str(result.get('error_type') or 'failed')[:80]}))

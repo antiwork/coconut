@@ -1,7 +1,8 @@
 """The icon of a new agent: an image that the image backend of Hermes makes from the agent's name and role.
 
 A new agent shows its fruit face at once. A thread then asks agent_icon_worker.py, in the agent's Hermes profile, for
-an icon. The service keeps the image as an attachment of the agent and sets `avatar_image` to its ID, so the apps
+an icon: a new character in the style of the fruit faces (assets/agent-sprites.png, made by AgentSpriteSheetTests), not
+one of them. The service keeps the image as an attachment of the agent and sets `avatar_image` to its ID, so the apps
 show it in place of the fruit (`coconut-file://<id>`). Without an image backend, or after an error, the fruit stays.
 """
 from __future__ import annotations
