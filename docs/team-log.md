@@ -1295,7 +1295,7 @@ A Hermes cron job of an agent with its chat connected can deliver its result int
 | A named chat | `coconut:<bot ID>:team:<room ID>:<chat ID>` |
 | The direct chat with a person | `coconut:<bot ID>:team:<room ID>:direct:<member ID>` |
 
-The bot ID is the ID of the agent on this Mac (`GET /v1/team/bots`), and the chat ID is the entry ID of the named chat. Hermes gives the whole value after `coconut:` to the plugin as the chat ID. The message is a send outside a turn, with the rules of rule 5 of [An agent answers](#an-agent-answers) and rule 10 of [The Mac for a team only](#the-mac-for-a-team-only).
+`<bot ID>` is the ID of the agent on this Mac (`GET /v1/team/bots`), and `<chat ID>` is the entry ID of the named chat. Hermes gives the whole value after `coconut:` to the plugin as the chat ID. The message is a send outside a turn, so rule 5 of [An agent answers](#an-agent-answers) and rule 10 of [The Mac for a team only](#the-mac-for-a-team-only) apply.
 
 A cron run can deliver in a process without the gateway. There the plugin sends with its `standalone_sender_fn` (`hermes_plugin/coconut/team.py`, `send_standalone`), to the same route as the adapter: `POST /v1/gateway/messages`. A refusal comes back to Hermes as an error with its reason, so the record of the job shows why. The team chat takes no file from this path: the text goes, and the result has a warning. See [Messages outside a Coconut turn](architecture.md#messages-outside-a-coconut-turn).
 
