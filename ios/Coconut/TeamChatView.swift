@@ -1569,40 +1569,12 @@ struct TeamChatMuteMenu: ViewModifier {
     }
 }
 
-/// The tile of a pinned chat of a team in the row of the pinned agents of the Chats list (TeamChatPin.Form.tiles):
-/// the face of the team, the unread count on its top right corner as on the tile of an agent, and the name of the
-/// chat under it (the name of the team for the Team chat).
-struct PinnedChatTile: View {
-    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
-    let room: TeamRoom
-    let width: CGFloat
-
-    var body: some View {
-        VStack(spacing: BoardStyle.Space.s) {
-            TeamFace(room: room, size: 76)
-                .overlay(alignment: .topTrailing) {
-                    // The face keeps its size, so the badge on it stops growing at the largest standard text size.
-                    if let unread = room.unread, unread > 0 {
-                        UnreadBadge(count: unread).offset(x: 4, y: -2)
-                            .dynamicTypeSize(...DynamicTypeSize.xxxLarge)
-                    }
-                }
-            Text(room.title).font(.subheadline).foregroundStyle(.secondary)
-                .lineLimit(dynamicTypeSize.isAccessibilitySize ? 2 : 1)
-                .fixedSize(horizontal: false, vertical: true)
-        }
-        .frame(width: width).frame(minHeight: 110)
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel(TeamRowSpeech.label(room, preview: nil))
-    }
-}
-
 /// The row of a chat of a team in the Chats list and the Mac sidebar: a team, a direct chat, or a direct chat with a
 /// bot.
 struct PeopleRow: View {
     let item: ChatListItem
     var avatarSize: CGFloat = BoardStyle.rowFace
-    /// The row shows the pin mark: a pinned chat at the top of the list (TeamChatPin.Form.rows).
+    /// The row shows the pin mark: a pinned chat at the top of the list (TeamChatPin).
     var pinMark = false
 
     var body: some View {

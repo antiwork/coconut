@@ -344,7 +344,17 @@ final class TeamNamedChatTests: XCTestCase {
         let none = try pinnedRooms(team: false, design: false)
         XCTAssertEqual(ChatList.pinnedChats(none.rooms), [])
         XCTAssertEqual(ChatList.people(none.rooms).map(\.id), ChatList.people(try rooms().rooms).map(\.id))
-        // "All" and "People" show the pinned chats. "Agents" shows the pinned agents only.
+        // The rows of the iPhone under the tiles of the pinned agents: the pinned chats first, the Team chat first, then
+        // the other rows newest activity first. "All" and "People" have the pinned chats, "Agents" has none.
+        let bot = Bot(id: "b1", sessionId: "s1", name: "Reporter", role: "", avatar: "", color: "", instructions: "",
+                      status: "idle", lastMessage: "", unreadCount: 0, archived: false,
+                      createdAt: "2026-11-12T11:00:00Z")
+        let pinnedIds = ["team-\(room)", "team-\(room)-\(launch)"]
+        XCTAssertEqual(ChatList.rows(.all, bots: [bot], latest: [:], rooms: list.rooms).map(\.id),
+                       pinnedIds + ["bot-b1", "team-\(room)-\(design)"])
+        XCTAssertEqual(ChatList.rows(.people, bots: [bot], latest: [:], rooms: list.rooms).map(\.id),
+                       pinnedIds + ["team-\(room)-\(design)"])
+        XCTAssertEqual(ChatList.rows(.bots, bots: [bot], latest: [:], rooms: list.rooms).map(\.id), ["bot-b1"])
         XCTAssertTrue(ChatFilter.all.showsPinnedChats)
         XCTAssertTrue(ChatFilter.people.showsPinnedChats)
         XCTAssertFalse(ChatFilter.bots.showsPinnedChats)

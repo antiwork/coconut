@@ -194,11 +194,6 @@ enum TeamChatPin {
     static let pin = "Pin"
     static let unpin = "Unpin"
 
-    /// How the iPhone shows a pinned chat. `tiles`: a tile with the face of the team in the row of the pinned agents.
-    /// `rows`: a row at the top of the list with a pin mark, as WhatsApp has it. The owner chooses from pictures.
-    enum Form { case tiles, rows }
-    static let form = Form.tiles
-
     /// The item "Pin" or "Unpin" of the menu of a row in the Chats list and the Mac sidebar.
     struct ListAction: Equatable {
         let room: String
@@ -1554,6 +1549,15 @@ enum ChatList {
     /// place when a message comes, as a pinned agent does. These chats are not in the other lists.
     static func pinnedChats(_ rooms: [TeamRoom]) -> [ChatListItem] {
         rooms.flatMap { room in ([room] + room.namedChatRooms).filter(\.chatPinned).map(ChatListItem.team) }
+    }
+
+    /// The rows of the Chats list of the iPhone for a filter, under the tiles of the pinned agents: first the pinned
+    /// chats of the teams in their fixed order (pinnedChats), as WhatsApp has them, then the other rows newest
+    /// activity first (items). A pinned chat shows in "All" and "People", where its row shows, and never in "Agents".
+    static func rows(_ filter: ChatFilter, bots: [Bot], latest: [String: Date], rooms: [TeamRoom],
+                     local: [TeamChatKey: TeamLastMessage] = [:]) -> [ChatListItem] {
+        (filter.showsPinnedChats ? pinnedChats(rooms) : [])
+            + filter.items(items(bots: bots, latest: latest, rooms: rooms, local: local))
     }
 
     private static func peopleItems(_ rooms: [TeamRoom], local: [TeamChatKey: TeamLastMessage]) -> [ChatListItem] {

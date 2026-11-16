@@ -20,13 +20,11 @@ struct HomeLaunchView: View {
         }
         let rooms = store.team?.rooms ?? []
         let filter = ChatFilter.effective(store.chatFilter, rooms: rooms)
-        let conversations = filter.items(ChatList.items(bots: activeBots.filter { !$0.pinned }, latest: latest,
-                                                        rooms: rooms, local: store.newestLocalMessages))
+        // The tiles of the pinned agents come first. Then the rows (ChatList.rows): the pinned chats of the teams, each
+        // with the pin mark, then the other rows newest activity first.
+        let conversations = ChatList.rows(filter, bots: activeBots.filter { !$0.pinned }, latest: latest,
+                                          rooms: rooms, local: store.newestLocalMessages)
         let pinned = filter.showsPinned ? pinnedBots : []
-        // The pinned chats of the teams: tiles after the pinned agents, or rows at the top of the list (TeamChatPin).
-        let pinnedChats = filter.showsPinnedChats ? ChatList.pinnedChats(rooms) : []
-        let chatTiles = TeamChatPin.form == .tiles ? pinnedChats : []
-        let chatRows = TeamChatPin.form == .rows ? pinnedChats : []
         return ScrollView {
             LazyVStack(spacing: 0) {
                 // The chips show only for a Mac in a team. A person with bots only sees the list as before.
@@ -40,15 +38,15 @@ struct HomeLaunchView: View {
                         .frame(maxWidth: .infinity).padding(.vertical, 45)
                         .accessibilityIdentifier("chats-empty")
                 }
-                if !pinned.isEmpty || !chatTiles.isEmpty {
+                if !pinned.isEmpty {
                     ViewThatFits(in: .horizontal) {
-                        pinnedTiles(pinned, chats: chatTiles)
-                        ScrollView(.horizontal, showsIndicators: false) { pinnedTiles(pinned, chats: chatTiles) }
+                        pinnedTiles(pinned)
+                        ScrollView(.horizontal, showsIndicators: false) { pinnedTiles(pinned) }
                     }
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, BoardStyle.Space.xl)
                 }
-                ForEach(chatRows + conversations) { item in
+                ForEach(conversations) { item in
                     switch item {
                     case .bot(let bot):
                         NavigationLink(value: ConversationRoute(botId: bot.id)) {
@@ -102,7 +100,7 @@ struct HomeLaunchView: View {
         .padding(.horizontal, BoardStyle.Space.l)
     }
 
-    private func pinnedTiles(_ pinned: [Bot], chats: [ChatListItem]) -> some View {
+    private func pinnedTiles(_ pinned: [Bot]) -> some View {
         HStack(spacing: BoardStyle.Space.xl) {
             ForEach(pinned) { bot in
                 NavigationLink(value: ConversationRoute(botId: bot.id)) {
@@ -128,19 +126,6 @@ struct HomeLaunchView: View {
                 }
                 .buttonStyle(HomePressStyle())
                 .accessibilityIdentifier("pinned-bot-\(bot.id)")
-            }
-            // The pinned chats of the teams follow the pinned agents.
-            ForEach(chats) { item in
-                if case .team(let room) = item, let chat = item.chat {
-                    NavigationLink(value: TeamChatRoute(chat: chat)) {
-                        PinnedChatTile(room: room, width: pinWidth)
-                            .background(BoardStyle.paper)
-                            .contentShape(Rectangle())
-                            .modifier(TeamChatMuteMenu(item: item))
-                    }
-                    .buttonStyle(HomePressStyle())
-                    .accessibilityIdentifier("pinned-" + Self.identifier(chat))
-                }
             }
         }.padding(.horizontal, BoardStyle.Space.l)
     }
@@ -320,7 +305,7 @@ struct ChatRowLayout<Face: View, Subtitle: View>: View {
     var mentioned = false
     /// The person muted the chat (TeamChatMute).
     var muted = false
-    /// The chat is pinned and shows at the top of the list (TeamChatPin.Form.rows).
+    /// The chat is pinned and shows at the top of the list (TeamChatPin).
     var pinned = false
     @ViewBuilder let face: () -> Face
     @ViewBuilder let subtitle: () -> Subtitle

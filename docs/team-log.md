@@ -513,6 +513,7 @@ A room in an answer has what the Team screen shows, so the app needs no other re
 | `mentioned`, `mention_first` | `mentioned` is true while an unread message of the Team chat names this Mac's person. The rule of the unread count decides which message is unread. `mention_first` is the `first` of the newest such message, and it is absent when `mentioned` is false. An older service sends neither, so the app shows people in its `@` list only for a room with `mentioned`. See [Mentions of a person](#mentions-of-a-person). |
 | `typing` | Who types in the Team chat now, the earliest start first: `member`, `name`, `bot`, `bot_name` and `seconds` for each other subject. See [Typing](#typing). An older service sends none. |
 | `chats`, `can_manage_chats` | The named chats of the team, and true on the admin's Mac of an `active` room. See [Chats of a team](#chats-of-a-team). An older service sends neither. |
+| `pinned` | Only on a person's Mac: true when the person pinned the Team chat. Each item of `chats` has its own `pinned` too. See [Pinned chats](#pinned-chats). |
 | `relay`, `member`, `admin`, `epoch` | For the tools. |
 | `directs` | Only for a request with `X-Coconut-Team: direct` from a paired device. Then each member also has `direct`. See [Direct messages](#direct-messages). |
 | `bot_directs` | Only for a request with `X-Coconut-Team: direct` from a paired device. Then each item of `bots` also has `direct`. See [Direct chat with an agent](#direct-chat-with-an-agent). |
@@ -888,7 +889,10 @@ A person pins a chat of a team, as the person pins an agent: the Team chat and e
 - The choice is the person's: it never goes into the log or to the relay. The Mac keeps it in `team_chat_pins`. When the chat goes (a `delete` entry over it, a new write that does not fit, a leave of the team), its row goes too.
 - `GET /v1/team/rooms` gives `pinned` for the room (the Team chat) and for each named chat, on a person's Mac only. A Mac for a team only and an older service send none, and the app then shows no action.
 - `PUT /v1/team/rooms/<room>/pin` (the Team chat) and `PUT /v1/team/rooms/<room>/chats/<id>/pin` change it, with the rules of the mute: only a paired device, 409 on a Mac for a team only, 404 for a chat that the store does not show, and a change adds `team.updated`. The same value again writes nothing. These routes keep no answer for an `Idempotency-Key` (see [Repeat a write](#repeat-a-write)).
-- The app shows "Pin" or "Unpin" in the menu of the row of the chat in the Chats list and in the Mac sidebar, above "Mute" for a named chat. A pinned chat shows on the Mac in the section "Pinned" of the sidebar, after the pinned agents and before the pinned pages, and not in its normal place. On the iPhone it shows with the pinned agents at the top of the Chats list.
+- The app shows "Pin" or "Unpin" (the symbols `pin` and `pin.slash`, as for an agent) in the menu of the row of the chat in the Chats list and in the Mac sidebar, above "Mute" for a named chat. The row of the Team chat has "Pin" only.
+- A pinned chat leaves its normal place and keeps one fixed order: the teams in the order of the Mac, and in each team the Team chat, then the named chats in their order. A new message does not move it.
+- On the iPhone, the top of the Chats list has the tiles of the pinned agents, then the row of each pinned chat with a pin mark (the line symbol `pin`, in the form of the mute mark), then the other rows newest activity first, as WhatsApp has it. A pinned chat shows in "All" and "People", where its row shows, and never in "Agents".
+- On the Mac, the section "Pinned" of the sidebar has the pinned agents, then the pinned chats as the same rows that they have in "People" (with the unread count and the mute mark), then the pinned pages.
 
 #### Reactions
 
