@@ -3,7 +3,10 @@ import SwiftUI
 enum BoardStyle {
     static let paper = Color.adaptive { dark, _ in dark ? PlatformColor(white: 0.065, alpha: 1) : .pageBackground }
     static let surface = Color.adaptive { dark, _ in PlatformColor(white: dark ? 0.13 : 0.955, alpha: 1) }
-    static let userBubble = Color.adaptive { dark, _ in PlatformColor(white: dark ? 0.36 : 0.86, alpha: 1) }
+    static let userBubble = Color.adaptive { dark, _ in
+        dark ? PlatformColor(red: 0.39, green: 0.26, blue: 0.18, alpha: 1)
+             : PlatformColor(red: 0.88, green: 0.77, blue: 0.65, alpha: 1)
+    }
     static let userBubbleLink = Color.adaptive { dark, _ in
         dark ? PlatformColor(red: 0.75, green: 0.87, blue: 1, alpha: 1) : PlatformColor(red: 0, green: 0.31, blue: 0.68, alpha: 1)
     }
