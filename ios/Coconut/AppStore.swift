@@ -70,6 +70,8 @@ final class AppStore {
     /// The new choice of each named chat whose request to mute or unmute runs now, by the ID of the chat
     /// (TeamChatMute). The Team screen shows it at once, and the actions of that chat wait until the request ends.
     private(set) var teamChatMuteChoices: [String: Bool] = [:]
+    /// The new choice of each chat whose request to pin or unpin runs now, by TeamChatPin.key. Its item waits.
+    private(set) var teamChatPinChoices: [String: Bool] = [:]
     /// The number of the latest share or stop of each page. Only the answer of that act goes into the list.
     @ObservationIgnored private var pageShareActs: [String: Int] = [:]
     @ObservationIgnored private var pageShareCount = 0
@@ -644,6 +646,7 @@ final class AppStore {
         // The teams are the teams of the earlier Mac. A list request of that Mac that is still on its way gets no
         // place to go: its client is not the client of the store.
         team = nil; teamLoadError = nil; latestTeamLoad = nil; teamWrites = [:]; teamChatMuteChoices = [:]
+        teamChatPinChoices = [:]
         teamChats = [:]; teamChatRequests = [:]; teamChatChanges = [:]; teamReadPosted = [:]; teamReadPosting = [:]
         teamChatsOnScreen = []; teamOlderRequests = [:]; teamMessageChanges = [:]; teamTypingPace = [:]
         teamReactionWriters = [:]
@@ -1814,6 +1817,35 @@ final class AppStore {
         guard let answer else { return false }
         if var list = team, let index = list.rooms.firstIndex(where: { $0.room == room }) {
             list.rooms[index] = TeamChatMute.applying([answer.chat: answer.notifications], to: list.rooms[index])
+            team = list
+        }
+        // A list that the app asked for before the answer can be older than it, so the list loads again.
+        teamChanges += 1
+        Task { await loadTeam() }
+        return true
+    }
+
+    /// Pins or unpins a chat of a team for this person (TeamChatPin): the Team chat when `chat` is nil, else a named
+    /// chat. Return whether the Mac did it. One request of a chat runs at a time, and the answer changes only that chat
+    /// in the list as it is now, as for a mute.
+    @discardableResult
+    func setTeamChatPinned(_ room: String, chat: String?, pinned: Bool) async -> Bool {
+        let key = TeamChatPin.key(room: room, chat: chat)
+        guard !TeamChatPin.waits(key, teamChatPinChoices) else { return false }
+        teamChatPinChoices[key] = pinned
+        defer { teamChatPinChoices[key] = nil }
+        let path = "team/rooms/\(room)" + (chat.map { "/chats/\($0)" } ?? "") + "/pin"
+        let answer: TeamChatPinAnswer? = await write(path, method: "PUT", payload: TeamPinRequest(pinned: pinned),
+                                                     as: TeamChatPinAnswer.self, refreshInBackground: true)
+        guard let answer else { return false }
+        if var list = team, let index = list.rooms.firstIndex(where: { $0.room == room }) {
+            if let chat = answer.chat {
+                if let named = list.rooms[index].chats?.firstIndex(where: { $0.id == chat }) {
+                    list.rooms[index].chats?[named].pinned = answer.pinned
+                }
+            } else {
+                list.rooms[index].pinned = answer.pinned
+            }
             team = list
         }
         // A list that the app asked for before the answer can be older than it, so the list loads again.
@@ -3214,6 +3246,8 @@ private struct TeamJoinBody: Encodable { let link: String; let memberName: Strin
 private struct TeamProfileRequest: Encodable { let memberName: String }
 private struct TeamNotificationsRequest: Encodable { let enabled: Bool }
 private struct TeamNotificationsAnswer: Decodable, Sendable { let room: String; let notifications: Bool }
+private struct TeamPinRequest: Encodable { let pinned: Bool }
+private struct TeamChatPinAnswer: Decodable, Sendable { let room: String; let chat: String?; let pinned: Bool }
 private struct TeamChatNotificationsAnswer: Decodable, Sendable {
     let room: String; let chat: String; let notifications: Bool
 }

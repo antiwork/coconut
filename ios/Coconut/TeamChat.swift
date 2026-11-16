@@ -59,6 +59,9 @@ struct TeamNamedChat: Decodable, Identifiable, Equatable, Sendable {
     /// False when this person muted the chat on this Mac (TeamChatMute). A Mac for a team only and an older service
     /// send none, and the row then has no action "Mute".
     var notifications: Bool? = nil
+    /// True when this person pinned the chat on this Mac (TeamChatPin). A Mac for a team only and an older service send
+    /// none.
+    var pinned: Bool? = nil
 }
 
 extension TeamRoom {
@@ -102,6 +105,13 @@ extension TeamRoom {
 
     /// The person muted the named chat that this room shows. The row of the chat then has the mark (TeamChatMute).
     var shownChatMuted: Bool { shownChat?.notifications == false }
+
+    /// The choice to pin the chat that this room shows: of the named chat, else of the Team chat. Nil for a Mac for a
+    /// team only and an older service.
+    var chatPinChoice: Bool? { shownChat.map(\.pinned) ?? pinned }
+
+    /// The person pinned the chat that this room shows (TeamChatPin).
+    var chatPinned: Bool { chatPinChoice == true }
 }
 
 extension TeamRooms {
@@ -176,6 +186,43 @@ enum TeamChatMute {
         shown.chats = chats
         return shown
     }
+}
+
+/// The choice of this person to pin a chat of a team: the Team chat or a named chat (docs/team-log.md, "Pinned
+/// chats"). The words and the symbols are those of a pinned agent. A direct chat has no pin.
+enum TeamChatPin {
+    static let pin = "Pin"
+    static let unpin = "Unpin"
+
+    /// How the iPhone shows a pinned chat. `tiles`: a tile with the face of the team in the row of the pinned agents.
+    /// `rows`: a row at the top of the list with a pin mark, as WhatsApp has it. The owner chooses from pictures.
+    enum Form { case tiles, rows }
+    static let form = Form.tiles
+
+    /// The item "Pin" or "Unpin" of the menu of a row in the Chats list and the Mac sidebar.
+    struct ListAction: Equatable {
+        let room: String
+        /// The named chat, or nil for the Team chat.
+        let chat: String?
+        let label: String
+        let symbol: String
+        /// The value that the request sends: true pins.
+        let pinned: Bool
+    }
+
+    /// The item of the menu of the row of a chat of a team, or nil: a direct chat, an agent, a team that is not active,
+    /// a Mac for a team only and an older service have none.
+    static func listAction(_ item: ChatListItem) -> ListAction? {
+        guard case .team(let room) = item, room.status == .active, let choice = room.chatPinChoice else { return nil }
+        return ListAction(room: room.room, chat: room.shownChat?.id, label: choice ? unpin : pin,
+                          symbol: choice ? "pin.slash" : "pin", pinned: !choice)
+    }
+
+    /// The key of a chat in the choices that wait: the ID of the named chat, else the ID of the room.
+    static func key(room: String, chat: String?) -> String { chat ?? room }
+
+    /// True while a request to pin or unpin the chat runs. Its item then waits.
+    static func waits(_ key: String, _ choices: [String: Bool]) -> Bool { choices[key] != nil }
 }
 
 /// Which person makes, renames and deletes the named chats of a team: the admin of an active team, as the service says
@@ -1434,6 +1481,12 @@ enum ChatListItem: Identifiable, Equatable {
         }
     }
 
+    /// A chat of a team that this person pinned (TeamChatPin). It shows with the pinned agents.
+    var isPinnedChat: Bool {
+        if case .team(let room) = self { return room.chatPinned }
+        return false
+    }
+
     /// The newest activity of a chat of a team: its newest message, or for a team the time when this Mac made or
     /// joined it.
     fileprivate var teamActivity: Date {
@@ -1496,9 +1549,16 @@ enum ChatList {
         sorted(botDirectItems(rooms, local: local))
     }
 
+    /// The chats of the teams that this person pinned (TeamChatPin), in a fixed order: the teams in the order of the
+    /// Mac, and in each team the Team chat, then the named chats in the order of the Mac. So a pinned chat keeps its
+    /// place when a message comes, as a pinned agent does. These chats are not in the other lists.
+    static func pinnedChats(_ rooms: [TeamRoom]) -> [ChatListItem] {
+        rooms.flatMap { room in ([room] + room.namedChatRooms).filter(\.chatPinned).map(ChatListItem.team) }
+    }
+
     private static func peopleItems(_ rooms: [TeamRoom], local: [TeamChatKey: TeamLastMessage]) -> [ChatListItem] {
         rooms.flatMap { room in
-            [.team(room)] + room.namedChatRooms.map(ChatListItem.team)
+            ([.team(room)] + room.namedChatRooms.map(ChatListItem.team)).filter { !$0.isPinnedChat }
                 + room.listedDirects(local: local).map { ChatListItem.direct(room, $0) }
         }
     }
@@ -1540,8 +1600,11 @@ enum ChatFilter: String, CaseIterable, Identifiable, Sendable {
         showsChips(rooms: rooms) ? chosen : .all
     }
 
-    /// The pinned tiles are bots, so "People" has none.
+    /// The pinned agents show in "All" and "Agents", so "People" has none.
     var showsPinned: Bool { self != .people }
+
+    /// The pinned chats of the teams show in "All" and "People", so "Agents" has none.
+    var showsPinnedChats: Bool { self != .bots }
 
     /// The rows of the list for this filter, in the order of the list.
     func items(_ items: [ChatListItem]) -> [ChatListItem] {
@@ -1557,6 +1620,8 @@ enum ChatFilter: String, CaseIterable, Identifiable, Sendable {
 /// the other bots with the direct chats with a bot of a team. Each one newest activity first.
 struct ChatSections: Equatable {
     var pinned: [Bot]
+    /// The pinned chats of the teams (ChatList.pinnedChats). The section "Pinned" has them after the pinned bots.
+    var pinnedChats: [ChatListItem] = []
     var people: [ChatListItem]
     /// The bots that are not pinned (`.bot`) and the direct chats with a bot of a team (`.botDirect`).
     var bots: [ChatListItem]
@@ -1567,7 +1632,8 @@ struct ChatSections: Equatable {
         let latest = ChatList.lastMessageDates(messages)
         func activity(_ bot: Bot) -> Date { latest[bot.id] ?? bot.createdAt.apiDate ?? .distantPast }
         let active = bots.filter { !$0.archived }.sorted { activity($0) > activity($1) }
-        return ChatSections(pinned: active.filter(\.pinned), people: ChatList.people(rooms, local: local),
+        return ChatSections(pinned: active.filter(\.pinned), pinnedChats: ChatList.pinnedChats(rooms),
+                            people: ChatList.people(rooms, local: local),
                             bots: ChatList.merge(bots: active.filter { !$0.pinned }, latest: latest,
                                                  chats: ChatList.botDirects(rooms, local: local)))
     }

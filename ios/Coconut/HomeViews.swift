@@ -23,6 +23,10 @@ struct HomeLaunchView: View {
         let conversations = filter.items(ChatList.items(bots: activeBots.filter { !$0.pinned }, latest: latest,
                                                         rooms: rooms, local: store.newestLocalMessages))
         let pinned = filter.showsPinned ? pinnedBots : []
+        // The pinned chats of the teams: tiles after the pinned agents, or rows at the top of the list (TeamChatPin).
+        let pinnedChats = filter.showsPinnedChats ? ChatList.pinnedChats(rooms) : []
+        let chatTiles = TeamChatPin.form == .tiles ? pinnedChats : []
+        let chatRows = TeamChatPin.form == .rows ? pinnedChats : []
         return ScrollView {
             LazyVStack(spacing: 0) {
                 // The chips show only for a Mac in a team. A person with bots only sees the list as before.
@@ -36,15 +40,15 @@ struct HomeLaunchView: View {
                         .frame(maxWidth: .infinity).padding(.vertical, 45)
                         .accessibilityIdentifier("chats-empty")
                 }
-                if !pinned.isEmpty {
+                if !pinned.isEmpty || !chatTiles.isEmpty {
                     ViewThatFits(in: .horizontal) {
-                        pinnedTiles(pinned)
-                        ScrollView(.horizontal, showsIndicators: false) { pinnedTiles(pinned) }
+                        pinnedTiles(pinned, chats: chatTiles)
+                        ScrollView(.horizontal, showsIndicators: false) { pinnedTiles(pinned, chats: chatTiles) }
                     }
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, BoardStyle.Space.xl)
                 }
-                ForEach(conversations) { item in
+                ForEach(chatRows + conversations) { item in
                     switch item {
                     case .bot(let bot):
                         NavigationLink(value: ConversationRoute(botId: bot.id)) {
@@ -62,7 +66,7 @@ struct HomeLaunchView: View {
                         // action.
                         if let chat = item.chat {
                             NavigationLink(value: TeamChatRoute(chat: chat)) {
-                                PeopleRow(item: item)
+                                PeopleRow(item: item, pinMark: item.isPinnedChat)
                                     .padding(.vertical, BoardStyle.Space.m)
                                     .background(BoardStyle.paper)
                                     .contentShape(Rectangle())
@@ -98,7 +102,7 @@ struct HomeLaunchView: View {
         .padding(.horizontal, BoardStyle.Space.l)
     }
 
-    private func pinnedTiles(_ pinned: [Bot]) -> some View {
+    private func pinnedTiles(_ pinned: [Bot], chats: [ChatListItem]) -> some View {
         HStack(spacing: BoardStyle.Space.xl) {
             ForEach(pinned) { bot in
                 NavigationLink(value: ConversationRoute(botId: bot.id)) {
@@ -124,6 +128,19 @@ struct HomeLaunchView: View {
                 }
                 .buttonStyle(HomePressStyle())
                 .accessibilityIdentifier("pinned-bot-\(bot.id)")
+            }
+            // The pinned chats of the teams follow the pinned agents.
+            ForEach(chats) { item in
+                if case .team(let room) = item, let chat = item.chat {
+                    NavigationLink(value: TeamChatRoute(chat: chat)) {
+                        PinnedChatTile(room: room, width: pinWidth)
+                            .background(BoardStyle.paper)
+                            .contentShape(Rectangle())
+                            .modifier(TeamChatMuteMenu(item: item))
+                    }
+                    .buttonStyle(HomePressStyle())
+                    .accessibilityIdentifier("pinned-" + Self.identifier(chat))
+                }
             }
         }.padding(.horizontal, BoardStyle.Space.l)
     }
@@ -303,6 +320,8 @@ struct ChatRowLayout<Face: View, Subtitle: View>: View {
     var mentioned = false
     /// The person muted the chat (TeamChatMute).
     var muted = false
+    /// The chat is pinned and shows at the top of the list (TeamChatPin.Form.rows).
+    var pinned = false
     @ViewBuilder let face: () -> Face
     @ViewBuilder let subtitle: () -> Subtitle
 
@@ -347,7 +366,7 @@ struct ChatRowLayout<Face: View, Subtitle: View>: View {
         .frame(minHeight: 52)
     }
 
-    private var hasBadges: Bool { unread > 0 || mentioned || muted }
+    private var hasBadges: Bool { unread > 0 || mentioned || muted || pinned }
 
     private var nameText: some View {
         Text(name).font(.body.weight(unread > 0 ? .semibold : .regular)).lineLimit(1)
@@ -361,6 +380,7 @@ struct ChatRowLayout<Face: View, Subtitle: View>: View {
     private var badges: some View {
         HStack(spacing: BoardStyle.Space.xs) {
             if muted { MutedMark() }
+            if pinned { MutedMark(symbol: "pin.fill") }
             if mentioned { MentionBadge() }
             if unread > 0 { UnreadBadge(count: unread) }
         }
@@ -370,8 +390,11 @@ struct ChatRowLayout<Face: View, Subtitle: View>: View {
 /// The mark of a muted chat in the secondary color, as WhatsApp has it: in the font of the line under the name, so it
 /// is as high as that line. The label of the row says it to VoiceOver (TeamRowSpeech), so the mark itself is silent.
 struct MutedMark: View {
+    /// The mark of a pinned chat at the top of the list uses the same form with `pin.fill`.
+    var symbol = TeamChatMute.mark
+
     var body: some View {
-        Image(systemName: TeamChatMute.mark)
+        Image(systemName: symbol)
             .font(.subheadline)
             .foregroundStyle(.secondary)
             .accessibilityHidden(true)

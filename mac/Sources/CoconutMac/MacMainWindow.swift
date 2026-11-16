@@ -299,26 +299,17 @@ struct MacSidebar: View {
                 .tag(MacSelection.library)
                 .accessibilityIdentifier("sidebar-library")
             // A section without rows does not show.
-            if !pins.isEmpty {
+            if !pins.isEmpty || !sections.pinnedChats.isEmpty {
                 Section("Pinned") {
                     ForEach(pins.bots) { bot in row(bot) }
+                    // The pinned chats of the teams, as the same rows that they have in "People".
+                    ForEach(sections.pinnedChats) { item in chatRow(item) }
                     ForEach(pins.pages) { page in pageRow(page) }
                 }
             }
             if !sections.people.isEmpty {
                 Section("People") {
-                    ForEach(sections.people) { item in
-                        // A team and a direct chat have no pin and no delete here. The Team screen has the leave
-                        // action.
-                        if let chat = item.chat {
-                            PeopleRow(item: item, avatarSize: 32)
-                                .padding(.vertical, BoardStyle.Space.xs)
-                                .tag(MacSelection.team(chat))
-                                .modifier(TeamChatMuteMenu(item: item))
-                                .accessibilityIdentifier(chat.member.map { "sidebar-direct-" + $0 }
-                                                         ?? "sidebar-team-" + chat.room + (chat.chat.map { "-" + $0 } ?? ""))
-                        }
-                    }
+                    ForEach(sections.people) { item in chatRow(item) }
                 }
             }
             if !sections.bots.isEmpty {
@@ -356,6 +347,19 @@ struct MacSidebar: View {
             if store.documents == nil { await store.loadDocuments(quiet: true) }
         }
         .safeAreaInset(edge: .bottom) { MacConnectionFooter() }
+    }
+
+    /// The row of a chat of a team. A chat of a team has Pin and Mute in its menu (TeamChatMuteMenu). A direct chat
+    /// has no pin and no delete here. The Team screen has the leave action.
+    @ViewBuilder private func chatRow(_ item: ChatListItem) -> some View {
+        if let chat = item.chat {
+            PeopleRow(item: item, avatarSize: 32)
+                .padding(.vertical, BoardStyle.Space.xs)
+                .tag(MacSelection.team(chat))
+                .modifier(TeamChatMuteMenu(item: item))
+                .accessibilityIdentifier(chat.member.map { "sidebar-direct-" + $0 }
+                                         ?? "sidebar-team-" + chat.room + (chat.chat.map { "-" + $0 } ?? ""))
+        }
     }
 
     /// A pinned page. Its menu only unpins: the Library and the page itself have the other actions.
