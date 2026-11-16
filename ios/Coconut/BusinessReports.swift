@@ -103,7 +103,7 @@ extension BusinessReport {
         let open: [[String: Any]] = ["Payout timing question", "Help with a product download", "Update a purchase email"].enumerated().map { i, title in
             ["slug": "sample-\(i)", "subject": title, "queue": "Gumroad", "createdAt": Date().addingTimeInterval(-Double(i + 1) * 3600).formatted(.iso8601)]
         }
-        let support: [String: Any] = ["support": ["counts": ["all": 14, "unassigned": 4, "assigned": 10], "open": open, "closed": closed, "closedCount": ["total": 184, "byAgent": [["displayName": "Alex", "count": 84], ["displayName": "Sam", "count": 100]]], "dailyVolume": daily], "issues": ["counts": ["all": 18], "open": [], "closed": [], "closedCount": ["total": 48], "dailyVolume": daily]]
+        let support: [String: Any] = ["generatedAt": Date().formatted(.iso8601), "support": ["counts": ["all": 14, "unassigned": 4, "assigned": 10], "open": open, "closed": closed, "closedCount": ["total": 184, "byAgent": [["displayName": "Alex", "count": 84], ["displayName": "Sam", "count": 100]]], "dailyVolume": daily], "issues": ["counts": ["all": 18], "open": [], "closed": [], "closedCount": ["total": 48], "dailyVolume": daily]]
         let data = key == "support" ? support : home
         let payload: [String: Any] = ["key": key, "data": data, "source": ["repository": "example/reports", "path": "demo.json", "sha": "demo", "url": "https://github.com"], "generated_at": Date().formatted(.iso8601), "ledger_url": "https://github.com/example/accounting"]
         return try APIJSON.decoder().decode(BusinessReport.self, from: JSONSerialization.data(withJSONObject: payload))

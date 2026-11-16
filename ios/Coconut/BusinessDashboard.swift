@@ -12,7 +12,7 @@ struct BusinessWorkspaceView: View {
                 if hasReport { Text("Overview").tag("overview") }
                 Text("Work").tag("work")
                 Text("Library").tag("library")
-            }.pickerStyle(.segmented).padding(.horizontal, 24).padding(.vertical, 12)
+            }.pickerStyle(.segmented).labelsHidden().padding(.horizontal, 24).padding(.vertical, 12)
             if tab == "library" { BusinessReportLibrary(function: function) }
             else if tab == "work" || !hasReport { BusinessWorkListView(function: function) }
             else { BusinessReportView(key: function) }
@@ -209,7 +209,7 @@ private struct SupportDashboard: View {
     }
     var body: some View {
         VStack(alignment: .leading, spacing: 24) {
-            Picker("Queue", selection: $queue) { Text("Customer support").tag("support"); Text("Product issues").tag("issues") }.pickerStyle(.segmented)
+            Picker("Queue", selection: $queue) { Text("Customer support").tag("support"); Text("Product issues").tag("issues") }.pickerStyle(.segmented).labelsHidden()
             LazyVGrid(columns: metricColumns, spacing: 14) {
                 MetricCard("Open", value: selected["counts"]["all"].number, note: "In this queue", tint: .blue)
                 MetricCard("Unassigned", value: selected["counts"]["unassigned"].number, note: "Waiting for an owner", tint: BoardStyle.accent)
@@ -375,6 +375,11 @@ struct ReportPoint: Identifiable {
 private struct ReportChart: View {
     let title: String; let subtitle: String; let points: [ReportPoint]; var money = false; var bars = false
     @State private var selected: Date?
+    private var axisDates: [Date] {
+        let days = Array(Set(points.map(\.day))).sorted()
+        guard !days.isEmpty else { return [] }
+        return Array(Set([0, days.count / 4, days.count / 2, days.count * 3 / 4])).sorted().map { days[$0] }
+    }
     private var selectedPoints: [ReportPoint] {
         guard let selected else { return [] }
         guard let closest = points.min(by: { abs($0.day.timeIntervalSince(selected)) < abs($1.day.timeIntervalSince(selected)) }) else { return [] }
@@ -404,7 +409,7 @@ private struct ReportChart: View {
                 .chartXSelection(value: $selected)
                 .chartXScale(range: .plotDimension(startPadding: 8, endPadding: 24))
                 .chartYAxis { AxisMarks(position: .leading, values: .automatic(desiredCount: 4)) { value in AxisGridLine(); AxisValueLabel { if let n = value.as(Double.self) { Text(reportNumber(n, money: money)) } } } }
-                .chartXAxis { AxisMarks(values: .automatic(desiredCount: 5)) { _ in AxisValueLabel(format: Set(points.map(\.series)).count > 1 ? .dateTime.month(.abbreviated) : .dateTime.month(.abbreviated).day()) } }
+                .chartXAxis { AxisMarks(values: axisDates) { _ in AxisValueLabel(format: Set(points.map(\.series)).count > 1 ? .dateTime.month(.abbreviated) : .dateTime.month(.abbreviated).day()) } }
                 .chartLegend(position: .bottom, alignment: .leading, spacing: 16)
                 .frame(height: 230)
                 if let first = selectedPoints.first {
