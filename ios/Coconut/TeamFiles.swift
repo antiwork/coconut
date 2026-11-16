@@ -80,6 +80,9 @@ enum TeamFileRules {
     /// The text of the agent chat for a file that does not fit (AppStore.uploadAttachment).
     static let sizeText = "Choose a file between 1 byte and 4 MB."
     static let limitText = "Add at most \(limit) files to one message."
+    /// A file that the fit step cannot make safe to send: a file of several images whose GPS position cannot go, or an
+    /// image that the app cannot read. The text is true for both.
+    static let cannotSendText = "This file cannot be sent."
     /// The largest file that the app reads to make an image fit. A larger file is not read.
     static let largestRead = 64 * 1024 * 1024
 
@@ -175,6 +178,27 @@ extension TeamChatRow {
     var documents: [TeamFile] { files.filter { !$0.isImage } }
 }
 
+/// What the step before an upload gives: the file as it goes, or why it cannot go.
+enum FitOutcome: Equatable, Sendable {
+    case fitted(FittedFile)
+    /// The file is empty, or larger than the limit, also after an image became smaller.
+    case tooLarge
+    /// The app cannot make the file fit the rules: it cannot remove the GPS position of a file with more than one
+    /// image, or it cannot read the image.
+    case cannotSend
+
+    var file: FittedFile? { if case .fitted(let file) = self { file } else { nil } }
+
+    /// The text for the error banner, or nil for a file that goes.
+    var text: String? {
+        switch self {
+        case .fitted: nil
+        case .tooLarge: TeamFileRules.sizeText
+        case .cannotSend: TeamFileRules.cannotSendText
+        }
+    }
+}
+
 /// The step before an upload: an image fits the limit of a file, and the chat gets its size in pixels.
 struct FittedFile: Equatable, Sendable {
     let data: Data
@@ -209,36 +233,55 @@ enum FileFit {
     /// the metadata.
     static func fit(_ data: Data, name: String, limit: Int = TeamFileRules.largest,
                     removesPosition: Bool = true) -> FittedFile? {
-        guard !data.isEmpty else { return nil }
+        outcome(data, name: name, limit: limit, removesPosition: removesPosition).file
+    }
+
+    /// The file as it goes to the Mac, or why it cannot go (`fit`).
+    ///
+    /// A file with more than one image (a TIFF with pages, an animated GIF, PNG, HEIC or WebP) is never encoded
+    /// again: a JPEG would keep only the first image, for example page 1 of a scan of three pages. Without a position
+    /// it goes as it is when it fits the limit, whatever its pixels. With a position it goes as the copy without it,
+    /// which keeps each image, and else it does not go. ImageIO cannot copy a GIF this way, and its copy of a TIFF
+    /// keeps the position, so a GIF or a TIFF of several images with a position does not go. `width` and `height` are
+    /// the pixels of the first image.
+    static func outcome(_ data: Data, name: String, limit: Int = TeamFileRules.largest,
+                        removesPosition: Bool = true) -> FitOutcome {
+        guard !data.isEmpty else { return .tooLarge }
         guard let source = CGImageSourceCreateWithData(data as CFData, nil),
               let identifier = CGImageSourceGetType(source) as String?, let kind = UTType(identifier),
               kind.conforms(to: .image), CGImageSourceGetCount(source) > 0,
               let size = pixelSize(source) else {
-            guard data.count <= limit else { return nil }
-            return FittedFile(data: data, name: name, type: mimeType(name), width: nil, height: nil)
+            guard data.count <= limit else { return .tooLarge }
+            return .fitted(FittedFile(data: data, name: name, type: mimeType(name), width: nil, height: nil))
         }
         let (width, height) = size
         let longest = max(width, height)
         let position = removesPosition && hasPosition(source)
+        if CGImageSourceGetCount(source) > 1 {
+            guard data.count <= limit else { return .tooLarge }
+            guard position else { return .fitted(kept(data, name: name, kind: kind, width: width, height: height)) }
+            guard let copy = withoutPosition(source, kind: kind), copy.count <= limit else { return .cannotSend }
+            return .fitted(kept(copy, name: name, kind: kind, width: width, height: height))
+        }
         let gif = kind.conforms(to: .gif)
         let heif = kind.conforms(to: .heic) || kind.conforms(to: .heif)
         if gif || (!heif && longest <= longestSide && data.count <= limit) {
-            guard data.count <= limit || !gif else { return nil }
-            guard position else { return kept(data, name: name, kind: kind, width: width, height: height) }
-            // A GIF has no EXIF block, but it can carry a position in XMP data, and ImageIO reads it. Such a GIF goes
-            // as a copy without the position, else as a JPEG of its first frame.
+            guard data.count <= limit || !gif else { return .tooLarge }
+            guard position else { return .fitted(kept(data, name: name, kind: kind, width: width, height: height)) }
+            // A GIF has no EXIF block, but it can carry a position in XMP data, and ImageIO reads it. A GIF of one
+            // frame goes as a copy without the position, else as a JPEG of its frame.
             if let copy = withoutPosition(source, kind: kind), copy.count <= limit {
-                return kept(copy, name: name, kind: kind, width: width, height: height)
+                return .fitted(kept(copy, name: name, kind: kind, width: width, height: height))
             }
         }
-        guard let image = downsampledImage(data, largestSide: min(longest, longestSide)) else { return nil }
+        guard let image = downsampledImage(data, largestSide: min(longest, longestSide)) else { return .cannotSend }
         for quality in [quality, 0.6, 0.4] {
             if let jpeg = jpegData(image, quality: quality), jpeg.count <= limit {
-                return FittedFile(data: jpeg, name: jpegName(name), type: "image/jpeg",
-                                  width: image.width, height: image.height)
+                return .fitted(FittedFile(data: jpeg, name: jpegName(name), type: "image/jpeg",
+                                          width: image.width, height: image.height))
             }
         }
-        return nil
+        return .tooLarge
     }
 
     /// The file has a GPS position: in the container, or in the EXIF data (the GPS dictionary of ImageIO) or the XMP
@@ -306,9 +349,9 @@ enum FileFit {
     }
 
     /// `fit` away from the main thread: a camera photo takes a moment to decode and encode.
-    static func fitted(_ file: PickedFile, removesPosition: Bool = true) async -> FittedFile? {
+    static func fitted(_ file: PickedFile, removesPosition: Bool = true) async -> FitOutcome {
         await Task.detached(priority: .userInitiated) {
-            fit(file.data, name: file.name, removesPosition: removesPosition)
+            outcome(file.data, name: file.name, removesPosition: removesPosition)
         }.value
     }
 

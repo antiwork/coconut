@@ -941,8 +941,9 @@ struct ConversationComposer: View {
                 guard let picked = await load() else { return nil }
                 // A photo of the library can be a HEIC image or larger than the limit. The Mac of the person gets it
                 // with its metadata, as a file of the file importer.
-                guard let fitted = await FileFit.fitted(picked, removesPosition: false) else {
-                    store.error = TeamFileRules.sizeText
+                let outcome = await FileFit.fitted(picked, removesPosition: false)
+                guard let fitted = outcome.file else {
+                    store.error = outcome.text
                     return nil
                 }
                 return await store.uploadAttachment(bot: bot, data: fitted.data, filename: fitted.name)

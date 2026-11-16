@@ -1496,8 +1496,9 @@ final class AppStore {
     /// the Mac, for example a full space of the team. The bytes stay on the phone, so a message on its way shows them.
     func uploadTeamFile(_ chat: TeamChatKey, _ picked: PickedFile) async -> TeamFile? {
         guard !chat.isDirect else { return nil }
-        guard let fitted = await FileFit.fitted(picked) else {
-            error = TeamFileRules.sizeText
+        let outcome = await FileFit.fitted(picked)
+        guard let fitted = outcome.file else {
+            error = outcome.text
             return nil
         }
         if isDemo {

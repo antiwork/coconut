@@ -274,8 +274,9 @@ final class TeamFileTests: XCTestCase {
         // A GIF without a position stays as it is (testAGIFStaysAsItIs).
     }
 
-    /// A file of two images where only the second one has a position: the check sees it, and the file goes out
-    /// without a position on any image.
+    /// A file of two images where only the second one has a position: the check sees it. The copy of ImageIO
+    /// removes the GPS data only from the first image of a TIFF, so the copy still has a position, and the file does
+    /// not go. It never becomes a JPEG of its first page.
     func testAPositionOnASecondImageCounts() throws {
         let context = try XCTUnwrap(CGContext(data: nil, width: 60, height: 40, bitsPerComponent: 8, bytesPerRow: 0,
                                               space: CGColorSpaceCreateDeviceRGB(),
@@ -297,9 +298,77 @@ final class TeamFileTests: XCTestCase {
         let first = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any]
         XCTAssertNil(first?[kCGImagePropertyGPSDictionary], "The first image has no position.")
         XCTAssertTrue(FileFit.hasPosition(source))
-        let fitted = try XCTUnwrap(FileFit.fit(tiff, name: "pages.tiff"))
-        XCTAssertFalse(try hasGPS(fitted.data))
-        XCTAssertNotEqual(fitted.data, tiff)
+        let outcome = FileFit.outcome(tiff, name: "pages.tiff")
+        XCTAssertEqual(outcome, .cannotSend)
+        XCTAssertEqual(outcome.text, TeamFileRules.cannotSendText)
+    }
+
+    // MARK: Files of more than one image
+
+    /// A file of several images: each image has the given size, and the position is on the images that ask for it.
+    private func images(_ sizes: [(width: Int, height: Int, gps: Bool)], type: UTType) throws -> Data {
+        let buffer = NSMutableData()
+        let destination = try XCTUnwrap(CGImageDestinationCreateWithData(buffer, type.identifier as CFString,
+                                                                         sizes.count, nil))
+        for (index, size) in sizes.enumerated() {
+            let context = try XCTUnwrap(CGContext(data: nil, width: size.width, height: size.height,
+                                                  bitsPerComponent: 8, bytesPerRow: 0,
+                                                  space: CGColorSpaceCreateDeviceRGB(),
+                                                  bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+            context.setFillColor(red: 0.1 * Double(index + 1), green: 0.4, blue: 0.6, alpha: 1)
+            context.fill(CGRect(x: 0, y: 0, width: size.width, height: size.height))
+            let position: [CFString: Any] = [kCGImagePropertyGPSDictionary: [
+                kCGImagePropertyGPSLatitude: 52.37, kCGImagePropertyGPSLatitudeRef: "N"]]
+            CGImageDestinationAddImage(destination, try XCTUnwrap(context.makeImage()),
+                                       size.gps ? position as CFDictionary : nil)
+        }
+        XCTAssertTrue(CGImageDestinationFinalize(destination))
+        return buffer as Data
+    }
+
+    private func imageCount(_ data: Data) throws -> Int {
+        CGImageSourceGetCount(try XCTUnwrap(CGImageSourceCreateWithData(data as CFData, nil)))
+    }
+
+    /// A scan of two pages whose first page is over 2400 pixels goes as it is: a JPEG would keep only page 1.
+    func testAScanOfTwoPagesGoesAsItIs() throws {
+        let tiff = try images([(2500, 100, false), (60, 40, false)], type: .tiff)
+        XCTAssertLessThan(tiff.count, TeamFileRules.largest)
+        let fitted = try XCTUnwrap(FileFit.outcome(tiff, name: "contract.tiff").file)
+        XCTAssertEqual(fitted.data, tiff)
+        XCTAssertEqual(try imageCount(fitted.data), 2)
+        XCTAssertEqual([fitted.width, fitted.height], [2500, 100], "The pixels of the first image.")
+        XCTAssertEqual(fitted.name, "contract.tiff")
+    }
+
+    /// The same scan with a position on page 1 does not go. ImageIO's copy without GPS data leaves the position in a
+    /// TIFF (it removes it from a JPEG), and the fit step never encodes a file of several images again, so it never
+    /// sends page 1 alone as a JPEG.
+    func testAScanOfTwoPagesWithAPositionDoesNotGo() throws {
+        let tiff = try images([(2500, 100, true), (60, 40, false)], type: .tiff)
+        XCTAssertTrue(try hasGPS(tiff))
+        let outcome = FileFit.outcome(tiff, name: "contract.tiff")
+        XCTAssertEqual(outcome, .cannotSend)
+        XCTAssertEqual(outcome.text, "This file cannot be sent.")
+        // The agent chat sends to the Mac of the person with the metadata: the scan goes as it is.
+        XCTAssertEqual(FileFit.outcome(tiff, name: "contract.tiff", removesPosition: false).file?.data, tiff)
+    }
+
+    /// An animated GIF over 2400 pixels within the limit stays as it is, with each frame.
+    func testAnAnimatedGIFOverTheSideStaysAsItIs() throws {
+        let gif = try images([(2600, 50, false), (2600, 50, false)], type: .gif)
+        let outcome = FileFit.outcome(gif, name: "wave.gif")
+        XCTAssertEqual(outcome.file?.data, gif)
+        XCTAssertEqual(try imageCount(gif), 2)
+    }
+
+    /// A file of two images over the limit does not fit, with the text of the size.
+    func testAFileOfTwoImagesOverTheLimitIsTooLarge() throws {
+        let tiff = try images([(2500, 100, false), (60, 40, false)], type: .tiff)
+        let outcome = FileFit.outcome(tiff, name: "contract.tiff", limit: tiff.count - 1)
+        XCTAssertEqual(outcome, .tooLarge)
+        XCTAssertEqual(outcome.text, TeamFileRules.sizeText)
+        XCTAssertEqual(FitOutcome.cannotSend.text, "This file cannot be sent.")
     }
 
     /// The same photo without a position goes out with its own bytes.
