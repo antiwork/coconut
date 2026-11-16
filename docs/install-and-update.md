@@ -127,37 +127,25 @@ A Mac with no person at it can join a team from a message, as `coconut pair <cod
 
 The tool calls the team routes of the service with the token of `<data>/gateway/bridge.json`. See [the team log](team-log.md#mac). A person makes a team and an invite on the Team screen of the app.
 
-## GitHub access for an agent
+## GitHub access for agents
 
-Agents use the GitHub CLI login of the Mac account, as your normal Mac Terminal does.
-An agent that had its own GitHub login before this version keeps it: the profile's `.env` sets `GH_CONFIG_DIR` to the agent's own folder.
-Coconut does not copy tokens between agents.
+Open **Settings → Connections → GitHub** in Coconut, choose **Connect GitHub**, copy the code, and approve Coconut
+on GitHub. The Antiwork organization owns the Coconut OAuth app. One connection serves all Coconut agents.
 
-From an agent's terminal, run:
+Coconut stores its own access and refresh tokens on the Mac with owner-only permissions. Expiring tokens refresh
+before expiry. A revoked or expired refresh token shows **Reconnect GitHub** in Settings. **Disconnect GitHub**
+removes both local tokens and stops future use of that connection.
 
-```sh
-gh auth login --hostname github.com --git-protocol https --web --skip-ssh-key
-```
-
-Open the device authorization URL on your phone and enter the displayed code. Keep the login process running until authorization finishes.
-Then verify access from the same agent's terminal:
+Verify the account from an agent's terminal:
 
 ```sh
 gh api user --jq .login
 ```
 
-To run these commands from the Mac's normal Terminal, first find the agent's profile ID:
-
-```sh
-sqlite3 ~/Coconut/.runtime/host/coconut.sqlite3 "SELECT json_extract(data, '$.name'), id FROM bots"
-```
-
-For an agent with its own login, read `GH_CONFIG_DIR` from `.runtime/host/bots/PROFILE_ID/home/.env` in the Coconut folder. Prefix each `gh` command with that value.
-Replace `PROFILE_ID` with that agent's ID. Do not change the shell's `HOME` or paste a token into chat.
-If the Keychain is locked or unavailable, GitHub CLI supports `--insecure-storage`.
-This stores the token unencrypted with owner-only permissions. Use it only if you accept that storage method.
-Reauthorize if GitHub expires or revokes the token.
-See [GitHub CLI authentication](https://cli.github.com/manual/gh_auth_login).
+Agents must not run `gh auth login`, `gh auth logout`, or `gh auth setup-git`: those commands can change another
+GitHub login on the Mac. Coconut changes no other GitHub login or Git config. Without a Coconut connection, existing
+profile logins work as before. A Git rule that rewrites GitHub HTTPS URLs to SSH can still select the Mac account's
+SSH key; remove that rule if Coconut must own all GitHub Git traffic.
 
 ## CLI login from chat
 

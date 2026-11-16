@@ -90,6 +90,13 @@ Each agent is one Hermes profile of the person, keyed by the profile name. `defa
 `HOME` remains the Mac account home so macOS Keychain works.
 `USER` identifies the Mac account so Claude Code selects its saved Keychain login.
 Coconut scopes Codex, GitHub CLI, and XDG settings through their native environment variables.
+Settings → Connections → GitHub connects one account for all agents through the Antiwork-owned Coconut OAuth app.
+Device sign-in uses its public client ID, without a client secret. Coconut keeps access and refresh tokens in private
+files under `<data-dir>/connections/github`, refreshes expiring tokens before they expire, and stops refresh on shutdown
+or disconnect. Agent shells read the current token for each command; new agent processes and PR tracking use it too.
+Coconut runs no `gh auth` command and changes no other GitHub login, Git config, or Keychain entry. A GitHub SSH remote
+uses HTTPS with Coconut's credential helper. A pre-existing Git rule that rewrites GitHub HTTPS URLs back to SSH can
+still select the Mac account's SSH key; remove that rule when this connection must own all GitHub Git traffic.
 Claude Code shares the Mac account's native login, settings, and session history across agents and managed Hermes Terminal.
 Its configuration overrides remain unset so Claude Code and Hermes use the same native credential store.
 These paths organize data; they do not restrict a full-access process from reading other paths.

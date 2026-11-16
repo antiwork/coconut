@@ -10,6 +10,10 @@ struct MCPSettingsView: View {
         Form {
             GoogleConnectionSection()
             Section {
+                NavigationLink { GitHubSettingsView() } label: { Text("GitHub") }
+                    .accessibilityIdentifier("github-settings")
+            }
+            Section {
                 ForEach(store.mcpServers) { server in
                     NavigationLink { MCPConnectionView(server: server) } label: {
                         VStack(alignment: .leading, spacing: BoardStyle.Space.line) {

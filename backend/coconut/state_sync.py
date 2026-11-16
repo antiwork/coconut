@@ -325,7 +325,7 @@ class StateSync:
             context.completed context.failed execution.started execution.completed execution.uncertain work.updated work.recovery_queued
             bot.read bot.updated bot.settings_pending bot_message.delivered bots.addressed settings.updated settings.pending
             settings.update_unconfirmed model_catalog.updated routine.created routine.updated routine.deleted routine.triggered
-            routine.reconciliation_required routines.unavailable google.updated device.paired maintenance.withdrawal_corrected
+            routine.reconciliation_required routines.unavailable google.updated github.updated device.paired maintenance.withdrawal_corrected
             document.created document.updated document.deleted team.updated team_messages.updated
             team_directs.updated team_bot_directs.updated team_typing.updated""".split())
         # The state holds no document, because the phone reads the Library with GET /v1/documents. A document event
