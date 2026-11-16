@@ -57,6 +57,7 @@ struct BusinessReportView: View {
     @Environment(AppStore.self) private var store
     let key: String
     @State private var report: BusinessReport?
+    private var shownReport: BusinessReport? { store.businessReports[key] ?? report }
     @State private var error: String?
     @State private var details = false
 
@@ -65,7 +66,7 @@ struct BusinessReportView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 24) {
-                if let report {
+                if let report = shownReport {
                     header(report)
                     if report.stale {
                         Label(report.generatedAt == nil ? "This snapshot has no timestamp. Its freshness is unknown." : "This snapshot is over an hour old. Check the publisher before acting.", systemImage: "clock.badge.exclamationmark")
@@ -96,10 +97,11 @@ struct BusinessReportView: View {
         }
         .background(BoardStyle.paper).navigationTitle(BusinessReport.titles[key] ?? key).inlineNavigationTitle()
         .task(id: "\(key)/\(store.connection)/\(store.businessChanges)") { await load() }
+        .onChange(of: store.businessGeneration) { _, _ in report = nil }
         .refreshable { await load() }
         .sheet(isPresented: $details) {
             NavigationStack {
-                if let report { BusinessDataExplorer(value: report.data).navigationTitle("Report data") }
+                if let report = shownReport { BusinessDataExplorer(value: report.data).navigationTitle("Report data") }
             }.frame(minWidth: 380, minHeight: 420)
         }
     }

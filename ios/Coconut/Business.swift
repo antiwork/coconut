@@ -73,8 +73,15 @@ struct BusinessWork: Decodable, Identifiable, Hashable, Sendable {
 }
 
 extension AppStore {
+    func resetBusiness() {
+        businessGeneration = UUID()
+        businessItems = [:]; businessReports = [:]; businessCatalog = nil
+        businessChanges += 1
+    }
+
     func loadBusinessCatalog(fresh: Bool = false) async throws {
         if isDemo { if businessCatalog == nil { businessCatalog = .preview }; return }
+        if businessCatalog != nil && !fresh { return }
         let catalog: BusinessCatalog = try await businessRequest("business" + (fresh ? "?fresh=1" : ""))
         businessCatalog = catalog
     }
@@ -88,8 +95,15 @@ extension AppStore {
         if let project { query.append(URLQueryItem(name: "project", value: project)) }
         var components = URLComponents()
         components.queryItems = query
+        let changes = businessChanges
         let response: BusinessWorkList = try await businessRequest("business/work?" + (components.percentEncodedQuery ?? ""))
-        return response.items
+        guard changes == businessChanges else { return cachedBusinessWork(function: function, project: project, state: state) }
+        optimisticUpdates.receive {
+            let ids = Set(response.items.map(\.id))
+            for item in businessItems.values where (function == nil || item.functionKey == function) && (project == nil || item.projectKey == project) && (state == "all" || item.state == state) && !ids.contains(item.id) { businessItems[item.id] = nil }
+            for item in response.items { businessItems[item.id] = item }
+        }
+        return cachedBusinessWork(function: function, project: project, state: state)
     }
 
     func addBusinessProject(_ key: String) async throws {
@@ -107,23 +121,43 @@ extension AppStore {
         } else {
             result = try await businessRequest("business/functions/\(function)/work", method: "POST", body: APIJSON.encode(BusinessWorkRequest(title: title, body: body, projectKey: project)), requestId: requestId)
         }
+        businessItems[result.id] = result
         businessChanges += 1
         return result
     }
 
-    func setBusinessWork(_ work: BusinessWork, state: String) async throws -> BusinessWork {
-        let result: BusinessWork
-        if isDemo {
-            var copy = work
-            copy.state = state
-            if let index = demoBusinessWork.firstIndex(where: { $0.id == work.id }) { demoBusinessWork[index] = copy }
-            result = copy
-        } else {
-            result = try await businessRequest("business/functions/\(work.functionKey)/work/\(work.number)", method: "PATCH", body: APIJSON.encode(BusinessStateRequest(state: state)))
-        }
-        businessChanges += 1
-        return result
+    func cachedBusinessWork(function: String?, project: String?, state: String) -> [BusinessWork] {
+        let items = isDemo ? demoBusinessWork : Array(businessItems.values)
+        return items.filter { (function == nil || $0.functionKey == function) && (project == nil || $0.projectKey == project) && (state == "all" || $0.state == state) }
+            .sorted { ($0.updatedAt, $0.id) > ($1.updatedAt, $1.id) }
     }
+
+    func setBusinessWork(_ work: BusinessWork, state: String) async throws -> BusinessWork {
+        var changed = work; changed.state = state
+        if isDemo {
+            if let index = demoBusinessWork.firstIndex(where: { $0.id == work.id }) { demoBusinessWork[index] = changed }
+            businessChanges += 1
+            return changed
+        }
+        if businessItems[work.id] == nil { businessItems[work.id] = work }
+        let generation = businessGeneration
+        guard optimistically("business/\(generation)/\(work.id)", change: { transaction in
+            optimisticUpdates.set("business/\(generation)/\(work.id)/state", to: state, in: transaction,
+                read: { self.businessItems[work.id]?.state ?? work.state },
+                write: { if self.businessGeneration == generation { self.businessItems[work.id]?.state = $0 } })
+        }, save: {
+            guard self.businessGeneration == generation else { return }
+            do {
+                let result: BusinessWork = try await self.businessRequest("business/functions/\(work.functionKey)/work/\(work.number)", method: "PATCH", body: APIJSON.encode(BusinessStateRequest(state: state)))
+                self.optimisticUpdates.receive { self.businessItems[work.id] = result }
+            } catch is CancellationError { return }
+            catch { self.error = error.localizedDescription }
+            self.businessChanges += 1
+        }) else { throw ServiceError.configuration(error ?? "Connect your Mac to continue.") }
+        businessChanges += 1
+        return changed
+    }
+
 }
 
 private struct BusinessWorkList: Decodable, Sendable { let items: [BusinessWork] }

@@ -406,6 +406,7 @@ struct DocumentView: View {
     @State private var link: URL?
     @State private var deleting: BotDocument?
 
+    private var shown: BotDocument? { store.documentContents[documentId] ?? document }
     private var listed: BotDocument? { store.documents?.first { $0.id == documentId } }
     /// A bot of this Mac. A team page has none, so the actions that need one are not there.
     private var bot: Bot? { (document ?? listed).flatMap { item in store.bots.first { $0.id == item.botId } } }
@@ -416,7 +417,7 @@ struct DocumentView: View {
 
     var body: some View {
         Group {
-            if let document, let content = document.content {
+            if let document = shown, let content = document.content {
                 // Markdown and HTML share the page view, its article style and its blocks. The list has the current
                 // teams of the page. The open document has the teams of the time it loaded.
                 DocumentPage(document: document, meta: document.meta(botName: botName),
@@ -442,7 +443,7 @@ struct DocumentView: View {
         .navigationTitle("")
         .inlineNavigationTitle()
         .toolbar {
-            if let document, let content = document.content {
+            if let document = shown, let content = document.content {
                 ToolbarItem(placement: .trailingBar) {
                     Menu {
                         if let target = DocumentChatTarget(listed ?? document, bots: store.bots, team: store.team) {
@@ -478,7 +479,7 @@ struct DocumentView: View {
             get: { link != nil }, set: { if !$0 { link = nil } }), titleVisibility: .visible) {
             Button("Open in browser") { if let link { openURL(link) } }
         } message: { Text(link?.absoluteString ?? "") }
-        .task(id: documentId) { await load() }
+        .task(id: "\(documentId)/\(store.businessGeneration)") { await load() }
         // The share actions name the teams of this Mac. A Library that opened before the Team screen loads them.
         .task(id: store.connection) { if store.team == nil { await store.loadTeam() } }
         .onChange(of: store.connection) { _, connection in
@@ -504,7 +505,7 @@ struct DocumentView: View {
     }
 
     private func load() async {
-        guard let loaded = await store.loadDocument(id: documentId) else { failed = document == nil; return }
+        guard let loaded = await store.loadDocument(id: documentId) else { document = nil; failed = true; return }
         failed = false
         document = loaded
     }

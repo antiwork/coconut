@@ -438,6 +438,7 @@ final class TeamScreenTests: XCTestCase {
             try await waitUntil { server.heldShares == 2 }
             server.releaseSharesLastFirst()
             let results = [await share.value, await stop.value]
+            await store.optimisticUpdates.wait()
             XCTAssertEqual(results, [true, true])
             let listed = { store.documents?.first { $0.id == "d1" } }
             XCTAssertEqual(listed()?.teams, [], "The older answer must not share the page again.")
@@ -446,6 +447,7 @@ final class TeamScreenTests: XCTestCase {
             XCTAssertEqual(listed()?.teams, [])
             // A share shows at once, with its line and its stop item.
             let shared = await store.sharePage(try XCTUnwrap(listed()), with: "r1", shared: true)
+            await store.optimisticUpdates.wait()
             XCTAssertTrue(shared)
             XCTAssertEqual(listed()?.sharedLine, "Shared with Example Team")
             XCTAssertEqual(PageShareItem.items(for: try XCTUnwrap(listed()), rooms: store.team?.rooms ?? [])
@@ -470,13 +472,15 @@ final class TeamScreenTests: XCTestCase {
             await store.loadTeam()
             XCTAssertEqual(store.team?.rooms.first?.namedChats.map(\.notifications), [true])
             let muted = await store.setTeamChatNotifications("r1", chat: "c1", enabled: false)
+            await store.optimisticUpdates.wait()
             XCTAssertTrue(muted)
             XCTAssertEqual(server.muteRequests, ["PUT /v1/team/rooms/r1/chats/c1/notifications {\"enabled\":false}"])
             XCTAssertEqual(store.team?.rooms.first?.namedChats.first?.notifications, false)
             XCTAssertEqual(store.teamChatMuteChoices, [:], "The choice goes when its request ends.")
             server.refuseMutes()
             let unmuted = await store.setTeamChatNotifications("r1", chat: "c1", enabled: true)
-            XCTAssertFalse(unmuted)
+            await store.optimisticUpdates.wait()
+            XCTAssertTrue(unmuted, "Accepted locally; the failed save rolls back below.")
             XCTAssertEqual(store.error, "This chat is no longer in the team.")
             XCTAssertEqual(store.teamChatMuteChoices, [:])
             XCTAssertEqual(store.team?.rooms.first?.namedChats.first?.notifications, false)
@@ -500,10 +504,12 @@ final class TeamScreenTests: XCTestCase {
             await store.loadTeam()
             XCTAssertEqual(store.team?.rooms.first?.pinned, false)
             let chat = await store.setTeamChatPinned("r1", chat: "c1", pinned: true)
+            await store.optimisticUpdates.wait()
             XCTAssertTrue(chat)
             XCTAssertEqual(store.team?.rooms.first?.namedChats.first?.pinned, true)
             XCTAssertEqual(store.team?.rooms.first?.pinned, false)
             let team = await store.setTeamChatPinned("r1", chat: nil, pinned: true)
+            await store.optimisticUpdates.wait()
             XCTAssertTrue(team)
             XCTAssertEqual(store.team?.rooms.first?.pinned, true)
             XCTAssertEqual(server.muteRequests, ["PUT /v1/team/rooms/r1/chats/c1/pin {\"pinned\":true}",
@@ -513,7 +519,8 @@ final class TeamScreenTests: XCTestCase {
             // A failed request shows its text, and the list keeps the state of the Mac.
             server.refuseMutes()
             let refused = await store.setTeamChatPinned("r1", chat: "c1", pinned: false)
-            XCTAssertFalse(refused)
+            await store.optimisticUpdates.wait()
+            XCTAssertTrue(refused, "Accepted locally; the failed save rolls back below.")
             XCTAssertEqual(store.error, "This chat is no longer in the team.")
             XCTAssertEqual(store.teamChatPinChoices, [:])
             XCTAssertEqual(store.shownTeamRooms.first?.namedChats.first?.pinned, true)
@@ -537,7 +544,8 @@ final class TeamScreenTests: XCTestCase {
             let page = try XCTUnwrap(store.documents?.first { $0.id == "d1" })
             server.refuseShares()
             let shared = await store.sharePage(page, with: "r1", shared: true)
-            XCTAssertFalse(shared)
+            await store.optimisticUpdates.wait()
+            XCTAssertTrue(shared, "Accepted locally; refusal restores the original page.")
             XCTAssertEqual(store.error, "This team no longer exists.")
             XCTAssertEqual(store.documents?.first { $0.id == "d1" }?.teams, [])
         }

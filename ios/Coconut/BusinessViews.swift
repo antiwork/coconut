@@ -27,8 +27,10 @@ struct BusinessHomeView: View {
 }
 
 struct BusinessDestinationView: View {
+    @Environment(AppStore.self) private var store
     let route: BusinessRoute
     var body: some View {
+        Group {
         switch route {
         case .home: BusinessHomeView()
         case .projects: BusinessProjectsView()
@@ -37,6 +39,7 @@ struct BusinessDestinationView: View {
         case .report(let key): BusinessReportView(key: key)
         case .ledger: BusinessLedgerView()
         }
+        }.id(store.businessGeneration)
     }
 }
 
@@ -79,11 +82,11 @@ struct BusinessWorkListView: View {
     var function: String? = nil
     var project: String? = nil
     @State private var state = "open"
-    @State private var items: [BusinessWork] = []
     @State private var error: String?
     @State private var loading = false
     @State private var adding = false
 
+    private var shownItems: [BusinessWork] { store.cachedBusinessWork(function: function, project: project, state: state) }
     private var title: String {
         if let function { return BusinessFunction.name(function) }
         return store.businessCatalog?.projects.first { $0.key == project }?.displayName ?? project ?? "Work"
@@ -104,8 +107,8 @@ struct BusinessWorkListView: View {
                     Link(destination: url) { Label(repository.fullName, systemImage: "folder") }.font(.caption)
                 }
             }
-            if loading && items.isEmpty { ProgressView("Loading work") }
-            ForEach(items) { item in
+            if loading && shownItems.isEmpty { ProgressView("Loading work") }
+            ForEach(shownItems) { item in
                 NavigationLink { BusinessWorkDetailView(work: item) } label: {
                     VStack(alignment: .leading, spacing: 5) {
                         Text(item.title).foregroundStyle(.primary)
@@ -115,7 +118,7 @@ struct BusinessWorkListView: View {
                     }.padding(.vertical, 3)
                 }.accessibilityIdentifier("business-work-" + item.id)
             }
-            if !loading && items.isEmpty && error == nil {
+            if !loading && shownItems.isEmpty && error == nil {
                 Section { Text(state == "open" ? "No open work yet." : "No completed work yet.").foregroundStyle(.secondary) }
             }
             if let error { BusinessConnectionNotice(message: error) }
@@ -138,9 +141,9 @@ struct BusinessWorkListView: View {
         defer { loading = false }
         do {
             try await store.loadBusinessCatalog(fresh: fresh)
-            let loaded = try await store.businessWork(function: function, project: project, state: state)
+            _ = try await store.businessWork(function: function, project: project, state: state)
             guard !Task.isCancelled else { return }
-            items = loaded; error = nil
+            error = nil
         } catch is CancellationError { }
         catch { self.error = error.localizedDescription }
     }
@@ -149,6 +152,7 @@ struct BusinessWorkListView: View {
 struct BusinessWorkDetailView: View {
     @Environment(AppStore.self) private var store
     @State var work: BusinessWork
+    private var shownWork: BusinessWork { store.businessItems[work.id] ?? work }
     @State private var busy = false
     @State private var error: String?
     @State private var asking = false
@@ -156,22 +160,22 @@ struct BusinessWorkDetailView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
-                Text(work.title).font(.title2.bold())
-                Text([BusinessFunction.name(work.functionKey), work.projectKey, work.isOpen ? "Open" : "Completed"].compactMap { $0 }.joined(separator: " · "))
+                Text(shownWork.title).font(.title2.bold())
+                Text([BusinessFunction.name(shownWork.functionKey), shownWork.projectKey, shownWork.isOpen ? "Open" : "Completed"].compactMap { $0 }.joined(separator: " · "))
                     .font(.subheadline).foregroundStyle(.secondary)
-                if !work.body.isEmpty { Markdown(work.body).textSelection(.enabled) }
+                if !shownWork.body.isEmpty { Markdown(shownWork.body).textSelection(.enabled) }
                 if let error { Text(error).foregroundStyle(BoardStyle.destructive) }
-                Button(busy ? "Saving…" : work.isOpen ? "Complete work" : "Reopen work") {
+                Button(busy ? "Saving…" : shownWork.isOpen ? "Complete work" : "Reopen work") {
                     busy = true
                     Task {
                         defer { busy = false }
-                        do { work = try await store.setBusinessWork(work, state: work.isOpen ? "closed" : "open"); error = nil }
+                        do { work = try await store.setBusinessWork(shownWork, state: shownWork.isOpen ? "closed" : "open"); error = nil }
                         catch { self.error = error.localizedDescription }
                     }
                 }.disabled(busy).accessibilityIdentifier("business-work-state")
                 Button("Ask an agent", systemImage: "bubble.left.and.bubble.right") { asking = true }
                     .disabled(store.bots.allSatisfy(\.archived)).accessibilityIdentifier("business-ask-agent")
-                if let url = URL(string: work.url) { Link("Open on GitHub", destination: url).font(.subheadline) }
+                if let url = URL(string: shownWork.url) { Link("Open on GitHub", destination: url).font(.subheadline) }
             }.frame(maxWidth: 720, alignment: .leading).padding(24).frame(maxWidth: .infinity, alignment: .leading)
         }
         .background(BoardStyle.paper).navigationTitle("Work").inlineNavigationTitle()

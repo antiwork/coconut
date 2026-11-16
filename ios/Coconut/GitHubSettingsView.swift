@@ -76,9 +76,8 @@ struct GitHubSettingsView: View {
         do {
             let result = try await store.githubStatus()
             guard !Task.isCancelled else { return }
-            if status?.login != result.login || status?.connected != result.connected {
-                store.businessCatalog = nil
-                store.businessChanges += 1
+            if let previous = status, previous.login != result.login || previous.connected != result.connected {
+                store.resetBusiness()
             }
             status = result
         } catch is CancellationError { }
@@ -121,8 +120,7 @@ struct GitHubSettingsView: View {
             defer { busy = false }
             do {
                 status = try await store.githubRequest("disconnect")
-                store.businessCatalog = nil
-                store.businessChanges += 1
+                store.resetBusiness()
             }
             catch { self.error = error.localizedDescription }
         }

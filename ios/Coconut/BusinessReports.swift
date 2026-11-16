@@ -71,7 +71,9 @@ struct LedgerFile: Decodable, Sendable { let path: String; let content: String; 
 extension AppStore {
     func businessReport(_ key: String) async throws -> BusinessReport {
         if isDemo { return try BusinessReport.preview(key) }
-        return try await businessRequest("business/reports/" + key)
+        let report: BusinessReport = try await businessRequest("business/reports/" + key)
+        businessReports[key] = report
+        return report
     }
     func businessLedger() async throws -> LedgerIndex { try await businessRequest("business/ledger") }
     func businessLedgerFile(_ path: String) async throws -> LedgerFile {

@@ -61,6 +61,17 @@ publisher's Helper, mail and reporting integrations. Reading their GitHub snapsh
 
 ## Native integration
 
+Local edits update the interface before their network requests finish. `OptimisticUpdates` keeps confirmed values
+under pending edits, reapplies the latest choice over background snapshots, and restores the newest confirmed value
+after a failed save. Writes of native settings and writes within one team run in order. A failed save uses the shared
+error banner. Pairing changes discard pending projections and private reading caches.
+
+Pins, archives, settings, routine edits, Library actions and business issue states use this path. Messages and decision
+answers retain their existing durable outboxes. Opening a previously read Library page or report draws its cached
+content while revalidating it. Saves return after their receipt; background refreshes coalesce instead of delaying
+the control that initiated the save. Creating remote identities, authentication, uploads and first reads show their
+actual progress until the service returns the required data.
+
 Coconut installs no files into the Hermes source checkout.
 Coconut ships its `coconut` skill in `skills/` of the install folder. Hermes loads it through `skills.external_dirs`: setup adds that folder to the person's Hermes profiles, which are also the agents, and a profile that Coconut creates gets it at creation. The person's other Hermes surfaces, such as the Telegram gateway, then know how to update, pair, and repair Coconut. See [the coconut skill](install-and-update.md#the-coconut-skill-for-hermes).
 The gateway of the person's Hermes runs each turn with the agent's profile: its tools, context, memory and skills.
