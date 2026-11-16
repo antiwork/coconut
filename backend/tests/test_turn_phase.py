@@ -1,60 +1,42 @@
-import tempfile
 import unittest
-from uuid import uuid4
 
-from coconut.service import Service
-from test_service import ControlledProvider
+from coconut.gateway_bridge import TurnEvents
+from coconut.turn_phase import PHASES, tool_phase
 
 
-class RecordedPhaseTests(unittest.TestCase):
-    def setUp(self):
-        self.directory = tempfile.TemporaryDirectory()
-        self.service = Service(self.directory.name, ControlledProvider(), start_workers=False)
-        self.device = self.service.pair({'code': self.service.pairing_code()})['device_id']
-        self.bot = self.service.mutate('POST', '/v1/bots', {'name': 'Ada'}, str(uuid4()), self.device)
-        self.task = self.service.mutate('POST', f'/v1/bots/{self.bot["id"]}/messages',
-                                        dict(text='Check the test', mode='queue'), str(uuid4()), self.device)
-        with self.service.transaction():
-            task = self.service._get('tasks', self.task['id'])
-            task['status'] = 'working'
-            self.service._put('tasks', task)
+class ToolPhaseTests(unittest.TestCase):
+    def test_each_tool_names_its_phase_and_what_it_does(self):
+        self.assertEqual(tool_phase('terminal', {'command': 'git status --short'}), ('command', 'git status --short'))
+        self.assertEqual(tool_phase('terminal', {'command': 'python -m pytest backend/tests'})[0], 'testing')
+        self.assertEqual(tool_phase('terminal', {'command': 'gh pr view 12'})[0], 'github')
+        self.assertEqual(tool_phase('read_file', {'path': '/Users/x/project/app/Models.swift'}), ('reading', 'Models.swift'))
+        self.assertEqual(tool_phase('patch', {'path': 'a/b/c.py'}), ('editing', 'c.py'))
+        self.assertEqual(tool_phase('search_files', {'pattern': 'unread'}), ('searching', 'unread'))
+        self.assertEqual(tool_phase('web_search', {'query': 'swift timeline'}), ('browsing', 'swift timeline'))
+        self.assertEqual(tool_phase('web_extract', {'urls': ['https://example.com/a/b']}), ('browsing', 'example.com'))
+        self.assertEqual(tool_phase('delegate_task', {}), ('helpers', ''))
+        self.assertEqual(tool_phase('coconut_save_document', {}), ('working', 'coconut save document'))
 
-    def tearDown(self):
-        self.service.close()
-        self.directory.cleanup()
+    def test_the_detail_is_one_short_line(self):
+        phase, detail = tool_phase('terminal', {'command': 'echo ' + 'x' * 400 + '\nsecond line'})
+        self.assertEqual(phase, 'command')
+        self.assertLessEqual(len(detail), 120)
+        self.assertNotIn('second line', detail)
 
-    def stored(self):
-        with self.service.transaction():
-            return self.service._get('tasks', self.task['id'])
+    def test_every_phase_is_one_the_app_knows(self):
+        for tool in ('terminal', 'read_file', 'patch', 'search_files', 'web_search', 'memory', 'delegate_task', 'x'):
+            self.assertIn(tool_phase(tool, {})[0], PHASES)
 
-    def public(self):
-        return next(task for task in self.service.snapshot()['tasks'] if task['id'] == self.task['id'])
-
-    def test_working_task_publishes_its_phase_and_keeps_the_turn_start(self):
-        self.service.emit(self.task['id'], 'phase', {'phase': 'thinking'})
-        started = self.stored()['turn_started_at']
-        self.service.emit(self.task['id'], 'phase', {'phase': 'testing'})
-        self.assertEqual(self.public()['phase'], 'testing')
-        self.assertEqual(self.public()['turn_started_at'], started)
-
-    def test_unknown_phase_is_ignored(self):
-        self.service.emit(self.task['id'], 'phase', {'phase': 'rm -rf /'})
-        self.assertNotIn('phase', self.stored())
-
-    def test_phase_ends_with_the_turn(self):
-        self.service.emit(self.task['id'], 'phase', {'phase': 'reading'})
-        self.service.emit(self.task['id'], 'text_delta', {'text': 'Done.'})
-        self.service.emit(self.task['id'], 'completed', {'summary': 'Complete.'})
-        self.assertNotIn('phase', self.stored())
-        self.assertNotIn('turn_started_at', self.stored())
-
-    def test_finished_task_does_not_take_a_late_phase(self):
-        with self.service.transaction():
-            task = self.service._get('tasks', self.task['id'])
-            task['status'] = 'completed'
-            self.service._put('tasks', task)
-        self.service.emit(self.task['id'], 'phase', {'phase': 'writing'})
-        self.assertNotIn('phase', self.stored())
+    def test_a_tool_event_reports_its_phase_with_the_detail(self):
+        emitted = []
+        events = TurnEvents(lambda kind, payload: emitted.append((kind, payload)))
+        events.apply({'kind': 'typing'})
+        events.apply({'kind': 'tool', 'tool': 'terminal', 'args': {'command': 'ls'}})
+        events.apply({'kind': 'tool', 'tool': 'terminal', 'args': {'command': 'ls'}})
+        events.apply({'kind': 'tool', 'tool': 'read_file', 'args': {'path': 'a/b.txt'}})
+        self.assertEqual(emitted, [('phase', {'phase': 'thinking'}),
+                                   ('phase', {'phase': 'command', 'detail': 'ls'}),
+                                   ('phase', {'phase': 'reading', 'detail': 'b.txt'})])
 
 
 if __name__ == '__main__':

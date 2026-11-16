@@ -65,6 +65,7 @@ def register(ctx):
     ctx.register_hook('post_llm_call', cron_answer)
     ctx.register_hook('on_session_end', cron_end)
     ctx.register_hook('pre_tool_call', guard_tool)
+    ctx.register_hook('pre_tool_call', report_tool)
     ctx.register_hook('post_tool_call', save_todos)
     ctx.register_hook('post_api_request', note_prompt_size)
     ctx.register_hook('on_session_reset', follow_new_session)
@@ -138,6 +139,43 @@ def save_todos(tool_name='', result=None, **_):
             'todos': state['todos'], 'revision': state.get('revision', 0)}}, REQUEST_SECONDS)
     except Exception as error:
         LOG.warning('Coconut: the Coconut service did not save the todo list of a turn (%s).', type(error).__name__)
+    return None
+
+
+# The arguments that name what a tool call does: a command, a file, a query or a page. Only these reach the service, each
+# cut short, so a file that the model writes never travels with its phase.
+TOOL_DETAIL_KEYS = ('command', 'code', 'path', 'pattern', 'query', 'url', 'urls')
+TOOL_DETAIL_CHARS = 300
+
+
+def tool_detail(args) -> dict:
+    """The short arguments of a tool call that say what it does."""
+    detail = {}
+    for key in TOOL_DETAIL_KEYS:
+        value = (args or {}).get(key) if isinstance(args, dict) else None
+        if isinstance(value, str):
+            detail[key] = value[:TOOL_DETAIL_CHARS]
+        elif key == 'urls' and isinstance(value, list):
+            detail[key] = [url[:TOOL_DETAIL_CHARS] for url in value[:1] if isinstance(url, str)]
+    return detail
+
+
+def report_tool(tool_name='', args=None, **_):
+    """pre_tool_call: tell Coconut which tool the turn runs now, so the chat shows the command, file or query with its
+    own timer, as Codex and Claude Code do. It never blocks the call: the report goes on its own thread."""
+    holder, turn = _turn()
+    if turn is None or not tool_name or getattr(holder, '_bridge', None) is None:
+        return None
+    payload = {'turn_id': turn, 'kind': 'tool', 'tool': str(tool_name)[:80], 'args': tool_detail(args)}
+
+    def send():
+        try:
+            holder._bridge.request('/v1/gateway/events', payload, 5)
+        except Exception as error:
+            LOG.debug('Coconut: the service did not take the tool of a turn (%s).', type(error).__name__)
+
+    import threading
+    threading.Thread(target=send, name='coconut-tool-phase', daemon=True).start()
     return None
 
 

@@ -2,7 +2,7 @@ name: Mac release
 
 # Builds Coconut.app, signs it with the Developer ID Application certificate, notarizes it, staples the ticket, and
 # publishes it in the Sparkle feed of the Worker coconut-updates (updates/). Pushes coalesce into at most one update
-# per hour. The hourly run picks up changes that arrived during the cooldown. Manual runs use the same gate.
+# per hour. The hourly run picks up changes that arrived during the cooldown. An explicit urgent manual run skips it.
 # The version is in mac/VERSION. The build number is the commit count of main.
 #
 # The environment `mac-release` accepts only the main branch. It holds these secrets:
@@ -17,6 +17,11 @@ on:
   schedule:
     - cron: '17 * * * *'
   workflow_dispatch:
+    inputs:
+      urgent:
+        description: Publish an urgent Mac update before the hourly cooldown ends
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -50,7 +55,11 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-        run: python3 scripts/release_gate.py plan --channel mac
+          URGENT: ${{ github.event_name == 'workflow_dispatch' && inputs.urgent }}
+        run: |
+          args=()
+          if [ "$URGENT" = true ]; then args+=(--urgent); fi
+          python3 scripts/release_gate.py plan --channel mac "${args[@]}"
       - name: Choose the build
         id: plan
         run: |
@@ -163,7 +172,12 @@ jobs:
         run: python scripts/mac_feed.py publish --archive "$ARCHIVE" --signature "$SIGNATURE" --output updates/public
       - name: Record the publication
         id: publication
-        run: python3 scripts/release_gate.py begin --channel mac
+        env:
+          URGENT: ${{ github.event_name == 'workflow_dispatch' && inputs.urgent }}
+        run: |
+          args=()
+          if [ "$URGENT" = true ]; then args+=(--urgent); fi
+          python3 scripts/release_gate.py begin --channel mac "${args[@]}"
       - name: Deploy the feed to the Worker coconut-updates
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}

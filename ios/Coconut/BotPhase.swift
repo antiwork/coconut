@@ -38,6 +38,19 @@ struct ConversationActivity: Equatable {
     var phase: BotPhase
     var startedAt: Date?
     var reconnecting: Bool
+    /// The command, file or query of the phase, as Codex and Claude Code show it.
+    var detail: String? = nil
+    /// The name of the model that runs the turn.
+    var model: String? = nil
+
+    /// The time of a turn to the second: 9s, 4m 05s, 1h 02m 05s.
+    static func elapsed(_ seconds: TimeInterval) -> String {
+        let total = max(0, Int(seconds))
+        let (hours, minutes, rest) = (total / 3600, total / 60 % 60, total % 60)
+        if hours > 0 { return String(format: "%dh %02dm %02ds", hours, minutes, rest) }
+        if minutes > 0 { return String(format: "%dm %02ds", minutes, rest) }
+        return "\(rest)s"
+    }
 }
 
 // A bright band crosses the label from left to right, then rests. One repeating offset

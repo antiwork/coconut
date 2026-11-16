@@ -39,6 +39,7 @@ backend changes and the tests of changed modules or test files. Python 3.11 or n
 The agent runs additional targeted checks locally when needed. GitHub runs no regression CI. Only the Mac and
 TestFlight release jobs remain: they build before publishing, skip unchanged app inputs, and publish at most once
 per hour per app. The hourly schedule picks up commits that arrived during the cooldown.
+For an urgent Mac fix, run `Mac release` manually with `urgent` enabled to skip the cooldown.
 
 When a change needs the full backend suite, run each file in its own process. Module names collide otherwise.
 

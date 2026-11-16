@@ -13,9 +13,11 @@ struct BotStatusRow: View {
     private var writing: Bool { phase == .writing && !reduceMotion && !activity.reconnecting }
     private var fade: Animation? { BoardStyle.fade(reduceMotion: reduceMotion) }
 
+    // The detail belongs to the phase that the row shows, not to a newer one that still waits for its dwell.
+    private var detail: String? { shown == nil || shown == activity.phase ? activity.detail : nil }
+
     var body: some View {
-        TimelineView(.periodic(from: .now, by: 15)) { timeline in
-            let label = label(at: timeline.date)
+        VStack(alignment: .leading, spacing: 3) {
             HStack(spacing: 8) {
                 if writing { TypingDots().transition(.opacity) }
                 ZStack(alignment: .leading) {
@@ -23,16 +25,34 @@ struct BotStatusRow: View {
                         .id(label)
                         .transition(.opacity)
                 }
+                // The time of the turn to the second, and the model, as a professional tool shows them.
+                if !activity.reconnecting {
+                    TimelineView(.periodic(from: .now, by: 1)) { timeline in
+                        Text(meta(at: timeline.date))
+                            .monospacedDigit()
+                            .foregroundStyle(.secondary)
+                    }
+                }
             }
             .font(.subheadline)
-            .animation(fade, value: label)
-            .animation(fade, value: writing)
+            if let detail, !activity.reconnecting {
+                Text(detail)
+                    .font(.caption.monospaced())
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .textSelection(.enabled)
+                    .transition(.opacity)
+            }
         }
+        .animation(fade, value: label)
+        .animation(fade, value: writing)
+        .animation(fade, value: detail)
         .frame(minHeight: 32, alignment: .leading)
         // The text starts at the edge of the text in a bubble.
         .padding(.leading, BoardStyle.Space.m)
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel("\(bot.name): \(label(at: .now))")
+        .accessibilityLabel(([bot.name + ": " + label, detail, meta(at: .now)].compactMap { $0 }).joined(separator: ", "))
         .accessibilityIdentifier("bot-working-\(bot.id)")
         .task(id: activity.phase) {
             // Hold each label long enough to read, so fast tool calls do not flicker.
@@ -44,12 +64,14 @@ struct BotStatusRow: View {
         }
     }
 
-    private func label(at date: Date) -> String {
-        if activity.reconnecting { return "Reconnecting…" }
-        let text = phase.label
-        guard let startedAt = activity.startedAt, date.timeIntervalSince(startedAt) >= 60,
-              let span = CompactAgeLabel.span(date.timeIntervalSince(startedAt)) else { return text }
-        return "\(text) · \(span)"
+    private var label: String { activity.reconnecting ? "Reconnecting…" : phase.label }
+
+    /// "· 4m 05s · Claude Opus 5.5": the time since the turn started and the model of the turn.
+    func meta(at date: Date) -> String {
+        var parts: [String] = []
+        if let startedAt = activity.startedAt { parts.append(ConversationActivity.elapsed(date.timeIntervalSince(startedAt))) }
+        if let model = activity.model, !model.isEmpty { parts.append(model) }
+        return parts.map { "· " + $0 }.joined(separator: " ")
     }
 }
 

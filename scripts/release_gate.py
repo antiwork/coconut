@@ -1,4 +1,4 @@
-"""Publish the latest main at most once an hour per app, after its build succeeds.
+"""Publish the latest main hourly, or publish an explicit urgent release, after its build succeeds.
 
 GitHub deployment records keep the publication time and source commit across runs. Existing workflow history
 supplies the first record while moving from per-push releases. No credentials leave the gh process.
@@ -52,8 +52,8 @@ def cooling_down(last, now):
     return last is not None and now < datetime.fromisoformat(last['at'].replace('Z', '+00:00')) + timedelta(hours=1)
 
 
-def should_release(channel, last, now, changed):
-    if cooling_down(last, now):
+def should_release(channel, last, now, changed, urgent=False):
+    if not urgent and cooling_down(last, now):
         return False, 'The previous update is less than one hour old.'
     inputs = MAC_INPUTS if channel == 'mac' else IPHONE_INPUTS
     if last and last['state'] == 'success' and not any(path.startswith(inputs) for path in changed):
@@ -73,6 +73,7 @@ def main():
     parser.add_argument('--channel', choices=CHANNELS)
     parser.add_argument('--id')
     parser.add_argument('--state', choices=('success', 'failure', 'cancelled'))
+    parser.add_argument('--urgent', action='store_true', help='Bypass the hourly cooldown for an urgent release.')
     args = parser.parse_args()
     if args.command == 'finish':
         if not args.id or not args.state:
@@ -90,15 +91,16 @@ def main():
             diff = subprocess.run(['git', 'diff', '--name-only', last['sha'], sha], capture_output=True, text=True)
             if diff.returncode == 0:
                 changed = diff.stdout.splitlines()
-        release, reason = should_release(args.channel, last, now, changed)
+        release, reason = should_release(args.channel, last, now, changed, urgent=args.urgent)
         print(reason)
         output(skip=str(not release).lower(), sha=sha,
                previous_sha=last['sha'] if last and last['state'] == 'success' else '')
     else:
-        if cooling_down(last, now):
+        if not args.urgent and cooling_down(last, now):
             raise SystemExit('Another update was published within the last hour.')
         deployment = api('POST', 'deployments', dict(ref=sha, auto_merge=False, required_contexts=[],
-                          environment=CHANNELS[args.channel][0], description='Hourly Coconut app update'))
+                          environment=CHANNELS[args.channel][0],
+                          description='Urgent Coconut app update' if args.urgent else 'Hourly Coconut app update'))
         output(id=deployment['id'])
         api('POST', f'deployments/{deployment["id"]}/statuses', {'state': 'in_progress'})
 

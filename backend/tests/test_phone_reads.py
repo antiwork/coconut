@@ -12,7 +12,7 @@ from uuid import uuid4
 from coconut.providers import FixtureProvider
 from coconut.server import TunnelServer, request_timing
 from coconut.service import Service
-from coconut.state_sync import CONFIRMED_REQUESTS
+from coconut.state_sync import CONFIRMED_REQUESTS, READ_INDEXES
 import legacy_work_sync
 
 setUpModule, tearDownModule = legacy_work_sync.scope()
@@ -252,7 +252,14 @@ class MessagePageTests(PhoneReadCase):
                 value = json.loads(self.service.db.execute(statement).fetchone()[0])
                 times.append(time.perf_counter() - started)
             return value, min(times)
+        # The index before this change held the request only, so a read of it opened every message for its bot.
+        self.service.db.executescript(
+            "DROP INDEX IF EXISTS messages_client_request_bot;\n"
+            "CREATE INDEX IF NOT EXISTS messages_client_request ON messages (json_extract(data,'$.client_request_id'))\n"
+            "    WHERE json_type(data,'$.client_request_id')='text';")
         expected, before = read(REFERENCE_CONFIRMED)
+        # The read view of this change holds the request and the bot of each message, so the read opens none of them.
+        self.service.db.executescript(READ_INDEXES)
         confirmed, after = read(CONFIRMED_REQUESTS)
         self.assertEqual(confirmed, expected)
         self.assertEqual(len(confirmed), 398)

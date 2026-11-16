@@ -365,7 +365,9 @@ struct ConversationView: View {
                     }
                     .pinnedDayPill(pinnedDay, now: dayReference, below: Self.titleHeight)
                     .background(BoardStyle.paper)
-                    .task { await store.markRead(bot) }
+                    // The chat reads each reply that comes while it is open, not only the replies before it opened. Before,
+                    // a chat that stayed open on a Mac counted each new reply as unread until the person left and came back.
+                    .task(id: bot.unreadCount) { if bot.unreadCount > 0 { await store.markRead(bot) } }
                     // From now on a new message does not push the first row out of the window.
                     .onAppear { window.keep(current.entries.map(\.id), focusId: windowFocus) }
                     .task(id: "\(focusMessageId ?? ""):\(store.connection.rawValue):\(store.hasOlderMessages(botId))") {

@@ -593,6 +593,8 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
         if table == 'tasks' and obj.get('status') != 'working':
             # A phase describes only the running turn. The next turn starts without it.
             obj.pop('phase', None)
+            obj.pop('phase_detail', None)
+            obj.pop('phase_started_at', None)
             obj.pop('turn_started_at', None)
         if table == 'decisions' and obj.get('status') == 'pending':
             # The time of the newest revision of a card (decision_sources.source_change). Each write that raises the
@@ -3825,14 +3827,18 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
     def _record_phase(self, task_id: str, payload: dict):
         from .turn_phase import PHASES
         phase = payload.get('phase')
+        detail = payload.get('detail') if isinstance(payload.get('detail'), str) else ''
         if phase not in PHASES:
             return
         with self.transaction():
             task = self._get('tasks', task_id)
-            if task['status'] != 'working' or task.get('phase') == phase:
+            if task['status'] != 'working' or (task.get('phase'), task.get('phase_detail') or '') == (phase, detail):
                 return
             task.setdefault('turn_started_at', now())
             task['phase'] = phase
+            # The command, file or query of the phase, and its start, for the line under the newest message.
+            task['phase_detail'] = detail[:120]
+            task['phase_started_at'] = now()
             self._put('tasks', task)
             self._event('task.updated', self._public(task), task['bot_id'], task_id)
 
