@@ -9,11 +9,13 @@ final class ArchiveAgentFlowTests: XCTestCase {
         XCTAssertTrue(working.waitForExistence(timeout: 10))
         let blocked = app.buttons["chats-todo-blocked"]
         XCTAssertTrue(blocked.exists)
+        XCTAssertTrue(app.buttons["chats-todo-coconut-work"].exists)
         XCTAssertLessThan(working.frame.minY, blocked.frame.minY)
         XCTAssertFalse(app.buttons["chats-todo-completed"].exists)
         XCTAssertFalse(app.buttons["chats-todo-archived"].exists)
         capture("To-dos above the Chats list")
         working.tap()
+        // SwiftUI applies the HStack identifier to its label and button in the native accessibility tree.
         XCTAssertTrue(app.staticTexts["work-context-preview"].waitForExistence(timeout: 10))
         XCTAssertEqual(app.staticTexts["work-context-preview"].label, "Prepare the next release")
         XCTAssertTrue(app.buttons["Remove work context"].exists)
@@ -23,6 +25,7 @@ final class ArchiveAgentFlowTests: XCTestCase {
         XCTAssertFalse(working.exists)
         app.buttons["chats-filter-bots"].tap()
         XCTAssertTrue(working.waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["chats-todo-coconut-work"].exists)
         app.buttons["chats-filter-unread"].tap()
         XCTAssertTrue(app.buttons["chats-filter-unread"].isSelected)
         XCTAssertFalse(working.exists)

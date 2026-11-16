@@ -29,7 +29,7 @@ struct HomeLaunchView: View {
         let conversations = ChatList.rows(filter, bots: activeBots.filter { !$0.pinned }, latest: latest,
                                           rooms: rooms, local: store.newestLocalMessages)
         let pinned = filter.showsPinned ? pinnedBots.filter { filter != .unread || $0.unreadCount > 0 } : []
-        let todos = filter.showsTodos ? AgentTodos.make(artifacts: store.artifacts, bots: activeBots) : []
+        let todos = filter.showsTodos ? AgentTodos.make(artifacts: store.artifacts, bots: store.bots) : []
         let coconut = store.bots.coconutChat
         // A list, not a stack, so that a row of an agent has the swipe of the system: swipe left to archive.
         return List {

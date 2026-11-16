@@ -29,11 +29,14 @@ def main():
         bot.update(unread_count=0 if index == 0 else 3, pinned=index == 1)
     archived = dict(state['bots'][0], id='archived-agent', archived=True)
     state['bots'].append(archived)
+    coconut = dict(state['bots'][0], id='coconut-agent', name='Coconut', coconut=True, unread_count=0)
+    state['bots'].append(coconut)
     state['artifacts'] = [dict(id=id, bot_id=bot, title=title, kind='work', status=status,
                                preview='', created_at=state['server_time'])
                           for id, bot, title, status in (
         ('working', state['bots'][0]['id'], 'Prepare the next release', 'working'),
         ('blocked', state['bots'][1]['id'], 'Review the release notes', 'blocked'),
+        ('coconut-work', coconut['id'], 'Check Coconut updates', 'working'),
         ('completed', state['bots'][0]['id'], 'Finished work', 'completed'),
         ('archived', archived['id'], 'Work of an archived agent', 'working'))]
     room = dict(room='a' * 64, name='Example Team', state='active', unread=1,
