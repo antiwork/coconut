@@ -238,6 +238,42 @@ final class ConversationFooterScrollTests: XCTestCase {
         XCTAssertEqual(ConversationComposer.typed(after: "Can you check the draft?", in: "Can you"), "")
     }
 
+    func testOneDraftSendsOneTime() {
+        var send = DraftSend()
+        XCTAssertTrue(send.begin("Can you check the draft?"))
+        // A second Return or a second click before the view updates reads the same draft: it does not send.
+        XCTAssertFalse(send.begin("Can you check the draft?"))
+        XCTAssertFalse(send.begin("Can you check the draft?"))
+        // The view shows the same draft again, for example before the draft clears on a Mac: still no second send.
+        send.shows("Can you check the draft?")
+        XCTAssertFalse(send.begin("Can you check the draft?"))
+    }
+
+    func testTheSameTextSendsAgainAfterTheDraftCleared() {
+        var send = DraftSend()
+        XCTAssertTrue(send.begin("Yes"))
+        send.shows("")
+        XCTAssertNil(send.sent)
+        // The person types the same text again and sends it.
+        XCTAssertTrue(send.begin("Yes"))
+    }
+
+    func testKeysTypedAfterReturnSendAsANewDraft() {
+        var send = DraftSend()
+        XCTAssertTrue(send.begin("Can you check the draft?"))
+        // The draft clears and keeps "ab", which the person typed after Return.
+        send.shows("ab")
+        XCTAssertTrue(send.begin("ab"))
+    }
+
+    func testAFailedSendCanSendTheSameDraftAgain() {
+        var send = DraftSend()
+        XCTAssertTrue(send.begin("Can you check the draft?"))
+        // The send fails before the view updates, and the draft comes back: the view never shows another draft.
+        send.failed()
+        XCTAssertTrue(send.begin("Can you check the draft?"))
+    }
+
     func testTheTimerOfAnOlderSendDoesNotEndTheWaitOfANewerOne() {
         var scroll = SentMessageScroll()
         let first = Date(timeIntervalSinceReferenceDate: 1_000)

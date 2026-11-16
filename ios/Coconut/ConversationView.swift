@@ -879,6 +879,8 @@ struct ConversationComposer: View {
     @Binding var scheduledAt: Date
     @Binding var mentions: [SelectedBotMention]
     @State private var selection: TextSelection?
+    /// One draft sends one time (DraftSend).
+    @State private var draftSend = DraftSend()
     @FocusState.Binding var focused: Bool
     @Binding var replyTo: MessageReference?
     @Binding var workContext: WorkReference?
@@ -977,6 +979,8 @@ struct ConversationComposer: View {
         } paste: { pasted in
             upload { await store.uploadAttachment(bot: bot, data: pasted.data, filename: pasted.name) }
         } report: { store.error = $0 })
+        // Only after a send: a key without a send changes no state.
+        .onChange(of: text) { _, draft in if draftSend.sent != nil { draftSend.shows(draft) } }
     }
 
     private var uploading: Bool { uploads.count > 0 }
@@ -1006,7 +1010,7 @@ struct ConversationComposer: View {
     }
 
     private func send() {
-        guard canSend else { return }
+        guard canSend, draftSend.begin(text) else { return }
         let submittedText = text
         let submittedWork = workContext
         let submittedReply = replyTo
@@ -1031,12 +1035,38 @@ struct ConversationComposer: View {
                                            attachments: submittedAttachments,
                                            scheduledAt: submittedScheduling ? ISO8601DateFormatter().string(from: submittedDate) : nil,
                                            mentionedBotIds: submittedRecipients, replyTo: submittedReply, workContext: submittedWork)
-            if !success && text.isEmpty {
+            guard !success else { return }
+            draftSend.failed()
+            if text.isEmpty {
                 text = submittedText; mentions = submittedMentions; attachments = submittedArtifacts
                 scheduling = submittedScheduling; scheduledAt = submittedDate; replyTo = submittedReply; workContext = submittedWork
             }
         }
     }
+}
+
+/// One draft sends one time. Keys and clicks that wait in the event queue come to the composer before its view updates.
+/// Until that update, the draft binding of the composer gives the draft that it sent, also after the send cleared it.
+/// Two Returns then sent the same message two times. A state of the composer gives what the first send wrote.
+struct DraftSend: Equatable {
+    /// The draft of the last send, until the composer shows another draft.
+    private(set) var sent: String?
+
+    /// The person sends `draft`. False when it is the draft of the last send and the composer did not show another
+    /// draft after it.
+    mutating func begin(_ draft: String) -> Bool {
+        guard draft != sent else { return false }
+        sent = draft
+        return true
+    }
+
+    /// The view of the composer updated and shows `draft`. When it is another draft, the person can send again.
+    mutating func shows(_ draft: String) {
+        if draft != sent { sent = nil }
+    }
+
+    /// The send failed. The draft comes back, and the person can send it again.
+    mutating func failed() { sent = nil }
 }
 
 /// The field and the plus button of the composer. With Liquid Glass (iOS 26, macOS 26) each is a glass shape that the
