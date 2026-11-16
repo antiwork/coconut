@@ -7,8 +7,8 @@ final class DecisionSourcesFlowTests: XCTestCase {
         let app = XCUIApplication()
         app.launchArguments = ["--demo", "--card-sources-preview", "-AppleInterfaceStyle", "Dark"]
         app.launch()
-        XCTAssertTrue(app.tabBars.buttons["Inbox"].waitForExistence(timeout: 10))
-        app.tabBars.buttons["Inbox"].tap()
+        XCTAssertTrue(app.tabBars.buttons["Home"].waitForExistence(timeout: 10))
+        app.openCards()
         XCTAssertTrue(app.links["Email · Weekly payout failures ↗"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.links["Email · Negative-balance reports ↗"].isHittable)
         XCTAssertTrue(app.buttons["decision-option-include"].isHittable)
@@ -25,8 +25,8 @@ final class DecisionSourcesFlowTests: XCTestCase {
         let app = XCUIApplication()
         app.launchArguments = ["--demo", "--card-sources-preview", "-AppleInterfaceStyle", "Light"]
         app.launch()
-        XCTAssertTrue(app.tabBars.buttons["Inbox"].waitForExistence(timeout: 10))
-        app.tabBars.buttons["Inbox"].tap()
+        XCTAssertTrue(app.tabBars.buttons["Home"].waitForExistence(timeout: 10))
+        app.openCards()
         XCTAssertTrue(app.links["Email · Weekly payout failures ↗"].waitForExistence(timeout: 5))
         capture(app, "03-email-sources-light")
     }

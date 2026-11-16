@@ -1741,6 +1741,17 @@ enum AgentTodos {
             }
     }
 
+    /// The word for the state of a To-do. "waiting" is the agent that waits, not a card for the person.
+    static func label(_ status: String) -> String {
+        switch status {
+        case "working": "Working"
+        case "blocked": "Blocked"
+        case "waiting": "Waiting"
+        case "ready": "Ready for review"
+        default: StatusLabel.label(for: status)
+        }
+    }
+
     /// The symbol of a To-do: a dot that fills while the agent works on it.
     static func symbol(_ status: String) -> String {
         switch status {
@@ -1754,6 +1765,13 @@ enum AgentTodos {
 }
 
 extension ChatListItem {
+    /// The newest activity of the chat. `latest` is the date of the newest message of each bot
+    /// (ChatList.lastMessageDates). Home sorts its unread chats by it.
+    func activity(latest: [String: Date]) -> Date {
+        if case .bot(let bot) = self { return latest[bot.id] ?? bot.createdAt.apiDate ?? .distantPast }
+        return teamActivity
+    }
+
     /// The unread messages of the chat. A muted team chat counts none, so it never moves to "Unreads".
     var unreadCount: Int {
         switch self {

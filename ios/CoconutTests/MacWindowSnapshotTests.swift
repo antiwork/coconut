@@ -4,7 +4,7 @@ import SwiftUI
 import XCTest
 @testable import Coconut
 
-/// Renders whole Mac windows with the preview data: the sidebar next to an agent chat, the Inbox and the Library. Set
+/// Renders whole Mac windows with the preview data: the sidebar next to Home, the agents, an agent and a chat. Set
 /// COCONUT_WINDOW_SHOTS to a folder to keep the images, for example for the screenshots of the website.
 @MainActor
 final class MacWindowSnapshotTests: XCTestCase {
@@ -21,19 +21,22 @@ final class MacWindowSnapshotTests: XCTestCase {
         let botId = try XCTUnwrap(store.bots.first?.id)
         store.team = try APIJSON.decoder().decode(TeamRooms.self, from: Data(TeamNoticeTests.rooms.utf8))
         let windows: [(String, AnyView)] = [
+            ("home", AnyView(NavigationStack { HomeView { _ in } })),
             ("notices", AnyView(NavigationStack { NoticeBoardView(roomId: "example") })),
             ("coconut", AnyView(NavigationStack { ConversationView(botId: coconutId) })),
             ("chat", AnyView(NavigationStack { ConversationView(botId: botId) })),
             ("inbox", AnyView(MacInboxView(selection: .constant(.inbox)))),
-            ("library", AnyView(NavigationStack { LibraryView().navigationTitle("Library") })),
+            ("agents", AnyView(NavigationStack { AgentsView(create: {}) })),
+            ("agent", AnyView(NavigationStack { AgentProjectView(botId: botId) })),
         ]
         for (name, detail) in windows {
             let selection: MacSelection = switch name {
             case "chat": .bot(botId)
             case "inbox": .inbox
+            case "home": .home
             case "notices": .notices("example")
             case "coconut": .bot(coconutId)
-            default: .library
+            default: .agents
             }
             let view = HStack(spacing: 0) {
                 MacSidebar(selection: .constant(selection)).frame(width: 260)

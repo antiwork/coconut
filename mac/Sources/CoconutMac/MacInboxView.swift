@@ -1,11 +1,17 @@
 import SwiftUI
 
-/// The Inbox on a Mac: the waiting cards in a list, and the chosen card next to it. The iPhone shows one card at a
+/// The cards that wait, on a Mac: the cards in a list, and the chosen card next to it. A card row of Home opens it. The iPhone shows one card at a
 /// time and swipes it away; a Mac window has room for the whole queue.
 struct MacInboxView: View {
     @Environment(AppStore.self) private var store
     @Binding var selection: MacSelection?
     @State private var chosenId: String?
+
+    /// `first` is the card that shows first: the card of the row of Home that opened the list.
+    init(selection: Binding<MacSelection?>, first: String? = nil) {
+        _selection = selection
+        _chosenId = State(initialValue: first)
+    }
     // The cards whose rows are on screen. A rebuilt list scrolls back to the top one (see the list below).
     @State private var shownIds: Set<String> = []
     // What the card opened: its chat or an earlier answer. A new card from the Mac keeps it, so an open chat keeps its
@@ -118,8 +124,14 @@ struct MacInboxView: View {
             .frame(minWidth: 300, maxWidth: .infinity, maxHeight: .infinity)
             .background(BoardStyle.paper)
         }
-        .navigationTitle("Inbox")
+        .navigationTitle("Cards")
         .toolbar {
+            // The cards are a page of Home. The sidebar keeps Home marked, so this button leads back.
+            ToolbarItem(placement: .navigation) {
+                Button { selection = .home } label: { Label("Home", systemImage: "chevron.left") }
+                    .help("Back to Home")
+                    .accessibilityIdentifier("cards-back")
+            }
             // The toolbar has the Undo item only while an undo waits. An item without content still took a slot in the
             // glass capsule of "Open chat", so that capsule was two slots wide with its symbol in the right half.
             if let undoAction {

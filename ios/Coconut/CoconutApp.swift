@@ -46,7 +46,7 @@ struct CoconutApp: App {
     }
 }
 
-enum HomeTab: Hashable { case bots, inbox, library, business }
+enum HomeTab: Hashable { case home, bots, agents, business }
 
 struct CoconutHome: View {
     @Environment(AppStore.self) private var store
@@ -55,15 +55,16 @@ struct CoconutHome: View {
     // The first run hides Close, because Coconut needs a pairing before it can show anything.
     @State private var onboardingFirstRun = false
     @State private var createOpen = false
-    @State private var selectedTab: HomeTab = .inbox
+    @State private var selectedTab: HomeTab = .home
     @State private var notificationDecisionId: String?
     @State private var openingNotification = false
     @State private var previewedNotification: NotificationTarget?
     /// The place that the preview of `previewedNotification` showed.
     @State private var previewedPlace: NotificationDestination?
     @State private var botsPath = NavigationPath()
-    @State private var inboxPath = NavigationPath()
-    @State private var libraryPath = NavigationPath()
+    @State private var homePath = NavigationPath()
+    @State private var cardsShown = false
+    @State private var agentsPath = NavigationPath()
     @State private var businessPath = NavigationPath()
     @State private var keyboardVisible = false
     @State private var conversationFooters: [HomeTab: Bool] = [:]
@@ -72,21 +73,24 @@ struct CoconutHome: View {
 
     private var conversationCanMinimize: Bool? { conversationFooters[selectedTab] }
 
+    /// The cards that wait show alone on the stack of Home. They keep the tab bar, as a tab root does.
+    private var cardsOnTop: Bool { selectedTab == .home && cardsShown && homePath.count == 1 }
+
     private var tabBarVisibility: Visibility {
-        let activePath = switch selectedTab { case .inbox: inboxPath; case .bots: botsPath; case .library: libraryPath; case .business: businessPath }
-        return keyboardVisible || (!activePath.isEmpty && conversationCanMinimize == nil) ? .hidden : .automatic
+        let activePath = switch selectedTab { case .home: homePath; case .bots: botsPath; case .agents: agentsPath; case .business: businessPath }
+        return keyboardVisible || (!activePath.isEmpty && conversationCanMinimize == nil && !cardsOnTop) ? .hidden : .automatic
     }
 
     var body: some View {
         TabView(selection: $selectedTab) {
-            Tab(value: HomeTab.inbox) {
-                root(tab: .inbox, path: $inboxPath)
+            Tab(value: HomeTab.home) {
+                root(tab: .home, path: $homePath)
             } label: {
-                Label { Text("Inbox") } icon: {
-                    Image(systemName: "tray").environment(\.symbolVariants, .none)
+                Label { Text("Home") } icon: {
+                    Image(systemName: "house").environment(\.symbolVariants, .none)
                 }
-            }.badge(store.inboxBadgeCount)
-                .accessibilityIdentifier("home-inbox")
+            }.badge(HomeFeed.badge(store.homeUnread))
+                .accessibilityIdentifier("home-home")
             Tab(value: HomeTab.bots) {
                 root(tab: .bots, path: $botsPath)
             } label: {
@@ -99,25 +103,26 @@ struct CoconutHome: View {
             } label: {
                 Label("Business", systemImage: "square.grid.2x2")
             }.accessibilityIdentifier("home-business")
-            Tab(value: HomeTab.library) {
-                root(tab: .library, path: $libraryPath)
+            Tab(value: HomeTab.agents) {
+                root(tab: .agents, path: $agentsPath)
             } label: {
-                Label { Text("Library") } icon: {
-                    Image(systemName: "rectangle.3.group").environment(\.symbolVariants, .none)
+                Label { Text("Agents") } icon: {
+                    Image(systemName: "square.stack.3d.up").environment(\.symbolVariants, .none)
                 }
-            }.accessibilityIdentifier("home-library")
+            }.accessibilityIdentifier("home-agents")
         }
         .modifier(NativeTabCollapse(enabled: conversationCanMinimize == true && !keyboardVisible))
-        // A document card in a chat opens the document on the Library tab, so Back leads to the Library.
+        // A document card in a chat opens the page on the Agents tab over the page of its agent, so Back leads to the
+        // agent that keeps it.
         .environment(\.openDocument) { id in
-            libraryPath = NavigationPath()
-            libraryPath.append(DocumentRoute(id: id))
-            selectedTab = .library
+            agentsPath = NavigationPath()
+            for route in store.documentPath(id) { agentsPath.append(route) }
+            selectedTab = .agents
         }
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { _ in keyboardVisible = true }
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in keyboardVisible = false }
         .onChange(of: selectedTab) { _, tab in
-            if previewedNotification?.decisionId != nil && tab != .inbox {
+            if previewedNotification?.decisionId != nil && tab != .home {
                 PushNotifications.shared.target = nil
                 previewedNotification = nil
             }
@@ -164,16 +169,16 @@ struct CoconutHome: View {
         NavigationStack(path: path) {
             Group {
                 switch tab {
-                case .inbox: DecisionInboxView(focusDecisionId: $notificationDecisionId, refreshingDecisionId: PushNotifications.shared.target?.decisionId)
+                case .home: HomeView { open($0) }
                 case .bots: HomeLaunchView()
-                case .library: LibraryView()
+                case .agents: AgentsView()
                 case .business: BusinessHomeView()
                 }
             }
                 .toolbar(tabBarVisibility, for: .tabBar)
                 .navigationTitle("")
                 .navigationBarTitleDisplayMode(.inline)
-                .toolbar { rootToolbar(inbox: tab != .bots) }
+                .toolbar { rootToolbar(create: tab == .bots || tab == .agents) }
                 .topBanners { area in
                     RootBanners(area: area) {
                         onboardingFirstRun = false
@@ -183,7 +188,12 @@ struct CoconutHome: View {
                 .navigationDestination(for: HomeDestination.self) { destination in
                     switch destination {
                     case .inbox:
-                        DecisionInboxView().navigationTitle("Inbox").navigationBarTitleDisplayMode(.inline)
+                        // The cards that wait, with the card of the row or of the notification first.
+                        DecisionInboxView(focusDecisionId: $notificationDecisionId,
+                                          refreshingDecisionId: PushNotifications.shared.target?.decisionId)
+                            .navigationBarTitleDisplayMode(.inline)
+                            .onAppear { cardsShown = true }
+                            .onDisappear { cardsShown = false }
                     }
                 }
                 .navigationDestination(for: ConversationRoute.self) { route in
@@ -206,6 +216,8 @@ struct CoconutHome: View {
                 .navigationDestination(for: TeamScreenRoute.self) { route in
                     TeamRoomView(roomId: route.roomId, pushed: true)
                 }
+                .navigationDestination(for: NoticeBoardRoute.self) { NoticeBoardView(roomId: $0.roomId) }
+                .modifier(AgentDestinations())
                 .background(BoardStyle.paper)
         }
         // On the stack itself, so that the pushed pages get it too.
@@ -216,9 +228,9 @@ struct CoconutHome: View {
     }
 
     @ToolbarContentBuilder
-    private func rootToolbar(inbox: Bool) -> some ToolbarContent {
+    private func rootToolbar(create: Bool) -> some ToolbarContent {
         // Coconut has no settings screen: the Coconut chat at the top of Chats changes it.
-        if !inbox {
+        if create {
             ToolbarItem(placement: .topBarTrailing) {
                 Button { createOpen = true } label: {
                     Image(systemName: "plus")
@@ -290,18 +302,34 @@ struct CoconutHome: View {
         botsPath.append(TeamChatRoute(chat: chat))
     }
 
+    /// Shows the cards that wait on the Home tab, with Home under them. The card with this ID comes first.
+    private func showCards(_ decisionId: String?) {
+        notificationDecisionId = decisionId
+        selectedTab = .home
+        homePath = NavigationPath([HomeDestination.inbox])
+    }
+
+    /// Opens the place of a row of Home on the stack of Home, so Back leads to Home.
+    private func open(_ target: HomeTarget) {
+        switch target {
+        case .conversation(let route): homePath.append(route)
+        case .teamChat(let chat): homePath.append(TeamChatRoute(chat: chat))
+        case .cards(let decisionId): showCards(decisionId)
+        case .agent(let botId): homePath.append(AgentRoute(botId: botId))
+        case .agents: selectedTab = .agents
+        case .connection: Task { await store.reconnect() }
+        case .notices(let room): homePath.append(NoticeBoardRoute(roomId: room))
+        }
+    }
+
     private func showNotification(_ destination: NotificationDestination) {
         settingsOpen = false; createOpen = false
         UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
         switch destination {
         case .inbox(let decisionId):
-            inboxPath = NavigationPath()
-            notificationDecisionId = decisionId
-            selectedTab = .inbox
+            showCards(decisionId)
         case .inboxList:
-            inboxPath = NavigationPath()
-            notificationDecisionId = nil
-            selectedTab = .inbox
+            showCards(nil)
         case .conversation(let route):
             notificationDecisionId = nil
             selectedTab = .bots

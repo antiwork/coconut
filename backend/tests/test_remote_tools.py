@@ -229,6 +229,20 @@ class RemoteToolsTests(unittest.TestCase):
             self.assertNotIn("comment", actual)
 
 
+class SourcePackageTests(unittest.TestCase):
+    def test_the_update_accepts_each_file_of_the_real_source_package(self):
+        """remote.source_files chooses the files of the package and deploy.validate_package accepts them. A file that
+        only the first one knows makes the service update of each Mac fail."""
+        import deploy
+        with tempfile.TemporaryDirectory() as folder:
+            destination = Path(folder) / "package.tar.gz"
+            remote.package(destination)
+            with destination.open("rb") as stream:
+                result = deploy.validate_package(stream)
+        self.assertIn("backend/coconut/assets/agent-sprites.png", result.files)
+        self.assertEqual(set(result.files), set(remote.source_files()))
+
+
 class PairingToolsTests(unittest.TestCase):
     def payload(self):
         return dict(version=2, relay="https://coconut-push.gumroad.workers.dev", route="c" * 64,

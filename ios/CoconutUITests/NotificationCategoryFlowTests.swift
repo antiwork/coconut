@@ -121,13 +121,13 @@ final class NotificationCategoryFlowTests: XCTestCase {
             XCTAssertTrue(app.wait(for: .runningForeground, timeout: 10))
             if kind == "decision" {
                 XCTAssertTrue(app.staticTexts["Review the deferred notification?"].waitForExistence(timeout: 15))
-                XCTAssertTrue(app.tabBars.buttons["Inbox"].isSelected)
+                XCTAssertTrue(app.tabBars.buttons["Home"].isSelected)
                 XCTAssertFalse(app.buttons["bot-settings"].exists)
                 XCTAssertFalse(app.buttons["undo-inbox-dismiss"].exists)
             } else {
                 XCTAssertTrue(app.buttons["bot-settings"].waitForExistence(timeout: 10))
                 XCTAssertTrue(app.staticTexts["The notification opens this exact reply."].exists)
-                XCTAssertFalse(app.tabBars.buttons["Inbox"].isHittable)
+                XCTAssertFalse(app.tabBars.buttons["Home"].isHittable)
             }
             let proof = XCTAttachment(screenshot: app.screenshot())
             proof.name = "Notification opens " + kind; proof.lifetime = .keepAlways; add(proof)

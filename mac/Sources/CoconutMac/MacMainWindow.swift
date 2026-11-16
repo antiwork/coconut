@@ -4,8 +4,12 @@ import SwiftUI
 /// What the main window shows in its detail column.
 enum MacSelection: Hashable {
     case business(BusinessRoute)
+    /// Home: what needs attention, what is unread, and what is in progress.
+    case home
+    /// The cards that wait for an answer. A card row of Home opens them.
     case inbox
-    case library
+    /// The agents as projects. The page of an agent and its pages open on the stack of this place.
+    case agents
     case bot(String)
     /// A To-do of an agent: its chat, with the work item attached.
     case work(String)
@@ -17,9 +21,9 @@ enum MacSelection: Hashable {
     case notices(String)
 }
 
-/// The tabs of the details next to a chat.
+/// The tabs of the details next to a chat: the settings of the agent, and its pages.
 enum InspectorTab: Hashable {
-    case details, library
+    case details, pages
 }
 
 /// The main window of the Mac client: the bots in a sidebar, the chat or the Inbox in the middle, and the details of the
@@ -28,15 +32,17 @@ enum InspectorTab: Hashable {
 struct MacMainWindow: View {
     @Environment(AppStore.self) private var store
     @ObservedObject var model: AppModel
-    @State private var selection: MacSelection? = .inbox
+    @State private var selection: MacSelection? = .home
+    // The card that the Inbox shows first: the card of the row of Home that opened it.
+    @State private var inboxCard: String?
     @State private var inspectorShown = true
     @State private var inspectorTab = InspectorTab.details
     @State private var createOpen = false
     @State private var pairingOpen = false
     // The pages that a chat opened. A row of the chat list pushes onto it (pushRoute); another bot starts at its chat.
     @State private var chatPath = NavigationPath()
-    // The pages of the Library. A document card in a chat opens its document here.
-    @State private var libraryPath = NavigationPath()
+    // The pages to push when the next choice shows: the page of an agent, or a page of an agent over it.
+    @State private var pendingRoutes: [any Hashable] = []
     // The right edge of the sidebar in the window. The notice centers right of it while the sidebar shows.
     @State private var sidebarRight: CGFloat = 0
     @State private var sidebarShown = true
@@ -87,10 +93,10 @@ struct MacMainWindow: View {
             selection = .team(chat)
             model.shownChat = nil
         }
-        // A document card in a chat selects the pinned row of its page, else it opens the page inside the Library.
+        // A document card in a chat selects the pinned row of its page, else it opens the page over its agent.
         .environment(\.openDocument) { id in show(MacPagePlace.card(id, documents: store.documents)) }
-        // The page of a pinned row stays open when its pin goes: the Library shows it. A deleted page leaves the
-        // Library list.
+        // The page of a pinned row stays open when its pin goes: it shows over its agent. A deleted page leaves the
+        // list of the agents.
         .onChange(of: store.documents) { _, documents in
             guard case .document(let id) = selection,
                   let place = MacPagePlace.afterChange(open: id, documents: documents) else { return }
@@ -113,15 +119,17 @@ struct MacMainWindow: View {
         // Each choice in the sidebar starts at its own root, so another bot never shows the last bot's pages.
         .onChange(of: selection) { old, selected in
             // The menu of an open pinned page deletes it and then dismisses it, which clears the selection. The
-            // Library list shows, not the Inbox.
+            // agents show, not Home.
             if selected == nil, case .document(let id)? = old,
                MacPagePlace.afterChange(open: id, documents: store.documents) == .libraryList {
                 show(.libraryList)
                 return
             }
-            chatPath = NavigationPath()
-            // The Library row of the sidebar opens the list. A document card sets the page first and then the row.
-            if selected != .library { libraryPath = NavigationPath() }
+            // A place starts at its root, or at the pages that the choice asked for (go).
+            var path = NavigationPath()
+            for route in pendingRoutes { path.append(route) }
+            pendingRoutes = []
+            chatPath = path
         }
         // Outside each sheet of the window, so that each sheet and each page gets it.
         .errorSheetRoot()
@@ -130,12 +138,63 @@ struct MacMainWindow: View {
     private func show(_ place: MacPagePlace) {
         switch place {
         case .pinnedRow(let id): selection = .document(id)
-        case .inLibrary(let id):
-            libraryPath = NavigationPath([DocumentRoute(id: id)])
-            selection = .library
-        case .libraryList:
-            libraryPath = NavigationPath()
-            selection = .library
+        case .inLibrary(let id): go(.agents, pushing: store.documentPath(id))
+        case .libraryList: go(.agents)
+        }
+    }
+
+    /// Shows a place with pages on its stack. The change of the choice clears the stack, so the pages wait for it.
+    private func go(_ place: MacSelection, pushing routes: [any Hashable] = []) {
+        if selection == place {
+            var path = NavigationPath()
+            for route in routes { path.append(route) }
+            chatPath = path
+        } else {
+            pendingRoutes = routes
+            selection = place
+        }
+    }
+
+    /// The stack of a place that is no chat: the agents, with each page that they open.
+    private func placeStack(@ViewBuilder _ root: () -> some View) -> some View {
+        NavigationStack(path: $chatPath) {
+            root()
+                .modifier(AgentDestinations())
+                .navigationDestination(for: ConversationRoute.self) { route in
+                    ConversationView(botId: route.botId, focusDecisionId: route.decisionId,
+                                     focusMessageId: route.messageId, attachedWork: route.workContext)
+                }
+                .navigationDestination(for: BotExchangeRoute.self) { BotExchangeView(route: $0) }
+                .navigationDestination(for: BotSettingsRoute.self) { BotSettingsView(botId: $0.botId) }
+                .navigationDestination(for: DocumentRoute.self) { DocumentView(documentId: $0.id) }
+                .navigationDestination(for: BusinessRoute.self) { BusinessDestinationView(route: $0) }
+                .navigationDestination(for: ArchivedAgentsRoute.self) { _ in ArchivedAgentsView() }
+                .navigationDestination(for: NoticeBoardRoute.self) { NoticeBoardView(roomId: $0.roomId) }
+                .navigationDestination(for: TeamScreenRoute.self) { TeamRoomView(roomId: $0.roomId, pushed: true) }
+        }
+        .environment(\.pushRoute) { route in chatPath.append(route) }
+        // A grouped Mac form keeps each section in a box, as the iPhone settings show them.
+        .formStyle(.grouped)
+    }
+
+    /// Opens the place of a row of Home. Each place is a choice of the window, so the sidebar shows where it is.
+    private func open(_ target: HomeTarget) {
+        switch target {
+        case .conversation(let route):
+            // A To-do opens the chat with the work attached.
+            if let work = route.workContext, store.artifacts.contains(where: { $0.id == work.id }) {
+                selection = .work(work.id)
+            } else {
+                selection = .bot(route.botId)
+            }
+        case .teamChat(let chat): selection = .team(chat)
+        case .cards(let decisionId):
+            inboxCard = decisionId
+            selection = .inbox
+        case .agent(let botId): go(.agents, pushing: [AgentRoute(botId: botId)])
+        case .agents: go(.agents)
+        case .connection: Task { await store.reconnect() }
+        case .notices(let room): selection = .notices(room)
         }
     }
 
@@ -147,15 +206,12 @@ struct MacMainWindow: View {
                 BusinessDestinationView(route: route)
                     .navigationDestination(for: BusinessRoute.self) { BusinessDestinationView(route: $0) }
             }
-        case .inbox, nil:
-            MacInboxView(selection: $selection)
-        case .library:
-            NavigationStack(path: $libraryPath) {
-                LibraryView()
-                    .navigationTitle("Library")
-                    .navigationDestination(for: DocumentRoute.self) { DocumentView(documentId: $0.id) }
-                    .navigationDestination(for: BusinessRoute.self) { BusinessDestinationView(route: $0) }
-            }
+        case .home, nil:
+            NavigationStack { HomeView { open($0) }.navigationTitle("Home") }
+        case .inbox:
+            MacInboxView(selection: $selection, first: inboxCard)
+        case .agents:
+            placeStack { AgentsView(create: { createOpen = true }).navigationTitle("Agents") }
         case .document(let documentId):
             // A page has no links to other pages, so its stack has only the page.
             NavigationStack { DocumentView(documentId: documentId).id(documentId) }
@@ -175,7 +231,7 @@ struct MacMainWindow: View {
                 .toolbarBackgroundVisibility(.hidden, for: .windowToolbar)
                 .toolbar(removing: .title)
             } else {
-                MacInboxView(selection: $selection)
+                NavigationStack { HomeView { open($0) }.navigationTitle("Home") }
             }
         case .bot(let botId):
             // The details are a column of fixed width next to the chat, not an inspector. Next to a chat, the
@@ -304,7 +360,7 @@ struct DetailColumnBottomInset: NSViewRepresentable {
     }
 }
 
-/// The sidebar: the Inbox, the pinned bots and the pinned pages, and the chats: every other bot and each team, with the
+/// The sidebar: Home, the pinned bots and the pinned pages, and the chats: every other bot and each team, with the
 /// last message.
 struct MacSidebar: View {
     @Environment(AppStore.self) private var store
@@ -327,19 +383,20 @@ struct MacSidebar: View {
                                          rooms: store.shownTeamRooms, local: store.newestLocalMessages)
         let pins = SidebarPins(pinnedBots: sections.pinned, documents: store.documents ?? [], bots: store.bots,
                                teamBots: store.teamBots)
-        return List(selection: $selection) {
+        // The cards are a page of Home, so Home stays marked while they show.
+        let marked = Binding<MacSelection?>(get: { selection == .inbox ? .home : selection }, set: { selection = $0 })
+        return List(selection: marked) {
             // The Coconut chat: where the person changes Coconut. Coconut has no settings window for it.
             if let coconut = store.bots.coconutChat {
                 CoconutChatRow(bot: coconut).tag(MacSelection.bot(coconut.id))
             }
-            MacSidebarLabel(title: "Inbox", symbol: "tray")
-                .badge(store.inboxBadgeCount)
-                .tag(MacSelection.inbox)
-                .accessibilityIdentifier("sidebar-inbox")
-            MacSidebarLabel(title: "Library", symbol: "rectangle.3.group")
-                .badge(store.documents?.count ?? 0)
-                .tag(MacSelection.library)
-                .accessibilityIdentifier("sidebar-library")
+            MacSidebarLabel(title: "Home", symbol: "house")
+                .badge(HomeFeed.badge(store.homeUnread))
+                .tag(MacSelection.home)
+                .accessibilityIdentifier("sidebar-home")
+            MacSidebarLabel(title: "Agents", symbol: "square.stack.3d.up")
+                .tag(MacSelection.agents)
+                .accessibilityIdentifier("sidebar-agents")
             MacSidebarLabel(title: "Business", symbol: "chart.xyaxis.line")
                 .tag(MacSelection.business(.home))
                 .accessibilityIdentifier("sidebar-business")
@@ -404,7 +461,7 @@ struct MacSidebar: View {
                 }
             }
             if !sections.bots.isEmpty {
-                Section("Agents", isExpanded: $agentsOpen) {
+                Section("Agent chats", isExpanded: $agentsOpen) {
                     ForEach(sections.bots) { item in itemRow(item) }
                 }
             }
@@ -420,13 +477,13 @@ struct MacSidebar: View {
         .environment(\.defaultMinListRowHeight, 26)
         .listStyle(.sidebar)
         .modifier(DeleteBotDialog(bot: $deleting))
-        // A deleted bot leaves the list. Its chat closes, and the Inbox shows instead.
+        // A deleted bot leaves the list. Its chat closes, and Home shows instead.
         .onChange(of: store.bots.map(\.id)) { _, ids in
-            if case .bot(let id) = selection, !ids.contains(id) { selection = .inbox }
+            if case .bot(let id) = selection, !ids.contains(id) { selection = .home }
         }
         // A team that this Mac removed leaves the list too, and so does a named chat that the admin deleted.
         .onChange(of: store.team) { _, team in
-            if case .team(let chat) = selection, let team, !team.has(chat) { selection = .inbox }
+            if case .team(let chat) = selection, let team, !team.has(chat) { selection = .home }
         }
         // The pinned pages need the list without a visit to the Library: one quiet load when the Mac connects and no
         // list is there. After that, the updates load the list again on each change of a page and on a reset.
@@ -438,7 +495,7 @@ struct MacSidebar: View {
         .safeAreaInset(edge: .bottom) { MacConnectionFooter() }
     }
 
-    /// A pinned page. Its menu only unpins: the Library and the page itself have the other actions.
+    /// A pinned page. Its menu only unpins: the page of its agent and the page itself have the other actions.
     private func pageRow(_ page: BotDocument) -> some View {
         MacPinnedPageRow(page: page)
             .tag(MacSelection.document(page.id))
@@ -595,7 +652,7 @@ private struct MacConnectionFooter: View {
     }
 }
 
-/// The details of a bot next to its chat: its settings, or its documents in the Library.
+/// The details of an agent next to its chat: its settings, or its pages.
 private struct MacBotDetails: View {
     let botId: String
     @Binding var tab: InspectorTab
@@ -606,7 +663,7 @@ private struct MacBotDetails: View {
             // the chat, so both sit in one row.
             HStack(spacing: BoardStyle.Space.xs) {
                 tabButton("Details", .details)
-                tabButton("Library", .library)
+                tabButton("Pages", .pages)
             }
             .frame(height: 34)
             .padding(.horizontal, 12).padding(.top, 8)
@@ -617,7 +674,7 @@ private struct MacBotDetails: View {
                 // never moves to the next bot.
                 switch tab {
                 case .details: BotSettingsView(botId: botId).id(botId)
-                case .library:
+                case .pages:
                     LibraryView(botId: botId)
                         .navigationDestination(for: DocumentRoute.self) { DocumentView(documentId: $0.id) }
                     .navigationDestination(for: BusinessRoute.self) { BusinessDestinationView(route: $0) }

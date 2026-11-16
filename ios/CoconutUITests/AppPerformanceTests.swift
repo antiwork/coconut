@@ -67,7 +67,7 @@ final class AppPerformanceTests: XCTestCase {
         measure(metrics: [XCTClockMetric(), XCTCPUMetric(application: app)], options: options()) {
             openConversation(app)
             closeConversation(app)
-            app.tabBars.buttons["Inbox"].tap()
+            app.openCards()
             XCTAssertTrue(app.buttons["app-settings"].waitForExistence(timeout: 5))
             app.tabBars.buttons["Chats"].tap()
             XCTAssertTrue(app.buttons[conversationId].waitForExistence(timeout: 5))

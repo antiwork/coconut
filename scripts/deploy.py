@@ -144,6 +144,8 @@ def allowed_path(name):
         name in {'README.md', 'backend/pyproject.toml', 'backend/coconut/hermes_versions.json', 'Start Coconut.command',
                  'Uninstall Coconut.command'}
         or re.fullmatch(r'backend/coconut/(?:[A-Za-z_][A-Za-z0-9_]*/)*[A-Za-z_][A-Za-z0-9_]*\.py', name)
+        # The sprite sheet of the fruit faces (backend/coconut/agent_icon_worker.py). remote.source_files packs it.
+        or name == 'backend/coconut/assets/agent-sprites.png'
         or re.fullmatch(r'scripts/[A-Za-z0-9_-]+\.(?:py|swift)', name)
         or re.fullmatch(r'ios/Tunnel/[A-Za-z0-9_-]+\.swift', name)
         or re.fullmatch(r'docs/(?:[A-Za-z0-9_-]+/)*[A-Za-z0-9_.-]+\.md', name)

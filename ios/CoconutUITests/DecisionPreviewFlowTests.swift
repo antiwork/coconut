@@ -14,8 +14,8 @@ final class DecisionPreviewFlowTests: XCTestCase {
         app.launchEnvironment = ["COCONUT_SERVER_URL": url, "COCONUT_PAIR_CODE": code]
         app.launchArguments = ["-AppleInterfaceStyle", "Dark"]
         app.launch()
-        XCTAssertTrue(app.tabBars.buttons["Inbox"].waitForExistence(timeout: 15))
-        app.tabBars.buttons["Inbox"].tap()
+        XCTAssertTrue(app.tabBars.buttons["Home"].waitForExistence(timeout: 15))
+        app.openCards()
         let first = app.buttons["decision-preview-\(firstId)"]
         XCTAssertTrue(first.waitForExistence(timeout: 10))
         XCTAssertTrue(app.buttons["decision-option-approve"].waitForExistence(timeout: 5))

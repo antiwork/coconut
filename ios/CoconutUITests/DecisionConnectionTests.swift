@@ -14,9 +14,9 @@ final class DecisionConnectionTests: XCTestCase {
         app.tabBars.buttons["Chats"].tap()
         let bot = app.buttons["bot-conversation-00000000-0000-4000-8000-000000000002"]
         XCTAssertTrue(bot.waitForExistence(timeout: 15))
-        let inbox = app.tabBars.buttons["Inbox"]
+        let inbox = app.tabBars.buttons["Home"]
         XCTAssertTrue(inbox.waitForExistence(timeout: 15))
-        inbox.tap()
+        app.openCards()
         let option = app.buttons["decision-option-confirm"]
         XCTAssertTrue(option.waitForExistence(timeout: 5))
         app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "inbox-context-")).firstMatch.tap()
