@@ -199,6 +199,9 @@ struct CoconutHome: View {
                 .navigationDestination(for: TeamScreenRoute.self) { route in
                     TeamRoomView(roomId: route.roomId, pushed: true)
                 }
+                .navigationDestination(for: AlertsRoute.self) { _ in
+                    AlertsView()
+                }
                 .background(BoardStyle.paper)
         }
         // On the stack itself, so that the pushed pages get it too.
@@ -249,10 +252,10 @@ struct CoconutHome: View {
             PushNotifications.shared.target = nil
             return
         }
-        if target.team == nil && (target.group || target.decisionId == nil) {
+        if target.team == nil && (target.alert || target.group || target.decisionId == nil) {
             PushNotifications.shared.target = nil
             previewedNotification = nil
-            showNotification(target.group ? .inboxList : .conversation(target.conversationRoute))
+            showNotification(target.alert ? .alerts : target.group ? .inboxList : .conversation(target.conversationRoute))
             return
         }
         // A card and a team show their place at once. The Mac then confirms it: a card can be answered already, and
@@ -311,6 +314,11 @@ struct CoconutHome: View {
             notificationDecisionId = nil
             selectedTab = .bots
             botsPath = NavigationPath()
+        case .alerts:
+            notificationDecisionId = nil
+            selectedTab = .inbox
+            inboxPath = NavigationPath()
+            inboxPath.append(AlertsRoute())
         }
     }
 

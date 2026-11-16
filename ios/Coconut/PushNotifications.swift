@@ -393,6 +393,8 @@ enum NotificationDestination: Equatable {
     case chat(TeamChatKey)
     /// The Chats list: a team notification of a team that the app no longer has.
     case chatList
+    /// The alerts feed: the notification of a critical alert.
+    case alerts
 
     /// The place of the chat of a team: the Team chat, a named chat or a direct chat.
     init(chat: TeamChatKey) {
@@ -426,6 +428,8 @@ struct NotificationTarget: Equatable, Sendable {
     var bot: String? = nil
     /// The named chat of a team message, or of a group of the messages of one named chat. An older Mac sends none.
     var named: String? = nil
+    /// A critical alert of the alerts feed. It names no bot and no task, and opens the feed.
+    var alert = false
 
     var conversationRoute: ConversationRoute { ConversationRoute(botId: botId, decisionId: decisionId, messageId: messageId) }
     /// The chat of a team that the notification opens: a Team chat, a named chat or a direct chat.
@@ -433,6 +437,7 @@ struct NotificationTarget: Equatable, Sendable {
 
     func destination(pendingDecisionIds: Set<String>, snapshotReady: Bool) -> NotificationDestination? {
         if let chat { return NotificationDestination(chat: chat) }
+        if alert { return .alerts }
         if group { return .inboxList }
         if let decisionId {
             guard snapshotReady else { return nil }
@@ -469,6 +474,10 @@ struct NotificationTarget: Equatable, Sendable {
             deviceId = device; botId = ""; taskId = ""; decisionId = nil; messageId = nil; group = true
             team = direct?.room ?? room; member = direct?.member; bot = direct?.bot
             self.named = direct == nil && room != nil ? named : nil
+            return
+        }
+        if data["kind"] as? String == "alert" {
+            deviceId = device; botId = ""; taskId = ""; decisionId = nil; messageId = nil; alert = true
             return
         }
         if data["kind"] as? String == "team" {

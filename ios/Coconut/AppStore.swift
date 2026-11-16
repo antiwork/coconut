@@ -31,6 +31,8 @@ final class AppStore {
     /// The seconds that the app holds an answer before it sends it. Undo in this time sends nothing.
     static let answerUndoSeconds: TimeInterval = 10
     var decisionReplyDrafts: [String: String] = [:]
+    /// The alerts feed of the paired Mac: operational notices of its tooling. It comes with the state.
+    var alertFeed = AlertFeed()
     var artifacts: [Artifact] = [] {
         didSet { assign(\.transcriptArtifacts, artifacts.filter { $0.kind == "task" }) }
     }
@@ -183,6 +185,8 @@ final class AppStore {
     var isBusy: Bool { writeCount > 0 }
     var pendingDecisions: [Decision] { decisions.filter(\.isPending) }
     var inboxBadgeCount: Int { pendingDecisions.filter { !answeringDecisionIds.contains($0.id) }.count }
+    /// The unread alerts of the feed, for the bell of the Inbox. The badge of the Inbox tab counts only decisions.
+    var unreadAlertCount: Int { alertFeed.unread }
     var reconciledBadgeCount: Int? { lastSync.map { _ in inboxBadgeCount } }
     @ObservationIgnored var setBadge: (Int) -> Void = { PushNotifications.shared.setBadgeCount($0) }
     /// Gets the list of the teams before and after each list that the Mac sent. The list before is nil for the first
@@ -2348,6 +2352,58 @@ final class AppStore {
         return true
     }
 
+    /// Mark an alert of the feed as read. The feed shows the change at once, and takes it back when the Mac refuses.
+    func markAlertRead(_ alert: FeedAlert) async {
+        guard alert.isUnread else { return }
+        await changeAlert(alert, action: "read") { $0.readAt = $0.readAt ?? Self.alertStamp() }
+    }
+
+    /// Resolve an alert of the feed: its cause is gone. A resolved alert is read too.
+    func resolveAlert(_ alert: FeedAlert) async {
+        guard !alert.isResolved else { return }
+        await changeAlert(alert, action: "resolve") {
+            let stamp = Self.alertStamp()
+            $0.resolvedAt = stamp
+            $0.readAt = $0.readAt ?? stamp
+        }
+    }
+
+    /// Mark each alert of the feed as read.
+    func markAllAlertsRead() async {
+        guard unreadAlertCount > 0 else { return }
+        let before = alertFeed
+        let stamp = Self.alertStamp()
+        var feed = alertFeed
+        for index in feed.items.indices where feed.items[index].isUnread { feed.items[index].readAt = stamp }
+        feed.unread = 0
+        setAlertFeed(feed)
+        guard !isDemo else { return }
+        let answer = await write("alerts/read-all", payload: EmptyRequest(), as: AlertsReadAnswer.self,
+                                 refreshInBackground: true)
+        // An update that arrived during the request has the feed of the Mac, so only the feed of this write goes back.
+        if answer == nil, alertFeed == feed { setAlertFeed(before) }
+    }
+
+    private func changeAlert(_ alert: FeedAlert, action: String, _ change: (inout FeedAlert) -> Void) async {
+        var feed = alertFeed
+        feed.update(alert.id, change)
+        setAlertFeed(feed)
+        guard !isDemo else { return }
+        let saved = await write("alerts/\(alert.id)/\(action)", payload: EmptyRequest(), as: FeedAlert.self,
+                                refreshInBackground: true)
+        var current = alertFeed
+        if let saved { current.replace(saved) } else if alertFeed == feed { current.replace(alert) }
+        setAlertFeed(current)
+    }
+
+    /// The saved state has the feed too: the next update starts from it (StateUpdates.applying).
+    private func setAlertFeed(_ feed: AlertFeed) {
+        assign(\.alertFeed, feed)
+        cachedState?.alerts = feed
+    }
+
+    private static func alertStamp() -> String { Date().formatted(.iso8601) }
+
     /// Pin a document in the Library, or remove its pin. The document moves only after the Mac confirms.
     func pinDocument(_ document: BotDocument, pinned: Bool) async {
         if !isDemo {
@@ -2660,6 +2716,7 @@ final class AppStore {
         assign(\.tasks, snapshot.tasks)
         assign(\.messages, snapshot.messages)
         assign(\.decisions, snapshot.decisions)
+        assign(\.alertFeed, snapshot.alerts ?? AlertFeed())
         assign(\.artifacts, snapshot.artifacts)
         assign(\.approvals, snapshot.approvals)
         let previewLimit = ParallelWorkSettings(limit: nil, effectiveLimit: 4, automaticLimit: 4)
@@ -2936,6 +2993,7 @@ final class AppStore {
     func notificationDestination(_ target: NotificationTarget) async -> NotificationDestination? {
         guard acceptsNotification(target) else { return nil }
         if target.team != nil { return await teamNotificationDestination(target) }
+        if target.alert { return .alerts }
         if target.group { return .inboxList }
         if target.decisionId == nil { return .conversation(target.conversationRoute) }
         // Without the Mac, the phone opens the card that it has, or the chat. Waiting would keep the Inbox busy
@@ -3114,6 +3172,8 @@ private struct EmptyRequest: Encodable {}
 private struct Acknowledgement: Decodable, Sendable { let ok: Bool }
 private struct BotRequest: Encodable { let name: String; let role: String; let avatar: String; let color: String; let instructions: String; let memory: String; let pinned: Bool? }
 private struct PinRequest: Encodable { let pinned: Bool }
+/// The answer of Mark All Read: the count of the unread alerts, which is zero.
+private struct AlertsReadAnswer: Decodable, Sendable { let unread: Int }
 private struct TeamCreateRequest: Encodable { let name: String; let memberName: String }
 private struct TeamJoinBody: Encodable { let link: String; let memberName: String }
 private struct TeamProfileRequest: Encodable { let memberName: String }

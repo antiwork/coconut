@@ -29,6 +29,8 @@ struct StateUpdates: Decodable, Sendable {
     /// The teams where who types changed. The list of the teams says who types now.
     var teamTypingChanged: [String]?
     var confirmedRequestIds: [String]?
+    /// The alerts feed, when an alert changed. The Mac sends the whole feed, which is small.
+    var alerts: AlertFeed?
 
     /// The chats that changed: each Team chat, each direct chat and each direct chat with a bot of this page.
     var changedTeamChats: [TeamChatKey] {
@@ -61,6 +63,7 @@ struct StateUpdates: Decodable, Sendable {
         }
         if let workCapacity { result.workCapacity = workCapacity }
         if let confirmedRequestIds { result.confirmedRequestIds = confirmedRequestIds }
+        if let alerts { result.alerts = alerts }
         result.cursor = cursor
         result.serverTime = serverTime
         return result

@@ -130,7 +130,7 @@
       "role": "assistant",
       "streaming": false,
       "task_id": "00000000-0000-4000-8000-000000000021",
-      "text": "Read 3 files \u00b7 Compared the retry paths",
+      "text": "Read 3 files · Compared the retry paths",
       "thread_id": "00000000-0000-4000-8000-000000000021"
     },
     {
@@ -141,7 +141,7 @@
       "role": "assistant",
       "streaming": false,
       "task_id": "00000000-0000-4000-8000-000000000021",
-      "text": "Ran 6 focused checks \u00b7 All passed",
+      "text": "Ran 6 focused checks · All passed",
       "thread_id": "00000000-0000-4000-8000-000000000021"
     },
     {
@@ -337,6 +337,71 @@
         "id": "manual",
         "label": "Ask for flagged actions",
         "description": "Hermes asks before flagged actions."
+      }
+    ]
+  },
+  "alerts": {
+    "unread": 3,
+    "items": [
+      {
+        "id": "a1e5c0de-0000-4000-8000-000000000001",
+        "level": "critical",
+        "source": "cron:daily-ledger",
+        "title": "daily-ledger failed",
+        "body": "Request 20260908T1154 ended with status=error after 3 retries. The ledger for September 7 is not posted, and the payout report that reads it will be short until the job runs again.",
+        "url": "https://github.com/antiwork/coconut/actions",
+        "created_at": "2026-09-08T11:54:00Z",
+        "read_at": null,
+        "resolved_at": null,
+        "dedupe_key": "daily-ledger:2026-09-08"
+      },
+      {
+        "id": "a1e5c0de-0000-4000-8000-000000000002",
+        "level": "notice",
+        "source": "watchdog:pr-compliance",
+        "title": "2 pull requests wait for a review for more than a day",
+        "body": "coconut#511 and coconut#516 have no reviewer.",
+        "url": "https://github.com/antiwork/coconut/pulls",
+        "created_at": "2026-09-08T10:12:00Z",
+        "read_at": null,
+        "resolved_at": null,
+        "dedupe_key": null
+      },
+      {
+        "id": "a1e5c0de-0000-4000-8000-000000000003",
+        "level": "info",
+        "source": "deploy:coconut-relay",
+        "title": "Relay deploy finished",
+        "body": "Version 4f2a91c is live. 0 errors in the first 10 minutes.",
+        "url": null,
+        "created_at": "2026-09-08T08:40:00Z",
+        "read_at": null,
+        "resolved_at": null,
+        "dedupe_key": null
+      },
+      {
+        "id": "a1e5c0de-0000-4000-8000-000000000004",
+        "level": "notice",
+        "source": "health:mac-mini",
+        "title": "Disk space is under 15%",
+        "body": "42 GB of 500 GB are free on the data volume.",
+        "url": null,
+        "created_at": "2026-09-07T16:05:00Z",
+        "read_at": "2026-09-07T18:30:00Z",
+        "resolved_at": null,
+        "dedupe_key": "disk:mac-mini"
+      },
+      {
+        "id": "a1e5c0de-0000-4000-8000-000000000005",
+        "level": "info",
+        "source": "cron:marketing-holdout-metrics-weekly",
+        "title": "Weekly holdout metrics report is ready",
+        "body": "",
+        "url": null,
+        "created_at": "2026-09-07T09:00:00Z",
+        "read_at": "2026-09-07T09:20:00Z",
+        "resolved_at": null,
+        "dedupe_key": null
       }
     ]
   }
