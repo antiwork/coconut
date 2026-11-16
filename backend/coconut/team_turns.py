@@ -455,13 +455,16 @@ class TeamTurns:
                 self._team_stop_turns(room=room, bot=bot)
 
     def _team_say(self, room: str, bot: str, trigger: str, part, text: str, reply_to: str | None = None,
-                  request: bool = True, chat: str | None = None, direct: str | None = None) -> None:
+                  request: bool = True, chat: str | None = None, direct: str | None = None) -> bool:
         """Write one message of the bot into `chat` (None for the Team chat), or into its direct chat with the person
         `direct` (a member ID). Nothing when the bot no longer answers there, for example after a removal, a leave or
         the removal of the chat, and nothing when the request is gone: `trigger` names the message that the bot
         answers, and it must still show with its member in the list (`request`). A direct message goes only to a
         member in the list, and has no `reply_to`. A failure of the relay or of the helper leaves a log line, and the
         chat shows nothing.
+
+        True when the log has the entry of this message after the call: this call or an earlier one wrote it. Only a
+        send outside a turn reads the value (gateway_message); the turns of the chat do not.
 
         The lock of the room holds from the check to the write, so a leave cannot come between them. No call to the
         relay or to the helper holds the service lock."""
@@ -475,23 +478,28 @@ class TeamTurns:
                     written = self.team_store.entry(room, entry) is not None
                     gone = chat is not None and self.team_store.chat(room, chat) is None
                     person = self.team_store.member(room, direct) if direct else None
-                if share is None or written or gone:
-                    return
+                if written:
+                    return True
+                if share is None or gone:
+                    return False
                 if direct is not None:
-                    if person is not None and direct != room_row['member']:
-                        # Three tries, as a message of the team chat.
-                        self._team_write_direct(room_row, entry, direct, person['agreement'], {'kind': 'direct'},
-                                                text, None, share, tries=3)
-                    return
+                    if person is None or direct == room_row['member']:
+                        return False
+                    # Three tries, as a message of the team chat.
+                    self._team_write_direct(room_row, entry, direct, person['agreement'], {'kind': 'direct'},
+                                            text, None, share, tries=3)
+                    return True
                 fields = {'kind': 'message', 'text': text, 'bot': share}
                 if reply_to:
                     fields['reply_to'] = reply_to
                 if chat is not None:
                     fields['chat'] = chat
                 self._team_write(room_row, entry, False, fields, tries=3)
+                return True
         except ROOM_ERRORS as error:
             log.warning('coconut.team_turns room %s: a message of the bot %s did not reach the relay (%s).',
                         room[:8], bot, type(error).__name__)
+            return False
 
     def _team_poll_drain(self) -> None:
         """Start no new turn while an update asks for it, and say when no turn runs (ServiceRestart.poll_service_drain).

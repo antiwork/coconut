@@ -694,6 +694,13 @@ class TeamAdapterTests(TeamTurnMacs, unittest.TestCase):
         self.assertEqual(list(self.only.root.glob('**/photo.png')), [])
 
 
+def http_error(status):
+    """An HTTP answer of the service with this status and an empty body."""
+    import io
+    import urllib.error
+    return urllib.error.HTTPError('http://127.0.0.1/', status, 'Error', {}, io.BytesIO())
+
+
 class StandaloneSenderTests(DirectTurnMacs, unittest.TestCase):
     """A cron delivery into a team chat from a process without a gateway (team.send_standalone)."""
 
@@ -701,14 +708,41 @@ class StandaloneSenderTests(DirectTurnMacs, unittest.TestCase):
         super().setUp()
         listen(self)
 
-    def deliver(self, chat, text='The weekly report is ready.', bridge=None, **options):
+    def deliver(self, chat, text='The weekly report is ready.', bridge=None, home=None, extra=None, **options):
         from gateway.config import PlatformConfig
-        config = PlatformConfig({'bridge': str(bridge or self.only.gateway_bridge.address_file), 'mode': 'team'})
-        with mock.patch.dict(os.environ, HERMES_HOME=str(self.home)):
+        config = PlatformConfig(extra or {'bridge': str(bridge or self.only.gateway_bridge.address_file),
+                                          'mode': 'team'})
+        with mock.patch.dict(os.environ, HERMES_HOME=str(home or self.home)):
             return asyncio.run(team.send_standalone(config, chat, text, thread_id=None, **options))
 
+    def requests(self, *faults):
+        """Count the requests of the sender to the bridge, as (message ID, timeout). The request number n raises
+        faults[n] when there is one, and else goes to the service."""
+        calls, real = [], team.Bridge.request
+
+        def request(bridge, route, payload, timeout):
+            calls.append((payload['message_id'], timeout))
+            if len(calls) <= len(faults):
+                raise faults[len(calls) - 1]
+            return real(bridge, route, payload, timeout)
+        patch = mock.patch.object(team.Bridge, 'request', autospec=True, side_effect=request)
+        patch.start()
+        self.addCleanup(patch.stop)
+        return calls
+
+    def quick(self):
+        """Waits of 0.1 seconds between the tries of the sender."""
+        patch = mock.patch.object(team, 'STANDALONE_WAITS', (.1, .1))
+        patch.start()
+        self.addCleanup(patch.stop)
+
+    def outside(self, text, message_id='outside:report'):
+        """A send outside a turn into the Team chat, as the service gets it."""
+        return self.only.gateway_message({'kind': 'send', 'home': str(self.home), 'message_id': message_id,
+                                          'chat_id': chat_id(self.room, self.bot['id']), 'text': text})
+
     def sent(self, result):
-        self.assertEqual(set(result) - {'warnings'}, {'success', 'message_id'})
+        self.assertEqual(set(result), {'success', 'message_id'})
         self.assertTrue(result['success'])
         self.assertTrue(result['message_id'].startswith('outside:'))
 
@@ -759,12 +793,132 @@ class StandaloneSenderTests(DirectTurnMacs, unittest.TestCase):
         self.assertEqual([row for row in self.of_chat() if row[0] == 'Reporter'], [])
 
     def test_files_with_a_text_send_the_text(self):
-        result = self.deliver(chat_id(self.room, self.bot['id']), media_files=[('/tmp/report.pdf', False)])
+        with self.assertLogs('hermes_plugins.coconut', logging.WARNING) as logs:
+            result = self.deliver(chat_id(self.room, self.bot['id']), media_files=[('/tmp/report.pdf', False)])
+        # No `warnings`: Hermes records each warning as a failed delivery (cron/scheduler_delivery.py).
         self.sent(result)
-        self.assertEqual(result['warnings'], ['The team chat got the text. Coconut does not send files there from a '
-                                              'cron job.'])
+        self.assertEqual(logs.output, ['WARNING:hermes_plugins.coconut.team:Coconut: a cron delivery into a team chat '
+                                       'sent its text without its 1 files.'])
         self.sync()
         self.assertEqual(self.of_chat(), [('Reporter', 'The weekly report is ready.')])
+
+    def test_a_service_that_does_not_answer_gets_three_tries_with_one_message_id(self):
+        # A restart of the service, then a bridge file that is missing for a moment.
+        self.quick()
+        calls = self.requests(ConnectionRefusedError(), FileNotFoundError())
+        with self.assertLogs('hermes_plugins.coconut', logging.WARNING):
+            self.sent(self.deliver(chat_id(self.room, self.bot['id'])))
+        self.assertEqual(len(calls), 3)
+        self.assertEqual(len({message_id for message_id, _ in calls}), 1)
+        self.assertEqual({timeout for _, timeout in calls}, {team.STANDALONE_SECONDS})
+        self.sync()
+        self.assertEqual(self.of_chat(), [('Reporter', 'The weekly report is ready.')])
+
+    def test_a_5xx_answer_three_times_is_an_error(self):
+        self.quick()
+        calls = self.requests(*[http_error(503)] * 3)
+        result = self.deliver(chat_id(self.room, self.bot['id']))
+        self.assertEqual(result, {'error': 'The Coconut service did not answer.'})
+        self.assertEqual(len(calls), 3)
+
+    def test_a_refusal_names_its_http_status_and_gets_no_second_try(self):
+        calls = self.requests(http_error(403))
+        with self.assertLogs('hermes_plugins.coconut', logging.WARNING):
+            result = self.deliver(chat_id(self.room, self.bot['id']))
+        self.assertEqual(result, {'error': 'Coconut refused this message. (HTTP 403)'})
+        self.assertEqual(len(calls), 1)
+
+    def test_a_fault_of_the_sender_is_an_error_and_no_exception(self):
+        with mock.patch('hermes_constants.get_hermes_home', side_effect=RuntimeError('no home')), \
+                self.assertLogs('hermes_plugins.coconut', logging.WARNING) as logs:
+            result = self.deliver(chat_id(self.room, self.bot['id']))
+        self.assertEqual(result, {'error': 'Coconut did not take this message (RuntimeError).'})
+        self.assertEqual(logs.output, ['WARNING:hermes_plugins.coconut.team:Coconut: a cron delivery into a team chat '
+                                       'failed (RuntimeError).'])
+
+    def test_a_config_without_a_bridge_uses_the_default_bridge_file(self):
+        with mock.patch.object(team, 'DEFAULT_BRIDGE', Path(self.only.gateway_bridge.address_file)):
+            self.sent(self.deliver(chat_id(self.room, self.bot['id']), extra={'mode': 'team'}))
+        self.sync()
+        self.assertEqual(self.of_chat(), [('Reporter', 'The weekly report is ready.')])
+
+    def test_a_job_of_a_named_profile_delivers_as_the_agent_of_that_profile(self):
+        # The cron process of a named profile has the profile home as its Hermes home.
+        profile = Path(self.temp.name) / 'hermes' / 'profiles' / 'writer'
+        profile.mkdir(parents=True)
+        writer = self.declare('Writer', home=profile)
+        self.share(self.room, writer)
+        self.connect(bot=writer)
+        self.sync()
+        self.sent(self.deliver(chat_id(self.room, writer['id']), 'The draft is ready.', home=profile))
+        # An agent that exists, but has another home: each home delivers only as its own agent.
+        with self.assertLogs('hermes_plugins.coconut', logging.WARNING):
+            refused = [self.deliver(chat_id(self.room, writer['id'])),
+                       self.deliver(chat_id(self.room, self.bot['id']), home=profile)]
+        self.assertEqual(refused, [{'error': 'Coconut refused this message: the chat is not a team chat of an agent '
+                                             'of this Hermes home.'}] * 2)
+        self.sync()
+        self.assertEqual(self.of_chat(), [('Writer', 'The draft is ready.')])
+
+    def test_a_slow_relay_gives_no_false_failure(self):
+        # The first try waits less than the write takes. The next try waits for the lock of the room, finds the entry
+        # of the first try, and the service answers `recorded: true`.
+        self.quick()
+        calls = self.requests()
+        real = self.only._team_write
+
+        def slow(*arguments, **options):
+            time.sleep(1)
+            return real(*arguments, **options)
+        with mock.patch.object(team, 'STANDALONE_SECONDS', .6), mock.patch.object(self.only, '_team_write', slow), \
+                self.assertLogs('hermes_plugins.coconut', logging.WARNING):
+            self.sent(self.deliver(chat_id(self.room, self.bot['id'])))
+        self.assertGreater(len(calls), 1)
+        self.assertEqual(len({message_id for message_id, _ in calls}), 1)
+        self.sync()
+        self.assertEqual(self.of_chat(), [('Reporter', 'The weekly report is ready.')])
+
+    def test_a_repeat_with_the_same_message_id_adds_no_message(self):
+        self.assertEqual(self.outside('The weekly report is ready.'), {'recorded': True})
+        self.assertEqual(self.outside('The weekly report is ready.'), {'recorded': True})
+        self.sync()
+        self.assertEqual(self.of_chat(), [('Reporter', 'The weekly report is ready.')])
+
+    def test_a_message_that_the_log_did_not_take_is_not_recorded(self):
+        from coconut.team_relay import TeamRelayError
+        fault = TeamRelayError(503, 'The relay answered 503.')
+        with mock.patch.object(self.only.team_relay, 'write', side_effect=fault), \
+                self.assertLogs('coconut', logging.WARNING):
+            self.assertEqual(self.outside('The weekly report is ready.'),
+                             {'recorded': False, 'reason': 'The team log did not take this message.'})
+            calls = self.requests()
+            result = self.deliver(chat_id(self.room, self.bot['id']))
+        # The service tried the relay three times. The sender gives the reason to Hermes and makes no second try.
+        self.assertEqual(result, {'error': 'Coconut did not show this message: The team log did not take this '
+                                           'message.'})
+        self.assertEqual(len(calls), 1)
+        self.sync()
+        self.assertEqual(self.of_chat(), [])
+
+    def test_a_text_in_two_parts_is_recorded_only_when_the_log_has_both(self):
+        from coconut.team_relay import TeamRelayError
+        from coconut.team_turns import MAX_TEXT
+        text = 'a' * MAX_TEXT + 'b'
+        real, writes = self.only.team_relay.write, []
+
+        def second_fails(*arguments, **options):
+            writes.append(arguments)
+            if len(writes) == 2:
+                raise TeamRelayError(503, 'The relay answered 503.')
+            return real(*arguments, **options)
+        with mock.patch.object(self.only.team_relay, 'write', side_effect=second_fails), \
+                self.assertLogs('coconut', logging.WARNING):
+            self.assertEqual(self.outside(text), {'recorded': False,
+                                                  'reason': 'The chat shows only 1 of 2 parts of this message.'})
+        # A repeat with the same message ID writes only the part that the log does not have.
+        self.assertEqual(self.outside(text), {'recorded': True})
+        self.sync()
+        self.assertEqual(self.of_chat(), [('Reporter', 'a' * MAX_TEXT), ('Reporter', 'b')])
 
 
 if __name__ == '__main__':

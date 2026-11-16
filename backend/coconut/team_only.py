@@ -351,7 +351,9 @@ class TeamOnlyService(TeamTurns, Documents, Team):
         reply of its own turn after a background process. A send becomes a message of the bot without `reply_to`, and
         its entry ID comes from the message ID of Hermes, so a send that the adapter repeats adds none. A message of
         the chat is complete, so an edit and a delete change nothing. In a direct chat, a send is a direct message of
-        the bot to the person of the chat, while that person is in the member list (TeamTurns._team_say)."""
+        the bot to the person of the chat, while that person is in the member list (TeamTurns._team_say). The answer is
+        `recorded: false` with a reason when the log does not have each part of the text, for example after a failure
+        of the relay. The sender of a cron run without a gateway gives that reason to Hermes."""
         home, chat, message_id = data.get('home'), parse_chat(data.get('chat_id')), data.get('message_id')
         if not isinstance(home, str) or chat is None or not isinstance(message_id, str):
             raise ServiceError(400, 'Name the home, the chat and the message.')
@@ -372,7 +374,18 @@ class TeamOnlyService(TeamTurns, Documents, Team):
                                                                or self.team_store.member(room, direct) is None)
         if not answers or room_row['state'] != ACTIVE or gone:
             return {'recorded': False, 'reason': 'The agent does not answer in this team chat.'}
-        for number, piece in enumerate(parts(readable_text(text))):
+        pieces = parts(readable_text(text))
+        shown = 0
+        for number, piece in enumerate(pieces):
             # A send outside a turn answers no message, so no request must still stand: only the bot must answer.
-            self._team_say(room, bot_id, message_id, number, piece, request=False, chat=named, direct=direct)
+            # A part that the log did not take stops the send, so the chat shows no later part before it.
+            if not self._team_say(room, bot_id, message_id, number, piece, request=False, chat=named, direct=direct):
+                break
+            shown += 1
+        # The answer is true only when the log has each part. A repeat with the same message ID writes only the parts
+        # that the log does not have.
+        if shown == 0:
+            return {'recorded': False, 'reason': 'The team log did not take this message.'}
+        if shown < len(pieces):
+            return {'recorded': False, 'reason': f'The chat shows only {shown} of {len(pieces)} parts of this message.'}
         return {'recorded': True}

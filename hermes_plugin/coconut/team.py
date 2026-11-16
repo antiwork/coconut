@@ -56,6 +56,15 @@ BASE_METHODS = ('build_source', 'handle_message', 'send_image_file', '_mark_conn
 # `trusted_inbound`, Hermes refuses each member of the team as an unknown user and ends the turn with no reply. Without
 # `display_overrides`, Hermes sends its tool progress into the chat as messages of the bot.
 REGISTRATION_FIELDS = ('trusted_inbound', 'display_overrides')
+# A cron delivery without a gateway (send_standalone) tries three times: the waits between the tries are the first two
+# waits of the adapter. A restart of the service, or a bridge file that is missing for a moment, then loses no notice.
+STANDALONE_WAITS = RETRY_SECONDS[:2]
+# Each try waits this long for the service: one relay try of the service (team_relay.TIMEOUT_SECONDS). The service can
+# need longer, with its three relay tries. A later try then waits for the lock of the room, finds the entry of the
+# first try, and answers `recorded: true`. All tries take at most 3 x 15 + 1 + 2 = 48 seconds, under the bound of 60
+# seconds of Hermes (`cron.standalone_send_timeout_seconds`). One part with three relay tries takes the service at most
+# about 46 seconds (3 x 15 + 2 x 0.5).
+STANDALONE_SECONDS = 15
 
 
 def missing() -> str | None:
@@ -77,9 +86,12 @@ async def send_standalone(pconfig, chat_id, message, *, thread_id=None, media_fi
 
     It sends the text as the adapter sends a message outside a turn: `kind: send` with the Hermes home of this process
     and a new message ID, to the service of the bridge file. The service shows it as a message of the bot in the chat
-    `chat_id`. A refusal of the service becomes an `error` with its reason, so the record of the job shows it. A fault
-    never reaches Hermes. The team chat takes no file from this path: the text goes, and the result says that the
-    files did not go.
+    `chat_id`. A service that does not answer gets two more tries with the same message ID. The service derives the
+    entry ID from the message ID, so a try that repeats a send that arrived adds no second message. A refusal gets no
+    second try: a 404, `recorded: false` or an empty text. A refusal, and a service that does not answer three times,
+    become an `error` with the reason, so the record of the job shows a failed delivery. A fault never reaches Hermes.
+    The team chat takes no file from this path: the text goes, and a log line says that the files did not go. The
+    result has no `warnings`: Hermes records each warning as a failed delivery.
 
     Only the mode `team` registers this sender. On a person's Mac, the service drops a cron delivery whose run shows
     already as a routine task in the chat, by the job ID of the delivery (gateway_chat.py). This call has no job ID,
@@ -95,8 +107,13 @@ async def send_standalone(pconfig, chat_id, message, *, thread_id=None, media_fi
         message_id = OUTSIDE + str(uuid.uuid4())
 
         async def request(route, payload):
-            return await asyncio.to_thread(bridge.request, route, payload, REQUEST_SECONDS)
-        answer = await report_outside(request, home, str(chat_id), dict(kind='send', message_id=message_id, text=text))
+            return await asyncio.to_thread(bridge.request, route, payload, STANDALONE_SECONDS)
+        for wait in (*STANDALONE_WAITS, None):
+            answer = await report_outside(request, home, str(chat_id),
+                                          dict(kind='send', message_id=message_id, text=text))
+            if wait is None or not (isinstance(answer, SendResult) and answer.retryable):
+                break
+            await asyncio.sleep(wait)
         if isinstance(answer, SendResult):
             status = answer.raw_response.get('status') if isinstance(answer.raw_response, dict) else None
             if status == 404:
@@ -106,12 +123,10 @@ async def send_standalone(pconfig, chat_id, message, *, thread_id=None, media_fi
         if not isinstance(answer, dict) or not answer.get('recorded'):
             reason = answer.get('reason') if isinstance(answer, dict) else None
             return {'error': 'Coconut did not show this message: ' + str(reason or 'no reason')}
-        result = {'success': True, 'message_id': message_id}
         if media_files:
             LOG.warning('Coconut: a cron delivery into a team chat sent its text without its %d files.',
                         len(media_files))
-            result['warnings'] = ['The team chat got the text. Coconut does not send files there from a cron job.']
-        return result
+        return {'success': True, 'message_id': message_id}
     except Exception as error:
         LOG.warning('Coconut: a cron delivery into a team chat failed (%s).', type(error).__name__)
         return {'error': f'Coconut did not take this message ({type(error).__name__}).'}
