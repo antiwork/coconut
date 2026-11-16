@@ -289,8 +289,8 @@ enum ChatRowText {
 
 /// The layout of one row of the Chats list and of the Mac sidebar, for a bot and a team, as the chat list of WhatsApp.
 /// The face comes first. A grid of two lines follows. The name and the age of the newest message share the first line.
-/// The line under the name and the badges share the second line. The badges are the round "@" mark of a team whose
-/// unread message names this person, and then the unread count. WhatsApp and Telegram have the same mark. The age
+/// The line under the name and the badges share the second line. The badges are the mark of a muted chat
+/// (`bell.slash`), the round "@" mark of a team whose unread message names this person, and then the unread count. WhatsApp and Telegram have the same mark. The age
 /// and the badges end at one right edge. No line is empty, so a row of one line has its text centered on the face.
 /// At the accessibility text sizes the name, the age with the badges, and the line under the name each have their
 /// own line.
@@ -300,6 +300,8 @@ struct ChatRowLayout<Face: View, Subtitle: View>: View {
     let unread: Int
     let date: Date?
     var mentioned = false
+    /// The person muted the chat (TeamChatMute).
+    var muted = false
     @ViewBuilder let face: () -> Face
     @ViewBuilder let subtitle: () -> Subtitle
 
@@ -344,7 +346,7 @@ struct ChatRowLayout<Face: View, Subtitle: View>: View {
         .frame(minHeight: 52)
     }
 
-    private var hasBadges: Bool { unread > 0 || mentioned }
+    private var hasBadges: Bool { unread > 0 || mentioned || muted }
 
     private var nameText: some View {
         Text(name).font(.body.weight(unread > 0 ? .semibold : .regular)).lineLimit(1)
@@ -354,12 +356,24 @@ struct ChatRowLayout<Face: View, Subtitle: View>: View {
         CompactAgeLabel(date: date).font(.footnote.monospacedDigit()).foregroundStyle(.secondary)
     }
 
-    /// The "@" mark, then the unread count.
+    /// The mark of a muted chat, the "@" mark, then the unread count.
     private var badges: some View {
         HStack(spacing: BoardStyle.Space.xs) {
+            if muted { MutedMark() }
             if mentioned { MentionBadge() }
             if unread > 0 { UnreadBadge(count: unread) }
         }
+    }
+}
+
+/// The mark of a muted chat in the secondary color, as WhatsApp has it: in the font of the line under the name, so it
+/// is as high as that line. The label of the row says it to VoiceOver (TeamRowSpeech), so the mark itself is silent.
+struct MutedMark: View {
+    var body: some View {
+        Image(systemName: TeamChatMute.mark)
+            .font(.subheadline)
+            .foregroundStyle(.secondary)
+            .accessibilityHidden(true)
     }
 }
 

@@ -445,6 +445,34 @@ final class TeamScreenTests: XCTestCase {
         #endif
     }
 
+    /// The person mutes the named chat Notices, and then the Mac refuses an unmute. The request has the path and the
+    /// body of the route, and the answer goes into the list. A refusal shows its text and changes nothing.
+    @MainActor
+    func testAMuteOfANamedChatSendsItsChoiceAndKeepsTheAnswer() async throws {
+        #if !(DEBUG && targetEnvironment(simulator))
+        throw XCTSkip("This HTTP fixture requires a debug simulator build.")
+        #else
+        let state = try PreviewStateFixture.load()
+        let server = try TeamServer(state: APIJSON.encoder().encode(state))
+        server.showChat(notifications: true)
+        let address = try await server.start()
+        defer { server.stop() }
+        try await withPairedStore(address: address) { store in
+            await store.loadTeam()
+            XCTAssertEqual(store.team?.rooms.first?.namedChats.map(\.notifications), [true])
+            let muted = await store.setTeamChatNotifications("r1", chat: "c1", enabled: false)
+            XCTAssertTrue(muted)
+            XCTAssertEqual(server.muteRequests, ["PUT /v1/team/rooms/r1/chats/c1/notifications {\"enabled\":false}"])
+            XCTAssertEqual(store.team?.rooms.first?.namedChats.first?.notifications, false)
+            server.refuseMutes()
+            let unmuted = await store.setTeamChatNotifications("r1", chat: "c1", enabled: true)
+            XCTAssertFalse(unmuted)
+            XCTAssertEqual(store.error, "This chat is no longer in the team.")
+            XCTAssertEqual(store.team?.rooms.first?.namedChats.first?.notifications, false)
+        }
+        #endif
+    }
+
     /// A Mac of today that the app asks to share a page answers with an error. The app shows it and keeps the page as
     /// it was.
     @MainActor
@@ -1743,6 +1771,14 @@ private final class TeamServer: @unchecked Sendable {
     /// The teams that the page "d1" is shared with.
     private var pageTeams: [String] = []
     private var refusingShares = false
+    /// The choice of the named chat "c1" (Notices), or nil for a room without a named chat.
+    private var chatNotifications: Bool?
+    private var refusingMutes = false
+    private var muteLines: [String] = []
+    /// Each request of the route of a mute: the method, the path and the body.
+    var muteRequests: [String] { lock.withLock { muteLines } }
+    func showChat(notifications: Bool) { lock.withLock { chatNotifications = notifications } }
+    func refuseMutes() { lock.withLock { refusingMutes = true } }
     private var holdingShares = false
     private var heldShare: [@Sendable (Double) -> Void] = []
     var heldShares: Int { lock.withLock { heldShare.count } }
@@ -2046,7 +2082,9 @@ private final class TeamServer: @unchecked Sendable {
             + #""color": "A68456", "member": "m0", "member_name": "Ada", "this_mac": true, "bot_id": "bot-reporter"}"#
         return #"{"room": "r1", "name": "Example Team", "state": "active", "is_admin": true, "can_invite": true, "#
             + #""members": [\#(people.joined(separator: ", "))], "bots": [\#(authors)], "#
-            + #""sync": {"error": null}, "unread": \#(unread), "last_message": \#(lastMessage())}"#
+            + #""sync": {"error": null}, "unread": \#(unread), "last_message": \#(lastMessage())"#
+            + (chatNotifications.map { #", "chats": [{"id": "c1", "name": "Notices", "notifications": \#($0)}]"# } ?? "")
+            + "}"
     }
 
     /// The page "d1" of the bot of this Mac, as the Library lists it, with its teams. The caller holds the lock.
@@ -2099,6 +2137,18 @@ private final class TeamServer: @unchecked Sendable {
                         if failing { status = "500 Internal Server Error" }
                         let rooms = [left ? nil : room(), otherRoom].compactMap { $0 }
                         return #"{"rooms": [\#(rooms.joined(separator: ", "))], "helper": true}"#
+                    }
+                case "PUT /v1/team/rooms/r1/chats/c1/notifications":
+                    let sent = request.components(separatedBy: "\r\n\r\n").dropFirst().joined()
+                    body = lock.withLock {
+                        muteLines.append(route + " " + sent)
+                        if refusingMutes {
+                            status = "404 Not Found"
+                            return #"{"error": "This chat is no longer in the team."}"#
+                        }
+                        let enabled = sent.contains("true")
+                        chatNotifications = enabled
+                        return #"{"room": "r1", "chat": "c1", "notifications": \#(enabled)}"#
                     }
                 case "GET /v1/documents":
                     body = lock.withLock { #"{"documents": [\#(page())], "team_bots": []}"# }

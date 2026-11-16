@@ -178,6 +178,45 @@ final class TeamNamedChatTests: XCTestCase {
         XCTAssertEqual(TeamChatMute.mark, "bell.slash")
     }
 
+    func testTheFooterOfTheSwitchNamesAMutedChat() throws {
+        var room = try XCTUnwrap(try rooms().rooms.first)
+        XCTAssertEqual(TeamNotificationFooter.text(enabled: true, room: room), TeamNotificationFooter.on)
+        room.chats?[1].notifications = true
+        XCTAssertEqual(TeamNotificationFooter.text(enabled: true, room: room), TeamNotificationFooter.on)
+        room.chats?[1].notifications = false
+        XCTAssertEqual(TeamNotificationFooter.text(enabled: true, room: room),
+                       "Get notified when someone writes in this team. A muted chat notifies only when someone names "
+                       + "you with @.")
+        // With the switch off the text stays as before.
+        XCTAssertEqual(TeamNotificationFooter.text(enabled: false, room: room), TeamNotificationFooter.off)
+        room.mentioned = nil
+        XCTAssertEqual(TeamNotificationFooter.text(enabled: false, room: room), TeamNotificationFooter.on)
+    }
+
+    func testAChoiceShowsAtOnceAndTheRoomOfTheMacShowsWhenItEnds() throws {
+        var room = try XCTUnwrap(try rooms().rooms.first)
+        XCTAssertEqual(TeamChatMute.applying([design: false], to: room), room,
+                       "An older service has no choice, so a choice changes nothing.")
+        room.chats?[0].notifications = true
+        room.chats?[1].notifications = true
+        let shown = TeamChatMute.applying([design: false], to: room)
+        XCTAssertEqual(shown.namedChats.map(\.notifications), [false, true])
+        XCTAssertEqual(TeamChatMute.action(shown.namedChats[0], in: shown), "Unmute")
+        XCTAssertTrue(TeamChatMute.showsMark(shown.namedChats[0]))
+        XCTAssertEqual(TeamChatMute.applying([:], to: room), room, "After the request the room of the Mac shows.")
+    }
+
+    func testTheRowOfAMutedChatInTheListHasTheMarkAndSaysIt() throws {
+        var room = try XCTUnwrap(try rooms().rooms.first)
+        room.chats?[0].notifications = false
+        let muted = try XCTUnwrap(room.inChat(design))
+        XCTAssertTrue(muted.shownChatMuted)
+        XCTAssertFalse(try XCTUnwrap(room.inChat(launch)).shownChatMuted)
+        XCTAssertFalse(room.shownChatMuted, "The Team chat has no mute.")
+        XCTAssertEqual(TeamRowSpeech.label(muted, preview: "Grace: @Ada the logo"),
+                       "Design, Example Team, Grace: @Ada the logo, \(UnreadBadge.spoken(2)), You are named, Muted")
+    }
+
     func testAMutedChatKeepsItsCountAndMakesABannerOnlyForAMention() throws {
         let before = try rooms()
         // A plain message after the mention: the newest message and the count grow, and `mention_first` stays.

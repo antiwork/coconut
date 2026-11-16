@@ -166,15 +166,17 @@ struct TeamRoomView: View {
     @State private var naming: TeamChatNaming?
     /// The chat that the confirmation of a delete asks about.
     @State private var deletingChat: TeamNamedChat?
-    /// The named chats whose choice to mute runs now, so a second tap waits for the answer of the Mac.
-    @State private var mutingChats: Set<String> = []
+    /// The new choice of each named chat whose request to mute or unmute runs now (TeamChatMute.applying). The row
+    /// shows it at once, and a second tap waits for the answer of the Mac.
+    @State private var muteChoices: [String: Bool] = [:]
 
     private var room: TeamRoom? { store.team?.rooms.first { $0.room == roomId } }
 
     var body: some View {
         Group {
             if let room {
-                Form { sections(room) }
+                // A choice to mute shows at once, while its request runs.
+                Form { sections(TeamChatMute.applying(muteChoices, to: room)) }
                     .teamForm()
                     .disabled(busy)
                     .refreshable { await store.loadTeam() }
@@ -321,7 +323,7 @@ struct TeamRoomView: View {
                     // In the font of the name, so the mark is as high as the line of the name.
                     Image(systemName: TeamChatMute.mark)
                         .foregroundStyle(.secondary)
-                        .accessibilityLabel("Muted")
+                        .accessibilityLabel(TeamChatMute.spoken)
                         .accessibilityIdentifier("team-chat-muted-\(chat.id)")
                 }
                 Image(systemName: "chevron.right")
@@ -456,15 +458,16 @@ struct TeamRoomView: View {
         }
     }
 
-    /// Mutes or unmutes a named chat. The row shows the state of the Mac when it answers. After a failure the error
-    /// shows in the banner of the screen.
+    /// Mutes or unmutes a named chat, as the switch of the team saves its choice: the row shows the new state at once.
+    /// Then it shows the state of the Mac: the new one after a success, and the old one after a failure, with the error
+    /// in the banner of the screen.
     private func setMuted(_ chat: TeamNamedChat, in room: TeamRoom) {
-        guard let enabled = chat.notifications, !mutingChats.contains(chat.id) else { return }
-        mutingChats.insert(chat.id)
+        guard let enabled = chat.notifications, muteChoices[chat.id] == nil else { return }
+        muteChoices[chat.id] = !enabled
         store.error = nil
         Task {
             await store.setTeamChatNotifications(room.room, chat: chat.id, enabled: !enabled)
-            mutingChats.remove(chat.id)
+            muteChoices[chat.id] = nil
         }
     }
 

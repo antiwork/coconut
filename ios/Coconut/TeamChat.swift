@@ -99,6 +99,9 @@ extension TeamRoom {
     /// A new message of the chat that this room shows notifies this person: the switch of the team is on, and the
     /// person did not mute the named chat. A mention notifies also without this (MessageBanners).
     var chatNotifies: Bool { notifiesPhone && shownChat?.notifications != false }
+
+    /// The person muted the named chat that this room shows. The row of the chat then has the mark (TeamChatMute).
+    var shownChatMuted: Bool { shownChat?.notifications == false }
 }
 
 extension TeamRooms {
@@ -132,6 +135,24 @@ enum TeamChatMute {
 
     /// True when the row of `chat` shows the mark.
     static func showsMark(_ chat: TeamNamedChat) -> Bool { chat.notifications == false }
+
+    /// What VoiceOver says for the mark.
+    static let spoken = "Muted"
+
+    /// The room as the Team screen shows it while requests run: each chat in `choices` has the new choice of the
+    /// person (`notifications`) at once. When a request ends, its choice goes, and the room of the Mac shows again:
+    /// the new state after a success, the old state after a failure.
+    static func applying(_ choices: [String: Bool], to room: TeamRoom) -> TeamRoom {
+        guard !choices.isEmpty, var chats = room.chats else { return room }
+        for index in chats.indices {
+            if let choice = choices[chats[index].id], chats[index].notifications != nil {
+                chats[index].notifications = choice
+            }
+        }
+        var shown = room
+        shown.chats = chats
+        return shown
+    }
 }
 
 /// Which person makes, renames and deletes the named chats of a team: the admin of an active team, as the service says
@@ -1707,7 +1728,8 @@ enum TeamRowSpeech {
         let unread = room.unread ?? 0
         return [room.shownChat.map { $0.name + ", " + room.name } ?? room.name, preview,
                 unread > 0 ? UnreadBadge.spoken(unread) : nil,
-                room.showsMentionMark ? named : nil].compactMap { $0 }.joined(separator: ", ")
+                room.showsMentionMark ? named : nil,
+                room.shownChatMuted ? TeamChatMute.spoken : nil].compactMap { $0 }.joined(separator: ", ")
     }
 }
 
@@ -1716,9 +1738,12 @@ enum TeamRowSpeech {
 enum TeamNotificationFooter {
     static let on = "Get notified when someone writes in this team."
     static let off = "You get a notification only when someone names you with @."
+    static let onWithMuted = on + " A muted chat notifies only when someone names you with @."
 
+    /// With the switch on, a team with a muted chat (TeamChatMute) gets the longer text.
     static func text(enabled: Bool, room: TeamRoom) -> String {
-        enabled || !room.knowsPersonMentions ? on : off
+        if enabled { return room.namedChats.contains(where: TeamChatMute.showsMark) ? onWithMuted : on }
+        return room.knowsPersonMentions ? off : on
     }
 }
 
