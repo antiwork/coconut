@@ -107,7 +107,7 @@ class NativeExecution:
                 action = record['action']
                 record['state'] = 'awaiting_approval'
                 self._put('native_receipts', record)
-                options = [dict(id='once', label='Allow once', answer='approve', explanation='Run this action once. Future actions still require their own permission.'), dict(id='deny', label='Do not run', answer='reject', explanation='Block this action and let the bot know you declined.')]
+                options = [dict(id='once', label='Allow once', answer='approve', explanation='Run this action once. Future actions still require their own permission.'), dict(id='deny', label='Do not run', answer='reject', explanation='Block this action and let the agent know you declined.')]
             else:
                 if payload.get('receipt_id'):
                     record = self._get('native_receipts', payload['receipt_id'])
@@ -187,7 +187,7 @@ class NativeExecution:
     def answer_native(self, decision, task, data, device, callbacks):
         from .service import ServiceError, now, decision_correction
         if self._task_paused(task):
-            raise ServiceError(409, 'Restore the bot before answering.')
+            raise ServiceError(409, 'Restore the agent before answering.')
         if data.get('revision') != decision['revision']:
             raise ServiceError(409, 'This decision changed. Review it before answering.')
         option_id = data.get('option_id')
@@ -222,7 +222,7 @@ class NativeExecution:
         if instructions_changed:
             decision['_answers'][-1]['instructions_changed'] = True
         if choice == 'reply':
-            decision['outcome'] = 'Reply received. The bot will continue.'
+            decision['outcome'] = 'Reply received. The agent will continue.'
             reply_message_id = self._record_decision_correction(task, decision, correction)
             self._put('tasks', task)
         if decision.get('draft') is not None and choice != 'reply':

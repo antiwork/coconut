@@ -58,15 +58,15 @@ A reason such as `keychain read -34018` means that the build has the wrong keych
 
 The `Hermes` line shows the Hermes version when Hermes works. Otherwise it shows the reason.
 
-Without a usable Hermes, the service still runs, but it runs no bots. The iPhone can pair and read the reason. Every other request gets the error `503` with the code `hermes_unavailable`.
+Without a usable Hermes, the service still runs, but it runs no agents. The iPhone can pair and read the reason. Every other request gets the error `503` with the code `hermes_unavailable`.
 
 Common reasons:
 
 - Coconut found no Hermes. Coconut looks at `COCONUT_HERMES_PYTHON` and `COCONUT_HERMES_ROOT`, then at the first `hermes` on the service's `PATH`, then at `~/.hermes/hermes-agent`.
 - The installed Hermes cannot load a module that Coconut uses, or it fails the contract check. Repair or update Hermes.
-- The Hermes source folder has a `.env` file. Every bot would get those keys, so Coconut refuses it. The keys belong in `~/.hermes/.env`. Tell the person. Do not move keys yourself.
+- The Hermes source folder has a `.env` file. Every agent would get those keys, so Coconut refuses it. The keys belong in `~/.hermes/.env`. Tell the person. Do not move keys yourself.
 
-After Hermes changes, the service restarts by itself. If Hermes did not change, but the cause is gone, restart the login item. In this state no bot runs, so a restart stops no work:
+After Hermes changes, the service restarts by itself. If Hermes did not change, but the cause is gone, restart the login item. In this state no agent runs, so a restart stops no work:
 
 ```
 launchctl kickstart -k gui/$(id -u)/com.gumroad.coconut.service
@@ -103,16 +103,16 @@ All Coconut data is in the install folder (default `~/Coconut`). Read the files 
 | `.runtime/host/tunnel/events.log`, `events.log.1` | The connection events of the relay sidecar, as JSON lines. |
 | `.runtime/host/tunnel/status.json` | The state of the relay sidecar, with the last disconnect and its cause. |
 | `.runtime/host/hermes.json` | The result of the last Hermes check. |
-| `.runtime/host/coconut.sqlite3` | The Coconut database: bots, conversations, and tasks. |
-| `.runtime/host/bots/<bot id>/home` | The Hermes profile of one bot: `SOUL.md`, `config.yaml`, `.env`, and its memory. |
+| `.runtime/host/coconut.sqlite3` | The Coconut database: agents, conversations, and tasks. |
+| `.runtime/host/bots/<agent ID>/home` | The Hermes profile of one agent: `SOUL.md`, `config.yaml`, `.env`, and its memory. |
 | `skills/coconut` | This skill. |
 
 The menu item **Open Logs** opens the logs folder.
 
 ## Never do these
 
-- Do not run `scripts/host.py restart` while bots work. It stops the running turns at once, and their tasks fail. Use `coconut update`, which waits for running turns.
+- Do not run `scripts/host.py restart` while agents work. It stops the running turns at once, and their tasks fail. Use `coconut update`, which waits for running turns.
 - Do not edit, move, or delete files in the install folder. Updates own the source files.
 - Do not change the database with `sqlite3`.
-- Do not copy model keys, OAuth tokens, or `.env` files between Hermes profiles, into a bot profile, or into chat.
+- Do not copy model keys, OAuth tokens, or `.env` files between Hermes profiles, into an agent profile, or into chat.
 - Do not delete `.runtime`. It holds all conversations and the pairing of the iPhone.

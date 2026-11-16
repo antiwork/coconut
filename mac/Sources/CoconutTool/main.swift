@@ -11,36 +11,36 @@ let usage = """
                 service, the relay and Hermes. On a Mac that runs Coconut for a team only: the mode, the service and
                 each team. --json prints the service state as JSON.
       update    Check for a newer Coconut.app now, and install it. Prints the result and returns when the install
-                starts: the service updates after its running bot work finishes, also the turn that ran this
-                command. Run coconut status later to see the end. --wait waits for the end (not inside a bot turn).
+                starts: the service updates after its running agent work finishes, also the turn that ran this
+                command. Run coconut status later to see the end. --wait waits for the end (not inside an agent turn).
       settings automatic-updates on|off
                 Turn automatic updates on or off. When on, Coconut.app checks every hour and installs.
       pair      Print a one-time iPhone setup link. Not on a Mac that runs Coconut for a team only.
       pair <code>
                 Pair the iPhone that shows this code. Hermes runs this from the iPhone's message.
-      team      Print the teams of this Mac: the name, the state, the admin, the members, the bots and the sync
+      team      Print the teams of this Mac: the name, the state, the admin, the members, the agents and the sync
                 error. --json prints the answer of the service as JSON.
       team join [--name <text>]
                 Join a team with the invite link on standard input. The link is a secret: pipe it to the command.
                 --name is the name of this Mac in the member list.
-      team new-bot <name> [--home <path>]
-                On a Mac that runs Coconut for a team only: declare a bot for the Hermes home that it stands for.
+      team new-agent <name> [--home <path>]
+                On a Mac that runs Coconut for a team only: declare an agent for the Hermes home that it stands for.
                 Without --home, the service takes its own Hermes home.
-      team add-bot <bot> [--team <name or ID>]
-                Add a bot of this Mac to the team. <bot> is the ID or the name of the bot. --team is necessary
+      team add-agent <agent> [--team <name or ID>]
+                Add an agent of this Mac to the team. <agent> is the ID or the name of the agent. --team is necessary
                 when this Mac is in more than one team.
-      team remove-bot <bot> [--team <name or ID>]
-                Remove a bot of this Mac from the team.
+      team remove-agent <agent> [--team <name or ID>]
+                Remove an agent of this Mac from the team.
       team leave --confirm <name of the team> [--team <name or ID>]
                 Leave the team, and delete its copy and its keys on this Mac. The name after --confirm chooses the
                 team. --team <ID> is necessary only when two teams of this Mac have the same name. Without
                 --confirm, print what a leave does and the command for each team.
-      team connect-chat <bot> [--confirm]
-                On a Mac that runs Coconut for a team only: let the bot answer each member of its teams who names it
-                in the team chat. Without --confirm, print each change in the Hermes home of the bot and change
-                nothing. With --confirm, make the changes. Then restart the Hermes gateway of the bot yourself.
-      team disconnect-chat <bot>
-                Take away what connect-chat added. Then restart the Hermes gateway of the bot yourself.
+      team connect-chat <agent> [--confirm]
+                On a Mac that runs Coconut for a team only: let the agent answer each member of its teams who names it
+                in the team chat. Without --confirm, print each change in the Hermes home of the agent and change
+                nothing. With --confirm, make the changes. Then restart the Hermes gateway of the agent yourself.
+      team disconnect-chat <agent>
+                Take away what connect-chat added. Then restart the Hermes gateway of the agent yourself.
       version   Print the version of Coconut.app.
       install-source
                 Install the Coconut source that this app carries. --if-needed skips an install that is current.
@@ -52,7 +52,7 @@ let usage = """
 
     Coconut.app --set-up sets up Coconut without a click, as Set Up Coconut in the menu does. The install script
     opens the app with it. Coconut.app --set-up --team-only sets up a Mac with no person for a team only: Coconut keeps
-    its teams and the pages of its bots, and touches nothing of Hermes until coconut team connect-chat --confirm.
+    its teams and the pages of its agents, and touches nothing of Hermes until coconut team connect-chat --confirm.
     Coconut.app --remove removes a team-only install. See docs/install-and-update.md, "A Mac without a person".
     """
 
@@ -148,7 +148,7 @@ func checkForUpdates() -> Int32 {
         print("Coconut.app \(result.version ?? before) is installed.")
         return 0
     case .installing:
-        print("Installing Coconut \(result.version ?? "") now. The app restarts. The service updates after its running bot work finishes.")
+        print("Installing Coconut \(result.version ?? "") now. The app restarts. The service updates after its running agent work finishes.")
     }
     // A bot turn that waits here would wait for itself: the service update waits for all running turns. So the command
     // returns now, unless a person asks to wait.

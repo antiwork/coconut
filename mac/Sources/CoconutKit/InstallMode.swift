@@ -124,8 +124,8 @@ public enum RemoveRequest {
             switch chatBots(path: path, flags: flags) {
             case .success(let names):
                 guard !names.isEmpty else { return nil }
-                return "The Hermes home of \(names.joined(separator: ", ")) has the team chat of Coconut. For each bot, "
-                    + "run coconut team disconnect-chat <bot>, then remove Coconut."
+                return "The Hermes home of \(names.joined(separator: ", ")) has the team chat of Coconut. For each agent, "
+                    + "run coconut team disconnect-chat <agent>, then remove Coconut."
             case .failure:
                 continue
             }

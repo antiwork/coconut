@@ -42,7 +42,8 @@ import { close, hash, HEX64, readBytes, send } from './tunnel.js';
 // Tests set smaller values with the ROOM_LIMITS binding, as JSON. The deployed relay does not set it.
 const LIMITS = {
   members: 64, tickets: 8, minTtl: 60, maxTtl: 7 * 86400, uses: 64, welcome: 1024,
-  minBody: 99, maxBody: 1024 * 1024, keptEntries: 512, keptBytes: 64 * 1024 * 1024, otherBytes: 64 * 1024 * 1024,
+  // otherBytes has room for the files of a team chat next to its messages (docs/team-log.md, "Limits").
+  minBody: 99, maxBody: 1024 * 1024, keptEntries: 512, keptBytes: 64 * 1024 * 1024, otherBytes: 512 * 1024 * 1024,
   roomBytes: 8 * 1024 * 1024 * 1024,
   retentionSeconds: 90 * 86400, writesPerMinute: 300, readEntries: 256, readBytes: 1024 * 1024,
   creationsPerHour: 10, idleSeconds: 180 * 86400, sweepSeconds: 86400,

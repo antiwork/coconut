@@ -407,7 +407,7 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
                 try:
                     self.profiles.sync(bot)
                 except (ProfileError, OSError) as error:
-                    raise ServiceError(503, 'The bot settings were saved, but its Hermes profile could not sync.') from error
+                    raise ServiceError(503, 'The agent settings were saved, but its Hermes profile could not sync.') from error
 
     def _migrate_activity_notices(self):
         if self._setting('activity_notices_migrated'):
@@ -563,7 +563,8 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
         with self.lock:
             row = self._read_one(f'SELECT data FROM {table} WHERE id=?', (object_id,))
         if not row:
-            raise ServiceError(404, f'{table[:-1].capitalize()} was not found.')
+            noun = 'Agent' if table == 'bots' else table[:-1].capitalize()
+            raise ServiceError(404, f'{noun} was not found.')
         return json.loads(row[0])
 
     def _put(self, table: str, obj: dict):
@@ -694,7 +695,7 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
         except ProfileError as error:
             raise ServiceError(409, str(error)) from error
         except OSError as error:
-            raise ServiceError(503, 'The bot settings were saved, but its Hermes profile could not sync.') from error
+            raise ServiceError(503, 'The agent settings were saved, but its Hermes profile could not sync.') from error
 
 
     def _human_source(self, task: dict, source_id: str, binding: dict, purpose: str) -> dict:
@@ -706,14 +707,14 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
                 or source.get('sender_bot_id') is not None
                 or source.get('thread_id') != task['thread_id']
                 or task['bot_id'] not in source.get('recipient_bot_ids', [])):
-            raise ServiceError(403, f'To {purpose}, use a direct human message addressed to this bot.')
+            raise ServiceError(403, f'To {purpose}, use a direct human message addressed to this agent.')
         return source
 
     def _bot_creation_input(self, task: dict) -> dict:
         sources, receipts = [], []
         for source_id in task.get('_preference_source_ids', []):
             try:
-                source = self._human_source(task, source_id, task, 'create bots')
+                source = self._human_source(task, source_id, task, 'create agents')
             except ServiceError:
                 continue
             sources.append({'id': source['id'], 'text': source['text']})
@@ -729,7 +730,7 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
 
     def _create_bot_from_chat(self, task_id: str, payload: dict) -> dict:
         if not isinstance(payload, dict) or set(payload) != {'source_message_id', 'name', 'role', 'instructions'}:
-            raise ServiceError(400, 'Send only source_message_id, name, role, and instructions to create a bot.')
+            raise ServiceError(400, 'Send only source_message_id, name, role, and instructions to create an agent.')
         source_id = require_text(payload, 'source_message_id', 100)
         name = require_text(payload, 'name', 80)
         role = require_text(payload, 'role', 160)
@@ -742,22 +743,22 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
         with self.transaction():
             task = self._get('tasks', task_id)
             if self.stopping.is_set() or task['status'] != 'working':
-                raise ServiceError(409, 'This task is no longer working and cannot create a bot.')
+                raise ServiceError(409, 'This task is no longer working and cannot create an agent.')
             if self._task_paused(task) or self._get('exchanges', task['exchange_id']).get('cancelled'):
-                raise ServiceError(409, 'Restore this bot before creating a bot.')
-            source = self._human_source(task, source_id, task, 'create bots')
+                raise ServiceError(409, 'Restore this agent before creating an agent.')
+            source = self._human_source(task, source_id, task, 'create agents')
             previous = self.db.execute('SELECT data FROM bot_creation_receipts WHERE id=?', (receipt_id,)).fetchone()
             if previous:
                 record = json.loads(previous[0])
                 if record['fingerprint'] != fingerprint:
-                    raise ServiceError(409, 'This message already created that bot with different settings. Send a new request.')
+                    raise ServiceError(409, 'This message already created that agent with different settings. Send a new request.')
                 bot = self._get('bots', record['receipt']['bot_id'])
                 if bot.get('_deleted'):
-                    raise ServiceError(409, 'That bot was deleted. Send a new human request to create another bot.')
+                    raise ServiceError(409, 'That agent was deleted. Send a new human request to create another agent.')
                 self._sync_profile(bot)
                 return record['receipt'] | {'status': 'duplicate'}
             if sum(record['source_message_id'] == source_id for record in self._all('bot_creation_receipts')) >= self.BOT_CHANGE_LIMIT:
-                raise ServiceError(409, 'This message created eight bots. Send a new human request to create more.')
+                raise ServiceError(409, 'This message created eight agents. Send a new human request to create more.')
             audit = {'source_message_id': source_id, 'source_task_id': task_id, 'created_by': source['_human_device_id']}
             bot = self._create_bot({'name': name, 'role': role, 'instructions': instructions}, audit=audit)
             receipt = dict(status='created', bot_id=bot['id'], profile_id=bot['profile_id'], session_id=bot['session_id'], name=bot['name'], role=bot['role'], source_message_id=source_id)
@@ -768,7 +769,7 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
         sources = []
         for source_id in task.get('_preference_source_ids', []):
             try:
-                source = self._human_source(task, source_id, task, 'delete bots')
+                source = self._human_source(task, source_id, task, 'delete agents')
             except ServiceError:
                 continue
             sources.append({'id': source['id'], 'text': source['text']})
@@ -782,7 +783,7 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
 
     def _delete_bot_from_chat(self, task_id: str, payload: dict) -> dict:
         if not isinstance(payload, dict) or set(payload) != {'source_message_id', 'target_bot_id', 'expected_name'}:
-            raise ServiceError(400, 'Send only source_message_id, target_bot_id, and expected_name to delete a bot.')
+            raise ServiceError(400, 'Send only source_message_id, target_bot_id, and expected_name to delete an agent.')
         source_id = require_text(payload, 'source_message_id', 100)
         target_id = require_text(payload, 'target_bot_id', 100)
         name = require_text(payload, 'expected_name', 160)
@@ -791,15 +792,15 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
         with self.transaction():
             task = self._get('tasks', task_id)
             if self.stopping.is_set() or task['status'] != 'working' or self._task_paused(task):
-                raise ServiceError(409, 'This task cannot delete a bot now.')
+                raise ServiceError(409, 'This task cannot delete an agent now.')
             if self._get('exchanges', task['exchange_id']).get('cancelled'):
                 raise ServiceError(409, 'This exchange was cancelled.')
-            source = self._human_source(task, source_id, task, 'delete bots')
+            source = self._human_source(task, source_id, task, 'delete agents')
             if target_id in (task['bot_id'], task['conversation_bot_id']):
-                raise ServiceError(409, 'Use another conversation to delete this bot. A bot cannot delete itself.')
+                raise ServiceError(409, 'Use another conversation to delete this agent. An agent cannot delete itself.')
             bot = self._get('bots', target_id)
             if bot['name'] != name:
-                raise ServiceError(409, 'The target bot changed its name. Refresh before requesting deletion.')
+                raise ServiceError(409, 'The target agent changed its name. Refresh before requesting deletion.')
             row = self.db.execute('SELECT data FROM bot_deletion_receipts WHERE id=?', (receipt_id,)).fetchone()
             if row:
                 receipt = json.loads(row[0])['receipt']
@@ -809,10 +810,10 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
                 callbacks.append(lambda: self._finish_bot_deletion(target_id))
             else:
                 if sum(record['source_message_id'] == source_id for record in self._all('bot_deletion_receipts')) >= self.BOT_CHANGE_LIMIT:
-                    raise ServiceError(409, 'This message deleted eight bots. Send a new request to delete more.')
+                    raise ServiceError(409, 'This message deleted eight agents. Send a new request to delete more.')
                 audit = {'source_message_id': source_id, 'source_task_id': task_id, 'deleted_by': source['_human_device_id']}
                 if task_id in self._bot_deletion_scope(target_id):
-                    raise ServiceError(409, 'Request deletion in a separate task. This task depends on that bot.')
+                    raise ServiceError(409, 'Request deletion in a separate task. This task depends on that agent.')
                 self._delete_bot(bot, callbacks, audit=audit)
                 receipt = dict(status='deleted', bot_id=target_id, profile_id=bot['profile_id'], name=name,
                                source_message_id=source_id, cancelled_task_ids=bot.get('_delete_task_ids', []))
@@ -1144,7 +1145,7 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
                 if method == 'POST' and path == '/v1/bots':
                     bot = self._get('bots', response['id'])
                     if bot.get('_deleted'):
-                        raise ServiceError(409, 'That bot was deleted. Send a new request to create another bot.')
+                        raise ServiceError(409, 'That agent was deleted. Send a new request to create another agent.')
                     self._sync_profile(bot)
                 if method == 'DELETE' and len(parts) == 3 and parts[:2] == ['v1', 'bots']:
                     callbacks.append(lambda: self._finish_bot_deletion(parts[2]))
@@ -1263,9 +1264,9 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
             with self.lock:
                 bot = self._get('bots', bot_id)
             if bot.get('_deleted'):
-                raise ServiceError(404, 'This bot was deleted.')
+                raise ServiceError(404, 'This agent was deleted.')
             if 'profile_id' in data and data['profile_id'] != bot['profile_id']:
-                raise ServiceError(409, 'A bot keeps its original Hermes profile ID.')
+                raise ServiceError(409, 'An agent keeps its original Hermes profile ID.')
             for field in ('instructions', 'memory'):
                 if field in data and (not isinstance(data[field], str) or len(data[field]) > 20000):
                     raise ServiceError(400, f'{field} must contain at most 20000 characters.')
@@ -1352,7 +1353,7 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
     def _create_bot(self, data: dict, *, audit: dict | None = None, profile: dict | None = None) -> dict:
         """Create a bot. `profile` is {name, home} of a profile that a scan found. Without it, Hermes creates one."""
         if data.get('model_override') is not None:
-            raise ServiceError(400, 'Create the bot, then choose its model in bot settings.')
+            raise ServiceError(400, 'Create the agent, then choose its model in agent settings.')
         if not isinstance(data.get('pinned', False), bool):
             raise ServiceError(400, 'pinned must be true or false.')
         for field in ('instructions', 'memory'):
@@ -1367,7 +1368,7 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
             try:
                 profile = self._new_profile(bot)
             except (ProfileError, OSError) as error:
-                raise ServiceError(503, f'Hermes did not create the profile of this bot: {error}') from None
+                raise ServiceError(503, f'Hermes did not create the profile of this agent: {error}') from None
             # A bot that Coconut creates follows the default model. A found profile gets its choice in the reconcile.
             bot['model_follows_default'] = True
             self.wake_model_follow()
@@ -1436,7 +1437,7 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
         with self.lock:
             bot = self._get('bots', bot_id)
             if not bot.get('_deleted'):
-                raise ServiceError(409, 'This bot has no recorded deletion.')
+                raise ServiceError(409, 'This agent has no recorded deletion.')
             bot_lock = self.bot_locks.setdefault(bot_id, threading.Lock())
         # Cancellation waits outside the database lock so worker receipts can finish.
         errors = []
@@ -1450,7 +1451,7 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
                 self.provider.stop_bot(bot_id)
             # A worker can still be preparing its profile before its process starts.
             if not bot_lock.acquire(timeout=5):
-                raise TimeoutError('The deleted bot is still stopping.')
+                raise TimeoutError('The deleted agent is still stopping.')
             try:
                 self.profiles.sync(bot)
                 if hasattr(self.provider, 'native_settings'):
@@ -1517,7 +1518,7 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
         if len(parts) >= 3 and parts[1] == 'bots':
             bot = self._get('bots', parts[2])
             if bot.get('_deleted'):
-                raise ServiceError(404, 'This bot was deleted.')
+                raise ServiceError(404, 'This agent was deleted.')
             if len(parts) == 3 and method == 'PATCH':
                 if 'model_override' in data:
                     bot['model_override'] = self._model_override(data['model_override'], self._request_model_catalog)
@@ -1526,7 +1527,7 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
                     if not bot['model_follows_default']:
                         bot.pop('model_follow_error', None)
                 if 'profile_id' in data and data['profile_id'] != bot['profile_id']:
-                    raise ServiceError(409, 'A bot keeps its original Hermes profile ID.')
+                    raise ServiceError(409, 'An agent keeps its original Hermes profile ID.')
                 for field in ('name', 'role', 'avatar', 'color', 'instructions'):
                     if field in data:
                         if field in ('instructions', 'role'):
@@ -1649,7 +1650,7 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
 
     def _create_routine(self, bot: dict, data: dict) -> dict:
         if bot['archived'] or bot.get('_deleted'):
-            raise ServiceError(409, 'Restore this bot before adding a routine.')
+            raise ServiceError(409, 'Restore this agent before adding a routine.')
         routine = self._routine_fields(data)
         routine.update(id=uid(), bot_id=bot['id'], last_run_at=None, last_task_id=None, created_at=now())
         self._put('routines', routine)
@@ -1673,7 +1674,7 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
             return {'ok': True}
         if parts[3:] == ['run'] and method == 'POST':
             if bot['archived']:
-                raise ServiceError(409, 'Restore the bot before running this routine.')
+                raise ServiceError(409, 'Restore the agent before running this routine.')
             active = self._active_routine_task(routine['id'])
             if active:
                 return self._public(active)
@@ -1788,7 +1789,7 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
                 or previous['thread_id'] != source['thread_id']
                 or previous['conversation_bot_id'] != source['conversation_bot_id']
                 or previous.get('_conversation_epoch') != self._setting('conversation_epoch')):
-            raise ServiceError(409, 'Choose a failed task owned by this bot in the same conversation. Use the native workflow for an outcome or routine.')
+            raise ServiceError(409, 'Choose a failed task owned by this agent in the same conversation. Use the native workflow for an outcome or routine.')
         if (self._task_paused(previous) or self._continuation_blocked(previous)
                 or self._get('exchanges', previous['exchange_id']).get('cancelled')
                 or self._automatic_work_is_paused(dict(previous, _work_resume=True))):
@@ -1850,10 +1851,10 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
         if self.stopping.is_set() or exchange.get('cancelled') or (source['status'] == 'cancelled' and not cancellation_result):
             return {'task_id': None, 'target_bot_id': target_id, 'thread_id': source['thread_id'], 'status': 'cancelled'}
         if source['status'] != 'working' and not (returning and source['status'] in ('completed', 'failed')) and not cancellation_result:
-            raise YieldForDecision('This task cannot send bot messages.')
+            raise YieldForDecision('This task cannot send agent messages.')
         self._recipient_ids([target_id])
         if target_id == source['bot_id']:
-            raise ServiceError(400, 'Choose another bot for this message.')
+            raise ServiceError(400, 'Choose another agent for this message.')
         origin = self._get('bots', source['conversation_bot_id'])
         if origin['archived'] or origin.get('_deleted'):
             raise ServiceError(409, 'The originating conversation is unavailable.')
@@ -2133,12 +2134,12 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
 
     def _recipient_ids(self, values: Any) -> list[str]:
         if not isinstance(values, list) or len(values) > 20 or any(not isinstance(value, str) for value in values):
-            raise ServiceError(400, 'recipient_bot_ids must contain at most 20 bot IDs.')
+            raise ServiceError(400, 'recipient_bot_ids must contain at most 20 agent IDs.')
         recipients = list(dict.fromkeys(values))
         for recipient_id in recipients:
             bot = self._get('bots', recipient_id)
             if bot.get('_deleted') or bot['archived']:
-                raise ServiceError(409, 'Choose bots that are active and not archived.')
+                raise ServiceError(409, 'Choose agents that are active and not archived.')
         return recipients
 
     def _interaction_target(self, message_id, bot_id=None):
@@ -2162,7 +2163,7 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
         row = self.db.execute('SELECT data FROM documents WHERE id=?', (document_id,)).fetchone() if isinstance(document_id, str) else None
         document = json.loads(row[0]) if row else None
         if document is None or document['bot_id'] != bot['id'] or expired(document, now()):
-            raise ServiceError(409, 'Choose a page of this bot in the Library.')
+            raise ServiceError(409, 'Choose a page of this agent in the Library.')
         return dict(message_id='', text=document['title'], author='Library', role='document',
                     document_id=document['id'], document_key=document['key'])
 
@@ -2266,7 +2267,7 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
         if mode not in ('auto', 'steer', 'queue'):
             raise ServiceError(400, 'Unsupported message mode.')
         if bot['archived'] or bot.get('_deleted'):
-            raise ServiceError(409, 'Restore this bot before sending work.')
+            raise ServiceError(409, 'Restore this agent before sending work.')
         conversation_bot_id = conversation_bot_id or bot['id']
         origin = self._get('bots', conversation_bot_id)
         if origin['archived'] or origin.get('_deleted'):
@@ -2274,7 +2275,7 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
         recipients = self._recipient_ids(data.get('recipient_bot_ids', []))
         if recipients:
             if mode == 'steer':
-                raise ServiceError(400, 'Mentioned bots receive separate messages.')
+                raise ServiceError(400, 'Mentioned agents receive separate messages.')
             return self._dispatch_user(origin, data, recipients, thread_id=thread_id, parent_task_id=parent_task_id)
         attachments = self._validate_attachments(conversation_bot_id, data.get('attachment_ids', []))
         if work_item and work_item.get('_native_outcome_id') and not data.get('work_status_only'):
@@ -2433,7 +2434,7 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
                 delivery = dict(id=identity, text=chat_message_content(
                     {'operation': 'start', 'task': current}, message))
                 try:
-                    source = self._human_source(task, identity, task, 'create or delete bots')
+                    source = self._human_source(task, identity, task, 'create or delete agents')
                 except ServiceError:
                     pass
                 else:
@@ -2497,7 +2498,7 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
         for artifact_id in artifact_ids:
             attachment = self._get('artifacts', artifact_id)
             if attachment['bot_id'] != bot_id or not attachment.get('_attachment'):
-                raise ServiceError(400, 'This attachment does not belong to this bot.')
+                raise ServiceError(400, 'This attachment does not belong to this agent.')
         return list(dict.fromkeys(artifact_ids))
 
     def _request_context(self, decision: dict, task: dict, question: str, attachments: list[str], reply_device=None) -> dict:
@@ -2519,14 +2520,14 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
         text = require_text(data, 'text', 20000)
         bot = self._get('bots', task['bot_id'])
         if bot.get('_deleted') or bot['archived']:
-            raise ServiceError(409, 'Restore this bot before replying.')
+            raise ServiceError(409, 'Restore this agent before replying.')
         origin = self._get('bots', task['conversation_bot_id'])
         if origin['archived'] or origin.get('_deleted'):
             raise ServiceError(409, 'Restore this conversation before replying.')
         recipients = self._recipient_ids(data.get('recipient_bot_ids', []))
         if recipients:
             if data.get('decision_id'):
-                raise ServiceError(400, 'Ask decision context or address bots in separate replies.')
+                raise ServiceError(400, 'Ask decision context or address agents in separate replies.')
             return self._dispatch_user(origin, data, recipients, thread_id=task['thread_id'], parent_task_id=task['id']) | {'reply_status': 'queued_recipients'}
         attachments = self._validate_attachments(origin['id'], data.get('attachment_ids', []))
         thread_tasks = {t['id'] for t in self._all('tasks') if t['thread_id'] == task['thread_id']}
@@ -2635,7 +2636,7 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
     def _validate_action(self, decision: dict):
         action = decision.get('_action', {})
         if action.get('type') != 'create_file' or decision.get('action_type') != action.get('type'):
-            raise ServiceError(409, 'This action is unavailable in v1. Ask the bot to prepare a local file.')
+            raise ServiceError(409, 'This action is unavailable in v1. Ask the agent to prepare a local file.')
         filename = action.get('filename', '')
         if not isinstance(filename, str) or not filename or filename in ('.', '..') or Path(filename).name != filename or len(filename) > 160:
             raise ServiceError(400, 'The proposed file name is invalid.')
@@ -2739,7 +2740,7 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
             raise ServiceError(400, 'Describe the change before modifying this decision.')
         if choice == 'approve':
             if self._task_paused(task):
-                raise ServiceError(409, 'Restore the bot before approving this action.')
+                raise ServiceError(409, 'Restore the agent before approving this action.')
             self._validate_action(decision)
         actor_name = self._actor_name(device)
         response_record = dict(choice=choice, option_id=option_id, option_label=option['label'] if option else None, correction=correction, decided_by=device, decided_by_name=actor_name, decided_at=now(), prediction=decision.get('_prediction'), predicted_option_id=decision.get('_predicted_option_id'), revision=decision['revision'], action_hash=decision['_action_hash'], original_action_hash=digest(encoded(decision.get('_proposal_action', decision['_action']))))
@@ -2747,7 +2748,7 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
         decision.update(decided_at=response_record['decided_at'], decided_by=device, decided_by_name=actor_name, correction=correction, selected_option_id=option_id, selected_option_label=option['label'] if option else None)
         if choice in ('modify', 'reply'):
             decision.update(status='replied' if choice == 'reply' else 'modified',
-                            outcome='Reply received. The bot will continue.' if choice == 'reply' else 'Changes requested. The bot will prepare a new decision.')
+                            outcome='Reply received. The agent will continue.' if choice == 'reply' else 'Changes requested. The agent will prepare a new decision.')
             task.update(status='queued', _resume_decision=decision['id'], updated_at=now())
             self._record_decision_correction(task, decision, correction, human_authored=bool(data.get('correction')))
         elif choice == 'reject':
@@ -2911,7 +2912,7 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
             task = self._get('tasks', task_id) if task_id else dict(bot_id=bot_id, status='working')
             bot = self._get('bots', task['bot_id'])
             if bot.get('_deleted'):
-                raise ServiceError(404, 'This bot was deleted.')
+                raise ServiceError(404, 'This agent was deleted.')
             if task['status'] != 'working' or self.stopping.is_set():
                 raise YieldForDecision('This task no longer accepts provider output.')
             review_task = self._pr_review_source(bot['id'], task_id or payload.get('review_task_id'))
@@ -2930,7 +2931,7 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
             task = self._get('tasks', task_id) if task_id else dict(bot_id=bot_id, status='working')
             bot = self._get('bots', task['bot_id'])
             if bot.get('_deleted'):
-                raise ServiceError(404, 'This bot was deleted.')
+                raise ServiceError(404, 'This agent was deleted.')
             if task['status'] != 'working' or self.stopping.is_set():
                 raise YieldForDecision('This task no longer accepts provider output.')
             review_task = self._pr_review_source(bot['id'], task_id or payload.get('review_task_id'))
@@ -3541,7 +3542,7 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
                     task.update(status='working', summary='Working', updated_at=now())
                     # The cards of this task that Coconut closed for their source. A turn that continues a card gets them
                     # as data (native_conversation.decision_context).
-                    closed_cards = self._closed_cards(task_id, task['_resume_decision']) if task.get('_resume_decision') else []
+                    closed_cards = self._closed_cards(task, task['_resume_decision']) if task.get('_resume_decision') else []
                     if task.get('_gateway_cron'):
                         # A turn of Coconut continues the routine, for example after an answered card. A restart
                         # queues it again like any other turn (_recover).
@@ -3682,7 +3683,7 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
                             or current.get('_native_turn_id') != task.get('_native_turn_id')):
                         return
                     if self._task_paused(current):
-                        current.update(status='queued', summary='Waiting for the bot to be restored.', updated_at=now())
+                        current.update(status='queued', summary='Waiting for the agent to be restored.', updated_at=now())
                         self._put('tasks', current)
                         self._event('task.updated', self._public(current), current['bot_id'], task_id)
                         return
@@ -3889,7 +3890,7 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
                     if prior['status'] in ('modified', 'replied'):
                         decision['replaces_decision_id'] = prior_id
                         prior['replaced_by_decision_id'] = decision['id']
-                        prior['outcome'] = 'The bot prepared a new proposal with your requested changes.'
+                        prior['outcome'] = 'The agent prepared a new proposal with your requested changes.'
                         self._put('decisions', prior)
                         self._event('decision.updated', self._public(prior), bot_id, task_id)
                 self._validate_action(decision)

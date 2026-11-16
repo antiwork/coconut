@@ -238,7 +238,7 @@ class ClosedSourceAdmissionTests(ClosedSource, unittest.TestCase):
     def test_only_the_owner_or_its_requester_can_continue(self):
         owner = self.closed()
         other = self.store.mutate('POST', '/v1/bots', {'name': 'Other'}, str(uuid4()), 'test-phone')
-        self.assertRejected(owner, 'Only the owner or its requesting bot', caller=self.working(other, 'Continue it.'))
+        self.assertRejected(owner, 'Only the owner or its requesting agent', caller=self.working(other, 'Continue it.'))
         # A caller that is not working, such as the requester's finished turn, cannot continue anything.
         self.requester = self.update(self.requester['id'], status='completed')
         self.assertRejected(owner, 'cannot continue work now')
@@ -697,7 +697,7 @@ class ParkedClosedSourceTests(ParkedClosedSource, unittest.TestCase):
 
     def test_only_the_owner_or_its_requester_can_continue(self):
         owner = self.parked()
-        self.assertRejected(owner, 'Only the owner or its requesting bot', caller=self.working(self.dev, 'Continue it.'))
+        self.assertRejected(owner, 'Only the owner or its requesting agent', caller=self.working(self.dev, 'Continue it.'))
         self.requester = self.update(self.requester['id'], status='completed')
         self.assertRejected(owner, 'cannot continue work now')
 

@@ -371,7 +371,7 @@ class BotProfiles:
                     raise ProfileError('Hermes is not available on this Mac.')
                 run_profile_command(python, source, self.hermes_home, 'delete', name=name)
             except ProfileError as error:
-                raise ServiceError(503, 'The bot was removed, but Hermes did not delete its profile. Retry, or run '
+                raise ServiceError(503, 'The agent was removed, but Hermes did not delete its profile. Retry, or run '
                                    f'hermes profile delete {name}.') from error
         # The name is free again: a new profile with it becomes a new bot.
         with self.transaction():

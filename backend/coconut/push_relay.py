@@ -167,9 +167,11 @@ def team_alert(store, room, entry):
 
 def direct_alert(store, room, entry):
     """The alert of a direct message, in the pattern of a chat with one person: the writer in the title and the text in
-    the body, with no subtitle. When the store has no name for the writer, the title is the name of the team."""
+    the body, with no subtitle. The writer of a message of a chat with a bot is the bot. When the store has no name for
+    the writer, the title is the name of the team."""
     message = store.direct(room, entry)
-    writer = notification_text(message['member_name'], limit=80, byte_limit=256)
+    writer = notification_text(message['bot_name'] if message['bot'] else message['member_name'], limit=80,
+                               byte_limit=256)
     title = writer or notification_text(store.room(room)['name'], limit=80, byte_limit=256)
     return {'title': title, 'body': notification_text(message['text'])}
 

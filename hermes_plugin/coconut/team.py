@@ -1,20 +1,24 @@
 """The adapter of the mode `team`: the team chat of a Mac that runs Coconut for a team only.
 
 `gateway.platforms.coconut.extra.mode: team` in the profile turns this mode on. Only the operator's command
-`coconut team connect-chat` writes it (scripts/team_chat.py). In this mode the plugin registers the platform and this
-adapter, and nothing else: no tool, no hook, no skill and no change of cron. See backend/coconut/team_turns.py for the
-service side.
+`coconut team connect-chat` writes it (scripts/team_chat.py). In this mode the plugin registers the platform, this
+adapter and the guard of the direct chats (privacy.py), and nothing else: no tool, no hook, no skill and no change of
+cron. See backend/coconut/team_turns.py for the service side.
 
-The service gives a turn for each message of the team chat that names the bot. The adapter gives it to the gateway
-as a message of a group chat: the chat is the bot in one chat of a team (`<bot>:team:<room>` for the Team chat, and
-`<bot>:team:<room>:<chat>` for a named chat), the sender is the member of the team, and the earlier messages of the
-chat are `channel_context`. The adapter does not read the chat ID: it gives it back to the service with each send. Each reply goes back to the service.
+The service gives a turn for each message of the team chat that names the bot, and for each direct message of a person
+to the bot. The adapter gives each turn to the gateway as a message of a group chat: the chat is the bot in one chat of
+a team (`<bot>:team:<room>` for the Team chat, `<bot>:team:<room>:<chat>` for a named chat, and
+`<bot>:team:<room>:direct:<member>` for a direct chat), the sender is the member of the team, and the earlier messages
+of the chat are `channel_context`. A direct chat is a group chat too, not the chat type `dm`: Hermes adds a
+first-contact note to a `dm` chat and writes to the config of the Hermes home. Its chat ID is its own, so it has its own
+session, its rules tell the agent that one person reads it, and the guard keeps its text out of the other chats. The
+adapter does not read the chat ID: it gives it back to the service with each send. Each reply goes back to the service.
 
 A production agent runs in this gateway. Each entry point of the adapter catches its own faults, so a fault of Coconut
 never stops the gateway or its other channels. A Hermes without the fields that the adapter needs gets one log line
-and no Coconut channel (`missing`). A Hermes without a field of the registration that the chat needs (`unregistered`)
-gets a channel that takes no message: the adapter polls, each poll names what Hermes lacks, and the service tells the
-team that Hermes needs an update (backend/coconut/team_turns.py).
+and no Coconut channel (`missing`). A Hermes without a field of the registration that the chat needs (`unregistered`),
+or without the middleware of the guard, gets a channel that takes no message: the adapter polls, each poll names what
+Hermes lacks, and the service tells the team that Hermes needs an update (backend/coconut/team_turns.py).
 """
 from __future__ import annotations
 

@@ -8,6 +8,7 @@ runs. test_team_chat_gateway.py runs the adapter of the plugin, and test_native_
 import logging
 import threading
 import time
+import unicodedata
 import unittest
 from unittest import mock
 from uuid import uuid4
@@ -257,6 +258,178 @@ class TriggerTests(TeamTurnMacs, unittest.TestCase):
         self.only.team_sync_pass()
         self.assertEqual(len(self.triggers()), 1)
 
+
+class MemberMentionTests(TeamTurnMacs, unittest.TestCase):
+    """A member names the team-only Mac itself, not its bot. A Mac without a person is no person, so the mention
+    means its bot (docs/team-log.md, "A bot answers", rule 4)."""
+
+    MAC_NAME = 'Reporter'
+    BOT_NAME = 'Reporter'
+
+    def team(self) -> str:
+        room = self.create()
+        self.join(self.only, self.invite(room)['link'], self.MAC_NAME)
+        return room['room']
+
+    def setUp(self):
+        super().setUp()
+        self.mac = self.only.team_store.room(self.room)['member']
+
+    def second_bot(self, name='Helper') -> dict:
+        home = self.home.parent / name.lower()
+        home.mkdir()
+        bot = self.declare(name, home=home)
+        self.share(self.room, bot)
+        self.connect(bot=bot)
+        self.sync()
+        return bot
+
+    def queued(self) -> list[tuple[str, str]]:
+        with self.only.lock:
+            return [tuple(row) for row in self.only.db.execute('SELECT bot, entry FROM team_triggers ORDER BY number')]
+
+    def test_a_mention_of_the_mac_asks_its_bot_and_the_turn_answers(self):
+        named = self.send('@Reporter hello', mentions=[self.mac])
+        self.sync()
+        self.assertEqual(self.queued(), [(self.bot['id'], named['id'])])
+        turns = []
+        self.serve(lambda turn: (turns.append(turn), reply('Hello.')(turn))[1])
+        self.run_turns()
+        self.assertEqual(len(turns), 1)
+        self.assertEqual(self.chat()[-1], (self.BOT_NAME, 'Hello.', named['id']))
+        self.assertEqual(self.triggers(), [])
+
+    def test_a_mention_of_the_mac_and_of_its_bot_starts_one_turn(self):
+        named = self.send('@Reporter @Reporter hello', mentions=[self.mac, self.mention])
+        self.sync()
+        self.assertEqual(self.queued(), [(self.bot['id'], named['id'])])
+
+    def test_of_two_bots_the_mention_asks_the_bot_with_the_name_of_the_mac(self):
+        self.second_bot()
+        named = self.send('@Reporter hello', mentions=[self.mac])
+        self.sync()
+        self.assertEqual(self.queued(), [(self.bot['id'], named['id'])])
+
+    def test_a_bot_that_does_not_answer_starts_nothing(self):
+        for case in ('chat', 'archived', 'shared'):
+            with self.subTest(case=case):
+                if case == 'chat':
+                    self.connect(chat=False)
+                elif case == 'archived':
+                    self.connect(chat=True)
+                    with self.only.transaction():
+                        record = self.only._get('bots', self.bot['id'])
+                        self.only._put('bots', dict(record, archived=True))
+                else:
+                    with self.only.transaction():
+                        record = self.only._get('bots', self.bot['id'])
+                        self.only._put('bots', dict(record, archived=False))
+                    self.call('DELETE', f'/v1/team/rooms/{self.room}/bots/{self.bot["id"]}')
+                self.send(f'@Reporter {case}', mentions=[self.mac])
+                self.sync()
+                self.assertEqual(self.queued(), [])
+
+    def test_the_own_message_an_edit_an_old_message_and_a_sender_who_left_start_nothing(self):
+        room = self.only.team_store.room(self.room)
+        own = self.only.team_store.member(self.room, self.mac)['entry']
+        # A message of the team-only Mac itself.
+        with self.only._team_room_lock(self.room):
+            self.only._team_write(room, 'b' * 32, False, {'kind': 'message', 'text': 'Me', 'mentions': [own]})
+        # An edit that adds the mention.
+        plain = self.send('No mention yet')
+        with self.first._team_room_lock(self.room):
+            self.first._team_write(self.first.team_store.room(self.room), plain['id'], False,
+                                   {'kind': 'message', 'text': 'Now @Reporter', 'mentions': [own]})
+        self.sync()
+        self.assertEqual(self.queued(), [])
+        # A message over one hour old.
+        self.send('@Reporter old', mentions=[self.mac])
+        clock = self.only.team_store.clock
+        self.only.team_store.clock = lambda: time.time() + team_store.TRIGGER_SECONDS + 1
+        self.sync()
+        self.assertEqual(self.queued(), [])
+        self.only.team_store.clock = clock
+        # A sender who left before the turn: the check before the turn drops the trigger.
+        self.join(self.second, self.invite({'room': self.room})['link'], 'Grace')
+        self.second.team_sync_pass()
+        self.only.team_sync_pass()
+        self.send('@Reporter please', service=self.second, mentions=[self.mac])
+        self.sync()
+        self.assertEqual(len(self.queued()), 1)
+        self.leave(self.second, {'room': self.room})
+        self.sync()
+        gateway = self.serve(reply('never'))
+        self.run_turns()
+        self.assertEqual((self.queued(), gateway.turns), ([], []))
+
+    def test_a_mention_in_a_named_chat_gets_its_reply_in_that_chat(self):
+        design = self.call('POST', f'/v1/team/rooms/{self.room}/chats', {'name': 'Design'}, service=self.first)['chat']
+        self.sync()
+        named = self.send('@Reporter hello', mentions=[self.mac], chat=design)
+        self.sync()
+        self.serve(reply('Hi.'))
+        self.run_turns()
+        rows = self.call('GET', f'/v1/team/rooms/{self.room}/messages', {'chat': design}, service=self.first)['messages']
+        self.assertEqual([(row['bot_name'], row['text'], row['reply_to']) for row in reversed(rows)][-1],
+                         (self.BOT_NAME, 'Hi.', named['id']))
+        self.assertNotIn('Hi.', [text for _, text, _ in self.chat()])
+
+
+    def test_two_answering_bots_with_the_name_of_the_mac_give_no_turn(self):
+        helper = self.second_bot()
+        # The Mac refuses a second bot with the same name, so the store gets both names as an older Mac could keep them.
+        shares = self.only.team_store.shares(self.room)
+        with self.only.lock:
+            for bot in (self.bot, helper):
+                self.only.db.execute('UPDATE team_bots SET name=? WHERE room=? AND entry=?',
+                                     (self.MAC_NAME.upper(), self.room, shares[bot['id']]))
+        self.send('@Mac hello', mentions=[self.mac])
+        self.sync()
+        self.assertEqual(self.queued(), [])
+
+
+class MemberMentionOtherNameTests(MemberMentionTests):
+    """The team-only Mac has another name than its bot."""
+
+    MAC_NAME = 'Night Mac'
+
+    def test_of_two_bots_the_mention_asks_the_bot_with_the_name_of_the_mac(self):
+        # Two answering bots, and none has the name of the Mac: the mention means no bot.
+        self.second_bot()
+        self.send('@Night Mac hello', mentions=[self.mac])
+        self.sync()
+        self.assertEqual(self.queued(), [])
+        # The name compares without case.
+        self.call('PATCH', f'/v1/team/bots/{self.bot["id"]}', {'name': 'NIGHT MAC'})
+        self.sync()
+        named = self.send('@Night Mac hello', mentions=[self.mac])
+        self.sync()
+        self.assertEqual(self.queued(), [(self.bot['id'], named['id'])])
+
+    def test_a_shared_bot_that_does_not_answer_does_not_count(self):
+        helper = self.second_bot()
+        self.connect(chat=False, bot=helper)
+        self.sync()
+        named = self.send('@Night Mac hello', mentions=[self.mac])
+        self.sync()
+        self.assertEqual(self.queued(), [(self.bot['id'], named['id'])], 'Reporter is the only bot that answers.')
+
+    def test_a_full_mac_queues_nothing_for_a_mention_of_its_member(self):
+        self.join(self.second, self.invite({'room': self.room})['link'], 'Grace')
+        self.second.team_sync_pass()
+        grace = self.second.team_store.room(self.room)['member']
+        helper = self.second.mutate('POST', '/v1/bots', {'name': 'Grace'}, str(uuid4()), 'phone')
+        with self.second.transaction():
+            self.second._put('bots', dict(self.second._get('bots', helper['id']), chat=True))
+        self.share_page(self.second, self.room, helper)
+        self.second.team_sync_pass()
+        self.first.team_sync_pass()
+        self.send('@Grace hello', mentions=[grace])
+        self.second.team_sync_pass()
+        self.assertFalse(self.second.team_store.answers)
+        with self.second.lock:
+            self.assertEqual(self.second.db.execute('SELECT COUNT(*) FROM team_triggers').fetchone()[0], 0)
+
 class TurnTests(TeamTurnMacs, unittest.TestCase):
     def trigger(self, text='@Reporter what is open?', **fields):
         sent = self.send(text, mentions=[self.mention], **fields)
@@ -369,6 +542,16 @@ class OutsideTests(TeamTurnMacs, unittest.TestCase):
         # A message of the chat is complete: an edit and a delete change nothing.
         self.assertFalse(self.message(kind='edit', text='Changed.')['recorded'])
         self.assertFalse(self.message(kind='delete')['recorded'])
+
+    def test_the_raw_name_of_a_notice_outside_a_turn_shows_as_the_text_of_hermes(self):
+        from coconut.hermes_notices import NOTICES
+        failed = 'Your request was not processed. Send it again if you still want me to carry it out.'
+        with self.assertLogs('coconut.hermes_notices', 'WARNING'):
+            answer = self.message(text=f'gateway.errors.no_credentials\n\n{failed}')
+        self.assertEqual(answer, {'recorded': True})
+        self.sync()
+        self.assertEqual([row for row in self.chat() if row[0] == 'Reporter'],
+                         [('Reporter', f'{NOTICES["gateway.errors.no_credentials"]}\n\n{failed}', None)])
 
     def test_a_send_for_another_home_or_chat_is_refused_and_a_bot_without_its_chat_writes_nothing(self):
         other = self.home.parent / 'other'
@@ -910,6 +1093,24 @@ class FailureTests(TeamTurnMacs, unittest.TestCase):
         self.only._team_poll_drain()
         self.assertFalse(self.only._draining)
         self.assertFalse((self.only.root / 'drained').exists())
+
+
+class MemberMentionUnicodeTests(MemberMentionTests):
+    """The Mac and its bot have one name for a person in two Unicode forms: composed and decomposed accents."""
+
+    MAC_NAME = unicodedata.normalize('NFC', 'Renée')
+    BOT_NAME = unicodedata.normalize('NFD', 'Renée')
+
+    def setUp(self):
+        super().setUp()
+        self.call('PATCH', f'/v1/team/bots/{self.bot["id"]}', {'name': self.BOT_NAME})
+        self.sync()
+
+    def test_of_two_bots_the_mention_asks_the_bot_with_the_name_of_the_mac(self):
+        self.second_bot()
+        named = self.send('@Renée hello', mentions=[self.mac])
+        self.sync()
+        self.assertEqual(self.queued(), [(self.bot['id'], named['id'])])
 
 
 if __name__ == '__main__':

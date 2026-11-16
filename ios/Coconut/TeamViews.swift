@@ -240,7 +240,7 @@ struct TeamRoomView: View {
                 Section {
                     ForEach(botRows) { botRow($0, in: room) }
                 } header: {
-                    Text("Bots")
+                    Text("Agents")
                 } footer: {
                     if let line = TeamBotSection.footer(for: botRows) { Text(line) }
                 }
@@ -368,7 +368,7 @@ struct TeamRoomView: View {
             }
             .buttonStyle(.plain)
             .accessibilityElement(children: .combine)
-            .accessibilityHint("Opens a direct chat")
+            .accessibilityHint(TeamDirectText.opens)
             .accessibilityIdentifier("team-member-\(member.member)")
         } else {
             label
@@ -376,9 +376,15 @@ struct TeamRoomView: View {
     }
 
     /// A face, the name and the quiet text, as the row of a member has. A Mac without a bot has a quiet symbol of a
-    /// Mac in the space of the face, so each name of the section starts at the same edge.
+    /// Mac in the space of the face, so each name of the section starts at the same edge. The row of a bot that can
+    /// get a direct message (TeamBotSection.directBot) opens the direct chat with it, in the form of the row of a
+    /// person with a direct chat.
     private func botRow(_ row: TeamBotRow, in room: TeamRoom) -> some View {
-        HStack(spacing: 12) {
+        let direct = TeamBotSection.directBot(of: row, in: room)
+        let open: (() -> Void)? = direct.flatMap { bot in
+            showTeamChat.map { show in { show(TeamChatKey(room: room.room, bot: bot.id)) } }
+        }
+        let label = HStack(spacing: 12) {
             if let bot = row.bot {
                 BotAvatar(symbol: bot.avatar ?? "", color: bot.color ?? "", size: avatarSize, identity: bot.id,
                           animated: false)
@@ -391,10 +397,31 @@ struct TeamRoomView: View {
             }
             TeamRowText(name: row.name, note: row.note)
         }
-        // The whole row takes the right click and the long press, also the space after the name.
-        .contentShape(Rectangle())
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel(row.spoken)
+        return Group {
+            if let open {
+                Button(action: open) {
+                    HStack(spacing: 8) {
+                        label
+                        // The arrow of a row that opens something, as a navigation link draws it.
+                        Image(systemName: "chevron.right")
+                            .font(.footnote.weight(.semibold)).foregroundStyle(.tertiary)
+                            .accessibilityHidden(true)
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel(row.spoken)
+                .accessibilityHint(TeamDirectText.opens)
+                .accessibilityAddTraits(.isButton)
+            } else {
+                label
+                    // The whole row takes the right click and the long press, also the space after the name.
+                    .contentShape(Rectangle())
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityLabel(row.spoken)
+            }
+        }
         .accessibilityIdentifier(row.id)
         // A row of a Mac for a team only removes that Mac, with each of its bots.
         .teamRemovalActions(TeamRemoval(member: row.member, in: room), message: nil) { removing = $0 }

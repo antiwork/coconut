@@ -30,7 +30,7 @@ public struct TeamServiceStatus: Codable, Equatable, Sendable {
         /// One line for a person: "Example Team (active): 3 members, 2 bots, connected". The socket is a word of the
         /// code, so the line says whether the team is connected.
         public var line: String {
-            "\(name) (\(state)): \(Self.count(members, "member")), \(Self.count(bots, "bot")), "
+            "\(name) (\(state)): \(Self.count(members, "member")), \(Self.count(bots, "agent")), "
                 + (socket ? "connected" : "not connected")
         }
 
@@ -176,7 +176,7 @@ public struct TeamOnlyReport: Encodable, Equatable {
 
 extension StatusText {
     public static let missingHelper = "Coconut cannot join a team: a part of the app is missing. Run coconut update."
-    public static let noBots = "Bots: none. To add one, run: coconut team new-bot <name>"
+    public static let noBots = "Agents: none. To add one, run: coconut team new-agent <name>"
     public static let noTeams = "Teams: none. To join one, pipe an invite link to: coconut team join"
     public static let noAnswer = "Teams: unknown, because the service does not answer."
 
@@ -192,7 +192,7 @@ extension StatusText {
             if !answer.helper {
                 lines.append(missingHelper)
             }
-            lines.append(answer.botNames.isEmpty ? noBots : "Bots: \(answer.botNames.joined(separator: ", "))")
+            lines.append(answer.botNames.isEmpty ? noBots : "Agents: \(answer.botNames.joined(separator: ", "))")
             lines += answer.chats.map(\.line)
             if answer.rooms.isEmpty {
                 lines.append(noTeams)

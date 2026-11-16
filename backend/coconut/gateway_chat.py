@@ -41,6 +41,7 @@ import time
 from . import hermes_runtime
 from .gateway_bridge import (OTHER_PATHS, WORK_MESSAGE_FIELDS, WORK_SESSION_INPUTS, GatewayBridge, GatewayBusy,
                              GatewayUnavailable, gateway_claim_turn, gateway_work_turn, plain_chat_turn)
+from .hermes_notices import readable_text
 from .native_conversation import current_messages, reaction_only_turn
 from .work_capacity import bot_input_turn
 
@@ -87,10 +88,10 @@ BUSY_WAITING = 'Waiting for Hermes to finish another turn in this chat.'
 BUSY_TOO_LONG = ('Hermes ran another turn in the chat of this task for more than {minutes} minutes, so this turn did '
                  'not start. Send the request again.')
 WAITING = 'Waiting for the Hermes gateway. See Settings > Hermes when this takes long.'
-NOT_CONNECTED = ('The Hermes gateway did not connect for this bot in {minutes} minutes. Send the message again after '
+NOT_CONNECTED = ('The Hermes gateway did not connect for this agent in {minutes} minutes. Send the message again after '
                  'the gateway runs. See GET /v1/setup and {log}.')
-PARKED = ('The Hermes profile of this bot is parked ({path}), so no Hermes gateway serves its chats. Remove that file '
-          'to chat with the bot. Its routines are paused too.')
+PARKED = ('The Hermes profile of this agent is parked ({path}), so no Hermes gateway serves its chats. Remove that file '
+          'to chat with the agent. Its routines are paused too.')
 
 
 def gateway_turn_text(request) -> str | None:
@@ -293,7 +294,7 @@ PREEMPTED = ('Your earlier turn on this input stopped, so you could answer the p
 # The audit text names the board tools of a worker. In the gateway, Coconut runs them on its own board.
 AUDIT_BOARD_TOOLS = ('\nIn this chat, call coconut_kanban_list, coconut_kanban_show, coconut_kanban_create and '
                      'coconut_kanban_comment for kanban_list, kanban_show, kanban_create and kanban_comment. They use '
-                     'the board of Coconut, where the Hermes tasks of this bot are. Find the existing task of an outcome '
+                     'the board of Coconut, where the Hermes tasks of this agent are. Find the existing task of an outcome '
                      'before you create one.')
 # The rules and the skills of a bot name the board tools of Hermes. In the gateway, Coconut runs them on its own board,
 # for the Kanban claim of the turn (gateway_kanban_tool). The plugin blocks the gateway's own board tools in the turn.
@@ -322,7 +323,7 @@ LANE_EVENTS = {'ask': 'native_question', 'suggest': 'native_proposal', 'resolve_
                'delete_bot': 'bot_delete', 'continue_work': 'work_continue', 'track_work': 'artifact'}
 # coconut_track_work tracks the work of a work session. A turn of the bot's chat records an outcome on Coconut's board,
 # and a native outcome reports its progress on its card, as for the worker.
-TRACK_WORK_CHAT = ('In the bot\'s chat, record an outcome with coconut_kanban_create. coconut_track_work tracks the work '
+TRACK_WORK_CHAT = ('In the agent\'s chat, record an outcome with coconut_kanban_create. coconut_track_work tracks the work '
                    'of a work session.')
 TRACK_WORK_OUTCOME = ('A native outcome reports its progress on its card with coconut_kanban_heartbeat, and its PRs with '
                       'coconut_track_pr. coconut_track_work tracks the work of a work session.')
@@ -537,7 +538,7 @@ class GatewayChat:
         for card in cards[:CARDS_NOTE_LIMIT]:
             if card['bot_id'] not in names:
                 row = self.db.execute('SELECT data FROM bots WHERE id=?', (card['bot_id'],)).fetchone()
-                names[card['bot_id']] = json.loads(row[0]).get('name', 'a bot') if row else 'a bot'
+                names[card['bot_id']] = json.loads(row[0]).get('name', 'an agent') if row else 'an agent'
             lines.append(f"- {card['id']}: {card.get('title') or 'Untitled card'} ({names[card['bot_id']]})")
         header = ('\nCards that wait for the person now (live from Coconut). A card that the conversation mentioned '
                   'earlier may be answered or outdated.')
@@ -997,7 +998,7 @@ class GatewayChat:
                 bot for bot in bots if bot['name'].casefold() == target.casefold()]
             if len(match) != 1:
                 names = ', '.join(sorted(bot['name'] for bot in bots)) or 'none'
-                raise ServiceError(400, f'Name one other bot exactly. The other bots: {names}.')
+                raise ServiceError(400, f'Name one other agent exactly. The other agents: {names}.')
             receipt = self.emit(task_id, 'bot_message', {'target_bot_id': match[0]['id'],
                                                          'text': require_text(arguments, 'text', 20000)})
             return {key: receipt[key] for key in ('status', 'target_bot_id', 'task_id') if key in receipt}
@@ -1086,7 +1087,7 @@ class GatewayChat:
             value = self._board_value(self.kanban.call({'op': 'tool', 'name': name, 'arguments': arguments,
                                                         'profile': profile, 'claim': claim})['result'])
             if name == 'kanban_show' and (value.get('task') or {}).get('tenant') not in (None, bot['id']):
-                raise ServiceError(403, 'This Hermes task belongs to another bot.')
+                raise ServiceError(403, 'This Hermes task belongs to another agent.')
             return value
         if name == 'kanban_unblock':
             # kanban_unblock routes the board, so it runs without a claim. It changes only a task of this bot.
@@ -1094,7 +1095,7 @@ class GatewayChat:
                                                         'arguments': {'task_id': str(arguments.get('task_id') or '')}})
                                       ['result'])
             if (shown.get('task') or {}).get('tenant') != bot['id']:
-                raise ServiceError(403, 'Unblock only a Hermes task of this bot.')
+                raise ServiceError(403, 'Unblock only a Hermes task of this agent.')
         if name == 'kanban_create':
             arguments = kanban_arguments(arguments, task_id, task.get('_native_turn_id'), bot['id'],
                                          workspaces=self.root / 'kanban' / 'kanban' / 'workspaces')
@@ -1187,7 +1188,7 @@ class GatewayChat:
         from .service import ServiceError, require_text
         profile = self._gateway_profile(os.path.realpath(require_text(data, 'home', 4096)))
         if profile is None:
-            raise ServiceError(404, 'This Hermes home is not the profile of a bot.')
+            raise ServiceError(404, 'This Hermes home is not the profile of an agent.')
         return profile['bot_id']
 
     def gateway_page_tool(self, data: dict) -> dict:
@@ -1219,7 +1220,7 @@ class GatewayChat:
         home = os.path.realpath(require_text(data, 'home', 4096))
         chat_id = chat_bot(require_text(data, 'chat_id', 200))
         if (self._gateway_profile(home) or {}).get('bot_id') != chat_id:
-            raise ServiceError(404, 'This chat is not the bot of this Hermes profile.')
+            raise ServiceError(404, 'This chat is not the agent of this Hermes profile.')
         filename = os.path.basename(require_text(data, 'filename', 160)) or 'photo'
         try:
             content = base64.b64decode(data.get('content_base64', ''), validate=True)
@@ -1232,7 +1233,7 @@ class GatewayChat:
         with self.transaction():
             bot = self._get('bots', chat_id)
             if bot['archived'] or bot.get('_deleted'):
-                raise ServiceError(409, 'The bot is archived or deleted.')
+                raise ServiceError(409, 'The agent is archived or deleted.')
             artifact = dict(id=uid(), bot_id=chat_id, task_id=None, title=filename, kind='file', status='attached',
                             preview=f'{len(content):,} bytes', url=None, created_at=now(), _attachment=True,
                             _bot_photo=True)
@@ -1252,17 +1253,19 @@ class GatewayChat:
         kind, text = data.get('kind'), data.get('text', '')
         if kind not in ('send', 'edit', 'delete') or not isinstance(text, str) or len(text) > MAX_TEXT:
             raise ServiceError(400, 'Send a send, an edit or a delete with a text.')
+        # The chat and the title of a task outside a turn show clear words in place of the raw name of a notice.
+        text = readable_text(text)
         home = os.path.realpath(require_text(data, 'home', 4096))
         chat_id, message_id = require_text(data, 'chat_id', 200), require_text(data, 'message_id', 200)
         # The chat of a work session or of a status question belongs to its bot. The message goes to the bot's chat.
         # The Hermes chat stays on the message, so a message ID belongs to one Hermes chat.
         hermes_chat, chat_id = chat_id, chat_bot(chat_id)
         if (self._gateway_profile(home) or {}).get('bot_id') != chat_id:
-            raise ServiceError(404, 'This chat is not the bot of this Hermes profile.')
+            raise ServiceError(404, 'This chat is not the agent of this Hermes profile.')
         with self.transaction():
             bot = self._get('bots', chat_id)
             if bot['archived'] or bot.get('_deleted'):
-                return {'recorded': False, 'reason': 'The bot is archived or deleted.'}
+                return {'recorded': False, 'reason': 'The agent is archived or deleted.'}
             row = self.db.execute(
                 "SELECT data FROM messages WHERE json_extract(data,'$.bot_id')=? "
                 "AND json_extract(data,'$._gateway_message_id')=? "

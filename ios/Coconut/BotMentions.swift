@@ -105,8 +105,11 @@ enum BotMentions {
                 mention.snapshot = text
                 result.append(mention)
             } else {
+                // A typed name of a bot and a person gives the bot: an older service shows a Mac for a team only as a
+                // person with the name of its bot.
                 let exact = matchingBots.filter { $0.name.count == longest }
-                if exact.count == 1, let bot = exact.first {
+                let chosen = exact.count == 1 ? exact : exact.filter { $0.mentionedPerson == nil }
+                if chosen.count == 1, let bot = chosen.first {
                     result.append(SelectedBotMention(id: bot.id, name: bot.name, location: location, snapshot: text))
                 }
             }
@@ -157,7 +160,7 @@ struct BotMentionPicker<B: MentionableBot>: View {
         let matching = bots.filter { $0.mentionedPerson == nil && $0.name.lowercased() == bot.name.lowercased() }
         guard matching.count > 1, let index = matching.firstIndex(where: { $0.id == bot.id }) else { return bot.name }
         let fruit = FruitArtwork.all[FruitArtwork.index(symbol: bot.faceSymbol, identity: bot.id)].name
-        return "\(bot.name), \(fruit), bot \(index + 1) of \(matching.count)"
+        return "\(bot.name), \(fruit), agent \(index + 1) of \(matching.count)"
     }
 
     var body: some View {

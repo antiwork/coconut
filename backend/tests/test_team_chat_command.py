@@ -218,7 +218,7 @@ class HalfStateTests(TeamOnlyMacs, unittest.TestCase):
             err = []
             with mock.patch.object(sys, 'stdout', Writer([])), mock.patch.object(sys, 'stderr', Writer(err)):
                 self.assertEqual(team_chat.main(['connect', 'Reporter', '--confirm', '--data-dir', str(self.only.root)]), 1)
-            self.assertIn('Another command for the bot Reporter runs now', ''.join(err))
+            self.assertIn('Another command for the agent Reporter runs now', ''.join(err))
             self.assertEqual((self.flags(), self.edits), ((False, False), []))
             holder.kill()
             holder.wait(5)
@@ -486,7 +486,7 @@ class CommandTests(TeamOnlyMacs, unittest.TestCase):
         shutil.rmtree(self.home / 'plugins/coconut')
         missing = self.run_command('connect', 'Nobody')
         self.assertEqual(missing.status, 1)
-        self.assertIn('This Mac has no bot with the name or ID "Nobody"', missing.err)
+        self.assertIn('This Mac has no agent with the name or ID "Nobody"', missing.err)
 
 
 class Writer:

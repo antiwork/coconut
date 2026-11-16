@@ -475,7 +475,7 @@ struct ConversationView: View {
                     Text(StopCopy.message)
                 }
             } else {
-                QuietEmptyState(symbol: "bubble.left", title: "Conversation unavailable", message: "This bot may have been deleted. Return to your team to continue.")
+                QuietEmptyState(symbol: "bubble.left", title: "Conversation unavailable", message: "This agent may have been deleted. Return to your team to continue.")
             }
         }
         .inlineNavigationTitle()
@@ -593,7 +593,7 @@ struct TranscriptMessageRow: View {
                 }
             }.font(.footnote).foregroundStyle(.secondary).padding(.horizontal, BoardStyle.Space.m)
         } else if let senderId = message.senderBotId, senderId != message.botId {
-            Text("Deleted bot").font(.footnote).foregroundStyle(.secondary).padding(.horizontal, BoardStyle.Space.m)
+            Text("Deleted agent").font(.footnote).foregroundStyle(.secondary).padding(.horizontal, BoardStyle.Space.m)
         } else if message.role == "user", let names = recipientNames, !names.isEmpty {
             Text("To \(names)").font(.footnote).foregroundStyle(.secondary)
                 .frame(maxWidth: .infinity, alignment: .trailing).padding(.horizontal, BoardStyle.Space.m)
@@ -618,7 +618,7 @@ struct TranscriptMessageRow: View {
     }
 
     private var recipientNames: String? {
-        TranscriptPresentation.recipientIDs(for: message).map { id in store.bots.first { $0.id == id }?.name ?? "Deleted bot" }.joined(separator: ", ")
+        TranscriptPresentation.recipientIDs(for: message).map { id in store.bots.first { $0.id == id }?.name ?? "Deleted agent" }.joined(separator: ", ")
     }
 }
 
@@ -662,7 +662,7 @@ struct MessageBubble: View {
                 } else if let reference = message.replyTo, let page = reference.documentId {
                     Button { openPage(page) } label: {
                         MessageQuote(reference: reference)
-                    }.buttonStyle(.plain).accessibilityLabel("Open the page \(reference.text)")
+                    }.buttonStyle(.plain).accessibilityLabel(PageQuoteText.open(reference.text))
                         .accessibilityIdentifier("message-page-\(message.id)")
                 } else if let reference = message.replyTo {
                     Button { scrollToDecision(reference.messageId) } label: {
@@ -716,8 +716,14 @@ struct MessageBubble: View {
             #else
             // A Mac shows the actions of a held message in the menu of a secondary click.
             .contextMenu {
-                // As the swipe and VoiceOver do, Reply shows only for a saved message, which a reply can quote.
+                // As the swipe and VoiceOver do, Reply and the reactions show only for a saved message, which a reply
+                // can quote.
                 if let onReply, store.messageReference(for: message) != nil {
+                    let reactions = store.reactions(for: message)
+                    ReactionMenuRow(emoji: MessageReactions.selectable, marked: reactions.contains,
+                                    label: { "\(reactions.contains($0) ? "Remove" : "React with") \(MessageReactions.name($0))" }) { emoji in
+                        Task { await store.react(to: message, emoji: emoji) }
+                    }
                     Button("Reply", systemImage: "arrowshape.turn.up.left") { onReply() }
                 }
                 Button("Copy", systemImage: "doc.on.doc") { Pasteboard.copy(message.text) }
@@ -745,7 +751,7 @@ struct MessageBubble: View {
                 }
             }
         }
-        .accessibilityLabel("\(isUser ? "You" : store.bots.first { $0.id == (message.senderBotId ?? message.botId) }?.name ?? "Deleted bot")")
+        .accessibilityLabel("\(isUser ? "You" : store.bots.first { $0.id == (message.senderBotId ?? message.botId) }?.name ?? "Deleted agent")")
         .sheet(item: $editingOutgoing) { RejectedMessageEditor(outgoing: $0) }
     }
 }
@@ -766,10 +772,40 @@ struct MessageReactionList: View {
                     }.buttonStyle(.plain).accessibilityLabel("Remove \(emoji) reaction")
                         .disabled(!enabled)
                 }
-            }.padding(.horizontal, BoardStyle.Space.xs)
-                .background(BoardStyle.surface, in: Capsule()).overlay(Capsule().stroke(BoardStyle.line))
+            }.modifier(ReactionCapsule())
                 .accessibilityIdentifier("message-reactions-\(message.id)")
         }
+    }
+}
+
+#if os(macOS)
+/// The emoji at the top of the menu of a message on a Mac, in one row. A marked emoji is the one that the person has.
+/// The bot chat and the team chats share it.
+struct ReactionMenuRow: View {
+    let emoji: [String]
+    let marked: (String) -> Bool
+    /// The VoiceOver label of the item of an emoji.
+    let label: (String) -> String
+    let pick: (String) -> Void
+
+    var body: some View {
+        ControlGroup {
+            ForEach(emoji, id: \.self) { emoji in
+                Toggle(isOn: Binding(get: { marked(emoji) }, set: { _ in pick(emoji) })) { Text(emoji) }
+                    .accessibilityLabel(label(emoji))
+            }
+        }
+        .controlGroupStyle(.palette)
+    }
+}
+#endif
+
+/// The look of the reactions under a bubble: a capsule on the surface, with the line. The chat of an own bot and the
+/// team chats share it.
+struct ReactionCapsule: ViewModifier {
+    func body(content: Content) -> some View {
+        content.padding(.horizontal, BoardStyle.Space.xs)
+            .background(BoardStyle.surface, in: Capsule()).overlay(Capsule().stroke(BoardStyle.line))
     }
 }
 
@@ -779,7 +815,7 @@ struct MessageQuote: View {
         HStack(spacing: 8) {
             Capsule().fill(.secondary).frame(width: 3)
             VStack(alignment: .leading, spacing: BoardStyle.Space.line) {
-                if reference.documentId != nil {
+                if reference.isPage {
                     HStack(spacing: BoardStyle.Space.xs) {
                         Image(systemName: "doc.text").imageScale(.small)
                         Text("Library page")
@@ -868,7 +904,7 @@ struct ConversationComposer: View {
             }
             if let reference = replyTo {
                 ComposerQuoteBar(reference: reference,
-                                 cancelLabel: reference.documentId == nil ? "Cancel reply" : "Remove the page") { replyTo = nil }
+                                 cancelLabel: reference.documentId == nil ? "Cancel reply" : PageQuoteText.remove) { replyTo = nil }
                     .accessibilityIdentifier("reply-preview")
             }
             BotMentionControls(text: $text, selection: $selection, selected: $mentions, bots: store.bots, focused: focused) { focused = true }
@@ -891,7 +927,7 @@ struct ConversationComposer: View {
             }
             HStack(alignment: .bottom, spacing: 8) {
                 Menu {
-                    Button("Mention a bot", systemImage: "at") {
+                    Button("Mention an agent", systemImage: "at") {
                         text += text.isEmpty || text.last?.isWhitespace == true ? "@" : " @"
                         selection = TextSelection(insertionPoint: text.endIndex)
                         focused = true
@@ -931,6 +967,9 @@ struct ConversationComposer: View {
                 }
                 }
                 .padding(.leading, BoardStyle.Space.m).padding(.trailing, BoardStyle.Space.xs)
+                .modifier(ComposerClickArea(shape: RoundedRectangle(cornerRadius: BoardStyle.Radius.large, style: .continuous)) {
+                    focused = true
+                })
                 .modifier(ComposerSurface(shape: RoundedRectangle(cornerRadius: BoardStyle.Radius.large, style: .continuous)))
             }
             .modifier(ComposerGlassGroup())
@@ -939,6 +978,17 @@ struct ConversationComposer: View {
         .padding(.top, 4)
         .padding(.bottom, 8)
         .modifier(ComposerBackdrop())
+        #if os(macOS)
+        .modifier(PasteAttachmentMonitor(enabled: focused && connected && !uploading) { pasted in
+            Task {
+                uploading = true
+                if let artifact = await store.uploadAttachment(bot: bot, data: pasted.data, filename: pasted.filename) {
+                    attachments.append(artifact)
+                }
+                uploading = false
+            }
+        })
+        #endif
         .fileImporter(isPresented: $importing, allowedContentTypes: [.item]) { result in
             if case .success(let url) = result {
                 Task {
@@ -1113,12 +1163,14 @@ struct ComposerFieldStyle: ViewModifier {
         content
             .lineLimit(1...5).font(.body)
             #if os(macOS)
-            // The composer draws the box. A Mac text field would draw a second one inside it. Its line is shorter than
-            // on an iPhone, so it gets the height of the buttons next to it.
+            // The composer draws the box. A Mac text field would draw a second one inside it. The field fills the box,
+            // and the box is taller than the line, so a click does not need to hit the line itself (ComposerClickArea).
             .textFieldStyle(.plain)
-            .frame(minHeight: 20)
-            #endif
+            .frame(maxWidth: .infinity, minHeight: 24, alignment: .leading)
+            .padding(.vertical, 16)
+            #else
             .padding(.vertical, 12)
+            #endif
             #if os(macOS)
             .onKeyPress(.return, phases: .down) { press in
                 guard !press.modifiers.contains(.shift) else { return .ignored }
@@ -1126,6 +1178,20 @@ struct ComposerFieldStyle: ViewModifier {
                 return .handled
             }
             #endif
+    }
+}
+
+/// A click anywhere in the box of a composer puts the cursor in its field. A Mac text field takes clicks only on its
+/// line of text, so a click above or below it, or in its padding, did nothing. The area lies behind the field and the
+/// buttons, so they keep their own clicks.
+struct ComposerClickArea<S: Shape>: ViewModifier {
+    let shape: S
+    let focus: () -> Void
+
+    func body(content: Content) -> some View {
+        content.background {
+            shape.fill(Color.clear).contentShape(shape).onTapGesture(perform: focus)
+        }
     }
 }
 

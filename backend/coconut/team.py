@@ -26,14 +26,17 @@ for a person, because the app shows them.
 - `DELETE /v1/team/rooms/<room>/bots/<bot_id>`: stop sharing the bot with the room, with the same rule.
 - The routes of the Team chat under `/v1/team/rooms/<room>/messages` and `/v1/team/rooms/<room>/read`
   (team_messages.py).
+- `PUT /v1/team/rooms/<room>/messages/<id>/reaction` with `{emoji}`: the person reacts to a message of a team chat,
+  or takes the reaction back (team_reactions.py). A direct chat has the same route under its path.
 - `POST /v1/team/rooms/<room>/typing`: the person types in the Team chat (team_typing.py). Only a paired device calls
   it, and the Mac writes at most one `typing` entry in 4 seconds for a room and chat.
 - `POST /v1/team/rooms/<room>/chats`, `PATCH` and `DELETE /v1/team/rooms/<room>/chats/<id>`: the admin makes, renames
   and removes a named chat (team_chats.py). The routes of the Team chat take a named chat in `chat`.
 - `PUT /v1/team/rooms/<room>/notifications` with `{enabled}`: the person turns the notifications of the room on or off
   for the phones of this Mac. Only a person's Mac has phones, so a Mac for a team only answers 409.
-- The routes of the direct messages under `/v1/team/rooms/<room>/directs/<member>` (team_directs.py). A `GET
-  /v1/team/rooms` with `X-Coconut-Team: direct` from a paired device sets the mark of direct messages on this Mac.
+- The routes of the direct messages under `/v1/team/rooms/<room>/directs/<member>`, and of a direct chat with a bot
+  under `/v1/team/rooms/<room>/directs/<team bot ID>` (team_directs.py). A `GET /v1/team/rooms` with
+  `X-Coconut-Team: direct` from a paired device sets the mark of direct messages on this Mac.
 
 No answer has a key, a token or an invite secret. Only the invite link, which the person shares, carries a secret.
 
@@ -65,6 +68,7 @@ from .team_epochs import TeamEpochs
 from .team_keys import ROOM_ID, TeamKeysError
 from .team_messages import TeamMessages
 from .team_pages import TeamPages
+from .team_reactions import TeamReactions
 from .team_relay import HEX64, TeamRelay, TeamRelayError, relay_origin
 from .team_socket import TeamSocket
 from .team_store import ACTIVE, JOINING, MAX_TICKET_SECONDS, MEMBER_LIMITS, SCHEMA, TeamStore, unicode_text
@@ -202,7 +206,8 @@ def team_errors():
         raise ServiceError(status, room_error(error)) from None
 
 
-class Team(TeamSync, TeamSocket, TeamPages, TeamMessages, TeamChats, TeamDirects, TeamEpochs, TeamTyping):
+class Team(TeamSync, TeamSocket, TeamPages, TeamMessages, TeamChats, TeamDirects, TeamEpochs, TeamTyping,
+           TeamReactions):
     """The team rooms of this Mac: the routes of the tools, and the thread that copies each log."""
 
     def _init_team(self):
@@ -224,8 +229,28 @@ class Team(TeamSync, TeamSocket, TeamPages, TeamMessages, TeamChats, TeamDirects
         self._init_team_typing()
 
     def _start_team(self):
+        self._team_tell_corrected()
         self._start_team_sync()
         self._start_team_socket()
+
+    def _team_tell_corrected(self):
+        """The open of the store can correct the rows of a room (TeamStore._read_marks_again). An app that is open
+        gets one event for each such room and reads the room again. The store keeps each such room until this step
+        (TeamStore.corrected_rooms), because the push code does not exist yet when the store opens. A stop before
+        this step sends the event at the next start.
+
+        The step must not stop or slow a start: it takes the write lock only when a room waits, and it waits at most
+        MARK_WAIT_MS for it. Each error leaves the marks for the next start, with one log line. An app that connects
+        reads the rooms anyway, so a late event only delays an open app."""
+        if not self.team_store.corrected_waiting():
+            return
+        try:
+            with self.team_store.short_wait(), self.transaction():
+                for room in self.team_store.corrected_rooms():
+                    self._team_tell(room)
+        except Exception as error:
+            log.warning('coconut.team_log: the start did not tell the phone of the corrected rooms (%s). The next start '
+                        'tries again.', type(error).__name__)
 
     def _close_team(self):
         self._close_team_socket()
@@ -342,6 +367,9 @@ class Team(TeamSync, TeamSocket, TeamPages, TeamMessages, TeamChats, TeamDirects
             return self.team_edit(parts[1], parts[3], data)
         if len(parts) == 4 and parts[0] == 'rooms' and parts[2] == 'messages' and method == 'DELETE':
             return self.team_unsend(parts[1], parts[3])
+        if (len(parts) == 5 and parts[0] == 'rooms' and parts[2] == 'messages' and parts[4] == 'reaction'
+                and method == 'PUT'):
+            return self.team_react(parts[1], parts[3], data)
         if len(parts) == 3 and parts[0] == 'rooms' and parts[2] == 'read' and method == 'POST':
             return self.team_mark_read(parts[1], data)
         if len(parts) == 3 and parts[0] == 'rooms' and parts[2] == 'typing' and method == 'POST':
@@ -360,8 +388,8 @@ class Team(TeamSync, TeamSocket, TeamPages, TeamMessages, TeamChats, TeamDirects
 
     def team_rooms(self, direct: bool = False) -> dict:
         """The rooms, `helper`, and `mac_bots`: the bots of this Mac that a room can take, so a tool can find a bot by
-        its name (`coconut team add-bot`). An archived or deleted bot is not in that list. With `direct`, each member
-        has `direct` and each room has `directs` (TeamDirects)."""
+        its name (`coconut team add-agent`). An archived or deleted bot is not in that list. With `direct`, each member
+        and each bot has `direct`, and each room has `directs` and `bot_directs` (TeamDirects)."""
         with self.lock:
             rooms = [self._team_view(room, direct) for room in self.team_store.rooms()]
             bots = sorted(({'id': bot['id'], 'name': bot['name']} for bot in self._all('bots')
@@ -371,8 +399,8 @@ class Team(TeamSync, TeamSocket, TeamPages, TeamMessages, TeamChats, TeamDirects
 
     def _team_view(self, room: dict, direct: bool = False) -> dict:
         """What the Team screen and a tool read about a room, with no key. With `direct`, for an app that knows direct
-        messages, each member has `direct` (this Mac can send it one now) and the room has `directs`. The caller holds
-        the service lock."""
+        messages, each member and each bot has `direct` (this Mac can send it one now), and the room has `directs` and
+        `bot_directs`. The caller holds the service lock."""
         entries, waiting = self.team_store.counts(room['room'])
         status = self._team_status.get(room['room'], {})
         sends = direct and self._team_reads_directs
@@ -393,7 +421,8 @@ class Team(TeamSync, TeamSocket, TeamPages, TeamMessages, TeamChats, TeamDirects
                 # The admin of an active room deletes a message of another member or of a bot (team_unsend). An app
                 # reads only this field, so an older service shows no action.
                 'can_delete_messages': removes,
-                'created_at': room['created_at'], 'members': members, 'bots': self._team_bots(room, members),
+                'created_at': room['created_at'], 'members': members,
+                'bots': self._team_bots(room, members, sends if direct else None),
                 **self._team_chat_summary(room), 'typing': self._team_typing_view(room, members),
                 # The named chats. The fields above stay the fields of the Team chat, so an older app works. Only the
                 # admin of an active room changes the chats, and the app shows the actions only with this field.
@@ -406,6 +435,7 @@ class Team(TeamSync, TeamSocket, TeamPages, TeamMessages, TeamChats, TeamDirects
             view['notifications'] = bool(room['notifications'])
         if direct:
             view['directs'] = self._team_direct_summary(room)
+            view['bot_directs'] = self._team_bot_direct_summary(room)
         return view
 
     def _team_direct_asked(self) -> bool:

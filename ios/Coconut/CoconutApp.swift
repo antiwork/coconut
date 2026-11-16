@@ -194,7 +194,7 @@ struct CoconutHome: View {
                     DocumentView(documentId: route.id)
                 }
                 .navigationDestination(for: TeamChatRoute.self) { route in
-                    TeamChatView(chatKey: route.chat)
+                    TeamChatDestination(route: route)
                 }
                 .navigationDestination(for: TeamScreenRoute.self) { route in
                     TeamRoomView(roomId: route.roomId, pushed: true)
@@ -220,7 +220,7 @@ struct CoconutHome: View {
             ToolbarItem(placement: .topBarTrailing) {
                 Button { createOpen = true } label: {
                     Image(systemName: "plus")
-                }.accessibilityLabel("Create bot").accessibilityIdentifier("create-bot")
+                }.accessibilityLabel("Create agent").accessibilityIdentifier("create-bot")
             }
         }
     }
@@ -259,8 +259,7 @@ struct CoconutHome: View {
         // the person can have left the team.
         if previewedNotification != target {
             previewedNotification = target
-            let preview = target.chat.map { store.teamNotificationPlace($0.room, member: $0.member, chat: $0.chat) }
-                ?? target.decisionId.map(NotificationDestination.inbox) ?? .conversation(target.conversationRoute)
+            let preview = store.notificationPreview(target)
             previewedPlace = preview
             showNotification(preview)
         }

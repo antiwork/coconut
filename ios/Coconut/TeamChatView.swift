@@ -1,21 +1,38 @@
 import SwiftUI
 
+/// The page of a chat of a team on the stack of the Chats tab. A chat can take the place of another chat at the same
+/// depth (the name above a message, a tapped notification). The identity of the chat makes it a new page: it loads its
+/// own messages, and the draft, the reply quote and the edit of the first chat stay behind. The Mac window does the
+/// same with `.id(chat)`. A page that "Chat about this page" quotes waits in the store under the key of its chat, so it
+/// shows only in that chat.
+struct TeamChatDestination: View {
+    let route: TeamChatRoute
+
+    var body: some View {
+        TeamChatView(chatKey: route.chat).id(route.chat)
+    }
+}
+
 /// The chat of a team: a bot chat with more than one other party (docs/team-log.md, "Team chat"). It reuses the bubble,
 /// the quote, the day pill, the times and the composer of the bot chat, and adds only what a group needs: the name of
 /// the writer above a run, Edit and Delete for the person's own messages, and Delete for the admin of the team
 /// (TeamMessageDeletion).
 ///
 /// The same view is the direct chat with one person of the team ("Direct messages"): its title is the person, no name
-/// shows above a message, and the composer has no list for `@`. It is also each named chat of the team ("Chats of a
-/// team"): its title is the name of the chat, with the name of the team under it (TeamRoom.inChat).
+/// shows above a message, and the composer has no list for `@`. A direct chat with a bot of the team ("Direct chat
+/// with an agent") is the same chat with the bot as the other side, and it shows while the bot types. It is also each
+/// named chat of the team ("Chats of a team"): its title is the name of the chat, with the name of the team under it
+/// (TeamRoom.inChat).
 struct TeamChatView: View {
     @Environment(AppStore.self) private var store
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.dismiss) private var dismiss
     let chatKey: TeamChatKey
-    @State private var draft = ""
-    @State private var replyTo: TeamMessage?
-    @State private var editing: TeamMessage?
+    /// The draft, and the reply, the page or the edit above the field.
+    @State private var composer = TeamComposerState()
+    /// The composer gets the keyboard a moment after "Chat about this page" opened the chat, as in the chat of an own
+    /// bot.
+    @State private var focusAfterOpen: UUID?
     /// The bots and the people that the person picked with `@` in the draft (see BotMentions).
     @State private var mentions: [SelectedBotMention] = []
     @State private var deleting: TeamMessage?
@@ -58,8 +75,8 @@ struct TeamChatView: View {
     /// The room as this chat shows it. Nil when the team, or the named chat, is no longer in the list.
     private var room: TeamRoom? { store.team?.rooms.first { $0.room == chatKey.room }?.inChat(chatKey.chat) }
     private var chat: TeamChat { store.teamChats[chatKey] ?? TeamChat() }
-    /// The other person of a direct chat. Nil for the Team chat.
-    private func peer(_ room: TeamRoom) -> TeamDirectPeer? { chatKey.member.map(room.directPeer) }
+    /// The other side of a direct chat: a person or a bot. Nil for the Team chat and a named chat.
+    private func peer(_ room: TeamRoom) -> TeamDirectPeer? { room.peer(of: chatKey) }
     private func currentRows() -> [TeamChatRow] { rows.current(chat, calendar: .current) }
     /// A sent message waits for the layout of its row, and the other scroll rules wait too (SentMessageScroll). Only on
     /// a Mac.
@@ -126,6 +143,7 @@ struct TeamChatView: View {
                         .disabled(chat.loadingEarlier || growingAbove)
                         .accessibilityIdentifier("load-earlier-messages")
                     }
+                    let writable = canWrite(room)
                     ForEach(allRows[shown], id: Self.rowIdentity) { row in
                         let date = row.createdAt.apiDate
                         VStack(spacing: 0) {
@@ -134,7 +152,9 @@ struct TeamChatView: View {
                             }
                             TeamMessageRow(row: row, room: room, peer: peer(room),
                                            editedText: row.message.flatMap { chat.editing[$0.id] },
-                                           canWrite: canWrite(room), actions: actions(proxy: proxy))
+                                           canWrite: writable,
+                                           canReact: TeamReactions.offered(on: row, in: chatKey, canWrite: writable),
+                                           actions: actions(proxy: proxy))
                         }
                         .pinnedDayRow(pinnedDay, id: row.id, date: date, startsDay: row.startsDay)
                         // Keep full text height when the list resizes or scrolls to a new message.
@@ -143,8 +163,8 @@ struct TeamChatView: View {
                     }
                     // The last row: who types, under the newest message and above the composer, then the anchor of
                     // the bottom. The row is always there, so the list never adds or removes a row for typing while it
-                    // scrolls to its bottom. A direct chat shows nobody. The row inset and the padding keep 12 points
-                    // below the last message, and the space of the notice of the Mac window.
+                    // scrolls to its bottom. A direct chat with a person shows nobody. The row inset and the padding
+                    // keep 12 points below the last message, and the space of the notice of the Mac window.
                     VStack(alignment: .leading, spacing: 0) {
                         if !typing.isEmpty {
                             TeamTypingRow(room: room, subjects: typing)
@@ -242,17 +262,30 @@ struct TeamChatView: View {
             guard room.hasChat, store.connection == .connected || store.isDemo else { return }
             await store.loadTeamChat(chatKey)
         }
-        .onAppear { isVisible = true; store.openTeamChat(chatKey) }
+        .onAppear { isVisible = true; store.openTeamChat(chatKey); takePageQuote() }
+        // "Chat about this page" opens the chat with the page quoted above the text field.
+        .onChange(of: store.teamPageQuotes[chatKey]) { _, _ in takePageQuote() }
+        // The view cancels this task when it leaves the screen, and a new ID when the request changes.
+        .task(id: focusAfterOpen) {
+            guard focusAfterOpen != nil else { return }
+            try? await Task.sleep(for: .milliseconds(450))
+            guard !Task.isCancelled, focusAfterOpen != nil else { return }
+            focusAfterOpen = nil
+            composerFocused = true
+        }
+        // The person can no longer write, for example because the bot left the team: the closed line takes the place
+        // of the composer, and the page goes with it.
+        .onChange(of: closedReason(room) != nil) { _, closed in if closed { composer.close() } }
         // A chat that closes keeps its newest page only, so it opens again without stale older pages.
         .onDisappear { isVisible = false; composerFocused = false; store.closeTeamChat(chatKey) }
         .onReceive(DaySeparator.changes) { _ in dayReference = Date() }
-        .onChange(of: chatKey.isDirect ? [] : room.typingNow(at: typingClock), initial: true) { _, value in
+        .onChange(of: room.typingNow(in: chatKey, at: typingClock), initial: true) { _, value in
             withAnimation(BoardStyle.fade(reduceMotion: reduceMotion)) { typing = value }
         }
-        .typingClock(room.typing, $typingClock)
-        .onChange(of: draft) { _, value in
+        .typingClock(room.typingList(of: chatKey), $typingClock)
+        .onChange(of: composer.draft) { _, value in
             // The person types: the Mac tells the team. Not for an edit of a sent message, and not in a direct chat.
-            guard editing == nil, canWrite(room) else { return }
+            guard composer.editing == nil, canWrite(room) else { return }
             store.teamDraftChanged(chatKey, draft: value)
         }
         .confirmationDialog(TeamMessageDeletion.title, isPresented: Binding(
@@ -355,7 +388,7 @@ struct TeamChatView: View {
             // The structure of the empty bot chat (ConversationView.conversationHeader): face, title, one line.
             VStack(spacing: BoardStyle.Space.m) {
                 if let peer = peer(room) {
-                    PersonFace(member: peer.entry, memberId: peer.member, name: peer.name, size: 68)
+                    DirectPeerFace(peer: peer, size: 68)
                     Text(peer.name).font(.title3.weight(.semibold)).multilineTextAlignment(.center)
                 } else {
                     TeamFace(room: room, size: 68)
@@ -381,15 +414,16 @@ struct TeamChatView: View {
                 .modifier(ComposerBackdrop())
                 .accessibilityIdentifier("team-chat-closed")
         } else {
-            TeamChatComposer(placeholder: "Message " + (peer(room)?.name ?? room.title), targets: mentionTargets(room),
-                             peer: peer(room)?.name, text: $draft, mentions: $mentions, replyTo: $replyTo,
-                             editing: $editing, focused: $composerFocused, enabled: canWrite(room), send: send)
+            TeamChatComposer(placeholder: TeamDirectText.message(peer(room)?.name ?? room.title),
+                             targets: mentionTargets(room), peer: peer(room)?.name, state: $composer,
+                             mentions: $mentions, focused: $composerFocused,
+                             enabled: canWrite(room), previews: chat.offersPreviews, send: send)
                 .fixedSize(horizontal: false, vertical: true)
         }
     }
 
-    /// Why the person cannot write: the reason of the team, else for a direct chat a member that can no longer get a
-    /// direct message. The chat then shows its history only.
+    /// Why the person cannot write: the reason of the team, else for a direct chat a member or a bot that can no longer
+    /// get a direct message. The chat then shows its history only.
     private func closedReason(_ room: TeamRoom) -> String? {
         if let reason = room.chatClosedReason { return reason }
         guard let peer = peer(room), !peer.canReceive else { return nil }
@@ -408,53 +442,59 @@ struct TeamChatView: View {
     private func actions(proxy: ScrollViewProxy) -> TeamMessageActions {
         TeamMessageActions(
             reply: { message in
-                editing = nil
-                replyTo = message
+                composer.reply(to: message)
                 composerFocused = true
             },
             edit: { message in
-                replyTo = nil
-                editing = message
+                composer.edit(message)
                 mentions = []
-                draft = message.text
                 composerFocused = true
             },
             delete: { deleting = $0 },
+            react: { message, emoji in store.reactToTeamMessage(chatKey, message, emoji: emoji) },
             showMessage: { id in show(id, proxy: proxy) },
             retry: { store.retryTeamMessage(chatKey, id: $0) },
             removeUnsent: { store.removeUnsentTeamMessage(chatKey, id: $0) })
     }
 
     private func send() {
-        let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
+        let text = composer.draft.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let room, canWrite(room), !text.isEmpty else { return }
-        if let message = editing {
-            draft = ""
-            editing = nil
+        if let message = composer.editing {
+            composer.cancelEdit()
             Task {
                 // A failure gives the edit back to the composer, unless the person typed something new.
-                if await !store.editTeamMessage(chatKey, message, text: text), draft.isEmpty, editing == nil {
-                    editing = message
-                    draft = text
+                if await !store.editTeamMessage(chatKey, message, text: text) {
+                    composer.restore(edit: message, text: text)
                 }
             }
         } else {
             // The store saves the message first. When the save fails, the composer keeps the text.
             // The mentions count in the draft before the trim: their places are places in the draft.
-            let named = BotMentions.recipients(in: draft, selected: mentions, bots: mentionTargets(room)).map(\.id)
-            guard store.sendTeamMessage(chatKey, text: text, replyingTo: replyTo, mentions: named) else { return }
+            let named = BotMentions.recipients(in: composer.draft, selected: mentions, bots: mentionTargets(room))
+                .map(\.id)
+            guard store.sendTeamMessage(chatKey, from: composer, mentions: named) else { return }
             #if os(macOS)
             sentScroll.sent()
             #endif
-            draft = ""
+            composer.sent()
             mentions = []
-            replyTo = nil
         }
     }
 
+    /// Takes the page that "Chat about this page" left for this chat (AppStore.takeTeamPageQuote). The page takes the
+    /// place of a reply and of an edit.
+    private func takePageQuote() {
+        guard let page = store.takeTeamPageQuote(chatKey, onScreen: isVisible,
+                                                 canWrite: room.map(canWrite) ?? false) else { return }
+        composer.ask(about: page)
+        // The chat follows its newest message. The keyboard opens after the push, as in the chat of an own bot.
+        follows = true
+        focusAfterOpen = UUID()
+    }
+
     private func delete(_ message: TeamMessage) {
-        if editing?.id == message.id { editing = nil; draft = "" }
-        if replyTo?.id == message.id { replyTo = nil }
+        composer.removed(message.id)
         Task { await store.deleteTeamMessage(chatKey, message) }
     }
 
@@ -523,6 +563,8 @@ struct TeamMessageActions {
     let reply: (TeamMessage) -> Void
     let edit: (TeamMessage) -> Void
     let delete: (TeamMessage) -> Void
+    /// Sets or takes back the reaction of this person (AppStore.reactToTeamMessage).
+    let react: (TeamMessage, String) -> Void
     let showMessage: (String) -> Void
     let retry: (String) -> Void
     let removeUnsent: (String) -> Void
@@ -532,15 +574,20 @@ struct TeamMessageActions {
 /// chat has one other writer, so it shows no name.
 struct TeamMessageRow: View {
     @Environment(\.showTeamChat) private var showTeamChat
+    @Environment(\.openDocument) private var openDocument
+    @Environment(\.pushRoute) private var pushRoute
     let row: TeamChatRow
     let room: TeamRoom
-    /// The other person of a direct chat. Nil for the Team chat.
+    /// The other side of a direct chat. Nil for the Team chat.
     let peer: TeamDirectPeer?
     /// The new text of an edit on its way.
     let editedText: String?
     let canWrite: Bool
+    /// The chat offers reactions on this message (TeamReactions.offered).
+    let canReact: Bool
     let actions: TeamMessageActions
     @State private var held = false
+    @State private var showsReactions = false
 
     private var own: Bool { row.writer == .you }
     private var message: TeamMessage? { row.message }
@@ -550,7 +597,7 @@ struct TeamMessageRow: View {
     private var shownText: String { TeamMentionEmphasis.text(text, message: message, room: room) }
     private var teamBot: TeamRoomBot? { message?.bot.flatMap { id in room.botList.first { $0.id == id } } }
     private var writerName: String {
-        if let message, message.bot != nil { return teamBot?.name ?? message.botName ?? "Bot" }
+        if let message, message.bot != nil { return teamBot?.name ?? message.botName ?? "Agent" }
         return message.map { TeamNames.author(of: $0, peer: peer?.name) } ?? "You"
     }
     /// Only a saved message of this person can change. A message of a bot of this Mac belongs to the bot.
@@ -565,24 +612,70 @@ struct TeamMessageRow: View {
         VStack(alignment: .leading, spacing: BoardStyle.Space.xs) {
             if row.startsRun && !own && peer == nil { writerLabel }
             bubbleRow.modifier(MessageTimestamp(createdAt: row.createdAt))
-            // Under the bubble, on its side, in the style of the name above it. The bubble keeps the width of its text.
-            if message?.isEdited == true || editedText != nil {
-                Text("Edited").font(.footnote).foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, alignment: own ? .trailing : .leading)
-                    .padding(.horizontal, BoardStyle.Space.m)
-                    .accessibilityHidden(true)
+            // Under the bubble, on its side, in the style of the name above it: the reactions, then "Edited", in one
+            // line. The bubble keeps the width of its text.
+            let edited = message?.isEdited == true || editedText != nil
+            let summary = TeamReactionSummary(message?.reactions)
+            if edited || summary != nil {
+                HStack(spacing: BoardStyle.Space.s) {
+                    if own, edited { editedLabel }
+                    if let summary { reactionPill(summary) }
+                    if !own, edited { editedLabel }
+                }
+                .frame(maxWidth: .infinity, alignment: own ? .trailing : .leading)
+                // The first word starts at the edge of the text in the bubble: "Edited", or the first emoji in the
+                // capsule.
+                .padding(.horizontal, summary == nil ? BoardStyle.Space.m : BoardStyle.Space.xs)
             }
         }
     }
 
-    /// One form for a bot and a person: a small face, then the name. The name of a person that can get a direct
-    /// message opens the direct chat with that person.
+    private var editedLabel: some View {
+        Text("Edited").font(.footnote).foregroundStyle(.secondary).accessibilityHidden(true)
+    }
+
+    /// The reactions on the message. A tap opens the list of the people: a sheet on the iPhone, a popover on a Mac.
+    private func reactionPill(_ summary: TeamReactionSummary) -> some View {
+        Button { showsReactions = true } label: {
+            (Text(summary.emoji.joined())
+             + Text(summary.count > 1 ? " \(summary.count)" : "").foregroundStyle(.secondary))
+                .font(.footnote).monospacedDigit()
+                .padding(.horizontal, BoardStyle.Space.xs).padding(.vertical, BoardStyle.Space.line)
+                .modifier(ReactionCapsule())
+                .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(summary.spoken)
+        .accessibilityIdentifier("team-reactions-\(row.id)")
+        #if os(iOS)
+        .sheet(isPresented: $showsReactions) {
+            reactionList.presentationDetents([.medium]).presentationDragIndicator(.visible)
+        }
+        #else
+        .popover(isPresented: $showsReactions, arrowEdge: .bottom) { reactionList.frame(width: 260) }
+        #endif
+    }
+
+    private var reactionList: some View {
+        TeamReactionList(people: TeamReactionPerson.list(message?.reactions, room: room, peer: peer),
+                         canRemove: canReact) { emoji in
+            if let message { actions.react(message, emoji) }
+        }
+    }
+
+    /// One form for a bot and a person: a small face, then the name. The name of a person or of a bot that can get a
+    /// direct message opens the direct chat with it.
     @ViewBuilder private var writerLabel: some View {
         if let message, message.bot == nil, let member = room.directMember(message.member), let showTeamChat {
             Button { showTeamChat(TeamChatKey(room: room.room, member: member.member)) } label: { writerContent }
                 .buttonStyle(.plain)
-                .accessibilityLabel("Message " + member.name)
+                .accessibilityLabel(TeamDirectText.message(member.name))
                 .accessibilityIdentifier("team-writer-\(member.member)")
+        } else if let bot = room.directBot(message?.bot), let showTeamChat {
+            Button { showTeamChat(TeamChatKey(room: room.room, bot: bot.id)) } label: { writerContent }
+                .buttonStyle(.plain)
+                .accessibilityLabel(TeamDirectText.message(bot.name))
+                .accessibilityIdentifier("team-writer-\(bot.id)")
         } else {
             writerContent.accessibilityHidden(true)
         }
@@ -617,14 +710,20 @@ struct TeamMessageRow: View {
     }
 
     private var bubble: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            if let reference = quote {
-                Button { if let id = message?.replyTo ?? pending?.replyTo { actions.showMessage(id) } } label: {
-                    MessageQuote(reference: reference)
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel(reference.author.isEmpty ? reference.text : "View replied message from \(reference.author)")
-                .accessibilityIdentifier("team-message-quote-\(row.id)")
+        BubbleStack(spacing: 4) {
+            switch TeamRowQuote(message: message, pending: pending) {
+            case .page(let page): pageQuote(page)
+            case .reply(let id):
+                let reference = quote(of: id)
+                Button { actions.showMessage(id) } label: { MessageQuote(reference: reference) }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(reference.author.isEmpty ? reference.text
+                                        : "View replied message from \(reference.author)")
+                    .accessibilityIdentifier("team-message-quote-\(row.id)")
+            case nil: EmptyView()
+            }
+            if let preview = row.linkPreview {
+                TeamLinkCard(preview: preview).layoutValue(key: BubbleStack.CardWidth.self, value: TeamLinkCard.maxWidth)
             }
             MessageText(text: shownText, linkColor: own ? BoardStyle.userBubbleLink : .blue, allowsTextSelection: false)
                 .accessibilityLabel(Text(spokenLabel))
@@ -645,8 +744,13 @@ struct TeamMessageRow: View {
             withTransaction(transaction) { held = true }
         })
         .fullScreenCover(isPresented: $held) {
-            HeldBubbleView(trailing: own, actions: menuActions, share: .text(row.text), afterShare: changeActions) { _ in
-                EmptyView()
+            HeldBubbleView(trailing: own, actions: menuActions, share: .text(row.text), afterShare: changeActions) { close in
+                if canReact, let message {
+                    HeldReactionRow(emoji: TeamReactions.all, marked: { message.ownReaction == $0 },
+                                    label: { TeamReactions.action($0, on: message) }) { emoji in
+                        close { actions.react(message, emoji) }
+                    }
+                }
             } preview: { maxHeight in
                 HeldTextPreview(text: text, own: own, maxHeight: maxHeight)
             }
@@ -654,6 +758,10 @@ struct TeamMessageRow: View {
         #else
         // A Mac shows the actions of a message in the menu of a secondary click.
         .contextMenu {
+            if canReact, let message {
+                ReactionMenuRow(emoji: TeamReactions.all, marked: { message.ownReaction == $0 },
+                                label: { TeamReactions.action($0, on: message) }) { actions.react(message, $0) }
+            }
             if let message, canWrite {
                 Button("Reply", systemImage: "arrowshape.turn.up.left") { actions.reply(message) }
             }
@@ -694,6 +802,11 @@ struct TeamMessageRow: View {
     /// VoiceOver gets the same actions as the menu.
     @ViewBuilder private var accessibilityMenu: some View {
         if let message, canWrite { Button("Reply") { actions.reply(message) } }
+        if canReact, let message {
+            ForEach(TeamReactions.all, id: \.self) { emoji in
+                Button(TeamReactions.action(emoji, on: message)) { actions.react(message, emoji) }
+            }
+        }
         Button("Copy") { Pasteboard.copy(row.text) }
         if let message, canChange { Button("Edit") { actions.edit(message) } }
         if let message, canDelete { Button("Delete") { actions.delete(message) } }
@@ -711,10 +824,23 @@ struct TeamMessageRow: View {
         return parts.joined(separator: ", ")
     }
 
+    /// The Library page that the message is about, as the chat of an own bot shows it. A tap opens the page in the
+    /// Library. A page that is gone says so and opens nothing.
+    @ViewBuilder private func pageQuote(_ page: TeamAboutPage) -> some View {
+        if let open = page.open(openDocument: openDocument, pushRoute: pushRoute) {
+            Button(action: open) { MessageQuote(reference: page.quote) }
+            .buttonStyle(.plain)
+            .accessibilityLabel(PageQuoteText.open(page.title ?? ""))
+            .accessibilityIdentifier("team-message-page-\(row.id)")
+        } else {
+            MessageQuote(reference: page.quote)
+                .accessibilityElement(children: .combine)
+                .accessibilityIdentifier("team-message-page-\(row.id)")
+        }
+    }
+
     /// The quote of an answered message. A removed message shows "Message removed".
-    private var quote: MessageReference? {
-        let replyTo = message?.replyTo ?? pending?.replyTo
-        guard let replyTo else { return nil }
+    private func quote(of replyTo: String) -> MessageReference {
         guard let reply = message?.reply ?? pending?.reply else {
             return MessageReference(messageId: replyTo, text: "Message removed", author: "", role: "")
         }
@@ -724,7 +850,69 @@ struct TeamMessageRow: View {
     }
 }
 
+/// The people that reacted to a message: the emoji and the name of each. The own row is first and takes the reaction
+/// back with a tap, then the list closes.
+struct TeamReactionList: View {
+    @Environment(\.dismiss) private var dismiss
+    let people: [TeamReactionPerson]
+    /// False where the person cannot change a reaction, for example in a team that ended.
+    let canRemove: Bool
+    /// Takes back the reaction of this person: the same emoji again.
+    let remove: (String) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Text("Reactions").font(.headline)
+                .padding(.horizontal, BoardStyle.Space.l).padding(.vertical, BoardStyle.Space.m)
+            // A short list takes its own height, so a popover on a Mac fits it. A long list scrolls.
+            ViewThatFits(in: .vertical) {
+                rows
+                ScrollView { rows }
+            }
+        }
+        .padding(.top, BoardStyle.Space.s)
+        // The list starts at the top of the sheet.
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+
+    private var rows: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            ForEach(people) { person in
+                if person.own && canRemove {
+                    Button {
+                        dismiss()
+                        remove(person.emoji)
+                    } label: { row(person) }
+                    .buttonStyle(.plain)
+                    .accessibilityIdentifier("team-reaction-remove")
+                } else {
+                    row(person)
+                }
+            }
+        }
+    }
+
+    private func row(_ person: TeamReactionPerson) -> some View {
+        HStack(spacing: BoardStyle.Space.m) {
+            Text(person.emoji).font(.title3)
+            VStack(alignment: .leading, spacing: BoardStyle.Space.line) {
+                Text(person.name).font(.body)
+                if person.own && canRemove {
+                    Text("Tap to remove").font(.footnote).foregroundStyle(.secondary)
+                }
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, BoardStyle.Space.l)
+        .frame(minHeight: 44)
+        .padding(.vertical, BoardStyle.Space.xs)
+        .contentShape(Rectangle())
+        .accessibilityElement(children: .combine)
+    }
+}
+
 /// The composer of the Team chat: text only. A reply or an edit shows its message above the field, with a way to cancel.
+/// In a direct chat with a bot, a Library page shows there in the same form.
 /// `@` opens the list of the team bots and the people, as in the composer of a bot chat. An edit changes only the text,
 /// so it has no list.
 struct TeamChatComposer: View {
@@ -734,15 +922,20 @@ struct TeamChatComposer: View {
     let targets: [TeamMentionTarget]
     /// The name of the other person of a direct chat, for the quote of a reply. Nil for the Team chat.
     let peer: String?
-    @Binding var text: String
+    /// The draft, and the reply, the page or the edit above the field.
+    @Binding var state: TeamComposerState
     @Binding var mentions: [SelectedBotMention]
     @State private var selection: TextSelection?
-    @Binding var replyTo: TeamMessage?
-    @Binding var editing: TeamMessage?
     @FocusState.Binding var focused: Bool
     let enabled: Bool
+    /// The Mac of the chat takes link previews (TeamChat.offersPreviews). Without it the composer reads no link.
+    var previews = false
     let send: () -> Void
 
+    private var text: String { state.draft }
+    /// The link whose preview the composer shows: the first link of a new message, while the Mac takes previews.
+    private var previewLink: TeamDraftLink? { previews && editing == nil ? TeamDraftLink.first(in: text) : nil }
+    private var editing: TeamMessage? { state.editing }
     private var canSend: Bool { enabled && !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
 
     var body: some View {
@@ -750,23 +943,26 @@ struct TeamChatComposer: View {
             if let editing {
                 ComposerQuoteBar(reference: MessageReference(messageId: editing.id, text: editing.text,
                                                              author: "Edit message", role: ""),
-                                 cancelLabel: "Cancel edit") {
-                    self.editing = nil
-                    text = ""
-                }
+                                 cancelLabel: "Cancel edit") { state.cancelEdit() }
                 .accessibilityIdentifier("edit-preview")
-            } else if let replyTo {
+            } else if let replyTo = state.quote?.reply {
                 ComposerQuoteBar(reference: MessageReference(messageId: replyTo.id, text: replyTo.text,
                                                              author: TeamNames.author(of: replyTo, peer: peer), role: ""),
-                                 cancelLabel: "Cancel reply") { self.replyTo = nil }
+                                 cancelLabel: "Cancel reply") { state.removeQuote() }
+                    .accessibilityIdentifier("reply-preview")
+            } else if let page = state.quote?.page {
+                ComposerQuoteBar(reference: page.quote, cancelLabel: PageQuoteText.remove) { state.removeQuote() }
                     .accessibilityIdentifier("reply-preview")
             }
+            if editing == nil, let preview = state.linkPreview {
+                ComposerLinkBar(preview: preview) { state.removePreview() }
+            }
             if editing == nil && !targets.isEmpty {
-                BotMentionControls(text: $text, selection: $selection, selected: $mentions,
+                BotMentionControls(text: $state.draft, selection: $selection, selected: $mentions,
                                    bots: targets, focused: focused) { focused = true }
             }
             HStack(alignment: .bottom, spacing: 4) {
-                TextField(placeholder, text: $text, selection: $selection, axis: .vertical)
+                TextField(placeholder, text: $state.draft, selection: $selection, axis: .vertical)
                     .focused($focused)
                     .modifier(ComposerFieldStyle(send: { if canSend { send() } }))
                     .accessibilityIdentifier("message-input")
@@ -776,6 +972,9 @@ struct TeamChatComposer: View {
                 }
             }
             .padding(.leading, BoardStyle.Space.m).padding(.trailing, BoardStyle.Space.xs)
+            .modifier(ComposerClickArea(shape: RoundedRectangle(cornerRadius: BoardStyle.Radius.large, style: .continuous)) {
+                focused = true
+            })
             .modifier(ComposerSurface(shape: RoundedRectangle(cornerRadius: BoardStyle.Radius.large, style: .continuous)))
             .modifier(ComposerGlassGroup())
         }
@@ -785,6 +984,116 @@ struct TeamChatComposer: View {
         .modifier(ComposerBackdrop())
         // A sent or cancelled draft leaves no caret in the old text.
         .onChange(of: text) { _, value in if value.isEmpty { selection = nil } }
+        // A new first link drops the old preview at once, and its page loads after a pause in typing. The send never
+        // waits for it.
+        .task(id: previewLink) {
+            let link = previewLink
+            state.linkChanged(to: link?.text)
+            guard let link, state.removedLink != link.text, state.linkPreview == nil else { return }
+            let preview = await TeamComposerPreview.load(link) { await LinkPreviewLoader.shared.preview($0) }
+            guard !Task.isCancelled else { return }
+            state.previewLoaded(preview, for: link.text)
+        }
+    }
+}
+
+/// The link preview of the draft above the field, in the form of the reply bar: the title and the site of the page,
+/// and a control that removes the preview from the message.
+struct ComposerLinkBar: View {
+    let preview: TeamLinkPreview
+    let remove: () -> Void
+
+    var body: some View {
+        HStack(spacing: 8) {
+            HStack(spacing: 8) {
+                Capsule().fill(.secondary).frame(width: 3)
+                VStack(alignment: .leading, spacing: BoardStyle.Space.line) {
+                    Text(preview.title).font(.footnote.weight(.semibold)).lineLimit(1)
+                    Text(preview.site).font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .fixedSize(horizontal: false, vertical: true).padding(.vertical, BoardStyle.Space.xs)
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(preview.spoken)
+            .accessibilityIdentifier("link-preview-bar")
+            Button(action: remove) {
+                Image(systemName: "xmark").foregroundStyle(.secondary).frame(minWidth: 44, minHeight: 44)
+            }
+            .accessibilityLabel("Remove preview")
+            .accessibilityIdentifier("link-preview-remove")
+        }
+        .padding(.leading, BoardStyle.Space.m).padding(.trailing, BoardStyle.Space.xs).padding(.vertical, BoardStyle.Space.xs)
+        .modifier(ComposerSurface(shape: RoundedRectangle(cornerRadius: BoardStyle.Radius.medium, style: .continuous)))
+        .padding(.horizontal, BoardStyle.Space.m).padding(.bottom, BoardStyle.Space.s)
+    }
+}
+
+/// The link preview of a message, at the top of its bubble: the title and the site that the app of the writer sent,
+/// text only. It loads nothing. A tap opens the address with the system.
+struct TeamLinkCard: View {
+    /// The widest card, as the card of the agent chat. A card never makes a bubble wider than a text of this width.
+    static let maxWidth: CGFloat = 280
+    @Environment(\.openURL) private var openURL
+    let preview: TeamLinkPreview
+
+    var body: some View {
+        Button { if let address = preview.address { openURL(address) } } label: {
+            // The line fill reads on each bubble, and the corner follows the corner of the bubble.
+            LinkPreviewText(title: preview.title, site: preview.site)
+                .padding(.horizontal, BoardStyle.Space.m).padding(.vertical, BoardStyle.Space.s)
+                .background(BoardStyle.line, in: RoundedRectangle(cornerRadius: BoardStyle.Radius.small))
+        }
+        .buttonStyle(.plain)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(preview.spoken)
+        .accessibilityHint("Opens the link")
+        .accessibilityAddTraits(.isLink)
+        .accessibilityIdentifier("team-link-preview")
+    }
+}
+
+/// The content of a bubble, from top to bottom, as a leading VStack: each part takes its own width, and the stack takes
+/// the width of the widest part. A part with a `CardWidth` (the link card) takes its own width up to that value, then
+/// the width of the stack. So the card ends at the edge of a wider text, and a short text keeps the card at its own
+/// width. The sizes come from the proposal only, so a row has the same height at each layout.
+struct BubbleStack: Layout {
+    /// The most width of a part that grows to the width of the stack.
+    struct CardWidth: LayoutValueKey {
+        static let defaultValue: CGFloat? = nil
+    }
+
+    var spacing: CGFloat
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let sizes = sizes(proposal, subviews)
+        let height = sizes.reduce(0) { $0 + $1.height } + spacing * CGFloat(max(subviews.count - 1, 0))
+        return CGSize(width: sizes.map(\.width).max() ?? 0, height: height)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        var y = bounds.minY
+        for (subview, size) in zip(subviews, sizes(proposal, subviews)) {
+            subview.place(at: CGPoint(x: bounds.minX, y: y), anchor: .topLeading, proposal: ProposedViewSize(size))
+            y += size.height + spacing
+        }
+    }
+
+    /// The size of each part: a part measures at the width of the proposal; a card at its ideal width, at most its
+    /// `CardWidth` and the proposal, and then at the width of the widest part.
+    private func sizes(_ proposal: ProposedViewSize, _ subviews: Subviews) -> [CGSize] {
+        let measured: [CGSize?] = subviews.map { subview in
+            subview[CardWidth.self] == nil ? subview.sizeThatFits(ProposedViewSize(width: proposal.width, height: nil)) : nil
+        }
+        let cardWidths: [CGFloat] = subviews.compactMap { subview in
+            subview[CardWidth.self].map { limit in
+                min(subview.sizeThatFits(.unspecified).width, limit, proposal.width ?? .infinity)
+            }
+        }
+        let width: CGFloat = (measured.compactMap { $0?.width } + cardWidths).max() ?? 0
+        return zip(subviews, measured).map { subview, size in
+            size ?? CGSize(width: width, height: subview.sizeThatFits(ProposedViewSize(width: width, height: nil)).height)
+        }
     }
 }
 
@@ -881,8 +1190,8 @@ struct TeamTitle: View {
     }
 }
 
-/// The title of a direct chat: the face and the name of the person, and the name of the team under it, in the place
-/// and the form of the title of a team.
+/// The title of a direct chat: the face and the name of the person or the bot, and the name of the team under it, in
+/// the place and the form of the title of a team. It never names the Mac of a bot.
 struct DirectTitle: View {
     let peer: TeamDirectPeer
     let team: String
@@ -890,7 +1199,7 @@ struct DirectTitle: View {
 
     var body: some View {
         HStack(spacing: 8) {
-            PersonFace(member: peer.entry, memberId: peer.member, name: peer.name, size: faceSize)
+            DirectPeerFace(peer: peer, size: faceSize)
             VStack(alignment: .leading, spacing: 0) {
                 Text(peer.name).font(.body.weight(.semibold)).lineLimit(1).truncationMode(.tail)
                 Text(team).font(.footnote).foregroundStyle(.secondary).lineLimit(1)
@@ -1014,20 +1323,20 @@ struct TeamContactRow: View {
     }
 }
 
-/// The row of a direct chat in the Chats list, in the layout of a team row: the face and the name of the person, the
-/// age and one line of the newest message, and the unread count. A member that left keeps the last name of the Mac.
+/// The row of a direct chat in the Chats list, in the layout of a team row: the face and the name of the person or the
+/// bot, the age and one line of the newest message, and the unread count. A member or a bot that left keeps the last
+/// name of the Mac.
 struct DirectContactRow: View {
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
-    let room: TeamRoom
-    let direct: TeamDirect
+    let peer: TeamDirectPeer
+    let unread: Int
+    let lastMessage: TeamLastMessage?
     var avatarSize: CGFloat = BoardStyle.rowFace
 
     var body: some View {
-        let peer = room.directPeer(direct.member)
-        let unread = direct.unread ?? 0
-        let preview = TeamChatPreview.text(direct.lastMessage, direct: true)
-        ChatRowLayout(name: peer.name, unread: unread, date: direct.lastMessage?.createdAt?.apiDate) {
-            PersonFace(member: peer.entry, memberId: peer.member, name: peer.name, size: avatarSize)
+        let preview = TeamChatPreview.text(lastMessage, direct: true)
+        ChatRowLayout(name: peer.name, unread: unread, date: lastMessage?.createdAt?.apiDate) {
+            DirectPeerFace(peer: peer, size: avatarSize)
         } subtitle: {
             Text(preview)
                 .font(.subheadline).foregroundStyle(.secondary)
@@ -1039,7 +1348,24 @@ struct DirectContactRow: View {
     }
 }
 
-/// The row of a chat of a team in the Chats list and the Mac sidebar: a team or a direct chat.
+/// The face of the other side of a direct chat: the face of the bot, or the face of the person (PersonFace).
+struct DirectPeerFace: View {
+    let peer: TeamDirectPeer
+    let size: CGFloat
+
+    var body: some View {
+        if peer.isBot {
+            // A bot that left has the neutral face, as above its message in the Team chat.
+            BotAvatar(symbol: peer.botEntry?.avatar ?? "", color: peer.botEntry?.color ?? "", size: size,
+                      identity: peer.member, animated: false)
+        } else {
+            PersonFace(member: peer.entry, memberId: peer.member, name: peer.name, size: size)
+        }
+    }
+}
+
+/// The row of a chat of a team in the Chats list and the Mac sidebar: a team, a direct chat, or a direct chat with a
+/// bot.
 struct PeopleRow: View {
     let item: ChatListItem
     var avatarSize: CGFloat = BoardStyle.rowFace
@@ -1047,7 +1373,12 @@ struct PeopleRow: View {
     var body: some View {
         switch item {
         case .team(let room): TeamContactRow(room: room, avatarSize: avatarSize)
-        case .direct(let room, let direct): DirectContactRow(room: room, direct: direct, avatarSize: avatarSize)
+        case .direct(let room, let direct):
+            DirectContactRow(peer: room.directPeer(direct.member), unread: direct.unread ?? 0,
+                             lastMessage: direct.lastMessage, avatarSize: avatarSize)
+        case .botDirect(let room, let direct):
+            DirectContactRow(peer: room.botPeer(direct.bot), unread: direct.unread ?? 0,
+                             lastMessage: direct.lastMessage, avatarSize: avatarSize)
         case .bot: EmptyView()
         }
     }

@@ -59,7 +59,8 @@ private struct LinkPreviewCard: View {
     private func largeCard(_ preview: LinkPreview, image: URL) -> some View {
         VStack(alignment: .leading, spacing: 0) {
             RemotePhoto(url: image).frame(height: 150)
-            text(preview).padding(.horizontal, 12).padding(.vertical, BoardStyle.Space.m)
+            LinkPreviewText(title: preview.title, site: preview.site)
+                .padding(.horizontal, 12).padding(.vertical, BoardStyle.Space.m)
         }
         .frame(width: 280, alignment: .leading)
         .background(BoardStyle.surface)
@@ -78,17 +79,23 @@ private struct LinkPreviewCard: View {
             .frame(width: 44, height: 44)
             .background(BoardStyle.line.opacity(0.4))
             .clipShape(RoundedRectangle(cornerRadius: BoardStyle.Radius.small))
-            text(preview)
+            LinkPreviewText(title: preview.title, site: preview.site)
         }
         .padding(8)
         .frame(width: 280, alignment: .leading)
         .background(BoardStyle.surface, in: RoundedRectangle(cornerRadius: BoardStyle.Radius.medium))
     }
+}
 
-    private func text(_ preview: LinkPreview) -> some View {
+/// The title (at most two lines) and the site of a page preview. The agent chat cards and the team chat card share it.
+struct LinkPreviewText: View {
+    let title: String
+    let site: String
+
+    var body: some View {
         VStack(alignment: .leading, spacing: 2) {
-            Text(preview.title).font(.subheadline.weight(.semibold)).lineLimit(2)
-            Text(preview.site).font(.footnote).foregroundStyle(.secondary).lineLimit(1)
+            Text(title).font(.subheadline.weight(.semibold)).lineLimit(2)
+            Text(site).font(.footnote).foregroundStyle(.secondary).lineLimit(1)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }

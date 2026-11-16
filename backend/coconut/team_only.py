@@ -52,6 +52,7 @@ import threading
 
 from .documents import SCHEMA as DOCUMENTS_SCHEMA, Documents
 from .gateway_bridge import GatewayBridge
+from .hermes_notices import readable_text
 from .service_base import (MODE_MARK, TEAM_MODE, ServiceError, check_data_folder, encoded, now, open_store,
                            release_data_folder, take_data_folder, uid)
 from .service_restart import ServiceRestart
@@ -62,13 +63,13 @@ from .team_turns import TeamTurns, parse_chat, parts
 MODE = TEAM_MODE
 REFUSAL = 'This Mac runs Coconut for a team only, so it does not serve this request.'
 MAX_HOME = 4096
-HOME = 'Give the Hermes home of the bot as a full path that starts with /.'
+HOME = 'Give the Hermes home of the agent as a full path that starts with /.'
 TEAM_PAGE = ('This Mac runs Coconut for a team only, so no person reads a page here. Save the page with audience '
              '"team".')
-UNKNOWN_HOME = ('This Hermes home is not the home of a bot of this Mac. Declare the bot first: coconut team new-bot '
+UNKNOWN_HOME = ('This Hermes home is not the home of an agent of this Mac. Declare the agent first: coconut team new-agent '
                 '<name> --home <path>.')
-CHAT_CONNECTED = ('The Hermes home of the bot {name} has the team chat of Coconut. Run coconut team disconnect-chat '
-                  '{name} first, then remove the bot.')
+CHAT_CONNECTED = ('The Hermes home of the agent {name} has the team chat of Coconut. Run coconut team disconnect-chat '
+                  '{name} first, then remove the agent.')
 NO_BOT = {'name': None, 'avatar': '', 'color': ''}
 COMMIT = re.compile(r'[0-9a-f]{40}|[0-9a-f]{64}')
 PROJECT = Path(__file__).resolve().parents[2]
@@ -173,7 +174,8 @@ class TeamOnlyService(TeamTurns, Documents, Team):
         with self.lock:
             row = self.db.execute(f'SELECT data FROM {table} WHERE id=?', (object_id,)).fetchone()
         if not row:
-            raise ServiceError(404, f'{table[:-1].capitalize()} was not found.')
+            noun = 'Agent' if table == 'bots' else table[:-1].capitalize()
+            raise ServiceError(404, f'{noun} was not found.')
         return json.loads(row[0])
 
     def _put(self, table: str, obj: dict):
@@ -226,7 +228,7 @@ class TeamOnlyService(TeamTurns, Documents, Team):
         return super()._team_route(method, path, data, repeat, device, direct)
 
     def team_rooms(self, direct: bool = False) -> dict:
-        """As on a full Mac, with the mode, so `coconut team add-bot` can say how to declare a missing bot. No person
+        """As on a full Mac, with the mode, so `coconut team add-agent` can say how to declare a missing bot. No person
         is at this Mac, so `direct` is always false here (Team._team_direct_asked)."""
         return dict(super().team_rooms(direct), mode=MODE)
 
@@ -256,7 +258,7 @@ class TeamOnlyService(TeamTurns, Documents, Team):
     def team_declare_bot(self, data: dict) -> dict:
         """Declare a bot for the Hermes home that it stands for. One home has one bot, and one name one bot, because
         a tool finds a bot by its name."""
-        fields = member_profile(data, NO_BOT, field='name', noun='the name of the bot')
+        fields = member_profile(data, NO_BOT, field='name', noun='the name of the agent')
         home = checked_home(data['home']) if 'home' in data else default_home()
         with self.transaction():
             self._check_bot(fields['name'], home)
@@ -270,14 +272,14 @@ class TeamOnlyService(TeamTurns, Documents, Team):
         room. Only `coconut team connect-chat` sets `chat` true, and `disconnect-chat` sets it false before it takes
         the plugin away. A bot whose chat goes off stops its running turns and queues no new trigger."""
         if 'home' in data:
-            raise ServiceError(400, 'A bot keeps its Hermes home. Remove the bot, then declare it again with the new '
+            raise ServiceError(400, 'An agent keeps its Hermes home. Remove the agent, then declare it again with the new '
                                     'home.')
         for flag in ('chat', 'plugin'):
             if flag in data and not isinstance(data[flag], bool):
                 raise ServiceError(400, f'Give {flag} as true or false.')
         with self.transaction():
             bot = self._declared_bot(bot_id)
-            bot.update(member_profile(data, bot, field='name', noun='the name of the bot'))
+            bot.update(member_profile(data, bot, field='name', noun='the name of the agent'))
             for flag in ('chat', 'plugin'):
                 if flag in data:
                     bot[flag] = data[flag]
@@ -307,7 +309,7 @@ class TeamOnlyService(TeamTurns, Documents, Team):
     def _declared_bot(self, bot_id: str) -> dict:
         bot = self._team_bot(bot_id) if unicode_text(bot_id) else None
         if bot is None:
-            raise ServiceError(404, 'This Mac has no bot with this ID.')
+            raise ServiceError(404, 'This Mac has no agent with this ID.')
         return bot
 
     def _check_bot(self, name: str, home: str, bot_id: str | None = None) -> None:
@@ -316,10 +318,10 @@ class TeamOnlyService(TeamTurns, Documents, Team):
             if other['id'] == bot_id:
                 continue
             if other['home'] == home:
-                raise ServiceError(409, f'The bot {other["name"]} already stands for this Hermes home. A Hermes home '
-                                        'has one bot.')
+                raise ServiceError(409, f'The agent {other["name"]} already stands for this Hermes home. A Hermes home '
+                                        'has one agent.')
             if other['name'].casefold() == name.casefold():
-                raise ServiceError(409, f'This Mac already has a bot with the name {other["name"]}. Choose another '
+                raise ServiceError(409, f'This Mac already has an agent with the name {other["name"]}. Choose another '
                                         'name.')
 
     def gateway_document(self, data: dict) -> dict:
@@ -348,26 +350,29 @@ class TeamOnlyService(TeamTurns, Documents, Team):
         """POST /v1/gateway/messages: a send of Hermes in a chat of the team outside a turn of Coconut, for example the
         reply of its own turn after a background process. A send becomes a message of the bot without `reply_to`, and
         its entry ID comes from the message ID of Hermes, so a send that the adapter repeats adds none. A message of
-        the chat is complete, so an edit and a delete change nothing."""
+        the chat is complete, so an edit and a delete change nothing. In a direct chat, a send is a direct message of
+        the bot to the person of the chat, while that person is in the member list (TeamTurns._team_say)."""
         home, chat, message_id = data.get('home'), parse_chat(data.get('chat_id')), data.get('message_id')
         if not isinstance(home, str) or chat is None or not isinstance(message_id, str):
             raise ServiceError(400, 'Name the home, the chat and the message.')
-        room, bot_id, named = chat
+        room, bot_id, named, direct = chat
         with self.lock:
             bot = self._team_bot(bot_id) if unicode_text(bot_id) else None
         if bot is None or bot['home'] != os.path.realpath(home):
-            raise ServiceError(404, 'This chat is not a team chat of a bot of this Hermes home.')
+            raise ServiceError(404, 'This chat is not a team chat of an agent of this Hermes home.')
         text = data.get('text')
         if data.get('kind') != 'send' or not isinstance(text, str) or not text.strip():
             return {'recorded': False, 'reason': 'A message of the team chat is complete. It takes no edit.'}
         with self.lock:
             room_row = self.team_store.room(room)
             answers = room_row is not None and bot_id in dict(self.team_store.answering(room))
-            # A send into a named chat that the team removed goes nowhere.
+            # A send into a named chat that the team removed goes nowhere, and so does a send to a person who left.
             gone = named is not None and self.team_store.chat(room, named) is None
+            gone = gone or answers and direct is not None and (direct == room_row['member']
+                                                               or self.team_store.member(room, direct) is None)
         if not answers or room_row['state'] != ACTIVE or gone:
-            return {'recorded': False, 'reason': 'The bot does not answer in this team chat.'}
-        for number, piece in enumerate(parts(text)):
+            return {'recorded': False, 'reason': 'The agent does not answer in this team chat.'}
+        for number, piece in enumerate(parts(readable_text(text))):
             # A send outside a turn answers no message, so no request must still stand: only the bot must answer.
-            self._team_say(room, bot_id, message_id, number, piece, request=False, chat=named)
+            self._team_say(room, bot_id, message_id, number, piece, request=False, chat=named, direct=direct)
         return {'recorded': True}

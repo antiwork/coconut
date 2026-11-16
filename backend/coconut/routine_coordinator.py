@@ -28,19 +28,26 @@ FAILED_RUN_OUTCOMES = ('blocked', 'crashed', 'gave_up', 'spawn_failed', 'stale',
 FAILED_TURN_INPUT = ('_background_completion', '_pr_review')
 # The reason of a routine that does not run, because no Hermes gateway serves the bot's profile
 # (RoutineCoordinator._pause_unserved_routines). The phone shows it with the routine, as a chat shows its refusal.
-ROUTINES_PARKED = ('The Hermes profile of this bot is parked ({path}), so no Hermes gateway runs its routines. Remove '
+ROUTINES_PARKED = ('The Hermes profile of this agent is parked ({path}), so no Hermes gateway runs its routines. Remove '
                    'that file to run them again on their schedule.')
 # A run that the person starts waits for the next tick of the gateway's cron (RoutineCoordinator._trigger_routine).
 TRIGGER_SECONDS = 5 * 60
 TRIGGER_WAITING = 'Waiting for the Hermes gateway to run this routine.'
 # The results of a run that started no agent turn (_expire_routine_triggers).
-TRIGGER_QUIET = 'Hermes ran the script check of this routine. It found no work, so the bot did not run.'
+TRIGGER_QUIET = 'Hermes ran the script check of this routine. It found no work, so the agent did not run.'
 TRIGGER_NO_AGENT = 'Hermes ran the script of this routine.'
 TRIGGER_SCRIPT_FAILED = 'Hermes ran this routine, and it failed: {error}'
 TRIGGER_EXPIRED = ('The Hermes gateway did not run this routine within 5 minutes. Check that the gateway runs, then run '
                    'the routine again.')
-ROUTINES_UNSERVED = ('No Hermes gateway serves the profile of this bot now, so its routines are paused. They run again on '
+ROUTINES_UNSERVED = ('No Hermes gateway serves the profile of this agent now, so its routines are paused. They run again on '
                      'their schedule when the gateway serves the profile.')
+# Earlier versions wrote these reasons with "bot" in place of "agent", and a routine keeps its reason. The pause
+# recognizes both texts (_pause_unserved_routines).
+EARLIER_UNSERVED = ('No Hermes gateway serves the profile of this bot now, so its routines are paused. They run again on '
+                    'their schedule when the gateway serves the profile.')
+EARLIER_PARKED = 'The Hermes profile of this bot is parked ('
+UNSERVED_REASONS = (ROUTINES_UNSERVED, EARLIER_UNSERVED)
+PARKED_PREFIXES = (ROUTINES_PARKED.split('{', 1)[0], EARLIER_PARKED)
 # Without a Hermes gateway (fixture mode and tests), nothing runs a routine.
 ROUTINES_NEED_GATEWAY = 'Only the Hermes gateway runs routines, and this Mac has none.'
 # Records that only a routine occurrence has. A request that has any of them, even an empty one, follows the routine
@@ -710,8 +717,8 @@ class NativeRoutines:
         changed = []
         for routine in routines:
             reason = self._routine_pause(routine['bot_id'], served)
-            paused = (routine.get('error') == ROUTINES_UNSERVED
-                      or str(routine.get('error') or '').startswith(ROUTINES_PARKED.split('{', 1)[0]))
+            paused = (routine.get('error') in UNSERVED_REASONS
+                      or str(routine.get('error') or '').startswith(PARKED_PREFIXES))
             if reason and not routine.get('error'):
                 routine['error'] = reason
                 changed.append(routine)
@@ -735,7 +742,7 @@ class NativeRoutines:
         if parts[1] == 'bots':
             bot = self._get('bots', parts[2])
             if bot['archived'] or bot.get('_deleted'):
-                raise ServiceError(409, 'Restore this bot before creating a routine.')
+                raise ServiceError(409, 'Restore this agent before creating a routine.')
             result = self.provider.native_settings('routine_create', [bot], bot_id=bot['id'], changes=data, request_key=key)
         else:
             try:
@@ -753,7 +760,7 @@ class NativeRoutines:
                 self._put('routines', routine)
             bot = self._get('bots', routine['bot_id'])
             if bot.get('_deleted'):
-                raise ServiceError(404, 'This bot was deleted.')
+                raise ServiceError(404, 'This agent was deleted.')
             if parts[3:] == ['run']:
                 active = self._active_routine_task(routine['id'])
                 if active:
@@ -773,7 +780,7 @@ class NativeRoutines:
         from .service import ServiceError, now
         bot = self._get('bots', routine['bot_id'])
         if bot['archived'] or bot.get('_deleted'):
-            raise ServiceError(409, 'Restore the bot before running this routine.')
+            raise ServiceError(409, 'Restore the agent before running this routine.')
         if routine.get('error'):
             raise ServiceError(409, routine['error'])
         pause = self._routine_pause(bot['id'])

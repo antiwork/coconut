@@ -8,7 +8,7 @@ enum MacSelection: Hashable {
     case bot(String)
     /// A page of the Library, by its document ID.
     case document(String)
-    /// The Team chat of a team, or a direct chat with one person of a team.
+    /// The Team chat of a team, a named chat, or a direct chat with one person or one bot of a team.
     case team(TeamChatKey)
 }
 
@@ -56,9 +56,9 @@ struct MacMainWindow: View {
                         .navigationSplitViewColumnWidth(min: 220, ideal: 260, max: 300)
                         .toolbar {
                             ToolbarItem {
-                                Button { createOpen = true } label: { Label("New bot", systemImage: "plus") }
+                                Button { createOpen = true } label: { Label("New agent", systemImage: "plus") }
                                     .keyboardShortcut("n", modifiers: .command)
-                                    .help("Create a bot")
+                                    .help("Create an agent")
                             }
                         }
                 } detail: {
@@ -318,8 +318,21 @@ struct MacSidebar: View {
                 }
             }
             if !sections.bots.isEmpty {
-                Section("Bots") {
-                    ForEach(sections.bots) { bot in row(bot) }
+                Section("Agents") {
+                    ForEach(sections.bots) { item in
+                        switch item {
+                        case .bot(let bot): row(bot)
+                        default:
+                            // A direct chat with a bot of a team, newest activity first with the bots. It has no pin
+                            // and no delete.
+                            if let chat = item.chat {
+                                PeopleRow(item: item, avatarSize: 32)
+                                    .padding(.vertical, BoardStyle.Space.xs)
+                                    .tag(MacSelection.team(chat))
+                                    .accessibilityIdentifier("sidebar-bot-direct-" + (chat.bot ?? ""))
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -359,7 +372,7 @@ struct MacSidebar: View {
             .contextMenu {
                 Button(bot.pinned ? "Unpin" : "Pin") { Task { await store.pinBot(bot, pinned: !bot.pinned) } }
                 Divider()
-                Button("Delete Bot…", role: .destructive) { deleting = bot }
+                Button("Delete Agent…", role: .destructive) { deleting = bot }
             }
             .accessibilityIdentifier("sidebar-bot-\(bot.id)")
     }

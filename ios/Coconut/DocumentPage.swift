@@ -142,7 +142,7 @@ struct DocumentPage {
     /// The design tokens of a page. The colors match the app: BoardStyle for the surfaces and the text, and a
     /// palette of six chart colors with a lighter set for dark mode.
     private static let stylesheet = """
-    /* The rules of a page. A bot writes the structure, and this stylesheet sets the look.
+    /* The rules of a page. An agent writes the structure, and this stylesheet sets the look.
        1. One column. It is at most 680 px wide and sits in the center of a wide window. On a phone the side margin
           is 16 px, the margin of the app: the text of the page then starts under the left edge of the back button.
        2. One typeface: the system font. Five sizes: 13, 15, 17, 20 and 28 px (--size-1 to --size-5), the iOS text
@@ -264,15 +264,28 @@ struct DocumentPage {
     figure { margin: 0 0 16px; }
     figure.chart.broken { color: var(--text-2); font-size: var(--size-2); }
     /* A chart: a line of series names, the plot with hairlines and quiet numbers, then a quiet caption. */
-    /* Only the chart block of page.js: a chart that a bot draws by hand in an HTML page keeps its own look. */
-    /* A chart takes the full width of its box, also in a flex row or column, and never more. */
-    figure.chart[data-spec] { min-width: 0; width: 100%; }
+    /* Only the chart block of page.js: a chart that an agent draws by hand in an HTML page keeps its own look. */
+    /* A chart takes the full width of its box, also in a flex row or column, and never more. In a table cell, an empty
+       drawing of 680 px in the chart (page.js) asks for its room. The text of a chart wraps, also in a table cell of
+       one line. */
+    figure.chart[data-spec] { min-width: 0; width: 100%; white-space: normal; }
+    /* The box of the plot has the width of its figure and no content width. So a drawn plot never changes the width
+       of a box around its chart: a table column, a grid column with the width auto, a flex row of content width. The
+       caption and the series names still give their width to a box that takes its width from its content. The box
+       has no look of its own (all: unset), also in a page with a style for each div or for each child of a figure.
+       The empty drawing of a table cell has no float, margin, border or padding from such a page. */
+    figure.chart[data-spec] .plot-box { all: unset; box-sizing: border-box; display: block; contain: inline-size;
+                                        width: 100%; }
+    figure.chart[data-spec] > svg[aria-hidden] { float: none; margin: 0; border: 0; padding: 0; }
     figure.chart[data-spec] svg { direction: ltr; }
     figure.chart[data-spec] svg text { font-variant-numeric: tabular-nums; }
     figure.chart[data-spec] svg { max-width: 100%; }
+    /* The plot is 200 px high. With the height auto, WebKit makes it 199.98 px high and draws each text a little narrower
+       than its measure. */
+    figure.chart[data-spec] svg.plot { height: 200px; }
     figure.chart[data-spec] [aria-label="y-grid"] line { stroke: var(--line); stroke-opacity: 1; stroke-width: 1;
                                                          shape-rendering: crispEdges; }
-    figure.chart[data-spec] figcaption { font-size: var(--size-1); }
+    figure.chart[data-spec] figcaption { font-size: var(--size-1); overflow-wrap: anywhere; }
     figure.chart[data-spec] .legend { display: flex; flex-wrap: wrap; gap: 4px 16px; margin: 0 0 8px;
                                       font-size: var(--size-1); color: var(--text-2); }
     figure.chart[data-spec] .legend > span { min-width: 0; overflow-wrap: anywhere; }

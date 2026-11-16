@@ -416,7 +416,7 @@ final class TeamChatTests: XCTestCase {
         XCTAssertTrue(ChatFilter.showsChips(rooms: [room("r1")]))
         XCTAssertEqual(ChatFilter.effective(.bots, rooms: [room("r1")]), .bots)
         XCTAssertEqual(ChatFilter.effective(.people, rooms: []), .all, "A Mac that left its last team is back at All.")
-        XCTAssertEqual(ChatFilter.allCases.map(\.title), ["All", "People", "Bots"])
+        XCTAssertEqual(ChatFilter.allCases.map(\.title), ["All", "People", "Agents"])
     }
 
     /// A team that the Mac left keeps its row and its history, but brings no chips. A team that the Mac joins does.
@@ -462,7 +462,7 @@ final class TeamChatTests: XCTestCase {
         let sections = ChatSections.make(bots: bots, messages: [], rooms: rooms)
         XCTAssertEqual(sections.pinned.map(\.id), ["planner"])
         XCTAssertEqual(sections.people.map(\.room), ["r2", "r1", "r3"], "Newest activity first.")
-        XCTAssertEqual(sections.bots.map(\.id), ["writer"])
+        XCTAssertEqual(sections.bots.map(\.id), ["bot-writer"])
     }
 
     func testTheLettersOfAFace() {
@@ -548,7 +548,7 @@ final class TeamChatTests: XCTestCase {
             + #"{"id": "t-r-1", "name": "Planner", "open": true}, {"id": "t-r-2", "name": "Scribe", "open": true}]}"#
         let room = try APIJSON.decoder().decode(TeamRoom.self, from: Data(json.utf8))
         XCTAssertEqual(room.memberList.map(\.isBotOnly), [false, false, true], "A missing mark is false.")
-        XCTAssertEqual(room.whoLine, "2 people, 2 bots")
+        XCTAssertEqual(room.whoLine, "2 people, 2 agents")
     }
 
     func testTheEmptyChatTellsOfTheAtOnlyWhenABotCanAnswer() {
@@ -558,7 +558,7 @@ final class TeamChatTests: XCTestCase {
             TeamRoom(room: "r", name: "Example Team", state: "active", bots: bots)
         }
         XCTAssertEqual(TeamChatEmptyLine.text(for: room([open, own])),
-                       "Messages here go to each person in Example Team. Type @ to ask a bot.")
+                       "Messages here go to each person in Example Team. Type @ to ask an agent.")
         XCTAssertEqual(TeamChatEmptyLine.text(for: room([own])), "Messages here go to each person in Example Team.",
                        "A bot of a person answers no teammate, so the line tells of no @.")
         XCTAssertEqual(TeamChatEmptyLine.text(for: room([])), "Messages here go to each person in Example Team.")
@@ -634,7 +634,7 @@ final class TeamChatTests: XCTestCase {
         let twice = TeamMentions.ids(in: "@Bot1 and again @Bot1", selected: [], room: room)
         XCTAssertEqual(twice, ["t-r1-1"], "The same bot named twice counts once.")
         XCTAssertFalse(TeamMentions.fits(ids(16) + ["t-r1-1"]), "The Mac counts each item, also a second copy of an ID.")
-        XCTAssertEqual(TeamMentions.overLimit, "Name at most 16 people and bots in one message.")
+        XCTAssertEqual(TeamMentions.overLimit, "Name at most 16 people and agents in one message.")
     }
 
     @MainActor
@@ -645,7 +645,7 @@ final class TeamChatTests: XCTestCase {
         let mentions = (1...17).map { "t-r1-\($0)" }
         XCTAssertFalse(store.sendTeamMessage("r1", text: "Hello", replyingTo: nil, mentions: mentions))
         XCTAssertEqual(store.teamChats["r1"]?.pending ?? [], [], "Nothing is saved, so nothing waits for a retry.")
-        XCTAssertEqual(store.error, "Name at most 16 people and bots in one message.")
+        XCTAssertEqual(store.error, "Name at most 16 people and agents in one message.")
         store.error = nil
         XCTAssertTrue(store.sendTeamMessage("r1", text: "Hello", replyingTo: nil, mentions: Array(mentions.prefix(16))))
         XCTAssertNil(store.error)
@@ -712,7 +712,7 @@ final class TeamChatTests: XCTestCase {
                                             typing("Noor")]), "4 people are typing")
         // A subject without a name.
         XCTAssertEqual(TeamTypingText.text([TeamTyping(member: "m-x", seconds: 10)]), "Former member is typing")
-        XCTAssertEqual(TeamTypingText.text([TeamTyping(member: "m-x", bot: "t-r1-b9", seconds: 30)]), "Bot is typing")
+        XCTAssertEqual(TeamTypingText.text([TeamTyping(member: "m-x", bot: "t-r1-b9", seconds: 30)]), "Agent is typing")
     }
 
     /// Each subject ends `seconds` after the list came, without a request. A team that is not active shows nobody.
@@ -818,6 +818,41 @@ final class TeamChatTests: XCTestCase {
                        "Neither this person nor a Mac for a team only is a mention.")
     }
 
+    func testATypedNameGivesTheBotWhenAPersonHasTheSameName() {
+        // An older service shows a Mac for a team only as a person with the name of its bot.
+        let room = TeamRoom(room: "r1", name: "Example Team", state: "active",
+                            members: [TeamMember(member: "m-ada", name: "Ada", thisMac: true),
+                                      TeamMember(member: "m-mac", name: "Reporter")],
+                            bots: mentionRoom.botList, mentioned: false)
+        XCTAssertEqual(TeamMentions.targets(of: room).map(\.id), ["t-r1-b1", "t-r1-b2", "m-mac"])
+        XCTAssertEqual(TeamMentions.ids(in: "@Reporter hello", selected: [], room: room), ["t-r1-b2"],
+                       "A typed name gives the bot.")
+        XCTAssertEqual(TeamMentions.ids(in: "@reporter hello", selected: [], room: room), ["t-r1-b2"])
+        let text = "@Reporter hello"
+        let person = [SelectedBotMention(id: "m-mac", name: "Reporter", location: 0, snapshot: text)]
+        let bot = [SelectedBotMention(id: "t-r1-b2", name: "Reporter", location: 0, snapshot: text)]
+        XCTAssertEqual(TeamMentions.ids(in: text, selected: person, room: room), ["m-mac"], "A tap gives its row.")
+        XCTAssertEqual(TeamMentions.ids(in: text, selected: bot, room: room), ["t-r1-b2"])
+        // A bot and two people with the name: the bot.
+        let three = TeamRoom(room: "r1", name: "Example Team", state: "active",
+                             members: room.memberList + [TeamMember(member: "m-rep", name: "Reporter")],
+                             bots: mentionRoom.botList, mentioned: false)
+        XCTAssertEqual(TeamMentions.ids(in: "@Reporter hello", selected: [], room: three), ["t-r1-b2"])
+        // A name in another Unicode form (decomposed accents) is the same name, as on the Mac of the bot.
+        let accented = TeamRoom(room: "r1", name: "Example Team", state: "active",
+                                members: [TeamMember(member: "m-ada", name: "Ada", thisMac: true),
+                                          TeamMember(member: "m-mac", name: "Ren\u{E9}e")],
+                                bots: [TeamRoomBot(id: "t-r1-b9", name: "Ren\u{E9}e", memberName: "Ren\u{E9}e",
+                                                   thisMac: false, open: true)], mentioned: false)
+        XCTAssertEqual(TeamMentions.ids(in: "@RENE\u{301}E hello", selected: [], room: accented), ["t-r1-b9"])
+        // Two people with the same name stay unclear, as before.
+        let twins = TeamRoom(room: "r1", name: "Example Team", state: "active",
+                             members: [TeamMember(member: "m-ada", name: "Ada", thisMac: true),
+                                       TeamMember(member: "m-lin", name: "Lin"), TeamMember(member: "m-lin2", name: "Lin")],
+                             bots: [], mentioned: false)
+        XCTAssertEqual(TeamMentions.ids(in: "@Lin hello", selected: [], room: twins), [])
+    }
+
     func testABubbleShowsTheNameOfThisPersonInBold() {
         let room = peopleRoom()
         func message(_ text: String, mentions: [String]?, own: Bool = false) -> TeamMessage {
@@ -868,4 +903,344 @@ final class TeamChatTests: XCTestCase {
                        "Get notified when someone writes in this team.",
                        "An older service sends nothing for a mention in a quiet team.")
     }
+
+    // MARK: Reactions
+
+    /// Ada (this person), Grace and Lin in "North team".
+    private func northTeam() -> TeamRoom {
+        TeamRoom(room: "r1", name: "North team", state: "active",
+                 members: [TeamMember(member: "m-ada", name: "Ada", thisMac: true),
+                           TeamMember(member: "m-grace", name: "Grace"), TeamMember(member: "m-lin", name: "Lin")],
+                 unread: 0)
+    }
+
+    private func reacted(_ reactions: [TeamReaction]?) -> TeamMessage {
+        var message = message("e1", 1)
+        message.reactions = reactions
+        return message
+    }
+
+    /// A message of a Mac with reactions has the list, in the order of the service. A Mac with an older Coconut sends
+    /// no key, so the message has none: the app then offers no reaction.
+    func testAMessageDecodesWithAndWithoutReactions() throws {
+        let answer = #"""
+        {"room": "r1", "before": null, "messages": [
+          {"id": "e2", "first": 2, "member": "m-grace", "member_name": "Grace", "this_mac": false, "text": "Lunch?",
+           "created_at": "2026-11-10T12:00:00Z", "reactions": [
+             {"emoji": "👍", "members": ["m-ada"], "mine": true},
+             {"emoji": "❤️", "members": ["m-lin", "m-grace"], "mine": false}]},
+          {"id": "e1", "first": 1, "member": "m-grace", "member_name": "Grace", "this_mac": false, "text": "Hello",
+           "created_at": "2026-11-10T11:00:00Z"}
+        ]}
+        """#
+        let page = try APIJSON.decoder().decode(TeamMessagePage.self, from: Data(answer.utf8))
+        XCTAssertEqual(page.messages.map(\.id), ["e2", "e1"])
+        XCTAssertEqual(page.messages[0].reactions, [TeamReaction(emoji: "👍", members: ["m-ada"], mine: true),
+                                                    TeamReaction(emoji: "❤️", members: ["m-lin", "m-grace"], mine: false)])
+        XCTAssertEqual(page.messages[0].ownReaction, "👍")
+        XCTAssertNil(page.messages[1].reactions, "No key: a Mac without reactions.")
+        XCTAssertNil(page.messages[1].ownReaction)
+    }
+
+    /// A tap adds the reaction of this person, a new emoji replaces it, and the same emoji takes it back.
+    func testATapAddsReplacesAndRemovesTheOwnReaction() {
+        let start = reacted([TeamReaction(emoji: "❤️", members: ["m-grace"], mine: false)])
+        XCTAssertEqual(TeamReactions.value(tapping: "👍", on: start), "👍")
+        let added = start.reacting("👍", as: "m-ada")
+        XCTAssertEqual(added.reactions, [TeamReaction(emoji: "👍", members: ["m-ada"], mine: true),
+                                         TeamReaction(emoji: "❤️", members: ["m-grace"], mine: false)],
+                       "The list keeps the order of the six emoji.")
+        let replaced = added.reacting(TeamReactions.value(tapping: "❤️", on: added), as: "m-ada")
+        XCTAssertEqual(replaced.reactions, [TeamReaction(emoji: "❤️", members: ["m-grace", "m-ada"], mine: true)])
+        XCTAssertEqual(replaced.ownReaction, "❤️")
+        XCTAssertEqual(TeamReactions.value(tapping: "❤️", on: replaced), "", "The same emoji again takes it back.")
+        let removed = replaced.reacting("", as: "m-ada")
+        XCTAssertEqual(removed.reactions, [TeamReaction(emoji: "❤️", members: ["m-grace"], mine: false)])
+        XCTAssertEqual(reacted([]).reacting("👍", as: "m-ada").reacting("", as: "m-ada").reactions, [],
+                       "An emoji without a member is not in the list.")
+    }
+
+    /// The chat shows a reaction on its way in place of the reaction of the Mac. A page that the app reads meanwhile
+    /// does not take it off.
+    func testAReactionOnItsWayShowsAlsoAfterAPage() {
+        var chat = TeamChat()
+        chat.merge(page([reacted([])], before: nil), requested: nil)
+        chat.reacting["e1"] = TeamOwnReaction(emoji: "😂", member: "m-ada")
+        XCTAssertEqual(TeamChatRow.rows(chat).first?.message?.ownReaction, "😂")
+        chat.merge(page([reacted([TeamReaction(emoji: "👍", members: ["m-lin"], mine: false)])], before: nil),
+                   requested: nil)
+        XCTAssertEqual(TeamChatRow.rows(chat).first?.message?.reactions,
+                       [TeamReaction(emoji: "👍", members: ["m-lin"], mine: false),
+                        TeamReaction(emoji: "😂", members: ["m-ada"], mine: true)])
+        chat.reacting["e1"] = nil
+        XCTAssertEqual(TeamChatRow.rows(chat).first?.message?.ownReaction, nil)
+    }
+
+    /// The chat offers reactions only on a saved message, where the person can write, from a Mac with reactions, and
+    /// not in a direct chat with a bot.
+    func testTheChatOffersReactionsOnlyWhereTheyWork() {
+        var chat = TeamChat()
+        chat.merge(page([reacted([]), { var old = message("e2", 2); old.reactions = nil; return old }()], before: nil),
+                   requested: nil)
+        chat.pending = [TeamPendingMessage(id: "k1", text: "On its way", replyTo: nil, reply: nil,
+                                           createdAt: "2026-11-10T13:00:00Z")]
+        let rows = TeamChatRow.rows(chat)
+        let saved = rows[0], older = rows[1], pending = rows[2]
+        XCTAssertTrue(TeamReactions.offered(on: saved, in: "r1", canWrite: true))
+        XCTAssertTrue(TeamReactions.offered(on: saved, in: TeamChatKey(room: "r1", chat: "c1"), canWrite: true))
+        XCTAssertTrue(TeamReactions.offered(on: saved, in: TeamChatKey(room: "r1", member: "m-grace"), canWrite: true))
+        XCTAssertFalse(TeamReactions.offered(on: saved, in: TeamChatKey(room: "r1", bot: "t-r1-b1"), canWrite: true),
+                       "A direct chat with a bot.")
+        XCTAssertFalse(TeamReactions.offered(on: saved, in: "r1", canWrite: false), "A chat where the person cannot write.")
+        XCTAssertFalse(TeamReactions.offered(on: older, in: "r1", canWrite: true), "A Mac without reactions.")
+        XCTAssertFalse(TeamReactions.offered(on: pending, in: "r1", canWrite: true), "A message on its way.")
+        chat.deleting.insert("e1")
+        XCTAssertFalse(TeamChatRow.rows(chat).contains { $0.id == "e1" }, "A message whose removal runs has no row.")
+    }
+
+    /// The answer of a send adds its message in its place when the chat does not have it. A copy that a page brought
+    /// stays.
+    func testTheAnswerOfASendAddsOnlyAMissingMessage() {
+        var chat = TeamChat()
+        chat.merge(page([message("e1", 1), message("e3", 3)], before: nil), requested: nil)
+        chat.add(message("e2", 2, own: true, text: "Sent"))
+        XCTAssertEqual(chat.messages.map(\.id), ["e1", "e2", "e3"])
+        var newer = message("e2", 2, own: true, text: "Sent")
+        newer.reactions = [TeamReaction(emoji: "👍", members: ["m-grace"], mine: false)]
+        chat.merge(page([message("e1", 1), newer, message("e3", 3)], before: nil), requested: nil)
+        chat.add(message("e2", 2, own: true, text: "Sent"))
+        XCTAssertEqual(chat.messages.first { $0.id == "e2" }?.reactions, newer.reactions)
+    }
+
+    /// The pill: each emoji with a member in the fixed order, and one count after them for more than one person.
+    func testTheTextOfThePill() throws {
+        XCTAssertNil(TeamReactionSummary(nil))
+        XCTAssertNil(TeamReactionSummary([]))
+        let one = try XCTUnwrap(TeamReactionSummary([TeamReaction(emoji: "😮", members: ["m-lin"])]))
+        XCTAssertEqual(one.text, "😮")
+        XCTAssertEqual(one.spoken, "Reactions: 1 surprise")
+        let many = try XCTUnwrap(TeamReactionSummary([TeamReaction(emoji: "🙏", members: ["m-lin"]),
+                                                      TeamReaction(emoji: "❤️", members: ["m-ada"]),
+                                                      TeamReaction(emoji: "👍", members: ["m-grace", "m-lin"])]))
+        XCTAssertEqual(many.text, "👍❤️🙏 4")
+        XCTAssertEqual(many.spoken, "Reactions: 2 thumbs up, 1 heart, 1 thanks")
+        XCTAssertEqual(TeamReactionSummary([TeamReaction(emoji: "🎉", members: ["m-lin"])]), nil,
+                       "An emoji of a later version shows nothing.")
+    }
+
+    /// The list of the people: this person first as "You", then the others in the order of the emoji and of the log.
+    /// A member that left reads "Former member".
+    func testTheNamesOfTheListOfThePeople() {
+        let reactions = [TeamReaction(emoji: "👍", members: ["m-lin", "m-old"]),
+                         TeamReaction(emoji: "😢", members: ["m-grace", "m-ada"], mine: true)]
+        let people = TeamReactionPerson.list(reactions, room: northTeam())
+        XCTAssertEqual(people.map(\.name), ["You", "Lin", TeamNames.formerMember, "Grace"])
+        XCTAssertEqual(people.map(\.emoji), ["😢", "👍", "👍", "😢"])
+        XCTAssertEqual(people.map(\.own), [true, false, false, false])
+        let peer = TeamDirectPeer(member: "m-old", entry: nil, name: "Bea", canReceive: false)
+        XCTAssertEqual(TeamReactionPerson.list(reactions, room: northTeam(), peer: peer).map(\.name),
+                       ["You", "Lin", "Bea", "Grace"], "A direct chat names its other person.")
+    }
+
+    /// VoiceOver and the Mac menu name the action of each emoji.
+    func testTheWordsOfTheActions() {
+        let mine = reacted([TeamReaction(emoji: "👍", members: ["m-ada"], mine: true)])
+        XCTAssertEqual(TeamReactions.action("👍", on: mine), "Remove thumbs up")
+        XCTAssertEqual(TeamReactions.action("❤️", on: mine), "React with heart")
+        XCTAssertEqual(TeamReactions.all, ["👍", "\u{2764}\u{FE0F}", "😂", "😮", "😢", "🙏"])
+    }
+
+    // MARK: Link previews
+
+    private let example = TeamLinkPreview(url: "https://example.com/a", title: "Example page", site: "example.com")
+
+    /// A Mac with previews sends the key: an object, or null. A Mac without previews sends no key. A preview of a wrong
+    /// shape, or one that does not fit, is left out, and the message stays.
+    func testAMessageDecodesWithNullAndWithoutAPreview() throws {
+        let answer = #"""
+        {"room": "r1", "before": null, "messages": [
+          {"id": "e4", "first": 4, "member": "m-grace", "member_name": "Grace", "this_mac": false,
+           "text": "Read https://example.com/a", "created_at": "2026-11-10T12:00:00Z",
+           "preview": {"url": "https://example.com/a", "title": "Example page", "site": "example.com"}},
+          {"id": "e3", "first": 3, "member": "m-grace", "member_name": "Grace", "this_mac": false, "text": "Hello",
+           "created_at": "2026-11-10T11:00:00Z", "preview": null},
+          {"id": "e2", "first": 2, "member": "m-grace", "member_name": "Grace", "this_mac": false, "text": "Hi",
+           "created_at": "2026-11-10T10:00:00Z"},
+          {"id": "e1", "first": 1, "member": "m-grace", "member_name": "Grace", "this_mac": false, "text": "No link",
+           "created_at": "2026-11-10T09:00:00Z",
+           "preview": {"url": "https://example.com/a", "title": "Example page", "site": "example.com"}},
+          {"id": "s1", "first": 0, "member": "m-grace", "text": "Read https://example.com/a",
+           "created_at": "2026-11-10T08:00:00Z", "preview": "https://example.com/a"},
+          {"id": "s2", "first": 0, "member": "m-grace", "text": "Read https://example.com/a",
+           "created_at": "2026-11-10T08:00:00Z", "preview": 7},
+          {"id": "s3", "first": 0, "member": "m-grace", "text": "Read https://example.com/a",
+           "created_at": "2026-11-10T08:00:00Z", "preview": {"url": "https://example.com/a", "title": "Example page"}}
+        ]}
+        """#
+        let page = try APIJSON.decoder().decode(TeamMessagePage.self, from: Data(answer.utf8))
+        XCTAssertEqual(page.messages.map(\.id), ["e4", "e3", "e2", "e1", "s1", "s2", "s3"], "Each message stays.")
+        XCTAssertEqual(page.messages[0].preview, example)
+        XCTAssertEqual(page.messages.map(\.previewKey), [true, true, false, true, true, true, true])
+        XCTAssertNil(page.messages[1].preview, "Null: a Mac with previews, a message without one.")
+        XCTAssertNil(page.messages[2].preview, "No key: a Mac without previews.")
+        XCTAssertNil(page.messages[3].preview, "The text does not have the address: the preview is left out.")
+        XCTAssertEqual(page.messages[4...].map(\.preview), [nil, nil, nil],
+                       "A string, a number and an object without a site are left out.")
+    }
+
+    /// The composer offers a preview only while the newest message of the chat has the key. A chat without a message
+    /// is not known, so it shows no bar.
+    func testOnlyAMacWithPreviewsGetsThem() {
+        var chat = TeamChat()
+        XCTAssertFalse(chat.offersPreviews, "A chat without a message.")
+        var newer = message("e2", 2)
+        newer.previewKey = true
+        chat.merge(page([message("e1", 1), newer], before: nil), requested: nil)
+        XCTAssertTrue(chat.offersPreviews)
+        chat.merge(page([message("e1", 1), message("e2", 2)], before: nil), requested: nil)
+        XCTAssertFalse(chat.offersPreviews, "A Mac without previews.")
+    }
+
+    /// The first link of a draft, exactly as the draft has it. A mail address is no link. A first link that is not a
+    /// public https page gives no preview, also when a later link is one.
+    func testTheFirstLinkOfADraft() throws {
+        XCTAssertNil(TeamDraftLink.first(in: "No link here"))
+        let link = try XCTUnwrap(TeamDraftLink.first(in: "Mail ada@example.com, read https://example.com/a?b=1. And https://example.org"))
+        XCTAssertEqual(link.text, "https://example.com/a?b=1")
+        XCTAssertEqual(link.url.absoluteString, "https://example.com/a?b=1")
+        XCTAssertNil(TeamDraftLink.first(in: "http://192.168.1.4/a then https://example.com/a"))
+        XCTAssertNil(TeamDraftLink.first(in: "example.com without a scheme"))
+    }
+
+    /// The page loads only after the pause, and a link that changes in the pause loads nothing.
+    @MainActor
+    func testThePageLoadsAfterThePauseOnly() async throws {
+        let link = try XCTUnwrap(TeamDraftLink.first(in: "Read https://example.com/a"))
+        let asked = AskedPages()
+        let stub: @MainActor @Sendable (URL) async -> LinkPreview? = { url in
+            asked.urls.append(url)
+            return LinkPreview(title: "Example\n  page ", site: "example.com", image: nil)
+        }
+        let cancelled = Task { @MainActor in await TeamComposerPreview.load(link, pause: .seconds(5), loader: stub) }
+        try await Task.sleep(for: .milliseconds(50))
+        cancelled.cancel()
+        let none = await cancelled.value
+        XCTAssertNil(none)
+        XCTAssertEqual(asked.urls, [], "A link that changes in the pause loads nothing.")
+        XCTAssertEqual(TeamComposerPreview.pause, .milliseconds(600))
+        let loaded = await TeamComposerPreview.load(link, pause: .milliseconds(10), loader: stub)
+        XCTAssertEqual(asked.urls.map(\.absoluteString), ["https://example.com/a"])
+        XCTAssertEqual(loaded, TeamLinkPreview(url: "https://example.com/a", title: "Example page", site: "example.com"),
+                       "The title has one line.")
+    }
+
+    /// A new first link drops the old preview at once. A late page of the old link shows nothing. A removed preview
+    /// stays removed for its link, and comes back after the link changed. A send clears the preview.
+    func testTheComposerKeepsThePreviewOfTheFirstLinkOnly() {
+        var composer = TeamComposerState()
+        composer.draft = "Read https://example.com/a"
+        composer.linkChanged(to: "https://example.com/a")
+        composer.previewLoaded(example, for: "https://example.com/a")
+        XCTAssertEqual(composer.linkPreview, example)
+
+        composer.draft = "Read https://example.org/b"
+        composer.linkChanged(to: "https://example.org/b")
+        XCTAssertNil(composer.linkPreview, "A new link drops the old bar at once.")
+        composer.previewLoaded(example, for: "https://example.com/a")
+        XCTAssertNil(composer.linkPreview, "A late page of the old link shows nothing.")
+
+        composer.draft = "Read https://example.com/a"
+        composer.linkChanged(to: "https://example.com/a")
+        composer.previewLoaded(example, for: "https://example.com/a")
+        composer.removePreview()
+        XCTAssertNil(composer.linkPreview)
+        composer.draft = "Read https://example.com/a again"
+        composer.linkChanged(to: "https://example.com/a")
+        composer.previewLoaded(example, for: "https://example.com/a")
+        XCTAssertNil(composer.linkPreview, "A removed preview stays removed for that link.")
+
+        composer.draft = "Read"
+        composer.linkChanged(to: nil)
+        composer.draft = "Read https://example.com/a"
+        composer.linkChanged(to: "https://example.com/a")
+        composer.previewLoaded(example, for: "https://example.com/a")
+        XCTAssertEqual(composer.linkPreview, example, "After the link changed, the preview comes back.")
+
+        composer.sent()
+        XCTAssertNil(composer.linkPreview)
+        XCTAssertNil(composer.removedLink)
+        composer.draft = "Read https://example.com/a"
+        composer.edit(message("e1", 1, own: true, text: "Read https://example.com/a"))
+        composer.previewLoaded(example, for: "https://example.com/a")
+        XCTAssertNil(composer.linkPreview, "An edit shows no preview.")
+    }
+
+    /// The limits of the Mac, for each value as sent: the title and the site are trimmed, then cut to 200 and 100
+    /// Unicode scalars. The address must be in the text exactly and have at most 2,000. A line break or an empty value
+    /// sends no preview.
+    func testThePreviewFitsTheLimitsOfTheMac() {
+        let text = "Read https://example.com/a"
+        XCTAssertEqual(TeamLinkPreview(url: "https://example.com/a", title: "  Example page ", site: " example.com")
+            .fitting(in: text), example)
+        func with(url: String = "https://example.com/a", title: String = "Example page", site: String = "example.com",
+                  in body: String = text) -> TeamLinkPreview? {
+            TeamLinkPreview(url: url, title: title, site: site).fitting(in: body)
+        }
+        XCTAssertEqual(with(title: String(repeating: "é", count: 200))?.title, String(repeating: "é", count: 200))
+        XCTAssertEqual(with(title: "  " + String(repeating: "a", count: 201) + " ")?.title, String(repeating: "a", count: 200),
+                       "A long title is trimmed, then cut to 200.")
+        XCTAssertEqual(with(title: String(repeating: "e\u{301}", count: 101))?.title,
+                       String(repeating: "e\u{301}", count: 100), "The Mac counts Unicode scalars, and a cut keeps whole characters.")
+        XCTAssertEqual(with(title: String(repeating: "a", count: 199) + " b")?.title, String(repeating: "a", count: 199),
+                       "A space at the cut goes.")
+        XCTAssertEqual(with(site: String(repeating: "s", count: 101))?.site, String(repeating: "s", count: 100))
+        XCTAssertNil(with(title: " "))
+        XCTAssertNil(with(site: ""))
+        XCTAssertNil(with(title: "Example\npage"))
+        XCTAssertNil(with(url: "https://example.com/b"), "The text does not have the address.")
+        XCTAssertNil(with(url: "ftp://example.com/a", in: "ftp://example.com/a"))
+        let path = String(repeating: "p", count: 2000 - "https://example.com/".count)
+        XCTAssertNotNil(with(url: "https://example.com/" + path, in: "https://example.com/" + path))
+        XCTAssertNil(with(url: "https://example.com/" + path + "p", in: "https://example.com/" + path + "p"))
+    }
+
+    /// The bubble shows the preview of a message of a person and of a message that waits. A message of a team agent
+    /// shows none.
+    func testAnAgentMessageShowsNoPreview() {
+        var chat = TeamChat()
+        var grace = message("e1", 1, text: "Read https://example.com/a")
+        grace.preview = example
+        var agent = message("e2", 2, bot: "t-r1-b1", text: "Read https://example.com/a")
+        agent.preview = example
+        chat.merge(page([grace, agent], before: nil), requested: nil)
+        chat.pending = [TeamPendingMessage(id: "k1", text: "Read https://example.com/a", replyTo: nil, reply: nil,
+                                           createdAt: "2026-11-10T13:00:00Z", preview: example)]
+        XCTAssertEqual(TeamChatRow.rows(chat).map(\.linkPreview), [example, nil, example])
+    }
+
+    /// The answer of an edit sets the preview of the Mac: an edit can drop it.
+    func testTheAnswerOfAnEditSetsThePreview() {
+        var chat = TeamChat()
+        var sent = message("e1", 1, own: true, text: "Read https://example.com/a")
+        sent.preview = example
+        chat.merge(page([sent], before: nil), requested: nil)
+        var edited = message("e1", 1, own: true, text: "Read it later")
+        edited.editedAt = "2026-11-10T13:00:00Z"
+        chat.putEdit(edited)
+        XCTAssertNil(chat.messages.first?.preview)
+        XCTAssertEqual(chat.messages.first?.text, "Read it later")
+    }
+
+    /// VoiceOver reads the card as one element, and only a web address opens.
+    func testTheCardSaysWhatItIs() {
+        XCTAssertEqual(example.spoken, "Link preview: Example page, example.com")
+        XCTAssertEqual(example.address?.absoluteString, "https://example.com/a")
+        XCTAssertNil(TeamLinkPreview(url: "javascript:alert(1)", title: "t", site: "s").address)
+    }
+}
+
+/// The pages that a stub loader was asked for.
+@MainActor
+private final class AskedPages {
+    var urls: [URL] = []
 }

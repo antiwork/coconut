@@ -190,7 +190,8 @@ class ReadingADirectEntry(DirectMacs, unittest.TestCase):
             self.assertEqual(self.count(service, 'team_direct_waits'), 0)
             self.assertEqual(self.phone(service)('GET', f'/v1/team/rooms/{self.room}/messages', {})['messages'], [])
         # The answer has the fields of a message of the app.
-        self.assertEqual(set(sent), {'id', 'first', 'this_mac', 'text', 'reply_to', 'reply', 'created_at', 'edited_at'})
+        self.assertEqual(set(sent), {'id', 'first', 'this_mac', 'text', 'reply_to', 'reply', 'reactions', 'created_at',
+                                     'edited_at', 'preview'})
 
     def test_a_mac_without_the_mark_stores_the_entry_and_opens_nothing(self):
         self.third.db.execute('DELETE FROM team_marks')

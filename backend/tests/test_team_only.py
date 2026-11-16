@@ -35,7 +35,8 @@ TEAM_ONLY_MODULES = {'coconut', 'coconut.server', 'coconut.service_base', 'cocon
                      'coconut.team_helper', 'coconut.team_keys', 'coconut.team_messages', 'coconut.team_pages',
                      'coconut.team_relay', 'coconut.team_socket', 'coconut.team_store', 'coconut.team_sync',
                      'coconut.push_relay', 'coconut.team_turns', 'coconut.team_directs', 'coconut.team_epochs',
-                     'coconut.team_typing', 'coconut.team_chats'}
+                     'coconut.team_typing', 'coconut.team_chats', 'coconut.hermes_notices',
+                     'coconut.team_reactions'}
 
 
 def make_hermes_home(home: Path) -> None:
@@ -161,7 +162,7 @@ class TeamOnlyFlowTests(TeamOnlyMacs, unittest.TestCase):
         # A home that is not the home of a declared bot, and a home that is not a full path.
         status, text = self.refusal(lambda: self.save(home=str(self.home / 'profiles' / 'reporter')))
         self.assertEqual(status, 404)
-        self.assertIn('coconut team new-bot', text)
+        self.assertIn('coconut team new-agent', text)
         for home in ('hermes', '~/.hermes', 'a\0b', '/a\ud800'):
             with self.subTest(home=home):
                 self.assertEqual(self.refusal(lambda: self.save(home=home))[0], 400)
@@ -329,12 +330,12 @@ class BotRecordTests(TeamOnlyMacs, unittest.TestCase):
         self.assertEqual(self.call('GET', '/v1/team/bots')['bots'], [bot])
 
     def test_a_bot_record_refuses_hostile_input(self):
-        cases = [({'name': 'R' * 81}, 'Use at most 80 characters for the name of the bot.'),
-                 ({'name': 'Re\ud800porter'}, 'Use only valid text for the name of the bot.'),
-                 ({'name': 'Two\nlines'}, 'Put the name of the bot on one line.'),
-                 ({'name': '‮Reporter'}, 'Remove the hidden characters from the name of the bot.'),
-                 ({'name': ' Reporter'}, 'Remove the space at the start or end of the name of the bot.'),
-                 ({'name': ''}, 'Give the name of the bot.'), ({'name': 7}, 'Give the name of the bot.'), ({}, 'Give the name of the bot.'),
+        cases = [({'name': 'R' * 81}, 'Use at most 80 characters for the name of the agent.'),
+                 ({'name': 'Re\ud800porter'}, 'Use only valid text for the name of the agent.'),
+                 ({'name': 'Two\nlines'}, 'Put the name of the agent on one line.'),
+                 ({'name': '‮Reporter'}, 'Remove the hidden characters from the name of the agent.'),
+                 ({'name': ' Reporter'}, 'Remove the space at the start or end of the name of the agent.'),
+                 ({'name': ''}, 'Give the name of the agent.'), ({'name': 7}, 'Give the name of the agent.'), ({}, 'Give the name of the agent.'),
                  ({'name': 'Reporter', 'avatar': 'a' * 81}, 'Use text of at most 80 characters for the avatar.'),
                  ({'name': 'Reporter', 'color': 'c' * 21}, 'Use text of at most 20 characters for the color.'),
                  ({'name': 'Reporter', 'color': '\udfff'}, 'Use text of at most 20 characters for the color.'),
@@ -357,11 +358,11 @@ class BotRecordTests(TeamOnlyMacs, unittest.TestCase):
         link = Path(self.temp.name) / 'link'
         link.symlink_to(self.home)
         status, text = self.refusal(lambda: self.declare('Helper', home=link))
-        self.assertEqual((status, text), (409, 'The bot Reporter already stands for this Hermes home. A Hermes home '
-                                               'has one bot.'))
+        self.assertEqual((status, text), (409, 'The agent Reporter already stands for this Hermes home. A Hermes home '
+                                               'has one agent.'))
         other = Path(self.temp.name) / 'other'
         self.assertEqual(self.refusal(lambda: self.declare('reporter', home=other)),
-                         (409, 'This Mac already has a bot with the name Reporter. Choose another name.'))
+                         (409, 'This Mac already has an agent with the name Reporter. Choose another name.'))
         self.assertEqual(self.declare('Helper', home=other)['home'], os.path.realpath(other))
 
     def test_the_default_home_is_the_home_of_the_process(self):
@@ -386,14 +387,14 @@ class BotRecordTests(TeamOnlyMacs, unittest.TestCase):
             (row,) = self.first.team_request('GET', '/v1/team/rooms', {})['rooms'][0]['bots']
             return row['name'], row['this_mac'], row['open']
 
-        self.assertEqual(list(self.only.team_store.written(room, member).values()), [('bot', 'Reporter', '', '', 0)])
+        self.assertEqual(list(self.only.team_store.written(room, member).values()), [('bot', 'Reporter', '', '', 0, 0)])
         self.assertEqual(seen(), ('Reporter', False, False), 'No mark while the bot does not answer.')
         # The step that connects the bot to its agent sets `chat`. The next pass writes the mark.
         changed = self.call('PATCH', f'/v1/team/bots/{bot["id"]}', {'chat': True})['bot']
         self.assertIs(changed['chat'], True)
         self.assertEqual(self.call('GET', '/v1/team/status')['chat_bots'], 1)
         self.sync()
-        self.assertEqual(list(self.only.team_store.written(room, member).values()), [('bot', 'Reporter', '', '', 1)])
+        self.assertEqual(list(self.only.team_store.written(room, member).values()), [('bot', 'Reporter', '', '', 1, 1)])
         self.assertEqual(seen(), ('Reporter', False, True))
         # A change of the name keeps the mark, and a pass with nothing new writes nothing.
         self.call('PATCH', f'/v1/team/bots/{bot["id"]}', {'name': 'Night Reporter'})
@@ -443,6 +444,54 @@ class BotRecordTests(TeamOnlyMacs, unittest.TestCase):
         view = self.first.team_request('GET', '/v1/team/rooms', {})['rooms'][0]
         self.assertEqual([member['bot_only'] for member in view['members']], [False, True])
 
+    def test_a_store_of_an_older_version_shows_the_team_only_mac_and_its_bot_again_at_the_next_start(self):
+        # A service of a version before the marks kept the `member` and `bot` entries of the team-only Mac in rows
+        # without the marks. The new columns came with 0, and the team-only Mac never writes the entries again.
+        room = self.team()
+        bot = self.declare()
+        self.share(room, bot)
+        self.call('PATCH', f'/v1/team/bots/{bot["id"]}', {'chat': True})
+        self.sync()
+
+        def seen():
+            view = self.first.team_request('GET', '/v1/team/rooms', {})['rooms'][0]
+            return ([(member['name'], member['bot_only']) for member in view['members']],
+                    [(row['name'], row['open']) for row in view['bots']])
+        right = ([('Ada', False), ('Reporter Mac', True)], [('Reporter', True)])
+        self.assertEqual(seen(), right)
+        with self.first.lock:
+            self.first.db.execute('UPDATE team_members SET bot_only=0')
+            self.first.db.execute('UPDATE team_bots SET open=0')
+        self.assertEqual(seen(), ([('Ada', False), ('Reporter Mac', False)], [('Reporter', False)]))
+        # The next start of the service opens the store and tells the app. The threads of the sync do not start here.
+        def start():
+            self.first.team_store.migrate()
+            with mock.patch.object(self.first, '_start_team_sync'), mock.patch.object(self.first, '_start_team_socket'):
+                self.first._start_team()
+        cursor = self.first.db.execute('SELECT MAX(seq) FROM events').fetchone()[0] or 0
+        # Another connection holds the write lock at the first start. The start goes on after a short wait, and the
+        # event waits in the store for the next start.
+        holder = sqlite3.connect(self.first.root / 'coconut.sqlite3', isolation_level=None)
+        self.addCleanup(holder.close)
+        self.first.team_store.migrate()
+        holder.execute('BEGIN IMMEDIATE')
+        begin = time.monotonic()
+        with self.assertLogs('coconut.team', 'WARNING'):
+            start()
+        holder.execute('ROLLBACK')
+        self.assertLess(time.monotonic() - begin, 5)
+        self.assertEqual(seen(), right)
+        self.assertTrue(self.first.team_store.corrected_waiting())
+        start()
+        events = [row[0] for row in self.first.db.execute('SELECT type FROM events WHERE seq>?', (cursor,))]
+        self.assertEqual(events, ['team.updated'])
+        # A start with correct rows changes nothing, tells nothing, and takes no write lock.
+        holder.execute('BEGIN IMMEDIATE')
+        with self.assertNoLogs('coconut', 'WARNING'):
+            start()
+        holder.execute('ROLLBACK')
+        self.assertEqual(self.first.db.execute('SELECT COUNT(*) FROM events WHERE seq>?', (cursor,)).fetchone()[0], 1)
+
     def test_a_change_keeps_the_home_and_reaches_the_team(self):
         room = self.team()
         bot = self.declare()
@@ -456,7 +505,7 @@ class BotRecordTests(TeamOnlyMacs, unittest.TestCase):
         self.assertEqual(self.refusal(self.call, 'PATCH', f'/v1/team/bots/{bot["id"]}', {'home': '/tmp'})[0], 400)
         self.assertEqual(self.refusal(self.call, 'PATCH', f'/v1/team/bots/{bot["id"]}', {'name': 'x' * 81})[0], 400)
         self.assertEqual(self.refusal(self.call, 'PATCH', '/v1/team/bots/missing', {'name': 'Other'}),
-                         (404, 'This Mac has no bot with this ID.'))
+                         (404, 'This Mac has no agent with this ID.'))
         self.declare('Helper', home=Path(self.temp.name) / 'other')
         self.assertEqual(self.refusal(self.call, 'PATCH', f'/v1/team/bots/{bot["id"]}', {'name': 'HELPER'})[0], 409)
         (stored,) = [row for row in self.call('GET', '/v1/team/bots')['bots'] if row['id'] == bot['id']]

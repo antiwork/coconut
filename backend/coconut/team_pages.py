@@ -1,4 +1,4 @@
-"""The bots and the pages that a Mac shares with its teams (docs/team-log.md, "Bots and pages").
+"""The bots and the pages that a Mac shares with its teams (docs/team-log.md, "Agents and pages").
 
 A Mac has two ways to share, one for each kind of Mac:
 
@@ -43,10 +43,10 @@ TEAM_ID = re.compile(r't-([a-f0-9]{64})-([a-f0-9]{32})')
 # The longest bot ID or document ID that a share takes, so a long value does not reach SQLite. Each is a UUID.
 MAX_BOT_ID = 200
 # The answer of the routes of a bot share on a person's Mac. An app of today still shows "Add one of your bots", and
-# `coconut team add-bot` prints the same text.
-PERSONAL_BOTS = ('The bots of this Mac stay yours, so a team does not get them. To share a page with the team, open it '
+# `coconut team add-agent` prints the same text.
+PERSONAL_BOTS = ('The agents of this Mac stay yours, so a team does not get them. To share a page with the team, open it '
                  'in the Library of the Coconut app.')
-NO_PAGE_SHARE = ('This Mac runs Coconut for a team only, so each page of a bot goes to the teams of the bot. Save the '
+NO_PAGE_SHARE = ('This Mac runs Coconut for a team only, so each page of an agent goes to the teams of the agent. Save the '
                  'page with audience "team".')
 
 log = logging.getLogger(__name__)
@@ -69,8 +69,8 @@ def bot_entry(bot: dict, open: bool = False) -> dict:
     A lone surrogate becomes U+FFFD, because UTF-8 cannot encode it and the other Macs refuse it.
 
     `open` marks a bot that answers each member in the team chat: only a team-only Mac writes it, for a bot whose
-    record has `chat` true (team_only.py). A bot of a person answers only that person, so the entry of a full Mac has
-    no `open`.
+    record has `chat` true (team_only.py). The same bot answers direct messages, so the entry also gets `direct`. A bot
+    of a person answers only that person, so the entry of a full Mac has neither mark.
     """
     fields = {'kind': 'bot'}
     for name, limit in MEMBER_LIMITS.items():
@@ -79,7 +79,7 @@ def bot_entry(bot: dict, open: bool = False) -> dict:
         fields[name] = ''.join('�' if '\ud800' <= character <= '\udfff' else character
                                for character in value[:limit])
     if open:
-        fields['open'] = True
+        fields['open'] = fields['direct'] = True
     return fields
 
 
@@ -167,13 +167,13 @@ class TeamPages:
             raise ServiceError(409, INACTIVE[room['state']])
         bot_id = data.get('bot_id')
         if not unicode_text(bot_id) or not 0 < len(bot_id) <= MAX_BOT_ID:
-            raise ServiceError(400, 'Choose a bot of this Mac.')
+            raise ServiceError(400, 'Choose an agent of this Mac.')
         with self.transaction():
             bot = self._team_bot(bot_id)
             if bot is None or bot.get('_deleted'):
-                raise ServiceError(404, 'This bot is no longer on this Mac.')
+                raise ServiceError(404, 'This agent is no longer on this Mac.')
             if bot.get('archived'):
-                raise ServiceError(409, 'The bot is archived. Restore it, then add it to the team.')
+                raise ServiceError(409, 'The agent is archived. Restore it, then add it to the team.')
             if self.team_store.room(room_id) is None:
                 raise ServiceError(404, 'This Mac is not in this team.')
             if self.team_store.share(room_id, bot_id, token_hex(16)):
@@ -217,7 +217,7 @@ class TeamPages:
             if bot is None or bot.get('_deleted') or expired(document, self._now()):
                 raise ServiceError(404, 'Document was not found.')
             if bot.get('archived'):
-                raise ServiceError(409, 'The bot of this page is archived. Restore the bot, then share the page.')
+                raise ServiceError(409, 'The agent of this page is archived. Restore the agent, then share the page.')
             content = self.db.execute('SELECT content FROM document_versions WHERE document_id=? AND version=?',
                                       (document['id'], document['version'])).fetchone()
             problem = payload_problem(page_entry(dict(WIDEST, key=document['key'], title=document['title'],
@@ -322,25 +322,33 @@ class TeamPages:
                 live[bot_id] = entry, bot
         return live
 
-    def _team_bots(self, room: dict, members: list[dict]) -> list[dict]:
+    def _team_bots(self, room: dict, members: list[dict], sends: bool | None = None) -> list[dict]:
         """The bots of the team as a person sees them, for GET /v1/team/rooms. The caller holds the service lock.
 
         As in the Library, a bot shows only while the room is active and its member is in the member list. A bot of
         another Mac has the ID of its team bot in GET /v1/documents. A bot of this Mac also has its `bot_id`, and
         its profile comes from the bot of this Mac, so a change shows before the next pass writes it.
+
+        With `sends` (not None), for an app that knows direct messages, each bot has `direct`: true when this Mac reads
+        direct messages (`sends`) and the `bot` entry of another member has the mark `direct`. A bot of this Mac never
+        has it.
         """
         if room['state'] != ACTIVE:
             return []
         names = {member['member']: member['name'] for member in members}
+
+        def mark(value: bool) -> dict:
+            return {} if sends is None else {'direct': bool(sends and value)}
         bots = [dict(id=team_id(room['room'], row['entry']), name=row['name'], avatar=row['avatar'], color=row['color'],
-                     member=row['member'], member_name=names[row['member']], this_mac=False, open=bool(row['open']))
+                     member=row['member'], member_name=names[row['member']], this_mac=False, open=bool(row['open']),
+                     **mark(row['direct']))
                 for row in self.team_store.bots(room['room']) if row['member'] in names]
         if room['member'] in names:
             for bot_id, (entry, bot) in self._team_live_bots(room['room']).items():
                 fields = bot_entry(bot)
                 bots.append(dict(id=team_id(room['room'], entry), name=fields['name'], avatar=fields['avatar'],
                                  color=fields['color'], member=room['member'], member_name=names[room['member']],
-                                 this_mac=True, bot_id=bot_id, open=self._team_opens(bot)))
+                                 this_mac=True, bot_id=bot_id, open=self._team_opens(bot), **mark(False)))
         # The bots follow the order of the members, then their names.
         order = {member: index for index, member in enumerate(names)}
         return sorted(bots, key=lambda bot: (order[bot['member']], bot['name'], bot['id']))
@@ -424,8 +432,8 @@ class TeamPages:
         wanted = {}
         for bot_id, bot in bots.items():
             fields = bot_entry(bot, open=self._team_opens(bot))
-            wanted[shares[bot_id]] = (('bot', fields['name'], fields['avatar'], fields['color'],
-                                       self._team_opens(bot)), {'bot_id': bot_id}, fields)
+            wanted[shares[bot_id]] = (('bot', fields['name'], fields['avatar'], fields['color'], 'open' in fields,
+                                       'direct' in fields), {'bot_id': bot_id}, fields)
         for document in documents:
             wanted[entries[document['id']]] = (('page', shares[document['bot_id']], document['version']),
                                                {'document': document['id'], 'key': document['key']}, document)

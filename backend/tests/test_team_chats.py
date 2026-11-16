@@ -601,9 +601,9 @@ class ChatBotTests(TeamTurnMacs, unittest.TestCase):
         self.assertNotIn('Team chat', turn['team']['context'])
         self.assertEqual(self.chat_of(design)[-1], ('Reporter', 'Done.', named['id']))
         self.assertEqual([text for _, text, _ in self.chat_of(None)], ['Plan in the Team chat.'])
-        self.assertEqual(team_turns.parse_chat(turn['chat_id']), (self.room, self.bot['id'], design))
+        self.assertEqual(team_turns.parse_chat(turn['chat_id']), (self.room, self.bot['id'], design, None))
         self.assertEqual(team_turns.parse_chat(team_turns.chat_id(self.room, self.bot['id'])),
-                         (self.room, self.bot['id'], None))
+                         (self.room, self.bot['id'], None, None))
 
     def test_a_reply_to_the_bot_in_another_chat_starts_nothing(self):
         design = self.make()
