@@ -310,6 +310,29 @@ final class TeamChatTests: XCTestCase {
         XCTAssertNotEqual(changed.last?.message, after.last?.message)
     }
 
+    func testASentMessageWithAPhotoAndAFileKeepsItsRowAndItsFiles() {
+        var chat = TeamChat()
+        chat.merge(page([message("1", 1, at: "2026-11-10T09:00:00Z")], before: nil), requested: nil)
+        let photo = TeamFile(id: "f-photo", name: "chart.png", type: "image/png", size: 2048, width: 800, height: 600,
+                             complete: false)
+        let file = TeamFile(id: "f-report", name: "report.pdf", type: "application/pdf", size: 4096, complete: false)
+        var pending = TeamPendingMessage(id: "p", text: "The numbers", replyTo: nil, reply: nil,
+                                         createdAt: "2026-11-10T09:07:00Z")
+        pending.files = [photo, file]
+        chat.pending = [pending]
+        XCTAssertEqual(TeamChatRow.rows(chat, calendar: Self.utc).map(\.listID), ["1", "pending-p"])
+        // The Mac answers with the message and its files, now complete.
+        var answer = message("srv", 2, own: true, text: "The numbers", at: "2026-11-10T09:07:01Z")
+        answer.files = [photo, file].map { var done = $0; done.complete = true; return done }
+        chat.confirm("p", as: answer)
+        let rows = TeamChatRow.rows(chat, calendar: Self.utc)
+        XCTAssertEqual(rows.map(\.listID), ["1", "pending-p"])
+        XCTAssertEqual(rows.map(\.id), ["1", "srv"])
+        XCTAssertEqual(rows.last?.message?.files.map(\.id), ["f-photo", "f-report"])
+        XCTAssertEqual(rows.last?.message?.files.map(\.isReady), [true, true])
+        XCTAssertTrue(chat.pending.isEmpty)
+    }
+
     func testTheAuthorOfAQuote() {
         let grace = TeamMessageQuote(id: "e1", member: "m-grace", memberName: "Grace", text: "Hi")
         XCTAssertEqual(TeamNames.author(of: grace, ownMember: "m-ada"), "Grace")
