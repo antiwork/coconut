@@ -704,14 +704,13 @@ final class AppStore {
     func optimistically(_ resource: String, change: (UUID) -> Void, save: @escaping @MainActor () async -> Void) -> Bool {
         guard isDemo || pairing != nil else { error = "Pair with your Mac in Settings to continue."; return false }
         let pairing = pairing
-        let requestId = UUID().uuidString
         error = nil
         let parts = resource.split(separator: "/")
         let queue = resource.hasPrefix("bot/") || resource.hasPrefix("settings/") || resource.hasPrefix("routine/") ? "native-settings"
             : parts.first == "team" && parts.count > 1 ? "team/" + String(parts[1]) : resource
         optimisticUpdates.enqueue(queue, change: change) {
             guard self.pairing == pairing else { return }
-            await OptimisticRequest.$id.withValue(requestId) { await save() }
+            await save()
         }
         return true
     }
@@ -2723,6 +2722,18 @@ final class AppStore {
     }
 
     private func write<Response: Decodable & Sendable, Payload: Encodable>(_ path: String, method: String = "POST", payload: Payload, as type: Response.Type, quiet: Bool = false, refreshInBackground: Bool = true, idempotencyKey: String? = nil, onFailure: ((Error) -> Void)? = nil, onSuccess: ((Response) -> Void)? = nil) async -> Response? {
+        let origin = pairing
+        var confirmed = false
+        defer { if !confirmed { optimisticUpdates.markFailed() } }
+        if method == "POST", ["/messages", "/replies", "/run", "/context"].contains(where: { path.hasSuffix($0) }),
+           !(await optimisticUpdates.wait(for: "native-settings")) {
+            guard pairing == origin else { return nil }
+            let message = "Your agent settings did not save. Review them before retrying this message or task."
+            error = message
+            onFailure?(ServiceError.configuration(message))
+            return nil
+        }
+        guard pairing == origin else { return nil }
         let storedToken: String?
         do { storedToken = try PairingToken.lookup() } catch {
             if !quiet { self.error = error.localizedDescription }
@@ -2758,6 +2769,7 @@ final class AppStore {
             }
             let result: Response = try await client.request(path, method: method, body: body, idempotencyKey: key)
             guard belongsToPairing() else { return nil }
+            confirmed = true
             uncertainWriteKeys.removeValue(forKey: requestSignature)
             if !quiet { error = nil }
             let updatesNativeSettings = path.hasPrefix("settings/") || path.contains("routines") || (path.hasPrefix("bots/") && method == "PATCH")

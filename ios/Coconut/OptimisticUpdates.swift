@@ -33,6 +33,9 @@ final class OptimisticUpdates {
     private var tails: [String: (UUID, Task<Void, Never>)] = [:]
     private var epoch = UUID()
     private var receiving = false
+    private var active: Set<UUID> = []
+    private var failed: Set<UUID> = []
+    private var failures: [String: Int] = [:]
 
     func set<Value: Equatable>(_ key: String, to value: Value, in id: UUID,
                                read: @escaping () -> Value, write: @escaping (Value) -> Void) {
@@ -59,13 +62,16 @@ final class OptimisticUpdates {
 
     func enqueue(_ resource: String, change: (UUID) -> Void, save: @escaping @MainActor () async -> Void) {
         let id = UUID(), epoch = epoch
+        active.insert(id)
         change(id)
         let previous = tails[resource]?.1
         let task = Task {
             await previous?.value
             guard self.epoch == epoch, !Task.isCancelled else { return }
-            await save()
+            await OptimisticRequest.$id.withValue(id.uuidString) { await save() }
             guard self.epoch == epoch else { return }
+            self.active.remove(id)
+            if self.failed.remove(id) != nil { self.failures[resource, default: 0] += 1 }
             for key in Array(self.fields.keys) {
                 guard let field = self.fields[key] else { continue }
                 field.finish(id)
@@ -81,10 +87,22 @@ final class OptimisticUpdates {
         while let task = tails.values.first?.1 { await task.value }
     }
 
+    /// Execution waits for settings that the UI already shows. A failed prerequisite keeps the work unsent.
+    func wait(for resource: String) async -> Bool {
+        let epoch = epoch
+        let before = failures[resource, default: 0]
+        while let task = tails[resource]?.1 { await task.value }
+        return epoch == self.epoch && before == failures[resource, default: 0]
+    }
+
+    func markFailed() {
+        if let text = OptimisticRequest.id, let id = UUID(uuidString: text), active.contains(id) { failed.insert(id) }
+    }
+
     func reset() {
         epoch = UUID()
         tails.values.forEach { $0.1.cancel() }
-        tails = [:]; fields = [:]
+        tails = [:]; fields = [:]; active = []; failed = []; failures = [:]
     }
 }
 

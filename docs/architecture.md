@@ -68,7 +68,9 @@ error banner. Pairing changes discard pending projections and private reading ca
 
 Pins, archives, settings, routine edits, Library actions and business issue states use this path. Messages and decision
 answers retain their existing durable outboxes. Opening a previously read Library page or report draws its cached
-content while revalidating it. Saves return after their receipt; background refreshes coalesce instead of delaying
+content while revalidating it. New execution waits for pending model and access edits to finish; a failed prerequisite
+leaves the message or task unsent. Each local intent gets a distinct receipt key, including a return to an earlier value.
+Saves return after their receipt; background refreshes coalesce instead of delaying
 the control that initiated the save. Creating remote identities, authentication, uploads and first reads show their
 actual progress until the service returns the required data.
 

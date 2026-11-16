@@ -87,8 +87,14 @@ final class OptimisticUpdatesTests: XCTestCase {
         var value = "Old"
         updates.enqueue("name", change: { id in updates.set("name", to: "Pending", in: id, read: { value }, write: { value = $0 }) }, save: { await gate.wait() })
         await entered(gate)
+        var waiting = false
+        let blocked = Task { waiting = true; return await updates.wait(for: "name") }
+        for _ in 0..<100 where !waiting { await Task.yield() }
+        XCTAssertTrue(waiting)
         updates.reset(); value = "New pairing"
         gate.open(); await updates.wait()
+        let ready = await blocked.value
+        XCTAssertFalse(ready, "Work from the old pairing must not continue on the new pairing.")
         XCTAssertEqual(value, "New pairing")
     }
 
@@ -116,5 +122,23 @@ final class OptimisticUpdatesTests: XCTestCase {
         await store.optimisticUpdates.wait()
         XCTAssertEqual(keys.compactMap { $0 }.count, 3)
         XCTAssertEqual(Set(keys.compactMap { $0 }).count, 3, "A later repeated value must not replay an uncertain receipt from before an intervening change.")
+    }
+
+    func testWorkWaitsForSettingsAndAFailedPrerequisiteStopsDispatch() async {
+        let updates = OptimisticUpdates(), gate = Gate()
+        updates.enqueue("native-settings", change: { _ in }, save: {
+            await gate.wait()
+            updates.markFailed()
+        })
+        var waiting = false
+        let ready = Task { waiting = true; return await updates.wait(for: "native-settings") }
+        await entered(gate)
+        for _ in 0..<100 where !waiting { await Task.yield() }
+        XCTAssertTrue(waiting)
+        gate.open()
+        let result = await ready.value
+        XCTAssertFalse(result)
+        let retry = await updates.wait(for: "native-settings")
+        XCTAssertTrue(retry, "A later explicit retry uses the now-confirmed settings.")
     }
 }
