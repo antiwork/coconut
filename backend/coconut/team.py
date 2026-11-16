@@ -40,6 +40,8 @@ for a person, because the app shows them.
   for the phones of this Mac. Only a person's Mac has phones, so a Mac for a team only answers 409.
 - `PUT /v1/team/rooms/<room>/chats/<id>/notifications` with `{enabled}`: the person mutes or unmutes one named chat
   for the phones of this Mac (team_chats.py), with the rules of the route above.
+- `PUT /v1/team/rooms/<room>/pin` and `PUT /v1/team/rooms/<room>/chats/<id>/pin` with `{pinned}`: the person pins or
+  unpins the Team chat or a named chat on this Mac (team_chats.py), with the rules of the routes above.
 - The routes of the direct messages under `/v1/team/rooms/<room>/directs/<member>`, and of a direct chat with a bot
   under `/v1/team/rooms/<room>/directs/<team bot ID>` (team_directs.py). A `GET /v1/team/rooms` with
   `X-Coconut-Team: direct` from a paired device sets the mark of direct messages on this Mac.
@@ -174,12 +176,16 @@ def tool_route(method: str, parts: list[str]) -> bool:
 
 
 def switch_route(method: str, parts: list[str]) -> bool:
-    """True for a PUT of a notification switch: `rooms/<room>/notifications` or `rooms/<room>/chats/<chat>/notifications`.
-    `parts` are the parts of the route after `/v1/team`, as _team_route reads them. A repeat of such a request keeps no
-    saved answer (team_request)."""
+    """True for a PUT of a choice of the person: `rooms/<room>/<choice>` or `rooms/<room>/chats/<chat>/<choice>`, where
+    the choice is `notifications` or `pin`. `parts` are the parts of the route after `/v1/team`, as _team_route reads
+    them. A repeat of such a request keeps no saved answer (team_request)."""
     return method == 'PUT' and (
-        (len(parts) == 3 and parts[0] == 'rooms' and parts[2] == 'notifications')
-        or (len(parts) == 5 and parts[0] == 'rooms' and parts[2] == 'chats' and parts[4] == 'notifications'))
+        (len(parts) == 3 and parts[0] == 'rooms' and parts[2] in CHOICES)
+        or (len(parts) == 5 and parts[0] == 'rooms' and parts[2] == 'chats' and parts[4] in CHOICES))
+
+
+# The last part of the route of each choice of the person (switch_route).
+CHOICES = ('notifications', 'pin')
 
 
 def removal_entry(token: str, room: str, member: str) -> str:
@@ -417,6 +423,10 @@ class Team(TeamSync, TeamSocket, TeamPages, TeamMessages, TeamChats, TeamDirects
         if (len(parts) == 5 and parts[0] == 'rooms' and parts[2] == 'chats' and parts[4] == 'notifications'
                 and method == 'PUT'):
             return self.team_chat_notifications(parts[1], parts[3], data)
+        if len(parts) == 3 and parts[0] == 'rooms' and parts[2] == 'pin' and method == 'PUT':
+            return self.team_chat_pin(parts[1], None, data)
+        if len(parts) == 5 and parts[0] == 'rooms' and parts[2] == 'chats' and parts[4] == 'pin' and method == 'PUT':
+            return self.team_chat_pin(parts[1], parts[3], data)
         raise ServiceError(404, 'This route was not found.')
 
     # Reads
@@ -468,6 +478,7 @@ class Team(TeamSync, TeamSocket, TeamPages, TeamMessages, TeamChats, TeamDirects
         # Only a person's Mac has phones to notify. The app shows the switch only when the room has this field.
         if self._team_has_phones:
             view['notifications'] = bool(room['notifications'])
+            view['pinned'] = None in self.team_store.pinned_chats(room['room'])
         if direct:
             view['directs'] = self._team_direct_summary(room)
             view['bot_directs'] = self._team_bot_direct_summary(room)

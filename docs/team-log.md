@@ -401,6 +401,7 @@ Everything else is in `coconut.sqlite3`:
 | `team_chats` | A view of `team_entries`: the valid `chat` entries of the admin, with the name, the `first` and the time of the first write that this Mac saw. See [Chats of a team](#chats-of-a-team). |
 | `team_chat_reads` | The read position of this Mac in each named chat that the person read: one row for each room and chat. |
 | `team_chat_mutes` | The named chats that the person of this Mac muted: one row for each room and muted chat. See rule 4 of [Notifications](#notifications). |
+| `team_chat_pins` | The chats that the person of this Mac pinned: one row for each room and pinned chat, with an empty `chat` for the Team chat. See [Pinned chats](#pinned-chats). |
 | `team_triggers` | Only on a team-only Mac: the messages that start a turn of an agent of this Mac, in the order in which the Mac accepted them, each with a mark for a turn that began. See [An agent answers](#an-agent-answers). |
 | `team_directs` | The direct messages that this Mac shows: one row for each `direct` entry whose box opens for this Mac, with the other member of its chat, and `bot`, `page` and the link preview from the box. `bot` is null for a chat of two people. An index on the room, the member, `bot` and `first` gives a page and the unread count of one chat. See [Direct messages](#direct-messages) and [Direct chat with an agent](#direct-chat-with-an-agent). |
 | `team_direct_reads` | The read position of this Mac in each direct chat of two people: one row for each room and other member. |
@@ -535,7 +536,7 @@ The app sends a write again with the same `Idempotency-Key` when the answer does
 - The answers stay in the memory of the service only, for 10 minutes, and at most 256 of them. The sync thread drops an old answer on its next pass, at most 30 seconds later, also on a Mac without a room. A new answer drops the oldest answer over the limit at once. A stop of the service drops them all. A later repeat runs again.
 - The answer of the invite route has the invite link, so the answers never go to the database or to a log. The `requests` table of the other writes of the phone keeps each answer with no end, so these routes do not use it.
 - A request without a key runs each time, as before. A tool on this Mac sends no key, and the Mac ignores a key from a tool.
-- The routes `.../typing` and `.../notifications` keep no answer, and each request with a key runs. A PUT of a state is safe to repeat by itself. A saved answer of a mute would cancel a later mute with the same key and body after an unmute, because the app sends the key of a write without an answer again.
+- The routes `.../typing`, `.../notifications` and `.../pin` keep no answer, and each request with a key runs. A PUT of a state is safe to repeat by itself. A saved answer of a mute would cancel a later mute with the same key and body after an unmute, because the app sends the key of a write without an answer again.
 
 #### Leave a join that did not finish
 
@@ -657,6 +658,7 @@ The routes have the authorization of the other team routes, and a write with an 
 | The routes of the named chats | See [Chats of a team](#chats-of-a-team). Without `chat`, each route above means the Team chat. |
 | `PUT /v1/team/rooms/<room>/notifications`, body `{enabled}` | Turns the notifications of the room on or off for the phones of this Mac, and answers `{room, notifications}`. See [Notifications](#notifications). |
 | `PUT /v1/team/rooms/<room>/chats/<id>/notifications`, body `{enabled}` | Mutes (`false`) or unmutes (`true`) one named chat for the phones of this Mac, and answers `{room, chat, notifications}`. See [Notifications](#notifications). |
+| `PUT /v1/team/rooms/<room>/pin` and `PUT /v1/team/rooms/<room>/chats/<id>/pin`, body `{pinned}` | Pins or unpins the Team chat or one named chat on this Mac, and answers `{room, chat, pinned}` (`chat` is null for the Team chat). See [Pinned chats](#pinned-chats). |
 
 A message in an answer:
 
@@ -878,6 +880,15 @@ An agent of a Mac for a team only answers in the chat where a person names it (s
 - The bound of 8 waiting triggers for one agent in one room stays, and one thread still runs the triggers of one agent in one room one at a time.
 
 No log line has the name of a chat.
+
+#### Pinned chats
+
+A person pins a chat of a team, as the person pins an agent: the Team chat and each named chat. A direct chat has no pin.
+
+- The choice is the person's: it never goes into the log or to the relay. The Mac keeps it in `team_chat_pins`. When the chat goes (a `delete` entry over it, a new write that does not fit, a leave of the team), its row goes too.
+- `GET /v1/team/rooms` gives `pinned` for the room (the Team chat) and for each named chat, on a person's Mac only. A Mac for a team only and an older service send none, and the app then shows no action.
+- `PUT /v1/team/rooms/<room>/pin` (the Team chat) and `PUT /v1/team/rooms/<room>/chats/<id>/pin` change it, with the rules of the mute: only a paired device, 409 on a Mac for a team only, 404 for a chat that the store does not show, and a change adds `team.updated`. The same value again writes nothing. These routes keep no answer for an `Idempotency-Key` (see [Repeat a write](#repeat-a-write)).
+- The app shows "Pin" or "Unpin" in the menu of the row of the chat in the Chats list and in the Mac sidebar, above "Mute" for a named chat. A pinned chat shows on the Mac in the section "Pinned" of the sidebar, after the pinned agents and before the pinned pages, and not in its normal place. On the iPhone it shows with the pinned agents at the top of the Chats list.
 
 #### Reactions
 
