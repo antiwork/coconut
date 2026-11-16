@@ -2177,7 +2177,6 @@ final class AppStore {
     private func deliverTeamMessage(_ chat: TeamChatKey, id: String) async {
         guard let pending = teamChats[chat]?.pending.first(where: { $0.id == id }) else { return }
         if isDemo {
-            teamChats[chat]?.pending.removeAll { $0.id == id }
             let first = (teamChats[chat]?.newestFirst ?? 0) + 1
             let files = (pending.files ?? []).map { file in var file = file; file.complete = true; return file }
             let message = TeamMessage(id: id, first: first, thisMac: true, text: pending.text, replyTo: pending.replyTo,
@@ -2185,7 +2184,7 @@ final class AppStore {
                                       createdAt: pending.createdAt, page: pending.page,
                                       preview: pending.preview, files: files, filesKey: true)
             adoptTeamDrafts(pending, as: message, in: chat)
-            teamChats[chat]?.put(message)
+            teamChats[chat]?.confirm(id, as: message)
             return
         }
         let change = startMessageChange(chat, id)
@@ -2223,10 +2222,9 @@ final class AppStore {
         }
         teamChatChanges[chat, default: 0] += 1
         adoptTeamDrafts(pending, as: answer.message, in: chat)
-        teamChats[chat]?.pending.remove(at: index)
         // A page that brought the message first is as new as this answer or newer, so its copy stays: a late answer
         // does not take away a reaction or bring back a page that went.
-        teamChats[chat]?.add(answer.message)
+        teamChats[chat]?.confirm(id, as: answer.message)
         try? saveOutgoing()
     }
 

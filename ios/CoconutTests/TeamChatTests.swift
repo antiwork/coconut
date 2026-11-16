@@ -280,6 +280,59 @@ final class TeamChatTests: XCTestCase {
         XCTAssertEqual(TeamChatRow.rows(chat, calendar: Self.utc).map(\.id).contains("4"), false)
     }
 
+    func testASentMessageKeepsItsRowWhenTheMacAnswers() {
+        var chat = TeamChat()
+        chat.merge(page([message("1", 1, at: "2026-11-10T09:00:00Z")], before: nil), requested: nil)
+        chat.pending = [TeamPendingMessage(id: "p", text: "On its way", replyTo: nil, reply: nil,
+                                           createdAt: "2026-11-10T09:07:00Z")]
+        let before = TeamChatRow.rows(chat, calendar: Self.utc)
+        XCTAssertEqual(before.map(\.id), ["1", "pending-p"])
+        XCTAssertEqual(before.map(\.listID), ["1", "pending-p"])
+        // The Mac answers with a message of its own ID. The row of the message keeps the identity of the row on the
+        // way in the list of a Mac. Its ID, which a quote and a scroll use, is the ID of the message.
+        chat.confirm("p", as: message("srv", 2, own: true, at: "2026-11-10T09:07:01Z"))
+        let after = TeamChatRow.rows(chat, calendar: Self.utc)
+        XCTAssertEqual(after.map(\.id), ["1", "srv"])
+        XCTAssertEqual(after.map(\.listID), ["1", "pending-p"])
+        XCTAssertTrue(chat.pending.isEmpty)
+        // A page of the Mac keeps the row of the sent message.
+        chat.merge(page([message("1", 1, at: "2026-11-10T09:00:00Z"), message("srv", 2, own: true, at: "2026-11-10T09:07:01Z")],
+                        before: nil), requested: nil)
+        XCTAssertEqual(TeamChatRow.rows(chat, calendar: Self.utc).map(\.listID), ["1", "pending-p"])
+        // A reaction of this person on its way, and a link preview from the Mac, change the row and keep its identity.
+        chat.reacting["srv"] = TeamOwnReaction(emoji: "👍", member: "m-ada")
+        var withPreview = message("srv", 2, own: true, at: "2026-11-10T09:07:01Z")
+        withPreview.preview = TeamLinkPreview(url: "https://example.com/report", title: "Report", site: "example.com")
+        chat.putEdit(withPreview)
+        let changed = TeamChatRow.rows(chat, calendar: Self.utc)
+        XCTAssertEqual(changed.map(\.listID), ["1", "pending-p"])
+        XCTAssertEqual(changed.last?.message?.preview?.title, "Report")
+        XCTAssertNotEqual(changed.last?.message, after.last?.message)
+    }
+
+    func testASentMessageWithAPhotoAndAFileKeepsItsRowAndItsFiles() {
+        var chat = TeamChat()
+        chat.merge(page([message("1", 1, at: "2026-11-10T09:00:00Z")], before: nil), requested: nil)
+        let photo = TeamFile(id: "f-photo", name: "chart.png", type: "image/png", size: 2048, width: 800, height: 600,
+                             complete: false)
+        let file = TeamFile(id: "f-report", name: "report.pdf", type: "application/pdf", size: 4096, complete: false)
+        var pending = TeamPendingMessage(id: "p", text: "The numbers", replyTo: nil, reply: nil,
+                                         createdAt: "2026-11-10T09:07:00Z")
+        pending.files = [photo, file]
+        chat.pending = [pending]
+        XCTAssertEqual(TeamChatRow.rows(chat, calendar: Self.utc).map(\.listID), ["1", "pending-p"])
+        // The Mac answers with the message and its files, now complete.
+        var answer = message("srv", 2, own: true, text: "The numbers", at: "2026-11-10T09:07:01Z")
+        answer.files = [photo, file].map { var done = $0; done.complete = true; return done }
+        chat.confirm("p", as: answer)
+        let rows = TeamChatRow.rows(chat, calendar: Self.utc)
+        XCTAssertEqual(rows.map(\.listID), ["1", "pending-p"])
+        XCTAssertEqual(rows.map(\.id), ["1", "srv"])
+        XCTAssertEqual(rows.last?.message?.files.map(\.id), ["f-photo", "f-report"])
+        XCTAssertEqual(rows.last?.message?.files.map(\.isReady), [true, true])
+        XCTAssertTrue(chat.pending.isEmpty)
+    }
+
     func testTheAuthorOfAQuote() {
         let grace = TeamMessageQuote(id: "e1", member: "m-grace", memberName: "Grace", text: "Hi")
         XCTAssertEqual(TeamNames.author(of: grace, ownMember: "m-ada"), "Grace")

@@ -61,6 +61,7 @@ struct TeamChatView: View {
     @ScaledMetric(relativeTo: .body) private var nameWidth = 150
     #if os(macOS)
     @Environment(\.openSettings) private var openSettings
+    @State private var sentScroll = SentMessageScroll()
     /// The title of the team floats over the top of the chat. It has two lines (the name and who is in the chat), so it
     /// is 10 points taller than the title of a bot (34).
     private static let titlePillHeight: CGFloat = 44
@@ -77,6 +78,15 @@ struct TeamChatView: View {
     /// The other side of a direct chat: a person or a bot. Nil for the Team chat and a named chat.
     private func peer(_ room: TeamRoom) -> TeamDirectPeer? { room.peer(of: chatKey) }
     private func currentRows() -> [TeamChatRow] { rows.current(chat, calendar: .current) }
+    /// A sent message waits for the layout of its row, and the other scroll rules wait too (SentMessageScroll). Only on
+    /// a Mac.
+    private var sentWaits: Bool {
+        #if os(macOS)
+        sentScroll.waits
+        #else
+        false
+        #endif
+    }
     /// The space that the last row of the chat keeps for the notice of the Mac window.
     private var noticeSpace: CGFloat {
         #if os(macOS)
@@ -123,7 +133,7 @@ struct TeamChatView: View {
                     if shown.lowerBound > 0 || chat.before != nil {
                         Button {
                             follows = false
-                            let anchor = allRows[shown].first?.id
+                            let anchor = allRows[shown].first?[keyPath: Self.rowIdentity]
                             Task { await loadEarlier(anchor: anchor, proxy: proxy) }
                         } label: {
                             if chat.loadingEarlier || growingAbove { ProgressView() }
@@ -134,7 +144,7 @@ struct TeamChatView: View {
                         .accessibilityIdentifier("load-earlier-messages")
                     }
                     let writable = canWrite(room)
-                    ForEach(allRows[shown]) { row in
+                    ForEach(allRows[shown], id: Self.rowIdentity) { row in
                         let date = row.createdAt.apiDate
                         VStack(spacing: 0) {
                             if row.startsDay, let date {
@@ -149,7 +159,7 @@ struct TeamChatView: View {
                         .pinnedDayRow(pinnedDay, id: row.id, date: date, startsDay: row.startsDay)
                         // Keep full text height when the list resizes or scrolls to a new message.
                         .fixedSize(horizontal: false, vertical: true)
-                        .id(row.id)
+                        .id(row[keyPath: Self.rowIdentity])
                     }
                     // The last row: who types, under the newest message and above the composer, then the anchor of
                     // the bottom. The row is always there, so the list never adds or removes a row for typing while it
@@ -199,10 +209,16 @@ struct TeamChatView: View {
                 else if new[0] > old[0] + 0.5 && new[0] + new[2] >= new[1] - 4 { follows = true }
                 #endif
                 // New content, the keyboard and the composer move the bottom. The chat stays there while it follows.
-                if follows && !userScrolling && (new[1] != old[1] || new[2] != old[2] || new[3] != old[3]) {
+                if follows && !userScrolling && !sentWaits && (new[1] != old[1] || new[2] != old[2] || new[3] != old[3]) {
                     proxy.scrollTo(Self.bottom, anchor: .bottom)
                 }
             }
+            #if os(macOS)
+            // A sent message moves the chat one time, after the layout of its row.
+            .modifier(SentMessageMove(scroll: $sentScroll, follows: { follows }) {
+                proxy.scrollTo(Self.bottom, anchor: .bottom)
+            })
+            #endif
             .onScrollPhaseChange { _, phase in
                 #if !os(macOS)
                 pinnedDay.scrolls(phase != .idle)
@@ -213,7 +229,7 @@ struct TeamChatView: View {
                 // The person sent a message: the chat shows it at the bottom.
                 guard id != nil else { return }
                 follows = true
-                proxy.scrollTo(Self.bottom, anchor: .bottom)
+                if !sentWaits { proxy.scrollTo(Self.bottom, anchor: .bottom) }
             }
             .pinnedDayPill(pinnedDay, now: dayReference, below: Self.titleHeight)
             .background(BoardStyle.paper)
@@ -342,6 +358,13 @@ struct TeamChatView: View {
     }
 
     private static let bottom = "team-chat-bottom"
+    #if os(macOS)
+    /// A Mac list and its scrolls know a sent message by its row on the way (TeamChatRow.listID). When the list took that
+    /// row away and added a row for the answer of the Mac, the chat went down by the height of the row (47 points).
+    private static let rowIdentity = \TeamChatRow.listID
+    #else
+    private static let rowIdentity = \TeamChatRow.id
+    #endif
 
     /// The first row of the chat: what the chat cannot show yet, or where a message goes. It is always a row, also an
     /// empty one, as the header of the bot chat (ConversationView.conversationHeader) is. So the first day pill has the
@@ -458,6 +481,9 @@ struct TeamChatView: View {
             let named = BotMentions.recipients(in: composer.draft, selected: mentions, bots: mentionTargets(room))
                 .map(\.id)
             guard store.sendTeamMessage(chatKey, from: composer, mentions: named) else { return }
+            #if os(macOS)
+            sentScroll.sent()
+            #endif
             composer.sent()
             mentions = []
         }
@@ -481,13 +507,13 @@ struct TeamChatView: View {
 
     /// Shows a message that a quote names, when the chat has it.
     private func show(_ id: String, proxy: ScrollViewProxy) {
-        let ids = currentRows().map(\.id)
-        guard ids.contains(id) else { return }
+        let rows = currentRows()
+        guard let row = rows.first(where: { $0.id == id }) else { return }
         follows = false
-        window.include(id, in: ids)
+        window.include(id, in: rows.map(\.id))
         Task {
             await Task.yield()
-            proxy.scrollTo(id, anchor: .top)
+            proxy.scrollTo(row[keyPath: Self.rowIdentity], anchor: .top)
         }
     }
 

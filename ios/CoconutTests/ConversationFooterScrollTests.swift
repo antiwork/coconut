@@ -170,4 +170,87 @@ final class ConversationFooterScrollTests: XCTestCase {
         holders.remove(UUID())
         XCTAssertEqual(holders.chats, [first])
     }
+
+    // The rule of a sent message on a Mac (SentMessageScroll). It is a pure rule, so the iPhone tests run it too.
+    func testASentMessageMovesTheChatAfterTheLayoutOfItsRow() {
+        var scroll = SentMessageScroll()
+        let sent = Date(timeIntervalSinceReferenceDate: 1_000)
+        // Without a send, a layout moves nothing.
+        XCTAssertFalse(scroll.laidOut(inset: 58, now: sent))
+        XCTAssertFalse(scroll.waits)
+        // The person sends. The scroll waits for the layout of the row.
+        scroll.sent(now: sent)
+        XCTAssertTrue(scroll.waits)
+        // The layout of the row, with the composer of one line: the chat moves now, one time.
+        XCTAssertTrue(scroll.laidOut(inset: 58, now: sent.addingTimeInterval(0.02)))
+        XCTAssertFalse(scroll.waits)
+        XCTAssertFalse(scroll.laidOut(inset: 58, now: sent.addingTimeInterval(0.03)))
+    }
+
+    func testASentMessageWaitsWhileTheComposerIsTall() {
+        var scroll = SentMessageScroll()
+        let sent = Date(timeIntervalSinceReferenceDate: 1_000)
+        // The last layout before the send had the composer of one line.
+        _ = scroll.laidOut(inset: 56, now: sent)
+        scroll.sent(now: sent)
+        // The layout of the row: the composer still has the five lines of the draft.
+        XCTAssertFalse(scroll.laidOut(inset: 116, now: sent.addingTimeInterval(0.01)))
+        XCTAssertTrue(scroll.waits)
+        XCTAssertFalse(scroll.laidOut(inset: 116, now: sent.addingTimeInterval(0.02)))
+        // The composer is short again: the chat moves now.
+        XCTAssertTrue(scroll.laidOut(inset: 56, now: sent.addingTimeInterval(0.04)))
+        XCTAssertFalse(scroll.waits)
+    }
+
+    func testASentMessageWaitsWhenTheChatKnewTheTallComposer() {
+        var scroll = SentMessageScroll()
+        let sent = Date(timeIntervalSinceReferenceDate: 1_000)
+        // A first layout without the composer does not count. Then the composer with one line, then with five.
+        _ = scroll.laidOut(inset: 0, now: sent)
+        _ = scroll.laidOut(inset: 56, now: sent)
+        _ = scroll.laidOut(inset: 116, now: sent)
+        XCTAssertEqual(scroll.restingInset, 56)
+        scroll.sent(now: sent)
+        XCTAssertFalse(scroll.laidOut(inset: 116, now: sent.addingTimeInterval(0.01)))
+        XCTAssertTrue(scroll.laidOut(inset: 56, now: sent.addingTimeInterval(0.03)))
+    }
+
+    func testTheWaitOfASentMessageEnds() {
+        var scroll = SentMessageScroll()
+        let sent = Date(timeIntervalSinceReferenceDate: 1_000)
+        _ = scroll.laidOut(inset: 56, now: sent)
+        scroll.sent(now: sent)
+        XCTAssertFalse(scroll.laidOut(inset: 116, now: sent.addingTimeInterval(0.01)))
+        // A later layout that still has the tall inset, after the limit: the chat moves.
+        XCTAssertTrue(scroll.laidOut(inset: 116, now: sent.addingTimeInterval(SentMessageScroll.limit + 0.01)))
+        // No layout at all: the timer of the chat ends the wait, one time.
+        scroll.sent(now: sent)
+        XCTAssertTrue(scroll.timedOut(sentAt: sent))
+        XCTAssertFalse(scroll.timedOut(sentAt: sent))
+        XCTAssertFalse(scroll.waits)
+    }
+
+    func testKeysAfterReturnStayInTheDraft() {
+        // Return, then "ab" before the draft clears: "ab" stays, as when the draft clears at once.
+        XCTAssertEqual(ConversationComposer.typed(after: "Can you check the draft?", in: "Can you check the draft?ab"), "ab")
+        XCTAssertEqual(ConversationComposer.typed(after: "Line one\nLine two", in: "Line one\nLine two"), "")
+        // A draft that the person changed in another way clears.
+        XCTAssertEqual(ConversationComposer.typed(after: "Can you check the draft?", in: "Can you"), "")
+    }
+
+    func testTheTimerOfAnOlderSendDoesNotEndTheWaitOfANewerOne() {
+        var scroll = SentMessageScroll()
+        let first = Date(timeIntervalSinceReferenceDate: 1_000)
+        let second = first.addingTimeInterval(0.06)
+        _ = scroll.laidOut(inset: 56, now: first)
+        scroll.sent(now: first)
+        // A second message comes while the first one waits. The timer of the first send wakes up later.
+        scroll.sent(now: second)
+        XCTAssertFalse(scroll.timedOut(sentAt: first))
+        XCTAssertTrue(scroll.waits)
+        // The layout of the second row, with the tall composer, still waits. Then its own timer ends the wait.
+        XCTAssertFalse(scroll.laidOut(inset: 116, now: second.addingTimeInterval(0.02)))
+        XCTAssertTrue(scroll.timedOut(sentAt: second))
+        XCTAssertFalse(scroll.waits)
+    }
 }

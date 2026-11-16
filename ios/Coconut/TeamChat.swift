@@ -1025,6 +1025,17 @@ struct TeamChat: Equatable, Sendable {
     /// The messages that this person removed. A late answer cannot put one back. Only a page of the Mac can.
     var removed: Set<String> = []
 
+    /// The row of each message that this person sent from this app, by message ID: the row of the message on its way
+    /// (TeamChatRow.listID).
+    var sentRows: [String: String] = [:]
+
+    /// The Mac answered a message on its way: the message of the Mac takes its place.
+    mutating func confirm(_ pendingID: String, as message: TeamMessage) {
+        pending.removeAll { $0.id == pendingID }
+        sentRows[message.id] = TeamChatRow.pendingRowID(pendingID)
+        add(message)
+    }
+
     /// Puts one message that the Mac answered into the chat: a new message, or the new form of an edited one.
     mutating func put(_ message: TeamMessage) {
         guard !removed.contains(message.id) else { return }
@@ -1095,6 +1106,10 @@ struct TeamChatRow: Identifiable, Equatable, Sendable {
     }
 
     let id: String
+    /// The identity of the row in the list of a Mac. A message that this person sent keeps the identity of its row on
+    /// the way. When the Mac answers, the list then changes that row and does not take it away and add a new one, so the
+    /// chat does not move.
+    let listID: String
     let content: Content
     let writer: TeamWriter
     let createdAt: String
@@ -1122,19 +1137,25 @@ struct TeamChatRow: Identifiable, Equatable, Sendable {
         }
     }
 
+    /// The ID of the row of a message on its way.
+    static func pendingRowID(_ id: String) -> String { "pending-" + id }
+
     /// The rows of the chat: the messages without the ones whose removal is on its way, then the messages on their way.
     static func rows(_ chat: TeamChat, calendar: Calendar = .current) -> [TeamChatRow] {
         let shown = chat.messages.filter { !chat.deleting.contains($0.id) }
-            .map { (id: $0.id, content: Content.message(chat.shown($0)), writer: TeamWriter($0), createdAt: $0.createdAt) }
+            .map { (id: $0.id, listID: chat.sentRows[$0.id] ?? $0.id, content: Content.message(chat.shown($0)),
+                    writer: TeamWriter($0), createdAt: $0.createdAt) }
         let pending = chat.pending.map {
-            (id: "pending-" + $0.id, content: Content.pending($0), writer: TeamWriter.you, createdAt: $0.createdAt)
+            (id: pendingRowID($0.id), listID: pendingRowID($0.id), content: Content.pending($0), writer: TeamWriter.you,
+             createdAt: $0.createdAt)
         }
         var rows: [TeamChatRow] = []
         var previous: (writer: TeamWriter, createdAt: String)?
         for item in shown + pending {
             let startsDay = previous.map { !DaySeparator.sameDay($0.createdAt, item.createdAt, calendar: calendar) } ?? true
-            rows.append(TeamChatRow(id: item.id, content: item.content, writer: item.writer, createdAt: item.createdAt,
-                                    startsDay: startsDay, startsRun: startsDay || previous?.writer != item.writer))
+            rows.append(TeamChatRow(id: item.id, listID: item.listID, content: item.content, writer: item.writer,
+                                    createdAt: item.createdAt, startsDay: startsDay,
+                                    startsRun: startsDay || previous?.writer != item.writer))
             previous = (item.writer, item.createdAt)
         }
         return rows
