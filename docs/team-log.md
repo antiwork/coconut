@@ -400,6 +400,7 @@ Everything else is in `coconut.sqlite3`:
 | `team_reads` | The read position of this Mac in the Team chat of each room. |
 | `team_chats` | A view of `team_entries`: the valid `chat` entries of the admin, with the name, the `first` and the time of the first write that this Mac saw. See [Chats of a team](#chats-of-a-team). |
 | `team_chat_reads` | The read position of this Mac in each named chat that the person read: one row for each room and chat. |
+| `team_chat_mutes` | The named chats that the person of this Mac muted: one row for each room and muted chat. See rule 4 of [Notifications](#notifications). |
 | `team_triggers` | Only on a team-only Mac: the messages that start a turn of an agent of this Mac, in the order in which the Mac accepted them, each with a mark for a turn that began. See [An agent answers](#an-agent-answers). |
 | `team_directs` | The direct messages that this Mac shows: one row for each `direct` entry whose box opens for this Mac, with the other member of its chat, and `bot`, `page` and the link preview from the box. `bot` is null for a chat of two people. An index on the room, the member, `bot` and `first` gives a page and the unread count of one chat. See [Direct messages](#direct-messages) and [Direct chat with an agent](#direct-chat-with-an-agent). |
 | `team_direct_reads` | The read position of this Mac in each direct chat of two people: one row for each room and other member. |
@@ -534,6 +535,7 @@ The app sends a write again with the same `Idempotency-Key` when the answer does
 - The answers stay in the memory of the service only, for 10 minutes, and at most 256 of them. The sync thread drops an old answer on its next pass, at most 30 seconds later, also on a Mac without a room. A new answer drops the oldest answer over the limit at once. A stop of the service drops them all. A later repeat runs again.
 - The answer of the invite route has the invite link, so the answers never go to the database or to a log. The `requests` table of the other writes of the phone keeps each answer with no end, so these routes do not use it.
 - A request without a key runs each time, as before. A tool on this Mac sends no key, and the Mac ignores a key from a tool.
+- The routes `.../typing` and `.../notifications` keep no answer, and each request with a key runs. A PUT of a state is safe to repeat by itself. A saved answer of a mute would cancel a later mute with the same key and body after an unmute, because the app sends the key of a write without an answer again.
 
 #### Leave a join that did not finish
 
@@ -654,6 +656,7 @@ The routes have the authorization of the other team routes, and a write with an 
 | `POST /v1/team/rooms/<room>/typing`, body `{chat?}` | The person types in the Team chat, and answers `{room}`. See [Typing](#typing). |
 | The routes of the named chats | See [Chats of a team](#chats-of-a-team). Without `chat`, each route above means the Team chat. |
 | `PUT /v1/team/rooms/<room>/notifications`, body `{enabled}` | Turns the notifications of the room on or off for the phones of this Mac, and answers `{room, notifications}`. See [Notifications](#notifications). |
+| `PUT /v1/team/rooms/<room>/chats/<id>/notifications`, body `{enabled}` | Mutes (`false`) or unmutes (`true`) one named chat for the phones of this Mac, and answers `{room, chat, notifications}`. See [Notifications](#notifications). |
 
 A message in an answer:
 
@@ -709,7 +712,9 @@ A team message notifies the person like an agent reply: the same pipeline, the s
 2. The transaction that accepts the entry writes one item of the kind `team` for each phone in `push_items`: the room in `team`, the entry ID in `message_id`, and no agent, task or turn. No network call runs in that transaction.
 3. A phone gets an item when its notifications are on, it sent its preferences, and its level is not Only urgent. The switch for agent replies does not decide. A phone without stored preferences has an older app and gets none.
 4. Each room has `notifications` on this Mac, on at the start. It is a choice of the person, not of the team: it never goes into the log or to the relay. `GET /v1/team/rooms` gives it for each room on a person's Mac, and `PUT /v1/team/rooms/<room>/notifications` changes it. Only a paired device calls that route, and a change adds `team.updated`. A Mac for a team only answers 409. The switch decides only for a message that does not name this Mac's person. A message whose `mentions` have the entry ID of a `member` entry of this Mac notifies also when the switch is off, and each other rule stays: the level, the work hours, the read position and the checks of rule 5. A message that names nobody, or only other members, follows the switch.
-5. Each plan and each send checks the item again: the room is `active`, the message still shows, it is after the read position, and `notifications` is on or the message names this Mac's person. So a message that the person read on another device, a removed message, a team that the person left and a quiet team send nothing. Only a message that names the person still notifies in a quiet team.
+
+   Each named chat also has a choice of this Mac's person: muted or not, not muted at the start. The Team chat has no such choice: the switch of the room decides for it and for each named chat. The choice is the person's too: it never goes into the log or to the relay, and the Mac keeps it in `team_chat_mutes`. So the rule is: a message notifies when the switch is on and its chat is not muted, or when it names this Mac's person. A mention notifies also in a muted chat. `GET /v1/team/rooms` gives `notifications` for each named chat on a person's Mac: false for a muted chat. `PUT /v1/team/rooms/<room>/chats/<id>/notifications` changes it, with the rules of the route of the room: only a paired device, 409 on a Mac for a team only, and a change adds `team.updated`. A chat that the store does not show answers 404 with "This chat is no longer in the team." The same value again writes nothing. When the chat goes (a `delete` entry over it, a new write that does not fit, a leave of the team), its row goes too. The unread count of a muted chat does not change.
+5. Each plan and each send checks the item again: the room is `active`, the message still shows, it is after the read position of its chat, and the rule of rule 4 holds: `notifications` is on and the chat is not muted, or the message names this Mac's person. So a message that the person read on another device, a removed message, a team that the person left, a quiet team and a muted chat send nothing. Only a message that names the person still notifies in a quiet team or a muted chat.
 6. An item waits and groups as an agent reply does (level, work hours, the gap after the last notification). It is never urgent. The app icon badge counts cards only.
 7. The sealed alert has the name of the writer as its title (the name of the agent for a message with a `bot`), the name of the team as its subtitle, and the text as its body. When the store has no name for the writer, the title is the name of the team, and the alert has no subtitle. `thread-id` is the room ID. A phone without a relay route gets "Your team has a new message." and no text.
 8. A group counts "team message" and "team messages" after "message". A group of the messages of one team has the thread of the team and `{"kind": "group", "count": n, "team": <room ID>}`, so a tap opens the chat. Each other group opens Inbox, and its fields for older apps come from an item that is not a team message.
@@ -722,9 +727,9 @@ No log line has the text of a message, the name of a writer or the name of a tea
 A person names another person of the team with `@` in the chat, as the person names an agent. The app sends the member ID in `mentions`, and the Mac writes the entry ID of the `member` entry of that member. The log format and the relay do not change.
 
 - A mention of a person starts no turn of an agent. Rule 4 of [An agent answers](#an-agent-answers) names `bot` entries, and the `member` entry of a Mac for a team only, which is no person.
-- A mention of this Mac's person notifies also in a quiet team (see rule 4 of [Notifications](#notifications)).
+- A mention of this Mac's person notifies also in a quiet team and in a muted chat (see rule 4 of [Notifications](#notifications)).
 - `GET /v1/team/rooms` gives `mentioned` and `mention_first` for each room. `mentioned` stays true until the read position passes each unread message that names this Mac's person. An own message, a removed message and a message that does not show never count. One query walks the index of the messages back from the newest message to the read position. It reads at most the newest 1,000 messages after the read position, also own messages, so a mention under them does not show.
-- The Mac app makes a banner for a quiet team when `mention_first` grows: a new mention arrived since the last list, also when a plain message came after it.
+- The Mac app makes a banner for a quiet team or a muted chat when `mention_first` grows: a new mention arrived since the last list, also when a plain message came after it. A plain message makes a banner only when the switch of the team is on and its chat is not muted.
 - The `@` list of the app has the agents that a teammate can ask, then each other person of the team, without the Macs for a team only. The app lists the people only for a room with `mentioned`, because an older service does not notify a named person in a quiet team. A typed `@` name that an agent and a person share gives the agent. A tap gives the row that the person taps.
 
 #### An agent answers
@@ -823,7 +828,7 @@ Rules for a Mac that reads a `chat` entry:
 1. Rule 4 of a reader accepts the entry only from the admin.
 2. The entry is valid when `name` has 1 to 50 code points of valid Unicode text. An entry that does not fit stays in the store and shows nothing.
 3. A valid entry shows a chat with that name. Its `created_at` is the `at` of the first write that this Mac saw. The chats of a room sort by `first`, so a rename keeps the place of a chat.
-4. A removed chat, by a `delete` entry or by a new write that does not fit, goes on this Mac: the chat leaves the list, its rows of `team_messages` and its read position go, its waiting notifications send nothing, its waiting triggers go, and a running turn of an agent in it stops. A message for it that comes later shows nothing.
+4. A removed chat, by a `delete` entry or by a new write that does not fit, goes on this Mac: the chat leaves the list, its rows of `team_messages`, its read position and the choice of the person to mute it go, its waiting notifications send nothing, its waiting triggers go, and a running turn of an agent in it stops. A message for it that comes later shows nothing.
 5. A Mac with an older Coconut does not know the kind. It keeps the entry by rule 5 of a reader and shows nothing.
 
 Rules for a message in a named chat:
@@ -854,13 +859,13 @@ The routes. Each one has the authorization of the other team routes, and a write
 
 The room view of `GET /v1/team/rooms`:
 
-- `chats`: one item for each named chat, in the order of `first`: `id`, `name`, `created_at`, and the fields that the room has for the Team chat: `unread`, `last_message`, `mentioned`, `mention_first` (only when `mentioned` is true) and `typing`.
+- `chats`: one item for each named chat, in the order of `first`: `id`, `name`, `created_at`, and the fields that the room has for the Team chat: `unread`, `last_message`, `mentioned`, `mention_first` (only when `mentioned` is true) and `typing`. On a person's Mac each item also has `notifications`: false when the person muted the chat (rule 4 of [Notifications](#notifications)). A Mac for a team only and an older service send none, and the app then shows no action "Mute".
 - `can_manage_chats`: true on the admin's Mac of an `active` room. The app shows "New chat" and the actions of a chat only with this field.
 - The fields of the room itself stay the fields of the Team chat, so an older app shows the Team chat as before and no named chat.
 
 Events: a new, renamed or removed chat adds `team.updated`. A change inside a named chat adds `team_messages.updated` and `team_typing.updated` with `{"team": <room ID>}`, as for the Team chat.
 
-Notifications follow the switch `notifications` of the room: one switch for each chat of the team. A message in a named chat changes three parts of [Notifications](#notifications):
+Notifications follow the switch `notifications` of the room, and each member can also mute one named chat (rule 4 of [Notifications](#notifications)). The app shows "Mute" or "Unmute" for each member in the menu of the row of a named chat: on the Team screen, in the Chats list and in the Mac sidebar. A swipe of the row has no such action. A muted chat has the symbol `bell.slash` at the end of its row. A message in a named chat changes three parts of [Notifications](#notifications):
 
 1. The subtitle of the sealed alert is the name of the chat and the name of the team: "Design · Example Team".
 2. `thread-id` is the room ID, a colon, and the ID of the chat. So the alerts of one chat group together.

@@ -1457,7 +1457,7 @@ struct TeamContactRow: View {
         // An older service sends no chat. The row then has the name only, centered on the face. It has no "@" mark,
         // because the mark stands on the second line.
         return ChatRowLayout(name: room.title, unread: unread, date: date,
-                             mentioned: room.hasChat && room.showsMentionMark) {
+                             mentioned: room.hasChat && room.showsMentionMark, muted: room.shownChatMuted) {
             TeamFace(room: room, size: avatarSize)
         } subtitle: {
             Group {
@@ -1526,6 +1526,29 @@ struct DirectPeerFace: View {
                       identity: peer.member, animated: false)
         } else {
             PersonFace(member: peer.entry, memberId: peer.member, name: peer.name, size: size)
+        }
+    }
+}
+
+/// The menu of a row of a named chat in the Chats list and the Mac sidebar, as WhatsApp has it: "Mute" or "Unmute"
+/// (TeamChatMute.listAction). Each other row keeps its plain form. A failure shows in the banner of the screen.
+struct TeamChatMuteMenu: ViewModifier {
+    @Environment(AppStore.self) private var store
+    let item: ChatListItem
+
+    func body(content: Content) -> some View {
+        if let action = TeamChatMute.listAction(item) {
+            content.contextMenu {
+                Button(action.label, systemImage: action.symbol) {
+                    store.error = nil
+                    Task { await store.setTeamChatNotifications(action.room, chat: action.chat, enabled: action.enabled) }
+                }
+                // One request of a chat at a time.
+                .disabled(TeamChatMute.waits(action.chat, store.teamChatMuteChoices))
+                .accessibilityIdentifier("chat-row-mute-menu")
+            }
+        } else {
+            content
         }
     }
 }

@@ -38,6 +38,8 @@ for a person, because the app shows them.
   and removes a named chat (team_chats.py). The routes of the Team chat take a named chat in `chat`.
 - `PUT /v1/team/rooms/<room>/notifications` with `{enabled}`: the person turns the notifications of the room on or off
   for the phones of this Mac. Only a person's Mac has phones, so a Mac for a team only answers 409.
+- `PUT /v1/team/rooms/<room>/chats/<id>/notifications` with `{enabled}`: the person mutes or unmutes one named chat
+  for the phones of this Mac (team_chats.py), with the rules of the route above.
 - The routes of the direct messages under `/v1/team/rooms/<room>/directs/<member>`, and of a direct chat with a bot
   under `/v1/team/rooms/<room>/directs/<team bot ID>` (team_directs.py). A `GET /v1/team/rooms` with
   `X-Coconut-Team: direct` from a paired device sets the mark of direct messages on this Mac.
@@ -171,6 +173,15 @@ def tool_route(method: str, parts: list[str]) -> bool:
         method == 'DELETE' and len(parts) == 2 and parts[0] == 'rooms')
 
 
+def switch_route(method: str, parts: list[str]) -> bool:
+    """True for a PUT of a notification switch: `rooms/<room>/notifications` or `rooms/<room>/chats/<chat>/notifications`.
+    `parts` are the parts of the route after `/v1/team`, as _team_route reads them. A repeat of such a request keeps no
+    saved answer (team_request)."""
+    return method == 'PUT' and (
+        (len(parts) == 3 and parts[0] == 'rooms' and parts[2] == 'notifications')
+        or (len(parts) == 5 and parts[0] == 'rooms' and parts[2] == 'chats' and parts[4] == 'notifications'))
+
+
 def removal_entry(token: str, room: str, member: str) -> str:
     """The entry ID of the `remove` entry of a member: from the room and the member ID, so a repeat of a removal
     writes the same entry.
@@ -276,10 +287,15 @@ class Team(TeamSync, TeamSocket, TeamPages, TeamMessages, TeamChats, TeamDirects
         REPLY_SECONDS, and a repeat gets it and does nothing else. A repeat that comes while the first request runs
         waits for it. A failure keeps no answer, because the person tries again. A request without a key, for example
         of a tool on this Mac, runs as before. `POST /v1/team/sync` and the reads need no key. The route of typing needs
-        none too: a repeat writes nothing new, and its many calls would push the other answers out of the memory.
+        none too: a repeat writes nothing new, and its many calls would push the other answers out of the memory. The
+        routes `.../notifications` keep no answer either: a PUT of a state is safe to repeat by itself, and a saved
+        answer would cancel a later request with the same key and body after a change back (the app sends the key of
+        a write whose answer did not arrive again).
         """
         from .service_base import ServiceError
-        if not key or method == 'GET' or path.rstrip('/') == '/v1/team/sync' or path.rstrip('/').endswith('/typing'):
+        bare = path.rstrip('/')
+        if (not key or method == 'GET' or bare == '/v1/team/sync' or bare.endswith('/typing')
+                or switch_route(method, bare.strip('/').split('/')[2:])):
             return self._team_route(method, path, data, device=device, direct=direct)
         try:
             UUID(key)
@@ -398,6 +414,9 @@ class Team(TeamSync, TeamSocket, TeamPages, TeamMessages, TeamChats, TeamDirects
             return self.team_chat_delete(parts[1], parts[3], device)
         if len(parts) == 3 and parts[0] == 'rooms' and parts[2] == 'notifications' and method == 'PUT':
             return self.team_notifications(parts[1], data)
+        if (len(parts) == 5 and parts[0] == 'rooms' and parts[2] == 'chats' and parts[4] == 'notifications'
+                and method == 'PUT'):
+            return self.team_chat_notifications(parts[1], parts[3], data)
         raise ServiceError(404, 'This route was not found.')
 
     # Reads

@@ -28,6 +28,8 @@ Each table has the room ID in its key, because a Mac can be in more than one roo
 - `team_reads`: the read position of this Mac in the Team chat of each room: the `first` of the newest message that
   the person read.
 - `team_chat_reads`: the read position of this Mac in each named chat that the person read.
+- `team_chat_mutes`: the named chats that the person of this Mac muted. A plain message of such a chat notifies no
+  phone. The choice is the person's, so it never goes into the log. The row goes with its chat.
 - `team_triggers`: on a team-only Mac only, the messages and the direct messages that start a turn of a bot of this
   Mac, in the order in which this Mac accepted them (team_turns.py). `started` marks a trigger whose turn began.
 - `team_directs`: the direct messages that this Mac shows: one row for each `direct` entry whose box opens for this
@@ -142,6 +144,7 @@ CREATE TABLE IF NOT EXISTS team_chats (room TEXT NOT NULL, entry TEXT NOT NULL, 
     name TEXT NOT NULL, created_at TEXT NOT NULL, PRIMARY KEY (room, entry));
 CREATE TABLE IF NOT EXISTS team_chat_reads (room TEXT NOT NULL, chat TEXT NOT NULL, first INTEGER NOT NULL,
     PRIMARY KEY (room, chat));
+CREATE TABLE IF NOT EXISTS team_chat_mutes (room TEXT NOT NULL, chat TEXT NOT NULL, PRIMARY KEY (room, chat));
 CREATE TABLE IF NOT EXISTS team_file_pieces (room TEXT NOT NULL, entry TEXT NOT NULL, member TEXT NOT NULL,
     file TEXT NOT NULL, piece INTEGER NOT NULL, size INTEGER NOT NULL, received REAL NOT NULL, data BLOB NOT NULL,
     PRIMARY KEY (room, entry));
@@ -165,7 +168,7 @@ TABLES = ('team_rooms', 'team_entries', 'team_members', 'team_pending', 'team_sh
           'team_page_entries', 'team_bots', 'team_pages', 'team_messages', 'team_names', 'team_reads', 'team_triggers',
           'team_directs', 'team_direct_reads', 'team_bot_direct_reads', 'team_direct_waits', 'team_removed',
           'team_invites',
-          'team_erased', 'team_chats', 'team_chat_reads', 'team_reactions', 'team_file_pieces', 'team_message_files',
+          'team_erased', 'team_chats', 'team_chat_reads', 'team_chat_mutes', 'team_reactions', 'team_file_pieces', 'team_message_files',
           'team_file_drafts')
 # The table of the reactions and its index for the views. The store makes both in `migrate`, so a store of an older
 # version reads its stored `reaction` entries one time when it gets the table (_read_reactions_again). The state is a
@@ -1435,6 +1438,8 @@ class TeamStore:
             for (message,) in named:
                 self._name_files(room, message, [])
             self.db.execute('DELETE FROM team_chat_reads WHERE room=? AND chat=?', (room, entry['id']))
+            # The choice of the person goes with the chat. A chat that shows again starts as not muted.
+            self.db.execute('DELETE FROM team_chat_mutes WHERE room=? AND chat=?', (room, entry['id']))
             return True
         new = self.chat(room, entry['id']) is None
         changed = self.db.execute('''INSERT INTO team_chats (room, entry, first, name, created_at) VALUES (?, ?, ?, ?, ?)
@@ -1472,6 +1477,23 @@ class TeamStore:
         rows = self._rows(CHAT_FIELDS, f'SELECT {", ".join(CHAT_FIELDS)} FROM team_chats WHERE room=? AND entry=?',
                           (room, entry))
         return rows[0] if rows else None
+
+    def muted_chats(self, room: str) -> set[str]:
+        """The named chats of the room that the person of this Mac muted."""
+        return {row[0] for row in self.db.execute('SELECT chat FROM team_chat_mutes WHERE room=?', (room,))}
+
+    def mute_chat(self, room: str, chat: str, muted: bool) -> bool:
+        """Mute or unmute a named chat for the person of this Mac. True when the choice changed. The caller checked
+        that the store shows the chat."""
+        if muted:
+            return self.db.execute('INSERT OR IGNORE INTO team_chat_mutes (room, chat) VALUES (?, ?)',
+                                   (room, chat)).rowcount > 0
+        return self.db.execute('DELETE FROM team_chat_mutes WHERE room=? AND chat=?', (room, chat)).rowcount > 0
+
+    def in_muted_chat(self, room: str, entry: str) -> bool:
+        """True when the message `entry` is in a named chat that the person of this Mac muted."""
+        return self.db.execute('''SELECT 1 FROM team_messages m JOIN team_chat_mutes u ON u.room=m.room AND u.chat=m.chat
+            WHERE m.room=? AND m.entry=?''', (room, entry)).fetchone() is not None
 
     def _show_removal(self, room: dict, entry: dict, removal: dict | None) -> None:
         """Apply a `remove` entry of the admin, or a write over one (docs/team-log.md, "Member removal").
