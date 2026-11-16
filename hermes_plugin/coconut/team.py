@@ -57,13 +57,14 @@ BASE_METHODS = ('build_source', 'handle_message', 'send_image_file', '_mark_conn
 # `display_overrides`, Hermes sends its tool progress into the chat as messages of the bot.
 REGISTRATION_FIELDS = ('trusted_inbound', 'display_overrides')
 # A cron delivery without a gateway (send_standalone) tries three times: the waits between the tries are the first two
-# waits of the adapter. A restart of the service, or a bridge file that is missing for a moment, then loses no notice.
+# waits of the adapter. A refused connection fails at once, so the tries cover about 3 seconds of a service that is
+# down or a bridge file that is missing: a short gap, not a whole restart of the service.
 STANDALONE_WAITS = RETRY_SECONDS[:2]
-# Each try waits this long for the service: one relay try of the service (team_relay.TIMEOUT_SECONDS). The service can
-# need longer, with its three relay tries. A later try then waits for the lock of the room, finds the entry of the
-# first try, and answers `recorded: true`. All tries take at most 3 x 15 + 1 + 2 = 48 seconds, under the bound of 60
-# seconds of Hermes (`cron.standalone_send_timeout_seconds`). One part with three relay tries takes the service at most
-# about 46 seconds (3 x 15 + 2 x 0.5).
+# Each try waits this long for the service: one relay try of the service (team_relay.TIMEOUT_SECONDS). All tries take
+# at most 3 x 15 + 1 + 2 = 48 seconds, under the bound of 60 seconds of Hermes (`cron.standalone_send_timeout_seconds`).
+# One part can take the service about 46 seconds when the relay does not answer (3 x 15 + 2 x 0.5), and n parts n
+# times that. A later try waits for the lock of the room and finds the entry of an earlier try, so the sender reports
+# a false failure only when all parts together take longer than its tries.
 STANDALONE_SECONDS = 15
 
 
@@ -86,12 +87,13 @@ async def send_standalone(pconfig, chat_id, message, *, thread_id=None, media_fi
 
     It sends the text as the adapter sends a message outside a turn: `kind: send` with the Hermes home of this process
     and a new message ID, to the service of the bridge file. The service shows it as a message of the bot in the chat
-    `chat_id`. A service that does not answer gets two more tries with the same message ID. The service derives the
-    entry ID from the message ID, so a try that repeats a send that arrived adds no second message. A refusal gets no
-    second try: a 404, `recorded: false` or an empty text. A refusal, and a service that does not answer three times,
-    become an `error` with the reason, so the record of the job shows a failed delivery. A fault never reaches Hermes.
-    The team chat takes no file from this path: the text goes, and a log line says that the files did not go. The
-    result has no `warnings`: Hermes records each warning as a failed delivery.
+    `chat_id`. A service that does not answer, and an answer `recorded: false` with `retry: true` (the relay did not
+    take a part), get up to two more tries with the same message ID. The service derives the entry ID from the
+    message ID, so a try that repeats a send that arrived adds no second message. A refusal gets no second try: an
+    HTTP 4xx, `recorded: false` without `retry`, or an empty text. A refusal, and a last try that failed, become an
+    `error` with the reason, so the record of the job shows a failed delivery. A fault never reaches Hermes. The team
+    chat takes no file from this path: the text goes, and a log line says that the files did not go. Hermes itself
+    adds a warning to the result of a send with files, and so records a failed delivery.
 
     Only the mode `team` registers this sender. On a person's Mac, the service drops a cron delivery whose run shows
     already as a routine task in the chat, by the job ID of the delivery (gateway_chat.py). This call has no job ID,
@@ -111,7 +113,9 @@ async def send_standalone(pconfig, chat_id, message, *, thread_id=None, media_fi
         for wait in (*STANDALONE_WAITS, None):
             answer = await report_outside(request, home, str(chat_id),
                                           dict(kind='send', message_id=message_id, text=text))
-            if wait is None or not (isinstance(answer, SendResult) and answer.retryable):
+            retry = answer.retryable if isinstance(answer, SendResult) else (
+                isinstance(answer, dict) and not answer.get('recorded') and answer.get('retry') is True)
+            if wait is None or not retry:
                 break
             await asyncio.sleep(wait)
         if isinstance(answer, SendResult):

@@ -694,6 +694,15 @@ class TeamAdapterTests(TeamTurnMacs, unittest.TestCase):
         self.assertEqual(list(self.only.root.glob('**/photo.png')), [])
 
 
+# A relay write that the relay took, but whose answer did not arrive (StandaloneSenderTests.relay_faults).
+LOST = object()
+
+
+def relay_error(status=503):
+    from coconut.team_relay import TeamRelayError
+    return TeamRelayError(status, f'The relay answered {status}.')
+
+
 def http_error(status):
     """An HTTP answer of the service with this status and an empty body."""
     import io
@@ -736,10 +745,31 @@ class StandaloneSenderTests(DirectTurnMacs, unittest.TestCase):
         patch.start()
         self.addCleanup(patch.stop)
 
-    def outside(self, text, message_id='outside:report'):
-        """A send outside a turn into the Team chat, as the service gets it."""
+    def outside(self, text, message_id='outside:report', chat=None):
+        """A send outside a turn into the Team chat, or into `chat`, as the service gets it."""
         return self.only.gateway_message({'kind': 'send', 'home': str(self.home), 'message_id': message_id,
-                                          'chat_id': chat_id(self.room, self.bot['id']), 'text': text})
+                                          'chat_id': chat or chat_id(self.room, self.bot['id']), 'text': text})
+
+    def relay_faults(self, *faults):
+        """Let the relay writes of the team-only Mac fail. The write number n raises faults[n] when it is an error.
+        LOST writes the entry and then raises an error without an answer, as a relay whose answer did not arrive.
+        The later writes go to the relay. Return the list of all writes."""
+        from coconut.team_relay import TeamRelayError
+        writes, real = [], self.only.team_relay.write
+
+        def write(*arguments, **options):
+            writes.append(arguments)
+            fault = faults[len(writes) - 1] if len(writes) <= len(faults) else None
+            if fault is LOST:
+                real(*arguments, **options)
+                raise TeamRelayError(0, 'The relay did not answer.')
+            if fault is not None:
+                raise fault
+            return real(*arguments, **options)
+        patch = mock.patch.object(self.only.team_relay, 'write', side_effect=write)
+        patch.start()
+        self.addCleanup(patch.stop)
+        return writes
 
     def sent(self, result):
         self.assertEqual(set(result), {'success', 'message_id'})
@@ -795,7 +825,8 @@ class StandaloneSenderTests(DirectTurnMacs, unittest.TestCase):
     def test_files_with_a_text_send_the_text(self):
         with self.assertLogs('hermes_plugins.coconut', logging.WARNING) as logs:
             result = self.deliver(chat_id(self.room, self.bot['id']), media_files=[('/tmp/report.pdf', False)])
-        # No `warnings`: Hermes records each warning as a failed delivery (cron/scheduler_delivery.py).
+        # No `warnings` of the plugin. Hermes adds its own warning for the files (tools/send_message_tool.py), and the
+        # cron record then shows a failed delivery although the text arrived.
         self.sent(result)
         self.assertEqual(logs.output, ['WARNING:hermes_plugins.coconut.team:Coconut: a cron delivery into a team chat '
                                        'sent its text without its 1 files.'])
@@ -884,41 +915,108 @@ class StandaloneSenderTests(DirectTurnMacs, unittest.TestCase):
         self.sync()
         self.assertEqual(self.of_chat(), [('Reporter', 'The weekly report is ready.')])
 
-    def test_a_message_that_the_log_did_not_take_is_not_recorded(self):
-        from coconut.team_relay import TeamRelayError
-        fault = TeamRelayError(503, 'The relay answered 503.')
-        with mock.patch.object(self.only.team_relay, 'write', side_effect=fault), \
-                self.assertLogs('coconut', logging.WARNING):
+    def test_a_relay_failure_is_not_recorded_and_a_repeat_can_cure_it(self):
+        # One 503 of the relay: the relay answered, so the service makes no second write in the same call.
+        writes = self.relay_faults(relay_error(503))
+        with self.assertLogs('coconut', logging.WARNING):
             self.assertEqual(self.outside('The weekly report is ready.'),
-                             {'recorded': False, 'reason': 'The team log did not take this message.'})
-            calls = self.requests()
+                             {'recorded': False, 'reason': 'The team log did not take this message.', 'retry': True})
+        self.assertEqual(len(writes), 1)
+        self.assertEqual(self.outside('The weekly report is ready.'), {'recorded': True})
+        self.assertEqual(len(writes), 2)
+        self.sync()
+        self.assertEqual(self.of_chat(), [('Reporter', 'The weekly report is ready.')])
+
+    def test_the_sender_repeats_after_a_relay_failure_with_the_same_message_id(self):
+        self.quick()
+        writes, calls = self.relay_faults(relay_error(429)), self.requests()
+        with self.assertLogs('coconut', logging.WARNING):
+            self.sent(self.deliver(chat_id(self.room, self.bot['id'])))
+        self.assertEqual((len(calls), len(writes)), (2, 2))
+        self.assertEqual(len({message_id for message_id, _ in calls}), 1)
+        self.sync()
+        self.assertEqual(self.of_chat(), [('Reporter', 'The weekly report is ready.')])
+
+    def test_a_relay_that_fails_at_each_try_is_an_error_after_three_tries(self):
+        self.quick()
+        writes, calls = self.relay_faults(*[relay_error(503)] * 3), self.requests()
+        with self.assertLogs('coconut', logging.WARNING):
             result = self.deliver(chat_id(self.room, self.bot['id']))
-        # The service tried the relay three times. The sender gives the reason to Hermes and makes no second try.
         self.assertEqual(result, {'error': 'Coconut did not show this message: The team log did not take this '
                                            'message.'})
-        self.assertEqual(len(calls), 1)
+        self.assertEqual((len(calls), len(writes)), (3, 3))
         self.sync()
         self.assertEqual(self.of_chat(), [])
 
-    def test_a_text_in_two_parts_is_recorded_only_when_the_log_has_both(self):
-        from coconut.team_relay import TeamRelayError
-        from coconut.team_turns import MAX_TEXT
-        text = 'a' * MAX_TEXT + 'b'
-        real, writes = self.only.team_relay.write, []
-
-        def second_fails(*arguments, **options):
-            writes.append(arguments)
-            if len(writes) == 2:
-                raise TeamRelayError(503, 'The relay answered 503.')
-            return real(*arguments, **options)
-        with mock.patch.object(self.only.team_relay, 'write', side_effect=second_fails), \
-                self.assertLogs('coconut', logging.WARNING):
-            self.assertEqual(self.outside(text), {'recorded': False,
-                                                  'reason': 'The chat shows only 1 of 2 parts of this message.'})
-        # A repeat with the same message ID writes only the part that the log does not have.
-        self.assertEqual(self.outside(text), {'recorded': True})
+    def test_a_refusal_with_recorded_false_gets_no_second_try(self):
+        design = self.named()
+        self.call('DELETE', f'/v1/team/rooms/{self.room}/chats/{design}', service=self.first)
         self.sync()
-        self.assertEqual(self.of_chat(), [('Reporter', 'a' * MAX_TEXT), ('Reporter', 'b')])
+        self.quick()
+        calls = self.requests()
+        self.assertEqual(self.deliver(chat_id(self.room, self.bot['id'], design)),
+                         {'error': 'Coconut did not show this message: The agent does not answer in this team chat.'})
+        self.assertEqual(len(calls), 1)
+
+    def test_a_relay_answer_that_did_not_arrive_is_cured_by_a_repeat_without_a_second_write(self):
+        # The relay has the entry, but the Mac got no answer (`_team_unsure`). The repeat reads the room first.
+        writes = self.relay_faults(LOST)
+        with self.assertLogs('coconut', logging.WARNING):
+            self.assertEqual(self.outside('The weekly report is ready.'),
+                             {'recorded': False, 'reason': 'The team log did not take this message.', 'retry': True})
+        self.assertEqual(self.outside('The weekly report is ready.'), {'recorded': True})
+        self.assertEqual(len(writes), 1)
+        self.sync()
+        self.assertEqual(self.of_chat(), [('Reporter', 'The weekly report is ready.')])
+
+    def test_a_relay_failure_in_a_named_chat_and_a_direct_chat(self):
+        design = self.named()
+        named, direct = chat_id(self.room, self.bot['id'], design), self.direct_chat_id()
+        writes = self.relay_faults(relay_error(503), relay_error(503))
+        # Each send has its own message ID, as each send of Hermes has.
+        sends = (('outside:named', named), ('outside:direct', direct))
+        with self.assertLogs('coconut', logging.WARNING):
+            for message_id, chat in sends:
+                self.assertEqual(self.outside('Design notes are ready.', message_id, chat),
+                                 {'recorded': False, 'reason': 'The team log did not take this message.',
+                                  'retry': True})
+        for message_id, chat in sends:
+            self.assertEqual(self.outside('Design notes are ready.', message_id, chat), {'recorded': True})
+        self.assertEqual(len(writes), 4)
+        self.sync()
+        self.assertEqual(self.of_chat(design), [('Reporter', 'Design notes are ready.')])
+        self.assertEqual(self.bot_replies(), ['Design notes are ready.'])
+
+    def test_a_failed_middle_part_stops_the_send_and_a_repeat_writes_the_rest(self):
+        from coconut.team_turns import MAX_TEXT
+        text = 'a' * MAX_TEXT + 'b' * MAX_TEXT + 'c'
+        writes = self.relay_faults(None, relay_error(503))
+        with self.assertLogs('coconut', logging.WARNING):
+            self.assertEqual(self.outside(text), {'recorded': False, 'retry': True,
+                                                  'reason': 'The chat shows only 1 of 3 parts of this message.'})
+        # The third part waits: the chat shows no part after a gap.
+        self.assertEqual(len(writes), 2)
+        self.sync()
+        self.assertEqual(self.of_chat(), [('Reporter', 'a' * MAX_TEXT)])
+        # A repeat with the same message ID writes only the two parts that the log does not have.
+        self.assertEqual(self.outside(text), {'recorded': True})
+        self.assertEqual(len(writes), 4)
+        self.sync()
+        self.assertEqual(self.of_chat(), [('Reporter', 'a' * MAX_TEXT), ('Reporter', 'b' * MAX_TEXT),
+                                          ('Reporter', 'c')])
+
+    def test_a_failed_last_part_is_not_recorded_and_a_repeat_writes_only_that_part(self):
+        from coconut.team_turns import MAX_TEXT
+        text = 'a' * MAX_TEXT + 'b' * MAX_TEXT + 'c'
+        writes = self.relay_faults(None, None, relay_error(503))
+        with self.assertLogs('coconut', logging.WARNING):
+            self.assertEqual(self.outside(text), {'recorded': False, 'retry': True,
+                                                  'reason': 'The chat shows only 2 of 3 parts of this message.'})
+        self.assertEqual(self.outside(text), {'recorded': True})
+        self.assertEqual(len(writes), 4)
+        self.sync()
+        self.assertEqual(self.of_chat(), [('Reporter', 'a' * MAX_TEXT), ('Reporter', 'b' * MAX_TEXT),
+                                          ('Reporter', 'c')])
 
 
 if __name__ == '__main__':

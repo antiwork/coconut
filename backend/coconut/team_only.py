@@ -58,7 +58,7 @@ from .service_base import (MODE_MARK, TEAM_MODE, ServiceError, check_data_folder
 from .service_restart import ServiceRestart
 from .team import SCHEMA as TEAM_SCHEMA, Team, member_profile
 from .team_store import ACTIVE, unicode_text
-from .team_turns import TeamTurns, parse_chat, parts
+from .team_turns import SAID, SAY_FAILED, TeamTurns, parse_chat, parts
 
 MODE = TEAM_MODE
 REFUSAL = 'This Mac runs Coconut for a team only, so it does not serve this request.'
@@ -352,8 +352,9 @@ class TeamOnlyService(TeamTurns, Documents, Team):
         its entry ID comes from the message ID of Hermes, so a send that the adapter repeats adds none. A message of
         the chat is complete, so an edit and a delete change nothing. In a direct chat, a send is a direct message of
         the bot to the person of the chat, while that person is in the member list (TeamTurns._team_say). The answer is
-        `recorded: false` with a reason when the log does not have each part of the text, for example after a failure
-        of the relay. The sender of a cron run without a gateway gives that reason to Hermes."""
+        `recorded: false` with a reason when the log does not have each part of the text. After a failure of the relay
+        or the helper it also has `retry: true`: a repeat with the same message ID can write the missing parts. The
+        sender of a cron run without a gateway repeats then, and gives the reason of a last failure to Hermes."""
         home, chat, message_id = data.get('home'), parse_chat(data.get('chat_id')), data.get('message_id')
         if not isinstance(home, str) or chat is None or not isinstance(message_id, str):
             raise ServiceError(400, 'Name the home, the chat and the message.')
@@ -375,17 +376,22 @@ class TeamOnlyService(TeamTurns, Documents, Team):
         if not answers or room_row['state'] != ACTIVE or gone:
             return {'recorded': False, 'reason': 'The agent does not answer in this team chat.'}
         pieces = parts(readable_text(text))
-        shown = 0
+        shown, result = 0, SAID
         for number, piece in enumerate(pieces):
             # A send outside a turn answers no message, so no request must still stand: only the bot must answer.
             # A part that the log did not take stops the send, so the chat shows no later part before it.
-            if not self._team_say(room, bot_id, message_id, number, piece, request=False, chat=named, direct=direct):
+            result = self._team_say(room, bot_id, message_id, number, piece, request=False, chat=named, direct=direct)
+            if result != SAID:
                 break
             shown += 1
         # The answer is true only when the log has each part. A repeat with the same message ID writes only the parts
-        # that the log does not have.
-        if shown == 0:
-            return {'recorded': False, 'reason': 'The team log did not take this message.'}
-        if shown < len(pieces):
-            return {'recorded': False, 'reason': f'The chat shows only {shown} of {len(pieces)} parts of this message.'}
-        return {'recorded': True}
+        # that the log does not have, so after a failure of the relay or the helper the answer has `retry: true`.
+        if shown == len(pieces):
+            return {'recorded': True}
+        if shown:
+            reason = f'The chat shows only {shown} of {len(pieces)} parts of this message.'
+        elif result == SAY_FAILED:
+            reason = 'The team log did not take this message.'
+        else:
+            reason = 'The agent does not answer in this team chat.'
+        return dict(recorded=False, reason=reason, **({'retry': True} if result == SAY_FAILED else {}))
