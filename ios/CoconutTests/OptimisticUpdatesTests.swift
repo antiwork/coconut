@@ -106,4 +106,15 @@ final class OptimisticUpdatesTests: XCTestCase {
         XCTAssertEqual(result.status, "working")
         XCTAssertEqual(result.unreadCount, 7)
     }
+
+    func testEachNewIntentHasItsOwnReceiptKeyEvenWhenTheValueRepeats() async {
+        let store = AppStore(demo: true)
+        var keys: [String?] = []
+        for _ in 0..<3 {
+            store.optimistically("bot/test", change: { _ in }, save: { keys.append(OptimisticRequest.id) })
+        }
+        await store.optimisticUpdates.wait()
+        XCTAssertEqual(keys.compactMap { $0 }.count, 3)
+        XCTAssertEqual(Set(keys.compactMap { $0 }).count, 3, "A later repeated value must not replay an uncertain receipt from before an intervening change.")
+    }
 }

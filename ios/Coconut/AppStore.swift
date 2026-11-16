@@ -704,13 +704,14 @@ final class AppStore {
     func optimistically(_ resource: String, change: (UUID) -> Void, save: @escaping @MainActor () async -> Void) -> Bool {
         guard isDemo || pairing != nil else { error = "Pair with your Mac in Settings to continue."; return false }
         let pairing = pairing
+        let requestId = UUID().uuidString
         error = nil
         let parts = resource.split(separator: "/")
         let queue = resource.hasPrefix("bot/") || resource.hasPrefix("settings/") || resource.hasPrefix("routine/") ? "native-settings"
             : parts.first == "team" && parts.count > 1 ? "team/" + String(parts[1]) : resource
         optimisticUpdates.enqueue(queue, change: change) {
             guard self.pairing == pairing else { return }
-            await save()
+            await OptimisticRequest.$id.withValue(requestId) { await save() }
         }
         return true
     }
@@ -2097,22 +2098,32 @@ final class AppStore {
 
     /// Closes an own notice for each member. It stays on the board as ended.
     func closeTeamNotice(_ room: TeamRoom, notice: WorkspaceNotice) async -> Bool {
-        await changeTeamNotices(room, path: "team/rooms/\(room.room)/notices/\(notice.id)", method: "PATCH",
-                                payload: TeamNoticeChange(closed: true))
+        optimistically("team/\(room.room)", change: { transaction in
+            optimisticNotice(room.room, notice.id, \.closed, true, in: transaction)
+            optimisticNotice(room.room, notice.id, \.active, false, in: transaction)
+        }, save: { _ = await self.changeTeamNotices(room, path: "team/rooms/\(room.room)/notices/\(notice.id)", method: "PATCH", payload: TeamNoticeChange(closed: true)) })
     }
 
     /// Removes an own notice from the board of each member.
     func deleteTeamNotice(_ room: TeamRoom, notice: WorkspaceNotice) async -> Bool {
-        await changeTeamNotices(room, path: "team/rooms/\(room.room)/notices/\(notice.id)", method: "DELETE",
-                                payload: EmptyRequest())
+        optimistically("team/\(room.room)", change: { transaction in
+            optimisticUpdates.set("0:team/\(room.room)/notice/\(notice.id)", to: Optional<WorkspaceNotice>.none, in: transaction,
+                read: { self.team?.rooms.first { $0.room == room.room }?.notices?.first { $0.id == notice.id } },
+                write: { value in
+                    guard let i = self.team?.rooms.firstIndex(where: { $0.room == room.room }) else { return }
+                    self.team?.rooms[i].notices?.removeAll { $0.id == notice.id }
+                    if let value { self.team?.rooms[i].notices?.append(value) }
+                })
+        }, save: { _ = await self.changeTeamNotices(room, path: "team/rooms/\(room.room)/notices/\(notice.id)", method: "DELETE", payload: EmptyRequest()) })
     }
 
     /// Tells the team that this person has seen these notices. A notice that the person has seen writes nothing.
     func markTeamNoticesSeen(_ room: TeamRoom, notices: [WorkspaceNotice]) async {
         let ids = notices.filter { !$0.seen }.map(\.id)
         guard !ids.isEmpty, !isDemo else { return }
-        _ = await changeTeamNotices(room, path: "team/rooms/\(room.room)/notices/seen", method: "POST",
-                                    payload: TeamNoticesSeen(notices: ids), quiet: true)
+        optimistically("team/\(room.room)", change: { transaction in
+            for id in ids { optimisticNotice(room.room, id, \.seen, true, in: transaction) }
+        }, save: { _ = await self.changeTeamNotices(room, path: "team/rooms/\(room.room)/notices/seen", method: "POST", payload: TeamNoticesSeen(notices: ids), quiet: true) })
     }
 
     private func changeTeamNotices<Payload: Encodable>(_ room: TeamRoom, path: String, method: String,
@@ -2739,8 +2750,9 @@ final class AppStore {
             let body = try APIJSON.encode(payload)
             let requestSignature = method + " " + path + " " + SHA256.hash(data: body).description
             signature = requestSignature
-            let key = idempotencyKey ?? uncertainWriteKeys[requestSignature] ?? UUID().uuidString
-            if idempotencyKey == nil { uncertainWriteKeys[requestSignature] = key }
+            let explicitKey = idempotencyKey ?? OptimisticRequest.id
+            let key = explicitKey ?? uncertainWriteKeys[requestSignature] ?? UUID().uuidString
+            if explicitKey == nil { uncertainWriteKeys[requestSignature] = key }
             let (receiptModel, receiptBaseURL, receiptCatalog, receiptApproval, receiptMCP, receiptCapacityLimit, receiptParallelLimit, receiptFallback, receiptMessages, receiptDecisions, receiptBots, receiptRoutines, receiptNativeReadAt, receiptCursor, receiptEpoch) = optimisticUpdates.receive {
                 (model, modelBaseURL, modelCatalog, approvals?.defaults, mcpServers, workCapacity?.limit, parallelWork?.limit, fallback, messages, decisions, bots, routines, nativeSettingsReadAt, cachedState?.cursor, snapshotEpoch)
             }

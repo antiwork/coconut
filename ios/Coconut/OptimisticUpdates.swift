@@ -1,5 +1,9 @@
 import Foundation
 
+enum OptimisticRequest {
+    @TaskLocal static var id: String?
+}
+
 /// Local edits sit over confirmed values. Reads and receipts update the base, then the newest edit is reapplied.
 /// Writes of one resource stay in order; a failed earlier write cannot undo a later choice.
 @MainActor
@@ -118,6 +122,15 @@ extension AppStore {
             read: { self.documents?.first { $0.id == id }?[keyPath: field] },
             write: { value in
                 if let value, let index = self.documents?.firstIndex(where: { $0.id == id }) { self.documents?[index][keyPath: field] = value }
+            })
+    }
+
+    func optimisticNotice<Value: Equatable>(_ room: String, _ id: String, _ field: WritableKeyPath<WorkspaceNotice, Value>, _ value: Value, in transaction: UUID) {
+        optimisticUpdates.set("team/\(room)/notice/\(id)/\(field)", to: Optional(value), in: transaction,
+            read: { self.team?.rooms.first { $0.room == room }?.notices?.first { $0.id == id }?[keyPath: field] },
+            write: { value in
+                if let value, let i = self.team?.rooms.firstIndex(where: { $0.room == room }),
+                   let j = self.team?.rooms[i].notices?.firstIndex(where: { $0.id == id }) { self.team?.rooms[i].notices?[j][keyPath: field] = value }
             })
     }
 }
