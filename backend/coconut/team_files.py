@@ -94,7 +94,7 @@ class TeamFiles:
             raise ServiceError(409, TEAM_ONLY)
         return self._team_file_upload(room_id, data)
 
-    def _team_file_upload(self, room_id: str, data: dict) -> dict:
+    def _team_file_upload(self, room_id: str, data: dict, draft_id: str | None = None) -> dict:
         """Validate and keep a draft after the caller checks who can send it."""
         from .service_base import ServiceError
         from .team_sync import INACTIVE
@@ -118,12 +118,17 @@ class TeamFiles:
             raise ServiceError(413, FILE_SIZE)
         if room['state'] != ACTIVE:
             raise ServiceError(409, INACTIVE[room['state']])
-        draft = {'id': token_hex(16), 'name': name, 'type': kind, 'size': len(content),
+        draft = {'id': draft_id or token_hex(16), 'name': name, 'type': kind, 'size': len(content),
                  'hash': hashlib.sha256(content).hexdigest(), 'width': width, 'height': height}
         with self.transaction():
             self.team_store.drop_old_drafts(DRAFT_SECONDS)
             self.team_store.sweep_pieces()
-            self.team_store.add_draft(room_id, draft, content)
+            existing = self.team_store.drafts(room_id, [draft['id']], DRAFT_SECONDS).get(draft['id'])
+            if existing:
+                if any(existing[field] != draft[field] for field in ('name', 'type', 'size', 'hash', 'width', 'height')):
+                    raise ServiceError(409, 'This delivery ID already belongs to another file.')
+            else:
+                self.team_store.add_draft(room_id, draft, content)
         return {'room': room_id, 'file': file_view(draft)}
 
     def team_file_drop(self, room_id: str, file: str) -> dict:
@@ -184,7 +189,7 @@ class TeamFiles:
             raise ServiceError(413, SPACE_FULL)
         return [drafts[draft] for draft in ids]
 
-    def _team_write_pieces(self, room: dict, drafts: list[dict]) -> list[dict]:
+    def _team_write_pieces(self, room: dict, drafts: list[dict], deadline: float | None = None) -> list[dict]:
         """Write each piece of each draft as a `file` entry, in order, and return the items of the message. A piece
         whose bytes this Mac has with the size of the draft, from a send without an answer, is not written again. The
         `file` entry alone is not enough: the sweep or the delete of a message can have removed its bytes. Then the
@@ -200,8 +205,9 @@ class TeamFiles:
                     existing = self.team_store.entry(room['room'], entry)
                     stored = self.team_store.piece_size(room['room'], entry)
                 if existing is None or existing['kind'] != 'file' or stored != len(piece):
+                    options = dict(tries=1, deadline=deadline) if deadline is not None else dict(tries=2)
                     self._team_write(room, entry, False, {'kind': 'file', 'file': draft['id'], 'index': index,
-                                                          'data': base64.b64encode(piece).decode()}, tries=2)
+                                                          'data': base64.b64encode(piece).decode()}, **options)
             items.append({name: draft[name] for name in ('id', 'name', 'type', 'size', 'hash', 'width', 'height')
                           if draft[name] is not None})
         return items

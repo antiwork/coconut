@@ -30,6 +30,7 @@ No log line of this module has the text of a message or a name.
 """
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import logging
@@ -466,7 +467,7 @@ class TeamTurns:
 
     def _team_say(self, room: str, bot: str, trigger: str, part, text: str, reply_to: str | None = None,
                   request: bool = True, chat: str | None = None, direct: str | None = None,
-                  files: list[str] | None = None) -> str:
+                  file: dict | None = None, deadline: float | None = None) -> str:
         """Write one message of the bot into `chat` (None for the Team chat), or into its direct chat with the person
         `direct` (a member ID). Nothing when the bot no longer answers there, for example after a removal, a leave or
         the removal of the chat, and nothing when the request is gone: `trigger` names the message that the bot
@@ -491,11 +492,30 @@ class TeamTurns:
                     written = self.team_store.entry(room, entry) is not None
                     gone = chat is not None and self.team_store.chat(room, chat) is None
                     person = self.team_store.member(room, direct) if direct else None
-                    drafts = self._team_send_drafts(room_row, files) if files and share and not gone and not written else []
                 if written:
+                    if file is not None:
+                        from .service_base import ServiceError
+                        with self.lock:
+                            message = self.team_store.message(room, entry)
+                        attachments = json.loads(message['files'] or '[]') if message else []
+                        try:
+                            digest = hashlib.sha256(base64.b64decode(file.get('content'), validate=True)).hexdigest()
+                        except (ValueError, TypeError):
+                            digest = None
+                        if len(attachments) != 1 or any(attachments[0].get(key) != value for key, value in (
+                                ('name', file.get('name')), ('type', file.get('type')), ('hash', digest))) or message['text'] != text:
+                            raise ServiceError(409, 'This delivery ID already belongs to another file.')
                     return SAID
                 if share is None or gone:
                     return NOT_SAID
+                drafts = []
+                if file is not None:
+                    if direct is not None:
+                        from .service_base import ServiceError
+                        raise ServiceError(409, 'Coconut sends files in team chats only.')
+                    draft = self._team_file_upload(room, file, draft_id=reply_entry(room, trigger, bot, 'file'))['file']
+                    with self.lock:
+                        drafts = self._team_send_drafts(room_row, [draft['id']])
                 if direct is not None:
                     if person is None or direct == room_row['member']:
                         return NOT_SAID
@@ -510,8 +530,9 @@ class TeamTurns:
                     fields['chat'] = chat
                 with self._team_file_space(bool(drafts)):
                     if drafts:
-                        fields['files'] = self._team_write_pieces(room_row, drafts)
-                    self._team_write(room_row, entry, False, fields, tries=3)
+                        fields['files'] = self._team_write_pieces(room_row, drafts, deadline=deadline)
+                    options = dict(tries=1, deadline=deadline) if deadline is not None else dict(tries=3)
+                    self._team_write(room_row, entry, False, fields, **options)
                 if drafts:
                     self._team_drop_drafts(room, drafts)
                 return SAID

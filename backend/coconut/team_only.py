@@ -49,6 +49,7 @@ import os
 from pathlib import Path
 import re
 import threading
+import time
 
 from .documents import SCHEMA as DOCUMENTS_SCHEMA, Documents
 from .gateway_bridge import GatewayBridge
@@ -360,23 +361,23 @@ class TeamOnlyService(TeamTurns, Documents, Team):
             raise ServiceError(404, 'This chat is not a team chat of an agent of this Hermes home.')
         if direct is not None:
             raise ServiceError(409, 'Coconut sends files in team chats only.')
+        budget = data.get('budget_seconds', 40)
+        if type(budget) not in (int, float) or not 0 < budget <= 40:
+            raise ServiceError(400, 'Give the file delivery a time budget of at most 40 seconds.')
+        deadline = time.monotonic() + budget
         name = data.get('filename')
-        draft = self._team_file_upload(room, dict(name=name, content=data.get('content_base64'),
-                                                type=mimetypes.guess_type(name)[0] if isinstance(name, str) else None))['file']
         trigger = data.get('message_id')
         if not isinstance(trigger, str) or not trigger:
-            trigger = 'file:' + draft['id']
+            trigger = 'file:' + uid()
         text = data.get('caption') or name
         if not isinstance(text, str) or len(text) > MAX_TEXT or not unicode_text(text):
-            self._team_drop_drafts(room, [draft])
             raise ServiceError(400, f'Use valid text of at most {MAX_TEXT:,} characters for a file caption.')
-        try:
-            result = self._team_say(room, bot_id, trigger, 0, text, request=False, chat=named, files=[draft['id']])
-        finally:
-            self._team_drop_drafts(room, [draft])
+        file = dict(name=name, content=data.get('content_base64'),
+                    type=mimetypes.guess_type(name)[0] if isinstance(name, str) else None)
+        result = self._team_say(room, bot_id, trigger, 0, text, request=False, chat=named, file=file, deadline=deadline)
         if result != SAID:
             raise ServiceError(503 if result == SAY_FAILED else 409, 'Coconut could not send the file to this team chat.')
-        return {'id': draft['id'], 'message_id': reply_entry(room, trigger, bot_id, 0)}
+        return {'id': reply_entry(room, trigger, bot_id, 'file'), 'message_id': reply_entry(room, trigger, bot_id, 0)}
 
     def gateway_message(self, data: dict) -> dict:
         """POST /v1/gateway/messages: a send of Hermes in a chat of the team outside a turn of Coconut, for example the

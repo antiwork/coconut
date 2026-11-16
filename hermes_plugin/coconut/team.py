@@ -36,6 +36,7 @@ import logging
 import os
 import time
 import uuid
+from urllib.error import HTTPError
 
 from gateway.platforms.base import BasePlatformAdapter, SendResult
 from gateway.platforms.event import MessageEvent, MessageType
@@ -70,6 +71,8 @@ STANDALONE_SECONDS = 15
 # How long the adapter keeps the message ID of a failed cron delivery for the fallback send of Hermes. Hermes sends the
 # fallback directly after the live send fails, and it waits at most 60 seconds for the live send.
 CRON_FALLBACK_SECONDS = 120
+# A standalone cron send has a 60-second outer limit. Files share this smaller budget, including retries.
+FILE_SECONDS = 50
 
 
 def missing() -> str | None:
@@ -103,21 +106,37 @@ async def send_tries(request, home: str, chat_id: str, fields: dict):
         await asyncio.sleep(wait)
 
 
-async def send_file(request, home, chat_id, file_path, caption=None, file_name=None) -> SendResult:
+async def send_file(request, home, chat_id, file_path, caption=None, file_name=None, deadline=None) -> SendResult:
     """Send bytes through the team file transport. A text notice never counts as a delivered file."""
     path = BasePlatformAdapter.validate_media_delivery_path(file_path)
     if not path:
         return SendResult(success=False, error='The file is not available for delivery.')
+    deadline = min(deadline or time.monotonic() + FILE_SECONDS, time.monotonic() + FILE_SECONDS)
     try:
         with open(path, 'rb') as source:
             content = source.read(PHOTO_LIMIT + 1)
         if not 0 < len(content) <= PHOTO_LIMIT:
             return SendResult(success=False, error='Coconut sends files of between 1 byte and 4 MB.')
-        answer = await request('/v1/gateway/files', dict(home=home, chat_id=str(chat_id),
+        payload = dict(home=home, chat_id=str(chat_id),
             filename=os.path.basename(file_name or path), content_base64=base64.b64encode(content).decode(),
-            caption=caption, message_id=OUTSIDE + str(uuid.uuid4())))
-        if isinstance(answer, dict) and answer.get('message_id'):
-            return SendResult(success=True, message_id=answer['message_id'])
+            caption=caption, message_id=OUTSIDE + str(uuid.uuid4()))
+        for _ in range(2):
+            remaining = deadline - time.monotonic()
+            if remaining <= 5:
+                break
+            # The service stops before this request expires. Retries resume its pieces under the same message ID.
+            payload['budget_seconds'] = min(40, remaining - 5)
+            try:
+                answer = await request('/v1/gateway/files', payload, remaining)
+                if isinstance(answer, dict) and answer.get('message_id'):
+                    return SendResult(success=True, message_id=answer['message_id'])
+            except HTTPError as error:
+                status = error.code
+                error.close()
+                if status < 500:
+                    break
+            except (OSError, TimeoutError):
+                continue
     except Exception as error:
         LOG.warning('Coconut: a team file delivery failed (%s).', type(error).__name__)
     return SendResult(success=False, error='Coconut could not deliver the file to this team chat.')
@@ -140,6 +159,7 @@ async def send_standalone(pconfig, chat_id, message, *, thread_id=None, media_fi
     already as a routine task in the chat, by the job ID of the delivery (gateway_chat.py). This call has no job ID,
     so there the chat could show a run two times."""
     try:
+        file_deadline = time.monotonic() + FILE_SECONDS
         text = str(message or '')
         if not text.strip() and not media_files:
             return {'error': 'Coconut sends no empty message into a team chat.'}
@@ -149,8 +169,8 @@ async def send_standalone(pconfig, chat_id, message, *, thread_id=None, media_fi
         home = os.path.realpath(get_hermes_home())
         message_id = OUTSIDE + str(uuid.uuid4())
 
-        async def request(route, payload):
-            return await asyncio.to_thread(bridge.request, route, payload, STANDALONE_SECONDS)
+        async def request(route, payload, timeout=STANDALONE_SECONDS):
+            return await asyncio.to_thread(bridge.request, route, payload, timeout)
         answer, _ = (await send_tries(request, home, str(chat_id), dict(kind='send', message_id=message_id, text=text))
                      if text.strip() else ({'recorded': True}, 0))
         if isinstance(answer, SendResult):
@@ -165,7 +185,7 @@ async def send_standalone(pconfig, chat_id, message, *, thread_id=None, media_fi
         warnings = []
         delivered = 0
         for path, _ in media_files or []:
-            result = await send_file(request, home, chat_id, path)
+            result = await send_file(request, home, chat_id, path, deadline=file_deadline)
             if result.success:
                 delivered += 1
             else:

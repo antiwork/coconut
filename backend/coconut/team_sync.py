@@ -25,7 +25,7 @@ import time
 from . import team_keys
 from .team_helper import TeamFormatError, TeamHelperError, TeamHelperMissing
 from .team_keys import TeamKeysError
-from .team_relay import TeamRelayError
+from .team_relay import TIMEOUT_SECONDS, TeamRelayError
 from .team_store import (ACTIVE, BOT_DIRECTS_EVENT, DIRECTS_EVENT, DROPPED, GONE, JOINING, MESSAGES_EVENT, PENDING,
                          REFUSED, REMOVED, SKIPPED, TYPING_EVENT, direct_fields, direct_typing_fields,
                          reaction_box_fields, read_entry)
@@ -619,7 +619,8 @@ class TeamSync:
         self._team_write(room, profile['entry'], True, self._team_member_payload(profile))
 
     def _team_write(self, room: dict, entry_id: str, kept: bool, fields: dict, tries: int = 1,
-                    direct: dict | None = None, epoch: int | None = None, reaction: dict | None = None) -> None:
+                    direct: dict | None = None, epoch: int | None = None, reaction: dict | None = None,
+                    deadline: float | None = None) -> None:
         """Seal an entry of this Mac, write it to the relay, and put it into the store.
 
         A write with an entry ID that the store has replaces that entry, with the next `rev`. The caller holds the
@@ -638,6 +639,9 @@ class TeamSync:
             existing = self.team_store.entry(room['room'], entry_id)
         payload = encode_payload(fields, (existing['rev'] if existing else 0) + 1, utc_now())
         body = self.team_helper.seal(room['room'], entry_id, epoch, key, secrets['member_key'], payload)
+        if deadline is not None and time.monotonic() + TIMEOUT_SECONDS > deadline:
+            from .service_base import ServiceError
+            raise ServiceError(503, 'The file delivery needs more time. Try again.')
         try:
             position = self.team_relay.write(room['relay'], room['room'], secrets['token'], entry_id, kept, body, tries=tries)
         except TeamRelayError as error:

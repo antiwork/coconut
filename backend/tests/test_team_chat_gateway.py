@@ -18,6 +18,7 @@ import threading
 import time
 import unittest
 from unittest import mock
+from urllib.error import HTTPError
 
 import test_gateway_adapter
 from coconut.server import APIServer
@@ -722,6 +723,8 @@ class TeamAdapterTests(TeamTurnMacs, unittest.TestCase):
                          ('report.pdf', 'application/pdf', len(content)))
         received = self.first.team_file_content(self.room, rows[0]['id'], attachment['id'])
         self.assertEqual(received.content, content)
+        with mock.patch.object(team, 'FILE_SECONDS', 6):
+            self.assertFalse(self.complete(self.adapter.send_document(chat, str(file))).success)
         self.assertFalse(self.complete(self.adapter.send_document(chat, str(file) + '.missing')).success)
         with mock.patch.object(self.adapter, '_home', str(self.home / 'another-profile')):
             self.assertFalse(self.complete(self.adapter.send_document(chat, str(file))).success)
@@ -966,6 +969,32 @@ class StandaloneSenderTests(DirectTurnMacs, unittest.TestCase):
         message = self.call('GET', f'/v1/team/rooms/{self.room}/messages', {}, service=self.first)['messages'][0]
         attachment, = message['files']
         self.assertEqual(self.first.team_file_content(self.room, message['id'], attachment['id']).content, file.read_bytes())
+
+    def test_a_lost_file_receipt_retries_with_one_id_and_adds_no_second_copy(self):
+        file = Path(self.temp.name) / 'report.pdf'
+        file.write_bytes(b'%PDF-1.4\nThe report.')
+        calls, real = [], team.Bridge.request
+
+        def request(bridge, route, payload, timeout):
+            answer = real(bridge, route, payload, timeout)
+            if route == '/v1/gateway/files':
+                calls.append((dict(payload), timeout))
+                if len(calls) == 1:
+                    raise TimeoutError('The file arrived, but its receipt did not.')
+            return answer
+        with mock.patch.object(team.Bridge, 'request', autospec=True, side_effect=request):
+            self.sent(self.deliver(chat_id(self.room, self.bot['id']), text='', media_files=[(str(file), False)]))
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(calls[0][0]['message_id'], calls[1][0]['message_id'])
+        self.assertGreater(calls[0][1], 15)
+        self.assertLessEqual(calls[0][1], team.FILE_SECONDS)
+        self.sync()
+        self.assertEqual(self.of_chat(), [('Reporter', 'report.pdf')])
+        with self.assertRaises(HTTPError) as refused:
+            real(team.Bridge(self.only.gateway_bridge.address_file), '/v1/gateway/files',
+                 dict(calls[0][0], filename='another.pdf'), team.FILE_SECONDS)
+        self.assertEqual(refused.exception.code, 409)
+        refused.exception.close()
 
     def test_a_failed_file_is_a_failed_delivery_even_when_its_text_arrives(self):
         result = self.deliver(chat_id(self.room, self.bot['id']), media_files=[('/no-such-report.pdf', False)])
