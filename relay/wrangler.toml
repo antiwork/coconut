@@ -9,6 +9,11 @@ workers_dev = true
 APP_BUNDLE_ID = "com.gumroad.coconut"
 APPLE_TEAM_ID = "66LJACJ2U7"
 ALLOW_DEVELOPMENT_ATTESTATION = "true"
+# The Personal budget (src/budget.js). It stays off until the secret ANTHROPIC_API_KEY is set.
+BUDGET_LIMIT_USD = "200"
+BUDGET_MODEL = "claude-opus-5-5"
+# Anthropic's list prices of BUDGET_MODEL in dollars per million tokens. web_search is millionths of a dollar per search ($10 per 1,000).
+BUDGET_PRICES = '{"input":4,"output":20,"cache_read":0.2,"cache_write_5m":5,"cache_write_1h":8,"web_search":10000}'
 
 [[durable_objects.bindings]]
 name = "DEVICES"
@@ -41,6 +46,14 @@ class_name = "Room"
 [[migrations]]
 tag = "v4"
 new_sqlite_classes = ["Room"]
+
+[[durable_objects.bindings]]
+name = "BUDGETS"
+class_name = "BudgetAccount"
+
+[[migrations]]
+tag = "v4"
+new_sqlite_classes = ["BudgetAccount"]
 
 [[ratelimits]]
 name = "REGISTRATION_LIMIT"

@@ -72,6 +72,9 @@ def worker(request, default_home):
         finally:
             reset_secret_scope(scope)
             reset_hermes_home_override(token)
+    if op.startswith('budget_'):
+        from budget_native import worker as budget
+        return budget(op, request, homes)
     if op.startswith('routine'):
         from native_routines import worker as routines
         return routines(op, request, homes)

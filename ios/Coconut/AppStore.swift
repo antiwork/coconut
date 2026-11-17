@@ -164,6 +164,8 @@ final class AppStore {
     var chatUsage: [String: ChatUsage] = [:]
     @ObservationIgnored private var usageReadAt: Date?
     var provider = ""
+    /// The Antiwork budget of Personal (PersonalBudget.swift). An older Mac sends none.
+    var personalBudget: PersonalBudget?
     var pushConfigured = false
     var pushRegistrationError: String?
     var pushStatus: PushStatus?
@@ -700,6 +702,7 @@ final class AppStore {
         sentPreviewReports = nil
         pushStatus = nil
         pushConfigured = false
+        personalBudget = nil
         PushNotifications.shared.target = nil
         stopPolling()
         cacheTask?.cancel()
@@ -1630,6 +1633,25 @@ final class AppStore {
         let response: Response = try await client.request(path, method: method, body: body, idempotencyKey: requestId, retryTransient: method != "POST")
         guard generation == connectionGeneration, business == businessGeneration else { throw CancellationError() }
         return response
+    }
+
+    /// Sign in to the Antiwork budget of Personal with the identity token of Sign in with Apple, or sign out with nil.
+    /// The Mac exchanges the token at the relay and points Personal's Hermes profile at the budget.
+    func personalBudget(signIn identityToken: String?) async throws {
+        if isDemo {
+            personalBudget = identityToken == nil ? PersonalBudget(signedIn: false, botId: personalBudget?.botId)
+                : PersonalBudget(signedIn: true, botId: personalBudget?.botId, spentUsd: 0, limitUsd: 200, paused: false)
+            return
+        }
+        guard let client else { throw ServiceError.configuration("Connect your Mac to continue.") }
+        let generation = connectionGeneration
+        let body = try identityToken.map { try JSONSerialization.data(withJSONObject: ["identity_token": $0]) }
+        let response: PersonalBudget = try await client.request("settings/personal-budget",
+            method: identityToken == nil ? "DELETE" : "POST", body: body ?? Data("{}".utf8),
+            idempotencyKey: UUID().uuidString, retryTransient: false)
+        guard generation == connectionGeneration else { throw CancellationError() }
+        personalBudget = response
+        cachedState?.personalBudget = response
     }
 
     func githubStatus() async throws -> GitHubConnectionStatus {
@@ -3331,6 +3353,9 @@ final class AppStore {
             assign(\.modelConfigured, snapshot.modelConfigured)
             assign(\.modelCatalog, snapshot.modelCatalog)
             assign(\.pushConfigured, snapshot.pushConfigured ?? false)
+            assign(\.personalBudget, snapshot.personalBudget ?? (isDemo ? PersonalBudget(signedIn: true,
+                botId: snapshot.bots.first { $0.name == "Personal" && $0.chatOf == nil }?.id, month: "2026-11",
+                spentUsd: 41.2, limitUsd: 200, paused: false, resetsAt: "2026-12-01T00:00:00Z") : nil))
             lastSync = Date()
             cachedState = snapshot
             if persist { saveCache(snapshot) }

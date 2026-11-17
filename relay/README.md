@@ -9,6 +9,8 @@ Store these with Wrangler. Use an APNs key restricted to Coconut's bundle ID.
 - `APNS_PRODUCTION_KEY` and `APNS_PRODUCTION_KEY_ID` serve TestFlight and App Store builds.
 - `APNS_DEVELOPMENT_KEY` and `APNS_DEVELOPMENT_KEY_ID` serve development builds.
 
+- `ANTHROPIC_API_KEY` is Antiwork's model key for the Personal budget (`src/budget.js`, `docs/personal-budget.md`). Without it the budget routes answer 503.
+
 The APNs key never enters installation packages or iPhone registration responses.
 
 ## Deploy

@@ -249,6 +249,10 @@ struct ConversationView: View {
                             if activity == nil, let spend = store.chatUsage[botId], spend.total.tokens > 0 {
                                 ChatSpendFooter(usage: spend)
                             }
+                            // The Antiwork budget of Personal, in each chat of Personal, between turns.
+                            if activity == nil, let budget = store.personalBudget, budget.shows(in: bot) {
+                                PersonalBudgetFooter(budget: budget)
+                            }
                             // The row inset and this padding keep 12 points below the last row, and the space of
                             // the notice of the Mac window.
                             Color.clear.frame(height: 1).padding(.bottom, BoardStyle.Space.s + noticeSpace)

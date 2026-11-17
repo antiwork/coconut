@@ -4,6 +4,8 @@ import { handleTunnel } from './tunnel.js';
 export { Tunnel } from './tunnel.js';
 import { handleRendezvous } from './rendezvous.js';
 export { Rendezvous } from './rendezvous.js';
+import { handleBudget } from './budget.js';
+export { BudgetAccount } from './budget.js';
 import { handleRoom } from './room.js';
 export { Room } from './room.js';
 
@@ -16,6 +18,9 @@ export default {
       if (tunnel) return tunnel;
       const rendezvous = await handleRendezvous(request, env);
       if (rendezvous) return rendezvous;
+      // The Personal budget streams model calls, so its routes come before the body cap.
+      const budget = await handleBudget(request, env);
+      if (budget) return budget;
       const room = await handleRoom(request, env);
       if (room) return room;
       // The 24 KB body cap applies to the push routes only.

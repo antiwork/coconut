@@ -137,6 +137,7 @@ from .routine_coordinator import (CHILD_TASKS, NativeRoutines, OPEN_ROUTINE_TASK
                                   RUNNING_ROUTINE_TASKS)
 from .approval_updates import ApprovalUpdates
 from .parallel_work_updates import ParallelWorkUpdates
+from .personal_budget import PersonalBudget
 from .native_fallback_updates import NativeFallbackUpdates
 from .task_cache import SCHEMA as TASK_CHANGES_SCHEMA, TaskCache, TaskStates
 from .history_cache import SCHEMA as MESSAGE_CHANGES_SCHEMA, HistoryCache, HistoryStates
@@ -193,7 +194,7 @@ def marked(field):
     return f"json_type(data,'$.{field}') IN ('object','true')"
 
 
-class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness, WithdrawalCorrections, WorkRecovery, WorkSources, SilentResponses, TrackedWork, WorkStatus, WorkProgress, PullRequestReviews, DecisionInbox, BackgroundProcesses, NativeExecution, NativeRoutines, ApprovalUpdates, ParallelWorkUpdates, ServiceRestart, WorkspaceRecovery, WorktreeRetirement, SessionMaintenance, DatabaseMaintenance, TechnicalLane, HermesSetup, BotProfiles, AgentChats, GatewayChat, Documents, Team, Usage, TurnActivity, MessageQueue):
+class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness, WithdrawalCorrections, WorkRecovery, WorkSources, SilentResponses, TrackedWork, WorkStatus, WorkProgress, PullRequestReviews, DecisionInbox, BackgroundProcesses, NativeExecution, NativeRoutines, ApprovalUpdates, ParallelWorkUpdates, PersonalBudget, ServiceRestart, WorkspaceRecovery, WorktreeRetirement, SessionMaintenance, DatabaseMaintenance, TechnicalLane, HermesSetup, BotProfiles, AgentChats, GatewayChat, Documents, Team, Usage, TurnActivity, MessageQueue):
     ACTIVE = {'queued', 'working', 'scheduled', 'needs_you', 'paused', 'waiting'}
     TABLES = ('bots', 'tasks', 'messages', 'decisions', 'artifacts', 'routines')
     BOT_CHANGE_LIMIT = 8
@@ -281,6 +282,7 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
         ''')
         migrate_device_peers(self.db)
         self._init_profiles(hermes_home)
+        self._init_personal_budget()
         self.db.execute('CREATE INDEX IF NOT EXISTS native_receipts_pending_wait ON native_receipts (id) WHERE ' + PENDING_COMPLETIONS)
         for field in MARKS:
             self.db.execute(f'CREATE INDEX IF NOT EXISTS tasks{field} ON tasks (id) WHERE ' + marked(field))
@@ -1042,6 +1044,7 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
                         task = self._get('tasks', decision['task_id'])
                         decision.update(self.decision_origin(task))
                 state.update(cursor=self._cursor(), server_time=now(), provider=getattr(self.provider, 'name', 'unknown'), push_configured=self.push.configured)
+                state['personal_budget'] = self.personal_budget_state()
                 if catalog is not None:
                     default = catalog.get('default', {})
                     state.update(model_catalog=catalog, model=default.get('model') or '', base_url=default.get('base_url') or '', model_configured=bool(catalog.get('default_configured', False)))
@@ -1148,7 +1151,13 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
             return self.mutate_approval_default(data, key, fingerprint)
         if method == 'POST' and path == '/v1/settings/mcp':
             return self.mutate_mcp(data, key, fingerprint)
+        if method in ('POST', 'DELETE') and path == '/v1/settings/personal-budget':
+            # Signing in again gives a new token of the same account, so a retry needs no saved response.
+            return self.mutate_personal_budget(method, data)
         if method == 'PUT' and path == '/v1/settings/model' and hasattr(self.provider, 'set_model_default'):
+            if self.personal_budget_holds_default_model():
+                from .personal_budget import HOLDS_MODEL
+                raise ServiceError(409, HOLDS_MODEL)
             return self._mutate_model_default(data, key, fingerprint)
         parts = path.strip('/').split('/')
         if method == 'PATCH' and len(parts) == 3 and parts[:2] == ['v1', 'bots'] and isinstance(data, dict):
@@ -2923,6 +2932,8 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
         self.source_poller.start()
         self._start_hermes_entries()
         self._start_gateway_supervisor()
+        if self.personal_budget_state().get('signed_in'):
+            self._start_budget_poller()
         self._start_team()
         self.push.start()
 

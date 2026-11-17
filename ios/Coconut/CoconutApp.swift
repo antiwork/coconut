@@ -468,6 +468,9 @@ extension CoconutHome {
         case "agents": show(.home, [AgentListRoute()])
         case "cards": show(.todos, [HomeDestination.inbox])
         case "chat": show(.home, [ConversationRoute(botId: agent)])
+        // Personal, with the line of its Antiwork budget (PersonalBudget.swift).
+        case "chat-personal":
+            show(.home, [ConversationRoute(botId: store.bots.first { $0.name == "Personal" && $0.chatOf == nil }?.id ?? agent)])
         case "coconut": show(.home, [ConversationRoute(botId: store.bots.coconutChat?.id ?? agent)])
         case "archived": show(.home, [ArchivedAgentsRoute()])
         case "team-chat": show(.home, [TeamChatRoute(chat: TeamChatKey(room: room))])

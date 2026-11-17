@@ -54,6 +54,7 @@
 		219950E3524D97CEC9354790 /* Business.swift in Sources */ = {isa = PBXBuildFile; fileRef = 69409F2D054CB7924336C9A0 /* Business.swift */; };
 		2203E9B6441CCE3DE1D82FA9 /* BotExchangeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 84292AC71716E6E3438006BC /* BotExchangeView.swift */; };
 		2228089C1C5AAEF822FC8B84 /* MessageReplay.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7C477A5B7A98B02989D56026 /* MessageReplay.swift */; };
+		22923541B529F1685A2056E9 /* PersonalBudget.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A8F53E58407F24E776A975C /* PersonalBudget.swift */; };
 		23D58AF72A5F6729FA65344B /* TranscriptPresentation.swift in Sources */ = {isa = PBXBuildFile; fileRef = C77D5CDAA72E7F4867D4E5DA /* TranscriptPresentation.swift */; };
 		25DD44B19022CD519B25E327 /* TeamChatView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9DE255154D735C48CAE2774B /* TeamChatView.swift */; };
 		26418D4226589A02C99AF807 /* PushNotifications.swift in Sources */ = {isa = PBXBuildFile; fileRef = 314EA7AAB131B25EAEEE8971 /* PushNotifications.swift */; };
@@ -169,6 +170,7 @@
 		803ECED2ACDFD7FE3B416D95 /* FileFit.swift in Sources */ = {isa = PBXBuildFile; fileRef = 45AD5F38FCEB559AD2F8D09E /* FileFit.swift */; };
 		8301BB546514BED2D50D486A /* Usage.swift in Sources */ = {isa = PBXBuildFile; fileRef = 733045D7C4C7256AF9744660 /* Usage.swift */; };
 		8355B52BB9772B22B337E236 /* ParallelWorkSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 700B733AA852AB61242F7E50 /* ParallelWorkSettingsView.swift */; };
+		83A183384E4CA5BE5148A610 /* PersonalBudget.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A8F53E58407F24E776A975C /* PersonalBudget.swift */; };
 		856A34243B6ABBB67DB5E059 /* Library.swift in Sources */ = {isa = PBXBuildFile; fileRef = 314F7F34480A83406A676837 /* Library.swift */; };
 		86259EBC5A39AEE162388FD2 /* NotificationKeys.swift in Sources */ = {isa = PBXBuildFile; fileRef = 66C75106310254DAF919E136 /* NotificationKeys.swift */; };
 		87B2987ECFCB328F38AB8F60 /* CoconutShare.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = 192C514F4386030356307039 /* CoconutShare.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
@@ -360,6 +362,7 @@
 /* Begin PBXFileReference section */
 		02C28DCD356AB0A20D629F25 /* MessageReplyGesture.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MessageReplyGesture.swift; sourceTree = "<group>"; };
 		072A868C723A74C8AFADA70B /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
+		0A8F53E58407F24E776A975C /* PersonalBudget.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PersonalBudget.swift; sourceTree = "<group>"; };
 		0C177466512540E1010ADAD1 /* TranscriptWindow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TranscriptWindow.swift; sourceTree = "<group>"; };
 		0DB621874B1AF6F5054A82F5 /* TeamFiles.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TeamFiles.swift; sourceTree = "<group>"; };
 		0DBFEB0208E202DBB84B0F8A /* MacMainWindow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MacMainWindow.swift; sourceTree = "<group>"; };
@@ -685,6 +688,7 @@
 				F148539DFD85BF3879FA031A /* PairingSetup.swift */,
 				700B733AA852AB61242F7E50 /* ParallelWorkSettingsView.swift */,
 				AA3A363D562BF930B8F9A826 /* PeopleView.swift */,
+				0A8F53E58407F24E776A975C /* PersonalBudget.swift */,
 				E6BADED5520F6428F59143DF /* Platform.swift */,
 				35830E0B78D2781DFB12D5AE /* PlatformColor.swift */,
 				0F7D0F8D88BFF0F00891F0D9 /* PreviewStateFixture.swift */,
@@ -970,9 +974,9 @@
 			targets = (
 				7F2F5A68FD83C168A0C2DF7F /* Coconut */,
 				7787C3C6ED299383A1BC9BDE /* CoconutMac */,
-				EA4F49BE2A097AF59701F398 /* CoconutMacShare */,
 				7BCB11B2D6BED2E788C53C6C /* CoconutNotificationService */,
 				631C8CF061CFAB8F50866E3E /* CoconutShare */,
+				EA4F49BE2A097AF59701F398 /* CoconutMacShare */,
 			);
 		};
 /* End PBXProject section */
@@ -1119,6 +1123,7 @@
 				0C38F4A2D993E1604FB4DA70 /* PairingSetup.swift in Sources */,
 				73119561E88C6E6447E3CEE7 /* ParallelWorkSettingsView.swift in Sources */,
 				F40C913893E8346DE9F02C31 /* PeopleView.swift in Sources */,
+				22923541B529F1685A2056E9 /* PersonalBudget.swift in Sources */,
 				525C5E505B6CA9CF22C241C1 /* Platform.swift in Sources */,
 				2EE216523CD5878A802888AE /* PlatformColor.swift in Sources */,
 				8AA26EBBA0C273AB52A0AE74 /* PreviewDiagnostics.swift in Sources */,
@@ -1242,6 +1247,7 @@
 				93D8D55FE5A94348416B8153 /* PairingSetup.swift in Sources */,
 				8355B52BB9772B22B337E236 /* ParallelWorkSettingsView.swift in Sources */,
 				0FBE71F2917658FC7E2EE812 /* PeopleView.swift in Sources */,
+				83A183384E4CA5BE5148A610 /* PersonalBudget.swift in Sources */,
 				EF509B0647E0D4B066213085 /* Platform.swift in Sources */,
 				8E22224644D4CC5DFFB66041 /* PlatformColor.swift in Sources */,
 				801E7451AAE12BBA468F080E /* PreviewDiagnostics.swift in Sources */,

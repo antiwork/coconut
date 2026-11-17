@@ -580,6 +580,7 @@ struct StateSnapshot: Codable, Sendable {
     var queues: [String: AgentQueue]? = nil
     var mcpServers: [MCPServer]? = nil
     var pushConfigured: Bool? = nil
+    var personalBudget: PersonalBudget? = nil
 }
 
 struct ServerEvent: Decodable, Sendable {
