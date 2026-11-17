@@ -485,7 +485,9 @@ class HermesModelCatalog:
                                     input=serialized, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
                                     env=environment, cwd=self.private_home,
                                     # A turn reads its bot's profile first. Under load, this read can take seconds.
-                                    timeout=30 if operation in ('get', 'native', 'read_profiles', 'follow_default') else 5)
+                                    # A save of a model starts the same worker, so it gets the same time: a busy Mac
+                                    # must not refuse the model that the person chose.
+                                    timeout=5 if operation == 'defaults' else 30)
             # The snapshot combines settings and routines, each with a separate response budget.
             response_limit = 8_000_000 if operation == 'native' and payload.get('native_operation') == 'snapshot_read' else 4_000_000
             if result.returncode or len(result.stdout) > response_limit:
