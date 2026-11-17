@@ -11,6 +11,8 @@ enum MacSelection: Hashable {
     case agents
     /// The teams, their people and their notice boards.
     case people
+    /// The daily, monthly and yearly figures of the business.
+    case reports
     /// The person and this device.
     case profile
     case bot(String)
@@ -231,6 +233,8 @@ struct MacMainWindow: View {
             placeStack { AgentsView(create: createAgent).navigationTitle("Agents") }
         case .people:
             placeStack { PeopleView(openTeamChat: { selection = .team($0) }).navigationTitle("People") }
+        case .reports:
+            placeStack { BusinessReportsView().navigationTitle("Reports") }
         case .profile:
             placeStack { ProfileView().navigationTitle("Profile") }
         case .document(let documentId):
@@ -426,6 +430,9 @@ struct MacSidebar: View {
             MacSidebarLabel(title: "Agents", symbol: "square.stack.3d.up")
                 .tag(MacSelection.agents)
                 .accessibilityIdentifier("sidebar-agents")
+            MacSidebarLabel(title: "Reports", symbol: "chart.bar.doc.horizontal")
+                .tag(MacSelection.reports)
+                .accessibilityIdentifier("sidebar-reports")
             MacSidebarLabel(title: "People", symbol: "person.2")
                 .badge(store.shownTeamRooms.reduce(0) { $0 + $1.unseenNotices })
                 .tag(MacSelection.people)

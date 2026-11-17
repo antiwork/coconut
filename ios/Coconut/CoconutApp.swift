@@ -49,7 +49,7 @@ struct CoconutApp: App {
 }
 
 /// The five places of the app, in the order of the tab bar. The Mac sidebar has the same five.
-enum HomeTab: Hashable { case home, chats, agents, people, profile }
+enum HomeTab: Hashable { case home, chats, agents, reports, people, profile }
 
 struct CoconutHome: View {
     @Environment(AppStore.self) private var store
@@ -68,6 +68,7 @@ struct CoconutHome: View {
     @State private var cardsShown = false
     @State private var agentsPath = NavigationPath()
     @State private var peoplePath = NavigationPath()
+    @State private var reportsPath = NavigationPath()
     @State private var profilePath = NavigationPath()
     @State private var keyboardVisible = false
     @State private var conversationFooters: [HomeTab: Bool] = [:]
@@ -85,6 +86,7 @@ struct CoconutHome: View {
         case .chats: chatsPath
         case .agents: agentsPath
         case .people: peoplePath
+        case .reports: reportsPath
         case .profile: profilePath
         }
         return keyboardVisible || (!activePath.isEmpty && conversationCanMinimize == nil && !cardsOnTop) ? .hidden : .automatic
@@ -115,6 +117,13 @@ struct CoconutHome: View {
                     Image(systemName: "square.stack.3d.up.fill")
                 }
             }.accessibilityIdentifier("home-agents")
+            Tab(value: HomeTab.reports) {
+                root(tab: .reports, path: $reportsPath)
+            } label: {
+                Label { Text("Reports") } icon: {
+                    Image(systemName: "chart.bar.doc.horizontal.fill")
+                }
+            }.accessibilityIdentifier("home-reports")
             Tab(value: HomeTab.people) {
                 root(tab: .people, path: $peoplePath)
             } label: {
@@ -182,6 +191,7 @@ struct CoconutHome: View {
                 switch tab {
                 case .home: HomeView { open($0) }
                 case .chats: HomeLaunchView()
+                case .reports: BusinessReportsView()
                 case .people: PeopleView()
                 case .profile: ProfileView()
                 case .agents: AgentsView()
