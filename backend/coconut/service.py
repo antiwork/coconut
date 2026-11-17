@@ -612,6 +612,14 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
         if table == 'tasks':
             # The messages that wait for the next turn of the task (message_queue.py).
             self._show_queue(obj)
+        if table == 'messages':
+            # A background-process notice of Hermes shows as its own row (process_notices.py). An edit can end it.
+            from .process_notices import notice
+            parts = notice(obj.get('text')) if obj.get('role') == 'assistant' and obj.get('kind') == 'text' else None
+            if parts is None:
+                obj.pop('process_notice', None)
+            else:
+                obj['process_notice'] = parts
         if table == 'decisions' and obj.get('status') == 'pending':
             # The time of the newest revision of a card (decision_sources.source_change). Each write that raises the
             # revision sets it: a revision by the bot, a check or the person, an Undo, a restored card.
