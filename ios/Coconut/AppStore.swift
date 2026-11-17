@@ -194,6 +194,11 @@ final class AppStore {
     @ObservationIgnored var tunnelSocketFactory: TunnelSocketFactory = URLSessionTunnelSocket.factory
     @ObservationIgnored private var pollTask: Task<Void, Never>?
     @ObservationIgnored private var foreground = false
+    /// True after the first update that the Mac sent since the app came to the front. A notification that came while
+    /// the app was in the back is in that update, but the saved state of a start can be older than it.
+    @ObservationIgnored private var syncedInFront = false
+    /// The same for the list of the teams, which loads apart from the updates.
+    @ObservationIgnored private var teamSyncedInFront = false
     @ObservationIgnored private var cursor = 0
     @ObservationIgnored private var connectionGeneration = UUID()
     #if DEBUG && targetEnvironment(simulator)
@@ -262,6 +267,48 @@ final class AppStore {
 
     func reconcileBadge() {
         if let count = reconciledBadgeCount { setBadge(count) }
+        #if os(iOS)
+        removeReadNotifications()
+        #endif
+    }
+
+    #if os(iOS)
+    /// Removes the notifications that only repeat what the person read, as Slack does: a read on the Mac or on this
+    /// iPhone clears them from Notification Center and the lock screen. Before, each one stayed until the person
+    /// swiped it away. Only a state that the Mac sent since the app came to the front judges them (syncedInFront), and
+    /// only a list of the teams from that time judges the chats of a team.
+    private func removeReadNotifications() {
+        guard !isDemo, syncedInFront else { return }
+        let teams = teamSyncedInFront
+        Task {
+            await PushNotifications.shared.removeDelivered { target in
+                (teams || target.chat == nil) && self.notificationIsRead(target)
+            }
+        }
+    }
+    #endif
+
+    /// True when a notification only repeats what the person read: a reply or the end of a turn in an agent chat
+    /// without unread replies, a message of a chat of a team without unread messages, or a card that waits no more.
+    /// False when the app cannot tell: a notice, a group of several chats, or a chat or a card that the app does not have.
+    func notificationIsRead(_ target: NotificationTarget) -> Bool {
+        guard target.noticeRoom == nil else { return false }
+        if let chat = target.chat { return teamUnread(chat) == 0 }
+        guard !target.group else { return false }
+        if let decision = target.decisionId {
+            return decisions.first { $0.id == decision }.map { !$0.isPending } ?? false
+        }
+        return bots.first { $0.id == target.botId }?.unreadCount == 0
+    }
+
+    /// The unread messages of a chat of a team, from the list of the teams. Nil while the list has no such chat, and for
+    /// a Mac that sends no count.
+    func teamUnread(_ chat: TeamChatKey) -> Int? {
+        guard let room = team?.rooms.first(where: { $0.room == chat.room }) else { return nil }
+        if let member = chat.member { return room.directs?.first { $0.member == member }?.unread }
+        if let bot = chat.bot { return room.botDirects?.first { $0.bot == bot }?.unread }
+        if let id = chat.chat { return room.chats?.first { $0.id == id }?.unread }
+        return room.unread
     }
     var activeTasks: [AgentTask] { tasks.filter(\.isActive) }
     func isBotActive(_ bot: Bot) -> Bool {
@@ -483,6 +530,8 @@ final class AppStore {
     func setForeground(_ active: Bool) {
         guard active != foreground else { return }
         foreground = active
+        syncedInFront = false
+        teamSyncedInFront = false
         guard !isDemo else { return }
         if active {
             Task { await PushNotifications.shared.refresh(); await syncPushRegistration() }
@@ -2047,6 +2096,12 @@ final class AppStore {
         let before = team
         optimisticUpdates.receive { assign(\.team, response) }
         teamListLoaded(before, response)
+        if !teamSyncedInFront {
+            teamSyncedInFront = true
+            #if os(iOS)
+            removeReadNotifications()
+            #endif
+        }
         assign(\.teamLoadError, nil)
         teamListVersion += 1
         // A room that left the list takes its chats with it, also unsent messages that a restart brought back. So does
@@ -3413,6 +3468,12 @@ final class AppStore {
         let connecting = connection != .connected
         assign(\.connection, .connected)
         assign(\.syncIssue, nil)
+        if !syncedInFront {
+            syncedInFront = true
+            #if os(iOS)
+            removeReadNotifications()
+            #endif
+        }
         // The Chats list shows the teams, so the app has them as soon as it reaches the Mac.
         if connecting { Task { await loadTeam() } }
     }

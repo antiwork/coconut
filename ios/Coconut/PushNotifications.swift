@@ -528,6 +528,7 @@ final class PushNotifications {
     var authorization: UNAuthorizationStatus = .notDetermined
     var badgesAllowed = false
     @ObservationIgnored private var badgeTask: Task<Void, Never>?
+    @ObservationIgnored private var removalTask: Task<Void, Never>?
     var deviceToken: String?
     var error: String?
     var notificationLevel = NotificationLevel.load() {
@@ -606,6 +607,26 @@ final class PushNotifications {
             #endif
         }
     }
+
+    #if os(iOS)
+    /// Removes the delivered notifications of Coconut that `isRead` names (AppStore.notificationIsRead). One call at a
+    /// time, so a removal never runs on a list that an earlier one changed.
+    func removeDelivered(where isRead: @escaping (NotificationTarget) -> Bool) async {
+        let previous = removalTask
+        let task = Task {
+            await previous?.value
+            let center = UNUserNotificationCenter.current()
+            let identifiers = await center.deliveredNotifications().compactMap { notification -> String? in
+                guard let target = NotificationTarget(userInfo: notification.request.content.userInfo),
+                      isRead(target) else { return nil }
+                return notification.request.identifier
+            }
+            if !identifiers.isEmpty { center.removeDeliveredNotifications(withIdentifiers: identifiers) }
+        }
+        removalTask = task
+        await task.value
+    }
+    #endif
 
     func registered(_ token: Data) {
         let value = token.map { String(format: "%02x", $0) }.joined()
