@@ -51,6 +51,14 @@ enum AgentChats {
         return result
     }
 
+    /// Each unread chat stands alone, including a further chat whose agent has no unread messages.
+    static func unread(in bots: [Bot], latest: [String: Date]) -> [Bot] {
+        let active = Set(bots.filter { !$0.archived && !$0.isChat }.map(\.id))
+        func activity(_ bot: Bot) -> Date { latest[bot.id] ?? bot.createdAt.apiDate ?? .distantPast }
+        return bots.filter { !$0.archived && $0.unreadCount > 0 && active.contains($0.agentId) }
+            .sorted { (activity($0), $0.id) > (activity($1), $1.id) }
+    }
+
     /// The agent of a bot ID: the ID itself for an agent or an unknown bot.
     static func agentId(of botId: String, in bots: [Bot]) -> String {
         bots.first { $0.id == botId }?.agentId ?? botId

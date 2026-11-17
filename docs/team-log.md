@@ -1047,10 +1047,12 @@ An agent can send a file to the Team chat or a named chat through its Hermes gat
 The team-only service checks the agent's home and sends the bytes through the same file transport as a person's Mac.
 The same size and space limits apply. Direct chats do not take files.
 
-A standalone delivery shares a 50-second budget across its text, files, and retries.
+A standalone file delivery shares a 25-second budget across its text, files, and retries.
+Hermes waits only 30 seconds when its standalone sender runs in a fallback thread.
 The service reserves time for each relay call. A retry keeps its message ID and file ID.
 A retry adds no second file card.
-A live file stays bound to its turn and request. A stopped or removed request cannot publish the file message.
+A live file stays bound to its turn and request. Each live file links to its request.
+Before each write, the service checks the active turn. A stop does not recall a write already sent to the relay.
 Before the file message, the service reads new room entries to check for a delete or a member who left.
 A file-only answer ends the turn without a failure notice.
 

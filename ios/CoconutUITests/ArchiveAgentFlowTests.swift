@@ -35,9 +35,17 @@ final class ArchiveAgentFlowTests: XCTestCase {
         XCTAssertFalse(app.buttons["team-chat-\(room)-notices"].exists)
         XCTAssertFalse(app.buttons["team-chat-\(room)-design"].exists)
         XCTAssertFalse(app.buttons["bot-conversation-00000000-0000-4000-8000-000000000001"].exists)
+        let unreadChild = app.buttons["bot-conversation-unread-child"]
+        XCTAssertTrue(unreadChild.exists)
+        XCTAssertTrue(app.buttons["bot-conversation-coconut-child"].exists)
+        XCTAssertFalse(app.buttons["bot-conversation-read-child"].exists)
         let starred = app.buttons["pinned-bot-00000000-0000-4000-8000-000000000002"]
         XCTAssertTrue(starred.exists)
         capture("Unread includes starred chats and excludes muted chats")
+        unreadChild.tap()
+        XCTAssertTrue(app.navigationBars.buttons.element(boundBy: 0).waitForExistence(timeout: 5))
+        app.navigationBars.buttons.element(boundBy: 0).tap()
+        XCTAssertTrue(unreadChild.waitForNonExistence(timeout: 5))
         starred.tap()
         XCTAssertTrue(app.navigationBars.buttons.element(boundBy: 0).waitForExistence(timeout: 5))
         app.navigationBars.buttons.element(boundBy: 0).tap()

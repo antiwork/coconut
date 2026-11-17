@@ -741,7 +741,7 @@ class TeamAdapterTests(TeamTurnMacs, unittest.TestCase):
         async def runner(event):
             results.append(await self.adapter.send_document(event.source.chat_id, str(file)))
         self.connect(runner)
-        self.send('@Reporter send the answer', mentions=[self.mention])
+        trigger = self.send('@Reporter send the answer', mentions=[self.mention])
         self.sync()
         self.run_turns()
         self.assertEqual(len(results), 1)
@@ -749,6 +749,7 @@ class TeamAdapterTests(TeamTurnMacs, unittest.TestCase):
         self.assertEqual([text for writer, text, _ in self.chat() if writer == 'Reporter'], ['answer.pdf'])
         message = self.call('GET', f'/v1/team/rooms/{self.room}/messages', service=self.first)['messages'][0]
         self.assertEqual(results[0].message_id, message['id'])
+        self.assertEqual(message['reply_to'], trigger['id'])
         self.assertEqual(self.first.team_file_content(self.room, message['id'], message['files'][0]['id']).content,
                          file.read_bytes())
 
@@ -1144,6 +1145,8 @@ class StandaloneSenderTests(DirectTurnMacs, unittest.TestCase):
         self.assertEqual(calls[0][0]['message_id'], calls[1][0]['message_id'])
         self.assertGreater(calls[0][1], 15)
         self.assertLessEqual(calls[0][1], team.FILE_SECONDS)
+        self.assertLessEqual(calls[0][1], team.STANDALONE_FILE_SECONDS)
+        self.assertLessEqual(calls[0][0]['budget_seconds'], team.STANDALONE_FILE_SECONDS - 5)
         self.sync()
         self.assertEqual(self.of_chat(named), [('Reporter', 'report.pdf')])
         message = self.call('GET', f'/v1/team/rooms/{self.room}/messages', {'chat': named},

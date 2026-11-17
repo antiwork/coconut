@@ -73,6 +73,8 @@ STANDALONE_SECONDS = 15
 CRON_FALLBACK_SECONDS = 120
 # A standalone cron send has a 60-second outer limit. Files share this smaller budget, including retries.
 FILE_SECONDS = 50
+# Hermes waits only 30 seconds when its standalone sender runs in a fallback thread.
+STANDALONE_FILE_SECONDS = 25
 
 
 def missing() -> str | None:
@@ -163,7 +165,7 @@ async def send_standalone(pconfig, chat_id, message, *, thread_id=None, media_fi
     already as a routine task in the chat, by the job ID of the delivery (gateway_chat.py). This call has no job ID,
     so there the chat could show a run two times."""
     try:
-        file_deadline = time.monotonic() + FILE_SECONDS
+        file_deadline = time.monotonic() + min(FILE_SECONDS, STANDALONE_FILE_SECONDS)
         text = str(message or '')
         if not text.strip() and not media_files:
             return {'error': 'Coconut sends no empty message into a team chat.'}

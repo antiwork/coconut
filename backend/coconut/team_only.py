@@ -410,7 +410,8 @@ class TeamOnlyService(TeamTurns, Documents, Team):
         file = dict(name=name, content=data.get('content_base64'),
                     type=mimetypes.guess_type(name)[0] if isinstance(name, str) else None)
         result = self._team_say(room, bot_id, trigger, 0, text, request=turn_id is not None, chat=named, alert=alert,
-                                file=file, deadline=deadline, request_trigger=trigger_request, check=check)
+                                file=file, deadline=deadline, request_trigger=trigger_request, check=check,
+                                reply_to=trigger_request)
         if result != SAID:
             raise ServiceError(503 if result == SAY_FAILED else 409, 'Coconut could not send the file to this team chat.')
         if turn_id is not None:

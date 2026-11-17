@@ -28,7 +28,10 @@ struct HomeLaunchView: View {
         let filter = ChatFilter.effective(store.chatFilter, rooms: rooms)
         // The tiles of the pinned agents come first. Then the rows (ChatList.rows): the pinned chats of the teams, each
         // with the star mark, then the other rows newest activity first.
-        let conversations = ChatList.rows(filter, bots: activeBots.filter { !$0.pinned }, latest: latest,
+        let rowBots = filter == .unread
+            ? AgentChats.unread(in: store.bots, latest: ownLatest).filter { !$0.coconut && ($0.isChat || !$0.pinned) }
+            : activeBots.filter { !$0.pinned }
+        let conversations = ChatList.rows(filter, bots: rowBots, latest: filter == .unread ? ownLatest : latest,
                                           rooms: rooms, local: store.newestLocalMessages)
         let pinned = filter.showsPinned ? pinnedBots.filter { filter != .unread || $0.unreadCount > 0 } : []
         let todos = filter.showsTodos ? AgentTodos.make(artifacts: store.artifacts, bots: store.bots) : []
@@ -45,7 +48,7 @@ struct HomeLaunchView: View {
                 .buttonStyle(.plain)
                 .contextMenu { NewChatButton(bot: coconut) { pushRoute?(ConversationRoute(botId: $0.id)) } }
                 .homeRow(top: BoardStyle.Space.s)
-                chatRows(of: coconut, latest: ownLatest)
+                if filter != .unread { chatRows(of: coconut, latest: ownLatest) }
             }
             chips(filter, rooms: rooms).homeRow(top: BoardStyle.Space.l)
             if !todos.isEmpty {
@@ -83,7 +86,7 @@ struct HomeLaunchView: View {
                 switch item {
                 case .bot(let bot):
                     Button { pushRoute?(ConversationRoute(botId: bot.id)) } label: {
-                        BotContactRow(bot: bot)
+                        BotContactRow(bot: bot, title: bot.isChat ? bot.listName : nil)
                             .padding(.vertical, BoardStyle.Space.m)
                             .background(BoardStyle.paper)
                             .contentShape(Rectangle())
@@ -93,7 +96,7 @@ struct HomeLaunchView: View {
                         .accessibilityIdentifier("bot-conversation-\(bot.id)")
                         .swipeActions(edge: .trailing, allowsFullSwipe: true) { archiveButton(bot) }
                         .homeRow()
-                    chatRows(of: bot, latest: ownLatest)
+                    if filter != .unread { chatRows(of: bot, latest: ownLatest) }
                 case .team, .direct, .botDirect:
                     // A team chat has Star and Mute in its menu. The Team screen has the leave action.
                     if let chat = item.chat {
@@ -146,11 +149,7 @@ struct HomeLaunchView: View {
                     .padding(.vertical, BoardStyle.Space.s)
                     .background(BoardStyle.paper)
                     .contentShape(Rectangle())
-                    .contextMenu {
-                        NewChatButton(bot: chat) { pushRoute?(ConversationRoute(botId: $0.id)) }
-                        Button("Archive chat", systemImage: "archivebox") { Task { await store.archiveBot(chat, archived: true) } }
-                        Button("Delete chat", systemImage: "trash", role: .destructive) { deleting = chat }
-                    }
+                    .contextMenu { botActions(chat) }
             }
             .buttonStyle(HomePressStyle())
             .accessibilityIdentifier("bot-conversation-\(chat.id)")
@@ -250,11 +249,15 @@ struct HomeLaunchView: View {
     @ViewBuilder
     private func botActions(_ bot: Bot) -> some View {
         NewChatButton(bot: bot) { pushRoute?(ConversationRoute(botId: $0.id)) }
-        Button(bot.pinned ? "Unstar agent" : "Star agent", systemImage: bot.pinned ? "star.slash" : "star") {
-            Task { await store.pinBot(bot, pinned: !bot.pinned) }
+        if !bot.isChat {
+            Button(bot.pinned ? "Unstar agent" : "Star agent", systemImage: bot.pinned ? "star.slash" : "star") {
+                Task { await store.pinBot(bot, pinned: !bot.pinned) }
+            }
         }
-        Button("Archive agent", systemImage: "archivebox") { Task { await store.archiveBot(bot, archived: true) } }
-        Button("Delete agent", systemImage: "trash", role: .destructive) { deleting = bot }
+        Button(bot.isChat ? "Archive chat" : "Archive agent", systemImage: "archivebox") {
+            Task { await store.archiveBot(bot, archived: true) }
+        }
+        Button(bot.isChat ? "Delete chat" : "Delete agent", systemImage: "trash", role: .destructive) { deleting = bot }
     }
 
 }

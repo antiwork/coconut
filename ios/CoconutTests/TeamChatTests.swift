@@ -481,6 +481,20 @@ final class TeamChatTests: XCTestCase {
         XCTAssertTrue(ChatFilter.bots.showsTodos)
     }
 
+    func testUnreadIncludesFurtherChatsWithoutReadOrArchivedChats() {
+        let parent = bot("parent")
+        var unread = bot("unread"), read = bot("read"), archived = bot("archived")
+        unread.chatOf = parent.id; unread.unreadCount = 1
+        read.chatOf = parent.id
+        archived.chatOf = parent.id; archived.unreadCount = 1; archived.archived = true
+        var starred = bot("starred", pinned: true); starred.unreadCount = 2
+        let bots = [parent, unread, read, archived, starred]
+        XCTAssertEqual(AgentChats.unread(in: bots, latest: [unread.id: .distantFuture]).map(\.id),
+                       [unread.id, starred.id])
+        var archivedParent = parent; archivedParent.archived = true
+        XCTAssertEqual(AgentChats.unread(in: [archivedParent, unread], latest: [:]), [])
+    }
+
     /// The face of a writer comes from the message: the same before and after the writer leaves the team. Only a
     /// writer without a name has the neutral face.
     func testAMessageOfAMemberThatLeftKeepsItsFace() {

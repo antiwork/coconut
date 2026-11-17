@@ -647,6 +647,7 @@ class TeamSync:
         payload = encode_payload(fields, (existing['rev'] if existing else 0) + 1, utc_now())
         body = self.team_helper.seal(room['room'], entry_id, epoch, key, secrets['member_key'], payload)
         if check is not None:
+            # A stop blocks the next write. It cannot recall a write already sent to the relay, as with text replies.
             check(refresh=fields['kind'] == 'message')
         if deadline is not None and time.monotonic() + TIMEOUT_SECONDS > deadline:
             from .service_base import ServiceError

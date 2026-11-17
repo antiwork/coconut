@@ -31,6 +31,10 @@ def main():
     state['bots'].append(archived)
     coconut = dict(state['bots'][0], id='coconut-agent', name='Coconut', coconut=True, unread_count=0)
     state['bots'].append(coconut)
+    for id, parent, unread in (('unread-child', state['bots'][0], 1),
+                               ('read-child', state['bots'][1], 0), ('coconut-child', coconut, 1)):
+        state['bots'].append(dict(parent, id=id, chat_of=parent['id'], chat_title=id, coconut=False,
+                                  unread_count=unread, pinned=False))
     state['artifacts'] = [dict(id=id, bot_id=bot, title=title, kind='work', status=status,
                                preview='', created_at=state['server_time'])
                           for id, bot, title, status in (
