@@ -180,6 +180,7 @@
 		8A095FC145ABE017F701C8B2 /* ChatSpend.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5137DA013C0219DD57B22602 /* ChatSpend.swift */; };
 		8A1ADA6D0A6D11643ED8301B /* GitHubEmbedViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = F651A9C93CDD66940CB67BA1 /* GitHubEmbedViews.swift */; };
 		8A440AF112FF848BDA618795 /* MessagePhotos.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3877D84229483E68BD05E5F0 /* MessagePhotos.swift */; };
+		8A577763A258B9D20C1ADDFB /* ProcessNoticeRow.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4186B41A461A1A5C35FBF33E /* ProcessNoticeRow.swift */; };
 		8AA26EBBA0C273AB52A0AE74 /* PreviewDiagnostics.swift in Sources */ = {isa = PBXBuildFile; fileRef = A3A43A7E155EAC1270A61B25 /* PreviewDiagnostics.swift */; };
 		8BD40C5BDD894E7F6806DFB0 /* Spend.swift in Sources */ = {isa = PBXBuildFile; fileRef = E4F6506A10C1F118018FB0EE /* Spend.swift */; };
 		8C10BF55F4EA8379F7526AD5 /* AgentLetter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 981FC999E12844C020FEBD93 /* AgentLetter.swift */; };
@@ -218,6 +219,7 @@
 		AFC46A370B6DF8FCEB914A83 /* BoardSection.swift in Sources */ = {isa = PBXBuildFile; fileRef = B78CA35A955E85981763BFDA /* BoardSection.swift */; };
 		B0757E4EDC933C2771C8903A /* ComposerAttachments.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3449C2277EDAF3BB0C2BA0E3 /* ComposerAttachments.swift */; };
 		B15ACAFBE7184FB08FD744E8 /* MarkdownUI in Frameworks */ = {isa = PBXBuildFile; productRef = BC59E1DD5B09E3520ADF36FE /* MarkdownUI */; };
+		B1CD36F3065A747AD96BB30E /* ProcessNoticeRow.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4186B41A461A1A5C35FBF33E /* ProcessNoticeRow.swift */; };
 		B242F0A01EE8D3D6573C9BCF /* NotificationContent.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7CA9695EAB2F655862469B6C /* NotificationContent.swift */; };
 		B5AFB604F249D7910BF7CEB7 /* ShareItems.swift in Sources */ = {isa = PBXBuildFile; fileRef = 49E4849F245C2982D84A3988 /* ShareItems.swift */; };
 		B5D1A8BE6C4E98AD6A098DF4 /* Home.swift in Sources */ = {isa = PBXBuildFile; fileRef = DA3E57857A5BE776F16DA660 /* Home.swift */; };
@@ -393,6 +395,7 @@
 		3877D84229483E68BD05E5F0 /* MessagePhotos.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MessagePhotos.swift; sourceTree = "<group>"; };
 		3B252C8D2FF7AC9EFF6227FD /* ChatDeckView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatDeckView.swift; sourceTree = "<group>"; };
 		3E75185FFA8CEFCE940FFDE7 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
+		4186B41A461A1A5C35FBF33E /* ProcessNoticeRow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProcessNoticeRow.swift; sourceTree = "<group>"; };
 		4244E5068C8ECED6C1D1E124 /* HomeViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeViews.swift; sourceTree = "<group>"; };
 		45AD5F38FCEB559AD2F8D09E /* FileFit.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileFit.swift; sourceTree = "<group>"; };
 		4648B3469FA391A1202D1BD7 /* GitHubSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GitHubSettingsView.swift; sourceTree = "<group>"; };
@@ -698,6 +701,7 @@
 				E6BADED5520F6428F59143DF /* Platform.swift */,
 				35830E0B78D2781DFB12D5AE /* PlatformColor.swift */,
 				0F7D0F8D88BFF0F00891F0D9 /* PreviewStateFixture.swift */,
+				4186B41A461A1A5C35FBF33E /* ProcessNoticeRow.swift */,
 				AF78ECA5AAF444C7B0B3A210 /* ProfileView.swift */,
 				314EA7AAB131B25EAEEE8971 /* PushNotifications.swift */,
 				A60CFE7EAB28FA54EB0D2203 /* PushRelayClient.swift */,
@@ -1135,6 +1139,7 @@
 				2EE216523CD5878A802888AE /* PlatformColor.swift in Sources */,
 				8AA26EBBA0C273AB52A0AE74 /* PreviewDiagnostics.swift in Sources */,
 				1E4735BFC97F2D0BDA9F9578 /* PreviewStateFixture.swift in Sources */,
+				B1CD36F3065A747AD96BB30E /* ProcessNoticeRow.swift in Sources */,
 				10C9671B69BF4F67B8D5BFE8 /* ProfileView.swift in Sources */,
 				C1A26CA830CEA2D0DC65C986 /* PushNotifications.swift in Sources */,
 				8DEBB58B2324219CE7F2058E /* PushRelayClient.swift in Sources */,
@@ -1260,6 +1265,7 @@
 				8E22224644D4CC5DFFB66041 /* PlatformColor.swift in Sources */,
 				801E7451AAE12BBA468F080E /* PreviewDiagnostics.swift in Sources */,
 				59CFA44816F4310DB9EBBEFE /* PreviewStateFixture.swift in Sources */,
+				8A577763A258B9D20C1ADDFB /* ProcessNoticeRow.swift in Sources */,
 				56F4547B2E7EA8702BA828F5 /* ProfileView.swift in Sources */,
 				26418D4226589A02C99AF807 /* PushNotifications.swift in Sources */,
 				162DBDC6EC96A90E4269536F /* PushRelayClient.swift in Sources */,

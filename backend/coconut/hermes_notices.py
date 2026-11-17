@@ -73,6 +73,10 @@ def readable_text(text: str) -> str:
     """
     if not isinstance(text, str):
         return text
+    if text.startswith('gateway.background.task_'):
+        # A background-process notice with raw names (process_notices.py).
+        from .process_notices import readable_text as process_text
+        return process_text(text)
     first, gap, rest = text.partition('\n\n')
     name = first.strip()
     if name in NOTICES:

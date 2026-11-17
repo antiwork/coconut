@@ -740,6 +740,8 @@ struct TranscriptMessageRow: View {
             ArtifactCard(artifact: artifact)
         } else if message.kind == "document", let id = message.documentId {
             DocumentCard(documentId: id, title: message.text)
+        } else if let notice = message.processNotice, message.role == "assistant" {
+            ProcessNoticeRow(message: message, notice: notice)
         } else {
             MessageBubble(message: message, scrollToDecision: scrollToDecision, onReply: onReply.map { reply in { reply(message) } })
         }

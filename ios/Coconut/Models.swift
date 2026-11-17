@@ -301,6 +301,8 @@ struct Message: Codable, Identifiable, Equatable, Sendable {
     var workContext: WorkReference? = nil
     var reactions: [String]? = nil
     var reactionEvent: MessageReactionEvent? = nil
+    /// A background process of Hermes that ended. The row shows it in place of the bubble (ProcessNoticeRow).
+    var processNotice: ProcessNotice? = nil
 }
 
 struct MessageDraft: Codable, Equatable, Sendable {
