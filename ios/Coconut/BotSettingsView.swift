@@ -1,52 +1,33 @@
 import SwiftUI
 
-// Each change saves by itself: toggles and the character when they change, text when the field loses focus,
-// when the person submits it, and when the page closes. Back never drops an edit.
+// The routines of an agent. Its settings have no screen: the Coconut chat changes its name and its notifications
+// (coconut_settings), and the `coconut` command does the same.
 struct BotSettingsView: View {
     @Environment(AppStore.self) private var store
     @ShownError private var shownError
     let botId: String
-    @State private var edits: BotDraft?
     @State private var routineOpen = false
-
-    private var draft: Bot? { edits?.bot }
 
     var body: some View {
         Form {
-            if draft != nil {
-                BotNameField(name: field(\.name), commit: save)
-                Section {
-                    Toggle("Notifications", isOn: Binding(get: { edits?.bot.notifications ?? true }, set: { edits?.bot.notifications = $0 }))
-                        .tint(BoardStyle.green)
-                        .accessibilityIdentifier("bot-notifications")
-                } footer: { Text("Get notified when this chat needs a decision, finishes work, or fails.") }
-                let groups = RoutineGroups(store.routines.filter { $0.botId == botId })
-                Section("Routines") {
-                    ForEach(groups.recurring) { routine in
-                        routineLink(routine, detail: routine.error ?? routineLabel(routine))
-                    }
-                    Button("Add routine", systemImage: "plus") { routineOpen = true }.accessibilityIdentifier("add-routine")
+            let groups = RoutineGroups(store.routines.filter { $0.botId == botId })
+            Section("Routines") {
+                ForEach(groups.recurring) { routine in
+                    routineLink(routine, detail: routine.error ?? routineLabel(routine))
                 }
-                if !groups.scheduledChecks.isEmpty {
-                    Section("Scheduled checks") {
-                        ForEach(groups.scheduledChecks) { routine in
-                            routineLink(routine, detail: routine.error ?? checkLabel(routine))
-                        }
+                Button("Add routine", systemImage: "plus") { routineOpen = true }.accessibilityIdentifier("add-routine")
+            }
+            if !groups.scheduledChecks.isEmpty {
+                Section("Scheduled checks") {
+                    ForEach(groups.scheduledChecks) { routine in
+                        routineLink(routine, detail: routine.error ?? checkLabel(routine))
                     }
                 }
             }
             if let error = shownError { Section { InlineError(error) } }
         }
         .settingsBackground()
-        .navigationTitle(draft?.name ?? "Agent").inlineNavigationTitle()
-        .onAppear {
-            if edits == nil, let bot = store.bots.first(where: { $0.id == botId }) { edits = BotDraft(bot) }
-        }
-        .onChange(of: store.bots.first { $0.id == botId }) { _, current in
-            if let current { edits?.receive(current) }
-        }
-        .onChange(of: draft?.notifications) { _, _ in save() }
-        .onDisappear(perform: save)
+        .navigationTitle(store.bots.first { $0.id == botId }?.name ?? "Agent").inlineNavigationTitle()
         // A sheet has no notice over it, so it shows the error itself.
         .sheet(isPresented: $routineOpen) {
             NavigationStack { RoutineEditorView(botId: botId) }.sheetShowsError()
@@ -73,80 +54,6 @@ struct BotSettingsView: View {
         guard let date = (routine.nextRunAt ?? routine.runAt)?.apiDate else { return routine.scheduleLabel }
         let time = date.formatted(date: .abbreviated, time: .shortened)
         return routine.enabled && routine.state != "paused" ? "Next run " + time : "Paused · " + time
-    }
-
-    // One save at a time. A change during a save starts one more save after it.
-    private func save() {
-        guard let request = edits?.beginSave() else { return }
-        Task {
-            await store.updateBot(request.pending, comparedTo: request.original)
-            let current = store.error == nil ? store.bots.first(where: { $0.id == botId }) : nil
-            if edits?.finishSave(current) == true { save() }
-        }
-    }
-
-    private func field(_ path: WritableKeyPath<Bot, String>) -> Binding<String> {
-        Binding(get: { edits?.bot[keyPath: path] ?? "" }, set: { edits?.bot[keyPath: path] = $0 })
-    }
-}
-
-// The bot on the bot settings page, the newest bot from the Mac, and the save that runs.
-struct BotDraft: Equatable {
-    var bot: Bot
-    private(set) var saved: Bot
-    private(set) var submitted: Bot?
-    private var saveAgain = false
-
-    init(_ bot: Bot) {
-        self.bot = bot
-        saved = bot
-    }
-
-    // The bot to send and the bot it changes, or nil. A request during a save asks for one more save after it.
-    mutating func beginSave() -> (pending: Bot, original: Bot)? {
-        guard submitted == nil else {
-            saveAgain = true
-            return nil
-        }
-        guard let pending = BotAutosave.changes(bot, comparedTo: saved) else { return nil }
-        submitted = pending
-        return (pending, saved)
-    }
-
-    // An update from the Mac, also during a save. It keeps every edit that the Mac has not confirmed.
-    mutating func receive(_ current: Bot) {
-        bot = BotAutosave.merge(draft: bot, baseline: saved, into: current)
-        saved = current
-    }
-
-    // The save ended. `current` is the bot after a successful save, nil after a failure.
-    // Returns true when a change during the save needs one more save.
-    mutating func finishSave(_ current: Bot?) -> Bool {
-        if let current, let submitted {
-            // The confirmed result replaces only the fields that the person did not edit after the save started.
-            bot = BotAutosave.merge(draft: bot, baseline: submitted, into: current)
-            saved = current
-        }
-        submitted = nil
-        defer { saveAgain = false }
-        return saveAgain
-    }
-}
-
-enum BotAutosave {
-    // The bot to save, or nil when nothing changed. An empty name keeps the saved name, so the other edits still save.
-    static func changes(_ draft: Bot, comparedTo original: Bot) -> Bot? {
-        var pending = draft
-        if pending.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { pending.name = original.name }
-        return BotPatch(updated: pending, original: original).isEmpty ? nil : pending
-    }
-
-    // The bot from the Mac, with each draft field that differs from the baseline kept as the person left it.
-    static func merge(draft: Bot, baseline: Bot, into current: Bot) -> Bot {
-        var updated = current
-        if draft.name != baseline.name { updated.name = draft.name }
-        if draft.notifications != baseline.notifications { updated.notifications = draft.notifications }
-        return updated
     }
 }
 

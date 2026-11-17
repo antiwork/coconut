@@ -99,23 +99,3 @@ struct MacConnectionSettingsView: View {
         }
     }
 }
-
-/// The name of a project. The first message names a new project, and the person can rename it here.
-struct BotNameField: View {
-    @Binding var name: String
-    // Called when the field loses focus or the person submits it.
-    var commit: () -> Void = {}
-    @FocusState private var focused: Bool
-
-    var body: some View {
-        Section("Name") {
-            TextField("Name", text: $name).textContentType(.name)
-                .fieldUnderHeader()
-                .focused($focused)
-                .submitLabel(.done)
-                .onSubmit(commit)
-                .onChange(of: focused) { previous, current in if previous && !current { commit() } }
-                .accessibilityIdentifier("bot-name")
-        }
-    }
-}

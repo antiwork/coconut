@@ -495,7 +495,7 @@ struct ConversationView: View {
                         .accessibilityAction(named: "Show all chats") { showDeck(bot) }
                         .accessibilityIdentifier("agent-page")
                     }
-                    // The model and its reasoning are in the composer, under the text (ComposerModelMenu).
+                    // The model has no item here: the person types `/model` in the message box.
                     ToolbarItem(placement: .trailingBar) { NewChatHeaderButton(bot: bot) }
                     #endif
                 }
@@ -1076,8 +1076,8 @@ struct ConversationComposer: View {
             }
             ComposerSlashMenu(suggestions: slashSuggestions, highlighted: slashIndex) { run($0) }
             // One box, as in Codex. A short draft is one line with the plus and Send beside it. When the box opens, the
-            // text is on top, and under it are the plus, the model, its reasoning, the access mode, and Send or Stop. The
-            // model, the reasoning and the access are those of every chat.
+            // text is on top, and under it are the plus and Send or Stop. The model and the access have no chip: the
+            // person types `/model`, or asks an agent to change them.
             VStack(alignment: .leading, spacing: 0) {
                 HStack(alignment: .bottom, spacing: 0) {
                     if !expanded { plusMenu }
@@ -1092,16 +1092,7 @@ struct ConversationComposer: View {
                 if expanded {
                     HStack(alignment: .center, spacing: 0) {
                         plusMenu
-                        // The chips scroll when the box is narrow, so Send keeps its place at the end.
-                        ScrollView(.horizontal, showsIndicators: false) {
-                            HStack(spacing: 0) {
-                                ComposerModelMenu(showsEffort: false)
-                                ComposerEffortMenu()
-                                ComposerAccessMenu()
-                            }
-                        }
-                        .scrollBounceBehavior(.basedOnSize)
-                        .frame(maxWidth: .infinity, alignment: .leading)
+                        Spacer(minLength: 0)
                         sendControls
                     }
                     .padding(.horizontal, BoardStyle.Space.xs)

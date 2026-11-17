@@ -11,7 +11,7 @@ struct AllPagesRoute: Hashable {}
 /// The sections of the page of an agent, in the order of the page. Each one shows always, so each agent reads the
 /// same way. A section without rows has one quiet line.
 enum AgentSection: String, CaseIterable, Identifiable {
-    case chat, todos, pages, routines, settings
+    case chat, todos, pages, routines, manage
 
     var id: String { rawValue }
     var title: String {
@@ -20,7 +20,7 @@ enum AgentSection: String, CaseIterable, Identifiable {
         case .todos: "Tasks"
         case .pages: "Pages"
         case .routines: "Routines"
-        case .settings: "Settings"
+        case .manage: "Manage"
         }
     }
 }
@@ -152,14 +152,14 @@ struct AgentProject: Identifiable, Equatable {
     }
 
     /// The count after the title of a section: the number of its rows, so Chats counts the chats. A row has the unread
-    /// messages of its chat. One chat needs no count, and Settings has none.
+    /// messages of its chat. One chat needs no count, and Manage has none.
     func count(_ section: AgentSection) -> Int {
         switch section {
         case .chat: chats.isEmpty ? 0 : chats.count + 1
         case .todos: todos.count
         case .pages: pages.count
         case .routines: routines.count + checks.count
-        case .settings: 0
+        case .manage: 0
         }
     }
 }
@@ -435,12 +435,7 @@ struct AgentProjectView: View {
                 }
             }
             AgentUsageCard(botId: bot.id)
-            BoardSection(AgentSection.settings.title) {
-                BoardRow(symbol: bot.notifications ? "bell" : "bell.slash", title: "Notifications",
-                         value: bot.notifications ? "On" : "Off")
-                    .boardButton("agent-notifications") { pushRoute?(BotSettingsRoute(botId: bot.id)) }
-                BoardRow(symbol: "pencil", title: "Rename")
-                    .boardButton("agent-settings") { pushRoute?(BotSettingsRoute(botId: bot.id)) }
+            BoardSection(AgentSection.manage.title) {
                 BoardRow(symbol: bot.archived ? "tray.and.arrow.up" : "archivebox",
                          title: bot.archived ? "Unarchive" : "Archive", chevron: false)
                     .boardButton("agent-archive") { Task { await store.archiveBot(bot, archived: !bot.archived) } }

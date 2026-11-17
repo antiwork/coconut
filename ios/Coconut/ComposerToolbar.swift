@@ -3,8 +3,8 @@ import SwiftUI
 import UIKit
 #endif
 
-// The parts of the composer box that sit under the text when the box is open: the chips for the reasoning effort and
-// the access mode, the slash commands, the draft of each chat, and the camera and the paste of the plus menu.
+// The parts of the composer box that sit under the text when the box is open: the slash commands, the draft of each
+// chat, and the camera and the paste of the plus menu.
 
 /// When the box of the composer shows its toolbar under the text. A short draft stays on one line, with the plus and
 /// Send beside it.
@@ -105,56 +105,7 @@ enum ComposerDrafts {
     }
 }
 
-/// The reasoning effort as a chip under the text. A model without efforts has no chip. Every chat shares it.
-struct ComposerEffortMenu: View {
-    @Environment(AppStore.self) private var store
-
-    var body: some View {
-        let choice = ModelChoice(store: store)
-        if let model = choice.entry, !model.reasoningEfforts.isEmpty {
-            Menu {
-                ForEach(model.reasoningEfforts, id: \.self) { value in
-                    Toggle(isOn: Binding(get: { choice.effort == value }, set: { _ in choice.choose(model, effort: value) })) {
-                        Text(ModelPresentation.effortName(value))
-                    }
-                }
-            } label: {
-                ComposerChipLabel(symbol: "brain", title: ModelPresentation.effortName(choice.effort))
-            }
-            .modifier(ComposerChipMenuStyle())
-            .disabled(!choice.canEdit)
-            .accessibilityLabel("Reasoning effort, " + ModelPresentation.effortName(choice.effort))
-            .accessibilityIdentifier("chat-effort-menu")
-        }
-    }
-}
-
-/// The access mode (how much Hermes may do without asking) as a chip under the text. Every chat shares it. Full access
-/// has no chip: Hermes then never asks, so the chip says nothing that the person must know. Profile changes it back.
-struct ComposerAccessMenu: View {
-    @Environment(AppStore.self) private var store
-
-    var body: some View {
-        if let settings = store.approvals, !settings.modes.isEmpty, settings.defaults != "off" {
-            let current = settings.defaults
-            Menu {
-                ForEach(settings.modes) { mode in
-                    Toggle(isOn: Binding(get: { current == mode.id },
-                                         set: { _ in Task { await store.setApproval(mode.id) } })) {
-                        Text(mode.label)
-                    }
-                }
-            } label: {
-                ComposerChipLabel(symbol: "lock.shield", title: settings.label(for: current))
-            }
-            .modifier(ComposerChipMenuStyle())
-            .disabled(!(store.connection == .connected || store.isDemo))
-            .accessibilityLabel("Access, " + settings.label(for: current))
-            .accessibilityIdentifier("chat-access-menu")
-        }
-    }
-}
-
+/// The label of a chip of the composer (NewChatBar).
 struct ComposerChipLabel: View {
     let symbol: String
     let title: String
