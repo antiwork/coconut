@@ -236,6 +236,11 @@ struct ConversationView: View {
                                 }
                                     .transition(.opacity.animation(BoardStyle.fade(reduceMotion: reduceMotion)))
                             }
+                            // What the chat cost so far. It shows between turns, so the number does not move while
+                            // the agent works.
+                            if activity == nil, let spend = store.chatUsage[botId], spend.total.tokens > 0 {
+                                ChatSpendFooter(usage: spend)
+                            }
                             // The row inset and this padding keep 12 points below the last row, and the space of
                             // the notice of the Mac window.
                             Color.clear.frame(height: 1).padding(.bottom, BoardStyle.Space.s + noticeSpace)
@@ -335,7 +340,8 @@ struct ConversationView: View {
                     .onChange(of: nearBottom) { _, following in
                         if following { rowHold.release() }
                     }
-                    .onChange(of: activity != nil) { _, _ in
+                    .onChange(of: activity != nil) { _, working in
+                        if !working { Task { await store.loadChatUsage(botId) } }
                         if nearBottom && !userScrolling && !sentWaits { footerScroll.reset(); proxy.scrollTo("conversation-bottom", anchor: .bottom) }
                     }
                     .onChange(of: messages.last?.id) { _, _ in
@@ -424,6 +430,7 @@ struct ConversationView: View {
                 }
                 #endif
                 .onReceive(DaySeparator.changes) { _ in dayReference = Date() }
+                .task(id: botId) { await store.loadChatUsage(botId) }
                 .onDisappear { isVisible = false; composerFocused = false; footerScroll.reset() }
                 // "Ask the bot about this page" opens the chat with the page quoted in the composer.
                 .onChange(of: store.pageQuotes[botId], initial: true) { _, quote in

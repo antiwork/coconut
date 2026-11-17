@@ -14,6 +14,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import logging
 import os
+from uuid import UUID
 from pathlib import Path
 import re
 import signal
@@ -413,6 +414,14 @@ class Handler(BaseHTTPRequestHandler):
                         self._json(200, service.activity_file(parts[2], parse_qs(url.query).get('path', [''])[0]))
                     else:
                         raise ServiceError(404, 'This route was not found.')
+                elif url.path.startswith('/v1/bots/') and url.path.endswith('/usage') and url.path.count('/') == 4:
+                    # The tokens and the cost of one chat (usage.py, chat_usage).
+                    try:
+                        days = int(parse_qs(url.query).get('days', ['30'])[0])
+                        bot_id = str(UUID(url.path.split('/')[3]))
+                    except ValueError:
+                        raise ServiceError(400, 'Name a chat and a number of days.')
+                    self._json(200, service.chat_usage(bot_id, days))
                 elif url.path.startswith('/v1/artifacts/') and url.path.endswith('/content'):
                     parts = url.path.strip('/').split('/')
                     if len(parts) != 4:

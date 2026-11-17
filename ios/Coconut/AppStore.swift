@@ -157,6 +157,8 @@ final class AppStore {
     var usage: UsageReport?
     /// Why the store has no usage: the Mac is not connected, or its Coconut is older than this app.
     var usageIssue: String?
+    /// The tokens and the cost of each chat that the person opened (ChatSpend.swift), by chat ID.
+    var chatUsage: [String: ChatUsage] = [:]
     @ObservationIgnored private var usageReadAt: Date?
     var provider = ""
     var pushConfigured = false
@@ -729,7 +731,7 @@ final class AppStore {
         modelBaseURL = ""
         modelConfigured = false
         modelCatalog = nil
-        usage = nil; usageIssue = nil; usageReadAt = nil
+        usage = nil; usageIssue = nil; usageReadAt = nil; chatUsage = [:]
         nativeSettingsReadAt = nil
         nativeSettingsAttemptAt = nil
         nativeSettingsRequiredCursor = 0
@@ -1944,6 +1946,18 @@ final class AppStore {
         if isDemo { return true }
         let result: Acknowledgement? = await write("bots/restart", payload: EmptyRequest(), as: Acknowledgement.self)
         return result?.ok == true
+    }
+
+    /// Reads the usage of one chat. A failed read keeps what the store has and shows nothing: the footer is quiet.
+    func loadChatUsage(_ botId: String) async {
+        if isDemo {
+            if chatUsage[botId] == nil { chatUsage[botId] = .preview(botId: botId) }
+            return
+        }
+        guard let client else { return }
+        guard let usage: ChatUsage = try? await client.request("bots/\(botId)/usage?days=30") else { return }
+        guard self.client === client else { return }
+        if chatUsage[botId] != usage { chatUsage[botId] = usage }
     }
 
     /// Reads the usage of the agents for the longest range of the usage page. A page that opens within a minute of the
