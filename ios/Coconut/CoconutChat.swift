@@ -45,7 +45,7 @@ struct CoconutChatBar: View {
                 #if os(iOS)
                 Button("Notifications on this phone", systemImage: "bell") { sheet = .notifications }
                 #endif
-                Button("Sign-ins and connections", systemImage: "link") { sheet = .connections }
+                Button("Connections", systemImage: "link") { sheet = .connections }
             } label: {
                 Label("This device", systemImage: "ellipsis.circle").labelStyle(.iconOnly)
             }

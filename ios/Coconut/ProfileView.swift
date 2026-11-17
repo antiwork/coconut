@@ -54,35 +54,46 @@ struct ProfileView: View {
                          detail: push.outsideWorkHours == .same ? "At any time"
                              : "Work hours " + NotificationSentence.workHours(push.schedule))
                     .boardButton("notification-settings") { pushRoute?(ProfileRoute.notifications) }
-                BoardRow(symbol: "link", title: "Sign-ins and connections", detail: "Google, GitHub and other tools")
+                // The row has the name of the page that it opens.
+                BoardRow(symbol: "link", title: "Connections", detail: "Google, GitHub and other tools")
                     .boardButton("mcp-settings") { pushRoute?(ProfileRoute.connections) }
+            }
+            // What the projects use, in the order of the Projects page.
+            BoardSection("Usage") {
+                BoardRow(symbol: "dollarsign.circle", title: "Spend", value: store.spendTodayTotal)
+                    .boardButton("profile-spend") { pushRoute?(SpendRoute()) }
+                BoardRow(symbol: "chart.bar", title: "Usage")
+                    .boardButton("profile-usage") { pushRoute?(UsageRoute()) }
             }
             BoardSection("Coconut") {
                 if let coconut = store.bots.coconutChat {
+                    // The line says where the settings went, so it reads whole on a narrow screen.
                     BoardRow(symbol: "bubble.left.and.bubble.right", title: "Ask Coconut",
-                             detail: "Ask it to change the model, the access or a limit. Send /help to see all.")
+                             detail: "Ask it to change the model, the access or a limit. Send /help to see all.", detailLines: 2)
                         .boardButton("profile-coconut-chat") {
                             if let openChat { openChat(coconut.id) } else { pushRoute?(ConversationRoute(botId: coconut.id)) }
                         }
                 }
+                BoardRow(symbol: "person.2", title: "Team", value: teamSummary)
+                    .boardButton("profile-team") { pushRoute?(ProfileRoute.team) }
                 BoardRow(symbol: "server.rack", title: "Runs on", detail: "\(CoconutMode.local.label). \(CoconutMode.cloud.label) comes later.",
                          value: "Your Mac", chevron: false)
                     .accessibilityIdentifier("profile-mode")
-                BoardRow(symbol: "person.2", title: "Team", value: teamSummary)
-                    .boardButton("profile-team") { pushRoute?(ProfileRoute.team) }
-                BoardRow(symbol: "chart.bar", title: "Usage", detail: "Turns, tokens, cost and time")
-                    .boardButton("profile-usage") { pushRoute?(UsageRoute()) }
-                BoardRow(symbol: "dollarsign.circle", title: "Spend", value: store.spendTodayTotal)
-                    .boardButton("profile-spend") { pushRoute?(SpendRoute()) }
-            }
-            BoardSection("About") {
                 BoardRow(symbol: "info.circle", title: "Version", detail: "Execution stays on your Mac",
                          value: Self.appVersion, chevron: false)
                     .accessibilityIdentifier("profile-version")
             }
         }
-        // The Team row names the team, so Profile reads the teams of a connected Mac.
-        .task(id: store.connection) { if store.connection == .connected { await store.loadTeam() } }
+        // An iPhone tab root has the name of its tab in the bar, as Finance and To-dos have.
+        #if os(iOS)
+        .navigationTitle("You").inlineNavigationTitle()
+        #endif
+        // The Spend row has the cost of today, as on the Projects page, so Profile reads the usage. The Team row names
+        // the team, so Profile reads the teams of a connected Mac.
+        .task(id: store.connection) {
+            await store.loadUsage()
+            if store.connection == .connected { await store.loadTeam() }
+        }
     }
 
     private func header(_ summary: ProfileSummary) -> some View {
@@ -93,8 +104,16 @@ struct ProfileView: View {
                 LetterFaceView(letters: summary.name.flatMap { LetterFace.letters($0) }, id: "profile", symbol: "person.fill", size: 56)
             }
             VStack(alignment: .leading, spacing: BoardStyle.Space.line) {
+                #if os(iOS)
+                // The bar and the tab say "You", so a person without a name has the name of the device here.
+                Text(summary.name ?? Device.name).font(.title2.weight(.bold)).lineLimit(1)
+                if summary.name != nil {
+                    Text(Device.name).font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
+                }
+                #else
                 Text(summary.name ?? "You").font(.title2.weight(.bold)).lineLimit(1)
                 Text(Device.name).font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
+                #endif
             }
         }
         .accessibilityElement(children: .combine)
