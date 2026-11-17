@@ -140,3 +140,49 @@ struct PeopleView: View {
         }
     }
 }
+
+#if DEBUG && targetEnvironment(simulator)
+extension AppStore {
+    /// Gives the preview data a team, for a screenshot of People and of the notice board: Gumroad with three people,
+    /// a direct chat with an unread message, and four notices.
+    func applyTeamPreview(now: Date = Date()) {
+        let formatter = ISO8601DateFormatter()
+        func ago(_ minutes: Double) -> String { formatter.string(from: now.addingTimeInterval(-minutes * 60)) }
+        func notice(_ id: String, _ type: String, _ text: String, posted: Double, ends: Double?, active: Bool,
+                    author: String, name: String, seen: Bool) -> String {
+            let end = ends.map { "\"" + formatter.string(from: now.addingTimeInterval($0 * 60)) + "\"" } ?? "null"
+            let head = "{\"id\": \"\(id)\", \"type\": \"\(type)\", \"text\": \"\(text)\", \"posted_at\": \"\(ago(posted))\""
+            let state = ", \"ends_at\": \(end), \"closed\": false, \"active\": \(active), \"author\": \"\(author)\""
+            let tail = ", \"author_name\": \"\(name)\", \"own\": \(author == "m1"), \"seen\": \(seen), \"seen_by\": [\"Lin\"]}"
+            return head + state + tail
+        }
+        let notices = [
+            notice("n1", "status", "Deploys are frozen until the payout fix ships. Don't merge to main.", posted: 35,
+                   ends: nil, active: true, author: "m2", name: "Grace", seen: false),
+            notice("n2", "deadline", "Creator payout report is due Friday. One page per team in the Library.",
+                   posted: 6 * 60, ends: 4 * 1440, active: true, author: "m1", name: "Ada", seen: true),
+            notice("n3", "rule", "Every PR needs a real screenshot of the app.", posted: 4 * 1440, ends: nil,
+                   active: true, author: "m1", name: "Ada", seen: true),
+            notice("n4", "announcement", "Coconut 0.2 ships Thursday.", posted: 6 * 1440, ends: -3 * 1440,
+                   active: false, author: "m2", name: "Grace", seen: true),
+        ]
+        let json = "{\"rooms\": [{\"room\": \"gumroad\", \"name\": \"Gumroad\", \"state\": \"active\", \"unread\": 0, \"notices\": ["
+            + notices.joined(separator: ", ") + "]}]}"
+        guard var rooms = try? APIJSON.decoder().decode(TeamRooms.self, from: Data(json.utf8)) else { return }
+        rooms.rooms[0].canInvite = true
+        rooms.rooms[0].lastMessage = TeamLastMessage(member: "m3", memberName: "Lin", text: "The payout fix is in review.",
+                                                     createdAt: ago(42))
+        rooms.rooms[0].members = [
+            TeamMember(member: "m1", name: "Ada", admin: true, thisMac: true),
+            TeamMember(member: "m2", name: "Grace", direct: true),
+            TeamMember(member: "m3", name: "Lin", direct: true),
+        ]
+        rooms.rooms[0].directs = [
+            TeamDirect(member: "m2", memberName: "Grace", unread: 1,
+                       lastMessage: TeamLastMessage(text: "Can you check the refund for the Friday double payouts?",
+                                                    createdAt: ago(9))),
+        ]
+        team = rooms
+    }
+}
+#endif

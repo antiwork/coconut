@@ -352,6 +352,7 @@ final class AppStore {
             connection = .preview
             #if DEBUG && targetEnvironment(simulator)
             if ProcessInfo.processInfo.arguments.contains("--attention-preview") { applyAttentionPreview() }
+            if ProcessInfo.processInfo.arguments.contains("--team-preview") { applyTeamPreview() }
             #endif
             return
         }

@@ -5,6 +5,16 @@ import SwiftUI
 struct BoardPage<Content: View>: View {
     @ViewBuilder let content: () -> Content
 
+    /// A screenshot of the lower part of a page starts the app with `--bottom`. Only a debug build on a simulator
+    /// reads it.
+    private static var startsAtBottom: Bool {
+        #if DEBUG && targetEnvironment(simulator)
+        return ProcessInfo.processInfo.arguments.contains("--bottom")
+        #else
+        return false
+        #endif
+    }
+
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: BoardStyle.Space.xl) { content() }
@@ -12,6 +22,7 @@ struct BoardPage<Content: View>: View {
                 .frame(maxWidth: 760, alignment: .leading)
                 .frame(maxWidth: .infinity)
         }
+        .defaultScrollAnchor(Self.startsAtBottom ? .bottom : .top)
         .background(BoardStyle.paper)
     }
 }
