@@ -66,6 +66,9 @@ struct NoticeBoardView: View {
             }
             #if os(macOS)
             .listStyle(.inset)
+            #else
+            // The page color of the Team screen that opens the board, also in dark mode.
+            .settingsBackground()
             #endif
         }
     }
@@ -85,7 +88,8 @@ struct NoticeRow: View {
                 .frame(width: 28)
             VStack(alignment: .leading, spacing: BoardStyle.Space.xs) {
                 HStack(spacing: BoardStyle.Space.s) {
-                    Text(notice.kind.label.uppercased())
+                    // In sentence case, as the banner of the chat writes the kind.
+                    Text(notice.kind.label)
                         .font(.caption.weight(.semibold))
                         .foregroundStyle(notice.active ? notice.kind.tint : .secondary)
                     if let end = notice.endsAt?.apiDate, notice.active {
