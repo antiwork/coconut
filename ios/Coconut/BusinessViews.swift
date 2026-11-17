@@ -79,21 +79,20 @@ struct BusinessProjectsView: View {
     @State private var error: String?
 
     var body: some View {
-        List {
-            ForEach(store.businessCatalog?.projects ?? []) { project in
-                NavigationLink(value: BusinessRoute.project(project.key)) {
-                    VStack(alignment: .leading, spacing: BoardStyle.Space.xs) {
-                        Text(project.displayName)
-                        Text(project.fullName).font(.caption).foregroundStyle(.secondary)
+        BoardPage {
+            BoardSection("Projects", count: store.businessCatalog?.projects.count ?? 0) {
+                ForEach(store.businessCatalog?.projects ?? []) { project in
+                    NavigationLink(value: BusinessRoute.project(project.key)) {
+                        BoardRow(symbol: "shippingbox", title: project.displayName, detail: project.fullName)
                     }
-                }.accessibilityIdentifier("business-project-" + project.key)
-            }
-            if store.businessCatalog?.projects.isEmpty == true {
-                Section { Text("No projects yet.").foregroundStyle(.secondary) }
+                    .buttonStyle(.plain)
+                    .accessibilityIdentifier("business-project-" + project.key)
+                }
+                if store.businessCatalog?.projects.isEmpty == true { BoardEmptyRow(text: "No projects yet.") }
             }
             if let error { BusinessConnectionNotice(message: error) }
         }
-        .navigationTitle("Projects").settingsBackground()
+        .navigationTitle("Projects")
         .toolbar { ToolbarItem(placement: .primaryAction) { Button { adding = true } label: { Label("Add project", systemImage: "plus") }.accessibilityIdentifier("business-add-project") } }
         .task(id: store.businessChanges) { await load() }
         .refreshable { await load() }
@@ -127,8 +126,8 @@ struct BusinessWorkListView: View {
     }
 
     var body: some View {
-        List {
-            Section {
+        BoardPage {
+            VStack(alignment: .leading, spacing: BoardStyle.Space.m) {
                 Picker("Work", selection: $state) {
                     Text("Open").tag("open")
                     Text("Completed").tag("closed")
@@ -137,23 +136,22 @@ struct BusinessWorkListView: View {
                     Link(destination: url) { Label(repository.fullName, systemImage: "folder") }.font(.caption)
                 }
             }
-            if loading && shownItems.isEmpty { ProgressView("Loading work") }
-            ForEach(shownItems) { item in
-                NavigationLink { BusinessWorkDetailView(work: item) } label: {
-                    VStack(alignment: .leading, spacing: BoardStyle.Space.xs) {
-                        Text(item.title).foregroundStyle(.primary)
-                        Text([function == nil ? BusinessFunction.name(item.functionKey) : nil,
-                              project == nil ? item.projectKey : nil, "#\(item.number)"].compactMap { $0 }.joined(separator: " · "))
-                            .font(.caption).foregroundStyle(.secondary)
-                    }.padding(.vertical, BoardStyle.Space.xs)
-                }.accessibilityIdentifier("business-work-" + item.id)
-            }
-            if !loading && shownItems.isEmpty && error == nil {
-                Section { Text(state == "open" ? "No open work yet." : "No completed work yet.").foregroundStyle(.secondary) }
+            if loading && shownItems.isEmpty { BoardLoading(title: "Loading work", height: 200) }
+            BoardSection("Work", count: shownItems.count) {
+                ForEach(shownItems) { item in
+                    NavigationLink { BusinessWorkDetailView(work: item) } label: {
+                        BoardRow(symbol: "circle.dotted", title: item.title, detail: subtitle(item))
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityIdentifier("business-work-" + item.id)
+                }
+                if !loading && shownItems.isEmpty && error == nil {
+                    BoardEmptyRow(text: state == "open" ? "No open work yet." : "No completed work yet.")
+                }
             }
             if let error { BusinessConnectionNotice(message: error) }
         }
-        .navigationTitle(title).settingsBackground()
+        .navigationTitle(title)
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
                 Button { adding = true } label: { Label("New work", systemImage: "plus") }
@@ -163,6 +161,12 @@ struct BusinessWorkListView: View {
         .task(id: "\(function ?? "")/\(project ?? "")/\(state)/\(store.businessChanges)") { await load() }
         .refreshable { await load(fresh: true) }
         .sheet(isPresented: $adding) { BusinessWorkEditor(function: function, project: project) }
+    }
+
+    /// "Support · gumroad · #412": the function or the project, whichever the page is not already about.
+    private func subtitle(_ item: BusinessWork) -> String {
+        [function == nil ? BusinessFunction.name(item.functionKey) : nil,
+         project == nil ? item.projectKey : nil, "#\(item.number)"].compactMap { $0 }.joined(separator: " · ")
     }
 
     private func load(fresh: Bool = false) async {
@@ -186,28 +190,45 @@ struct BusinessWorkDetailView: View {
     @State private var error: String?
     @State private var asking = false
 
+    /// "Support · gumroad · Open".
+    private var meta: String {
+        [BusinessFunction.name(shownWork.functionKey), shownWork.projectKey, shownWork.isOpen ? "Open" : "Completed"]
+            .compactMap { $0 }.joined(separator: " · ")
+    }
+
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: BoardStyle.Space.xl) {
-                Text(shownWork.title).font(.title2.bold())
-                Text([BusinessFunction.name(shownWork.functionKey), shownWork.projectKey, shownWork.isOpen ? "Open" : "Completed"].compactMap { $0 }.joined(separator: " · "))
-                    .font(.subheadline).foregroundStyle(.secondary)
-                if !shownWork.body.isEmpty { Markdown(shownWork.body).textSelection(.enabled) }
-                if let error { Text(error).foregroundStyle(BoardStyle.destructive) }
-                Button(busy ? "Saving…" : shownWork.isOpen ? "Complete work" : "Reopen work") {
+        BoardPage {
+            BoardPageTitle(title: shownWork.title, detail: meta)
+            if !shownWork.body.isEmpty { Markdown(shownWork.body).textSelection(.enabled) }
+            if let error { Text(error).font(.subheadline).foregroundStyle(BoardStyle.destructive) }
+            BoardSection("Work") {
+                Button {
                     busy = true
                     Task {
                         defer { busy = false }
                         do { work = try await store.setBusinessWork(shownWork, state: shownWork.isOpen ? "closed" : "open"); error = nil }
                         catch { self.error = error.localizedDescription }
                     }
-                }.disabled(busy).accessibilityIdentifier("business-work-state")
-                Button("Ask an agent", systemImage: "bubble.left.and.bubble.right") { asking = true }
-                    .disabled(store.bots.allSatisfy(\.archived)).accessibilityIdentifier("business-ask-agent")
-                if let url = URL(string: shownWork.url) { Link("Open on GitHub", destination: url).font(.subheadline) }
-            }.frame(maxWidth: 720, alignment: .leading).padding(BoardStyle.Space.xl).frame(maxWidth: .infinity, alignment: .leading)
+                } label: {
+                    BoardRow(symbol: shownWork.isOpen ? "checkmark.circle" : "arrow.uturn.backward",
+                             title: busy ? "Saving…" : shownWork.isOpen ? "Complete work" : "Reopen work")
+                }
+                .buttonStyle(.plain)
+                .disabled(busy)
+                .accessibilityIdentifier("business-work-state")
+                Button { asking = true } label: {
+                    BoardRow(symbol: "bubble.left.and.bubble.right", title: "Ask an agent")
+                }
+                .buttonStyle(.plain)
+                .disabled(store.bots.allSatisfy(\.archived))
+                .accessibilityIdentifier("business-ask-agent")
+                if let url = URL(string: shownWork.url) {
+                    Link(destination: url) { BoardRow(symbol: "arrow.up.right.square", title: "Open on GitHub") }
+                        .buttonStyle(.plain)
+                }
+            }
         }
-        .background(BoardStyle.paper).navigationTitle("Work").inlineNavigationTitle()
+        .navigationTitle("Work").inlineNavigationTitle()
         .sheet(isPresented: $asking) { BusinessAgentSheet(work: work) }
     }
 }
@@ -217,9 +238,13 @@ private struct BusinessConnectionNotice: View {
     let message: String
     @State private var connecting = false
     var body: some View {
-        Section {
-            Text(message).font(.subheadline).foregroundStyle(.secondary)
-            Button("GitHub connection") { connecting = true }
+        BoardSection("Connection") {
+            VStack(alignment: .leading, spacing: BoardStyle.Space.s) {
+                Text(message).font(.subheadline).foregroundStyle(.secondary)
+                Button("GitHub connection") { connecting = true }.font(.subheadline)
+            }
+            .padding(BoardStyle.Space.m)
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
         .sheet(isPresented: $connecting, onDismiss: { store.businessChanges += 1 }) {
             NavigationStack {
