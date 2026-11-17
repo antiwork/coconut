@@ -18,7 +18,7 @@
       "id": "00000000-0000-4000-8000-000000000001",
       "instructions": "Ship gumroad/web to production. Run the specs first. Ask before every deploy.",
       "last_message": "The fix is ready. One decision needs you.",
-      "name": "Releases",
+      "name": "Coconut",
       "pinned": false,
       "role": "Ships Gumroad to production",
       "session_id": "00000000-0000-4000-8000-000000000011",
@@ -29,7 +29,9 @@
         "model": "preview-standard",
         "provider": "preview",
         "reasoning_effort": "medium"
-      }
+      },
+      "project": true,
+      "coconut": true
     },
     {
       "archived": false,
@@ -37,7 +39,7 @@
       "id": "00000000-0000-4000-8000-000000000002",
       "instructions": "Answer seller and buyer email from Helper. Keep a short report with links. Ask before refunds over $100.",
       "last_message": "The refund summary is ready. Matching sellers now.",
-      "name": "Support",
+      "name": "Gumroad",
       "pinned": false,
       "role": "Gumroad support inbox",
       "session_id": "00000000-0000-4000-8000-000000000012",
@@ -48,7 +50,8 @@
         "model": "preview-standard",
         "provider": "preview",
         "reasoning_effort": "medium"
-      }
+      },
+      "project": true
     },
     {
       "archived": false,
@@ -67,7 +70,8 @@
         "model": "preview-standard",
         "provider": "preview",
         "reasoning_effort": "medium"
-      }
+      },
+      "project": false
     },
     {
       "archived": false,
@@ -77,7 +81,7 @@
       "id": "00000000-0000-4000-8000-000000000004",
       "instructions": "Ship gumroad/web to production. Run the specs first. Ask before every deploy.",
       "last_message": "Paused. The retries start again once the endpoint answers 200. I will name the seller and the endpoint in the release notes, so Support can write to them.",
-      "name": "Releases",
+      "name": "Coconut",
       "pinned": false,
       "role": "Ships Gumroad to production",
       "session_id": "00000000-0000-4000-8000-000000000014",
@@ -98,7 +102,7 @@
       "id": "00000000-0000-4000-8000-000000000005",
       "instructions": "Answer seller and buyer email from Helper. Keep a short report with links. Ask before refunds over $100.",
       "last_message": "Saved as Refund request after 30 days. It names the receipt link and the seller contact.",
-      "name": "Support",
+      "name": "Gumroad",
       "pinned": false,
       "role": "Gumroad support inbox",
       "session_id": "00000000-0000-4000-8000-000000000015",
@@ -510,7 +514,17 @@
     ]
   },
   "queues": {
-    "00000000-0000-4000-8000-000000000001": {"running": 1, "waiting": 2, "needs_you": 1, "done_today": 3},
-    "00000000-0000-4000-8000-000000000002": {"running": 1, "waiting": 0, "needs_you": 0, "done_today": 5}
+    "00000000-0000-4000-8000-000000000001": {
+      "running": 1,
+      "waiting": 2,
+      "needs_you": 1,
+      "done_today": 3
+    },
+    "00000000-0000-4000-8000-000000000002": {
+      "running": 1,
+      "waiting": 0,
+      "needs_you": 0,
+      "done_today": 5
+    }
   }
 }

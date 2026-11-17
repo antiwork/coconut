@@ -130,12 +130,6 @@ struct MacMainWindow: View {
             model.newChatRequested = false
             startChat()
         }
-        // File > New project.
-        .onChange(of: model.newProjectRequested, initial: true) { _, requested in
-            guard requested else { return }
-            model.newProjectRequested = false
-            Task { await store.newProject() }
-        }
         // A document card in a chat selects the pinned row of its page, else it opens the page over its agent.
         .environment(\.openDocument) { id in show(MacPagePlace.card(id, documents: store.documents)) }
         // The page of a pinned row stays open when its pin goes: it shows over its agent. A deleted page leaves the
@@ -272,7 +266,7 @@ struct MacMainWindow: View {
         case .spend:
             placeStack { SpendView() }
         case .agents:
-            placeStack { AgentsView(create: { Task { await store.newProject() } }).navigationTitle("Projects") }
+            placeStack { AgentsView().navigationTitle("Projects") }
         case .people:
             placeStack { PeopleView(openTeamChat: { selection = .team($0) }).navigationTitle("People") }
         case .business:

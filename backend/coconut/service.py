@@ -14,7 +14,6 @@ import secrets
 import sqlite3
 import threading
 import time
-import unicodedata
 from concurrent.futures import Future
 from queue import Empty, Queue
 from datetime import datetime, timezone
@@ -158,7 +157,7 @@ from .withdrawal_corrections import WithdrawalCorrections
 from .silent_responses import SilentResponses, is_silent_message, is_silent_response
 from .technical_lane import TechnicalLane
 from .hermes_setup import HermesSetup
-from .bot_profiles import NEW_CHAT_NAME, SHARED_SETTINGS, BotProfiles
+from .bot_profiles import ONLY_PROJECTS, BotProfiles
 from .agent_chats import AgentChats
 from .gateway_chat import GatewayChat
 from .message_queue import MessageQueue
@@ -246,7 +245,6 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
         CREATE TABLE IF NOT EXISTS deliveries (id TEXT PRIMARY KEY, data TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS routine_occurrences (id TEXT PRIMARY KEY, data TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS contexts (id TEXT PRIMARY KEY, data TEXT NOT NULL);
-        CREATE TABLE IF NOT EXISTS bot_creation_receipts (id TEXT PRIMARY KEY, data TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS bot_deletion_receipts (id TEXT PRIMARY KEY, data TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS workspace_recoveries (id TEXT PRIMARY KEY, data TEXT NOT NULL);
@@ -361,7 +359,7 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
                 self._migrate_silent_responses()
                 self._migrate_pr_review_sources()
                 self._migrate_native_routine_prompts()
-                self._mark_coconut_chat()
+                self._ensure_projects()
                 migrate_notification_importance(self.db)
                 self._move_artifact_content()
                 if not getattr(self, '_workspace_recovery_hold', False):
@@ -752,60 +750,16 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
             raise ServiceError(403, f'To {purpose}, use a direct human message addressed to this agent.')
         return source
 
-    def _bot_creation_input(self, task: dict) -> dict:
-        sources, receipts = [], []
+    def _human_sources_input(self, task: dict) -> dict:
+        """The direct human messages of this turn (gateway_chat.gateway_command)."""
+        sources = []
         for source_id in task.get('_preference_source_ids', []):
             try:
-                source = self._human_source(task, source_id, task, 'create agents')
+                source = self._human_source(task, source_id, task, 'run a command')
             except ServiceError:
                 continue
             sources.append({'id': source['id'], 'text': source['text']})
-        source_ids = {source['id'] for source in sources}
-        for record in self._all('bot_creation_receipts'):
-            if record['source_message_id'] in source_ids:
-                bot = self._get('bots', record['receipt']['bot_id'])
-                if not bot.get('_deleted'):
-                    # A committed bot may still need its profile after an interrupted sync.
-                    self._sync_profile(bot)
-                    receipts.append(record['receipt'] | {'status': 'duplicate'})
-        return {'_bot_creation_sources': sources, '_bot_creation_receipts': receipts}
-
-    def _create_bot_from_chat(self, task_id: str, payload: dict) -> dict:
-        if not isinstance(payload, dict) or set(payload) != {'source_message_id', 'name', 'role', 'instructions'}:
-            raise ServiceError(400, 'Send only source_message_id, name, role, and instructions to create an agent.')
-        source_id = require_text(payload, 'source_message_id', 100)
-        name = require_text(payload, 'name', 80)
-        role = require_text(payload, 'role', 160)
-        instructions = payload['instructions']
-        if not isinstance(instructions, str) or len(instructions) > 20000:
-            raise ServiceError(400, 'instructions must contain at most 20000 characters.')
-        normalized_name = ' '.join(unicodedata.normalize('NFKC', name).casefold().split())
-        receipt_id = digest(encoded([source_id, normalized_name]))
-        fingerprint = digest(encoded([normalized_name, role, instructions]))
-        with self.transaction():
-            task = self._get('tasks', task_id)
-            if self.stopping.is_set() or task['status'] != 'working':
-                raise ServiceError(409, 'This task is no longer working and cannot create an agent.')
-            if self._task_paused(task) or self._get('exchanges', task['exchange_id']).get('cancelled'):
-                raise ServiceError(409, 'Restore this agent before creating an agent.')
-            source = self._human_source(task, source_id, task, 'create agents')
-            previous = self.db.execute('SELECT data FROM bot_creation_receipts WHERE id=?', (receipt_id,)).fetchone()
-            if previous:
-                record = json.loads(previous[0])
-                if record['fingerprint'] != fingerprint:
-                    raise ServiceError(409, 'This message already created that agent with different settings. Send a new request.')
-                bot = self._get('bots', record['receipt']['bot_id'])
-                if bot.get('_deleted'):
-                    raise ServiceError(409, 'That agent was deleted. Send a new human request to create another agent.')
-                self._sync_profile(bot)
-                return record['receipt'] | {'status': 'duplicate'}
-            if sum(record['source_message_id'] == source_id for record in self._all('bot_creation_receipts')) >= self.BOT_CHANGE_LIMIT:
-                raise ServiceError(409, 'This message created eight agents. Send a new human request to create more.')
-            audit = {'source_message_id': source_id, 'source_task_id': task_id, 'created_by': source['_human_device_id']}
-            bot = self._create_bot({'name': name, 'role': role, 'instructions': instructions}, audit=audit)
-            receipt = dict(status='created', bot_id=bot['id'], profile_id=bot['profile_id'], session_id=bot['session_id'], name=bot['name'], role=bot['role'], source_message_id=source_id)
-            self._put('bot_creation_receipts', dict(id=receipt_id, fingerprint=fingerprint, source_message_id=source_id, source_task_id=task_id, source_bot_id=task['bot_id'], created_by=source['_human_device_id'], created_at=now(), receipt=receipt))
-            return receipt
+        return {'_human_sources': sources}
 
     def _bot_deletion_input(self, task: dict) -> dict:
         sources = []
@@ -820,7 +774,7 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
                 '_bot_deletion_receipts': [record['receipt'] for record in self._all('bot_deletion_receipts')
                                             if record['source_message_id'] in source_ids],
                 '_deletable_bots': [{'id': bot['id'], 'name': bot['name'], 'role': bot['role'], 'archived': bot['archived']}
-                                    for bot in self._all('bots') if not bot.get('_deleted')
+                                    for bot in self._all('bots') if not bot.get('_deleted') and not self._is_project(bot['id'])
                                     and bot['id'] not in (task['bot_id'], task['conversation_bot_id'])]}
 
     def _delete_bot_from_chat(self, task_id: str, payload: dict) -> dict:
@@ -843,6 +797,7 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
             bot = self._get('bots', target_id)
             if bot['name'] != name:
                 raise ServiceError(409, 'The target agent changed its name. Refresh before requesting deletion.')
+            self._refuse_project_removal(target_id)
             row = self.db.execute('SELECT data FROM bot_deletion_receipts WHERE id=?', (receipt_id,)).fetchone()
             if row:
                 receipt = json.loads(row[0])['receipt']
@@ -944,6 +899,9 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
     def _bot_view(self, bot: dict, catalog: dict | None) -> dict:
         from .coconut_chat import view
         result = view(self, bot, self._public(bot))
+        if not bot.get('chat_of'):
+            # The apps list only projects under Projects and in the message box (bot_profiles.PROJECTS).
+            result['project'] = self._is_project(bot['id'])
         if catalog is not None:
             try:
                 route = self.provider.resolve_model(bot, catalog)
@@ -1196,9 +1154,11 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
         if method == 'PATCH' and len(parts) == 3 and parts[:2] == ['v1', 'bots'] and isinstance(data, dict):
             from .coconut_chat import refuse_removal
             refuse_removal(self, parts[2], data)
+            self._refuse_project_removal(parts[2], data)
         if method == 'DELETE' and len(parts) == 3 and parts[:2] == ['v1', 'bots']:
             from .coconut_chat import refuse_removal
             refuse_removal(self, parts[2])
+            self._refuse_project_removal(parts[2])
         catalog = self._model_catalog() if path == '/v1/settings/model' or (isinstance(data, dict) and ('model_override' in data or path == '/v1/bots')) else None
         callbacks = []
         with self.transaction():
@@ -1349,35 +1309,6 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
                 raise ServiceError(503, 'The Mac could not confirm the model change. Retry with the same request key.') from None
             return self._finish_model_update(key, catalog)
 
-    def _create_bot(self, data: dict, *, audit: dict | None = None) -> dict:
-        """Create a project: a named chat on the one Hermes profile (bot_profiles.py).
-
-        Without a name, the first message of the person names it (agent_chats._title_chat). The apps send no face: an
-        `avatar` or a `color` from an older app is ignored. The API still sends both fields, empty, for older apps.
-        """
-        if data.get('model_override') is not None:
-            raise ServiceError(409, SHARED_SETTINGS)
-        if not isinstance(data.get('pinned', False), bool):
-            raise ServiceError(400, 'pinned must be true or false.')
-        for field in ('instructions', 'memory'):
-            if not isinstance(data.get(field, ''), str) or len(data.get(field, '')) > 20000:
-                raise ServiceError(400, f'{field} must contain at most 20000 characters.')
-        name = str(data.get('name') or '').strip()
-        if len(name) > 80:
-            raise ServiceError(400, 'name must contain at most 80 characters.')
-        bot = dict(id=uid(), session_id=uid(), name=name or NEW_CHAT_NAME, role=str(data.get('role', ''))[:160], avatar='',
-                   color='', instructions='', notifications=True, status='idle', last_message='', unread_count=0,
-                   archived=False, pinned=data.get('pinned', False), created_at=now())
-        bot['last_read_message_id'] = None
-        if not name:
-            bot['auto_name'] = True
-        bot['profile_id'] = profile_id(bot)
-        bot['model_override'] = None
-        self._attach_profile(bot)
-        self._put('bots', bot)
-        self._event('bot.created', bot | (audit or {}), bot['id'], (audit or {}).get('source_task_id'))
-        return bot
-
     def _bot_deletion_scope(self, bot_id: str) -> set[str]:
         tasks = self._all('tasks')
         affected = {task['id'] for task in tasks if bot_id in (task['bot_id'], task['conversation_bot_id'])}
@@ -1524,7 +1455,8 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
             self._event('bots.restarted', result | {'requested_by': device})
             return result
         if parts == ['v1', 'bots'] and method == 'POST':
-            return self._bot_view(self._create_bot(data), self._request_model_catalog)
+            # Nobody creates a project: Coconut has two (bot_profiles.PROJECTS). An older app still asks.
+            raise ServiceError(410, ONLY_PROJECTS)
         if len(parts) >= 3 and parts[1] == 'bots':
             bot = self._get('bots', parts[2])
             if bot.get('_deleted'):
@@ -1539,7 +1471,6 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
                 # `avatar` and `color` from an older app are ignored: a project has no face.
                 if 'name' in data:
                     bot['name'] = require_text(data, 'name', 160)
-                    bot.pop('auto_name', None)
                 if 'role' in data:
                     if not isinstance(data['role'], str) or len(data['role']) > 160:
                         raise ServiceError(400, 'The label must contain at most 160 characters.')
@@ -3663,7 +3594,7 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
                         (task_id, task.get('_native_turn_id')))]
                     carried = [self._get('native_receipts', identity) for identity in task.get('_continuation_receipt_ids', [])]
                     provider_task['_native_receipts'] = list({r['id']: r for r in carried + provider_task['_native_receipts']}.values())
-                    provider_task.update(self._bot_creation_input(task))
+                    provider_task.update(self._human_sources_input(task))
                     provider_task['_withdrawal_corrections'] = self._withdrawal_corrections_available(task)
                 timing.mark('receipts')
                 # The context readers below only read. Each would parse every task again without the shared block.
@@ -3872,8 +3803,6 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
             return self.native_event(task_id, kind, payload)
         if kind == 'bot_delete':
             return self._delete_bot_from_chat(task_id, payload)
-        if kind == 'bot_create':
-            return self._create_bot_from_chat(task_id, payload)
         if kind == 'bot_message':
             return self._deliver_bot_message(task_id, payload)
         if kind == 'artifact' and payload.get('kind') == 'work':
@@ -4020,7 +3949,6 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
                 error_code = payload.get('error_code')
                 from .native_failure import NATIVE_ERROR_CODES
                 known_errors = set(NATIVE_ERROR_CODES)
-                known_errors.update({'bot_creation_invalid_request', 'bot_creation_rejected', 'bot_creation_receipt_unconfirmed'})
                 if kind == 'failed' and isinstance(error_code, str) and error_code in known_errors:
                     task['error_code'] = error_code
                     self.record_provider_failure(task['bot_id'], error_code, payload.get('retry_after'))

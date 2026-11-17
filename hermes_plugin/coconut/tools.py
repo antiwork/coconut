@@ -260,7 +260,6 @@ def register(ctx):
                             (module.refresh_schema(), _service_tool('refresh_decision')),
                             (module.WAIT_SCHEMA, _service_tool('wait')),
                             (module.CORRECTION_SCHEMA, _service_tool('correct_withdrawal')),
-                            (module.BOT_CREATION_SCHEMA, _service_tool('create_bot')),
                             (module.BOT_DELETION_SCHEMA, _service_tool('delete_bot')),
                             (module.WORKSPACE_SCHEMA, _workspace),
                             (module.KANBAN_CREATE_SCHEMA, _service_tool('kanban_create')),

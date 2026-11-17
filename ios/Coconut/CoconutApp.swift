@@ -442,22 +442,12 @@ extension CoconutHome {
         case "new-chat": show(.home); later { store.startChat(in: store.bots.first { $0.id == agent }) }
         case "agent-new-chat": show(.home, [AgentRoute(botId: agent)]); later { store.startChat(in: store.bots.first { $0.id == agent }) }
         case "chat-new-chat": show(.home, [ConversationRoute(botId: agent)]); later { store.startChat(in: store.bots.first { $0.id == agent }) }
-        case "new-project": show(.home); later { await store.newProject() }
-        // The first message of the box, sent as its Send does: in a new chat of the project, or in a new project.
+        // The first message of the box, sent as its Send does: in a new chat of the project.
         case "new-chat-send":
             show(.home)
             later {
                 guard let bot = store.bots.first(where: { $0.id == agent }),
                       let chat = await store.sendNewChat(in: bot, text: "Which sellers had a payout held on Friday?") else { return }
-                homePath.append(ConversationRoute(botId: chat.id))
-            }
-        case "new-project-send":
-            show(.home)
-            later {
-                guard let project = await store.newProject() else { return }
-                // The person types for a moment before Send.
-                try? await Task.sleep(for: .seconds(1.5))
-                guard let chat = await store.sendNewChat(in: project, text: "Draft the weekly payout summary for Gumroad.") else { return }
                 homePath.append(ConversationRoute(botId: chat.id))
             }
         // Quick to-dos: the sheet of a new one, a to-do added as Add does, and the comments of one.

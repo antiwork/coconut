@@ -1,7 +1,7 @@
 """The Coconut chat: the one place where a person changes their Coconut (docs: "Customize Coconut from its own chat").
 
-Coconut has no settings screens. Every chat runs on the default Hermes profile, and one of them, marked
-`coconut_chat` (bot_profiles._mark_coconut_chat), is the Coconut chat. It shows as "Coconut",
+Coconut has no settings screens. The Coconut project (bot_profiles.PROJECTS) carries the mark `coconut_chat`
+(bot_profiles._ensure_projects): it is the Coconut chat. It shows as "Coconut",
 it stays at the top of the sidebar and of the Chats list, and nobody archives or deletes it. It has one tool,
 `coconut_settings`, that reads every setting and changes one, through the same routes that the app used before
 (Service.mutate), so each rule and each check of a change stays the same.
@@ -32,7 +32,7 @@ SETTINGS_SCHEMA = {
         'that another agent hands to it with coconut_message_bot. Coconut has no settings screens, '
         'so the person changes everything here, in plain words: "use Opus", "let chats run commands '
         'without asking", "mute Desk", "let each agent run 4 work sessions", "fall back to Sonnet". When the person sends "/help", call "read" '
-        'and list in short lines what they can ask you to change, with the current values. Every chat shares one model and one access mode. First call with action "read" to see the current values and the choices. '
+        'and list in short lines what they can ask you to change, with the current values. First call with action "read" to see the current values and the choices. '
         'Then call action "change" with one setting. Say in one line what changed, from what to what, and that '
         'the person can ask to undo it. A change that deletes something or costs money needs a card first '
         '(coconut_ask). Mode "cloud" is not available yet: say that Cloud is coming soon.'),

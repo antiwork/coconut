@@ -119,23 +119,23 @@ It does not promise exactly-once execution for arbitrary shell commands or exter
 Agent deliveries commit their task and receipt together.
 The explicit Coconut file executor reconciles output identity and content before retrying.
 
-Routines are native jobs of the default profile. The gateway runs them, and each job belongs to the chat of its `origin.chat_id` (see "Phase 4: routines in the gateway").
+Routines are native jobs of each profile. The gateway runs them, and each job belongs to the chat of its `origin.chat_id`, else to the oldest bot of that profile (see "Phase 4: routines in the gateway").
 
 ## Isolation and routing
 
-Every chat runs on one Hermes profile, `default`. Each chat has its own Hermes session, kanban tenant, workspace, and browser directory.
+Coconut has two projects, Coconut and Gumroad, and each runs on its own Hermes profile: `coconut` and `gumroad` in `<Hermes home>/profiles`. Each chat has its own Hermes session, kanban tenant, workspace, and browser directory.
 
-### Agents are project chats on one Hermes profile
+### Two projects, each on its own Hermes profile
 
-An agent is a project: a name and its chats. Every chat runs on the default Hermes profile, the Hermes home (`$HERMES_HOME`, else `~/.hermes`). The `profiles` table in `coconut.sqlite3` still maps each agent UUID to the Hermes home that runs it, so agent IDs never change (`backend/coconut/bot_profiles.py`).
+A project is a name and its chats (`backend/coconut/bot_profiles.py`, `PROJECTS`). The `profiles` table in `coconut.sqlite3` maps each bot UUID to the Hermes profile that runs it, so IDs never change.
 
-- A new agent maps to the default profile. Coconut creates no profile, scans no profile folder, and deletes no profile.
-- Each chat is its own Hermes session, keyed by the chat ID. The model, memory, `SOUL.md`, skills, cron jobs and access are those of the one profile, so every chat shares them. `PATCH /v1/bots/<id>` refuses `model_override`, `instructions`, `approval_override` and `worker_limit` with 409. It ignores `avatar` and `color`.
-- A new agent needs no name. Without one it is "New chat", and the first message of the person names it (`auto_name`, `agent_chats._title_chat`). The person can rename it. The API still sends `avatar` and `color`, empty for a new agent, so older apps decode an agent.
-- The Coconut chat is the agent with the mark `coconut_chat`. At the first start of this release, the mark goes to the agent that the default profile ran before.
+- Nobody creates a project. At each start the service makes the bot of a project once, when its profile folder exists and no bot runs on it (`_ensure_projects`). The oldest bot on a project's profile is the project. `POST /v1/bots` answers 410, and agents have no tool to create one. Coconut creates no profile, scans no profile folder, and deletes no profile.
+- A project cannot be archived or deleted (409). A chat of a project can.
+- A bot view carries `project`: true for a project, false for an agent of an earlier release. The apps list only projects under Projects and in the message box. An agent of an earlier release keeps its profile, its chats and its routines, but takes no new chat (409). Removing it is the person's choice.
+- The Coconut project is the Coconut chat: it carries the mark `coconut_chat`, and its chats have `coconut_settings`.
+- `PATCH /v1/bots/<id>` refuses `model_override`, `instructions`, `approval_override` and `worker_limit` with 409, and ignores `avatar` and `color`. The API still sends both, empty, so older apps decode a bot.
 - Coconut keeps its own files of an agent in `<data-dir>/bots/<uuid>`: workspace, browser, temporary files, and terminal scripts.
-- An agent can have more chats. `POST /v1/bots/<id>/chats` makes a bot with `chat_of` (the agent's ID), a new session, and a `profiles` row with the folder of the agent's profile. Its first message is its title (`chat_title`). A chat can be archived or removed by itself; removing the agent removes its chats.
-- An agent of an earlier release can still map to a named profile in `<Hermes home>/profiles` and keeps running there. `python3 -m coconut.profile_merge` merges those profiles into default while the service is stopped: it backs up every profile folder, copies cron jobs (and pauses the old ones), memory entries (tagged with the agent), `SOUL.md` sections for each chat, and missing skills, and maps the chats to default. It copies no `.env`, `auth.json` or token: it lists them so the person can connect them again. It deletes no profile folder. Without `--apply` it prints the plan.
+- New chat: the person picks Coconut or Gumroad. `POST /v1/bots/<id>/chats` makes a bot with `chat_of` (the project's ID), a new session, and a `profiles` row with the folder of the project's profile. Its first message is its title (`chat_title`). A chat can be archived or removed by itself.
 - Deleting an agent means "Remove from Coconut": its Hermes sessions stay.
 `HOME` remains the Mac account home so macOS Keychain works.
 `USER` identifies the Mac account so Claude Code selects its saved Keychain login.
@@ -165,7 +165,7 @@ Native profile data is not copied into peer messages automatically.
 
 ### The model of an agent
 
-Every chat uses the model of the default profile, `<Hermes home>/config.yaml`. The Coconut chat changes it for every chat (`coconut_settings` `default_model`, `PUT /v1/settings/model`), and so does `/model` in the message box. An agent has no model of its own.
+Every chat uses the default model, `<Hermes home>/config.yaml`, unless its project's profile sets a model of its own. The Coconut chat changes the default model (`coconut_settings` `default_model`, `PUT /v1/settings/model`), and so does `/model` in the message box. A chat has no model of its own.
 
 ## The Hermes gateway
 
@@ -365,7 +365,7 @@ What the guard does not cover:
 
 - GitHub source activity. A turn of the gateway gets the new activity of the GitHub threads that the cards of its task link, and the tracked PRs with their latest observations, as the worker gives them (`native_conversation.source_activity_note`, `tracked_note`).
 - PR reviews. When Coconut sees new check or review results for a PR that a chat task tracks, the task continues in the gateway with the worker's text: `PR_REVIEW_INSTRUCTIONS`, the observed GitHub facts and the original task. The worker's rules for a merge card (`card_tools.PR_MERGE_INSTRUCTIONS`) go into the system prompt of each Coconut session. How an agent reviews and when it offers a merge card stay in its own Hermes skills, so the behavior stays the same.
-- Agent changes. `coconut_create_bot` and `coconut_delete_bot` are tools of the plugin, with the worker's schemas and rules (`card_tools`). A chat turn lists the person's messages that can ask for a change, and the agents that the turn can delete (`bot_creation_context`, `bot_deletion_context`). The service checks each request against those messages (`_create_bot_from_chat`, `_delete_bot_from_chat`).
+- Agent removal. `coconut_delete_bot` is a tool of the plugin, with the worker's schema and rules (`card_tools`). A chat turn lists the person's messages that can ask for a removal, and the agents that the turn can delete: never a project (`bot_deletion_context`). The service checks each request against those messages (`_delete_bot_from_chat`). No tool creates an agent.
 - A coordinator that names a failed gateway task in `continuation_task_id` no longer gets "Use the native workflow". That task has no work session to continue, so the message joins the target agent's gateway conversation as a new turn (`_bot_continuation_owner`).
 - Still in the worker: the audit of a work source (`_source_audit_prompt`, `_source_answer_steps`). Coconut gives each audit its own work session, and the dispatchers run it as a Kanban claim beside the person's chats. The gateway has no separate session for each audit, and the dispatch of a chat turn keeps one place for the person's chats. A PR review of a task with its own work session stays with the worker too. The results of a worker's background process (`_background_completion`) and the receipts of a worker's tool calls (`_native_receipts`) stay with the worker that made them.
 

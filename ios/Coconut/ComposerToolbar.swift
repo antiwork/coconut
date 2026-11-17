@@ -114,7 +114,7 @@ enum ComposerDrafts {
     }
 }
 
-/// The label of a chip of the composer (NewChatBar).
+/// The label of a chip of the composer (QuickTodos).
 struct ComposerChipLabel: View {
     let symbol: String
     let title: String

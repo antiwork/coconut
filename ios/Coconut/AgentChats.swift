@@ -6,6 +6,8 @@ import SwiftUI
 extension Bot {
     /// True for a further chat of an agent. The agent itself is the first chat.
     var isChat: Bool { chatOf != nil }
+    /// A project takes new chats. An older Mac sends no `project`: each agent but the Coconut chat is then a project.
+    var isProject: Bool { !isChat && (project ?? !coconut) }
 
     /// The agent of this bot: the bot itself, or the agent of a chat. The settings and the pages belong to it.
     var agentId: String { chatOf ?? id }
@@ -85,13 +87,9 @@ extension Array where Element == Bot {
 
     /// The bots that the person can mention or choose: each agent one time.
     var withoutChats: [Bot] { filter { !$0.isChat } }
-}
 
-/// The plus makes a project at once, without a name. The first message of the person names it, and the person can
-/// rename it on its page.
-enum NewAgent {
-    /// The name of a project until its first message names it. The Mac uses the same name (bot_profiles.NEW_CHAT_NAME).
-    static let name = "New chat"
+    /// The projects, Coconut and Gumroad: the only places where a chat starts.
+    var projects: [Bot] { filter(\.isProject) }
 }
 
 /// What a way to start a chat asks of the message box: the project that it sends to, and the text that waits in it.
@@ -102,8 +100,7 @@ struct NewChatRequest: Equatable {
 }
 
 extension AppStore {
-    /// Every way to start a chat ends here: the New chat of a project page, of a chat, of a menu and of the Mac, and
-    /// New project. The window shows the message box (Home) with the project chosen and the cursor in its field, ready
+    /// Every way to start a chat ends here: the New chat of a project page, of a chat, of a menu and of the Mac. The window shows the message box (Home) with the project chosen and the cursor in its field, ready
     /// to type. Nothing is asked of the Mac yet: the first message makes the chat (sendNewChat), so a chat that the
     /// person never writes in is never made. Returns false, with the reason in the error notice, when no chat can start.
     @discardableResult
@@ -118,22 +115,15 @@ extension AppStore {
                 error = "Restore this project before starting a new chat."
                 return false
             }
+            guard agent.isProject else {
+                error = "Start a new chat in Coconut or Gumroad."
+                return false
+            }
             project = agent.id
         }
         newChatRequest = NewChatRequest(project: project, text: text)
         chatStarts += 1
         return true
-    }
-
-    /// New project: makes a project without a name, and starts a chat in it. Its first message names it. Returns the
-    /// project, or nil when the Mac did not make it; the error notice says why.
-    @discardableResult
-    func newProject() async -> Bot? {
-        guard let bot = await createBot() else { return nil }
-        // The update of the Mac brings the project too. The app shows it at once.
-        if !bots.contains(where: { $0.id == bot.id }) { bots.append(bot) }
-        startChat(in: bot)
-        return bot
     }
 
     /// The chat for the first message of a new chat in `project`: the Coconut chat, which has one chat, or the chat of
@@ -149,7 +139,8 @@ extension AppStore {
             return nil
         }
         let latest = chatSummaries.newestActivity
-        if agent.coconut || AgentChats.isBlank(agent, latest: latest) { return agent }
+        // The Coconut chat of an older Mac has one chat. The Coconut project takes new chats as Gumroad does.
+        if (agent.coconut && !agent.isProject) || AgentChats.isBlank(agent, latest: latest) { return agent }
         if let spare = AgentChats.spare(of: agent.id, in: bots, latest: latest) { return spare }
         return await makeChat(of: agent)
     }

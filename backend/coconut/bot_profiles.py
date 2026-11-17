@@ -1,12 +1,13 @@
-"""Every project chat runs on one Hermes profile: `default`, the Hermes home itself.
+"""Coconut has two projects, Coconut and Gumroad, and each is served by its own Hermes profile.
 
-A project (a bot) is a name and its chats. Each chat is a Hermes session of its own on that one profile, keyed by the
-chat ID, so the model, the memory, SOUL.md, the skills, the routines (cron) and the access are shared by all projects.
-Coconut creates no profile, scans no profile folder, and deletes no profile.
+A project is a bot without `chat_of`. Its chats are bots with `chat_of` (agent_chats.py), each a Hermes session of its
+own on the project's profile. Nobody creates a project: the service makes the bot of a project once, when its profile
+folder exists and no bot runs on it (`_ensure_projects`). Coconut creates no profile, scans no profile folder, and
+deletes no profile.
 
-The `profiles` table (profile_registry) still maps each bot to the Hermes home that runs it. A new bot maps to the
-Hermes home. A bot of an earlier release can still map to a named profile in `<Hermes home>/profiles` until the
-person merges that profile into `default` (profile_merge.py). Until then it keeps running there.
+The `profiles` table (profile_registry) maps each bot to the Hermes home that runs it. A bot of an earlier release that
+is no project keeps its row and its chats, but takes no new chat (agent_chats._new_chat), and the apps list it under
+no project.
 """
 from __future__ import annotations
 
@@ -20,11 +21,13 @@ from .profiles import SKILLS
 
 LOG = logging.getLogger(__name__)
 COMMAND_SECONDS = 300
-# The name of a project before the first message of the person names it (agent_chats._title_chat).
-NEW_CHAT_NAME = 'New chat'
-SHARED_SETTINGS = ('All chats share one Hermes profile, so the model, instructions and access are the same for every '
-                   'chat. Change them for all chats in the Coconut chat.')
-# The fields that only a profile of its own could give one project.
+# The projects: the Hermes profile that serves each, and its name. The first is the Coconut chat (coconut_chat.py).
+PROJECTS = (('coconut', 'Coconut'), ('gumroad', 'Gumroad'))
+ONLY_PROJECTS = 'Coconut has two projects, Coconut and Gumroad. Start a new chat in one of them.'
+PROJECTS_STAY = 'Coconut and Gumroad stay: they are the projects of Coconut.'
+SHARED_SETTINGS = ('A project has no settings of its own in Coconut. Change the model and the access in the Coconut '
+                   'chat.')
+# The fields that only a per-agent setting gave one bot.
 PROFILE_FIELDS = ('instructions', 'approval_override', 'worker_limit')
 
 
@@ -58,13 +61,8 @@ class BotProfiles:
         profile_registry.write(self.db, row)
         self.profiles.rows[row['bot_id']] = dict(row, home=str(row['home']))
 
-    def _attach_profile(self, bot: dict, profile: dict | None = None) -> None:
-        """Run the bot on `profile` ({name, home}), by default the one profile: the Hermes home."""
-        if profile is None:
-            if not self.uses_hermes:
-                # Fixture mode has no Hermes. The smallest profile lives inside the data directory.
-                self.hermes_home.mkdir(parents=True, exist_ok=True, mode=0o700)
-            profile = dict(name=profile_registry.DEFAULT, home=str(self.hermes_home))
+    def _attach_profile(self, bot: dict, profile: dict) -> None:
+        """Run the bot on `profile` ({name, home})."""
         self._write_profile_row(dict(bot_id=bot['id'], name=profile['name'], home=profile['home'], state='active'))
         bot.update(profile=profile['name'], profile_state='active')
 
@@ -82,26 +80,59 @@ class BotProfiles:
         if data.get('model_override') is not None or any(field in data for field in PROFILE_FIELDS):
             raise ServiceError(409, SHARED_SETTINGS)
 
-    def _mark_coconut_chat(self) -> None:
-        """Keep the Coconut chat when every chat runs on the default profile.
+    def _project_ids(self) -> dict[str, str]:
+        """The bot of each project: {bot ID: profile name}. It is the oldest bot that runs on the project's profile."""
+        names = {name for name, _ in PROJECTS}
+        found: dict[str, dict] = {}
+        for bot in sorted(self._all('bots'), key=lambda bot: bot.get('created_at') or ''):
+            row = self.profiles.rows.get(bot['id'])
+            if (row and row['name'] in names and row['state'] == 'active' and not bot.get('chat_of')
+                    and not bot.get('_deleted')):
+                found.setdefault(row['name'], bot)
+        return {bot['id']: name for name, bot in found.items()}
 
-        The Coconut chat was the agent of the default profile (coconut_chat.is_coconut). Now every chat maps to that
-        profile, so the bot keeps the mark `coconut_chat` instead. The mark goes once to the agent that the default
-        profile ran before this release. The caller holds the transaction.
-        """
-        if self._setting('coconut_chat_marked'):
-            return
-        bots = {bot['id']: bot for bot in self._all('bots')}
-        for row in self.profiles.rows.values():
-            bot = bots.get(row['bot_id'])
-            if (bot and row['name'] == profile_registry.DEFAULT and row['state'] == 'active'
-                    and not bot.get('chat_of') and not bot.get('_deleted')):
-                bot['coconut_chat'] = True
+    def _is_project(self, bot_id: str) -> bool:
+        return bot_id in self._project_ids()
+
+    def _ensure_projects(self) -> None:
+        """Make the bot of each project whose profile exists and has none yet, and mark the Coconut project as the
+        Coconut chat. Without Hermes (fixture mode and tests), each profile lives in <data>/hermes/profiles. The
+        caller holds the transaction."""
+        from .service_base import now, uid
+        projects = {name: bot_id for bot_id, name in self._project_ids().items()}
+        for name, title in PROJECTS:
+            if name in projects:
+                continue
+            home = self.hermes_home / 'profiles' / name
+            if not self.uses_hermes:
+                home.mkdir(parents=True, exist_ok=True, mode=0o700)
+            if not home.is_dir():
+                LOG.warning('The Hermes profile %s of the project %s is missing.', name, title)
+                continue
+            # Older apps read `avatar` and `color`. A project has no face, so both stay empty.
+            bot = dict(id=uid(), session_id=uid(), name=title, role='', avatar='', color='', instructions='',
+                       notifications=True, status='idle', last_message='', unread_count=0, last_read_message_id=None,
+                       archived=False, pinned=False, created_at=now(), model_override=None)
+            bot['profile_id'] = bot['id']
+            self._attach_profile(bot, dict(name=name, home=str(home)))
+            self._put('bots', bot)
+            self._event('bot.created', bot, bot['id'])
+            projects[name] = bot['id']
+        coconut = projects.get(PROJECTS[0][0])
+        for bot in self._all('bots'):
+            marked = bot['id'] == coconut
+            if bool(bot.get('coconut_chat')) != marked and not bot.get('chat_of'):
+                if marked:
+                    bot['coconut_chat'] = True
+                else:
+                    bot.pop('coconut_chat', None)
                 self._put('bots', bot)
-                break
-        from .service_base import encoded
-        self.db.execute('INSERT INTO settings(key,value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value',
-                        ('coconut_chat_marked', encoded(True)))
+
+    def _refuse_project_removal(self, bot_id: str, data: dict | None = None) -> None:
+        """A project stays: no archive and no delete. A chat of a project can go."""
+        from .service_base import ServiceError
+        if self._is_project(bot_id) and (data is None or data.get('archived') is True):
+            raise ServiceError(409, PROJECTS_STAY)
 
     def _start_hermes_entries(self) -> None:
         """Set Coconut's own entries in the Hermes home again, in the background, at each start.

@@ -167,8 +167,8 @@ def gateway_turn_own(request) -> str:
 def gateway_command(request) -> str | None:
     """The command of Hermes that the person typed as the whole message of this turn, or None.
 
-    Only a direct message that the person typed on the phone counts, as the service checks it for a bot change
-    (`_bot_creation_sources`, Service._human_source). Bot traffic and a title from a bot's text never count. Other text
+    Only a direct message that the person typed on the phone counts, as the service checks it
+    (`_human_sources`, Service._human_source). Bot traffic and a title from a bot's text never count. Other text
     that starts with "/" stays a chat message."""
     from .gateway_bridge import COMMANDS
     from .native_conversation import current_messages
@@ -176,7 +176,7 @@ def gateway_command(request) -> str | None:
     if request['operation'] != 'start' or task.get('attachments'):
         return None
     messages = current_messages(request)
-    human = {source.get('id') for source in task.get('_bot_creation_sources') or [] if isinstance(source, dict)}
+    human = {source.get('id') for source in task.get('_human_sources') or [] if isinstance(source, dict)}
     if len(messages) != 1 or messages[0]['id'] not in human:
         return None
     text = str(messages[0].get('text') or '').strip()
@@ -223,8 +223,8 @@ def work_notes(request) -> str:
         text += '\n' + WORKSPACE_INSTRUCTIONS.strip()
     if request.get('bot') and request['operation'] in ('start', 'resume'):
         # The bot changes that the person's messages in this turn can request.
-        from .bot_changes import bot_creation_context, bot_deletion_context
-        text += bot_creation_context(request) + bot_deletion_context(request)
+        from .bot_changes import bot_deletion_context
+        text += bot_deletion_context(request)
     if work_enabled(request['operation'], task):
         text += '\n' + WORK_INSTRUCTIONS
         if task.get('_work_todos'):
@@ -319,7 +319,7 @@ LANE_QUESTION = ('Independent technical work cannot ask the person or get an app
 # The Coconut tools of a gateway turn and the service events that they are. In a technical lane, the service refuses
 # these events as it refuses them for the worker (technical_lane.REFUSED_EVENTS). The other tools emit their event.
 LANE_EVENTS = {'ask': 'native_question', 'suggest': 'native_proposal', 'resolve_reply': 'decision_response',
-               'wait': 'work_wait', 'correct_withdrawal': 'withdrawal_correction', 'create_bot': 'bot_create',
+               'wait': 'work_wait', 'correct_withdrawal': 'withdrawal_correction',
                'delete_bot': 'bot_delete', 'continue_work': 'work_continue', 'track_work': 'artifact'}
 # coconut_track_work tracks the work of a work session. A turn of the bot's chat records an outcome on Coconut's board,
 # and a native outcome reports its progress on its card, as for the worker.
@@ -975,9 +975,6 @@ class GatewayChat:
             return self.gateway_record_pause(task_id, arguments)
         if tool == 'read_receipts':
             return self.gateway_read_receipts(task_id, arguments)
-        if tool == 'create_bot':
-            # The service checks the human message that asks for the bot (service._create_bot_from_chat).
-            return self._create_bot_from_chat(task_id, arguments)
         if tool == 'delete_bot':
             return self._delete_bot_from_chat(task_id, arguments)
         if tool == 'correct_withdrawal':

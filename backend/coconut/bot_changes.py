@@ -1,15 +1,12 @@
-"""The bot changes that a turn may make: the context of a turn for coconut_create_bot and coconut_delete_bot.
+"""The bot changes that a turn may make: the context of a turn for coconut_delete_bot.
 
 The service gives a turn the person's direct messages that may ask for a change, the bots that the turn may delete, and
-the changes that the service already recorded (Service._bot_creation_sources, _bot_deletion_sources). The tools and
-their rules are in card_tools. The service checks each request (_create_bot_from_chat, _delete_bot_from_chat).
+the deletions that the service already recorded (Service._bot_deletion_input). The tool and its rules are in
+card_tools. The service checks each request (_delete_bot_from_chat). Nobody creates a bot: Coconut has two projects.
 """
 from __future__ import annotations
 
 import json
-import os
-from pathlib import Path
-import unicodedata
 from uuid import UUID
 
 
@@ -85,68 +82,3 @@ def bot_deletion_context(request):
     return text
 
 
-def bot_creation_name(name):
-    return ' '.join(unicodedata.normalize('NFKC', name).casefold().split())
-
-
-def bot_creation_sources(request):
-    if request.get('operation') not in ('start', 'resume'):
-        return []
-    return [
-        {'id': source['id'], 'text': source['text']}
-        for source in request['task'].get('_bot_creation_sources', [])
-        if isinstance(source, dict) and isinstance(source.get('id'), str) and source['id']
-        and isinstance(source.get('text'), str)
-    ]
-
-
-def bot_creation_receipt(value, payload, current_bot=None):
-    if (not isinstance(value, dict) or value.get('status') not in ('created', 'duplicate')
-            or value.get('source_message_id') != payload['source_message_id']
-            or not isinstance(value.get('name'), str)
-            or bot_creation_name(value['name']) != bot_creation_name(payload['name'])
-            or value.get('role') != payload['role']):
-        raise ValueError('The service did not confirm the requested agent creation.')
-    for field in ('bot_id', 'profile_id', 'session_id'):
-        identifier = value.get(field)
-        if not isinstance(identifier, str) or str(UUID(identifier)) != identifier:
-            raise ValueError('The service returned an invalid agent identity.')
-    current_bot = current_bot or {}
-    if (value['profile_id'] != value['bot_id'] or value['session_id'] == value['bot_id']
-            or value['bot_id'] == current_bot.get('id') or value['session_id'] == current_bot.get('session_id')):
-        raise ValueError('The service did not confirm a separate agent identity and session.')
-    # The profile ID is the key of the profiles table: the new bot must have its row there.
-    if os.environ.get('COCONUT_DATA_DIR') and (Path(os.environ['COCONUT_DATA_DIR']) / 'coconut.sqlite3').is_file():
-        from . import profile_registry
-        row = profile_registry.lookup(os.environ['COCONUT_DATA_DIR'], value['profile_id'])
-        if row is None or row['state'] != 'active':
-            raise ValueError('The service did not confirm the Hermes profile of the new agent.')
-    return {key: value[key] for key in ('status', 'bot_id', 'profile_id', 'session_id', 'name', 'role', 'source_message_id')}
-
-
-def prior_bot_creation_receipts(request):
-    result = []
-    for receipt in request['task'].get('_bot_creation_receipts', []):
-        try:
-            payload = {key: receipt[key] for key in ('source_message_id', 'name', 'role')}
-            result.append(bot_creation_receipt(receipt, payload, request['bot']))
-        except (ValueError, KeyError, TypeError):
-            continue
-    return result
-
-
-
-
-def bot_creation_context(request):
-    sources = bot_creation_sources(request)
-    text = ''
-    if sources:
-        text += '\nDirect human messages eligible to request agent creation:\n' + json.dumps(sources)
-    else:
-        text += '\nNo direct human source authorizes agent creation in this turn.'
-    receipts = prior_bot_creation_receipts(request)
-    if receipts:
-        text += ('\nThe service already confirmed these agent creations. Use their IDs. '
-                 'Do not create replacements or rephrase a creation after a restart. '
-                 'An exact retry must keep the same source, name, role, and instructions:\n' + json.dumps(receipts))
-    return text

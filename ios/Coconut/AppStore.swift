@@ -771,20 +771,6 @@ final class AppStore {
         return true
     }
 
-    /// Makes a project on the Mac. Without a name, its first message names it. Returns the project, or nil when the Mac
-    /// did not make it.
-    @discardableResult
-    func createBot(name: String = "", pinned: Bool = false) async -> Bot? {
-        if isDemo {
-            let bot = Bot(id: UUID().uuidString, sessionId: UUID().uuidString, name: name.isEmpty ? NewAgent.name : name,
-                          role: "", instructions: "", status: "idle", lastMessage: "", unreadCount: 0, archived: false,
-                          createdAt: Self.now, pinned: pinned)
-            bots.append(bot)
-            return bot
-        }
-        return await write("bots", payload: BotRequest(name: name, pinned: pinned), as: Bot.self)
-    }
-
     /// Asks the Mac for a new chat of an agent (makeChat), a quick to-do with `todo`.
     func createChat(of agentId: String, todo: Bool = false) async -> Bot? {
         await write("bots/\(agentId)/chats", payload: ChatRequest(todo: todo), as: Bot.self)
@@ -3787,7 +3773,6 @@ private struct PairResponse: Decodable, Sendable { let token: String; let device
 private struct EmptyRequest: Encodable {}
 private struct ChatRequest: Encodable { let todo: Bool }
 private struct Acknowledgement: Decodable, Sendable { let ok: Bool }
-private struct BotRequest: Encodable { let name: String; let pinned: Bool? }
 private struct PinRequest: Encodable { let pinned: Bool }
 private struct ArchiveRequest: Encodable { let archived: Bool }
 private struct MuteRequest: Encodable { let notifications: Bool }

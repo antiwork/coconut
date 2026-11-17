@@ -53,6 +53,9 @@ class AgentChats:
             raise ServiceError(404, 'This agent was deleted.')
         if agent['archived']:
             raise ServiceError(409, 'Restore this agent before starting a new chat.')
+        if not self._is_project(agent['id']):
+            from .bot_profiles import ONLY_PROJECTS
+            raise ServiceError(409, ONLY_PROJECTS)
         row = self.profiles.rows.get(agent['id'])
         if row is None or row['state'] != 'active':
             raise ServiceError(409, 'This agent has no Hermes profile to chat with.')
@@ -70,19 +73,10 @@ class AgentChats:
         return chat
 
     def _title_chat(self, bot: dict, text: str) -> None:
-        """The first message of the person names the chat, and names a new project that has no name yet."""
+        """The first message of the person names the chat."""
         if bot.get('chat_of') and not bot.get('chat_title'):
             bot['chat_title'] = chat_title(text)
             self._put('bots', bot)
-        elif bot.pop('auto_name', False):
-            from .service_base import encoded
-            title = chat_title(text)
-            if title:
-                bot['name'] = title
-            self._put('bots', bot)
-            self._event('bot.updated', self._public(bot), bot['id'])
-            self._note_published(bot['id'], encoded(self._public(bot)))
-            self._follow_agent(bot)
 
     def _follow_agent(self, agent: dict) -> None:
         """Give the chats of a project its changed name."""

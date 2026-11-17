@@ -5,9 +5,9 @@ enum ChatProject {
     static let projectKey = "chatProject"
 
     /// The places that a chat can start in: the projects with the newest chat first, then the Coconut chat. An archived
-    /// project is not one of them.
+    /// project and an agent that is no project are not among them.
     static func choices(in bots: [Bot], latest: [String: Date]) -> [Bot] {
-        let open = bots.filter { !$0.archived && !$0.isChat }
+        let open = bots.filter { !$0.archived && ($0.isProject || ($0.coconut && !$0.isChat)) }
         let agents = open.filter { !$0.coconut }.sorted {
             (latest[$0.id] ?? $0.createdAt.apiDate ?? .distantPast) > (latest[$1.id] ?? $1.createdAt.apiDate ?? .distantPast)
         }
@@ -23,7 +23,7 @@ enum ChatProject {
 
 /// The message box of Home, in the iPhone and in the Mac window, as the box of the Codex app: always there, with the
 /// cursor ready. The chip under the text names the project that the message goes to and lists the projects, newest
-/// first, then the Coconut chat. It ends with the list of all projects (on the iPhone) and New project. The first message
+/// first, then the Coconut chat. It ends with the list of all projects (on the iPhone). The first message
 /// starts a new chat in that project and opens it. The same box is where every New chat leads (AppStore.startChat).
 struct NewChatBar: View {
     @Environment(AppStore.self) private var store
@@ -84,7 +84,7 @@ struct NewChatBar: View {
         let shape = RoundedRectangle(cornerRadius: BoardStyle.Radius.large, style: .continuous)
         let canSend = target != nil && !sending && !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         return VStack(alignment: .leading, spacing: 0) {
-            TextField(target.map { "New chat with \($0.name)" } ?? "Create a project to start a chat", text: $text, axis: .vertical)
+            TextField(target.map { "New chat with \($0.name)" } ?? "No project yet", text: $text, axis: .vertical)
                 .focused($focused)
                 .modifier(ComposerFieldStyle(send: { if let target { send(to: target) } }, stacked: true))
                 .padding(.horizontal, BoardStyle.Space.m)
@@ -103,7 +103,8 @@ struct NewChatBar: View {
         .modifier(ComposerGlassGroup())
     }
 
-    /// The project of the box, as a chip that opens the list of projects. Without a project, the chip makes the first.
+    /// The project of the box, as a chip that opens the list of projects. Before the Mac sends its projects, the chip
+    /// says so.
     @ViewBuilder
     private func projectChip(_ target: Bot?, choices: [Bot]) -> some View {
         if let target {
@@ -118,7 +119,6 @@ struct NewChatBar: View {
                 Button("All projects", systemImage: "list.bullet") { pushRoute?(AgentListRoute()) }
                     .accessibilityIdentifier("new-chat-all-projects")
                 #endif
-                newProjectButton
             } label: {
                 HStack(spacing: BoardStyle.Space.xs) {
                     Text(target.name).lineLimit(1)
@@ -136,17 +136,13 @@ struct NewChatBar: View {
             .accessibilityLabel("Project, \(target.name)")
             .accessibilityIdentifier("new-chat-project")
         } else {
-            Button { Task { await store.newProject() } } label: {
-                ComposerChipLabel(symbol: "plus", title: "New project")
-            }
-            .buttonStyle(.plain)
-            .accessibilityIdentifier("new-chat-project")
+            Text("No project yet")
+                .font(.subheadline.weight(.medium))
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, BoardStyle.Space.s)
+                .frame(minHeight: 44)
+                .accessibilityIdentifier("new-chat-project")
         }
-    }
-
-    private var newProjectButton: some View {
-        Button("New project", systemImage: "plus") { Task { await store.newProject() } }
-            .accessibilityIdentifier("new-chat-new-project")
     }
 
     /// A start of a chat names the project and brings text, for example a forwarded message. The text joins what the

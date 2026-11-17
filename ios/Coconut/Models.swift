@@ -26,6 +26,9 @@ struct Bot: Codable, Identifiable, Equatable, Sendable {
     /// True for the Coconut chat, where the person changes Coconut. It stays
     /// at the top of the lists and is never archived.
     var coconut: Bool = false
+    /// True for Coconut and Gumroad, the projects: the only places where a chat starts. False for an agent of an
+    /// earlier release, whose chats stay readable. An older Mac sends nothing (isProject).
+    var project: Bool? = nil
     /// The ID of the project, for a further chat of that project: a fresh conversation. Every chat runs on the one Hermes
     /// profile of the Mac.
     var chatOf: String? = nil
@@ -69,7 +72,7 @@ struct BotPreference: Codable, Identifiable, Equatable, Sendable {
 extension Bot {
     enum CodingKeys: String, CodingKey {
         case id, sessionId, name, role, instructions, status
-        case lastMessage, unreadCount, archived, createdAt, memory, pinned, preferences, modelOverride, effectiveModel, modelError, notifications, approvalOverride, effectiveApproval, workerLimit, health, coconut, chatOf, chatTitle, lastReadMessageId, todo
+        case lastMessage, unreadCount, archived, createdAt, memory, pinned, preferences, modelOverride, effectiveModel, modelError, notifications, approvalOverride, effectiveApproval, workerLimit, health, coconut, project, chatOf, chatTitle, lastReadMessageId, todo
     }
 
     init(from decoder: Decoder) throws {
@@ -97,6 +100,7 @@ extension Bot {
         modelError = try values.decodeIfPresent(String.self, forKey: .modelError)
         health = try values.decodeIfPresent(BotHealth.self, forKey: .health)
         coconut = try values.decodeIfPresent(Bool.self, forKey: .coconut) ?? false
+        project = try values.decodeIfPresent(Bool.self, forKey: .project)
         chatOf = try values.decodeIfPresent(String.self, forKey: .chatOf)
         chatTitle = try values.decodeIfPresent(String.self, forKey: .chatTitle)
         lastReadMessageId = try values.decodeIfPresent(String.self, forKey: .lastReadMessageId)

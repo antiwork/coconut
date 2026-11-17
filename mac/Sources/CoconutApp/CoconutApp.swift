@@ -58,7 +58,7 @@ struct CoconutApp: App {
         // device and the defaults of the agents. The Coconut chat changes the rest.
         .commands {
             CommandGroup(replacing: .appSettings) { ProfileCommand(model: model) }
-            // File > New chat (Option-Command-N) and New project (Command-N): the message box with a project chosen.
+            // File > New chat (Command-N): the message box with a project chosen.
             CommandGroup(replacing: .newItem) { NewChatCommands(model: model) }
             // Show all chats, with Command-Shift-\ in the View menu.
             ChatDeckCommands()
@@ -82,8 +82,8 @@ struct CoconutApp: App {
     }
 }
 
-/// File > New chat and New project. Each brings the main window to the front and asks it for the start (the window
-/// knows which chat it shows). A project is made with a random letter, as the box makes it.
+/// File > New chat. It brings the main window to the front and asks it for the start (the window
+/// knows which chat it shows).
 struct NewChatCommands: View {
     @ObservedObject var model: AppModel
     @Environment(\.openWindow) private var openWindow
@@ -92,11 +92,6 @@ struct NewChatCommands: View {
         if model.mode == .full {
             Button("New chat") {
                 model.newChatRequested = true
-                show()
-            }
-            .keyboardShortcut("n", modifiers: [.command, .option])
-            Button("New project") {
-                model.newProjectRequested = true
                 show()
             }
             .keyboardShortcut("n", modifiers: .command)

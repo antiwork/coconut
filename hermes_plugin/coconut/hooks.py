@@ -102,7 +102,7 @@ def middleware_kinds():
 
 # Tools that a follow-up on a pending card must not call: it answers a question and leaves the card as it is.
 CARD_TOOLS = ('coconut_ask', 'coconut_suggest', 'clarify', 'coconut_track_pr', 'coconut_message_bot',
-              'coconut_wait', 'coconut_correct_withdrawal', 'coconut_create_bot', 'coconut_delete_bot',
+              'coconut_wait', 'coconut_correct_withdrawal', 'coconut_delete_bot',
               'coconut_continue_work', 'coconut_track_work', 'coconut_save_document', 'coconut_read_document',
               'coconut_delete_document')
 PAUSED_MESSAGE = ('Coconut shows a card and waits for the answer of the person. Call no other tool. End this turn now '

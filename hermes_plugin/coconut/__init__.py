@@ -53,7 +53,7 @@ def platform_hint():
     three parts in each session."""
     from .tools import cards
     module = cards()
-    rules = (module.DECISION_INSTRUCTIONS, module.PR_MERGE_INSTRUCTIONS, module.BOT_CREATION_INSTRUCTIONS,
+    rules = (module.DECISION_INSTRUCTIONS, module.PR_MERGE_INSTRUCTIONS,
              module.BOT_DELETION_INSTRUCTIONS, module.LIBRARY_INSTRUCTIONS)
     return '\n\n'.join([HINT, *(text.strip() for text in rules)])
 

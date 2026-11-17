@@ -131,12 +131,12 @@ struct AgentProject: Identifiable, Equatable {
         else { status = .idle }
     }
 
-    /// The agents as projects: each agent that is not archived and is not the Coconut chat, newest activity first. An
-    /// agent without a message sorts by the time when the person made it.
+    /// The projects, Coconut and Gumroad, newest activity first. A project without a message sorts by the time when the
+    /// Mac made it.
     static func list(_ input: Input, now: Date = Date()) -> [AgentProject] {
         let latest = AgentChats.activity(bots: input.bots, latest: input.latest)
         func activity(_ bot: Bot) -> Date { latest[bot.id] ?? bot.createdAt.apiDate ?? .distantPast }
-        return input.bots.agents.filter { !$0.archived }
+        return input.bots.projects.filter { !$0.archived }
             .sorted { (activity($0), $1.id) > (activity($1), $0.id) }
             .map { AgentProject(bot: $0, input: input, now: now) }
     }
@@ -180,27 +180,19 @@ struct AgentsView: View {
     @Environment(\.pushRoute) private var pushRoute
     /// Opens the page of an agent. The Mac window selects it; without it the page goes onto the stack.
     var open: ((String) -> Void)? = nil
-    var create: (() -> Void)? = nil
 
     var body: some View {
         let projects = AgentProject.list(store.agentProjectInput)
-        let archived = store.bots.agents.filter(\.archived).count
+        let archived = store.bots.projects.filter(\.archived).count
         BoardPage {
-            // The Mac window shows the title of this place in the page, with the counts and New project. An iPhone has
-            // the title in the bar, as each pushed page.
+            // The Mac window shows the title of this place in the page, with the counts. An iPhone has the title in the
+            // bar, as each pushed page.
             #if os(macOS)
-            HStack(alignment: .firstTextBaseline) {
-                BoardPageTitle(title: "Projects", detail: Self.detail(projects))
-                Spacer(minLength: 0)
-                if let create {
-                    Button(action: create) { Label("New project", systemImage: "plus") }
-                        .accessibilityIdentifier("agents-new")
-                }
-            }
+            BoardPageTitle(title: "Projects", detail: Self.detail(projects))
             #endif
             if projects.isEmpty {
-                QuietEmptyState(symbol: "person.crop.square.badge.plus", title: "No projects yet",
-                                message: "A project keeps its chats, its work, its pages and its routines.")
+                QuietEmptyState(symbol: "folder", title: "No projects yet",
+                                message: "Coconut and Gumroad show here when this Mac finds their Hermes profiles.")
             } else {
                 BoardSection("Projects", count: projects.count) {
                     ForEach(projects) { project in
