@@ -90,6 +90,9 @@ class ArchiveTests(unittest.TestCase):
         self.write(self.app, CFBundleIdentifier='com.gumroad.coconut', CoconutPushEnvironment='production',
                    ITSAppUsesNonExemptEncryption=False, CFBundleVersion='42', CFBundleShortVersionString='2026.10.27')
         self.write(self.extension, CFBundleVersion='42')
+        self.share = self.app / 'PlugIns/CoconutShare.appex'
+        self.share.mkdir(parents=True)
+        self.write(self.share, CFBundleVersion='42')
 
     def tearDown(self):
         import shutil
@@ -106,22 +109,26 @@ class ArchiveTests(unittest.TestCase):
         extension = plistlib.loads(testflight.expand(
             testflight.ENTITLEMENTS['PlugIns/CoconutNotificationService.appex']))
         self.assertEqual(extension['keychain-access-groups'], ['66LJACJ2U7.com.gumroad.coconut.push'])
+        # The share extension reads the list of the app in the shared group, and the pairing in the group of the app.
+        share = plistlib.loads(testflight.expand(testflight.ENTITLEMENTS['PlugIns/CoconutShare.appex']))
+        self.assertEqual(share['keychain-access-groups'],
+                         ['66LJACJ2U7.com.gumroad.coconut.push', '66LJACJ2U7.com.gumroad.coconut'])
 
     def test_the_extension_is_signed_before_the_app(self):
         with mock.patch.object(testflight.subprocess, 'run') as run:
             testflight.sign(self.archive, 42)
         signed = [call.args[0][-1] for call in run.call_args_list if '--sign' in call.args[0]]
-        self.assertEqual(signed, [str(self.extension), str(self.app)])
+        self.assertEqual(signed, [str(self.extension), str(self.share), str(self.app)])
 
     def test_both_bundles_get_the_keychain_group_of_their_entitlements(self):
         # An archive without a signature has the group without the team prefix, as in TestFlight builds 2026-10-27.
-        for bundle in (self.app, self.extension):
+        for bundle in (self.app, self.extension, self.share):
             info = plistlib.loads((bundle / 'Info.plist').read_bytes())
             info['CoconutPushKeychainGroup'] = 'com.gumroad.coconut.push'
             (bundle / 'Info.plist').write_bytes(plistlib.dumps(info, fmt=plistlib.FMT_BINARY))
         with mock.patch.object(testflight.subprocess, 'run'):
             testflight.sign(self.archive, 42)
-        for bundle in (self.app, self.extension):
+        for bundle in (self.app, self.extension, self.share):
             data = (bundle / 'Info.plist').read_bytes()
             self.assertTrue(data.startswith(b'bplist'))
             self.assertEqual(plistlib.loads(data)['CoconutPushKeychainGroup'], '66LJACJ2U7.com.gumroad.coconut.push')

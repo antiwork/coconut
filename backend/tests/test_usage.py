@@ -18,7 +18,7 @@ from coconut.service import Service
 
 PEER = 'ab' * 32
 SCHEMA = """
-CREATE TABLE sessions (id TEXT PRIMARY KEY, source TEXT, model TEXT, billing_provider TEXT, started_at REAL NOT NULL,
+CREATE TABLE sessions (id TEXT PRIMARY KEY, source TEXT, chat_id TEXT, parent_session_id TEXT, model TEXT, billing_provider TEXT, started_at REAL NOT NULL,
     input_tokens INTEGER DEFAULT 0, output_tokens INTEGER DEFAULT 0, cache_read_tokens INTEGER DEFAULT 0,
     cache_write_tokens INTEGER DEFAULT 0, reasoning_tokens INTEGER DEFAULT 0, estimated_cost_usd REAL, actual_cost_usd REAL);
 CREATE TABLE messages (id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL, role TEXT NOT NULL, timestamp REAL NOT NULL);
@@ -182,6 +182,51 @@ class ServiceUsageTests(unittest.TestCase):
             body = json.load(response)
             self.assertEqual(response.status, status)
         self.assertEqual(body, {'error': 'days must contain a number.'})
+
+
+
+class ChatUsageTests(unittest.TestCase):
+    """The tokens and the cost of one chat: its sessions and theirs children, apart from the other chats of the agent."""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.service = Service(self.temp.name, FixtureProvider(self.temp.name), start_workers=False)
+        self.addCleanup(self.service.close)
+        self.bot = self.service.mutate('POST', '/v1/bots', {'name': 'Releases'}, str(uuid4()), 'phone')
+        self.other = str(uuid4())
+        home = self.service.profiles.home(self.bot)
+        home.mkdir(parents=True, exist_ok=True)
+        (home / 'state.db').unlink(missing_ok=True)
+        store = Store(home / 'state.db')
+        now = time.time()
+        store.session('chat', now - 100, chat_id=self.bot['id'])
+        store.model('chat', 'opus', input_tokens=1000, output_tokens=200, cache_read_tokens=50_000, estimated_cost_usd=1.5)
+        store.model('chat', 'haiku', input_tokens=300, output_tokens=40, estimated_cost_usd=0.01)
+        # A subagent of the chat counts for the chat. Another chat and a one-shot run of the profile do not.
+        store.session('sub', now - 50, source='subagent', parent_session_id='chat', input_tokens=500, output_tokens=60,
+                      estimated_cost_usd=0.4)
+        store.session('else', now - 50, chat_id=self.other, input_tokens=9999, estimated_cost_usd=9.0)
+        store.session('cli', now - 50, source='oneshot', input_tokens=7777, estimated_cost_usd=7.0)
+        store.messages('chat', ('user', now - 90), ('assistant', now - 80))
+        store.messages('sub', ('assistant', now - 40))
+        store.close()
+
+    def test_a_chat_has_its_own_tokens_and_cost(self):
+        report = self.service.chat_usage(self.bot['id'], 7)
+        total = report['total']
+        self.assertEqual((total['input_tokens'], total['output_tokens'], total['cache_read_tokens']), (1800, 300, 50_000))
+        self.assertAlmostEqual(total['cost_usd'], 1.91)
+        self.assertTrue(total['cost_estimated'])
+        self.assertEqual([model['model'] for model in total['models']], ['opus', 'haiku'])
+        today = report['days'][-1]
+        self.assertEqual(today['day'], report['today'])
+        self.assertAlmostEqual(today['cost_usd'], 1.91, places=2)
+
+    def test_a_chat_without_a_store_has_nothing(self):
+        (self.service.profiles.home(self.bot) / 'state.db').unlink()
+        total = self.service.chat_usage(self.bot['id'])['total']
+        self.assertEqual((total['input_tokens'], total['cost_usd'], total['cost_known']), (0, 0.0, False))
 
 
 if __name__ == '__main__':

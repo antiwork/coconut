@@ -94,6 +94,12 @@ struct MacMainWindow: View {
             selection = .team(chat)
             model.shownChat = nil
         }
+        // A share from the share menu went to an agent. The window shows its chat.
+        .onChange(of: model.shownBot, initial: true) { _, bot in
+            guard let bot else { return }
+            selection = .bot(bot)
+            model.shownBot = nil
+        }
         // A document card in a chat selects the pinned row of its page, else it opens the page over its agent.
         .environment(\.openDocument) { id in show(MacPagePlace.card(id, documents: store.documents)) }
         // The page of a pinned row stays open when its pin goes: it shows over its agent. A deleted page leaves the

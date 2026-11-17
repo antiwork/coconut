@@ -383,11 +383,11 @@ enum BotRowSubtitle: Equatable {
     }
 
     /// VoiceOver reads what the row shows. It reads the unread count only when there is one.
-    func accessibilityLabel(bot: Bot, preview: String) -> String {
+    func accessibilityLabel(bot: Bot, preview: String, queued: Int = 0) -> String {
         var parts = [bot.name]
         switch self {
         case .needsYou: parts.append(StatusLabel.label(for: "needs_you"))
-        case .phase(let phase): parts.append(phase.label)
+        case .phase(let phase): parts += [phase.label] + [MessageQueue.label(queued)].compactMap { $0 }
         case .health(let health): parts.append(health.label)
         case .preview: parts += [bot.status.replacingOccurrences(of: "_", with: " "), preview]
         }
@@ -436,8 +436,16 @@ struct BotContactRow: View {
                         .transition(.opacity)
                         .accessibilityIdentifier("bot-needs-you-\(bot.id)")
                 case .phase(let phase):
-                    ShimmerText(text: phase.label).font(.subheadline)
-                        .transition(.opacity)
+                    HStack(spacing: BoardStyle.Space.xs) {
+                        ShimmerText(text: phase.label)
+                        // The messages of the person that wait for the next turn.
+                        if let queued = MessageQueue.label(store.queuedCount(bot.id)) {
+                            Text("· " + queued).foregroundStyle(.secondary).lineLimit(1)
+                                .accessibilityIdentifier("bot-queued-\(bot.id)")
+                        }
+                    }
+                    .font(.subheadline)
+                    .transition(.opacity)
                 case .health(let health):
                     Text(health.label)
                         .font(.subheadline).foregroundStyle(BoardStyle.attention)
@@ -454,7 +462,8 @@ struct BotContactRow: View {
             .animation(BoardStyle.fade(reduceMotion: reduceMotion), value: subtitle)
         }
         .accessibilityElement(children: .combine)
-        .accessibilityLabel(subtitle.accessibilityLabel(bot: bot, preview: subtitle == .preview ? preview : ""))
+        .accessibilityLabel(subtitle.accessibilityLabel(bot: bot, preview: subtitle == .preview ? preview : "",
+                                                        queued: store.queuedCount(bot.id)))
     }
 }
 

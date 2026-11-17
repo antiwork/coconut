@@ -623,18 +623,6 @@ final class PhotoLoader: @unchecked Sendable {
     private static func key(_ url: URL, _ size: PhotoSize) -> NSString { "\(size.rawValue) \(url.absoluteString)" as NSString }
 }
 
-/// Decodes image data at no more than the given number of pixels on its longest side, turned upright.
-/// A full-size camera photo would use too much memory.
-func downsampledImage(_ data: Data, largestSide: Int) -> CGImage? {
-    guard let source = CGImageSourceCreateWithData(data as CFData, nil) else { return nil }
-    return CGImageSourceCreateThumbnailAtIndex(source, 0, [
-        kCGImageSourceCreateThumbnailFromImageAlways: true,
-        kCGImageSourceCreateThumbnailWithTransform: true,
-        kCGImageSourceShouldCacheImmediately: true,
-        kCGImageSourceThumbnailMaxPixelSize: largestSide,
-    ] as CFDictionary)
-}
-
 extension Notification.Name {
     /// The phone reached the paired Mac again.
     static let coconutMacConnected = Notification.Name("CoconutMacConnected")

@@ -234,6 +234,8 @@ struct AgentTask: Codable, Identifiable, Equatable, Sendable {
     /// The command, file or query of the phase, and when the phase started.
     var phaseDetail: String? = nil
     var phaseStartedAt: String? = nil
+    /// The messages that wait for the next turn of this task, in the order of their delivery (MessageQueue.swift).
+    var queuedMessages: [QueuedMessage]? = nil
 
     var chatBotId: String { sourceBotId != nil ? botId : (conversationBotId ?? botId) }
     var isRunning: Bool { ["working", "running"].contains(status) }

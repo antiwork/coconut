@@ -93,11 +93,13 @@ struct BotStatusRow: View {
 
     private var label: String { activity.reconnecting ? "Reconnecting…" : phase.label }
 
-    /// "· 4m 05s · Claude Opus 5.5": the time since the turn started and the model of the turn.
+    /// "· 4m 05s · Claude Opus 5.5 · 2 queued": the time since the turn started, the model of the turn, and the
+    /// messages that wait for the next turn.
     func meta(at date: Date) -> String {
         var parts: [String] = []
         if let startedAt = activity.startedAt { parts.append(ConversationActivity.elapsed(date.timeIntervalSince(startedAt))) }
         if let model = activity.model, !model.isEmpty { parts.append(model) }
+        if let queued = MessageQueue.label(activity.queued) { parts.append(queued) }
         return parts.map { "· " + $0 }.joined(separator: " ")
     }
 }

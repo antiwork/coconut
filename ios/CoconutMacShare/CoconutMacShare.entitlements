@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- macOS loads an app extension only with a sandbox. -->
+    <key>com.apple.security.app-sandbox</key>
+    <true/>
+    <!-- A file that the person shares, for example from the Finder. -->
+    <key>com.apple.security.files.user-selected.read-only</key>
+    <true/>
+    <!-- The one folder that the extension and the app both use: the list of the chats and the shares on their way
+         to the app (ShareFolder). Coconut.app has no sandbox and no team in an ad-hoc build, so an app group cannot
+         hold it. -->
+    <key>com.apple.security.temporary-exception.files.home-relative-path.read-write</key>
+    <array>
+        <string>/Library/Application Support/Coconut/Share/</string>
+    </array>
+</dict>
+</plist>

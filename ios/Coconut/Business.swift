@@ -1,7 +1,7 @@
 import Foundation
 
 enum BusinessRoute: Hashable {
-    case home, projects, function(String), project(String), report(String), ledger
+    case home, projects, reports, function(String), project(String), report(String), ledger
 }
 
 struct BusinessRepository: Decodable, Identifiable, Hashable, Sendable {

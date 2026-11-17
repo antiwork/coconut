@@ -77,8 +77,27 @@ def _usage_row(model, provider, values):
                 **{field: int(values.get(field) or 0) for field in TOKEN_FIELDS})
 
 
-def read_usage(path, days=DEFAULT_DAYS, now=None):
-    """The usage of one profile for the last `days` days in the time of the Mac, the oldest day first."""
+def chat_sessions(db, chat_id):
+    """The sessions of one chat of Coconut: those that the gateway started for the chat, and the sessions that they
+    started in turn (subagents and compressions name their parent)."""
+    columns = _columns(db, 'sessions')
+    if not {'chat_id', 'source'} <= columns:
+        return set()
+    found = {row[0] for row in db.execute("SELECT id FROM sessions WHERE source='coconut' AND chat_id=?", (chat_id,))}
+    if 'parent_session_id' in columns:
+        frontier = set(found)
+        while frontier:
+            marks = ','.join('?' * len(frontier))
+            children = {row[0] for row in db.execute(
+                f'SELECT id FROM sessions WHERE parent_session_id IN ({marks})', tuple(frontier))} - found
+            found |= children
+            frontier = children
+    return found
+
+
+def read_usage(path, days=DEFAULT_DAYS, now=None, chat_id=None):
+    """The usage of one profile for the last `days` days in the time of the Mac, the oldest day first. With `chat_id`,
+    only the sessions of that chat count, and the report has the totals of the chat since its start in `total`."""
     now = time.time() if now is None else now
     today = _day(now)
     window = [today - timedelta(days=offset) for offset in range(days - 1, -1, -1)]
@@ -91,11 +110,14 @@ def read_usage(path, days=DEFAULT_DAYS, now=None):
         if 'timestamp' not in _columns(db, 'messages'):
             return _report(result, models, False, False)
         usage, started = _session_usage(db)
+        chat = chat_sessions(db, chat_id) if chat_id is not None else None
+        if chat is not None:
+            usage = {key: rows for key, rows in usage.items() if key in chat}
         # The share of each day in the model calls of a session, and the counts of each day.
         calls, session, previous = {}, None, None
         for session_id, role, timestamp in db.execute(
                 'SELECT session_id, role, timestamp FROM messages ORDER BY session_id, timestamp, id'):
-            if timestamp is None:
+            if timestamp is None or (chat is not None and session_id not in chat):
                 continue
             if session_id != session:
                 session, previous = session_id, None
@@ -138,7 +160,33 @@ def read_usage(path, days=DEFAULT_DAYS, now=None):
                 for field in TOKEN_FIELDS:
                     model[field] += row[field] * share
                 model['cost_usd'] += row['cost_usd'] * share
-    return _report(result, models, cost_known, cost_known and cost_exact)
+    report = _report(result, models, cost_known, cost_known and cost_exact)
+    if chat is not None:
+        report['total'] = _total(usage)
+    return report
+
+
+def _total(usage):
+    """The tokens and the cost of sessions since their start, by model and together."""
+    total = dict(cost_usd=0.0, **{field: 0 for field in TOKEN_FIELDS})
+    known, exact, models = False, True, {}
+    for rows in usage.values():
+        for row in rows:
+            for field in TOKEN_FIELDS:
+                total[field] += row[field]
+            total['cost_usd'] += row['cost_usd']
+            known, exact = known or row['cost_known'], exact and row['cost_exact']
+            model = models.setdefault((row['model'], row['provider']), dict(
+                model=row['model'], provider=row['provider'], cost_usd=0.0, **{field: 0 for field in TOKEN_FIELDS}))
+            for field in TOKEN_FIELDS:
+                model[field] += row[field]
+            model['cost_usd'] += row['cost_usd']
+    rows = sorted(models.values(), key=lambda model: (-model['cost_usd'], model['model']))
+    total['cost_usd'] = round(total['cost_usd'], 4)
+    for model in rows:
+        model['cost_usd'] = round(model['cost_usd'], 4)
+    return dict(total, models=[model for model in rows if model['model']], cost_known=known,
+                cost_estimated=known and not exact)
 
 
 def _report(result, models, cost_known, cost_exact):
@@ -177,3 +225,20 @@ class Usage:
             if now is None:
                 self._usage_cache = (days, current, report)
             return report
+
+    def chat_usage(self, bot_id, days=DEFAULT_DAYS, now=None) -> dict:
+        """`GET /v1/bots/<id>/usage`: the tokens and the cost of one chat, since its start and by day. A new chat of an
+        agent uses the profile of the agent, and Hermes names the chat in its sessions."""
+        days = max(1, min(int(days), MAX_DAYS))
+        current = time.time() if now is None else now
+        with self._read_view() as view, view._read_transaction():
+            bot = view._get('bots', bot_id)
+            agent = view._get('bots', bot['chat_of']) if bot.get('chat_of') else bot
+        try:
+            report = read_usage(self.profiles.home(agent) / 'state.db', days, current, chat_id=bot_id)
+        except (OSError, sqlite3.Error, ValueError, ProfileError):
+            report = _report({}, {}, False, False)
+            report['total'] = _total({})
+        # A chat without a store, or a store without its sessions, has nothing yet.
+        report.setdefault('total', _total({}))
+        return dict(report, bot_id=bot_id, today=date.fromtimestamp(current).isoformat())

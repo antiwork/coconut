@@ -39,6 +39,7 @@ API = 'https://api.appstoreconnect.apple.com/v1'
 # The entitlements of each signed bundle in the archive, relative to the app. Each comes from ios/project.yml.
 ENTITLEMENTS = {
     'PlugIns/CoconutNotificationService.appex': ROOT / 'ios/CoconutNotificationService/CoconutNotificationService.entitlements',
+    'PlugIns/CoconutShare.appex': ROOT / 'ios/CoconutShare/CoconutShare.entitlements',
     '.': ROOT / 'ios/Coconut/Coconut.entitlements',
 }
 # The build settings that the entitlements use, for a Release build of the Gumroad team.

@@ -160,6 +160,7 @@ from .hermes_setup import HermesSetup
 from .bot_profiles import BotProfiles
 from .agent_chats import AgentChats
 from .gateway_chat import GatewayChat
+from .message_queue import MessageQueue
 from .documents import SCHEMA as DOCUMENTS_SCHEMA, Documents
 from .team import SCHEMA as TEAM_SCHEMA, Team
 from .turn_activity import TurnActivity
@@ -192,7 +193,7 @@ def marked(field):
     return f"json_type(data,'$.{field}') IN ('object','true')"
 
 
-class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness, WithdrawalCorrections, WorkRecovery, WorkSources, SilentResponses, TrackedWork, WorkStatus, WorkProgress, PullRequestReviews, DecisionInbox, BackgroundProcesses, NativeExecution, NativeRoutines, ApprovalUpdates, ParallelWorkUpdates, ServiceRestart, WorkspaceRecovery, WorktreeRetirement, SessionMaintenance, DatabaseMaintenance, TechnicalLane, HermesSetup, BotProfiles, AgentChats, GatewayChat, Documents, Team, Usage, TurnActivity):
+class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness, WithdrawalCorrections, WorkRecovery, WorkSources, SilentResponses, TrackedWork, WorkStatus, WorkProgress, PullRequestReviews, DecisionInbox, BackgroundProcesses, NativeExecution, NativeRoutines, ApprovalUpdates, ParallelWorkUpdates, ServiceRestart, WorkspaceRecovery, WorktreeRetirement, SessionMaintenance, DatabaseMaintenance, TechnicalLane, HermesSetup, BotProfiles, AgentChats, GatewayChat, Documents, Team, Usage, TurnActivity, MessageQueue):
     ACTIVE = {'queued', 'working', 'scheduled', 'needs_you', 'paused', 'waiting'}
     TABLES = ('bots', 'tasks', 'messages', 'decisions', 'artifacts', 'routines')
     BOT_CHANGE_LIMIT = 8
@@ -605,6 +606,9 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
             obj.pop('turn_started_at', None)
             # The live activity of the turn stays for some hours (turn_activity.py).
             self.end_activity(obj['id'])
+        if table == 'tasks':
+            # The messages that wait for the next turn of the task (message_queue.py).
+            self._show_queue(obj)
         if table == 'decisions' and obj.get('status') == 'pending':
             # The time of the newest revision of a card (decision_sources.source_change). Each write that raises the
             # revision sets it: a revision by the bot, a check or the person, an Undo, a restored card.
@@ -1652,6 +1656,8 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
         if len(parts) == 4 and parts[1] == 'tasks' and parts[3] == 'replies' and method == 'POST':
             task = self._get('tasks', parts[2])
             return self._send_message_interaction(self._get('bots', task['conversation_bot_id']), data, task=task)
+        if len(parts) >= 5 and parts[1] == 'tasks' and parts[3] == 'queue':
+            return self._queue_route(method, parts, data)
         if len(parts) == 4 and parts[1] == 'tasks' and parts[3] == 'cancel' and method == 'POST':
             task = self._get('tasks', parts[2])
             self._cancel(task, callbacks)

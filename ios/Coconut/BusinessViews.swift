@@ -11,7 +11,7 @@ struct BusinessHomeView: View {
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 24) {
+            VStack(alignment: .leading, spacing: BoardStyle.Space.l) {
                 if let report = shownReport {
                     TimelineView(.periodic(from: .now, by: 60)) { context in
                         BusinessHomeContent(model: BusinessHomePresentation(report: report, now: context.date, refreshFailed: error != nil))
@@ -27,7 +27,7 @@ struct BusinessHomeView: View {
                     }.accessibilityIdentifier("business-home-refresh-error")
                 }
             }
-            .padding(24).frame(maxWidth: 1040, alignment: .leading).frame(maxWidth: .infinity)
+            .padding(BentoPage.padding).frame(maxWidth: BentoPage.width, alignment: .leading).frame(maxWidth: .infinity)
         }
         .navigationTitle("Business").background(BoardStyle.paper)
         .toolbar {
@@ -38,6 +38,8 @@ struct BusinessHomeView: View {
                             Label(function.name, systemImage: function.symbol)
                         }.accessibilityIdentifier("business-function-" + function.key)
                     }
+                    NavigationLink(value: BusinessRoute.reports) { Label("Reports", systemImage: "chart.bar.doc.horizontal") }
+                        .accessibilityIdentifier("business-reports-link")
                     NavigationLink(value: BusinessRoute.projects) { Label("Projects", systemImage: "square.stack.3d.up") }
                 } label: { Label("Functions", systemImage: "square.grid.2x2") }
                 .accessibilityIdentifier("business-home-functions")
@@ -67,6 +69,7 @@ struct BusinessDestinationView: View {
         switch route {
         case .home: BusinessHomeView()
         case .projects: BusinessProjectsView()
+        case .reports: BusinessReportsView()
         case .function(let key): BusinessWorkspaceView(function: key)
         case .project(let key): BusinessWorkListView(project: key)
         case .report(let key): BusinessReportView(key: key)

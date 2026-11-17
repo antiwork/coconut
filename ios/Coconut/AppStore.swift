@@ -157,6 +157,8 @@ final class AppStore {
     var usage: UsageReport?
     /// Why the store has no usage: the Mac is not connected, or its Coconut is older than this app.
     var usageIssue: String?
+    /// The tokens and the cost of each chat that the person opened (ChatSpend.swift), by chat ID.
+    var chatUsage: [String: ChatUsage] = [:]
     @ObservationIgnored private var usageReadAt: Date?
     var provider = ""
     var pushConfigured = false
@@ -219,6 +221,18 @@ final class AppStore {
     @ObservationIgnored private var snapshotRequest: (id: UUID, generation: UUID, epoch: UUID, client: APIClient, task: Task<StateSnapshot, Error>)?
 
     var hasPairing: Bool { pairing != nil || savedPairingLocked }
+    /// The relay route of the paired Mac for the share extension of the iPhone, which sends through the relay itself
+    /// (ShareDirectory.Endpoint). It holds no secret. Nil without a relay pairing, and on a Mac, where the app sends
+    /// each share.
+    var shareEndpoint: ShareDirectory.Endpoint? {
+        #if os(macOS)
+        nil
+        #else
+        guard let pairing, pairing.usesTunnel, let relay = pairing.relay, let route = pairing.route,
+              let macKey = pairing.macKey else { return nil }
+        return ShareDirectory.Endpoint(relay: relay, route: route, macKey: macKey)
+        #endif
+    }
     var pairedMacDescription: String {
         guard let pairing else { return savedPairingLocked ? "your Mac" : "no Mac" }
         return pairing.macName ?? "your Mac"
@@ -270,11 +284,11 @@ final class AppStore {
             if streams.contains(where: TranscriptPresentation.hasStreamingWords) && !reconnecting { return nil }
             let running = runningPhase(where: { $0.chatBotId == botId })
             return ConversationActivity(phase: .writing, startedAt: running?.startedAt, reconnecting: reconnecting,
-                                        model: modelName(botId))
+                                        model: modelName(botId), queued: queuedCount(botId))
         }
         if let running = runningPhase(where: { $0.chatBotId == botId }) {
             return ConversationActivity(phase: running.phase, startedAt: running.startedAt, reconnecting: reconnecting,
-                                        detail: running.detail, model: modelName(botId))
+                                        detail: running.detail, model: modelName(botId), queued: queuedCount(botId))
         }
         if outgoingMessages.contains(where: { $0.botId == botId && $0.expectsResponse }) {
             return ConversationActivity(phase: .thinking, startedAt: nil, reconnecting: reconnecting, model: modelName(botId))
@@ -717,7 +731,7 @@ final class AppStore {
         modelBaseURL = ""
         modelConfigured = false
         modelCatalog = nil
-        usage = nil; usageIssue = nil; usageReadAt = nil
+        usage = nil; usageIssue = nil; usageReadAt = nil; chatUsage = [:]
         nativeSettingsReadAt = nil
         nativeSettingsAttemptAt = nil
         nativeSettingsRequiredCursor = 0
@@ -931,7 +945,18 @@ final class AppStore {
                 target = AgentTask(id: id, botId: bot.id, sessionId: bot.sessionId, title: String(text.prefix(72)), status: scheduledAt == nil ? "queued" : "scheduled", summary: "Preview: no agent execution.",
                                    createdAt: Self.now, updatedAt: Self.now, scheduledAt: scheduledAt, threadId: id, conversationBotId: bot.id)
                 tasks.append(target)
-            } else if let currentTask { target = currentTask }
+            } else if let currentTask {
+                target = currentTask
+                if currentTask.isRunning, let index = tasks.firstIndex(where: { $0.id == currentTask.id }) {
+                    // The agent works, so the message waits in the queue of the task, as on the Mac.
+                    let id = UUID().uuidString
+                    messages.append(Message(id: id, botId: bot.id, taskId: target.id, role: "user", kind: "text", text: text,
+                                            decisionId: nil, artifactId: nil, createdAt: Self.now, streaming: false, threadId: target.threadId, replyTo: replyTo))
+                    tasks[index].queuedMessages = (tasks[index].queuedMessages ?? [])
+                        + [QueuedMessage(id: id, text: text, createdAt: Self.now, attachmentIds: attachments)]
+                    return true
+                }
+            }
             else { return false }
             nameDemoChat(bot.id, from: text)
             messages.append(Message(id: UUID().uuidString, botId: bot.id, taskId: target.id, role: "user", kind: "text", text: text,
@@ -1121,7 +1146,10 @@ final class AppStore {
         }
         // Cards can outlive the loaded history page. Keep their original place in the transcript.
         let timeline = (messages + missing).sorted { $0.createdAt < $1.createdAt }
-        return TranscriptPresentation.visibleMessages(timeline, artifacts: transcriptArtifacts, decisions: decisions)
+        // The messages that wait for the next turn show in the queue above the message field.
+        let queued = queueHidden(botId)
+        let shown = MessageQueue.transcript(timeline, without: queued.ids, attachments: queued.attachments)
+        return TranscriptPresentation.visibleMessages(shown, artifacts: transcriptArtifacts, decisions: decisions)
             .filter { $0.kind != "activity" }
     }
 
@@ -1174,6 +1202,108 @@ final class AppStore {
             return
         }
         let _: AgentTask? = await write("tasks/\(task.id)/cancel", payload: EmptyRequest(), as: AgentTask.self)
+    }
+
+    // The queue of a chat: the messages that wait for the next turn of its running task (MessageQueue.swift).
+
+    /// The messages on their way that the running turn of this chat will hold. The Mac decides it (service `_send`):
+    /// a plain message to a working task of the chat, with no card that waits.
+    private func queueSending(_ botId: String) -> [OutgoingMessage] {
+        guard outgoingMessages.contains(where: { $0.botId == botId }),
+              let current = tasks.last(where: { $0.botId == botId && $0.chatBotId == botId && $0.sourceBotId == nil
+                  && $0.scheduledAt == nil && ["working", "queued", "waiting"].contains($0.status) }),
+              current.status == "working",
+              !decisions.contains(where: { $0.isPending && conversationBotId(for: $0) == botId }) else { return [] }
+        // A confirmed message is in the queue of its task already.
+        let confirmed = Set(tasks.filter { $0.chatBotId == botId }.flatMap { $0.queuedMessages ?? [] }
+            .compactMap { savedMessage(id: $0.id)?.clientRequestId })
+        return outgoingMessages.filter {
+            $0.botId == botId && [.sending, .accepted].contains($0.status) && $0.request.mode == "auto"
+                && $0.request.scheduledAt == nil && $0.request.workArtifactId == nil && !confirmed.contains($0.id)
+        }
+    }
+
+    /// The rows of the queue of a chat, in the order of their delivery.
+    func messageQueue(_ botId: String) -> [QueueItem] {
+        MessageQueue.items(tasks: tasks.filter { $0.chatBotId == botId && !($0.queuedMessages ?? []).isEmpty },
+                           sending: queueSending(botId))
+    }
+
+    /// How many messages of this chat wait for the next turn.
+    func queuedCount(_ botId: String) -> Int {
+        tasks.reduce(0) { $0 + ($1.chatBotId == botId ? ($1.queuedMessages?.count ?? 0) : 0) } + queueSending(botId).count
+    }
+
+    /// The transcript rows that the queue shows instead: the IDs of the rows and the IDs of their files.
+    func queueHidden(_ botId: String) -> (ids: Set<String>, attachments: Set<String>) {
+        let held = tasks.filter { $0.chatBotId == botId }.flatMap { $0.queuedMessages ?? [] }
+        let sending = queueSending(botId)
+        return (Set(held.map { displayedMessageId(for: $0.id) } + sending.map { "outgoing-" + $0.id }),
+                Set(held.flatMap(\.attachmentIds) + sending.flatMap(\.request.attachmentIds)))
+    }
+
+    /// Changes the queue of a task here at once, then on the Mac. A change that the Mac refuses goes back.
+    private func changeQueue<Payload: Encodable>(_ taskId: String, path: String, method: String, payload: Payload,
+                                                 change: (inout [QueuedMessage]) -> Void) async {
+        guard let index = tasks.firstIndex(where: { $0.id == taskId }) else { return }
+        let before = tasks[index].queuedMessages
+        var queue = before ?? []
+        change(&queue)
+        let changed = queue.isEmpty ? nil : queue
+        guard changed != before || method == "POST" else { return }
+        tasks[index].queuedMessages = changed
+        if isDemo { return }
+        let result: AgentTask? = await write("tasks/\(taskId)/queue/\(path)", method: method, payload: payload, as: AgentTask.self)
+        guard let index = tasks.firstIndex(where: { $0.id == taskId }) else { return }
+        if let result { tasks[index].queuedMessages = result.queuedMessages }
+        else if tasks[index].queuedMessages == changed { tasks[index].queuedMessages = before }
+    }
+
+    func editQueued(_ id: String, task: String, text: String) async {
+        let text = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return }
+        let saved = messageIndex.first(id: id).map { messages[$0].text }
+        if let index = messageIndex.first(id: id) { messages[index].text = text }
+        await changeQueue(task, path: id, method: "PATCH", payload: QueueTextRequest(text: text)) { queue in
+            if let index = queue.firstIndex(where: { $0.id == id }) { queue[index].text = text }
+        }
+        // The Mac refused the change, so the message keeps its text.
+        if let saved, tasks.first(where: { $0.id == task })?.queuedMessages?.first(where: { $0.id == id })?.text == saved,
+           let index = messageIndex.first(id: id) { messages[index].text = saved }
+    }
+
+    func removeQueued(_ id: String, task: String) async {
+        let files = Set(tasks.first { $0.id == task }?.queuedMessages?.first { $0.id == id }?.attachmentIds ?? [])
+        let removed = messages.filter { $0.id == id || ($0.taskId == task && $0.role == "user" && $0.kind == "artifact" && $0.artifactId.map(files.contains) == true) }
+        // The message leaves the chat with its row of the queue, so it does not show in the transcript for a moment.
+        if !removed.isEmpty { messages.removeAll { message in removed.contains { $0.id == message.id } } }
+        await changeQueue(task, path: id, method: "DELETE", payload: EmptyRequest()) { queue in queue.removeAll { $0.id == id } }
+        if tasks.first(where: { $0.id == task })?.queuedMessages?.contains(where: { $0.id == id }) == true, !removed.isEmpty,
+           savedMessage(id: id) == nil {
+            messages = (messages + removed).sorted { ($0.createdAt, $0.id) < ($1.createdAt, $1.id) }
+        }
+    }
+
+    /// Puts the messages of the queue in the order of `ids`. Messages that the list does not name keep their places.
+    func orderQueued(_ ids: [String], task: String) async {
+        await changeQueue(task, path: "order", method: "POST", payload: QueueOrderRequest(messageIds: ids)) { queue in
+            let named = Dictionary(uniqueKeysWithValues: queue.map { ($0.id, $0) })
+            guard Set(ids) == Set(named.keys), ids.count == queue.count else { return }
+            // The messages take the times of the queue in the new order, as the Mac gives them.
+            let times = queue.map(\.createdAt).sorted()
+            queue = ids.enumerated().map { index, id in
+                var message = named[id]!
+                message.createdAt = times[index]
+                return message
+            }
+        }
+    }
+
+    /// Gives a queued message to the running turn at once, where the Mac can do that.
+    func steerQueued(_ id: String, task: String) async {
+        await changeQueue(task, path: "\(id)/steer", method: "POST", payload: EmptyRequest()) { queue in
+            if let index = queue.firstIndex(where: { $0.id == id }) { queue[index].state = "steering"; queue[index].canSteer = false }
+        }
     }
 
     @discardableResult
@@ -1816,6 +1946,18 @@ final class AppStore {
         if isDemo { return true }
         let result: Acknowledgement? = await write("bots/restart", payload: EmptyRequest(), as: Acknowledgement.self)
         return result?.ok == true
+    }
+
+    /// Reads the usage of one chat. A failed read keeps what the store has and shows nothing: the footer is quiet.
+    func loadChatUsage(_ botId: String) async {
+        if isDemo {
+            if chatUsage[botId] == nil { chatUsage[botId] = .preview(botId: botId) }
+            return
+        }
+        guard let client else { return }
+        guard let usage: ChatUsage = try? await client.request("bots/\(botId)/usage?days=30") else { return }
+        guard self.client === client else { return }
+        if chatUsage[botId] != usage { chatUsage[botId] = usage }
     }
 
     /// Reads the usage of the agents for the longest range of the usage page. A page that opens within a minute of the
@@ -3765,6 +3907,8 @@ private struct PreferenceRequest: Encodable { let text: String }
 private struct RoutineRequest: Encodable { let name: String; let prompt: String; let cron: String; let timezone: String; let enabled: Bool }
 struct MessageRequest: Codable, Equatable { let text: String; let mode: String; let taskId: String?; let scheduledAt: String?; let attachmentIds: [String]; let recipientBotIds: [String]; var replyToMessageId: String? = nil; var mentionedBotIds: [String]? = nil; var workArtifactId: String? = nil; var workStatusOnly: Bool? = nil; var aboutDocumentId: String? = nil }
 private struct ReactionRequest: Encodable { let emoji: String; let active: Bool }
+private struct QueueTextRequest: Encodable { let text: String }
+private struct QueueOrderRequest: Encodable { let messageIds: [String] }
 struct OutgoingMessage: Codable, Identifiable, Equatable {
     enum Status: String, Codable { case sending, accepted, failed, rejected }
     let id: String
