@@ -402,13 +402,16 @@ struct AgentProjectView: View {
             }
             // The agent's queue on the Hermes board of the Mac.
             let queue = store.queues[bot.id] ?? AgentQueue()
+            // Four counts and nothing to open, so they share one row of numbers.
             BoardSection("Queue") {
-                BoardRow(symbol: "circle.dotted", tint: queue.running > 0 ? BoardStyle.positive : .secondary,
-                         title: "Running", value: "\(queue.running)", chevron: false)
-                BoardRow(symbol: "clock", title: "Waiting", value: "\(queue.waiting)", chevron: false)
-                BoardRow(symbol: "circle.inset.filled", tint: queue.needsYou > 0 ? BoardStyle.attention : .secondary,
-                         title: "Needs you", value: "\(queue.needsYou)", chevron: false)
-                BoardRow(symbol: "checkmark.circle", title: "Done today", value: "\(queue.doneToday)", chevron: false)
+                HStack(alignment: .top, spacing: BoardStyle.Space.s) {
+                    UsageStat(title: "Running", value: "\(queue.running)")
+                    UsageStat(title: "Waiting", value: "\(queue.waiting)")
+                    UsageStat(title: "Needs you", value: "\(queue.needsYou)")
+                    UsageStat(title: "Done today", value: "\(queue.doneToday)")
+                }
+                .padding(BoardStyle.Space.m)
+                .accessibilityIdentifier("agent-queue")
             }
             BoardSection(AgentSection.pages.title, count: project.count(.pages)) {
                 if project.pages.isEmpty { BoardEmptyRow(text: "No pages. The agent keeps notes, checklists and charts here.") }
@@ -464,7 +467,7 @@ struct AgentProjectView: View {
         let role = project.bot.role.trimmingCharacters(in: .whitespacesAndNewlines)
         return HStack(alignment: .center, spacing: BoardStyle.Space.l) {
             VStack(alignment: .leading, spacing: BoardStyle.Space.xs) {
-                Text(project.bot.name).font(.title2.weight(.bold)).lineLimit(1)
+                Text(project.bot.name).font(.title.weight(.bold)).lineLimit(1).minimumScaleFactor(0.7)
                 if !role.isEmpty { Text(role).font(.subheadline).foregroundStyle(.secondary).lineLimit(2) }
                 AgentStatusLabel(status: project.status).accessibilityElement(children: .combine)
                     .accessibilityIdentifier("agent-status")
