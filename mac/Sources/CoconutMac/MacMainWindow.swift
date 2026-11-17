@@ -442,8 +442,10 @@ struct MacSidebar: View {
         // over the messages for each body cost about 3 ms with 1,500 messages.
         // An agent keeps its place by the newest of its chats, which show under it.
         let latest = AgentChats.activity(bots: store.bots, latest: store.chatSummaries.newestActivity)
-        // A project that nobody wrote in, and has no chat, is in the message box only (AgentChats.isBlank).
-        let sections = ChatSections.make(bots: store.bots.agents.filter { AgentChats.isListed($0, latest: latest) },
+        // A project that nobody wrote in, and has no chat, is in the message box only (AgentChats.isBlank). A chat
+        // whose project is gone has a row of its own (AgentChats.orphans).
+        let rows = store.bots.agents + AgentChats.orphans(in: store.bots)
+        let sections = ChatSections.make(bots: rows.filter { AgentChats.isListed($0, latest: latest) },
                                          latest: latest, rooms: store.shownTeamRooms, local: store.newestLocalMessages)
         let pins = SidebarPins(pinnedBots: sections.pinned, documents: store.documents ?? [], bots: store.bots,
                                teamBots: store.teamBots)
@@ -565,11 +567,12 @@ struct MacSidebar: View {
     /// The further chats of an agent, newest first: the title of each chat, set in under the name of the agent.
     private func chatRows(of agent: Bot) -> some View {
         ForEach(AgentChats.chats(of: agent.id, in: store.bots, latest: store.chatSummaries.newestActivity)) { chat in
-            botRow(chat)
+            botRow(chat, nested: true)
         }
     }
 
-    private func botRow(_ bot: Bot) -> some View {
+    /// `nested` sets a chat in under the row of its project. A chat whose project is gone stands alone.
+    private func botRow(_ bot: Bot, nested: Bool = false) -> some View {
         MacSidebarRow(name: bot.archived ? bot.listName : bot.isChat ? bot.chatLabel : bot.name, unread: bot.unreadCount,
                       muted: !bot.notifications) {
             // A project has no face. A further chat shows a bubble under its project, and a dot marks work.
@@ -579,7 +582,7 @@ struct MacSidebar: View {
                 ZStack { BotActivityDot(bot: bot) }.frame(width: 12)
             }
         }
-            .padding(.leading, bot.isChat && !bot.archived ? BoardStyle.Space.m : 0)
+            .padding(.leading, nested ? BoardStyle.Space.m : 0)
             .tag(MacSelection.bot(bot.id))
             .contextMenu {
                 if !bot.archived {

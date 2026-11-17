@@ -1631,7 +1631,11 @@ enum ChatList {
                      local: [TeamChatKey: TeamLastMessage] = [:]) -> [ChatListItem] {
         func activity(_ bot: Bot) -> Date { latest[bot.id] ?? bot.createdAt.apiDate ?? .distantPast }
         let open = Set(bots.filter { !$0.archived && !$0.isChat }.map(\.id))
-        let shown = bots.filter { open.contains($0.agentId) && AgentChats.isListed($0, latest: latest) }
+        // A chat whose project is gone shows as a chat of its own (AgentChats.orphans).
+        let orphans = Set(AgentChats.orphans(in: bots).map(\.id))
+        let shown = bots.filter {
+            (open.contains($0.agentId) || orphans.contains($0.id)) && AgentChats.isListed($0, latest: latest)
+        }
         let coconut = shown.filter(isCoconut)
         let starred = shown.filter(isStarred).sorted {
             let first = $0.createdAt.apiDate ?? .distantPast

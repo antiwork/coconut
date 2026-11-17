@@ -78,6 +78,14 @@ enum AgentChats {
     static func agentId(of botId: String, in bots: [Bot]) -> String {
         bots.first { $0.id == botId }?.agentId ?? botId
     }
+
+    /// The chats whose project the app does not have: a delete of the project from a chat left them behind, before
+    /// it took them too. The lists show each one as a chat of its own, so its unread replies, which count on the badge
+    /// and on Home, have a row.
+    static func orphans(in bots: [Bot]) -> [Bot] {
+        let ids = Set(bots.map(\.id))
+        return bots.filter { $0.isChat && !ids.contains($0.agentId) }
+    }
 }
 
 extension Array where Element == Bot {
