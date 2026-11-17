@@ -110,5 +110,5 @@ The `archive` and `export` commands remain available for local preparation witho
 
 ## TestFlight releases
 
-No GitHub workflow uploads the iPhone app. The upload is for internal testing only and does not change TestFlight groups.
+The release agent starts `.github/workflows/testflight.yml` twice a day. It uses the App Store Connect key of the GitHub environment `mac-release`. The upload is for internal testing only and does not change TestFlight groups.
 `python3 scripts/iphone.py testflight` uploads a build from a Mac with Xcode.

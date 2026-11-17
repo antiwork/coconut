@@ -48,7 +48,7 @@ xcodegen generate --spec ios/project.yml
 open ios/Coconut.xcodeproj
 ```
 
-Work directly on `main` and push. The repository has no tests and no GitHub workflows. Releases are manual.
+Work directly on `main` and push. The repository has no tests and no CI. The release agent starts the TestFlight workflow twice a day.
 See [architecture](docs/architecture.md) for implementation details, [relay transport](docs/relay-transport.md) for the relay, and [relay](relay/README.md) to deploy it.
 
 ## Parallel work

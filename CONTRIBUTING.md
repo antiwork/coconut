@@ -31,7 +31,7 @@ A small client is easy to keep up to date with Hermes releases. This matters mor
 
 ## Tests
 
-The repository has no tests, no commit hook and no GitHub workflows. Push without running checks. Releases are manual.
+The repository has no tests, no commit hook and no CI. Push without running checks. The release agent starts the TestFlight workflow twice a day.
 
 ## Hermes versions
 

@@ -14,4 +14,4 @@ write tests or run test suites before a push.
 Preserve other changes and never force-push `main`. Promptly revert a change that causes a confirmed fault, then fix
 forward. In your report, say what you checked by hand and what you did not.
 
-GitHub runs no workflows. Releases are manual: `python3 scripts/iphone.py testflight` uploads the iPhone app.
+GitHub runs one workflow, `testflight.yml`, only when the release agent starts it twice a day. Do not start it yourself.
