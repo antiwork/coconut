@@ -201,8 +201,7 @@ struct BusinessHomeContent: View {
                     .accessibilityIdentifier("business-home-run-rate").bento(3, 1, compact: (1, 1))
                 BentoStat(title: "Daily average", symbol: "sum", value: reportNumber(model.dailyAverage, money: true), size: .medium)
                     .accessibilityIdentifier("business-home-daily-average").bento(3, 1, compact: (1, 1))
-                // Support is a place of its own, so Finance opens the other functions.
-                ForEach(BusinessFunction.builtIns.filter { $0.key != "support" }) { function in
+                ForEach(Self.functions) { function in
                     BentoLink(route: .function(function.key)) {
                         BentoPlace(title: function.name, detail: Self.functionDetail[function.key], symbol: function.symbol)
                     }.accessibilityIdentifier("business-home-function-" + function.key).bento(3, 1, compact: (1, 1))
@@ -220,7 +219,15 @@ struct BusinessHomeContent: View {
         }.foregroundStyle(BoardStyle.ink)
     }
 
-    private static let functionDetail = ["accounting": "Ledger and close", "marketing": "Campaigns"]
+    /// On the iPhone, Dashboards holds Finance and Support in one tab, so its page opens Support with the other
+    /// functions. The Mac has Support in its sidebar, so Finance there opens the others.
+    #if os(iOS)
+    private static let functions = BusinessFunction.builtIns.filter { $0.key == "support" }
+        + BusinessFunction.builtIns.filter { $0.key != "support" }
+    #else
+    private static let functions = BusinessFunction.builtIns.filter { $0.key != "support" }
+    #endif
+    private static let functionDetail = ["accounting": "Ledger and close", "marketing": "Campaigns", "support": "Queues and SLAs"]
 
     private var urgent: Bool { model.attention.contains { !$0.unavailable } }
     private var attention: some View {

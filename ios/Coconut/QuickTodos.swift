@@ -365,10 +365,12 @@ private struct QuickTodoRowInset: ViewModifier {
     }
 }
 
-/// The number on the To-dos tab: each thing that the To-dos page lists, once. The cards that wait, the rows of Needs
+/// The number on the Inbox tab: each thing that the Inbox page lists, once. The cards that wait, the rows of Needs
 /// attention, the quick to-dos with the ones on their way, and the To-dos of the agents. A late card is a card that
 /// counts already, and stale data is a state of the connection, so neither adds to it. A blocked To-do of an agent is
-/// also a row of "Blocked or failed", so it counts one time.
+/// also a row of "Blocked or failed", so it counts one time. The rows of Finance come from the overview, which the root
+/// of the app loads for every tab and keeps for the next start (CoconutHome, BusinessReport.overviewCache), so the
+/// number stays the same whichever tab shows.
 enum TodosCount {
     static func count(cards: Int, attention: [AttentionItem], stuck: [ConversationRoute], quick: Int,
                       agentTodos: [Artifact]) -> Int {
@@ -379,7 +381,7 @@ enum TodosCount {
 }
 
 extension AppStore {
-    /// The badge of the To-dos tab (TodosCount).
+    /// The badge of the Inbox tab (TodosCount).
     func todosCount(now: Date = Date()) -> Int {
         let input = attentionInput
         return TodosCount.count(cards: pendingCardCount, attention: AttentionRules.items(input, now: now),

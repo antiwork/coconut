@@ -1,7 +1,7 @@
 import Foundation
 
 /// The published JSON stays intact. The native views choose a presentation without recalculating the ledger.
-enum BusinessValue: Decodable, Sendable, Equatable {
+enum BusinessValue: Codable, Sendable, Equatable {
     case object([String: BusinessValue]), array([BusinessValue]), string(String), number(Double), bool(Bool), null
 
     init(from decoder: Decoder) throws {
@@ -12,6 +12,19 @@ enum BusinessValue: Decodable, Sendable, Equatable {
         else if let v = try? value.decode(String.self) { self = .string(v) }
         else if let v = try? value.decode([String: BusinessValue].self) { self = .object(v) }
         else { self = .array(try value.decode([BusinessValue].self)) }
+    }
+
+    /// The same JSON again, so the app can keep a report for its next start.
+    func encode(to encoder: Encoder) throws {
+        var value = encoder.singleValueContainer()
+        switch self {
+        case .object(let v): try value.encode(v)
+        case .array(let v): try value.encode(v)
+        case .string(let v): try value.encode(v)
+        case .number(let v): try value.encode(v)
+        case .bool(let v): try value.encode(v)
+        case .null: try value.encodeNil()
+        }
     }
     subscript(_ key: String) -> BusinessValue { object[key] ?? .null }
     subscript(_ index: Int) -> BusinessValue { array.indices.contains(index) ? array[index] : .null }
@@ -49,8 +62,8 @@ struct SupportResolution {
     }
 }
 
-struct BusinessReport: Decodable, Sendable {
-    struct Source: Decodable, Sendable { let repository: String; let path: String; let sha: String; let url: String }
+struct BusinessReport: Codable, Sendable {
+    struct Source: Codable, Sendable { let repository: String; let path: String; let sha: String; let url: String }
     let key: String
     let data: BusinessValue
     let source: Source
@@ -61,6 +74,10 @@ struct BusinessReport: Decodable, Sendable {
     static let titles = ["overview": "Finance", "accounting": "Accounting", "support": "Support", "risk": "Risk", "engineering": "Engineering", "periods": "History"]
     static let symbols = ["overview": "chart.xyaxis.line", "accounting": "books.vertical", "support": "lifepreserver", "risk": "shield.lefthalf.filled", "engineering": "chevron.left.forwardslash.chevron.right", "periods": "chart.bar.doc.horizontal"]
     static let keys = ["overview", "accounting", "support", "risk", "engineering", "periods"]
+    /// The file of the overview of Finance. Its breaches count on Inbox (TodosCount), so the app keeps the last
+    /// overview for its next start, and the count does not drop until the Mac answers. A new pairing and another
+    /// GitHub account remove it (resetBusiness).
+    static let overviewCache = "business-overview.json"
 }
 
 struct LedgerIndex: Decodable, Sendable {
@@ -130,6 +147,7 @@ extension AppStore {
         if isDemo { return try BusinessReport.preview(key) }
         let report: BusinessReport = try await businessRequest("business/reports/" + key)
         businessReports[key] = report
+        if key == "overview" { try? ProtectedCache.write(report, name: BusinessReport.overviewCache) }
         return report
     }
     func businessLedger() async throws -> LedgerIndex {

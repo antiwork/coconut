@@ -76,6 +76,19 @@ enum HomeFeed {
         }
     }
 
+    /// The count of the Chats tab of the iPhone: the unread messages of the chats with people (ChatList.chats), and
+    /// the notices of the teams that the person did not see. A muted chat counts none.
+    static func chatsBadge(rooms: [TeamRoom], local: [TeamChatKey: TeamLastMessage] = [:]) -> Int {
+        ChatList.chats(rooms, local: local).reduce(0) { $0 + $1.unreadCount } + rooms.reduce(0) { $0 + $1.unseenNotices }
+    }
+
+    /// The count of the Agents tab of the iPhone: the unread messages of the chats of the projects and of the direct
+    /// chats with a bot of a team. A muted chat and an archived chat count none. The cards that wait count on Inbox.
+    static func agentsBadge(bots: [Bot], rooms: [TeamRoom], local: [TeamChatKey: TeamLastMessage] = [:]) -> Int {
+        (bots.filter { !$0.archived }.map(ChatListItem.bot) + ChatList.botDirects(rooms, local: local))
+            .reduce(0) { $0 + $1.unreadCount }
+    }
+
     /// "In progress": the turns that run now, then the open To-dos (AgentTodos), then the active notices of the
     /// teams. A turn whose To-do shows already does not show again, and an agent shows one turn.
     static func inProgress(bots: [Bot], tasks: [AgentTask], artifacts: [Artifact], rooms: [TeamRoom]) -> [HomeProgress] {

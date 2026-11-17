@@ -55,45 +55,60 @@ struct CoconutApp: App {
     }
 }
 
-/// The five tabs of the iPhone in their order: Finance, Support, To-dos, Chats and You. Chats (the case `home`) has
-/// every chat and the message box under the list. The page of a project opens from the name of its chat, and the list
-/// of all projects from the project chip of the box. The Mac sidebar has its own list.
+/// The five tabs of the iPhone in their order: Inbox, Chats, Agents, Dashboards and You. Inbox has what asks for the
+/// person, and its badge counts each thing that it lists (TodosCount). Chats is one list of the chats with people: the
+/// teams, their named chats and the direct chats. Agents is one list of the chats of the projects, with the message box
+/// under the list. The page of a project opens from the name of its chat, and the list of all projects from the project
+/// chip of the box. Dashboards has Finance, which opens Support and the other functions. The app opens on Agents,
+/// because the person does not want to land in the inbox. The Mac sidebar has its own list.
 ///
 /// The tab bar always has exactly five tabs. With a sixth, iOS puts the last tabs behind a More tab, and the person
 /// does not want More. A new place goes on the page of a tab, or it takes the place of a tab.
-enum HomeTab: Hashable { case business, support, todos, home, profile }
+enum HomeTab: Hashable { case inbox, chats, agents, dashboards, profile }
 
 struct CoconutHome: View {
     @Environment(AppStore.self) private var store
     @State private var onboardingOpen = false
     // The first run hides Close, because Coconut needs a pairing before it can show anything.
     @State private var onboardingFirstRun = false
-    @State private var selectedTab: HomeTab = .home
+    @State private var selectedTab: HomeTab = .agents
     @State private var notificationDecisionId: String?
     @State private var openingNotification = false
     @State private var previewedNotification: NotificationTarget?
     /// The place that the preview of `previewedNotification` showed.
     @State private var previewedPlace: NotificationDestination?
-    @State private var homePath = NavigationPath()
+    @State private var inboxPath = NavigationPath()
     @State private var cardsShown = false
-    @State private var businessPath = NavigationPath()
-    @State private var supportPath = NavigationPath()
-    @State private var todosPath = NavigationPath()
+    @State private var chatsPath = NavigationPath()
+    @State private var agentsPath = NavigationPath()
+    @State private var dashboardsPath = NavigationPath()
     @State private var profilePath = NavigationPath()
     @State private var teamJoin: TeamJoinRequest?
     @State private var shownTeamJoin: UUID?
 
-    /// The cards that wait show alone on the stack of To-dos. They keep the tab bar, as a tab root does.
-    private var cardsOnTop: Bool { selectedTab == .todos && cardsShown && todosPath.count == 1 }
+    /// The cards that wait show alone on the stack of Inbox. They keep the tab bar, as a tab root does.
+    private var cardsOnTop: Bool { selectedTab == .inbox && cardsShown && inboxPath.count == 1 }
 
     private var activePath: NavigationPath {
         switch selectedTab {
-        case .home: homePath
-        case .business: businessPath
-        case .support: supportPath
-        case .todos: todosPath
+        case .inbox: inboxPath
+        case .chats: chatsPath
+        case .agents: agentsPath
+        case .dashboards: dashboardsPath
         case .profile: profilePath
         }
+    }
+
+    /// Shows `tab` with `path` on its stack.
+    private func show(_ tab: HomeTab, path: NavigationPath = NavigationPath()) {
+        switch tab {
+        case .inbox: inboxPath = path
+        case .chats: chatsPath = path
+        case .agents: agentsPath = path
+        case .dashboards: dashboardsPath = path
+        case .profile: profilePath = path
+        }
+        selectedTab = tab
     }
 
     /// The tab bar shows on a tab root and under the cards only. A pushed page hides it, so an open chat has its
@@ -103,52 +118,59 @@ struct CoconutHome: View {
     var body: some View {
         // The tab bar shows filled symbols, as the system tab bars do.
         TabView(selection: $selectedTab) {
-            Tab(value: HomeTab.business) {
-                root(tab: .business, path: $businessPath)
+            Tab(value: HomeTab.inbox) {
+                root(tab: .inbox, path: $inboxPath)
             } label: {
-                Label { Text("Finance") } icon: { Image(systemName: "chart.xyaxis.line") }
-            }.accessibilityIdentifier("home-business")
-            Tab(value: HomeTab.support) {
-                root(tab: .support, path: $supportPath)
-            } label: {
-                Label { Text("Support") } icon: { Image(systemName: "lifepreserver.fill") }
-            }.accessibilityIdentifier("home-support")
-            Tab(value: HomeTab.todos) {
-                root(tab: .todos, path: $todosPath)
-            } label: {
-                Label { Text("To-dos") } icon: { Image(systemName: "checklist") }
+                Label { Text("Inbox") } icon: { Image(systemName: "tray.fill") }
             }.badge(store.todosCount())
-                .accessibilityIdentifier("home-todos")
-            Tab(value: HomeTab.home) {
-                root(tab: .home, path: $homePath)
+                .accessibilityIdentifier("home-inbox")
+            Tab(value: HomeTab.chats) {
+                root(tab: .chats, path: $chatsPath)
             } label: {
                 Label { Text("Chats") } icon: { Image(systemName: "bubble.left.and.bubble.right.fill") }
-            // The cards that wait count on To-dos, so this badge has the unread chats and notices only.
-            }.badge(HomeFeed.badge(HomeFeed.unread(bots: store.bots, latest: store.chatSummaries.newestActivity, rooms: store.shownTeamRooms,
-                                                   local: store.newestLocalMessages, decisions: [], answering: []))
-                    + store.shownTeamRooms.reduce(0) { $0 + $1.unseenNotices })
-                .accessibilityIdentifier("home-home")
+            }.badge(HomeFeed.chatsBadge(rooms: store.shownTeamRooms, local: store.newestLocalMessages))
+                .accessibilityIdentifier("home-chats")
+            Tab(value: HomeTab.agents) {
+                root(tab: .agents, path: $agentsPath)
+            } label: {
+                Label { Text("Agents") } icon: { Image(systemName: "square.stack.3d.up.fill") }
+            // The cards that wait count on Inbox, so this badge has the unread chats only.
+            }.badge(HomeFeed.agentsBadge(bots: store.bots, rooms: store.shownTeamRooms, local: store.newestLocalMessages))
+                .accessibilityIdentifier("home-agents")
+            Tab(value: HomeTab.dashboards) {
+                root(tab: .dashboards, path: $dashboardsPath)
+            } label: {
+                Label { Text("Dashboards") } icon: { Image(systemName: "gauge.with.needle.fill") }
+            }.accessibilityIdentifier("home-dashboards")
             Tab(value: HomeTab.profile) {
                 root(tab: .profile, path: $profilePath)
             } label: {
                 Label { Text("You") } icon: { Image(systemName: "person.crop.circle.fill") }
             }.accessibilityIdentifier("home-profile")
         }
-        // A document card in a chat opens the page on the stack of Home over the page of its agent, so Back leads to the
-        // agent that keeps it.
+        // The count of Inbox has the breaches of Finance (TodosCount), so the overview loads here for every tab, not
+        // only while Inbox shows: at each connection, then every 5 minutes. The publisher writes it every 15 minutes,
+        // and a report older than an hour proves no breach, so an overview that loaded once dropped from the count.
+        .task(id: "\(store.connection)/\(store.businessChanges)") {
+            guard store.connection == .connected || store.isDemo else { return }
+            while !Task.isCancelled {
+                await store.loadBusinessAttention()
+                try? await Task.sleep(for: .seconds(300))
+            }
+        }
+        // A document card in a chat opens the page on the stack of Agents over the page of its agent, so Back leads
+        // to the agent that keeps it.
         .environment(\.openDocument) { id in
-            selectedTab = .home
-            for route in store.documentPath(id) { homePath.append(route) }
+            selectedTab = .agents
+            for route in store.documentPath(id) { agentsPath.append(route) }
         }
         // A long press on a chat shows the deck of all chats (ChatDeck).
         .modifier(ChatDeckPresenter())
-        // A New chat, from a page or from the deck, shows Chats with the message box. The box takes the project.
-        .onChange(of: store.chatStarts) { _, _ in
-            selectedTab = .home
-            homePath = NavigationPath()
-        }
+        // A New chat, from a page or from the deck, shows Agents with the message box. The box takes the project.
+        .onChange(of: store.chatStarts) { _, _ in show(.agents) }
         .onChange(of: selectedTab) { _, tab in
-            if previewedNotification?.decisionId != nil && tab != .home && tab != .todos {
+            // The preview of a card shows in a chat or on Inbox. Another place leaves it.
+            if previewedNotification?.decisionId != nil && (tab == .dashboards || tab == .profile) {
                 PushNotifications.shared.target = nil
                 previewedNotification = nil
             }
@@ -187,17 +209,17 @@ struct CoconutHome: View {
         NavigationStack(path: path) {
             Group {
                 switch tab {
-                case .home: HomeLaunchView { open($0, on: path) }
-                case .todos: HomeLaunchView(part: .todos) { open($0, on: path) }
-                case .business: BusinessHomeView()
-                case .support: BusinessWorkspaceView(function: "support")
+                case .inbox: HomeLaunchView(part: .inbox) { open($0, on: path) }
+                case .chats: HomeLaunchView(part: .chats) { open($0, on: path) }
+                case .agents: HomeLaunchView(part: .agents) { open($0, on: path) }
+                case .dashboards: BusinessHomeView(title: "Dashboards")
                 case .profile: ProfileView()
                 }
             }
                 .toolbar(tabBarVisibility, for: .tabBar)
-                // The message box sits above the tab bar on Home. Every New chat leads to it.
+                // The message box sits above the tab bar on Agents. Every New chat leads to it.
                 .safeAreaInset(edge: .bottom, spacing: 0) {
-                    if tab == .home { NewChatBar() }
+                    if tab == .agents { NewChatBar() }
                 }
                 .navigationTitle("")
                 // A tab root has its name as a large title, so a root and a pushed page look different. You has the
@@ -310,31 +332,27 @@ struct CoconutHome: View {
         }
     }
 
-    /// Shows a Team chat or a direct chat on the stack of Home, with the chat list under it. The sheets close.
+    /// Shows a Team chat or a direct chat on the stack of the tab that lists it, with that list under it: Chats, or
+    /// Agents for a direct chat with a bot of a team. The sheets close.
     private func showTeamChat(_ chat: TeamChatKey) {
         notificationDecisionId = nil
-        selectedTab = .home
-        homePath = NavigationPath()
-        homePath.append(TeamChatRoute(chat: chat))
+        show(chat.bot == nil ? .chats : .agents, path: NavigationPath([TeamChatRoute(chat: chat)]))
     }
 
-    /// Shows the cards that wait on the To-dos tab, with the To-dos under them. The card with this ID comes first.
+    /// Shows the cards that wait on Inbox, with the rest of Inbox under them. The card with this ID comes first.
     private func showCards(_ decisionId: String?) {
         // A card opens in the chat of its agent, where its work is. Only "Review cards", or a card that the app does
         // not have yet, opens the list of cards.
         if let decisionId, let decision = store.decisions.first(where: { $0.id == decisionId }) {
             notificationDecisionId = nil
-            selectedTab = .home
-            homePath = NavigationPath()
-            homePath.append(store.decisionChatRoute(for: decision))
+            show(.agents, path: NavigationPath([store.decisionChatRoute(for: decision)]))
             return
         }
         notificationDecisionId = decisionId
-        selectedTab = .todos
-        todosPath = NavigationPath([HomeDestination.inbox])
+        show(.inbox, path: NavigationPath([HomeDestination.inbox]))
     }
 
-    /// Opens the place of a row of Chats or To-dos on the stack of its tab, so Back leads to that tab.
+    /// Opens the place of a row of Inbox, Chats or Agents on the stack of its tab, so Back leads to that tab.
     private func open(_ target: HomeTarget, on path: Binding<NavigationPath>) {
         switch target {
         case .conversation(let route): path.wrappedValue.append(route)
@@ -342,9 +360,7 @@ struct CoconutHome: View {
         case .cards(let decisionId): showCards(decisionId)
         case .agent(let botId): path.wrappedValue.append(AgentRoute(botId: botId))
         case .agents: path.wrappedValue.append(AgentListRoute())
-        case .connection:
-            profilePath = NavigationPath([ProfileRoute.mac])
-            selectedTab = .profile
+        case .connection: show(.profile, path: NavigationPath([ProfileRoute.mac]))
         case .notices(let room): path.wrappedValue.append(NoticeBoardRoute(roomId: room))
         case .business(let route): path.wrappedValue.append(route)
         }
@@ -359,21 +375,16 @@ struct CoconutHome: View {
             showCards(nil)
         case .conversation(let route):
             notificationDecisionId = nil
-            selectedTab = .home
-            homePath = NavigationPath()
-            homePath.append(route)
+            show(.agents, path: NavigationPath([route]))
         case .team, .chat:
             if let chat = destination.teamChat { showTeamChat(chat) }
         case .chatList:
             notificationDecisionId = nil
-            selectedTab = .home
-            homePath = NavigationPath()
+            show(.chats)
         case .notices(let room):
-            // The board of a team is part of the stack of Home, so Back leads to the chats.
+            // The board of a team is part of the stack of Chats, so Back leads to the chats with people.
             notificationDecisionId = nil
-            selectedTab = .home
-            homePath = NavigationPath()
-            homePath.append(NoticeBoardRoute(roomId: room))
+            show(.chats, path: NavigationPath([NoticeBoardRoute(roomId: room)]))
         }
     }
 
@@ -410,7 +421,8 @@ extension HomeTab: CaseIterable {}
 extension CoconutHome {
     /// Shows one place of the app at launch, for a screenshot of the preview data: `--demo --open agent`. A simulator
     /// takes no taps from a terminal, so the hand check of a screen starts the app on it. The name of a tab shows
-    /// its root. Each other place opens on the stack of Home. Only a debug build on a simulator reads the argument.
+    /// its root. Each other place opens on the stack of the tab that lists it. Only a debug build on a simulator reads
+    /// the argument.
     private func showPreviewPlace() {
         #if DEBUG && targetEnvironment(simulator)
         let arguments = ProcessInfo.processInfo.arguments
@@ -429,37 +441,29 @@ extension CoconutHome {
                 await action()
             }
         }
-        func show(_ tab: HomeTab, _ routes: [any Hashable] = []) {
+        func open(_ tab: HomeTab, _ routes: [any Hashable] = []) {
             var path = NavigationPath()
             for route in routes { path.append(route) }
-            switch tab {
-            case .home: homePath = path
-            case .business: businessPath = path
-            case .support: supportPath = path
-            case .todos: todosPath = path
-            case .profile: profilePath = path
-            }
-            selectedTab = tab
+            show(tab, path: path)
         }
         switch place {
-        // The chat list is the Chats tab, and a project opens from the name of its chat.
-        case "chats": show(.home)
-        // Each way to start a chat, run as the person would: the message box of Home shows with the project chosen.
-        case "new-chat": show(.home); later { store.startChat(in: store.bots.first { $0.id == agent }) }
-        case "agent-new-chat": show(.home, [AgentRoute(botId: agent)]); later { store.startChat(in: store.bots.first { $0.id == agent }) }
-        case "chat-new-chat": show(.home, [ConversationRoute(botId: agent)]); later { store.startChat(in: store.bots.first { $0.id == agent }) }
+        // The chats of the projects are the Agents tab, and a project opens from the name of its chat.
+        // Each way to start a chat, run as the person would: the message box of Agents shows with the project chosen.
+        case "new-chat": open(.agents); later { store.startChat(in: store.bots.first { $0.id == agent }) }
+        case "agent-new-chat": open(.agents, [AgentRoute(botId: agent)]); later { store.startChat(in: store.bots.first { $0.id == agent }) }
+        case "chat-new-chat": open(.agents, [ConversationRoute(botId: agent)]); later { store.startChat(in: store.bots.first { $0.id == agent }) }
         // The first message of the box, sent as its Send does: in a new chat of the project.
         case "new-chat-send":
-            show(.home)
+            open(.agents)
             later {
                 guard let bot = store.bots.first(where: { $0.id == agent }),
                       let chat = await store.sendNewChat(in: bot, text: "Which sellers had a payout held on Friday?") else { return }
-                homePath.append(ConversationRoute(botId: chat.id))
+                agentsPath.append(ConversationRoute(botId: chat.id))
             }
         // Quick to-dos: the sheet of a new one, a to-do added as Add does, and the comments of one.
-        case "new-todo": show(.todos); later { PendingTodos.shared.adding = true }
+        case "new-todo": open(.inbox); later { PendingTodos.shared.adding = true }
         case "todo-add", "todo-comments":
-            show(.todos)
+            open(.inbox)
             later {
                 let choices = QuickTodos.choices(in: store.bots, latest: store.chatSummaries.newestActivity)
                 guard let bot = QuickTodos.defaultAgent(last: UserDefaults.standard.string(forKey: QuickTodos.agentKey) ?? "", in: choices),
@@ -468,54 +472,56 @@ extension CoconutHome {
                 await store.commentOnTodo(chat, text: "Only the ones in USD, please.")
                 PendingTodos.shared.commenting = chat.id
             }
-        case "agents": show(.home, [AgentListRoute()])
-        case "cards": show(.todos, [HomeDestination.inbox])
-        case "chat": show(.home, [ConversationRoute(botId: agent)])
+        case "agent-list": open(.agents, [AgentListRoute()])
+        case "cards": open(.inbox, [HomeDestination.inbox])
+        case "chat": open(.agents, [ConversationRoute(botId: agent)])
         // Personal, with the line of its Antiwork budget (PersonalBudget.swift).
         case "chat-personal":
-            show(.home, [ConversationRoute(botId: store.bots.first { $0.name == "Personal" && $0.chatOf == nil }?.id ?? agent)])
-        case "coconut": show(.home, [ConversationRoute(botId: store.bots.coconutChat?.id ?? agent)])
-        case "archived": show(.home, [ArchivedAgentsRoute()])
-        case "team-chat": show(.home, [TeamChatRoute(chat: TeamChatKey(room: room))])
-        case "agent": show(.home, [AgentRoute(botId: agent)])
-        case "agent-routines": show(.home, [AgentRoute(botId: agent), BotSettingsRoute(botId: agent)])
-        case "all-pages": show(.home, [AllPagesRoute()])
-        case "usage": show(.home, [UsageRoute()])
-        case "agent-usage": show(.home, [AgentRoute(botId: agent), UsageRoute(botId: agent)])
-        case "live": show(.home, [LiveRoute()])
-        case "spend": show(.home, [SpendRoute()])
-        case "business": show(.business, [])
-        case "projects": show(.business, [BusinessRoute.projects])
-        case "accounting": show(.business, [BusinessRoute.function("accounting")])
-        case "support-work": show(.business, [BusinessRoute.function("support")])
-        case "support-conversation": show(.support, [BusinessRoute.supportConversation(id: "sample-0", subject: "Payout timing question")])
-        case "todos": show(.todos)
-        case "reports": show(.business, [BusinessRoute.reports])
-        case "history": show(.business, [BusinessRoute.reports])
-        case "marketing": show(.business, [BusinessRoute.function("marketing")])
-        case "ledger": show(.business, [BusinessRoute.ledger])
+            open(.agents, [ConversationRoute(botId: store.bots.first { $0.name == "Personal" && $0.chatOf == nil }?.id ?? agent)])
+        case "coconut": open(.agents, [ConversationRoute(botId: store.bots.coconutChat?.id ?? agent)])
+        case "archived": open(.agents, [ArchivedAgentsRoute()])
+        case "team-chat": open(.chats, [TeamChatRoute(chat: TeamChatKey(room: room))])
+        case "agent": open(.agents, [AgentRoute(botId: agent)])
+        case "agent-routines": open(.agents, [AgentRoute(botId: agent), BotSettingsRoute(botId: agent)])
+        case "all-pages": open(.agents, [AllPagesRoute()])
+        case "usage": open(.agents, [UsageRoute()])
+        case "agent-usage": open(.agents, [AgentRoute(botId: agent), UsageRoute(botId: agent)])
+        case "live": open(.agents, [LiveRoute()])
+        case "spend": open(.agents, [SpendRoute()])
+        // The older names of the tabs.
+        case "todos": open(.inbox)
+        case "business": open(.dashboards)
+        case "projects": open(.dashboards, [BusinessRoute.projects])
+        case "accounting": open(.dashboards, [BusinessRoute.function("accounting")])
+        case "support", "support-work": open(.dashboards, [BusinessRoute.function("support")])
+        case "support-conversation":
+            open(.dashboards, [BusinessRoute.function("support"),
+                               BusinessRoute.supportConversation(id: "sample-0", subject: "Payout timing question")])
+        case "reports", "history": open(.dashboards, [BusinessRoute.reports])
+        case "marketing": open(.dashboards, [BusinessRoute.function("marketing")])
+        case "ledger": open(.dashboards, [BusinessRoute.ledger])
         case "page":
             // The list of the pages loads first. The page then opens over the page of its agent.
             Task {
                 if store.documents == nil { await store.loadDocuments(quiet: true) }
                 guard let page = store.documents?.first else { return }
-                show(.home, store.documentPath(page.id))
+                open(.agents, store.documentPath(page.id))
             }
-        case "notices": show(.home, [NoticeBoardRoute(roomId: room)])
-        case "team": show(.profile, [ProfileRoute.team])
+        case "notices": open(.chats, [NoticeBoardRoute(roomId: room)])
+        case "team": open(.profile, [ProfileRoute.team])
         case "direct":
             let member = store.shownTeamRooms.first?.directList.first?.member
-            show(.home, [TeamChatRoute(chat: TeamChatKey(room: room, member: member))])
+            open(.chats, [TeamChatRoute(chat: TeamChatKey(room: room, member: member))])
         // The tap on the notification of a notice.
         case "notice-tap": showNotification(.notices(room))
-        case "profile-mac": show(.profile, [ProfileRoute.mac])
-        case "profile-notifications": show(.profile, [ProfileRoute.notifications])
-        case "profile-connections": show(.profile, [ProfileRoute.connections])
-        case "profile-team": show(.profile, [ProfileRoute.team])
+        case "profile-mac": open(.profile, [ProfileRoute.mac])
+        case "profile-notifications": open(.profile, [ProfileRoute.notifications])
+        case "profile-connections": open(.profile, [ProfileRoute.connections])
+        case "profile-team": open(.profile, [ProfileRoute.team])
         default:
             // "report-risk" opens a report by its key, and "project-gumroad" the work of a project.
-            if place.hasPrefix("report-") { show(.business, [BusinessRoute.report(String(place.dropFirst(7)))]) }
-            if place.hasPrefix("project-") { show(.business, [BusinessRoute.projects, BusinessRoute.project(String(place.dropFirst(8)))]) }
+            if place.hasPrefix("report-") { open(.dashboards, [BusinessRoute.report(String(place.dropFirst(7)))]) }
+            if place.hasPrefix("project-") { open(.dashboards, [BusinessRoute.projects, BusinessRoute.project(String(place.dropFirst(8)))]) }
         }
         #endif
     }

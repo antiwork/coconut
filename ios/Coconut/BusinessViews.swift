@@ -5,9 +5,14 @@ struct BusinessHomeView: View {
     @Environment(AppStore.self) private var store
     @State private var report: BusinessReport?
     @State private var error: String?
+    /// Finance, or Dashboards at the root of its tab on the iPhone, which holds Finance and Support.
+    private let title: String
     private var shownReport: BusinessReport? { store.businessReports["overview"] ?? report }
 
-    init(initial: BusinessReport? = nil) { _report = State(initialValue: initial) }
+    init(initial: BusinessReport? = nil, title: String = "Finance") {
+        _report = State(initialValue: initial)
+        self.title = title
+    }
 
     var body: some View {
         BoardPage(width: .wide, spacing: BoardStyle.Space.l) {
@@ -23,7 +28,7 @@ struct BusinessHomeView: View {
                     .accessibilityIdentifier("business-home-refresh-error")
             }
         }
-        .navigationTitle("Finance")
+        .navigationTitle(title)
         .task(id: "\(store.connection)/\(store.businessChanges)") { await load() }
         .onChange(of: store.businessGeneration) { _, _ in report = nil; error = nil }
         .refreshable { await load() }

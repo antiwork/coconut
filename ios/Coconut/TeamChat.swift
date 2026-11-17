@@ -1576,17 +1576,10 @@ enum ChatList {
         return latest
     }
 
-    /// One list, newest activity first. `bots` is in that order already. The activity of a team is its newest message,
-    /// or the time when this Mac made or joined it, the activity of a named chat is its newest message or the time of
-    /// the chat, and the activity of a direct chat is its newest message. A chat of a team and a bot with the same time
-    /// keep the bot first.
-    static func items(bots: [Bot], latest: [String: Date], rooms: [TeamRoom],
-                      local: [TeamChatKey: TeamLastMessage] = [:]) -> [ChatListItem] {
-        merge(bots: bots, latest: latest,
-              chats: sorted(peopleItems(rooms, local: local) + botDirectItems(rooms, local: local)))
-    }
-
-    /// The bots and the chats of the teams in one list, newest activity first. Both are in that order already.
+    /// The bots and the chats of the teams in one list, newest activity first. Both are in that order already. The
+    /// activity of a team is its newest message, or the time when this Mac made or joined it, the activity of a named
+    /// chat is its newest message or the time of the chat, and the activity of a direct chat is its newest message. A
+    /// chat of a team and a bot with the same time keep the bot first.
     fileprivate static func merge(bots: [Bot], latest: [String: Date], chats: [ChatListItem]) -> [ChatListItem] {
         func activity(_ bot: Bot) -> Date { latest[bot.id] ?? bot.createdAt.apiDate ?? .distantPast }
         var items: [ChatListItem] = []
@@ -1622,13 +1615,20 @@ enum ChatList {
         rooms.flatMap { room in ([room] + room.namedChatRooms).filter(\.chatPinned).map(ChatListItem.team) }
     }
 
-    /// The Chats list of the iPhone, as Telegram has it: one list, and every row has the same form. The pinned chats
-    /// come first in a fixed order: the Coconut chat, the starred projects in the order they were made, then the pinned
-    /// chats of the teams (pinnedChats). Then every other chat, newest activity first: the chats of the projects, the
-    /// teams and the direct chats. A chat that is archived, a chat of an archived project, and a chat that nobody wrote
-    /// in (AgentChats.isListed) are not in the list. `latest` is the date of the newest message of each bot.
-    static func flat(bots: [Bot], latest: [String: Date], rooms: [TeamRoom],
-                     local: [TeamChatKey: TeamLastMessage] = [:]) -> [ChatListItem] {
+    /// The Chats list of the iPhone, as Telegram has it: one list of the chats with people, and every row has the same
+    /// form. The pinned chats of the teams come first in a fixed order (pinnedChats). Then every other team, named
+    /// chat and direct chat with a person, newest activity first (people). The chats of the agents are on Agents.
+    static func chats(_ rooms: [TeamRoom], local: [TeamChatKey: TeamLastMessage] = [:]) -> [ChatListItem] {
+        pinnedChats(rooms) + people(rooms, local: local)
+    }
+
+    /// The Agents list of the iPhone, as Telegram has it: one list of the chats of the projects, and every row has the
+    /// same form. The Coconut chat and the starred projects come first, in the order they were made. Then every other
+    /// chat of a project and every direct chat with a bot of a team, newest activity first, as the Mac sidebar has them
+    /// under Project chats. A chat that is archived, a chat of an archived project, and a chat that nobody wrote in
+    /// (AgentChats.isListed) are not in the list. `latest` is the date of the newest message of each bot.
+    static func agents(bots: [Bot], latest: [String: Date], rooms: [TeamRoom],
+                       local: [TeamChatKey: TeamLastMessage] = [:]) -> [ChatListItem] {
         func activity(_ bot: Bot) -> Date { latest[bot.id] ?? bot.createdAt.apiDate ?? .distantPast }
         let open = Set(bots.filter { !$0.archived && !$0.isChat }.map(\.id))
         // A chat whose project is gone shows as a chat of its own (AgentChats.orphans).
@@ -1644,14 +1644,14 @@ enum ChatList {
         }
         let top = Set((coconut + starred).map(\.id))
         let others = shown.filter { !top.contains($0.id) }.sorted { (activity($0), $0.id) > (activity($1), $1.id) }
-        return (coconut + starred).map(ChatListItem.bot) + pinnedChats(rooms)
-            + items(bots: others, latest: latest, rooms: rooms, local: local)
+        return (coconut + starred).map(ChatListItem.bot)
+            + merge(bots: others, latest: latest, chats: botDirects(rooms, local: local))
     }
 
     /// The Coconut chat itself, not one of its further chats.
     static func isCoconut(_ bot: Bot) -> Bool { bot.coconut && !bot.isChat }
 
-    /// A starred project, at the top of the Chats list with the star mark.
+    /// A starred project, at the top of the Agents list with the star mark.
     static func isStarred(_ bot: Bot) -> Bool { bot.pinned && !bot.isChat && !bot.coconut }
 
     private static func peopleItems(_ rooms: [TeamRoom], local: [TeamChatKey: TeamLastMessage]) -> [ChatListItem] {

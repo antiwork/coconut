@@ -1,11 +1,11 @@
 import SwiftUI
 
-/// Two tabs of the iPhone. Chats is one list of every chat, as Telegram has it, with the message box under the list
-/// (NewChatBar). To-dos has what asks for the person: the rules that breach, the cards that wait, and the tasks of
-/// the agents.
+/// Three tabs of the iPhone. Inbox has what asks for the person: the rules that breach, the cards that wait, and the
+/// to-dos. Chats is one list of the chats with people, as Telegram has it: the teams, their named chats and the direct
+/// chats. Agents is one list of the chats of the projects, with the message box under the list (NewChatBar).
 struct HomeLaunchView: View {
-    enum Part { case chats, todos }
-    var part = Part.chats
+    enum Part { case inbox, chats, agents }
+    var part = Part.agents
     @Environment(AppStore.self) private var store
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @Environment(\.pushRoute) private var pushRoute
@@ -14,7 +14,12 @@ struct HomeLaunchView: View {
     @ScaledMetric(relativeTo: .title3) private var todoIconWidth = 24
 
     var body: some View {
-        if part == .todos { todoList } else { chatList }
+        switch part {
+        case .inbox: todoList
+        case .chats: chatList(ChatList.chats(store.shownTeamRooms, local: store.newestLocalMessages))
+        case .agents: chatList(ChatList.agents(bots: store.bots, latest: store.chatSummaries.newestActivity,
+                                               rooms: store.shownTeamRooms, local: store.newestLocalMessages))
+        }
     }
 
     private var todoList: some View {
@@ -26,7 +31,7 @@ struct HomeLaunchView: View {
             QuickTodoRows()
             ForEach(todos) { item in todoRow(item).homeRow() }
             if todos.isEmpty && cards == 0 && quick == 0 {
-                Text("No to-dos. Tap + to add one.")
+                Text("Nothing waits for you. Tap + to add a to-do.")
                     .font(.subheadline).foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity).padding(.vertical, BoardStyle.Space.xxl)
                     .accessibilityIdentifier("todos-empty")
@@ -39,7 +44,7 @@ struct HomeLaunchView: View {
         .contentMargins(.top, BoardStyle.Space.l, for: .scrollContent)
         .contentMargins(.bottom, BoardStyle.Space.xl, for: .scrollContent)
         .background(BoardStyle.paper)
-        .navigationTitle("To-dos")
+        .navigationTitle("Inbox")
         .toolbar {
             // One tap and one line add a to-do, which an agent starts on at once (QuickTodos).
             ToolbarItem(placement: .primaryAction) {
@@ -48,21 +53,20 @@ struct HomeLaunchView: View {
             }
         }
         .sheet(isPresented: Binding(get: { PendingTodos.shared.adding }, set: { PendingTodos.shared.adding = $0 })) { NewTodoSheet() }
-        .task(id: "\(store.connection)/\(store.businessChanges)") { await store.loadBusinessAttention() }
+        // The root of the app loads the overview of Finance for the count of the tab (CoconutHome), so a pull only
+        // loads it again.
         .refreshable { await store.reconnect(); await store.loadBusinessAttention() }
     }
 
-    private var chatList: some View {
-        // One list of chats, as Telegram has it (ChatList.flat): the pinned chats first, then every other chat newest
-        // activity first. Every row has the same form: the face of the project, the name, the last message. A starred
-        // row only adds the star mark.
-        let rows = ChatList.flat(bots: store.bots, latest: store.chatSummaries.newestActivity,
-                                 rooms: store.shownTeamRooms, local: store.newestLocalMessages)
-        let archivedCount = store.bots.filter(\.archived).count
+    /// The list of Chats or of Agents, as Telegram has it: the pinned chats first, then every other chat newest
+    /// activity first (ChatList.chats, ChatList.agents). Every row has the same form: the name, the last message, the
+    /// age and the badges. A starred row only adds the star mark.
+    private func chatList(_ rows: [ChatListItem]) -> some View {
+        let archivedCount = part == .agents ? store.bots.filter(\.archived).count : 0
         // A list, not a stack, so that a row of a chat has the swipe of the system: swipe left to archive.
         return List {
             if rows.isEmpty {
-                Text("No chats yet.")
+                Text(part == .agents ? "No chats yet." : "No chats with people yet.")
                     .font(.subheadline).foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity).padding(.vertical, BoardStyle.Space.xxl)
                     .accessibilityIdentifier("chats-empty")
@@ -125,9 +129,10 @@ struct HomeLaunchView: View {
         .contentMargins(.top, BoardStyle.Space.s, for: .scrollContent)
         .contentMargins(.bottom, BoardStyle.Space.xl, for: .scrollContent)
         .background(BoardStyle.paper)
-        .navigationTitle("Chats")
+        .navigationTitle(part == .agents ? "Agents" : "Chats")
         .toolbar {
-            // One tap reads every chat, as Read All in Telegram. It shows while a chat has an unread count.
+            // One tap reads every chat of both lists, as Read All in Telegram. It shows while a chat of this list has
+            // an unread count.
             if rows.contains(where: { $0.unreadCount > 0 }) {
                 ToolbarItem(placement: .primaryAction) {
                     MarkAllReadButton().accessibilityIdentifier("chats-mark-all-read")
@@ -139,7 +144,7 @@ struct HomeLaunchView: View {
         .scrollDismissesKeyboard(.interactively)
     }
 
-    /// What asks for the person comes first on To-dos: the rules that breach now, then the cards that wait. Each row
+    /// What asks for the person comes first on Inbox: the rules that breach now, then the cards that wait. Each row
     /// draws nothing when there is nothing to show.
     @ViewBuilder
     private func attention(cards: Int) -> some View {
