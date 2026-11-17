@@ -485,6 +485,8 @@ extension CoconutHome {
         case "agent-access": show(.home, [AgentRoute(botId: agent), AgentSettingRoute.access(agent)])
         case "all-pages": show(.home, [AllPagesRoute()])
         case "usage": show(.home, [UsageRoute()])
+        case "live": show(.home, [LiveRoute()])
+        case "spend": show(.home, [SpendRoute()])
         case "business": show(.business, [])
         case "projects": show(.business, [BusinessRoute.projects])
         case "accounting": show(.business, [BusinessRoute.function("accounting")])

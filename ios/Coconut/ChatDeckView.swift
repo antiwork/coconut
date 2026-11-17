@@ -125,14 +125,13 @@ struct ChatDeckView: View {
                     }
                 }
                 .scrollTargetLayout()
-                .padding(.vertical, 40)
             }
             .scrollIndicators(.hidden)
             .scrollTargetBehavior(.viewAligned(limitBehavior: .alwaysByOne))
             .scrollPosition(id: $selected)
             .contentMargins(.horizontal, layout.sideInset, for: .scrollContent)
             .scrollClipDisabled()
-            .frame(height: layout.card.height + 80)
+            .frame(height: layout.card.height)
             // A tap beside the cards closes the deck. A card takes its own tap.
             .onTapGesture { close() }
             .onAppear { centerSelected(proxy) }

@@ -11,6 +11,9 @@ struct ChatDeckPresenter: ViewModifier {
     /// Shows a chat that the person chose, for the command of the Mac menu. Only the Mac window has one.
     var open: ((String) -> Void)? = nil
     @State private var request: ChatDeckRequest?
+    #if DEBUG && targetEnvironment(simulator)
+    @Environment(AppStore.self) private var store
+    #endif
 
     func body(content: Content) -> some View {
         #if os(iOS)
@@ -21,6 +24,9 @@ struct ChatDeckPresenter: ViewModifier {
                 ChatDeckView(request: shown) { dismiss() }
             }
             .sensoryFeedback(trigger: request?.id, feedback)
+            #if DEBUG && targetEnvironment(simulator)
+            .task { await openForPreview() }
+            #endif
         #else
         content
             .environment(\.showChatDeck) { present($0) }
@@ -59,6 +65,20 @@ struct ChatDeckPresenter: ViewModifier {
         transaction.disablesAnimations = true
         withTransaction(transaction) { request = nil }
     }
+
+    #if DEBUG && targetEnvironment(simulator)
+    /// `--demo --open deck` shows the deck at launch with the first card in the middle, and `--open deck-2` with the
+    /// third. A simulator takes no taps from a terminal, so the hand check of the deck starts the app on it.
+    private func openForPreview() async {
+        let arguments = ProcessInfo.processInfo.arguments
+        guard store.isDemo, let index = arguments.firstIndex(of: "--open"), index + 1 < arguments.count,
+              arguments[index + 1].hasPrefix("deck") else { return }
+        try? await Task.sleep(for: .seconds(1))
+        let ids = store.chatDeckCards().map(\.id)
+        let place = Int(arguments[index + 1].dropFirst(5)) ?? 0
+        present(ChatDeckRequest(start: ids.indices.contains(place) ? ids[place] : ids.first, opened: nil) { _ in })
+    }
+    #endif
 }
 
 /// A chat row that opens its chat on a tap and shows the deck on a long press. A button cannot tell the two apart: it

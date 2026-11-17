@@ -120,7 +120,7 @@ struct HomeLaunchView: View {
                 }
             }
             // The archived agents wait behind one row at the end, as the archived chats of WhatsApp.
-            if archivedCount > 0 && filter != .people && filter != .unread {
+            if archivedCount > 0 && project.isEmpty && filter != .people && filter != .unread {
                 Button { pushRoute?(ArchivedAgentsRoute()) } label: {
                     HStack(spacing: BoardStyle.Space.m) {
                         Image(systemName: "archivebox").foregroundStyle(.secondary)
