@@ -1,0 +1,218 @@
+name: Mac release
+
+# Builds Coconut.app, signs it with the Developer ID Application certificate, notarizes it, staples the ticket, and
+# publishes it in the Sparkle feed of the Worker coconut-updates (updates/). Pushes coalesce into at most one update
+# per hour. The hourly run picks up changes that arrived during the cooldown. An explicit urgent manual run skips it.
+# The version is in mac/VERSION. The build number is the commit count of main.
+#
+# The environment `mac-release` accepts only the main branch. It holds these secrets:
+#   MAC_DEVELOPER_ID_P12, MAC_DEVELOPER_ID_P12_PASSWORD   the Developer ID Application identity, base64 .p12
+#   ASC_KEY_ID, ASC_ISSUER_ID, ASC_KEY_P8                  an App Store Connect API key for notarytool
+#   SPARKLE_ED_PRIVATE_KEY                                 the EdDSA key that signs each archive for Sparkle
+#   CLOUDFLARE_API_TOKEN                                   deploys the Worker coconut-updates
+# A missing secret stops the job: an archive that is not notarized and signed must never reach a Mac.
+# The release agent of Coconut starts this workflow twice a day. It does not run on push or on a schedule.
+on:
+  workflow_dispatch:
+    inputs:
+      urgent:
+        description: Publish an urgent Mac update before the hourly cooldown ends
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  deployments: write
+  actions: read
+
+# Two releases must not deploy the feed at the same time: the later one would drop the archive of the earlier one.
+# A push and a person share this group. Keep queued runs so a later push cannot cancel an urgent manual release.
+concurrency:
+  group: mac-release
+  cancel-in-progress: false
+  queue: max
+
+jobs:
+  plan:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      build: ${{ steps.plan.outputs.build }}
+      skip: ${{ steps.plan.outputs.skip }}
+      sha: ${{ steps.gate.outputs.sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+          fetch-depth: 0 # The build number is the commit count of HEAD.
+          ref: main
+      - name: Check the hourly publication gate
+        id: gate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          URGENT: ${{ github.event_name == 'workflow_dispatch' && inputs.urgent }}
+        run: |
+          args=()
+          if [ "$URGENT" = true ]; then args+=(--urgent); fi
+          python3 scripts/release_gate.py plan --channel mac "${args[@]}"
+      - name: Choose the build
+        id: plan
+        run: |
+          set -euo pipefail
+          version="$(cat mac/VERSION)"
+          if ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::mac/VERSION must have the form 1.2.3."
+            exit 1
+          fi
+          skip="${{ steps.gate.outputs.skip }}"
+          build="$(git rev-list --count HEAD)"
+          live="$(python3 scripts/mac_feed.py latest-build)"
+          if [ "$live" -ge "$build" ]; then
+            skip=true
+            echo "The feed already has build $live. Nothing to publish." >> "$GITHUB_STEP_SUMMARY"
+          fi
+          { echo "build=$build"; echo "skip=$skip"; } >> "$GITHUB_OUTPUT"
+
+  release:
+    needs: plan
+    if: needs.plan.outputs.skip != 'true'
+    runs-on: macos-latest
+    timeout-minutes: 60
+    environment: mac-release
+    env:
+      BUILD: ${{ needs.plan.outputs.build }}
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+          ref: ${{ needs.plan.outputs.sha }}
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.12'
+      - name: Check that the Sparkle key belongs to the app
+        env:
+          SPARKLE_ED_PRIVATE_KEY: ${{ secrets.SPARKLE_ED_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "$SPARKLE_ED_PRIVATE_KEY" ]; then
+            echo "::error::The environment mac-release needs SPARKLE_ED_PRIVATE_KEY."
+            exit 1
+          fi
+          python -m pip install --quiet --only-binary=:all: cryptography==44.0.0
+          printf '%s' "$SPARKLE_ED_PRIVATE_KEY" | python scripts/mac_feed.py check-key
+      - name: Import the Developer ID identity into a temporary keychain
+        env:
+          P12: ${{ secrets.MAC_DEVELOPER_ID_P12 }}
+          P12_PASSWORD: ${{ secrets.MAC_DEVELOPER_ID_P12_PASSWORD }}
+        run: |
+          set -euo pipefail
+          if [ -z "$P12" ] || [ -z "$P12_PASSWORD" ]; then
+            echo "::error::The environment mac-release needs MAC_DEVELOPER_ID_P12 and MAC_DEVELOPER_ID_P12_PASSWORD."
+            exit 1
+          fi
+          keychain="$RUNNER_TEMP/coconut-signing.keychain-db"
+          keychain_password="$(uuidgen)"
+          # The cleanup step deletes this keychain, also when a later command here fails.
+          echo "SIGNING_KEYCHAIN=$keychain" >> "$GITHUB_ENV"
+          printf '%s' "$P12" | base64 --decode > "$RUNNER_TEMP/identity.p12"
+          security create-keychain -p "$keychain_password" "$keychain"
+          security set-keychain-settings -lut 3600 "$keychain"
+          security unlock-keychain -p "$keychain_password" "$keychain"
+          # The .p12 uses the old RC2-40 key bag encryption. security import reads it.
+          security import "$RUNNER_TEMP/identity.p12" -k "$keychain" -P "$P12_PASSWORD" -T /usr/bin/codesign -f pkcs12
+          rm -f "$RUNNER_TEMP/identity.p12"
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$keychain_password" "$keychain" > /dev/null
+          # codesign searches the keychains of this list. The login keychain stays in it.
+          security list-keychains -d user -s "$keychain" "$HOME/Library/Keychains/login.keychain-db"
+          identity="$(security find-identity -v -p codesigning "$keychain" \
+            | awk '/"Developer ID Application: Gumroad, Inc. \(66LJACJ2U7\)"/ { print $2; exit }')"
+          if [ -z "$identity" ]; then
+            echo "::error::The .p12 has no Developer ID Application identity of team 66LJACJ2U7."
+            exit 1
+          fi
+          echo "SIGNING_IDENTITY=$identity" >> "$GITHUB_ENV"
+      - name: Build and sign Coconut.app
+        run: python scripts/mac_app.py build --output "$RUNNER_TEMP/mac" --build "$BUILD" --identity "$SIGNING_IDENTITY"
+      - name: Notarize and staple
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
+        run: |
+          set -euo pipefail
+          if [ -z "$ASC_KEY_ID" ] || [ -z "$ASC_ISSUER_ID" ] || [ -z "$ASC_KEY_P8" ]; then
+            echo "::error::The environment mac-release needs ASC_KEY_ID, ASC_ISSUER_ID and ASC_KEY_P8."
+            exit 1
+          fi
+          key="$RUNNER_TEMP/AuthKey.p8"
+          (umask 077; printf '%s\n' "$ASC_KEY_P8" > "$key")
+          python scripts/mac_app.py notarize --output "$RUNNER_TEMP/mac" --key "$key" --key-id "$ASC_KEY_ID" --issuer "$ASC_ISSUER_ID"
+          rm -f "$key"
+      - name: Make and sign the archive
+        env:
+          SPARKLE_ED_PRIVATE_KEY: ${{ secrets.SPARKLE_ED_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          archive="$(python scripts/mac_app.py archive --output "$RUNNER_TEMP/mac")"
+          # The Swift build put the tools of the pinned Sparkle version here.
+          # Xcode downloads Sparkle for the app target into the build folder of scripts/mac_app.py.
+          sign_update=mac/.build/xcode/packages/artifacts/sparkle/Sparkle/bin/sign_update
+          signature="$(printf '%s' "$SPARKLE_ED_PRIVATE_KEY" | "$sign_update" --ed-key-file - -p "$archive")"
+          printf '%s' "$SPARKLE_ED_PRIVATE_KEY" | "$sign_update" --ed-key-file - --verify "$archive" "$signature"
+          { echo "ARCHIVE=$archive"; echo "SIGNATURE=$signature"; } >> "$GITHUB_ENV"
+      - name: Build the feed
+        run: python scripts/mac_feed.py publish --archive "$ARCHIVE" --signature "$SIGNATURE" --output updates/public
+      - name: Record the publication
+        id: publication
+        env:
+          URGENT: ${{ github.event_name == 'workflow_dispatch' && inputs.urgent }}
+        run: |
+          args=()
+          if [ "$URGENT" = true ]; then args+=(--urgent); fi
+          python3 scripts/release_gate.py begin --channel mac "${args[@]}"
+      - name: Deploy the feed to the Worker coconut-updates
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "$CLOUDFLARE_API_TOKEN" ]; then
+            echo "::error::The environment mac-release needs CLOUDFLARE_API_TOKEN."
+            exit 1
+          fi
+          # The relay uses the same Wrangler version (relay/package.json).
+          npx --yes wrangler@4.130.0 deploy --config updates/wrangler.toml
+      - name: Check the live feed
+        run: |
+          set -euo pipefail
+          # The appcast has a cache time of five minutes.
+          for _ in $(seq 1 42); do
+            live="$(python scripts/mac_feed.py latest-build)"
+            if [ "$live" -ge "$BUILD" ]; then
+              echo "Published $(basename "$ARCHIVE")." >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "::error::The live feed does not show build $BUILD."
+          exit 1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: Coconut.app
+          path: ${{ env.ARCHIVE }}
+          if-no-files-found: error
+          retention-days: 30
+      - name: Remove the temporary keychain
+        if: always()
+        run: |
+          if [ -n "${SIGNING_KEYCHAIN:-}" ] && [ -e "$SIGNING_KEYCHAIN" ]; then
+            security delete-keychain "$SIGNING_KEYCHAIN" || true
+          fi
+          rm -f "$RUNNER_TEMP/identity.p12" "$RUNNER_TEMP/AuthKey.p8"
+      - name: Finish the publication record
+        if: always() && steps.publication.outputs.id != ''
+        run: python3 scripts/release_gate.py finish --id '${{ steps.publication.outputs.id }}' --state '${{ job.status }}'

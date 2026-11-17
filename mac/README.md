@@ -82,7 +82,7 @@ The Worker `coconut-updates` (`updates/`) serves the feed. See `updates/README.m
 
 ## Release
 
-No GitHub workflow publishes the Mac app. A person runs these steps by hand.
+The release agent starts `.github/workflows/mac-release.yml` twice a day. It runs these steps in the GitHub environment `mac-release`.
 
 The version is in `mac/VERSION`. The build number is the commit count of `main`. A release does these steps:
 

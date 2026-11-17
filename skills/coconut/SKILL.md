@@ -73,7 +73,7 @@ The person wants speed. The repository `antiwork/coconut` has no tests, no commi
 1. Work on `main` in a separate worktree. Do not open a pull request unless the person asks.
 2. Do not run tests, builds or other checks before a push. Commit, rebase on `origin/main` and push.
 3. Never force-push `main`. Resolve conflicts and keep other people's changes.
-4. Do not release. The release agent starts the TestFlight workflow twice a day.
+4. Do not release. The release agent starts the TestFlight and Mac release workflows twice a day.
 
 ## Teams
 
