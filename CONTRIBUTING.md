@@ -16,9 +16,8 @@ A small client is easy to keep up to date with Hermes releases. This matters mor
 
 ## Changes
 
-- Work directly on `main`. Push after the local regressions pass; do not open a pull request unless asked.
+- Work directly on `main` and push. Do not open a pull request unless asked.
 - Make each commit one focused change and describe the resulting behavior in its message.
-- Choose the smallest regression check that covers the change. Give real numbers for speed changes.
 - `docs/` holds only setup, architecture and the relay protocol. Fix a page there when your change makes it wrong. Do not add pages for reports, plans or one change.
 - Write docs and comments in short, plain sentences in the present tense.
 
@@ -32,27 +31,9 @@ A small client is easy to keep up to date with Hermes releases. This matters mor
 
 ## Tests
 
-Install the local pre-commit hook with `git config core.hooksPath .githooks`. It runs three service smoke tests for
-backend changes and the tests of changed modules or test files. Python 3.11 or newer is required; set
-`COCONUT_TEST_PYTHON` to choose its executable. App-only and documentation commits run no service tests.
-
-The agent runs additional targeted checks locally when needed. GitHub runs no regression CI. Only the Mac and
-TestFlight release jobs remain: they build before publishing, skip unchanged app inputs, and publish at most once
-per hour per app. The hourly schedule picks up commits that arrived during the cooldown.
-For an urgent Mac fix, run `Mac release` manually with `urgent` enabled to skip the cooldown.
-
-When a change needs the full backend suite, run each file in its own process. Module names collide otherwise.
-
-```sh
-(for test in backend/tests/test_*.py; do
-  PYTHONPATH=backend python3 -m unittest discover -s backend/tests -p "$(basename "$test")" || exit 1
-done)
-```
-
-- Name each backend test file `test_*.py`.
-- A test that needs Hermes uses `backend/tests/hermes_env.py`. It skips without a Hermes. To run it, see [Supported Hermes versions](docs/supported-hermes-versions.md#run-the-native-tests-locally).
-- Run the relay tests with `(cd relay && npm ci && npm test)`.
-- Run `CoconutTests` from Xcode for iOS changes.
+The repository has no tests, no commit hook and no regression CI. Push without running checks.
+GitHub runs only the Mac, TestFlight and site release jobs. The app jobs publish at most once per hour per app; run
+`Mac release` manually with `urgent` enabled to skip the cooldown.
 
 ## Hermes versions
 

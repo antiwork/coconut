@@ -2,8 +2,7 @@ import CryptoKit
 import Foundation
 
 // The iPhone end of the relay tunnel (docs/relay-transport.md). One WebSocket carries all requests as streams of
-// TunnelFrames inside a Noise session. This file uses Foundation and CryptoKit only, so the loopback test client
-// (scripts/tunnel-test-client.swift) compiles it with ios/Tunnel on the Mac.
+// TunnelFrames inside a Noise session. This file uses Foundation and CryptoKit only.
 
 struct TunnelEndpoint: Equatable, Sendable {
     let relay: URL

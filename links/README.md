@@ -48,8 +48,7 @@ from the same token (`TeamLinkCheck`, `onContinueUserActivity` in `ios/Coconut/C
 ## Deploy
 
 ```
-(cd links && npm ci && npm test)
-(cd links && npx wrangler deploy)
+(cd links && npm ci && npx wrangler deploy)
 ```
 
 The route of `wrangler.toml` puts the Worker on `coconut.gumroad.com`, a proxied DNS record of the zone of the site

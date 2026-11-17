@@ -151,7 +151,7 @@ The token is unpadded lowercase base32 (RFC 4648) of these bytes:
 | Length of `relay` | `relay`, UTF-8 |
 | The rest | `name`, UTF-8 |
 
-Hermes masks text that looks like a secret before its agent sends the link. Base64url JSON always starts with `eyJ`, so Hermes masks it as a JSON Web Token. No rule of Hermes 0.22.4 or 0.22.5 matches the token. `backend/tests/test_native_pairing_redaction.py` checks this with the redaction functions of the installed Hermes, in the native CI job for the minimum and the latest Hermes.
+Hermes masks text that looks like a secret before its agent sends the link. Base64url JSON always starts with `eyJ`, so Hermes masks it as a JSON Web Token. No rule of Hermes 0.22.4 or 0.22.5 matches the token.
 
 The iPhone and the Mac derive these values with HKDF-SHA256, an empty salt, and a 32-byte output:
 
@@ -243,11 +243,3 @@ The backend listens with plain HTTP on two loopback ports:
 
 - `127.0.0.1:8960` for the tools on this Mac. A tool pairs there with a code from `host.py pair`.
 - `127.0.0.1:8961` for the sidecar. Only this listener reads `X-Coconut-Peer`. The deploy checks `/health` here.
-
-## Loopback test
-
-`scripts/test_tunnel_loopback.py` runs the test client, a Miniflare relay, the sidecar, and the backend on one Mac. The test client uses the app's `TunnelConnection` to pair and to send its requests. The client pairs, gets `/v1/state`, uploads a 5 MB attachment, and downloads 3.9 MB. It also checks that another iPhone key and a used ticket get no session, and that the sidecar reconnects. At the end, the test stops the sidecar during a session and starts it again a second later. The phone's next request must succeed on its first attempt. It needs the Xcode Command Line Tools and `npm ci` in `relay/`.
-
-```bash
-python3 scripts/test_tunnel_loopback.py
-```

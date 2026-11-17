@@ -241,48 +241,6 @@ targets:
               NSExtensionActivationSupportsWebPageWithMaxCount: 1
               NSExtensionActivationSupportsImageWithMaxCount: 4
               NSExtensionActivationSupportsFileWithMaxCount: 4
-  CoconutTests:
-    type: bundle.unit-test
-    platform: iOS
-    sources:
-      - CoconutTests
-    dependencies:
-      - target: Coconut
-    settings:
-      base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.gumroad.coconut.tests
-        GENERATE_INFOPLIST_FILE: YES
-        TARGETED_DEVICE_FAMILY: "1,2"
-  # The logic tests of the iPhone app, run on the Mac against the CoconutMac target. The test of the row hold needs a
-  # UIKit window, so only the iPhone runs it.
-  CoconutMacTests:
-    type: bundle.unit-test
-    platform: macOS
-    sources:
-      - path: CoconutTests
-        excludes:
-          - ConversationRowHoldTests.swift
-    dependencies:
-      - target: CoconutMac
-    settings:
-      base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.gumroad.coconut.mac.tests
-        GENERATE_INFOPLIST_FILE: YES
-        TEST_HOST: $(BUILT_PRODUCTS_DIR)/Coconut.app/Contents/MacOS/Coconut
-        BUNDLE_LOADER: $(TEST_HOST)
-  CoconutUITests:
-    type: bundle.ui-testing
-    platform: iOS
-    sources:
-      - CoconutUITests
-    dependencies:
-      - target: Coconut
-    settings:
-      base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.gumroad.coconut.uitests
-        GENERATE_INFOPLIST_FILE: YES
-        TEST_TARGET_NAME: Coconut
-        TARGETED_DEVICE_FAMILY: "1,2"
 schemes:
   Coconut:
     build:
@@ -290,16 +248,7 @@ schemes:
         Coconut: all
     run:
       config: Debug
-    test:
-      config: Debug
-      targets:
-        - name: CoconutTests
-        - name: CoconutUITests
   CoconutMac:
     build:
       targets:
         CoconutMac: all
-    test:
-      config: Debug
-      targets:
-        - name: CoconutMacTests

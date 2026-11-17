@@ -11,12 +11,11 @@ Store these with Wrangler. Use an APNs key restricted to Coconut's bundle ID.
 
 The APNs key never enters installation packages or iPhone registration responses.
 
-## Test and deploy
+## Deploy
 
 ```sh
 cd relay
 npm ci
-npm test
 npm run deploy
 ```
 

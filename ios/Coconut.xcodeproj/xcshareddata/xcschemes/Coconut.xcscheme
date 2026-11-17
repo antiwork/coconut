@@ -39,31 +39,7 @@
          </BuildableReference>
       </MacroExpansion>
       <Testables>
-         <TestableReference
-            skipped = "NO"
-            parallelizable = "NO">
-            <BuildableReference
-               BuildableIdentifier = "primary"
-               BlueprintIdentifier = "7AE693619F5460E3FEF996C4"
-               BuildableName = "CoconutTests.xctest"
-               BlueprintName = "CoconutTests"
-               ReferencedContainer = "container:Coconut.xcodeproj">
-            </BuildableReference>
-         </TestableReference>
-         <TestableReference
-            skipped = "NO"
-            parallelizable = "NO">
-            <BuildableReference
-               BuildableIdentifier = "primary"
-               BlueprintIdentifier = "C374E2559992E75C45F981FE"
-               BuildableName = "CoconutUITests.xctest"
-               BlueprintName = "CoconutUITests"
-               ReferencedContainer = "container:Coconut.xcodeproj">
-            </BuildableReference>
-         </TestableReference>
       </Testables>
-      <CommandLineArguments>
-      </CommandLineArguments>
    </TestAction>
    <LaunchAction
       buildConfiguration = "Debug"

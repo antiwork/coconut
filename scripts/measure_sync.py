@@ -1,7 +1,6 @@
 """Measure the reads that a paired app repeats, with stored data of the size of a busy Mac.
 
-The fixture has synthetic records: five bots with 14,991, 10,275, 2,209, 203, and 141 messages, as the fixture of
-scripts/test_app_performance.py. The script starts no Hermes and no worker. Run it with
+The fixture has synthetic records: five bots with 14,991, 10,275, 2,209, 203, and 141 messages. The script starts no Hermes and no worker. Run it with
 `PYTHONPATH=backend python3 scripts/measure_sync.py`.
 """
 import json

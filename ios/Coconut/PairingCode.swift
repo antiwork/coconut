@@ -37,8 +37,7 @@ struct PairingCode: Equatable, Sendable {
     }
     #endif
 
-    // The message that the person sends to Hermes. Resources/hermes-pairing-message.txt holds the text, so the
-    // redaction test of the backend checks the same text (backend/tests/test_native_pairing_redaction.py).
+    // The message that the person sends to Hermes. Resources/hermes-pairing-message.txt holds the text.
     var hermesMessage: String {
         Self.template.replacingOccurrences(of: "{code}", with: text).replacingOccurrences(of: "{device}", with: Self.device)
     }

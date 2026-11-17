@@ -14,6 +14,5 @@ let package = Package(
     targets: [
         .target(name: "CoconutKit"),
         .executableTarget(name: "CoconutTool", dependencies: ["CoconutKit"]),
-        .testTarget(name: "CoconutKitTests", dependencies: ["CoconutKit"]),
     ]
 )

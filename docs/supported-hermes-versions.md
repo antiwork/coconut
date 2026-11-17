@@ -22,28 +22,13 @@ Before 0.21.6, Hermes used calendar versions, such as 2026.9.24. Coconut treats 
 
 ## Local compatibility checks
 
-Regression checks run locally. The commit hook selects small service checks for staged changes. When the Hermes
-contract changes, the agent also runs the contract and relevant native tests against the minimum and latest supported
-Hermes releases. A broad compatibility change can require every backend test file, each in its own process.
-
-GitHub runs only app release builds. There is no hosted compatibility matrix or nightly regression job.
-
-## Run the native tests locally
-
-The native tests use `backend/tests/hermes_env.py` to find Hermes:
-
-1. Install Hermes with the official installer.
-2. Set `COCONUT_HERMES_ROOT` to the Hermes source folder and `COCONUT_HERMES_PYTHON` to its Python. Without these variables, `hermes_env.py` uses the Hermes that `hermes_runtime` finds, but only when the tests run under the Python of that Hermes.
-3. Run each test file with that Python, for example `PYTHONPATH=backend "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_native_kanban.py`.
-
-Without a Hermes, the native tests skip. Set `COCONUT_REQUIRE_NATIVE=1` for a local compatibility check that must not skip. A missing Hermes then stops each native test module.
+The repository has no tests. The contract check at each service start is the compatibility check.
 
 ## Support a new Hermes release
 
-1. Run the contract check and relevant native tests locally against the release.
-2. If the checks pass, add the release to `tested` and commit to `main`.
-3. If a check fails, fix what the release breaks, rerun it, then add the release to `tested`.
+1. Start Coconut on the release. `hermes_contract.verify_contract()` runs at the start.
+2. If the contract check passes, add the release to `tested` and push to `main`.
+3. If it fails, fix what the release breaks, then add the release to `tested`.
 4. To stop the support of an old release, change `minimum` to a newer release in `tested`. Remove the older releases from `tested`.
 
-These checks require no model credentials. The tests make no network calls. Cache successful contract checks for unchanged hashes. Run them again after a source change, a Hermes change, or a new failure.
 Keep setup-specific update schedules, credentials, and installation procedures outside the repository.

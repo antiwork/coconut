@@ -198,7 +198,7 @@ that page and the file of the associated domain: it decodes the token to show th
 writes no log. `TeamLog.invite(link:)` reads either form, so the app, `coconut team join` and the service take a link as
 a person received it, also with a line break after it and with the slash that a browser adds at the end of a path.
 
-The token is unpadded lowercase base32 (RFC 4648) of these bytes. The pairing link uses the same encoding, because Hermes masks text that looks like a secret. `backend/tests/test_native_pairing_redaction.py` must check this link too.
+The token is unpadded lowercase base32 (RFC 4648) of these bytes. The pairing link uses the same encoding, because Hermes masks text that looks like a secret.
 
 | Bytes | Value |
 | --- | --- |
@@ -445,7 +445,7 @@ One thread, `coconut-team-sync`, reads each `active` room after its `seq`, one a
 - An unexpected failure in one room fails only that room, with the same waits. The other rooms go on.
 - No call to the relay or to the helper holds the lock of the service.
 
-A log line names a room by the start of its ID, and an entry by its ID and its `seq`. The relay sees these values too. No log line and no error text has an invite link, a token, a key, a ticket, a welcome or a proof. `backend/tests/test_team_routes.py` checks this.
+A log line names a room by the start of its ID, and an entry by its ID and its `seq`. The relay sees these values too. No log line and no error text has an invite link, a token, a key, a ticket, a welcome or a proof.
 
 ### Socket on the Mac
 

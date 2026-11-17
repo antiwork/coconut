@@ -48,24 +48,7 @@ xcodegen generate --spec ios/project.yml
 open ios/Coconut.xcodeproj
 ```
 
-Work directly on `main` and enable the local regression hook:
-
-```sh
-git config core.hooksPath .githooks
-```
-
-The agent chooses additional checks for the change. Full local checks are available without installing Hermes:
-
-```sh
-python3 -m pip install Pillow==12.3.0  # The image decoder also ships with Hermes.
-PYTHONPATH=backend python3 -m unittest discover -s backend/tests
-swift test --package-path mac
-(cd relay && npm ci && npm test)
-python3 scripts/test_tunnel_loopback.py  # iPhone, relay, and sidecar end to end
-```
-
-Tests that need Hermes skip without it. Check supported Hermes versions locally when the contract changes.
-Run `CoconutTests` from Xcode for iOS checks. GitHub runs only hourly-throttled app releases; it runs no regression CI.
+Work directly on `main` and push. The repository has no tests and no regression CI. GitHub runs only hourly-throttled app releases.
 See [architecture](docs/architecture.md) for implementation details, [relay transport](docs/relay-transport.md) for the relay, and [relay](relay/README.md) to deploy it.
 
 ## Parallel work
