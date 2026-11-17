@@ -4077,9 +4077,6 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
                                         outcome='Hermes continued with your answer.' if kind == 'completed' else task['summary'])
                         self._put('decisions', decision)
                         self._event('decision.updated', self._public(decision), bot_id, task_id)
-                from .library_replies import asked_by_person
-                # Read before the follow-up advances the input of the task.
-                person_asked = asked_by_person(self, task)
                 if has_followup:
                     self._advance_input(task)
                 else:
@@ -4110,10 +4107,6 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
                         self._message(bot_id, task['summary'], task_id=task_id, kind='activity')
                 else:
                     self._message(bot_id, task['summary'], task_id=task_id, kind='status' if kind == 'failed' else 'text')
-                # Also a turn whose follow-up waits keeps its report: the next turn starts a new turn of replies.
-                if kind == 'completed' and not (task.get('_routine_silent') or reaction_silent or silent_completion):
-                    from .library_replies import keep_report
-                    keep_report(self, task, person_asked)
             else:
                 raise ServiceError(400, f'Unknown provider event: {kind}')
             self._refresh_bot(bot_id)

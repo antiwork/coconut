@@ -456,50 +456,13 @@ class DocumentServiceTests(unittest.TestCase):
         for page in self.replays(cursor):
             self.assertEqual((page['tasks'], page['messages'], page['removed_messages']), ([], [], []))
 
-    def test_a_kept_report_replays_with_its_reply_and_its_card(self):
-        cursor = self.service._cursor()
+    def test_a_report_in_the_chat_stays_in_the_chat(self):
+        # Coconut saves no page by itself: a page costs a turn, and only a bot that the person asked saves one.
         self.reply(REPORT)
-        with patch.object(self.service, 'kanban', SimpleNamespace(tasks={}, observed_at='2099-01-01T00:00:00Z')):
-            page = self.service.updates(cursor, collection_deltas=True, native_events=True, compact_history=True)
-        self.assertNotIn('reset', page)
-        self.assertEqual([m['kind'] for m in page['messages']], ['text', 'document'])
-
-    def test_a_report_in_the_chat_goes_to_the_library_after_the_reply(self):
-        self.reply(REPORT)
-        documents = self.service.documents()['documents']
-        self.assertEqual([(d['key'], d['title'], d['bot_id']) for d in documents],
-                         [(KEY, 'Profit report, October', self.bot['id'])])
-        content = self.service.document(documents[0]['id'])['content']
-        self.assertTrue(content.startswith('Net profit rose'))
-        self.assertIn('![Profit by month](coconut-file://', content)
-        messages = [m['kind'] for m in self.service._task_messages(self.task_id) if m['role'] == 'assistant']
-        self.assertEqual(messages[-2:], ['text', 'document'])
-        self.assertEqual(self.cards(), [('Profit report, October', documents[0]['id'])])
-
-    def test_a_short_answer_or_a_saved_document_adds_no_report(self):
-        self.reply('Signups are 412 today, up 9%.')
         self.assertEqual(self.service.documents()['documents'], [])
-        self.turn, self.finish = self.start_turn(self.bot)
-        self.task_id = self.task['id']
-        self.save()
-        self.reply(REPORT)
-        self.assertEqual([d['key'] for d in self.service.documents()['documents']], ['signups-daily'])
-
-    def test_the_same_report_later_adds_a_version(self):
-        self.reply(REPORT)
-        self.turn, self.finish = self.start_turn(self.bot)
-        self.reply(REPORT.replace('rose 12%', 'rose 14%'))
-        documents = self.service.documents()['documents']
-        self.assertEqual([(d['key'], d['version']) for d in documents], [(KEY, 2)])
-
-
-    def test_a_report_with_a_queued_follow_up_goes_to_the_library(self):
-        # The person writes for the next turn while this one runs, so the task queues it when the turn ends.
-        steered = self.write('POST', f'/v1/bots/{self.bot["id"]}/messages', {'text': 'Then check refunds.', 'mode': 'auto'})
-        self.assertEqual(steered['id'], self.task_id)
-        self.reply(REPORT)
-        self.assertEqual(self.service._get('tasks', self.task_id)['status'], 'queued')
-        self.assertEqual([d['key'] for d in self.service.documents()['documents']], [KEY])
+        self.assertEqual(self.cards(), [])
+        messages = [m['kind'] for m in self.service._task_messages(self.task_id) if m['role'] == 'assistant']
+        self.assertNotIn('document', messages)
 
     def test_an_update_in_a_later_turn_of_the_task_shows_a_new_card(self):
         self.save()
@@ -546,6 +509,11 @@ class DocumentServiceTests(unittest.TestCase):
 
     def test_coconut_removes_once_the_pages_that_no_person_asked_for(self):
         from coconut.library_replies import remove_unasked_reports
+        # A page that an earlier build kept from a reply that a person asked for.
+        kept = document_of(REPORT, 'Task')
+        with self.service.transaction():
+            self.service._write_document(self.service._get('tasks', self.task_id), self.bot, kept['key'], kept['title'],
+                                         'markdown', kept['content'], kept['summary'], expires=None)
         self.reply(REPORT)
         asked = self.service.documents()['documents'][0]
         # A page of build 642 from a turn without a person's message, and its card.
@@ -875,5 +843,5 @@ if __name__ == '__main__':
 class LibraryRuleTests(unittest.TestCase):
     def test_an_unrequested_page_is_proposed_with_a_card_first(self):
         from coconut.card_tools import LIBRARY_INSTRUCTIONS
-        self.assertIn('propose it first with coconut_suggest and wait for approval', LIBRARY_INSTRUCTIONS)
-        self.assertNotIn('on your own, without a request', LIBRARY_INSTRUCTIONS)
+        self.assertIn('Make a new document only when the person asks for one. Do not offer or propose a page.', LIBRARY_INSTRUCTIONS)
+        self.assertNotIn('Coconut saves your report', LIBRARY_INSTRUCTIONS)
