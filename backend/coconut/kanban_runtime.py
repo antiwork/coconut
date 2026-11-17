@@ -15,6 +15,12 @@ try:
 except ImportError:
     # The adapter runs as a script, so its folder is on the path and the package is not.
     from native_failure import TRANSIENT_ERROR_CODES, TRANSIENT_NATIVE_ERROR
+try:
+    from .native_settings import raw_config, save_config
+    from .work_limits import board_limits, set_board_limit
+except ImportError:
+    from native_settings import raw_config, save_config
+    from work_limits import board_limits, set_board_limit
 
 
 def fingerprint(value):
@@ -23,6 +29,9 @@ def fingerprint(value):
 
 # Hermes states that wait for someone to act: specify, finish a parent, unblock, review, or reach a scheduled time.
 IDLE_STATUSES = ('triage', 'todo', 'blocked', 'review', 'scheduled')
+# The lanes of an agent's queue on the phone, by Hermes status. A done task counts only on the day that it finished.
+QUEUE_LANES = {'running': 'running', 'ready': 'waiting', 'todo': 'waiting', 'triage': 'waiting', 'scheduled': 'waiting',
+               'blocked': 'needs_you', 'review': 'needs_you', 'done': 'done_today'}
 # A waiting task without a Hermes event for this long is idle. Earlier app versions archived such tasks on request.
 IDLE_AGE = 7 * 86400
 # Events that leave a block as it is. Any other later event (a claim, an unblock, a new block) ends its proof.
@@ -47,6 +56,7 @@ class Board:
         self.kb, self.dispatch, self.workspace = kanban_db, kanban_db_dispatch, kanban_db_workspace
         self.conn = kanban_db_connect.connect()
         self._diagnostics = {}
+        self.home, self._config = home, (None, {})
         self.conn.execute('CREATE TABLE IF NOT EXISTS coconut_bindings '
                           '(external_id TEXT PRIMARY KEY, native_id TEXT NOT NULL UNIQUE, intent TEXT NOT NULL)')
         self.conn.execute('CREATE TABLE IF NOT EXISTS coconut_pr_followups '
@@ -54,6 +64,40 @@ class Board:
         self.conn.execute('CREATE TABLE IF NOT EXISTS coconut_outcomes (native_id TEXT PRIMARY KEY, initialized INTEGER NOT NULL DEFAULT 0)')
         if 'input_id' not in {r[1] for r in self.conn.execute('PRAGMA table_info(coconut_outcomes)')}:
             self.conn.execute("ALTER TABLE coconut_outcomes ADD COLUMN input_id TEXT NOT NULL DEFAULT ''")
+
+    def limits(self):
+        """The total and per-agent limits in the Hermes config of this board home (work_limits)."""
+        path = self.home / 'config.yaml'
+        try:
+            stamp = path.stat().st_mtime_ns
+        except OSError:
+            stamp = None
+        if stamp != self._config[0]:
+            # Hermes reads its own config. A file that it cannot read leaves the Automatic limits.
+            try:
+                config = raw_config(self.home) if stamp is not None else {}
+            except Exception:
+                config = {}
+            self._config = (stamp, config if isinstance(config, dict) else {})
+        return board_limits(self._config[1])
+
+    def set_limit(self, name, limit):
+        config = raw_config(self.home)
+        save_config(self.home, set_board_limit(config, name, limit))
+        self._config = (None, {})
+        return self.limits()
+
+    def queues(self):
+        """Each agent's queue on the board: tasks running, waiting, waiting for a person, and done today."""
+        midnight = time.mktime(time.localtime()[:3] + (0, 0, 0, 0, 0, -1))
+        result = {}
+        for tenant, status, count in self.conn.execute(
+                'SELECT tenant,status,COUNT(*) FROM tasks WHERE tenant IS NOT NULL AND status IN '
+                "('running','ready','todo','triage','scheduled','blocked','review') "
+                "OR tenant IS NOT NULL AND status='done' AND completed_at>=? GROUP BY tenant,status", (midnight,)):
+            lanes = result.setdefault(tenant, dict.fromkeys(('running', 'waiting', 'needs_you', 'done_today'), 0))
+            lanes[QUEUE_LANES[status]] += count
+        return result
 
     def transfer_worker_pid(self, claimed, pid):
         """Remove prior leases before Hermes assigns this worker to a new run."""
@@ -474,7 +518,7 @@ class Board:
     def tick(self, rows, capacity, spawn):
         self.sync(rows)
         result = self._dispatch_ready(rows, capacity, spawn)
-        return {'tasks': self.snapshot(), 'dispatch': asdict(result)}
+        return {'tasks': self.snapshot(), 'dispatch': asdict(result), 'limits': self.limits(), 'queues': self.queues()}
 
     def _dispatch_ready(self, rows, capacity, spawn):
         from hermes_cli.kanban_db_connect import _dispatch_tick_lock
@@ -500,6 +544,11 @@ class Board:
                 max_spawn=capacity, max_in_progress=capacity, board=None)
             if not allowed:
                 return result
+            # Hermes caps each assignee (kanban.max_in_progress_per_profile). Every task of this board has the assignee
+            # `default`, and its tenant is the agent, so the cap of Hermes applies here to each tenant.
+            per_agent = self.limits()['per_agent']['effective_limit']
+            running = dict(self.conn.execute("SELECT tenant,COUNT(*) FROM tasks WHERE status='running' "
+                                             'AND tenant IS NOT NULL GROUP BY tenant').fetchall())
             pending = self.conn.execute('SELECT t.*,b.external_id,f.input_id AS followup_input FROM tasks t JOIN coconut_bindings b '
                 'ON b.native_id=t.id LEFT JOIN coconut_pr_followups f ON f.native_id=t.id '
                 "WHERE t.status='ready' ORDER BY t.priority DESC,t.created_at,t.rowid").fetchall()
@@ -509,6 +558,10 @@ class Board:
                 row = candidates.get(task['external_id'])
                 profile_exists = self.dispatch._profile_exists_fn()
                 if not row or not task['assignee'] or profile_exists and not profile_exists(task['assignee']):
+                    continue
+                agent = task['tenant']
+                if agent is not None and running.get(agent, 0) >= per_agent:
+                    result.skipped_per_profile_capped.append((task['id'], agent, running[agent]))
                     continue
                 continuing = task['followup_input'] == row['input']
                 new_input = row.get('previous_input') and row['previous_input'] != row['input']
@@ -528,10 +581,11 @@ class Board:
                             with self.kb.write_txn(self.conn):
                                 self.record_worker_pid(claimed, pid, emit_event=False)
                         return pid
-                    self.dispatch._dispatch_lane_task(self.conn, task, task['assignee'], result,
-                        lane='ready', dry_run=False, ttl_seconds=None, board=None,
-                        failure_limit=self.dispatch.DEFAULT_FAILURE_LIMIT, spawn_fn=spawn_with_lease,
-                        per_profile_cap=None, per_profile_running={})
+                    if self.dispatch._dispatch_lane_task(self.conn, task, task['assignee'], result,
+                            lane='ready', dry_run=False, ttl_seconds=None, board=None,
+                            failure_limit=self.dispatch.DEFAULT_FAILURE_LIMIT, spawn_fn=spawn_with_lease,
+                            per_profile_cap=None, per_profile_running={}) and agent is not None:
+                        running[agent] = running.get(agent, 0) + 1
                     continue
                 if guard not in (None, 'active_pr'):
                     result.respawn_guarded.append((task['id'], guard))
@@ -558,6 +612,8 @@ class Board:
                             self.record_worker_pid(claimed, pid)
                     self.kb._fire_worker_spawned_hook(self.conn, claimed, str(workspace), pid)
                     result.spawned.append((claimed.id, claimed.assignee or '', str(workspace)))
+                    if agent is not None:
+                        running[agent] = running.get(agent, 0) + 1
                 except Exception as error:
                     if self.dispatch._record_task_failure(self.conn, claimed.id, str(error),
                             outcome='spawn_failed', release_claim=True, end_run=True):
@@ -664,7 +720,12 @@ def main():
                     board.bind(request['id'], request['external_id'])
                     result = {'ok': True}
                 elif request['op'] == 'snapshot':
-                    result = {'tasks': board.snapshot(request.get('external_ids', []), request.get('native_ids', []))}
+                    result = {'tasks': board.snapshot(request.get('external_ids', []), request.get('native_ids', [])),
+                              'limits': board.limits(), 'queues': board.queues()}
+                elif request['op'] == 'limits':
+                    result = {'limits': board.limits()}
+                elif request['op'] == 'set_limit':
+                    result = {'limits': board.set_limit(request['name'], request['limit'])}
                 elif request['op'] == 'completion':
                     result = {'card': board.completion(request['id'])}
                 elif request['op'] == 'tool':

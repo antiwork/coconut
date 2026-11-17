@@ -316,7 +316,6 @@ class StateSync:
     def _replay_changes(self, after, *, collection_deltas=False, native_events=False):
         import json
         from .service import now
-        from .work_capacity import state as capacity_state
         cursor = self._cursor()
         rows = self.db.execute('SELECT seq,type,task_id,data FROM events WHERE seq>? AND seq<=? ORDER BY seq LIMIT 1001',
                                (after, cursor)).fetchall()
@@ -504,7 +503,7 @@ class StateSync:
                         (json.dumps(hidden_tasks),)))
                 result['removed_artifacts'] = sorted(removed)
             result['artifacts'] = [self._public(a) for a in self._work_projection(artifacts)]
-            result['work_capacity'] = capacity_state(self._setting('work_capacity'))
+            result.update(self._work_limit_state())
             if rows:
                 replying = {c['decision_id'] for c in (json.loads(row[0]) for row in self.db.execute(
                     "SELECT data FROM contexts WHERE json_extract(data,'$.status') IN ('queued','working')"))

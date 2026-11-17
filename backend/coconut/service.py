@@ -142,7 +142,7 @@ from .parallel_work_updates import ParallelWorkUpdates
 from .native_fallback_updates import NativeFallbackUpdates
 from .task_cache import SCHEMA as TASK_CHANGES_SCHEMA, TaskCache, TaskStates
 from .history_cache import SCHEMA as MESSAGE_CHANGES_SCHEMA, HistoryCache, HistoryStates
-from .work_capacity import execution_key, state as capacity_state
+from .work_capacity import execution_key
 from .kanban_scheduler import NativeKanban
 
 
@@ -1036,7 +1036,7 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
                 data_started = time.perf_counter()
                 bots = [self._bot_view(dict(b, **{key: value for key, value in observed.get(b['id'], {}).items() if key in ('name', 'role', 'instructions', 'approval_override', 'effective_approval', 'worker_limit', 'model_override', '_native_effective_model', '_model_error')}), catalog) for b in self._all('bots') if not b.get('_deleted')]
                 visible = {b['id'] for b in bots}
-                state = {'bots': bots, 'work_capacity': capacity_state(self._setting('work_capacity'))}
+                state = {'bots': bots, **self._work_limit_state()}
                 for table in self.TABLES[1:]:
                     if content_only and table == 'tasks':
                         continue
@@ -1176,6 +1176,8 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
             return self.google_connection(path.rsplit('/', 1)[1], data, device_id, key)
         if method == 'PUT' and path == '/v1/settings/fallback' and hasattr(self.provider, 'native_settings'):
             return self.mutate_native_fallback(data, key, fingerprint)
+        if method == 'PUT' and path in ('/v1/settings/work-capacity', '/v1/settings/agent-limit') and self.kanban is not None:
+            return self.mutate_board_limit('total' if path.endswith('capacity') else 'per_agent', data, key, fingerprint)
         if method == 'PUT' and path == '/v1/settings/parallel-work' and hasattr(self.provider, 'native_settings'):
             return self.mutate_parallel_work(data, key, fingerprint)
         if method == 'PUT' and path == '/v1/settings/approvals' and hasattr(self.provider, 'native_settings'):
@@ -1337,7 +1339,7 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
             if 'role' in data and (not isinstance(data['role'], str) or len(data['role']) > 160):
                 raise ServiceError(400, 'The label must contain at most 160 characters.')
             if 'worker_limit' in data:
-                from .parallel_work import validate_limit
+                from .work_limits import validate_limit
                 try:
                     validate_limit(data['worker_limit'])
                 except ValueError as error:
@@ -1607,14 +1609,17 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
         if not isinstance(data, dict) or not parts or parts[0] != 'v1':
             raise ServiceError(400, 'Send a JSON object to a v1 route.')
         if parts == ['v1', 'settings', 'work-capacity'] and method == 'PUT':
+            # Fixture mode has no Hermes board (mutate_board_limit), so Coconut keeps this total.
+            from .work_limits import board_limits, validate_limit
             if set(data) != {'limit'}:
                 raise ServiceError(400, 'Specify a work limit, or null for Automatic.')
             try:
-                result = capacity_state(data['limit'])
+                validate_limit(data['limit'])
             except ValueError as error:
                 raise ServiceError(400, str(error)) from None
             self.db.execute('INSERT INTO settings VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value',
                             ('work_capacity', encoded(data['limit'])))
+            result = board_limits({'kanban': {'max_in_progress': data['limit']}})['total']
             self._event('settings.updated', {'work_capacity': result})
             return result
         if parts == ['v1', 'device', 'push', 'previews'] and method == 'PUT':
@@ -3337,7 +3342,7 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
         self.running = {k: v for k, v in self.running.items() if v.is_alive()}
         self.context_threads = {k: v for k, v in self.context_threads.items() if v.is_alive()}
         self._dispatch_status_request()
-        self._dispatch_chat(capacity_state(self._setting('work_capacity'))['effective_limit'])
+        self._dispatch_chat(self._work_limits()['total']['effective_limit'])
 
     def _dispatch_conversations(self):
         while not self.stopping.is_set():
@@ -3384,7 +3389,7 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
             self._cancel_stale_decision_refreshes()
             self.running = {k: v for k, v in self.running.items() if v.is_alive()}
             self.context_threads = {k: v for k, v in self.context_threads.items() if v.is_alive()}
-            capacity = capacity_state(self._setting('work_capacity'))['effective_limit']
+            capacity = self._work_limits()['total']['effective_limit']
             active = {execution_key(self._get('tasks', identity)) for identity in self.running}
             active.update(execution_key(self._get('tasks', self._get('contexts', identity)['task_id']))
                           for identity in self.context_threads)
