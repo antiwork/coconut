@@ -1039,6 +1039,7 @@ struct ConversationComposer: View {
     @State private var pickingPhotos = false
     @State private var takingPhoto = false
     @State private var editLast = 0
+    @State private var slashIndex = 0
     @Binding var attachments: [Artifact]
     /// The attachments from the pick until the Mac has them, in the order of the picks.
     @State private var uploads = OrderedUploads<Artifact>()
@@ -1095,7 +1096,7 @@ struct ConversationComposer: View {
                 DatePicker("Start", selection: $scheduledAt, in: Date()...)
                     .font(.footnote)
             }
-            ComposerSlashMenu(suggestions: slashSuggestions) { run($0) }
+            ComposerSlashMenu(suggestions: slashSuggestions, highlighted: slashIndex) { run($0) }
             // One box, as in Codex. A short draft is one line with the plus and Send beside it. When the box opens, the
             // text is on top, and under it are the plus, the model, its reasoning, the access mode, and Send or Stop.
             VStack(alignment: .leading, spacing: 0) {
@@ -1104,8 +1105,7 @@ struct ConversationComposer: View {
                     TextField("Message \(bot.name)", text: $text, selection: $selection, axis: .vertical)
                         .focused($focused)
                         .modifier(ComposerFieldStyle(send: { send() }, sendInNewChat: canSendInNewChat ? { send(inNewChat: true) } : nil,
-                                                     stacked: expanded,
-                                                     upArrow: text.isEmpty && canEditLast ? { editLast += 1; return true } : nil))
+                                                     stacked: expanded, arrow: { arrow($0) }))
                         .padding(.horizontal, BoardStyle.Space.m)
                         .accessibilityIdentifier("message-input")
                     if !expanded { sendControls }
@@ -1166,6 +1166,8 @@ struct ConversationComposer: View {
         } report: { store.error = $0 })
         // Only after a send: a key without a send changes no state.
         .onChange(of: draftKey) { _, draft in if draftSend.sent != nil { draftSend.shows(draft) } }
+        // A new character starts the choice of the slash menu at its first row.
+        .onChange(of: text) { _, _ in slashIndex = 0 }
     }
 
     #if os(iOS)
@@ -1186,6 +1188,25 @@ struct ConversationComposer: View {
         return ComposerSlash.suggestions(for: text, models: choice.catalog?.models ?? [], efforts: choice.entry?.reasoningEfforts ?? [],
                                          running: task?.isRunning == true && connected,
                                          canStartChat: !bot.coconut && !bot.archived && connected)
+    }
+
+    /// The row of the slash menu that Return runs.
+    private var slashChoice: ComposerSlash.Suggestion? {
+        let list = slashSuggestions
+        return list.isEmpty ? nil : list[min(slashIndex, list.count - 1)]
+    }
+
+    /// An arrow key in the field. -1 is up. In the slash menu it moves the row. Up in an empty field edits the last
+    /// message of the queue.
+    private func arrow(_ step: Int) -> Bool {
+        let list = slashSuggestions
+        if !list.isEmpty {
+            slashIndex = (min(slashIndex, list.count - 1) + step + list.count) % list.count
+            return true
+        }
+        guard step < 0, text.isEmpty, canEditLast else { return false }
+        editLast += 1
+        return true
     }
 
     /// Runs a command of the slash menu.
@@ -1303,7 +1324,7 @@ struct ConversationComposer: View {
     /// Sends the draft. In a new chat, the draft starts a fresh chat with the same agent, which then opens.
     private func send(inNewChat: Bool = false) {
         // A command that the text begins runs instead of sending the text.
-        if let first = slashSuggestions.first, attachments.isEmpty { run(first); return }
+        if let choice = slashChoice, attachments.isEmpty { run(choice); return }
         guard canSend, draftSend.begin(draftKey) else { return }
         let submittedText = text
         let submittedWork = workContext
@@ -1494,8 +1515,9 @@ struct ComposerFieldStyle: ViewModifier {
     var sendInNewChat: (() -> Void)? = nil
     /// The field sits above a row of controls in the same box: less space under the text.
     var stacked = false
-    /// Up-Arrow in an empty field. Returns true when it took the key (it edits the last queued message).
-    var upArrow: (() -> Bool)? = nil
+    /// Up-Arrow and Down-Arrow, as -1 and 1. Returns true when it took the key: it moves in the slash menu, or edits the
+    /// last queued message from an empty field.
+    var arrow: ((Int) -> Bool)? = nil
 
     func body(content: Content) -> some View {
         content
@@ -1529,7 +1551,11 @@ struct ComposerFieldStyle: ViewModifier {
             }
             #endif
             .onKeyPress(.upArrow, phases: .down) { press in
-                guard press.modifiers.isEmpty, let upArrow, upArrow() else { return .ignored }
+                guard press.modifiers.isEmpty, let arrow, arrow(-1) else { return .ignored }
+                return .handled
+            }
+            .onKeyPress(.downArrow, phases: .down) { press in
+                guard press.modifiers.isEmpty, let arrow, arrow(1) else { return .ignored }
                 return .handled
             }
     }

@@ -188,6 +188,8 @@ struct ComposerChipMenuStyle: ViewModifier {
 /// The menu above the field with the commands that the text begins.
 struct ComposerSlashMenu: View {
     let suggestions: [ComposerSlash.Suggestion]
+    /// The row that Return runs.
+    var highlighted = 0
     let choose: (ComposerSlash.Suggestion) -> Void
 
     var body: some View {
@@ -200,12 +202,13 @@ struct ComposerSlashMenu: View {
                             Text(item.title).font(.subheadline.weight(.medium))
                             Text(item.detail).font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
                             Spacer(minLength: 0)
-                            if index == 0 {
+                            if index == highlighted {
                                 Text("Return").font(.caption).foregroundStyle(.tertiary)
                             }
                         }
                         .padding(.horizontal, BoardStyle.Space.m)
                         .frame(minHeight: MessageQueueStack.rowHeight)
+                        .background(index == highlighted ? BoardStyle.ink.opacity(0.07) : .clear)
                         .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
