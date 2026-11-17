@@ -83,6 +83,9 @@ def register(ctx):
         from .adapter import CONTEXT_MIDDLEWARE
         ctx.register_middleware('llm_request', add_turn_context)
         CONTEXT_MIDDLEWARE['registered'] = True
+        # A message that the person sends while the turn works, and asks to send now, joins the turn here
+        # (service.gateway_steering, message_queue._steers_live).
+        ctx.register_middleware('llm_request', steer_live_message)
         if 'llm_execution' in middleware_kinds():
             # A Hermes without execution middleware retries an empty reply after a card or a wait, as before.
             ctx.register_middleware('llm_execution', end_turn_text)
@@ -403,6 +406,53 @@ def add_turn_context(request=None, **_):
     if not changes:
         return None
     return {'request': dict(request, **changes), 'source': 'coconut', 'reason': ' and '.join(reasons)}
+
+
+def steer_live_message(request=None, **_):
+    """llm_request middleware: give the running turn a message that the person sent while it worked, to send now.
+
+    The service keeps such a text in the live messages of the task (service._steer_task) and shows it as `steering`
+    in the queue of the chat (message_queue). A gateway cannot be pushed into a turn that it runs, so the turn takes
+    them itself here, at a safe point: the request of a model call whose last item is a tool result. Each text goes
+    in as a message of the person, in the order of the queue, with the marker of a steer of Hermes (prompt_builder),
+    so the model reads it as a message of the person and not as the output of a tool. The service then drops it from
+    its live messages (`steering_consumed`), so a later call of the turn does not send it again.
+
+    Return None for a request that is not that point, for a turn without the service, and when nothing waits.
+    """
+    holder, turn = _turn()
+    bridge = getattr(holder, '_bridge', None)
+    if turn is None or not isinstance(request, dict) or bridge is None:
+        return None
+    if not after_tool_result(request):
+        return None
+    try:
+        answer = bridge.request('/v1/gateway/steering', {'turn_id': turn}, 10)
+    except Exception as error:
+        LOG.debug('Coconut: the service did not give the live messages of the turn (%s).', type(error).__name__)
+        return None
+    messages = [message for message in (answer or {}).get('messages') or []
+                if isinstance(message, dict) and str(message.get('text') or '').strip()]
+    key = items_key(request) if messages else None
+    if key is None:
+        return None
+    try:
+        from agent.prompt_builder import STEER_DISPLAY_KIND, format_steer_marker
+    except Exception:
+        STEER_DISPLAY_KIND, format_steer_marker = 'steer', lambda text: text
+    items = list(request[key])
+    for message in messages:
+        content = format_steer_marker(str(message['text'])).lstrip()
+        items.append({'role': 'user', 'content': content, 'display_kind': STEER_DISPLAY_KIND}
+                     if key == 'messages' else
+                     {'type': 'message', 'role': 'user', 'content': [{'type': 'input_text', 'text': content}]})
+    try:
+        bridge.request('/v1/gateway/events', dict(
+            turn_id=turn, kind='steering_consumed',
+            message_ids=[message['id'] for message in messages]), 5)
+    except Exception:
+        LOG.debug('Coconut: the service did not take the live messages of the turn as consumed.')
+    return {'request': dict(request, **{key: items}), 'source': 'coconut', 'reason': 'a message sent into the turn'}
 
 
 def items_key(request):

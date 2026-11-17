@@ -35,7 +35,8 @@ PEER_KEY = re.compile(r'[0-9a-f]{64}')
 PAGE_ROUTE = '/v1/gateway/document'
 # Only the main listener serves these, each with POST. The tunnel listener carries the phone's requests.
 GATEWAY_ROUTES = ('/v1/gateway/poll', '/v1/gateway/events', '/v1/gateway/tools', '/v1/gateway/cron',
-                  '/v1/gateway/wake', '/v1/gateway/messages', '/v1/gateway/files', PAGE_ROUTE)
+                  '/v1/gateway/wake', '/v1/gateway/messages', '/v1/gateway/files', '/v1/gateway/steering',
+                  PAGE_ROUTE)
 # The routes of the adapter that a team-only service serves: the turns of the team chat (team_turns.py) and the sends
 # of Hermes outside a turn. No tool, no cron and no file of a phone.
 TEAM_GATEWAY_ROUTES = ('/v1/gateway/poll', '/v1/gateway/events', '/v1/gateway/messages', '/v1/gateway/files')
@@ -224,6 +225,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(200, self.server.service.gateway_message(data))
             elif path == '/v1/gateway/files':
                 self._json(200, self.server.service.gateway_file(data))
+            elif path == '/v1/gateway/steering':
+                self._json(200, self.server.service.gateway_steering(data))
             elif path == PAGE_ROUTE:
                 # Only this route takes DELETE (_serve).
                 service = self.server.service
