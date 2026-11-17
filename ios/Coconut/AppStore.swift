@@ -151,6 +151,11 @@ final class AppStore {
     var setupLink: String?
     var mcpServers: [MCPServer] = []
     var modelCatalog: ModelCatalog?
+    /// The usage of the agents by day (`GET /v1/usage`). Nil before the first read.
+    var usage: UsageReport?
+    /// Why the store has no usage: the Mac is not connected, or its Coconut is older than this app.
+    var usageIssue: String?
+    @ObservationIgnored private var usageReadAt: Date?
     var provider = ""
     var pushConfigured = false
     var pushRegistrationError: String?
@@ -707,6 +712,7 @@ final class AppStore {
         modelBaseURL = ""
         modelConfigured = false
         modelCatalog = nil
+        usage = nil; usageIssue = nil; usageReadAt = nil
         nativeSettingsReadAt = nil
         nativeSettingsAttemptAt = nil
         nativeSettingsRequiredCursor = 0
@@ -1799,6 +1805,34 @@ final class AppStore {
         if isDemo { return true }
         let result: Acknowledgement? = await write("bots/restart", payload: EmptyRequest(), as: Acknowledgement.self)
         return result?.ok == true
+    }
+
+    /// Reads the usage of the agents for the longest range of the usage page. A page that opens within a minute of the
+    /// last read shows what the store has. A failed read shows no notice: the person did not ask for it.
+    func loadUsage(force: Bool = false) async {
+        if isDemo {
+            if usage == nil { usage = UsageReport.preview(bots: bots) }
+            return
+        }
+        guard let client else {
+            usageIssue = "Connect to your Mac to see usage."
+            return
+        }
+        if !force, let usageReadAt, Date().timeIntervalSince(usageReadAt) < 60 { return }
+        do {
+            let report: UsageReport = try await client.request("usage?days=\(UsageRange.quarter.days)")
+            guard self.client === client else { return }
+            usage = report
+            usageIssue = nil
+            usageReadAt = Date()
+        } catch {
+            guard self.client === client, usage == nil else { return }
+            if case ServiceError.response(404, _) = error {
+                usageIssue = "Your Mac has an older Coconut than this app. Update Coconut on your Mac to see usage."
+            } else {
+                usageIssue = "Coconut could not read the usage from your Mac."
+            }
+        }
     }
 
     /// Loads the Library list. True when the list is fresh from the Mac. A quiet load shows no notice when it fails:

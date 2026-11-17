@@ -200,6 +200,8 @@ struct AgentsView: View {
                 BoardRow(symbol: "rectangle.3.group", title: "All pages",
                          value: store.documents.map { "\($0.count)" })
                     .boardButton("agents-all-pages") { pushRoute?(AllPagesRoute()) }
+                BoardRow(symbol: "chart.bar", title: "Usage", detail: "Turns, tokens, cost and time of each agent")
+                    .boardButton("agents-usage") { pushRoute?(UsageRoute()) }
                 if archived > 0 {
                     BoardRow(symbol: "archivebox", title: "Archived", value: "\(archived)")
                         .boardButton("agents-archived") { pushRoute?(ArchivedAgentsRoute()) }
@@ -306,6 +308,9 @@ struct AgentProjectView: View {
         let bot = project.bot
         return BoardPage {
             header(project)
+            #if os(iOS)
+            chatButton(bot)
+            #endif
             BoardSection(AgentSection.chat.title, count: project.count(.chat)) {
                 BotContactRow(bot: bot, avatarSize: 32)
                     .padding(.horizontal, BoardStyle.Space.m).padding(.vertical, BoardStyle.Space.xs)
@@ -353,6 +358,7 @@ struct AgentProjectView: View {
                         .boardButton("agent-routine-" + routine.id) { editing = routine }
                 }
             }
+            AgentUsageCard(botId: bot.id)
             BoardSection(AgentSection.settings.title) {
                 BoardRow(symbol: "cpu", title: "Model", value: store.modelName(bot.id) ?? "Default")
                     .boardButton("agent-model") { pushRoute?(AgentSettingRoute.model(bot.id)) }
@@ -388,9 +394,15 @@ struct AgentProjectView: View {
 
     private func header(_ project: AgentProject) -> some View {
         let role = project.bot.role.trimmingCharacters(in: .whitespacesAndNewlines)
-        let model = store.modelName(project.bot.id).map {
-            Label($0, systemImage: "cpu").font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
+        // The model is a menu: a tap, then a model.
+        let model = ModelMenu(botId: project.bot.id, settings: { pushRoute?(AgentSettingRoute.model(project.bot.id)) }) {
+            ModelMenuLabel(name: $0).font(.subheadline).foregroundStyle(.secondary)
         }
+        .fixedSize()
+        .accessibilityIdentifier("agent-model-menu")
+        // The state has the identifier, not the line: the menu of the model keeps its own.
+        let status = AgentStatusLabel(status: project.status).accessibilityElement(children: .combine)
+            .accessibilityIdentifier("agent-status")
         return HStack(alignment: .center, spacing: BoardStyle.Space.l) {
             LiveBotAvatar(bot: project.bot, size: 56)
             VStack(alignment: .leading, spacing: BoardStyle.Space.xs) {
@@ -399,24 +411,30 @@ struct AgentProjectView: View {
                 // The state and the model share a line where it fits, as in a Mac window. A narrow iPhone shows the
                 // model under the state, so neither is cut.
                 ViewThatFits(in: .horizontal) {
-                    HStack(spacing: BoardStyle.Space.m) { AgentStatusLabel(status: project.status); model }
+                    HStack(spacing: BoardStyle.Space.m) { status; model }
                     VStack(alignment: .leading, spacing: BoardStyle.Space.line) {
-                        AgentStatusLabel(status: project.status)
+                        status
                         model
                     }
                 }
-                .accessibilityIdentifier("agent-status")
             }
             Spacer(minLength: 0)
-            // A Mac window has room for the button. On an iPhone the first row of the page opens the chat.
+            // A Mac window has room for the button next to the name. An iPhone shows it under the header.
             #if os(macOS)
-            Button { chat(ConversationRoute(botId: project.bot.id)) } label: {
-                Label("Open chat", systemImage: "bubble.left.and.bubble.right")
-            }
-            .buttonStyle(.borderedProminent)
-            .accessibilityIdentifier("agent-chat-button")
+            chatButton(project.bot)
             #endif
         }
+    }
+
+    private func chatButton(_ bot: Bot) -> some View {
+        Button { chat(ConversationRoute(botId: bot.id)) } label: {
+            Label("Open chat", systemImage: "bubble.left.and.bubble.right")
+                #if os(iOS)
+                .frame(maxWidth: .infinity)
+                #endif
+        }
+        .buttonStyle(CoconutButtonStyle())
+        .accessibilityIdentifier("agent-chat-button")
     }
 
     /// The Mac window shows a chat in its own place. An iPhone pushes it onto the stack of the tab.
@@ -445,6 +463,7 @@ struct AgentDestinations: ViewModifier {
         content
             .navigationDestination(for: AgentRoute.self) { AgentProjectView(botId: $0.botId) }
             .navigationDestination(for: AllPagesRoute.self) { _ in AllPagesView() }
+            .navigationDestination(for: UsageRoute.self) { UsageView(botId: $0.botId).id($0.botId) }
             .navigationDestination(for: AgentSettingRoute.self) { route in
                 switch route {
                 case .model(let id): ModelSettingsView(botId: id)

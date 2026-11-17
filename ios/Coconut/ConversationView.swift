@@ -12,6 +12,9 @@ struct ConversationView: View {
         if focusMessageId != nil, let focusTarget { return messages.contains { $0.id == focusTarget } }
         return false
     }
+    #if os(macOS)
+    @State private var modelOpen = false
+    #endif
     @State private var messageDraft = ""
     @State private var workContext: WorkReference?
     @State private var replyTo: MessageReference?
@@ -462,6 +465,15 @@ struct ConversationView: View {
                         .accessibilityIdentifier("bot-settings")
                         .simultaneousGesture(TapGesture().onEnded { focusAfterPush = nil; composerFocused = false })
                     }
+                    // The model of the agent, as a menu: a tap, then a model.
+                    ToolbarItem(placement: .trailingBar) {
+                        ModelMenu(botId: bot.id) { name in
+                            ModelMenuLabel(name: name, symbol: false).font(.subheadline.weight(.medium))
+                                .frame(maxWidth: 150).padding(.horizontal, BoardStyle.Space.xs)
+                                .frame(minHeight: 44)
+                        }
+                        .accessibilityIdentifier("chat-model-menu")
+                    }
                     #endif
                 }
                 #if os(macOS)
@@ -484,6 +496,28 @@ struct ConversationView: View {
                     .padding(.top, 8)
                     .accessibilityLabel("\(bot.name) settings")
                     .accessibilityIdentifier("bot-settings")
+                }
+                // The model of the agent has a pill of its own at the end of that row. A click opens the models with a
+                // search, and a click on a model changes it. A Mac menu draws only the text of its label, so the pill
+                // is a button with a popover.
+                .overlay(alignment: .topTrailing) {
+                    Button { modelOpen = true } label: {
+                        ModelMenuLabel(name: store.modelName(bot.id) ?? "Model").font(.subheadline.weight(.medium))
+                            .padding(.horizontal, BoardStyle.Space.m)
+                            .frame(height: 34)
+                            .modifier(FloatingCapsule())
+                            .contentShape(Capsule())
+                    }
+                    .buttonStyle(.plain)
+                    .fixedSize()
+                    .help("Change the model of \(bot.name)")
+                    .popover(isPresented: $modelOpen, arrowEdge: .bottom) {
+                        ModelPickerSheet(botId: bot.id) { ModelChoice(store: store, botId: bot.id).choose($0) }
+                            .environment(store)
+                    }
+                    .padding(.top, 8).padding(.trailing, BoardStyle.Space.m)
+                    .accessibilityLabel("Model, " + (store.modelName(bot.id) ?? "not set"))
+                    .accessibilityIdentifier("chat-model-menu")
                 }
                 #endif
                 // The Coconut chat has its bar: where Coconut runs, and the things that need this device.

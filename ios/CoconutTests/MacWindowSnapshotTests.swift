@@ -55,6 +55,12 @@ final class MacWindowSnapshotTests: XCTestCase {
         store.routines.append(Routine(id: "shot-routine", botId: botId, name: "Morning deploy check", prompt: "",
                                       cron: "Weekdays at 9:00", timezone: "UTC", enabled: true, nextRunAt: nil,
                                       lastRunAt: nil, lastTaskId: nil, createdAt: ago(9000), updatedAt: ago(9000)))
+        // The catalog of the shots has the models of a real Mac, so the model menu and its search show them.
+        store.modelCatalog = try APIJSON.decoder().decode(ModelCatalog.self, from: Data(Self.catalog.utf8))
+        store.bots[0].effectiveModel = store.modelCatalog?.defaults.selection
+        store.bots[1].modelOverride = ModelOverride(model: "claude-sonnet-5", provider: "Anthropic", reasoningEffort: nil)
+        store.bots[1].effectiveModel = store.bots[1].modelOverride
+        store.usage = UsageReport.preview(bots: store.bots)
         let windows: [(String, AnyView)] = [
             ("home", AnyView(NavigationStack { HomeView { _ in } })),
             ("people", AnyView(NavigationStack { PeopleView() })),
@@ -64,6 +70,9 @@ final class MacWindowSnapshotTests: XCTestCase {
             ("inbox", AnyView(MacInboxView(selection: .constant(.inbox)))),
             ("agents", AnyView(NavigationStack { AgentsView(create: {}) })),
             ("agent", AnyView(NavigationStack { AgentProjectView(botId: botId) })),
+            ("usage", AnyView(NavigationStack { UsageView() })),
+            ("usage-agent", AnyView(NavigationStack { UsageView(botId: botId) })),
+            ("models", AnyView(ModelPickerSheet(botId: botId) { _ in }.frame(maxWidth: .infinity, maxHeight: .infinity).background(BoardStyle.paper))),
         ]
         for (name, detail) in windows {
             let selection: MacSelection = switch name {
@@ -75,16 +84,19 @@ final class MacWindowSnapshotTests: XCTestCase {
             case "coconut": .bot(coconutId)
             default: .agents
             }
-            let view = HStack(spacing: 0) {
+            let content = HStack(spacing: 0) {
                 MacSidebar(selection: .constant(selection)).frame(width: 260)
                 Divider()
                 detail.frame(maxWidth: .infinity, maxHeight: .infinity)
             }
             .environment(store)
-            .frame(width: 1180, height: 760)
+            // The page of an agent is long. Its shot is tall, so it shows the usage card too.
+            let height: CGFloat = name == "agent" ? 1240 : 760
+            let view = content
+            .frame(width: 1180, height: height)
             .background(.background)
             .environment(\.colorScheme, .light)
-            let data = try render(view, size: NSSize(width: 1180, height: 760))
+            let data = try render(view, size: NSSize(width: 1180, height: height))
             XCTAssertGreaterThan(data.count, 20_000)
             if let folder = ProcessInfo.processInfo.environment["COCONUT_WINDOW_SHOTS"] {
                 try data.write(to: URL(fileURLWithPath: folder).appendingPathComponent("window-\(name).png"))
@@ -145,6 +157,20 @@ final class MacWindowSnapshotTests: XCTestCase {
             }
         }
     }
+
+    private static let catalog = #"""
+        {"default": {"model": "claude-opus-5-5", "provider": "Anthropic", "base_url": null, "reasoning_effort": "high"},
+         "models": [
+          {"id": "claude-opus-5-5", "name": "Claude Opus 5.5", "provider": "Anthropic", "base_url": null, "reasoning_efforts": ["low", "medium", "high"], "default_reasoning_effort": "high"},
+          {"id": "claude-sonnet-5", "name": "Claude Sonnet 5", "provider": "Anthropic", "base_url": null, "reasoning_efforts": ["low", "medium", "high"], "default_reasoning_effort": "medium"},
+          {"id": "claude-haiku-5", "name": "Claude Haiku 5", "provider": "Anthropic", "base_url": null, "reasoning_efforts": []},
+          {"id": "gpt-5.5", "name": "GPT-5.5", "provider": "OpenAI", "base_url": null, "reasoning_efforts": ["low", "medium", "high"], "default_reasoning_effort": "medium"},
+          {"id": "gpt-5.5-mini", "name": "GPT-5.5 mini", "provider": "OpenAI", "base_url": null, "reasoning_efforts": ["low", "medium", "high"], "default_reasoning_effort": "medium"},
+          {"id": "gemini-3-pro", "name": "Gemini 3 Pro", "provider": "Google", "base_url": null, "reasoning_efforts": []},
+          {"id": "gemini-3-flash", "name": "Gemini 3 Flash", "provider": "Google", "base_url": null, "reasoning_efforts": []},
+          {"id": "qwen3-coder", "name": "Qwen3 Coder", "provider": "OpenRouter", "base_url": null, "reasoning_efforts": []}
+         ], "model_source": "Hermes", "default_source": "Hermes config.yaml"}
+        """#
 
     // A list is an AppKit table, which ImageRenderer does not draw. A window off the screen draws it.
     private func render(_ view: some View, size: NSSize, dark: Bool = false) throws -> Data {
