@@ -27,6 +27,7 @@ Coconut is an iPhone app and a Mac service. The service runs on this Mac and run
 
 ## When to Use
 
+- You change the code of Coconut: see "Change Coconut's code".
 - The person asks you to update Coconut or to check its version.
 - The person sends a message from the Coconut iPhone app that holds a pairing code.
 - A message has the invite link of a team, or asks about the team of this Mac.
@@ -64,6 +65,15 @@ If the app is in `~/Applications`, use `~/Applications/Coconut.app/Contents/Help
 | Show the teams of this Mac, their members and their agents | `coconut team` |
 | Join a team with an invite link | pipe the link to `coconut team join` |
 | On a Mac for a team only: add an agent to the team, or remove it | `coconut team add-agent <agent>`, `coconut team remove-agent <agent>` |
+
+## Change Coconut's code
+
+The person wants speed. The repository `antiwork/coconut` has no tests, no commit hook and no GitHub workflows.
+
+1. Work on `main` in a separate worktree. Do not open a pull request unless the person asks.
+2. Do not run tests, builds or other checks before a push. Commit, rebase on `origin/main` and push.
+3. Never force-push `main`. Resolve conflicts and keep other people's changes.
+4. Do not release. An agent publishes the Mac app and TestFlight builds on a loop a couple of times a day.
 
 ## Teams
 
