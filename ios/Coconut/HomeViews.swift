@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// Two tabs of the iPhone. Chats has every chat with its newest activity first, and the message box under the list
+/// Two tabs of the iPhone. Chats is one list of every chat, as Telegram has it, with the message box under the list
 /// (NewChatBar). To-dos has what asks for the person: the rules that breach, the cards that wait, and the tasks of
 /// the agents.
 struct HomeLaunchView: View {
@@ -11,7 +11,6 @@ struct HomeLaunchView: View {
     @Environment(\.pushRoute) private var pushRoute
     /// Opens the place of a row of Needs attention, or the cards that wait.
     let open: (HomeTarget) -> Void
-    @ScaledMetric(relativeTo: .subheadline) private var pinWidth = 108
     @ScaledMetric(relativeTo: .title3) private var todoIconWidth = 24
 
     var body: some View {
@@ -43,78 +42,34 @@ struct HomeLaunchView: View {
     }
 
     private var chatList: some View {
-        // The store keeps the newest activity of each bot (ChatSummaries). The list sorts by it one time.
-        // An agent keeps its place by the newest of its chats, which show under it.
-        let ownLatest = store.chatSummaries.newestActivity
-        let latest = AgentChats.activity(bots: store.bots, latest: ownLatest)
-        let activeBots = store.bots.agents.filter { AgentChats.isListed($0, latest: ownLatest) }.sorted {
-            (latest[$0.id] ?? $0.createdAt.apiDate ?? .distantPast) > (latest[$1.id] ?? $1.createdAt.apiDate ?? .distantPast)
-        }
+        // One list of chats, as Telegram has it (ChatList.flat): the pinned chats first, then every other chat newest
+        // activity first. Every row has the same form: the face of the project, the name, the last message. A starred
+        // row only adds the star mark.
+        let rows = ChatList.flat(bots: store.bots, latest: store.chatSummaries.newestActivity,
+                                 rooms: store.shownTeamRooms, local: store.newestLocalMessages)
         let archivedCount = store.bots.filter(\.archived).count
-        let pinnedBots = activeBots.filter(\.pinned).sorted {
-            let first = $0.createdAt.apiDate ?? .distantPast
-            let second = $1.createdAt.apiDate ?? .distantPast
-            return first == second ? $0.id < $1.id : first < second
-        }
-        // The choices that wait for the Mac show at once (TeamChatChoices).
-        let rooms = store.shownTeamRooms
-        let filter = ChatFilter.effective(store.chatFilter, rooms: rooms)
-        // The tiles of the pinned agents come first. Then the rows (ChatList.rows): the pinned chats of the teams, each
-        // with the star mark, then the other rows newest activity first.
-        let rowBots = filter == .unread
-            ? AgentChats.unread(in: store.bots, latest: ownLatest).filter { !$0.coconut && ($0.isChat || !$0.pinned) }
-            : activeBots.filter { !$0.pinned }
-        let conversations = ChatList.rows(filter, bots: rowBots, latest: filter == .unread ? ownLatest : latest,
-                                          rooms: rooms, local: store.newestLocalMessages)
-        let pinned = filter.showsPinned ? pinnedBots.filter { filter != .unread || $0.unreadCount > 0 } : []
-        let coconut = store.bots.coconutChat
-        // A list, not a stack, so that a row of an agent has the swipe of the system: swipe left to archive.
+        // A list, not a stack, so that a row of a chat has the swipe of the system: swipe left to archive.
         return List {
-            // The Coconut chat comes first: it is where the person changes Coconut.
-            if let coconut, filter != .unread || coconut.unreadCount > 0 {
-                CoconutChatRow(bot: coconut)
-                    .padding(.vertical, BoardStyle.Space.m)
-                    .background(BoardStyle.paper)
-                    .modifier(ChatDeckRow(botId: coconut.id) { pushRoute?(ConversationRoute(botId: coconut.id)) })
-                    .homeRow(top: BoardStyle.Space.s)
-                if filter != .unread { chatRows(of: coconut, latest: ownLatest) }
-            }
-            chips(filter, rooms: rooms).homeRow(top: BoardStyle.Space.l)
-            if conversations.isEmpty && pinned.isEmpty && filter == .unread && (coconut?.unreadCount ?? 0) == 0 {
-                Text("No unread messages.")
+            if rows.isEmpty {
+                Text("No chats yet.")
                     .font(.subheadline).foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity).padding(.vertical, BoardStyle.Space.xxl)
                     .accessibilityIdentifier("chats-empty")
                     .homeRow()
             }
-            if conversations.isEmpty && pinned.isEmpty && filter == .bots {
-                // The quiet line of the Team screen for a Mac without bots.
-                Text("This Mac has no agents yet.")
-                    .font(.subheadline).foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity).padding(.vertical, BoardStyle.Space.xxl)
-                    .accessibilityIdentifier("chats-empty")
-                    .homeRow()
-            }
-            if !pinned.isEmpty {
-                ViewThatFits(in: .horizontal) {
-                    pinnedTiles(pinned)
-                    ScrollView(.horizontal, showsIndicators: false) { pinnedTiles(pinned) }
-                }
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, BoardStyle.Space.xl)
-                .homeRow(inset: 0)
-            }
-            ForEach(conversations) { item in
+            ForEach(rows) { item in
                 switch item {
                 case .bot(let bot):
-                    BotContactRow(bot: bot, title: bot.isChat ? bot.listName : nil)
+                    BotContactRow(bot: bot, title: bot.isChat ? bot.listName : nil, pinned: ChatList.isStarred(bot))
                         .padding(.vertical, BoardStyle.Space.m)
                         .background(BoardStyle.paper)
                         .modifier(ChatDeckRow(botId: bot.id) { pushRoute?(ConversationRoute(botId: bot.id)) })
-                        .accessibilityIdentifier("bot-conversation-\(bot.id)")
-                        .swipeActions(edge: .trailing, allowsFullSwipe: true) { archiveButton(bot) }
+                        .accessibilityIdentifier(ChatList.isCoconut(bot) ? "coconut-chat" : "bot-conversation-\(bot.id)")
+                        .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+                            // The Coconut chat stays: it is where the person changes Coconut.
+                            if !ChatList.isCoconut(bot) { archiveButton(bot) }
+                        }
                         .homeRow()
-                    if filter != .unread { chatRows(of: bot, latest: ownLatest) }
                 case .team, .direct, .botDirect:
                     // A team chat has Star and Mute in its menu. The Team screen has the leave action.
                     if let chat = item.chat {
@@ -131,8 +86,8 @@ struct HomeLaunchView: View {
                     }
                 }
             }
-            // The archived agents wait behind one row at the end, as the archived chats of WhatsApp.
-            if archivedCount > 0 && filter != .people && filter != .unread {
+            // The archived chats wait behind one row at the end, as the archived chats of WhatsApp.
+            if archivedCount > 0 {
                 Button { pushRoute?(ArchivedAgentsRoute()) } label: {
                     HStack(spacing: BoardStyle.Space.m) {
                         Image(systemName: "archivebox").foregroundStyle(.secondary)
@@ -151,7 +106,7 @@ struct HomeLaunchView: View {
         .listStyle(.plain)
         .scrollContentBackground(.hidden)
         .environment(\.defaultMinListRowHeight, 0)
-        .contentMargins(.top, BoardStyle.Space.l, for: .scrollContent)
+        .contentMargins(.top, BoardStyle.Space.s, for: .scrollContent)
         .contentMargins(.bottom, BoardStyle.Space.xl, for: .scrollContent)
         .background(BoardStyle.paper)
         .refreshable { await store.reconnect() }
@@ -188,40 +143,12 @@ struct HomeLaunchView: View {
         }
     }
 
-    /// The further chats of an agent, under its row: a smaller face, the title of the chat, and its last message.
-    private func chatRows(of agent: Bot, latest: [String: Date]) -> some View {
-        ForEach(AgentChats.chats(of: agent.id, in: store.bots, latest: latest)) { chat in
-            BotContactRow(bot: chat, avatarSize: 32, title: chat.chatLabel)
-                .padding(.leading, BoardStyle.rowFace - 32 + BoardStyle.Space.m)
-                .padding(.vertical, BoardStyle.Space.s)
-                .background(BoardStyle.paper)
-                .modifier(ChatDeckRow(botId: chat.id) { pushRoute?(ConversationRoute(botId: chat.id)) })
-                .accessibilityIdentifier("bot-conversation-\(chat.id)")
-                .swipeActions(edge: .trailing, allowsFullSwipe: true) { archiveButton(chat) }
-                .homeRow()
-        }
-    }
-
     private func archiveButton(_ bot: Bot) -> some View {
         Button { Task { await store.archiveBot(bot, archived: true) } } label: {
             Label("Archive", systemImage: "archivebox")
         }
         .tint(.gray)
         .accessibilityIdentifier("archive-bot-\(bot.id)")
-    }
-
-    /// The row of filter chips, as the chips of WhatsApp. When large text does not fit one row, the chips stand one
-    /// under the other, so no chip is cut.
-    private func chips(_ selected: ChatFilter, rooms: [TeamRoom]) -> some View {
-        let chips = ForEach(ChatFilter.available(rooms: rooms)) { filter in
-            ChipButton(title: filter.title, selected: filter == selected) { store.chatFilter = filter }
-                .accessibilityIdentifier("chats-filter-\(filter.rawValue)")
-        }
-        return ViewThatFits(in: .horizontal) {
-            HStack(spacing: BoardStyle.Space.s) { chips }
-            VStack(alignment: .leading, spacing: 0) { chips }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private func todoRow(_ item: Artifact) -> some View {
@@ -253,32 +180,6 @@ struct HomeLaunchView: View {
         .accessibilityIdentifier("chats-todo-\(item.id)")
     }
 
-    private func pinnedTiles(_ pinned: [Bot]) -> some View {
-        HStack(spacing: BoardStyle.Space.xl) {
-            ForEach(pinned) { bot in
-                VStack(spacing: BoardStyle.Space.s) {
-                    LiveBotAvatar(bot: bot, size: 76)
-                        // The badge sits on the top right corner of the face, not next to the name.
-                        .overlay(alignment: .topTrailing) {
-                            // The face keeps its size, so the badge on it stops growing at the largest
-                            // standard text size and never covers the face.
-                            if bot.unreadCount > 0 {
-                                UnreadBadge(count: bot.unreadCount).offset(x: 4, y: -2)
-                                    .dynamicTypeSize(...DynamicTypeSize.xxxLarge)
-                            }
-                        }
-                    Text(bot.name).font(.subheadline).foregroundStyle(.secondary)
-                        .lineLimit(dynamicTypeSize.isAccessibilitySize ? 2 : 1)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-                .frame(width: pinWidth).frame(minHeight: 110)
-                .background(BoardStyle.paper)
-                .modifier(ChatDeckRow(botId: bot.id) { pushRoute?(ConversationRoute(botId: bot.id)) })
-                .accessibilityIdentifier("pinned-bot-\(bot.id)")
-            }
-        }.padding(.horizontal, BoardStyle.Space.l)
-    }
-
     /// "team-chat-<room>" for a team, "team-chat-<room>-<chat>" for a named chat, "direct-chat-<member>" for a direct
     /// chat, "bot-direct-chat-<team bot ID>" for a direct chat with a bot.
     static func identifier(_ chat: TeamChatKey) -> String {
@@ -288,7 +189,7 @@ struct HomeLaunchView: View {
 
 }
 
-/// The archived agents: swipe left or hold a row to bring an agent back. A row opens the conversation, which keeps its
+/// The archived chats and projects: swipe left or hold a row to bring one back. A row opens the conversation, which keeps its
 /// history.
 struct ArchivedAgentsView: View {
     @Environment(AppStore.self) private var store
@@ -299,7 +200,7 @@ struct ArchivedAgentsView: View {
         let archived = store.bots.filter(\.archived).sorted { $0.listName.localizedStandardCompare($1.listName) == .orderedAscending }
         List {
             if archived.isEmpty {
-                Text("No archived agents.")
+                Text("No archived chats.")
                     .font(.subheadline).foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity).padding(.vertical, BoardStyle.Space.xxl)
                     .homeRow()
@@ -314,7 +215,7 @@ struct ArchivedAgentsView: View {
                             Button("Unarchive", systemImage: "tray.and.arrow.up") {
                                 Task { await store.archiveBot(bot, archived: false) }
                             }
-                            Button(bot.isChat ? "Delete chat" : "Delete agent", systemImage: "trash", role: .destructive) { deleting = bot }
+                            Button(bot.isChat ? "Delete chat" : "Delete project", systemImage: "trash", role: .destructive) { deleting = bot }
                         }
                 }
                 .buttonStyle(HomePressStyle())
@@ -430,8 +331,10 @@ struct BotContactRow: View {
     let bot: Bot
     /// The face of the bot. The iPhone list shows a large face; a Mac sidebar shows a smaller one.
     var avatarSize: CGFloat = BoardStyle.rowFace
-    /// The name of the row. A further chat of an agent shows its title in place of the agent's name.
+    /// The name of the row. A further chat of a project shows its title next to the name of the project.
     var title: String? = nil
+    /// The star mark of a starred project at the top of the Chats list.
+    var pinned = false
     /// The row reads the summary of its bot, not the messages, so a streamed word does not redraw it.
     private var summary: BotChatSummary { store.chatSummaries[bot.id] }
     private var latestMessage: Message? { summary.latestMessage }
@@ -442,7 +345,7 @@ struct BotContactRow: View {
             return TranscriptPresentation.previewText(
                 TranscriptPresentation.previewFallback(bot.lastMessage, streaming: summary.streaming))
         }
-        let sender = message.senderBotId.flatMap { id in id == bot.id ? nil : store.bots.first { $0.id == id }?.name ?? "Deleted agent" }
+        let sender = message.senderBotId.flatMap { id in id == bot.id ? nil : store.bots.first { $0.id == id }?.name ?? "Deleted project" }
         let prefix = message.role == "user" ? "You: " : sender.map { $0 + ": " } ?? ""
         let body = AttachmentOnly.isMarker(message.text) ? "Photo" : TranscriptPresentation.previewText(message.text)
         return prefix + (message.photo?.preview ?? body)
@@ -452,7 +355,7 @@ struct BotContactRow: View {
 
     var body: some View {
         let subtitle = BotRowSubtitle(needsYou: store.botNeedsYou(bot), phase: phase, health: bot.health)
-        ChatRowLayout(name: title ?? bot.name, unread: bot.unreadCount, date: lastMessageDate) {
+        ChatRowLayout(name: title ?? bot.name, unread: bot.unreadCount, date: lastMessageDate, pinned: pinned) {
             LiveBotAvatar(bot: bot, size: avatarSize)
         } subtitle: {
             Group {

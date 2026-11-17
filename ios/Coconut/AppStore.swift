@@ -96,9 +96,6 @@ final class AppStore {
     }
     /// The number of the latest share or stop of each page. Only the answer of that act goes into the list.
     @ObservationIgnored private var teamWriteCount = 0
-    /// The filter chip of the Chats list. It stays while the app runs. A new pairing, an unpair and a Mac without a
-    /// team set People or Agents to All (`ChatFilter.effective`). Unread also works without a team.
-    var chatFilter: ChatFilter = .all
     /// The chats of the teams that the person opened, by chat: the Team chat of a room, or a direct chat. The updates
     /// keep them fresh.
     var teamChats: [TeamChatKey: TeamChat] = [:]
@@ -602,7 +599,6 @@ final class AppStore {
         optimisticUpdates.reset()
         documentContents = [:]; resetBusiness()
         resetDelivery()
-        chatFilter = .all
         outgoingMessages = []; outgoingAnswers = []; answeringDecisionIds = []; sendingAnswerIds = []; restoredDecisionId = nil
         ProtectedCache.remove("outgoing.json")
         pairing = configuration
@@ -741,7 +737,6 @@ final class AppStore {
         teamChatsOnScreen = []; teamOlderRequests = [:]; teamMessageChanges = [:]; teamTypingPace = [:]
         teamReactionWriters = [:]
         teamAlertFilters = [:]; teamAlertChats = [:]; teamAlertRequests = [:]
-        chatFilter = .all
         approvals = nil; parallelWork = nil; fallback = nil; workCapacity = nil; agentLimit = nil; queues = [:]; mcpServers = []
         optimisticUpdates.reset()
         documentContents = [:]; resetBusiness()
@@ -2109,7 +2104,6 @@ final class AppStore {
         teamListLoaded(before, response)
         assign(\.teamLoadError, nil)
         teamListVersion += 1
-        assign(\.chatFilter, ChatFilter.effective(chatFilter, rooms: response.rooms))
         // A room that left the list takes its chats with it, also unsent messages that a restart brought back. So does
         // a named chat that the room no longer has.
         dropTeamChats(teamChats.keys.filter { !teamListHas($0) })

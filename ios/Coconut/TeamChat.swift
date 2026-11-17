@@ -1533,15 +1533,7 @@ enum ChatListItem: Identifiable, Equatable {
     /// The room of a team or a direct chat. Nil for a bot.
     var room: String? { chat?.room }
 
-    /// A row of "People": a team or a direct chat with a person. A direct chat with a bot is a row of "Bots".
-    var isPeople: Bool {
-        switch self {
-        case .team, .direct: true
-        case .bot, .botDirect: false
-        }
-    }
-
-    /// A chat of a team that this person pinned (TeamChatPin). It shows with the pinned agents.
+    /// A chat of a team that this person pinned (TeamChatPin). It shows at the top of the Chats list.
     var isPinnedChat: Bool {
         if case .team(let room) = self { return room.chatPinned }
         return false
@@ -1616,14 +1608,33 @@ enum ChatList {
         rooms.flatMap { room in ([room] + room.namedChatRooms).filter(\.chatPinned).map(ChatListItem.team) }
     }
 
-    /// The rows of the Chats list of the iPhone for a filter, under the tiles of the pinned agents: first the pinned
-    /// chats of the teams in their fixed order (pinnedChats), as WhatsApp has them, then the other rows newest
-    /// activity first (items). A pinned chat shows in "All" and "People", where its row shows, and never in "Agents".
-    static func rows(_ filter: ChatFilter, bots: [Bot], latest: [String: Date], rooms: [TeamRoom],
+    /// The Chats list of the iPhone, as Telegram has it: one list, and every row has the same form. The pinned chats
+    /// come first in a fixed order: the Coconut chat, the starred projects in the order they were made, then the pinned
+    /// chats of the teams (pinnedChats). Then every other chat, newest activity first: the chats of the projects, the
+    /// teams and the direct chats. A chat that is archived, a chat of an archived project, and a chat that nobody wrote
+    /// in (AgentChats.isListed) are not in the list. `latest` is the date of the newest message of each bot.
+    static func flat(bots: [Bot], latest: [String: Date], rooms: [TeamRoom],
                      local: [TeamChatKey: TeamLastMessage] = [:]) -> [ChatListItem] {
-        filter.items(filter.showsPinnedChats ? pinnedChats(rooms) : [])
-            + filter.items(items(bots: bots, latest: latest, rooms: rooms, local: local))
+        func activity(_ bot: Bot) -> Date { latest[bot.id] ?? bot.createdAt.apiDate ?? .distantPast }
+        let open = Set(bots.filter { !$0.archived && !$0.isChat }.map(\.id))
+        let shown = bots.filter { open.contains($0.agentId) && AgentChats.isListed($0, latest: latest) }
+        let coconut = shown.filter(isCoconut)
+        let starred = shown.filter(isStarred).sorted {
+            let first = $0.createdAt.apiDate ?? .distantPast
+            let second = $1.createdAt.apiDate ?? .distantPast
+            return first == second ? $0.id < $1.id : first < second
+        }
+        let top = Set((coconut + starred).map(\.id))
+        let others = shown.filter { !top.contains($0.id) }.sorted { (activity($0), $0.id) > (activity($1), $1.id) }
+        return (coconut + starred).map(ChatListItem.bot) + pinnedChats(rooms)
+            + items(bots: others, latest: latest, rooms: rooms, local: local)
     }
+
+    /// The Coconut chat itself, not one of its further chats.
+    static func isCoconut(_ bot: Bot) -> Bool { bot.coconut && !bot.isChat }
+
+    /// A starred project, at the top of the Chats list with the star mark.
+    static func isStarred(_ bot: Bot) -> Bool { bot.pinned && !bot.isChat && !bot.coconut }
 
     private static func peopleItems(_ rooms: [TeamRoom], local: [TeamChatKey: TeamLastMessage]) -> [ChatListItem] {
         rooms.flatMap { room in
@@ -1638,49 +1649,6 @@ enum ChatList {
 
     private static func sorted(_ items: [ChatListItem]) -> [ChatListItem] {
         items.sorted { ($0.teamActivity, $1.id) > ($1.teamActivity, $0.id) }
-    }
-}
-
-/// The filter of the Chats list on an iPhone. "People" has the teams and the direct chats with a person. "Bots" has
-/// the bots and the direct chats with a bot of a team.
-enum ChatFilter: String, CaseIterable, Identifiable, Sendable {
-    case all, unread, people, bots
-
-    var id: String { rawValue }
-
-    var title: String {
-        switch self {
-        case .all: "All"
-        case .unread: "Unread"
-        case .people: "People"
-        case .bots: "Agents"
-        }
-    }
-
-    /// All and Unread work without a team. People and Agents also show when the Mac belongs to a team.
-    static func available(rooms: [TeamRoom]) -> [ChatFilter] {
-        rooms.contains { $0.status == .active || $0.status == .joining } ? allCases : [.all, .unread]
-    }
-
-    /// A choice that needs a team returns to All when the Mac leaves its last team.
-    static func effective(_ chosen: ChatFilter, rooms: [TeamRoom]) -> ChatFilter {
-        available(rooms: rooms).contains(chosen) ? chosen : .all
-    }
-
-    /// The pinned agents show in "All" and "Agents", so "People" has none.
-    var showsPinned: Bool { self != .people }
-
-    /// The pinned chats of the teams show in "All" and "People", so "Agents" has none.
-    var showsPinnedChats: Bool { self != .bots }
-
-    /// The rows of the list for this filter, in the order of the list.
-    func items(_ items: [ChatListItem]) -> [ChatListItem] {
-        switch self {
-        case .all: items
-        case .unread: items.filter { $0.unreadCount > 0 }
-        case .people: items.filter(\.isPeople)
-        case .bots: items.filter { !$0.isPeople }
-        }
     }
 }
 
