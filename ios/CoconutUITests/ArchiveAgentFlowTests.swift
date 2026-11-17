@@ -113,7 +113,11 @@ final class ArchiveAgentFlowTests: XCTestCase {
         XCTAssertTrue(archivedRow.waitForExistence(timeout: 5))
         capture("The archived agents")
         app.cells.containing(.button, identifier: "archived-bot-\(id)").firstMatch.swipeLeft()
-        app.buttons["Unarchive"].tap()
+        // Read the action by the identifier it carries: a button of a swipe without one reads as its symbol.
+        let unarchive = app.buttons["unarchive-bot-\(id)"]
+        XCTAssertTrue(unarchive.waitForExistence(timeout: 5))
+        capture("The Unarchive action of the swipe")
+        unarchive.tap()
         XCTAssertTrue(archivedRow.waitForNonExistence(timeout: 5))
         app.navigationBars.buttons.element(boundBy: 0).tap()
         XCTAssertTrue(row.waitForExistence(timeout: 5))

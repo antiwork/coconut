@@ -298,6 +298,7 @@ struct ArchivedAgentsView: View {
                         Label("Unarchive", systemImage: "tray.and.arrow.up")
                     }
                     .tint(.blue)
+                    .accessibilityIdentifier("unarchive-bot-\(bot.id)")
                 }
                 .homeRow()
             }
