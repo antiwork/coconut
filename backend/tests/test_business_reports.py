@@ -27,8 +27,13 @@ class BusinessReportTests(unittest.TestCase):
         if '/contents/' in path:
             return dict(encoding='base64', sha='source-version', html_url='https://github.com/example/source',
                         content=base64.b64encode(self.text.encode()).decode())
+        if '/git/trees/ledger-tree' in path:
+            return dict(tree=[dict(type='blob', path='2026/11.beancount', sha='month'), dict(type='tree', path='2026', sha='y')])
+        if '/git/trees/records-tree' in path:
+            raise ServiceError(502, 'GitHub returned too much data. Narrow the view and try again.')
         if '/git/trees/' in path:
-            return dict(tree=[dict(type='blob', path='ledger/2026/11.beancount', sha='month'),
+            return dict(tree=[dict(type='tree', path='ledger', sha='ledger-tree'),
+                              dict(type='tree', path='records', sha='records-tree'),
                               dict(type='blob', path='main.beancount', sha='main'),
                               dict(type='blob', path='README.md', sha='readme')])
         return dict(default_branch='main')
@@ -55,6 +60,8 @@ class BusinessReportTests(unittest.TestCase):
     def test_beancount_is_read_from_accounting_without_modification(self):
         index = ledger(self.business)
         self.assertEqual([v['path'] for v in index['files']], ['main.beancount', 'ledger/2026/11.beancount'])
+        # records/ is too large to list, as in the real repository, and the index still loads.
+        self.assertEqual(index['skipped'], ['records'])
         self.text = '2026-11-01 open Assets:Example USD\n'
         result = ledger(self.business, 'main.beancount')
         self.assertEqual(result['content'], self.text)
