@@ -2389,8 +2389,11 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
         """The live messages of a running turn, for the gateway to give to the turn itself.
 
         The Hermes gateway cannot be pushed into a turn that it runs, so the turn asks here at each safe point
-        (hooks.steer_live_message, an `llm_request` middleware after a tool result) and reports what it took with
-        `steering_consumed`. A worker that the service can push into needs none of this: `_deliver_live_messages`
+        (hooks.steer_live_message, an `llm_request` middleware after a tool result). A turn of the gateway names its
+        bridge turn, as the tools of a turn do (gateway_bridge.task_of), not the native turn ID of its task. The bridge
+        takes no `steering_consumed` event (gateway_bridge.KINDS), so the messages count as taken here, when the turn
+        gets them: a later call of the turn does not get them again, and the end of the turn does not start them a
+        second time as a follow-up. A worker that the service can push into needs none of this: `_deliver_live_messages`
         gives it the messages as soon as the gateway says `steering_ready`.
         """
         if not getattr(self.provider, 'steers_live', False):
@@ -2398,11 +2401,42 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
         turn_id = str(data.get('turn_id') or '')
         if not turn_id:
             return {'messages': []}
+        bridge = getattr(self, 'gateway_bridge', None)
+        task_id = bridge.task_of(turn_id) if bridge is not None else None
+        # Most calls find nothing, so a read decides before a write starts.
         with self.lock:
-            task = self._task_for_turn(turn_id)
+            task = self._steering_task(turn_id, task_id)
             if task is None or task['status'] != 'working' or not task.get('_live_messages'):
                 return {'messages': []}
-            return {'messages': self._live_deliveries(task)}
+        with self.transaction():
+            task = self._steering_task(turn_id, task['id'])
+            if task is None or task['status'] != 'working' or not task.get('_live_messages'):
+                return {'messages': []}
+            messages = self._live_deliveries(task)
+            taken = []
+            for message in messages:
+                text = task['_live_messages'].pop(message['id'], None)
+                if text is None:
+                    continue
+                if text in task.get('_steering', []):
+                    task['_steering'].remove(text)
+                task.setdefault('_turn_message_ids', []).append(message['id'])
+                taken.append(message)
+            if taken:
+                self._record_direct_reply(task)
+                self._put('tasks', task)
+                self._event('task.updated', self._public(task), task.get('conversation_bot_id', task['bot_id']), task['id'])
+            return {'messages': taken}
+
+    def _steering_task(self, turn_id: str, task_id: str | None):
+        """The task of a turn that asks for its live messages: by the task of its bridge turn, else by the native turn ID
+        of a worker's turn. None when neither has one."""
+        if task_id is None:
+            return self._task_for_turn(turn_id)
+        try:
+            return self._get('tasks', task_id)
+        except Exception:
+            return None
 
     def _task_for_turn(self, turn_id: str):
         """The task of the turn `turn_id`, or None. A turn runs many model calls, so the scan of the first call keeps
