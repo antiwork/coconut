@@ -350,16 +350,19 @@ struct AgentProjectView: View {
                     BotContactRow(bot: extra, avatarSize: 32, title: extra.chatLabel)
                         .padding(.horizontal, BoardStyle.Space.m).padding(.vertical, BoardStyle.Space.xs)
                         .contentShape(Rectangle())
-                        .boardButton("agent-chat-" + extra.id) { chat(ConversationRoute(botId: extra.id)) }
+                        // A long press on the iPhone shows the deck of all chats. Its menu has what this menu had.
+                        .chatRowButton("agent-chat-" + extra.id, botId: extra.id) { chat(ConversationRoute(botId: extra.id)) }
+                        #if os(macOS)
                         .contextMenu {
                             Button("Archive chat", systemImage: "archivebox") { Task { await store.archiveBot(extra, archived: true) } }
                             Button("Delete chat…", systemImage: "trash", role: .destructive) { deleting = extra }
                         }
+                        #endif
                 }
                 BotContactRow(bot: bot, avatarSize: 32)
                     .padding(.horizontal, BoardStyle.Space.m).padding(.vertical, BoardStyle.Space.xs)
                     .contentShape(Rectangle())
-                    .boardButton("agent-open-chat") { chat(ConversationRoute(botId: bot.id)) }
+                    .chatRowButton("agent-open-chat", botId: bot.id) { chat(ConversationRoute(botId: bot.id)) }
                 if project.pendingCards > 0 {
                     BoardRow(symbol: "circle.inset.filled", tint: BoardStyle.attention,
                              title: project.pendingCards == 1 ? "1 card needs you" : "\(project.pendingCards) cards need you")

@@ -181,20 +181,38 @@ struct HomeView: View {
         .task(id: store.connection == .connected) { await store.loadUsage() }
     }
 
+    @ViewBuilder
     private func unreadRow(_ row: HomeUnread) -> some View {
-        Button { open(row.target) } label: {
-            Group {
-                switch row {
-                case .chat(.bot(let bot), _): BotContactRow(bot: bot, avatarSize: face)
-                case .chat(let item, _): PeopleRow(item: item, avatarSize: face)
-                case .card(let decision): cardRow(decision)
-                }
-            }
-            .padding(.horizontal, BoardStyle.Space.m).padding(.vertical, BoardStyle.Space.xs)
-            .contentShape(Rectangle())
+        let content = unreadContent(row)
+        #if os(iOS)
+        // A long press on the row of an agent chat shows the deck of all chats (ChatDeck).
+        if case .chat(.bot(let bot), _) = row {
+            content.modifier(ChatDeckRow(botId: bot.id) { open(row.target) })
+                .accessibilityIdentifier("home-unread-" + row.id)
+        } else {
+            unreadButton(row, content)
         }
-        .buttonStyle(HomePressStyle())
-        .accessibilityIdentifier("home-unread-" + row.id)
+        #else
+        unreadButton(row, content)
+        #endif
+    }
+
+    private func unreadButton(_ row: HomeUnread, _ content: some View) -> some View {
+        Button { open(row.target) } label: { content }
+            .buttonStyle(HomePressStyle())
+            .accessibilityIdentifier("home-unread-" + row.id)
+    }
+
+    private func unreadContent(_ row: HomeUnread) -> some View {
+        Group {
+            switch row {
+            case .chat(.bot(let bot), _): BotContactRow(bot: bot, avatarSize: face)
+            case .chat(let item, _): PeopleRow(item: item, avatarSize: face)
+            case .card(let decision): cardRow(decision)
+            }
+        }
+        .padding(.horizontal, BoardStyle.Space.m).padding(.vertical, BoardStyle.Space.xs)
+        .contentShape(Rectangle())
     }
 
     /// A card that waits: its question, the agent that asks, and its age.

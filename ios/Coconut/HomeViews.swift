@@ -7,7 +7,6 @@ struct HomeLaunchView: View {
     @ScaledMetric(relativeTo: .subheadline) private var pinWidth = 108
     @ScaledMetric(relativeTo: .title3) private var todoIconWidth = 24
 
-    @State private var deleting: Bot?
     // The project of the menu above the message box. Empty is all projects.
     @AppStorage(ChatProject.projectKey) private var chosenProject = ""
 
@@ -47,14 +46,11 @@ struct HomeLaunchView: View {
         return List {
             // The Coconut chat comes first: it is where the person changes Coconut.
             if let coconut, filter != .unread || coconut.unreadCount > 0 {
-                Button { pushRoute?(ConversationRoute(botId: coconut.id)) } label: {
-                    CoconutChatRow(bot: coconut)
-                        .padding(.vertical, BoardStyle.Space.m)
-                        .background(BoardStyle.paper)
-                }
-                .buttonStyle(.plain)
-                .contextMenu { NewChatButton(bot: coconut) { pushRoute?(ConversationRoute(botId: $0.id)) } }
-                .homeRow(top: BoardStyle.Space.s)
+                CoconutChatRow(bot: coconut)
+                    .padding(.vertical, BoardStyle.Space.m)
+                    .background(BoardStyle.paper)
+                    .modifier(ChatDeckRow(botId: coconut.id) { pushRoute?(ConversationRoute(botId: coconut.id)) })
+                    .homeRow(top: BoardStyle.Space.s)
                 if filter != .unread { chatRows(of: coconut, latest: ownLatest) }
             }
             chips(filter, rooms: rooms).homeRow(top: BoardStyle.Space.l)
@@ -92,14 +88,10 @@ struct HomeLaunchView: View {
             ForEach(conversations) { item in
                 switch item {
                 case .bot(let bot):
-                    Button { pushRoute?(ConversationRoute(botId: bot.id)) } label: {
-                        BotContactRow(bot: bot, title: bot.isChat ? bot.listName : nil)
-                            .padding(.vertical, BoardStyle.Space.m)
-                            .background(BoardStyle.paper)
-                            .contentShape(Rectangle())
-                            .contextMenu { botActions(bot) }
-                    }
-                        .buttonStyle(HomePressStyle())
+                    BotContactRow(bot: bot, title: bot.isChat ? bot.listName : nil)
+                        .padding(.vertical, BoardStyle.Space.m)
+                        .background(BoardStyle.paper)
+                        .modifier(ChatDeckRow(botId: bot.id) { pushRoute?(ConversationRoute(botId: bot.id)) })
                         .accessibilityIdentifier("bot-conversation-\(bot.id)")
                         .swipeActions(edge: .trailing, allowsFullSwipe: true) { archiveButton(bot) }
                         .homeRow()
@@ -146,24 +138,19 @@ struct HomeLaunchView: View {
         .refreshable { await store.reconnect() }
         // The message box under the list gives the keyboard back when the list moves.
         .scrollDismissesKeyboard(.interactively)
-        .modifier(DeleteBotDialog(bot: $deleting))
     }
 
     /// The further chats of an agent, under its row: a smaller face, the title of the chat, and its last message.
     private func chatRows(of agent: Bot, latest: [String: Date]) -> some View {
         ForEach(AgentChats.chats(of: agent.id, in: store.bots, latest: latest)) { chat in
-            Button { pushRoute?(ConversationRoute(botId: chat.id)) } label: {
-                BotContactRow(bot: chat, avatarSize: 32, title: chat.chatLabel)
-                    .padding(.leading, BoardStyle.rowFace - 32 + BoardStyle.Space.m)
-                    .padding(.vertical, BoardStyle.Space.s)
-                    .background(BoardStyle.paper)
-                    .contentShape(Rectangle())
-                    .contextMenu { botActions(chat) }
-            }
-            .buttonStyle(HomePressStyle())
-            .accessibilityIdentifier("bot-conversation-\(chat.id)")
-            .swipeActions(edge: .trailing, allowsFullSwipe: true) { archiveButton(chat) }
-            .homeRow()
+            BotContactRow(bot: chat, avatarSize: 32, title: chat.chatLabel)
+                .padding(.leading, BoardStyle.rowFace - 32 + BoardStyle.Space.m)
+                .padding(.vertical, BoardStyle.Space.s)
+                .background(BoardStyle.paper)
+                .modifier(ChatDeckRow(botId: chat.id) { pushRoute?(ConversationRoute(botId: chat.id)) })
+                .accessibilityIdentifier("bot-conversation-\(chat.id)")
+                .swipeActions(edge: .trailing, allowsFullSwipe: true) { archiveButton(chat) }
+                .homeRow()
         }
     }
 
@@ -221,28 +208,24 @@ struct HomeLaunchView: View {
     private func pinnedTiles(_ pinned: [Bot]) -> some View {
         HStack(spacing: BoardStyle.Space.xl) {
             ForEach(pinned) { bot in
-                Button { pushRoute?(ConversationRoute(botId: bot.id)) } label: {
-                    VStack(spacing: BoardStyle.Space.s) {
-                        LiveBotAvatar(bot: bot, size: 76)
-                            // The badge sits on the top right corner of the face, not next to the name.
-                            .overlay(alignment: .topTrailing) {
-                                // The face keeps its size, so the badge on it stops growing at the largest
-                                // standard text size and never covers the face.
-                                if bot.unreadCount > 0 {
-                                    UnreadBadge(count: bot.unreadCount).offset(x: 4, y: -2)
-                                        .dynamicTypeSize(...DynamicTypeSize.xxxLarge)
-                                }
+                VStack(spacing: BoardStyle.Space.s) {
+                    LiveBotAvatar(bot: bot, size: 76)
+                        // The badge sits on the top right corner of the face, not next to the name.
+                        .overlay(alignment: .topTrailing) {
+                            // The face keeps its size, so the badge on it stops growing at the largest
+                            // standard text size and never covers the face.
+                            if bot.unreadCount > 0 {
+                                UnreadBadge(count: bot.unreadCount).offset(x: 4, y: -2)
+                                    .dynamicTypeSize(...DynamicTypeSize.xxxLarge)
                             }
-                        Text(bot.name).font(.subheadline).foregroundStyle(.secondary)
-                            .lineLimit(dynamicTypeSize.isAccessibilitySize ? 2 : 1)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-                    .frame(width: pinWidth).frame(minHeight: 110)
-                    .background(BoardStyle.paper)
-                    .contentShape(Rectangle())
-                    .contextMenu { botActions(bot) }
+                        }
+                    Text(bot.name).font(.subheadline).foregroundStyle(.secondary)
+                        .lineLimit(dynamicTypeSize.isAccessibilitySize ? 2 : 1)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
-                .buttonStyle(HomePressStyle())
+                .frame(width: pinWidth).frame(minHeight: 110)
+                .background(BoardStyle.paper)
+                .modifier(ChatDeckRow(botId: bot.id) { pushRoute?(ConversationRoute(botId: bot.id)) })
                 .accessibilityIdentifier("pinned-bot-\(bot.id)")
             }
         }.padding(.horizontal, BoardStyle.Space.l)
@@ -253,20 +236,6 @@ struct HomeLaunchView: View {
     static func identifier(_ chat: TeamChatKey) -> String {
         if let bot = chat.bot { return "bot-direct-chat-" + bot }
         return chat.member.map { "direct-chat-" + $0 } ?? "team-chat-" + chat.room + (chat.chat.map { "-" + $0 } ?? "")
-    }
-
-    @ViewBuilder
-    private func botActions(_ bot: Bot) -> some View {
-        NewChatButton(bot: bot) { pushRoute?(ConversationRoute(botId: $0.id)) }
-        if !bot.isChat {
-            Button(bot.pinned ? "Unstar agent" : "Star agent", systemImage: bot.pinned ? "star.slash" : "star") {
-                Task { await store.pinBot(bot, pinned: !bot.pinned) }
-            }
-        }
-        Button(bot.isChat ? "Archive chat" : "Archive agent", systemImage: "archivebox") {
-            Task { await store.archiveBot(bot, archived: true) }
-        }
-        Button(bot.isChat ? "Delete chat" : "Delete agent", systemImage: "trash", role: .destructive) { deleting = bot }
     }
 
 }

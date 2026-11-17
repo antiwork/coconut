@@ -52,6 +52,9 @@ struct ConversationView: View {
     @FocusState private var composerFocused: Bool
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.toggleBotDetails) private var toggleBotDetails
+    @Environment(\.showChatDeck) private var showChatDeck
+    @Environment(\.openChat) private var openChat
+    @Environment(\.pushRoute) private var pushRoute
     #if os(macOS)
     /// The height of the notice of the window above the composer (ChatWindowNotice).
     @State private var noticeHeight: CGFloat = 0
@@ -486,20 +489,28 @@ struct ConversationView: View {
                         ToolbarSpacer(.fixed, placement: .leadingBar)
                     }
                     ToolbarItem(placement: .leadingBar) {
-                        NavigationLink(value: BotSettingsRoute(botId: bot.agentId)) {
-                            HStack(spacing: 8) {
-                                LiveBotAvatar(bot: bot, size: 28)
-                                Text(bot.isChat ? bot.chatLabel : bot.name).font(.body.weight(.semibold))
-                                    .lineLimit(1).truncationMode(.tail)
-                                    .frame(maxWidth: nameWidth, alignment: .leading)
-                            }
-                            .fixedSize(horizontal: true, vertical: false)
-                            .padding(.leading, 4).padding(.trailing, BoardStyle.Space.m)
-                            .frame(minHeight: 44).contentShape(Capsule())
+                        HStack(spacing: 8) {
+                            LiveBotAvatar(bot: bot, size: 28)
+                            Text(bot.isChat ? bot.chatLabel : bot.name).font(.body.weight(.semibold))
+                                .lineLimit(1).truncationMode(.tail)
+                                .frame(maxWidth: nameWidth, alignment: .leading)
                         }
-                        .buttonStyle(.plain).labelStyle(.titleAndIcon).accessibilityLabel("\(bot.name) settings")
+                        .fixedSize(horizontal: true, vertical: false)
+                        .padding(.leading, 4).padding(.trailing, BoardStyle.Space.m)
+                        .frame(minHeight: 44).contentShape(Capsule())
+                        // A tap opens the settings of the agent. A long press shows the deck of all chats, which a link
+                        // cannot tell apart from a tap: it opens its page when the finger lifts after the hold.
+                        .onTapGesture {
+                            focusAfterPush = nil
+                            composerFocused = false
+                            pushRoute?(BotSettingsRoute(botId: bot.agentId))
+                        }
+                        .onLongPressGesture(minimumDuration: 0.4) { showDeck(bot) }
+                        .accessibilityElement(children: .combine)
+                        .accessibilityAddTraits(.isButton)
+                        .accessibilityLabel("\(bot.name) settings")
+                        .accessibilityAction(named: "Show all chats") { showDeck(bot) }
                         .accessibilityIdentifier("bot-settings")
-                        .simultaneousGesture(TapGesture().onEnded { focusAfterPush = nil; composerFocused = false })
                     }
                     // The model and its reasoning are in the composer, under the text (ComposerModelMenu).
                     ToolbarItem(placement: .trailingBar) { NewChatHeaderButton(bot: bot) }
@@ -546,6 +557,17 @@ struct ConversationView: View {
         .inlineNavigationTitle()
         .preference(key: ConversationFooterPreference.self,
                     value: isVisible ? (!composerFocused && footerScroll.allowsMinimization) : nil)
+        #if os(macOS)
+        // A pinch in on the chat shows the deck of all chats, as a pinch on a page of a browser shows its tabs.
+        .modifier(ChatDeckPinch(chat: botId) { id in openChat?(id) })
+        #endif
+    }
+
+    /// Shows the deck of all chats with this chat in the middle. A card of another chat opens that chat.
+    private func showDeck(_ bot: Bot) {
+        showChatDeck?(ChatDeckRequest(start: bot.id, opened: bot.id) { id in
+            if let openChat { openChat(id) } else { pushRoute?(ConversationRoute(botId: id)) }
+        })
     }
 
     #if os(macOS)

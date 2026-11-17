@@ -155,6 +155,8 @@ struct CoconutHome: View {
             for route in store.documentPath(id) { agentsPath.append(route) }
             selectedTab = .agents
         }
+        // A long press on a chat shows the deck of all chats (ChatDeck).
+        .modifier(ChatDeckPresenter())
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { _ in keyboardVisible = true }
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in keyboardVisible = false }
         .onChange(of: selectedTab) { _, tab in
