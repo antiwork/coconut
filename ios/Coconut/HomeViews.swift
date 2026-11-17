@@ -125,6 +125,7 @@ struct HomeLaunchView: View {
         .contentMargins(.top, BoardStyle.Space.s, for: .scrollContent)
         .contentMargins(.bottom, BoardStyle.Space.xl, for: .scrollContent)
         .background(BoardStyle.paper)
+        .navigationTitle("Chats")
         .refreshable { await store.reconnect() }
         // The message box under the list gives the keyboard back when the list moves.
         .scrollDismissesKeyboard(.interactively)
@@ -144,8 +145,9 @@ struct HomeLaunchView: View {
         if cards > 0 {
             Button { open(.cards(nil)) } label: {
                 HStack(spacing: BoardStyle.Space.m) {
-                    Image(systemName: "rectangle.stack.fill").foregroundStyle(BoardStyle.attention)
-                    Text(cards == 1 ? "1 card waits for you" : "\(cards) cards wait for you")
+                    // The count is what the person came for, so it is the largest thing under the title.
+                    Text("\(cards)").font(.largeTitle.weight(.bold).monospacedDigit()).foregroundStyle(BoardStyle.attention)
+                    Text(cards == 1 ? "card waits for you" : "cards wait for you")
                         .font(.body.weight(.semibold)).foregroundStyle(.primary)
                     Spacer(minLength: 0)
                     Image(systemName: "chevron.right").font(.footnote.weight(.semibold)).foregroundStyle(.tertiary)
