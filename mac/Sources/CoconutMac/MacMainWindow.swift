@@ -267,7 +267,8 @@ struct MacMainWindow: View {
                 .frame(minWidth: 300, maxWidth: .infinity)
                 if inspectorShown {
                     Divider()
-                    MacBotDetails(botId: botId, tab: $inspectorTab)
+                    // The settings and the pages are those of the agent, also next to one of its further chats.
+                    MacBotDetails(botId: AgentChats.agentId(of: botId, in: store.bots), tab: $inspectorTab)
                         .frame(width: 320)
                         .transition(.move(edge: .trailing))
                 }
@@ -388,7 +389,9 @@ struct MacSidebar: View {
     var body: some View {
         // The store keeps the newest activity of each bot (ChatSummaries), so the sidebar reads no message. A pass
         // over the messages for each body cost about 3 ms with 1,500 messages.
-        let sections = ChatSections.make(bots: store.bots.agents, latest: store.chatSummaries.newestActivity,
+        // An agent keeps its place by the newest of its chats, which show under it.
+        let latest = AgentChats.activity(bots: store.bots, latest: store.chatSummaries.newestActivity)
+        let sections = ChatSections.make(bots: store.bots.agents, latest: latest,
                                          rooms: store.shownTeamRooms, local: store.newestLocalMessages)
         let pins = SidebarPins(pinnedBots: sections.pinned, documents: store.documents ?? [], bots: store.bots,
                                teamBots: store.teamBots)
@@ -398,6 +401,8 @@ struct MacSidebar: View {
             // The Coconut chat: where the person changes Coconut. Coconut has no settings window for it.
             if let coconut = store.bots.coconutChat {
                 CoconutChatRow(bot: coconut).tag(MacSelection.bot(coconut.id))
+                    .contextMenu { NewChatButton(bot: coconut) { selection = .bot($0.id) } }
+                chatRows(of: coconut)
             }
             MacSidebarLabel(title: "Home", symbol: "house")
                 .badge(HomeFeed.badge(store.homeUnread))
@@ -439,7 +444,8 @@ struct MacSidebar: View {
                 }
             }
             // The archived agents, closed until the person opens the section. An archived chat stays readable.
-            let archived = store.bots.agents.filter(\.archived).sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+            let archived = store.bots.filter { $0.archived && !$0.coconut }
+                .sorted { $0.listName.localizedStandardCompare($1.listName) == .orderedAscending }
             if !archived.isEmpty {
                 Section("Archived", isExpanded: $archivedOpen) {
                     ForEach(archived) { bot in row(bot) }
@@ -476,18 +482,42 @@ struct MacSidebar: View {
             .accessibilityIdentifier("sidebar-page-\(page.key)")
     }
 
+    /// The row of an agent, and under it the rows of its further chats. An archived row stands alone.
+    @ViewBuilder
     private func row(_ bot: Bot) -> some View {
-        MacSidebarRow(name: bot.name, unread: bot.unreadCount) {
-            LiveBotAvatar(bot: bot, size: 20)
+        botRow(bot)
+        if !bot.archived && !bot.isChat { chatRows(of: bot) }
+    }
+
+    /// The further chats of an agent, newest first: the title of each chat, set in under the name of the agent.
+    private func chatRows(of agent: Bot) -> some View {
+        ForEach(AgentChats.chats(of: agent.id, in: store.bots, latest: store.chatSummaries.newestActivity)) { chat in
+            botRow(chat)
         }
+    }
+
+    private func botRow(_ bot: Bot) -> some View {
+        MacSidebarRow(name: bot.archived ? bot.listName : bot.isChat ? bot.chatLabel : bot.name, unread: bot.unreadCount) {
+            // A further chat has no face of its own: the face of its agent is in the row above it.
+            if bot.isChat && !bot.archived {
+                Image(systemName: "bubble.left").font(.caption).foregroundStyle(.tertiary)
+            } else {
+                LiveBotAvatar(bot: bot, size: 20)
+            }
+        }
+            .padding(.leading, bot.isChat && !bot.archived ? BoardStyle.Space.m : 0)
             .tag(MacSelection.bot(bot.id))
             .contextMenu {
                 if !bot.archived {
-                    Button(bot.pinned ? "Unstar" : "Star") { Task { await store.pinBot(bot, pinned: !bot.pinned) } }
+                    NewChatButton(bot: bot) { selection = .bot($0.id) }
+                    Divider()
+                    if !bot.isChat {
+                        Button(bot.pinned ? "Unstar" : "Star") { Task { await store.pinBot(bot, pinned: !bot.pinned) } }
+                    }
                 }
                 Button(bot.archived ? "Unarchive" : "Archive") { Task { await store.archiveBot(bot, archived: !bot.archived) } }
                 Divider()
-                Button("Delete Agent…", role: .destructive) { deleting = bot }
+                Button(bot.isChat ? "Delete Chat…" : "Delete Agent…", role: .destructive) { deleting = bot }
             }
             // A swipe to the left on the trackpad archives the agent, as in the Chats list of the iPhone.
             .swipeActions(edge: .trailing, allowsFullSwipe: true) {

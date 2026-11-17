@@ -49,7 +49,7 @@ struct BotAvatar: View {
 
     init(bot: Bot, size: CGFloat = 52, phase: BotPhase? = nil, mood: CoconutMood = .neutral, newestCardAt: Date? = nil,
          online: Bool = true, animated: Bool = true) {
-        self.init(symbol: bot.avatar, color: bot.color, size: size, identity: bot.id, phase: phase, mood: mood,
+        self.init(symbol: bot.avatar, color: bot.color, size: size, identity: bot.chatOf ?? bot.id, phase: phase, mood: mood,
                   newestCardAt: newestCardAt, online: online, animated: animated)
         self.image = bot.avatarImage.flatMap { URL(string: "coconut-file://" + $0) }
     }

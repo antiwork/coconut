@@ -403,18 +403,26 @@ struct DecisionAssessment: View {
 }
 
 struct DecisionSources: View {
+    @Environment(AppStore.self) private var store
     let sources: [DecisionSource]
 
     var body: some View {
+        let links = sources.compactMap(\.link).filter(GitHubLink.isCard)
         VStack(alignment: .leading, spacing: BoardStyle.Space.xs) {
             ForEach(sources, id: \.self) { source in
-                Text(reference(source))
-                    .fixedSize(horizontal: false, vertical: true)
+                // A GitHub source shows as its card when the Mac can read it. Else the line with the link stays.
+                if let link = source.link, GitHubLink.isCard(link), let preview = store.githubEmbeds.preview(for: link) {
+                    GitHubEmbedCard(preview: preview).foregroundStyle(.primary)
+                } else {
+                    Text(reference(source))
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
         }
         .font(.footnote)
         .foregroundStyle(.secondary)
         .tint(.secondary)
+        .task(id: links) { await store.githubEmbeds.load(Array(links.prefix(GitHubLink.limit))) }
     }
 
     private func reference(_ source: DecisionSource) -> AttributedString {

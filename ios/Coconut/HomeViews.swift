@@ -11,7 +11,9 @@ struct HomeLaunchView: View {
 
     var body: some View {
         // The store keeps the newest activity of each bot (ChatSummaries). The list sorts by it one time.
-        let latest = store.chatSummaries.newestActivity
+        // An agent keeps its place by the newest of its chats, which show under it.
+        let ownLatest = store.chatSummaries.newestActivity
+        let latest = AgentChats.activity(bots: store.bots, latest: ownLatest)
         let activeBots = store.bots.agents.filter { !$0.archived }.sorted {
             (latest[$0.id] ?? $0.createdAt.apiDate ?? .distantPast) > (latest[$1.id] ?? $1.createdAt.apiDate ?? .distantPast)
         }
@@ -41,7 +43,9 @@ struct HomeLaunchView: View {
                         .background(BoardStyle.paper)
                 }
                 .buttonStyle(.plain)
+                .contextMenu { NewChatButton(bot: coconut) { pushRoute?(ConversationRoute(botId: $0.id)) } }
                 .homeRow(top: BoardStyle.Space.s)
+                chatRows(of: coconut, latest: ownLatest)
             }
             chips(filter, rooms: rooms).homeRow(top: BoardStyle.Space.l)
             if !todos.isEmpty {
@@ -89,6 +93,7 @@ struct HomeLaunchView: View {
                         .accessibilityIdentifier("bot-conversation-\(bot.id)")
                         .swipeActions(edge: .trailing, allowsFullSwipe: true) { archiveButton(bot) }
                         .homeRow()
+                    chatRows(of: bot, latest: ownLatest)
                 case .team, .direct, .botDirect:
                     // A team chat has Star and Mute in its menu. The Team screen has the leave action.
                     if let chat = item.chat {
@@ -130,6 +135,28 @@ struct HomeLaunchView: View {
         .background(BoardStyle.paper)
         .refreshable { await store.reconnect() }
         .modifier(DeleteBotDialog(bot: $deleting))
+    }
+
+    /// The further chats of an agent, under its row: a smaller face, the title of the chat, and its last message.
+    private func chatRows(of agent: Bot, latest: [String: Date]) -> some View {
+        ForEach(AgentChats.chats(of: agent.id, in: store.bots, latest: latest)) { chat in
+            Button { pushRoute?(ConversationRoute(botId: chat.id)) } label: {
+                BotContactRow(bot: chat, avatarSize: 32, title: chat.chatLabel)
+                    .padding(.leading, BoardStyle.rowFace - 32 + BoardStyle.Space.m)
+                    .padding(.vertical, BoardStyle.Space.s)
+                    .background(BoardStyle.paper)
+                    .contentShape(Rectangle())
+                    .contextMenu {
+                        NewChatButton(bot: chat) { pushRoute?(ConversationRoute(botId: $0.id)) }
+                        Button("Archive chat", systemImage: "archivebox") { Task { await store.archiveBot(chat, archived: true) } }
+                        Button("Delete chat", systemImage: "trash", role: .destructive) { deleting = chat }
+                    }
+            }
+            .buttonStyle(HomePressStyle())
+            .accessibilityIdentifier("bot-conversation-\(chat.id)")
+            .swipeActions(edge: .trailing, allowsFullSwipe: true) { archiveButton(chat) }
+            .homeRow()
+        }
     }
 
     private func archiveButton(_ bot: Bot) -> some View {
@@ -222,6 +249,7 @@ struct HomeLaunchView: View {
 
     @ViewBuilder
     private func botActions(_ bot: Bot) -> some View {
+        NewChatButton(bot: bot) { pushRoute?(ConversationRoute(botId: $0.id)) }
         Button(bot.pinned ? "Unstar agent" : "Star agent", systemImage: bot.pinned ? "star.slash" : "star") {
             Task { await store.pinBot(bot, pinned: !bot.pinned) }
         }
@@ -239,7 +267,7 @@ struct ArchivedAgentsView: View {
     @State private var deleting: Bot?
 
     var body: some View {
-        let archived = store.bots.filter(\.archived).sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+        let archived = store.bots.filter(\.archived).sorted { $0.listName.localizedStandardCompare($1.listName) == .orderedAscending }
         List {
             if archived.isEmpty {
                 Text("No archived agents.")
@@ -249,7 +277,7 @@ struct ArchivedAgentsView: View {
             }
             ForEach(archived) { bot in
                 Button { pushRoute?(ConversationRoute(botId: bot.id)) } label: {
-                    BotContactRow(bot: bot)
+                    BotContactRow(bot: bot, title: bot.isChat ? bot.listName : nil)
                         .padding(.vertical, BoardStyle.Space.m)
                         .background(BoardStyle.paper)
                         .contentShape(Rectangle())
@@ -257,7 +285,7 @@ struct ArchivedAgentsView: View {
                             Button("Unarchive", systemImage: "tray.and.arrow.up") {
                                 Task { await store.archiveBot(bot, archived: false) }
                             }
-                            Button("Delete agent", systemImage: "trash", role: .destructive) { deleting = bot }
+                            Button(bot.isChat ? "Delete chat" : "Delete agent", systemImage: "trash", role: .destructive) { deleting = bot }
                         }
                 }
                 .buttonStyle(HomePressStyle())
@@ -372,6 +400,8 @@ struct BotContactRow: View {
     let bot: Bot
     /// The face of the bot. The iPhone list shows a large face; a Mac sidebar shows a smaller one.
     var avatarSize: CGFloat = BoardStyle.rowFace
+    /// The name of the row. A further chat of an agent shows its title in place of the agent's name.
+    var title: String? = nil
     /// The row reads the summary of its bot, not the messages, so a streamed word does not redraw it.
     private var summary: BotChatSummary { store.chatSummaries[bot.id] }
     private var latestMessage: Message? { summary.latestMessage }
@@ -392,7 +422,7 @@ struct BotContactRow: View {
 
     var body: some View {
         let subtitle = BotRowSubtitle(needsYou: store.botNeedsYou(bot), phase: phase, health: bot.health)
-        ChatRowLayout(name: bot.name, unread: bot.unreadCount, date: lastMessageDate) {
+        ChatRowLayout(name: title ?? bot.name, unread: bot.unreadCount, date: lastMessageDate) {
             LiveBotAvatar(bot: bot, size: avatarSize)
         } subtitle: {
             Group {

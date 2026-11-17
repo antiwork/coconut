@@ -314,13 +314,15 @@ struct DeleteBotDialog: ViewModifier {
     @Binding var bot: Bot?
 
     func body(content: Content) -> some View {
-        content.confirmationDialog("Delete \(bot?.name ?? "agent")?",
+        content.confirmationDialog(bot?.isChat == true ? "Delete this chat?" : "Delete \(bot?.name ?? "agent")?",
                                    isPresented: Binding(get: { bot != nil }, set: { if !$0 { bot = nil } }),
                                    titleVisibility: .visible, presenting: bot) { bot in
-            Button("Delete agent", role: .destructive) { Task { await store.deleteBot(bot) } }
+            Button(bot.isChat ? "Delete chat" : "Delete agent", role: .destructive) { Task { await store.deleteBot(bot) } }
                 .accessibilityIdentifier("confirm-delete-bot")
-        } message: { _ in
-            Text("The Mac cancels this agent's work and removes its conversation. The audit record remains on your Mac.")
+        } message: { bot in
+            Text(bot.isChat
+                 ? "The Mac cancels the work of this chat and removes its conversation. \(bot.name) and its other chats stay."
+                 : "The Mac cancels this agent's work and removes its conversation. The audit record remains on your Mac.")
         }
     }
 }

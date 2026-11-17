@@ -332,7 +332,7 @@ private struct BusinessAgentSheet: View {
             Form {
                 Picker("Agent", selection: $selected) {
                     Text("Choose an agent").tag("")
-                    ForEach(store.bots.filter { !$0.archived }) { Text($0.name).tag($0.id) }
+                    ForEach(store.bots.withoutChats.filter { !$0.archived }) { Text($0.name).tag($0.id) }
                 }
                 TextField("Instructions (optional)", text: $instruction, axis: .vertical).lineLimit(3...6)
             }

@@ -79,7 +79,7 @@ enum TranscriptPresentation {
 
     /// The web pages that a bot message links to, for preview cards: Markdown links and bare addresses, in the
     /// order of the text, each once, at most three. Only public https pages count: no photo, no local address.
-    static func previewLinks(in markdown: String) -> [URL] {
+    static func previewLinks(in markdown: String, limit: Int = 3) -> [URL] {
         guard let detector = try? NSDataDetector(types: NSTextCheckingResult.CheckingType.link.rawValue) else { return [] }
         var links: [URL] = []
         var seen: Set<String> = []
@@ -87,7 +87,7 @@ enum TranscriptPresentation {
             guard let url = match.url, isPublicWebAddress(url), !isPhotoAddress(url),
                   seen.insert(url.absoluteString).inserted else { continue }
             links.append(url)
-            if links.count == 3 { break }
+            if links.count == limit { break }
         }
         return links
     }

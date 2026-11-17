@@ -84,8 +84,10 @@ struct AgentProject: Identifiable, Equatable {
     let checks: [Routine]
     /// The cards of the agent that wait for an answer.
     let pendingCards: Int
-    /// The time of the newest message of the chat. Nil for a chat without a message.
+    /// The time of the newest message of the agent's chats. Nil for an agent without a message.
     let lastActivity: Date?
+    /// The further chats of the agent that are not archived, newest activity first (AgentChats).
+    let chats: [Bot]
 
     var id: String { bot.id }
 
@@ -104,7 +106,10 @@ struct AgentProject: Identifiable, Equatable {
 
     init(bot: Bot, input: Input, now: Date = Date()) {
         self.bot = bot
-        todos = AgentTodos.make(artifacts: input.artifacts.filter { $0.botId == bot.id }, bots: [bot])
+        chats = AgentChats.chats(of: bot.id, in: input.bots, latest: input.latest)
+        // The work, the cards and the state of the further chats are those of the agent.
+        let ids = Set([bot.id] + chats.map(\.id))
+        todos = AgentTodos.make(artifacts: input.artifacts.filter { ids.contains($0.botId) }, bots: [bot] + chats)
         pages = input.documents.filter { $0.botId == bot.id }
             .sorted { ($0.isPinned ? 1 : 0, $0.updatedAt, $1.id) > ($1.isPinned ? 1 : 0, $1.updatedAt, $0.id) }
         let groups = RoutineGroups(input.routines.filter { $0.botId == bot.id }, now: now)
@@ -112,11 +117,12 @@ struct AgentProject: Identifiable, Equatable {
         checks = groups.scheduledChecks
         let chatOf = Dictionary(input.tasks.map { ($0.id, $0.chatBotId) }) { _, latest in latest }
         pendingCards = input.decisions.filter {
-            $0.isPending && !input.answering.contains($0.id) && (chatOf[$0.taskId] ?? $0.botId) == bot.id
+            $0.isPending && !input.answering.contains($0.id) && ids.contains(chatOf[$0.taskId] ?? $0.botId)
         }.count
-        lastActivity = input.latest[bot.id]
+        lastActivity = ([bot] + chats).compactMap { input.latest[$0.id] }.max()
         let runs = ["working", "running"].contains(bot.status)
-            || input.tasks.contains { $0.botId == bot.id && $0.isRunning }
+            || chats.contains { ["working", "running"].contains($0.status) }
+            || input.tasks.contains { ids.contains($0.botId) && $0.isRunning }
             || todos.contains { $0.status == "working" }
         if bot.archived { status = .archived }
         else if let health = bot.health { status = .cannotRun(health.label) }
@@ -128,7 +134,8 @@ struct AgentProject: Identifiable, Equatable {
     /// The agents as projects: each agent that is not archived and is not the Coconut chat, newest activity first. An
     /// agent without a message sorts by the time when the person made it.
     static func list(_ input: Input, now: Date = Date()) -> [AgentProject] {
-        func activity(_ bot: Bot) -> Date { input.latest[bot.id] ?? bot.createdAt.apiDate ?? .distantPast }
+        let latest = AgentChats.activity(bots: input.bots, latest: input.latest)
+        func activity(_ bot: Bot) -> Date { latest[bot.id] ?? bot.createdAt.apiDate ?? .distantPast }
         return input.bots.agents.filter { !$0.archived }
             .sorted { (activity($0), $1.id) > (activity($1), $0.id) }
             .map { AgentProject(bot: $0, input: input, now: now) }
@@ -147,7 +154,7 @@ struct AgentProject: Identifiable, Equatable {
     /// The count after the title of a section. Chat counts the unread messages. Settings has none.
     func count(_ section: AgentSection) -> Int {
         switch section {
-        case .chat: bot.unreadCount
+        case .chat: bot.unreadCount + chats.reduce(0) { $0 + $1.unreadCount }
         case .todos: todos.count
         case .pages: pages.count
         case .routines: routines.count + checks.count
@@ -169,6 +176,7 @@ extension AppStore {
 struct AgentsView: View {
     @Environment(AppStore.self) private var store
     @Environment(\.pushRoute) private var pushRoute
+    @Environment(\.openChat) private var openChat
     /// Opens the page of an agent. The Mac window selects it; without it the page goes onto the stack.
     var open: ((String) -> Void)? = nil
     var create: (() -> Void)? = nil
@@ -193,6 +201,11 @@ struct AgentsView: View {
                     ForEach(projects) { project in
                         AgentProjectRow(project: project)
                             .boardButton("agent-" + project.id) { show(project.id) }
+                            .contextMenu {
+                                NewChatButton(bot: project.bot) { chat in
+                                    if let openChat { openChat(chat.id) } else { pushRoute?(ConversationRoute(botId: chat.id)) }
+                                }
+                            }
                     }
                 }
             }
@@ -311,7 +324,24 @@ struct AgentProjectView: View {
             #if os(iOS)
             chatButton(bot)
             #endif
-            BoardSection(AgentSection.chat.title, count: project.count(.chat)) {
+            BoardSection(project.chats.isEmpty ? AgentSection.chat.title : "Chats", count: project.count(.chat)) {
+                // A new chat is a fresh conversation with the same agent: its instructions, model, memory and pages.
+                if !bot.archived {
+                    Button { newChat(bot) } label: { Label("New Chat", systemImage: "square.and.pencil") }
+                        .accessibilityIdentifier("agent-new-chat")
+                }
+            } rows: {
+                // The newest chats come first. The first chat of the agent, with its name, is the last row.
+                ForEach(project.chats) { extra in
+                    BotContactRow(bot: extra, avatarSize: 32, title: extra.chatLabel)
+                        .padding(.horizontal, BoardStyle.Space.m).padding(.vertical, BoardStyle.Space.xs)
+                        .contentShape(Rectangle())
+                        .boardButton("agent-chat-" + extra.id) { chat(ConversationRoute(botId: extra.id)) }
+                        .contextMenu {
+                            Button("Archive Chat", systemImage: "archivebox") { Task { await store.archiveBot(extra, archived: true) } }
+                            Button("Delete Chat…", systemImage: "trash", role: .destructive) { deleting = extra }
+                        }
+                }
                 BotContactRow(bot: bot, avatarSize: 32)
                     .padding(.horizontal, BoardStyle.Space.m).padding(.vertical, BoardStyle.Space.xs)
                     .contentShape(Rectangle())
@@ -330,7 +360,7 @@ struct AgentProjectView: View {
                                  : item.status == "working" ? BoardStyle.positive : .secondary,
                              title: item.title, detail: item.preview, value: AgentTodos.label(item.status))
                         .boardButton("agent-todo-" + item.id) {
-                            chat(ConversationRoute(botId: bot.id, workContext: WorkReference(id: item.id, title: item.title)))
+                            chat(ConversationRoute(botId: item.botId, workContext: WorkReference(id: item.id, title: item.title)))
                         }
                 }
             }
@@ -435,6 +465,10 @@ struct AgentProjectView: View {
         }
         .buttonStyle(CoconutButtonStyle())
         .accessibilityIdentifier("agent-chat-button")
+    }
+
+    private func newChat(_ bot: Bot) {
+        Task { if let new = await store.newChat(with: bot) { chat(ConversationRoute(botId: new.id)) } }
     }
 
     /// The Mac window shows a chat in its own place. An iPhone pushes it onto the stack of the tab.

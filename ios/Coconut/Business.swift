@@ -77,6 +77,8 @@ extension AppStore {
         businessGeneration = UUID()
         businessItems = [:]; businessReports = [:]; businessCatalog = nil
         businessChanges += 1
+        // Another Mac or another GitHub account reads other repositories.
+        githubEmbeds.reset()
     }
 
     func loadBusinessCatalog(fresh: Bool = false) async throws {

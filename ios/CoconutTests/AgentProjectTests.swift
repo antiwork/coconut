@@ -86,4 +86,94 @@ final class AgentProjectTests: XCTestCase {
         input.bots[1].health = BotHealth(state: "error", errorCode: nil, until: nil, uncovered: 0)
         XCTAssertEqual(AgentsView.detail(AgentProject.list(input, now: IAData.now)), "2 agents · 1 needs you · 1 can't run")
     }
+
+    // The further chats of an agent (AgentChats).
+
+    private func chat(_ id: String, of agent: String, title: String = "", created: String, unread: Int = 0,
+                      archived: Bool = false) -> Bot {
+        var bot = IAData.bot(id, unread: unread, archived: archived)
+        bot.name = agent.capitalized
+        bot.chatOf = agent
+        bot.chatTitle = title
+        bot.createdAt = created
+        return bot
+    }
+
+    func testAChatDecodesWithItsAgentAndItsTitle() throws {
+        let json = #"{"id":"c1","session_id":"s","name":"Planner","role":"","avatar":"a","color":"777777","instructions":"","status":"idle","last_message":"","unread_count":0,"archived":false,"created_at":"2026-11-16T10:00:00Z","chat_of":"planner","chat_title":"Plan the launch"}"#
+        let bot = try APIJSON.decoder().decode(Bot.self, from: Data(json.utf8))
+        XCTAssertEqual([bot.chatOf, bot.chatTitle], ["planner", "Plan the launch"])
+        XCTAssertTrue(bot.isChat)
+        XCTAssertEqual(bot.agentId, "planner")
+        XCTAssertEqual(bot.listName, "Planner · Plan the launch")
+        let agent = IAData.bot("planner")
+        XCTAssertFalse(agent.isChat)
+        XCTAssertEqual([agent.agentId, agent.listName], ["planner", "Planner"])
+    }
+
+    func testAChatWithoutAMessageIsANewChat() {
+        XCTAssertEqual(chat("c1", of: "planner", created: "2026-11-16T10:00:00Z").chatLabel, "New chat")
+        XCTAssertEqual(chat("c1", of: "planner", title: "  ", created: "2026-11-16T10:00:00Z").chatLabel, "New chat")
+        XCTAssertEqual(AgentChats.title(from: "\n  Plan the payout email \nfor Friday"), "Plan the payout email")
+        XCTAssertEqual(AgentChats.title(from: String(repeating: "x", count: 100)), String(repeating: "x", count: 71) + "…")
+    }
+
+    func testTheChatsOfAnAgentShowUnderItNewestFirst() {
+        var input = input
+        input.bots += [chat("c-old", of: "planner", title: "Old", created: "2026-11-10T00:00:00Z"),
+                       chat("c-new", of: "planner", title: "New", created: "2026-11-16T12:00:00Z", unread: 1),
+                       chat("c-talk", of: "planner", title: "Talk", created: "2026-11-11T00:00:00Z"),
+                       chat("c-gone", of: "planner", title: "Gone", created: "2026-11-16T13:00:00Z", archived: true),
+                       chat("c-other", of: "writer", title: "Other", created: "2026-11-12T00:00:00Z")]
+        input.latest["c-talk"] = "2026-11-16T11:30:00Z".apiDate!
+        // A chat without a message counts from its start. An archived chat does not show.
+        XCTAssertEqual(AgentChats.chats(of: "planner", in: input.bots, latest: input.latest).map(\.id), ["c-new", "c-talk", "c-old"])
+        // The lists have each agent one time, and the agent keeps its place by its newest chat.
+        XCTAssertEqual(input.bots.agents.map(\.id), ["planner", "writer", "old"])
+        XCTAssertEqual(input.bots.withoutChats.map(\.id), ["planner", "writer", "old", "coconut"])
+        XCTAssertEqual(AgentChats.activity(bots: input.bots, latest: input.latest)["planner"], "2026-11-16T12:00:00Z".apiDate!)
+        let projects = AgentProject.list(input, now: IAData.now)
+        XCTAssertEqual(projects.map(\.id), ["planner", "writer"])
+        XCTAssertEqual(projects[0].chats.map(\.id), ["c-new", "c-talk", "c-old"])
+        XCTAssertEqual(projects[0].count(.chat), 3, "The unread messages of the agent and of its chats.")
+        XCTAssertEqual(projects[0].lastActivity, "2026-11-16T11:30:00Z".apiDate!)
+        XCTAssertEqual(AgentChats.agentId(of: "c-new", in: input.bots), "planner")
+        XCTAssertEqual(AgentChats.agentId(of: "unknown", in: input.bots), "unknown")
+    }
+
+    func testTheWorkAndTheCardsOfAChatAreThoseOfItsAgent() {
+        var input = input
+        input.bots.append(chat("c1", of: "writer", title: "Draft", created: "2026-11-16T12:00:00Z"))
+        input.artifacts.append(IAData.work("chat-work", "working", bot: "c1", created: "2026-11-16T12:10:00Z"))
+        input.decisions = [IAData.decision("ship", bot: "c1", created: "2026-11-16T11:00:00Z")]
+        let writer = AgentProject(bot: input.bots[1], input: input, now: IAData.now)
+        XCTAssertTrue(writer.todos.contains { $0.id == "chat-work" })
+        XCTAssertEqual(writer.pendingCards, 1)
+        XCTAssertEqual(writer.status, .needsYou)
+    }
+
+    @MainActor
+    func testANewChatInTheDemoIsAFreshChatOfTheSameAgent() async throws {
+        let store = AppStore(demo: true)
+        let agent = try XCTUnwrap(store.bots.first)
+        let count = store.bots.count
+        let made = await store.newChat(with: agent)
+        let first = try XCTUnwrap(made)
+        XCTAssertEqual(first.chatOf, agent.id)
+        XCTAssertEqual([first.name, first.avatar, first.instructions], [agent.name, agent.avatar, agent.instructions])
+        XCTAssertNotEqual(first.sessionId, agent.sessionId)
+        XCTAssertEqual(store.composerFocusRequest, first.id)
+        XCTAssertEqual(first.chatLabel, "New chat")
+        // A new chat from a chat belongs to the agent.
+        let madeAgain = await store.newChat(with: first)
+        let second = try XCTUnwrap(madeAgain)
+        XCTAssertEqual(second.chatOf, agent.id)
+        XCTAssertEqual(store.bots.count, count + 2)
+        // The first message names the chat, and the chat of the agent keeps no title.
+        _ = await store.send(bot: second, text: "Draft the refund reply\nfor Friday")
+        XCTAssertEqual(store.bots.first { $0.id == second.id }?.chatLabel, "Draft the refund reply")
+        XCTAssertTrue(store.messages.filter { $0.botId == second.id }.contains { $0.text.hasPrefix("Draft the refund reply") })
+        XCTAssertNil(store.bots.first { $0.id == agent.id }?.chatTitle)
+    }
 }
+

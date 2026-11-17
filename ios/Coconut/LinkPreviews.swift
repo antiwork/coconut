@@ -3,34 +3,62 @@ import SwiftUI
 import UIKit
 #endif
 
-/// Preview cards for the web pages that a bot message links to. One link gets a large card with the page's
-/// image. Two or three links get compact rows.
+/// Preview cards for the pages that a message links to, in the order of the text. A GitHub page gets a GitHub card
+/// from the Mac (GitHubEmbedViews.swift). Of the other pages, one link gets a large card with the page's image, and
+/// two or three links get compact rows.
 struct LinkPreviewList: View {
+    @Environment(AppStore.self) private var store
     let text: String
+    /// A message of the person gets only GitHub cards.
+    var githubOnly = false
     @State private var links: [URL] = []
     @State private var previews: [URL: LinkPreview] = [:]
 
     var body: some View {
+        let pages = links.filter { !GitHubLink.isCard($0) }
         VStack(alignment: .leading, spacing: BoardStyle.Space.s) {
-            ForEach(links.filter { previews[$0] != nil }, id: \.self) { url in
-                LinkPreviewCard(url: url, preview: previews[url]!, large: links.count == 1)
+            ForEach(links, id: \.self) { url in
+                if GitHubLink.isCard(url) {
+                    if let preview = store.githubEmbeds.preview(for: url) { GitHubEmbedCard(preview: preview) }
+                } else if let preview = previews[url] {
+                    LinkPreviewCard(url: url, preview: preview, large: pages.count == 1)
+                }
             }
         }
         .task(id: text) {
             let text = text
-            links = await Task.detached(priority: .utility) { TranscriptPresentation.previewLinks(in: text) }.value
+            let githubOnly = githubOnly
+            links = await Task.detached(priority: .utility) { Self.links(in: text, githubOnly: githubOnly) }.value
+            let pages = links.filter { !GitHubLink.isCard($0) }
             // Pages that loaded before show at once, so the chat does not move for them.
-            previews = Dictionary(uniqueKeysWithValues: links.compactMap { url in
+            previews = Dictionary(uniqueKeysWithValues: pages.compactMap { url in
                 LinkPreviewLoader.shared.cached(url).map { (url, $0) }
             })
+            async let github: Void = store.githubEmbeds.load(links.filter(GitHubLink.isCard))
             await withTaskGroup(of: (URL, LinkPreview?).self) { group in
-                for url in links where previews[url] == nil {
+                for url in pages where previews[url] == nil {
                     group.addTask { (url, await LinkPreviewLoader.shared.preview(url)) }
                 }
                 for await (url, preview) in group {
                     if let preview { previews[url] = preview }
                 }
             }
+            await github
+        }
+    }
+
+    /// The links of a text that get a card: at most four GitHub pages and at most three other pages, in the order of
+    /// the text.
+    nonisolated static func links(in text: String, githubOnly: Bool = false) -> [URL] {
+        var github = 0
+        var pages = 0
+        return TranscriptPresentation.previewLinks(in: text, limit: 24).filter { url in
+            if GitHubLink.isCard(url) {
+                github += 1
+                return github <= GitHubLink.limit
+            }
+            pages += 1
+            return !githubOnly && pages <= 3
         }
     }
 }
