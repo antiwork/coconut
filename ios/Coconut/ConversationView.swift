@@ -670,12 +670,12 @@ struct UnreadMark: Equatable {
     }
 }
 
-/// Slack's line above the first message that came since the person last read the chat: a thin red rule and "New".
+/// Slack's line above the first message that came since the person last read the chat: a thin green rule and "New".
 struct NewMessagesLine: View {
     var body: some View {
         HStack(spacing: BoardStyle.Space.s) {
-            Rectangle().fill(Color.red).frame(height: 1)
-            Text("New").font(.caption.weight(.semibold)).foregroundStyle(Color.red)
+            Rectangle().fill(BoardStyle.positive).frame(height: 1)
+            Text("New").font(.caption.weight(.semibold)).foregroundStyle(BoardStyle.positive)
         }
         .padding(.vertical, BoardStyle.Space.s)
         .accessibilityElement(children: .ignore)
