@@ -237,10 +237,11 @@ struct BusinessReportsView: View {
                 .accessibilityIdentifier("business-reports-monthly-chart")
             }
             if let revenue3m = periods.revenue3m, let previous = periods.revenuePrev3m {
-                Text("Revenue in the last three closed months was " + BusinessPeriodFormat.money(revenue3m)
-                     + " against " + BusinessPeriodFormat.money(previous) + ", "
-                     + BusinessPeriodFormat.percent(periods.revenue3mPercent, signed: true) + ".")
-                    .font(.callout)
+                let now: String = BusinessPeriodFormat.money(revenue3m)
+                let before: String = BusinessPeriodFormat.money(previous)
+                let change: String = BusinessPeriodFormat.percent(periods.revenue3mPercent, signed: true)
+                // Data only: the two quarters and the change.
+                Text("3 mo \(now) vs \(before) · \(change)").font(.callout).monospacedDigit()
             }
             ForEach(periods.months.reversed()) { month in
                 BusinessReportRow(title: BusinessPeriodFormat.label(month.month),
