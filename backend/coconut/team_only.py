@@ -471,8 +471,13 @@ class TeamOnlyService(TeamTurns, Documents, Team):
         for number, piece in enumerate(pieces):
             # A send outside a turn answers no message, so no request must still stand: only the bot must answer.
             # A part that the log did not take stops the send, so the chat shows no later part before it.
-            result = self._team_say(room, bot_id, message_id, number, piece, request=False, chat=named, direct=direct,
-                                    alert=alert, deadline=deadline)
+            try:
+                result = self._team_say(room, bot_id, message_id, number, piece, request=False, chat=named, direct=direct,
+                                        alert=alert, deadline=deadline)
+            except ServiceError as error:
+                if deadline is None or error.status != 503:
+                    raise
+                result = SAY_FAILED
             if result != SAID:
                 break
             shown += 1

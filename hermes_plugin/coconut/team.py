@@ -187,18 +187,19 @@ async def send_standalone(pconfig, chat_id, message, *, thread_id=None, media_fi
                 payload = dict(payload, budget_seconds=min(40, remaining - 5))
                 timeout = remaining
             return await asyncio.to_thread(bridge.request, route, payload, timeout)
-        answer, _ = (await send_tries(request, home, str(chat_id), dict(kind='send', message_id=message_id, text=text),
+        answer, shown = (await send_tries(request, home, str(chat_id), dict(kind='send', message_id=message_id, text=text),
                                       deadline=file_deadline if media_files else None)
                      if text.strip() else ({'recorded': True}, 0))
+        partial = {'partial_success': True, 'message_id': message_id} if shown else {}
         if isinstance(answer, SendResult):
             status = answer.raw_response.get('status') if isinstance(answer.raw_response, dict) else None
             if status == 404:
                 return {'error': 'Coconut refused this message: the chat is not a team chat of an agent of this '
-                                 'Hermes home.'}
-            return {'error': answer.error + (f' (HTTP {status})' if status else '')}
+                                 'Hermes home.', **partial}
+            return {'error': answer.error + (f' (HTTP {status})' if status else ''), **partial}
         if not isinstance(answer, dict) or not answer.get('recorded'):
             reason = answer.get('reason') if isinstance(answer, dict) else None
-            return {'error': 'Coconut did not show this message: ' + str(reason or 'no reason')}
+            return {'error': 'Coconut did not show this message: ' + str(reason or 'no reason'), **partial}
         warnings = []
         delivered = []
         for path, _ in media_files or []:

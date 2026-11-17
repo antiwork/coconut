@@ -1240,6 +1240,28 @@ class StandaloneSenderTests(DirectTurnMacs, unittest.TestCase):
         self.assertLessEqual(calls[0][2], team.STANDALONE_FILE_SECONDS)
         self.assertLessEqual(calls[0][1]['budget_seconds'], team.STANDALONE_FILE_SECONDS - 5)
 
+    def test_a_deadline_after_the_first_text_piece_reports_a_partial_delivery(self):
+        from coconut.team_store import MAX_TEXT
+        self.quick()
+        file = Path(self.temp.name) / 'report.pdf'
+        file.write_bytes(b'%PDF-1.4\nThe report.')
+        clock, elapsed, write = time.monotonic, [0], self.only.team_relay.write
+
+        def slow_write(*arguments, **options):
+            answer = write(*arguments, **options)
+            elapsed[0] = 6
+            return answer
+        with mock.patch.object(self.only.team_relay, 'write', side_effect=slow_write), \
+                mock.patch.object(team.time, 'monotonic', side_effect=lambda: clock() + elapsed[0]):
+            result = self.deliver(chat_id(self.room, self.bot['id']), text='x' * (MAX_TEXT + 100),
+                                  media_files=[(str(file), False)])
+        self.assertIn('error', result)
+        self.assertIn('only 1 of 2 parts', result['error'])
+        self.assertTrue(result['partial_success'])
+        self.assertTrue(result['message_id'].startswith('outside:'))
+        self.sync()
+        self.assertEqual(self.of_chat(), [('Reporter', 'x' * MAX_TEXT)])
+
     def test_a_service_that_does_not_answer_gets_three_tries_with_one_message_id(self):
         # A restart of the service, then a bridge file that is missing for a moment.
         self.quick()
