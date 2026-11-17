@@ -813,12 +813,9 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
                 audit = {'source_message_id': source_id, 'source_task_id': task_id, 'deleted_by': source['_human_device_id']}
                 if task_id in self._bot_deletion_scope(target_id):
                     raise ServiceError(409, 'Request deletion in a separate task. This task depends on that agent.')
-                if self._get('bots', task['conversation_bot_id']).get('chat_of') == target_id:
-                    raise ServiceError(409, 'Use another conversation to delete this agent. An agent cannot delete itself.')
+                # The chats of the agent stay, each a contact of its own: work can still run in them. The apps list a
+                # chat whose agent is gone by itself (AgentChats.orphans).
                 self._delete_bot(bot, callbacks, audit=audit)
-                # The chats of the agent go with it, as with a delete in the apps. Before, they stayed without their
-                # agent: no list showed them, while their unread replies still counted on the badge.
-                self._delete_agent_chats(bot, callbacks, audit=audit)
                 receipt = dict(status='deleted', bot_id=target_id, profile_id=bot['profile_id'], name=name,
                                source_message_id=source_id, cancelled_task_ids=bot.get('_delete_task_ids', []))
                 self._put('bot_deletion_receipts', dict(id=receipt_id, source_message_id=source_id,
