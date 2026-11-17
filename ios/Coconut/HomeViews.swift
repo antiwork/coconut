@@ -8,13 +8,16 @@ struct HomeLaunchView: View {
     @ScaledMetric(relativeTo: .title3) private var todoIconWidth = 24
 
     @State private var deleting: Bot?
+    // The project of the menu above the message box. Empty is all projects.
+    @AppStorage(ChatProject.projectKey) private var chosenProject = ""
 
     var body: some View {
+        let project = ChatProject.effective(chosenProject, in: store.bots)
         // The store keeps the newest activity of each bot (ChatSummaries). The list sorts by it one time.
         // An agent keeps its place by the newest of its chats, which show under it.
         let ownLatest = store.chatSummaries.newestActivity
         let latest = AgentChats.activity(bots: store.bots, latest: ownLatest)
-        let activeBots = store.bots.agents.filter { !$0.archived }.sorted {
+        let activeBots = store.bots.agents.filter { !$0.archived && (project.isEmpty || $0.id == project) }.sorted {
             (latest[$0.id] ?? $0.createdAt.apiDate ?? .distantPast) > (latest[$1.id] ?? $1.createdAt.apiDate ?? .distantPast)
         }
         let archivedCount = store.bots.filter(\.archived).count
@@ -24,18 +27,22 @@ struct HomeLaunchView: View {
             return first == second ? $0.id < $1.id : first < second
         }
         // The choices that wait for the Mac show at once (TeamChatChoices).
-        let rooms = store.shownTeamRooms
+        // A project shows its own chats only, so the teams stay out.
+        let rooms = project.isEmpty ? store.shownTeamRooms : []
         let filter = ChatFilter.effective(store.chatFilter, rooms: rooms)
         // The tiles of the pinned agents come first. Then the rows (ChatList.rows): the pinned chats of the teams, each
         // with the star mark, then the other rows newest activity first.
         let rowBots = filter == .unread
-            ? AgentChats.unread(in: store.bots, latest: ownLatest).filter { !$0.coconut && ($0.isChat || !$0.pinned) }
+            ? AgentChats.unread(in: store.bots, latest: ownLatest).filter { !$0.coconut && ($0.isChat || !$0.pinned) && (project.isEmpty || $0.agentId == project) }
             : activeBots.filter { !$0.pinned }
         let conversations = ChatList.rows(filter, bots: rowBots, latest: filter == .unread ? ownLatest : latest,
                                           rooms: rooms, local: store.newestLocalMessages)
         let pinned = filter.showsPinned ? pinnedBots.filter { filter != .unread || $0.unreadCount > 0 } : []
-        let todos = filter.showsTodos ? AgentTodos.make(artifacts: store.artifacts, bots: store.bots) : []
-        let coconut = store.bots.coconutChat
+        let todos = filter.showsTodos
+            ? AgentTodos.make(artifacts: store.artifacts, bots: store.bots).filter { item in
+                project.isEmpty || store.bots.first { $0.id == item.botId }?.agentId == project
+            } : []
+        let coconut = store.bots.coconutChat.flatMap { project.isEmpty || project == $0.id ? $0 : nil }
         // A list, not a stack, so that a row of an agent has the swipe of the system: swipe left to archive.
         return List {
             // The Coconut chat comes first: it is where the person changes Coconut.
@@ -137,6 +144,8 @@ struct HomeLaunchView: View {
         .contentMargins(.bottom, BoardStyle.Space.xl, for: .scrollContent)
         .background(BoardStyle.paper)
         .refreshable { await store.reconnect() }
+        // The message box under the list gives the keyboard back when the list moves.
+        .scrollDismissesKeyboard(.interactively)
         .modifier(DeleteBotDialog(bot: $deleting))
     }
 

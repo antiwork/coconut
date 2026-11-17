@@ -262,11 +262,13 @@
 		E2DBE925BF2E145FB0B40454 /* ShareDirectory.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1BCCBD2348AD6BFA9CD627F6 /* ShareDirectory.swift */; };
 		E350DEACEA03334F3F338BBF /* ModelSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 10DFD4C7D86BB227502C3FFF /* ModelSettingsView.swift */; };
 		E42641486746B9515E864490 /* ConversationRowHold.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7C93C22E1E2019B2F523CCF8 /* ConversationRowHold.swift */; };
+		E53459B59EED78E90D2F79CB /* NewChatBar.swift in Sources */ = {isa = PBXBuildFile; fileRef = F96F779A147806A0315D3491 /* NewChatBar.swift */; };
 		E587F728CFD92ECB49066588 /* TunnelConnection.swift in Sources */ = {isa = PBXBuildFile; fileRef = A8709568F75F99A00D1122C7 /* TunnelConnection.swift */; };
 		E59CA9268B187085E523832D /* DocumentPage.swift in Sources */ = {isa = PBXBuildFile; fileRef = 150811EF36AC20B533E07A4F /* DocumentPage.swift */; };
 		E693798C301EC5B7E2FD34A4 /* Attention.swift in Sources */ = {isa = PBXBuildFile; fileRef = A9F05D49F1285AB0CBCC817E /* Attention.swift */; };
 		E69D4F2D3447386046F48952 /* DecisionPreviews.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6AA2396057CD5325BD54D0A7 /* DecisionPreviews.swift */; };
 		E72774C679BC2F500FF833BC /* NotificationContent.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7CA9695EAB2F655862469B6C /* NotificationContent.swift */; };
+		E76E4D9425A30D709735A48A /* NewChatBar.swift in Sources */ = {isa = PBXBuildFile; fileRef = F96F779A147806A0315D3491 /* NewChatBar.swift */; };
 		E7A2236459A678FDFAB49020 /* Business.swift in Sources */ = {isa = PBXBuildFile; fileRef = 69409F2D054CB7924336C9A0 /* Business.swift */; };
 		E84C6776DACDBC6DFC611F43 /* Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = 92F9D270338BED68C35CC516 /* Models.swift */; };
 		E8CA00EBB93D51E7C7040E6B /* GitHubSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4648B3469FA391A1202D1BD7 /* GitHubSettingsView.swift */; };
@@ -490,6 +492,7 @@
 		F651A9C93CDD66940CB67BA1 /* GitHubEmbedViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GitHubEmbedViews.swift; sourceTree = "<group>"; };
 		F85BED295D4BCB7E12AA75B6 /* APIClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = APIClient.swift; sourceTree = "<group>"; };
 		F8C0E15F61D290FC6AF37B21 /* BusinessDashboard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BusinessDashboard.swift; sourceTree = "<group>"; };
+		F96F779A147806A0315D3491 /* NewChatBar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NewChatBar.swift; sourceTree = "<group>"; };
 		FC5588CE8E93B2033A90C4CE /* Cards.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Cards.swift; sourceTree = "<group>"; };
 		FCABC9E056D35D74FCE1B244 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		FFA30EC67D5486818D86E824 /* BusinessReports.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BusinessReports.swift; sourceTree = "<group>"; };
@@ -657,6 +660,7 @@
 				C93C38364B82E8492A11DCDE /* ModelMenu.swift */,
 				92F9D270338BED68C35CC516 /* Models.swift */,
 				10DFD4C7D86BB227502C3FFF /* ModelSettingsView.swift */,
+				F96F779A147806A0315D3491 /* NewChatBar.swift */,
 				36D624FBCAF3F69D37E5FA38 /* NotificationPlan.swift */,
 				6676C4B4D2B7F8B8C8248F67 /* Onboarding.swift */,
 				AE9F30F52666D7F17955402F /* OptimisticUpdates.swift */,
@@ -1082,6 +1086,7 @@
 				D8D8C38A04FEC13A66E6AFD9 /* ModelMenu.swift in Sources */,
 				E350DEACEA03334F3F338BBF /* ModelSettingsView.swift in Sources */,
 				E84C6776DACDBC6DFC611F43 /* Models.swift in Sources */,
+				E53459B59EED78E90D2F79CB /* NewChatBar.swift in Sources */,
 				30AD167650B32893E6BDC4DD /* Noise.swift in Sources */,
 				D487EE552C921007CFE7F645 /* NotificationContent.swift in Sources */,
 				2009DDEAE9FC456A80D0FBCE /* NotificationKeys.swift in Sources */,
@@ -1199,6 +1204,7 @@
 				CC73B1C63BD25B51544BFABD /* ModelMenu.swift in Sources */,
 				6B14984B239B5DFF88839F92 /* ModelSettingsView.swift in Sources */,
 				04C381BBFC669860445B0445 /* Models.swift in Sources */,
+				E76E4D9425A30D709735A48A /* NewChatBar.swift in Sources */,
 				0B933DF2FA9824868655833C /* Noise.swift in Sources */,
 				B242F0A01EE8D3D6573C9BCF /* NotificationContent.swift in Sources */,
 				86259EBC5A39AEE162388FD2 /* NotificationKeys.swift in Sources */,

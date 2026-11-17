@@ -215,6 +215,10 @@ struct CoconutHome: View {
                 }
             }
                 .toolbar(tabBarVisibility, for: .tabBar)
+                // The message box of a new chat sits above the tab bar on Home and Chats.
+                .safeAreaInset(edge: .bottom, spacing: 0) {
+                    if tab == .home || tab == .chats { NewChatBar() }
+                }
                 .navigationTitle("")
                 .navigationBarTitleDisplayMode(.inline)
                 .toolbar { rootToolbar(create: tab == .chats || tab == .agents, path: path) }
