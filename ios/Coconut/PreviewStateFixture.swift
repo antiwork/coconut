@@ -9,7 +9,7 @@ enum PreviewStateFixture {
 
     private static let timestampFields: Set<String> = [
         "server_time", "created_at", "updated_at", "scheduled_at", "decided_at",
-        "checked_at", "observed_at", "next_run_at", "last_run_at"
+        "checked_at", "observed_at", "next_run_at", "last_run_at", "turn_started_at", "phase_started_at"
     ]
 
     static func load(bundle: Bundle = .main, now: Date = Date(), resource: String = "PreviewState") throws -> StateSnapshot {

@@ -21,7 +21,7 @@ struct BusinessHomePresentation {
         let section = data["sections"][key]
         if section["ok"] == .bool(false) { return "Unavailable" }
         if let date = section["as_of"].text.apiDate, now.timeIntervalSince(date) > 3600 {
-            return "Stale source · current status unknown"
+            return "Stale source"
         }
         return nil
     }
@@ -54,7 +54,7 @@ struct BusinessHomePresentation {
             return AttentionRow(id: id, title: title + " · " + notice, detail: nil, symbol: symbol, route: route, unavailable: true)
         }
         if currentStatusUnknown || count == nil {
-            return AttentionRow(id: id, title: title + " · Unknown", detail: currentStatusUnknown ? "Current status unknown" : "Not published",
+            return AttentionRow(id: id, title: title + " · Unknown", detail: currentStatusUnknown ? nil : "Not published",
                                 symbol: symbol, route: route, unavailable: true)
         }
         guard let count, count > 0 else { return nil }
@@ -64,7 +64,7 @@ struct BusinessHomePresentation {
     var informational: [AttentionRow] {
         [("risk", "Risk review", "shield.lefthalf.filled", BusinessRoute.report("risk")),
          ("prs", "Pull requests", "arrow.triangle.pull", BusinessRoute.report("engineering"))].map { key, title, symbol, route in
-            let notice = sourceNotice(key) ?? (currentStatusUnknown ? "Current status unknown" : nil)
+            let notice = sourceNotice(key) ?? (currentStatusUnknown ? "Unknown" : nil)
             let count = data[key]["total"].number
             return AttentionRow(id: key, title: title, detail: notice ?? count.map { Self.decimal($0) + " open" } ?? "Not published",
                                 symbol: symbol, route: route, unavailable: notice != nil || count == nil)
@@ -94,10 +94,8 @@ struct BusinessHomePresentation {
               let day = nonempty(data["gmv"]["last_day"].text) else { return nil }
         return Self.day(day) + " · " + reportNumber(value, money: true)
     }
-    var weekdayComparison: String? {
-        guard sourceNotice("gmv") == nil else { return nil }
-        return data["gmv"]["same_weekday_pct"].number.map { Self.percent($0, signed: true) + " vs the same weekday" }
-    }
+    var weekdayChange: Double? { sourceNotice("gmv") == nil ? data["gmv"]["same_weekday_pct"].number : nil }
+    static let weekdayLabel = "vs same weekday"
     func selectedPoint(at position: Double?) -> Point? {
         guard let position else { return nil }
         return volume.min { abs(Double($0.id) - position) < abs(Double($1.id) - position) }
@@ -119,7 +117,7 @@ struct BusinessHomePresentation {
             if key == "ebitda" {
                 subtitle = money["ebitda_margin_pct"].number.map { Self.percent($0) + " margin" }
             } else if key == "net_income", let impairment = money["impairment_total"].number, impairment != 0 {
-                subtitle = "includes " + Self.writeOff(impairment) + " non-cash write-off"
+                subtitle = Self.writeOff(impairment) + " non-cash write-off"
             } else { subtitle = nil }
             let months = money["months"].array.enumerated().compactMap { index, month -> Point? in
                 guard let value = month[key].number, !month["month"].text.isEmpty else { return nil }
@@ -159,7 +157,7 @@ struct BusinessHomeContent: View {
                     .foregroundStyle(model.freshnessWarning ? BoardStyle.attention : BoardStyle.ink.opacity(0.65))
                     .accessibilityIdentifier("business-home-freshness")
                 if model.currentStatusUnknown {
-                    Text("Current status unknown. Historical values below are the last published snapshot.")
+                    Text("Current status unknown")
                         .accessibilityIdentifier("business-home-stale")
                 }
             }.font(.caption)
@@ -173,7 +171,7 @@ struct BusinessHomeContent: View {
         VStack(alignment: .leading, spacing: 16) {
             Text("Attention").font(.title2.bold())
             if model.attention.isEmpty {
-                Label { Text("All clear") } icon: { Image(systemName: "checkmark.circle").foregroundStyle(BoardStyle.green) }
+                Text("Nothing past SLA").font(.subheadline).foregroundStyle(.secondary)
                     .accessibilityIdentifier("business-home-all-clear")
             }
             ForEach(model.attention) { row in attentionLink(row, urgent: true) }
@@ -209,30 +207,41 @@ struct BusinessHomeContent: View {
             if let notice = model.gmvNotice {
                 Text(notice).accessibilityIdentifier("business-home-gmv-unavailable")
             } else {
-                if let change = model.change {
-                    HStack(spacing: 6) {
-                        Image(systemName: change > 0 ? "arrow.up.right" : change < 0 ? "arrow.down.right" : "arrow.right")
-                            .foregroundStyle(change >= 0 ? BoardStyle.green : BoardStyle.attention)
-                        Text(BusinessHomePresentation.percent(change, signed: true)).monospacedDigit()
-                        if let label = model.changeLabel { Text(label) }
-                    }.font(.caption).padding(8).background(BoardStyle.paper, in: Capsule())
-                        .accessibilityElement(children: .combine).accessibilityIdentifier("business-home-gmv-delta")
-                }
+                if let change = model.change { deltaChip(change, label: model.changeLabel, id: "business-home-gmv-delta") }
                 volumeChart
                 HStack(spacing: 16) {
                     Label("Current period", systemImage: "line.diagonal")
                     if !model.previousVolume.isEmpty { Text("┄ Prior period").foregroundStyle(.secondary) }
                 }.font(.caption2)
-                if let point = model.selectedPoint(at: selected) {
-                    Text(point.label).font(.headline).monospacedDigit().accessibilityIdentifier("business-home-gmv-selection")
-                } else if let latest = model.latest {
-                    Text(latest).font(.headline).monospacedDigit().accessibilityIdentifier("business-home-gmv-latest")
-                }
-                if selected == nil, let comparison = model.weekdayComparison {
-                    Text(comparison).font(.caption).accessibilityIdentifier("business-home-gmv-weekday")
+                ViewThatFits(in: .horizontal) {
+                    HStack(spacing: 12) { gmvValue; gmvWeekday }
+                    VStack(alignment: .leading, spacing: 8) { gmvValue; gmvWeekday }
                 }
             }
         }.homeCard().accessibilityIdentifier("business-home-gmv")
+    }
+    @ViewBuilder private var gmvValue: some View {
+        if let point = model.selectedPoint(at: selected) {
+            Text(point.label).font(.headline).monospacedDigit().accessibilityIdentifier("business-home-gmv-selection")
+        } else if let latest = model.latest {
+            Text(latest).font(.headline).monospacedDigit().accessibilityIdentifier("business-home-gmv-latest")
+        }
+    }
+    /// The weekday comparison is about the latest day, so it hides while another day is selected.
+    @ViewBuilder private var gmvWeekday: some View {
+        if selected == nil, let change = model.weekdayChange {
+            deltaChip(change, label: BusinessHomePresentation.weekdayLabel, id: "business-home-gmv-weekday")
+        }
+    }
+    /// The one form of a comparison on Home: arrow, signed percent, what it is against.
+    private func deltaChip(_ change: Double, label: String?, id: String) -> some View {
+        HStack(spacing: 6) {
+            Image(systemName: change > 0 ? "arrow.up.right" : change < 0 ? "arrow.down.right" : "arrow.right")
+                .foregroundStyle(change >= 0 ? BoardStyle.green : BoardStyle.attention)
+            Text(BusinessHomePresentation.percent(change, signed: true)).monospacedDigit()
+            if let label { Text(label) }
+        }.font(.caption).padding(8).background(BoardStyle.paper, in: Capsule())
+            .accessibilityElement(children: .combine).accessibilityIdentifier(id)
     }
     private var volumeChart: some View {
         Chart {

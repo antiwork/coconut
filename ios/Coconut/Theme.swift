@@ -70,6 +70,36 @@ enum BoardStyle {
     #endif
 }
 
+/// The button of Coconut. The primary kind is a capsule in the ink of the app with a label in the paper color, as the
+/// send button of the composer and the unread badge. The quiet kind is a soft capsule of the text color, for the
+/// second action next to it. The same on a Mac and on an iPhone; an iPhone gets the height that a finger needs.
+struct CoconutButtonStyle: ButtonStyle {
+    enum Kind { case primary, quiet }
+
+    var kind: Kind = .primary
+    /// A large button for the one action of a setup page.
+    var large = false
+    @Environment(\.isEnabled) private var enabled
+
+    #if os(macOS)
+    static let height: CGFloat = 28
+    #else
+    static let height: CGFloat = 36
+    #endif
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font((large ? Font.body : .subheadline).weight(.semibold))
+            .lineLimit(1)
+            .padding(.horizontal, large ? BoardStyle.Space.l : BoardStyle.Space.m)
+            .frame(minHeight: Self.height + (large ? 8 : 0))
+            .foregroundStyle(kind == .primary ? BoardStyle.controlLabel : BoardStyle.ink)
+            .background(kind == .primary ? BoardStyle.control : Color.primary.opacity(0.08), in: Capsule())
+            .opacity(!enabled ? 0.4 : configuration.isPressed ? 0.65 : 1)
+            .contentShape(Capsule())
+    }
+}
+
 extension Color {
     init(hex: String) {
         let clean = hex.trimmingCharacters(in: CharacterSet.alphanumerics.inverted)

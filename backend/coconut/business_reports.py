@@ -52,11 +52,27 @@ def ledger(business, path=None):
             raise ServiceError(400, 'Choose a Beancount file from Accounting.')
         text, source = contents(business, 'accounting', path)
         return dict(path=path, content=text, url=source['html_url'], sha=source['sha'])
+    # The recursive tree of the whole Accounting repository holds every receipt in records/ and passes the 2 MB limit
+    # of a GitHub response. The index reads the top level, then each folder on its own. A folder that is too large to
+    # list, or that GitHub truncates, is named in `skipped` instead of failing the whole index.
     repository = business._repo('accounting')
     branch = repository['default_branch']
-    tree = business._call('GET', business._repo_path('accounting') + '/git/trees/' + quote(branch, safe='') + '?recursive=1')
-    if tree.get('truncated'):
-        raise ServiceError(502, 'GitHub returned an incomplete ledger index.')
-    files = [dict(path=item['path'], sha=item['sha']) for item in tree.get('tree', [])
-             if item['type'] == 'blob' and item['path'].endswith('.beancount')]
-    return dict(files=sorted(files, key=lambda item: (item['path'] != 'main.beancount', item['path'])))
+    top = business._call('GET', business._repo_path('accounting') + '/git/trees/' + quote(branch, safe=''))
+    files, skipped = [], []
+    for item in top.get('tree', []):
+        if item.get('type') == 'blob' and item['path'].endswith('.beancount'):
+            files.append(dict(path=item['path'], sha=item['sha']))
+        elif item.get('type') == 'tree':
+            try:
+                tree = business._call('GET', business._repo_path('accounting') + '/git/trees/'
+                                      + quote(item['sha'], safe='') + '?recursive=1')
+            except ServiceError as error:
+                if error.status != 502:
+                    raise
+                skipped.append(item['path'])
+                continue
+            if tree.get('truncated'):
+                skipped.append(item['path'])
+            files += [dict(path=item['path'] + '/' + entry['path'], sha=entry['sha']) for entry in tree.get('tree', [])
+                      if entry.get('type') == 'blob' and entry['path'].endswith('.beancount')]
+    return dict(files=sorted(files, key=lambda item: (item['path'] != 'main.beancount', item['path'])), skipped=skipped)

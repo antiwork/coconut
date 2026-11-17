@@ -17,9 +17,9 @@ final class QuietConversationTests: XCTestCase {
         let transcript = app.collectionViews["conversation-transcript"]
         transcript.swipeDown()
         XCTAssertFalse(app.descendants(matching: .any)["activity-row"].exists)
-        XCTAssertFalse(app.staticTexts["Read 3 files · Compared the retry paths"].exists)
-        XCTAssertFalse(app.staticTexts["Ran 6 focused checks · All passed"].exists)
-        XCTAssertTrue(app.staticTexts["Save the retry fix?"].exists)
+        XCTAssertFalse(app.staticTexts["Read 4 files · Compared the payout retry paths"].exists)
+        XCTAssertFalse(app.staticTexts["Ran 212 payout specs · All passed"].exists)
+        XCTAssertTrue(app.staticTexts["Save the payout retry fix?"].exists)
         let proof = XCTAttachment(screenshot: app.screenshot())
         proof.name = "Conversation without tool logs"; proof.lifetime = .keepAlways; add(proof)
     }

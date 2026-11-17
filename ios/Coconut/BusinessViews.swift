@@ -23,7 +23,6 @@ struct BusinessHomeView: View {
                     VStack(alignment: .leading, spacing: 8) {
                         Label("Refresh unavailable", systemImage: "exclamationmark.arrow.trianglehead.2.clockwise.rotate.90")
                         Text(error).font(.caption)
-                        if shownReport != nil { Text("Showing the last published snapshot; current status is unknown.").font(.caption) }
                         Button("Try again") { Task { await load() } }
                     }.accessibilityIdentifier("business-home-refresh-error")
                 }
@@ -93,7 +92,7 @@ struct BusinessProjectsView: View {
                 }.accessibilityIdentifier("business-project-" + project.key)
             }
             if store.businessCatalog?.projects.isEmpty == true {
-                Section { Text("Add a repository as a project, such as Gumroad. All functions can work on it.").foregroundStyle(.secondary) }
+                Section { Text("No projects yet.").foregroundStyle(.secondary) }
             }
             if let error { BusinessConnectionNotice(message: error) }
         }
@@ -156,7 +155,6 @@ struct BusinessWorkListView: View {
                 Section { Text(state == "open" ? "No open work yet." : "No completed work yet.").foregroundStyle(.secondary) }
             }
             if let error { BusinessConnectionNotice(message: error) }
-            Section {} footer: { Text("Work is saved in the Accounting, Marketing or Support repository on GitHub. Project labels keep the same functions shared across projects.") }
         }
         .navigationTitle(title).settingsBackground()
         .toolbar {
@@ -251,7 +249,6 @@ private struct BusinessProjectEditor: View {
                     Text("Choose a repository").tag("")
                     ForEach(candidates) { Text($0.fullName).tag($0.key) }
                 }.accessibilityIdentifier("business-project-repository")
-                Section {} footer: { Text("The repository name is the project's stable key. Accounting, Marketing and Support remain shared functions. Adding the project saves its registration on GitHub.") }
                 if let error { Text(error).foregroundStyle(BoardStyle.destructive) }
             }
             .navigationTitle("Add project").inlineNavigationTitle().settingsBackground()
@@ -338,7 +335,6 @@ private struct BusinessAgentSheet: View {
                     ForEach(store.bots.filter { !$0.archived }) { Text($0.name).tag($0.id) }
                 }
                 TextField("Instructions (optional)", text: $instruction, axis: .vertical).lineLimit(3...6)
-                Section {} footer: { Text("The agent receives this GitHub issue and its function and project. Work and results stay on GitHub.") }
             }
             .navigationTitle("Ask an agent").inlineNavigationTitle().settingsBackground()
             .toolbar {

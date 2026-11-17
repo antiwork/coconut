@@ -369,6 +369,8 @@ class Handler(BaseHTTPRequestHandler):
                 elif url.path == '/v1/business/ledger':
                     from .business_reports import ledger
                     self._json(200, ledger(service.business, parse_qs(url.query).get('path', [None])[0]))
+                elif url.path == '/v1/github/preview':
+                    self._json(200, service.github_previews.preview(parse_qs(url.query).get('url', [''])[0]))
                 elif url.path == '/v1/settings/github':
                     self._json(200, service.github_connection('status'))
                 elif url.path == '/v1/settings/google':
@@ -387,12 +389,30 @@ class Handler(BaseHTTPRequestHandler):
                     self._json(200, service.events(after, wait))
                 elif url.path == '/v1/learning':
                     self._json(200, service.learning())
+                elif url.path == '/v1/usage':
+                    try:
+                        days = int(parse_qs(url.query).get('days', ['30'])[0])
+                    except ValueError:
+                        raise ServiceError(400, 'days must contain a number.')
+                    self._json(200, service.usage(days))
                 elif url.path == '/v1/setup':
                     self._json(200, service.hermes_setup())
                 elif url.path == '/v1/documents':
                     self._json(200, service.documents())
                 elif url.path.startswith('/v1/documents/') and url.path.count('/') == 3:
                     self._json(200, service.document(url.path.rsplit('/', 1)[1]))
+                elif url.path.startswith('/v1/tasks/') and '/activity' in url.path:
+                    # The live activity of a turn (turn_activity.py): its feed, one image of it, or the start of a
+                    # file that the turn touched.
+                    parts = url.path.strip('/').split('/')
+                    if len(parts) == 4 and parts[3] == 'activity':
+                        self._json(200, service.task_activity(parts[2]))
+                    elif len(parts) == 6 and parts[3:5] == ['activity', 'images']:
+                        self._bytes(service.activity_image(parts[2], parts[5]), parts[5] + '.jpg', 'image/jpeg', 'image')
+                    elif len(parts) == 5 and parts[3:] == ['activity', 'file']:
+                        self._json(200, service.activity_file(parts[2], parse_qs(url.query).get('path', [''])[0]))
+                    else:
+                        raise ServiceError(404, 'This route was not found.')
                 elif url.path.startswith('/v1/artifacts/') and url.path.endswith('/content'):
                     parts = url.path.strip('/').split('/')
                     if len(parts) != 4:

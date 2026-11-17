@@ -19,12 +19,21 @@ final class MacWindowSnapshotTests: XCTestCase {
         store.bots[store.bots.count - 1].name = "Coconut"
         let coconutId = store.bots[store.bots.count - 1].id
         let botId = try XCTUnwrap(store.bots.first?.id)
-        store.team = try APIJSON.decoder().decode(TeamRooms.self, from: Data(TeamNoticeTests.rooms.utf8))
+        // The team of the shots is Gumroad, with notices of its real work. Other tests keep TeamNoticeTests.rooms as it is.
+        var rooms = TeamNoticeTests.rooms
+        for (sample, real) in [("Example Team", "Gumroad"),
+                               ("Deploys are frozen while we fix the relay. Don't merge to main.",
+                                "Deploys are frozen until the payout fix ships. Don't merge to main."),
+                               ("Q4 plan is due. One page per team in the Library.",
+                                "Creator payout report is due Friday. One page per team in the Library.")] {
+            rooms = rooms.replacingOccurrences(of: sample, with: real)
+        }
+        store.team = try APIJSON.decoder().decode(TeamRooms.self, from: Data(rooms.utf8))
         // People: the members of the team, a direct chat with an unread message, and the invite.
         let formatter = ISO8601DateFormatter()
         func ago(_ minutes: Double) -> String { formatter.string(from: Date().addingTimeInterval(-minutes * 60)) }
         store.team?.rooms[0].canInvite = true
-        store.team?.rooms[0].lastMessage = TeamLastMessage(member: "m3", memberName: "Lin", text: "Relay fix is in review.", createdAt: ago(42))
+        store.team?.rooms[0].lastMessage = TeamLastMessage(member: "m3", memberName: "Lin", text: "The payout fix is in review.", createdAt: ago(42))
         store.team?.rooms[0].members = [
             TeamMember(member: "m1", name: "Ada", admin: true, thisMac: true),
             TeamMember(member: "m2", name: "Grace", direct: true),
@@ -32,20 +41,26 @@ final class MacWindowSnapshotTests: XCTestCase {
         ]
         store.team?.rooms[0].directs = [
             TeamDirect(member: "m2", memberName: "Grace", unread: 1,
-                       lastMessage: TeamLastMessage(text: "Can you look at the relay fix today?", createdAt: ago(9))),
+                       lastMessage: TeamLastMessage(text: "Can you check the refund for the Friday double payouts?", createdAt: ago(9))),
         ]
         // Home: a card that waits past 4 hours and a blocked To-do breach next to the unseen notice. The agent page
         // gets a To-do that runs and a routine.
         if let index = store.decisions.firstIndex(where: \.isPending) { store.decisions[index].createdAt = ago(5 * 60) }
         store.artifacts += [
-            Artifact(id: "shot-work-1", botId: botId, taskId: nil, title: "Add retry to the webhook sender", kind: "work",
+            Artifact(id: "shot-work-1", botId: botId, taskId: nil, title: "Retry failed Ping webhooks", kind: "work",
                      status: "working", preview: "Tests pass. Opening the pull request.", url: nil, createdAt: ago(25)),
-            Artifact(id: "shot-work-2", botId: botId, taskId: nil, title: "Upgrade the payments SDK", kind: "work",
+            Artifact(id: "shot-work-2", botId: botId, taskId: nil, title: "Upgrade the Stripe SDK", kind: "work",
                      status: "blocked", preview: "Waits for the new API key.", url: nil, createdAt: ago(90)),
         ]
-        store.routines.append(Routine(id: "shot-routine", botId: botId, name: "Morning pull request review", prompt: "",
+        store.routines.append(Routine(id: "shot-routine", botId: botId, name: "Morning deploy check", prompt: "",
                                       cron: "Weekdays at 9:00", timezone: "UTC", enabled: true, nextRunAt: nil,
                                       lastRunAt: nil, lastTaskId: nil, createdAt: ago(9000), updatedAt: ago(9000)))
+        // The catalog of the shots has the models of a real Mac, so the model menu and its search show them.
+        store.modelCatalog = try APIJSON.decoder().decode(ModelCatalog.self, from: Data(Self.catalog.utf8))
+        store.bots[0].effectiveModel = store.modelCatalog?.defaults.selection
+        store.bots[1].modelOverride = ModelOverride(model: "claude-sonnet-5", provider: "Anthropic", reasoningEffort: nil)
+        store.bots[1].effectiveModel = store.bots[1].modelOverride
+        store.usage = UsageReport.preview(bots: store.bots)
         let windows: [(String, AnyView)] = [
             ("home", AnyView(NavigationStack { HomeView { _ in } })),
             ("people", AnyView(NavigationStack { PeopleView() })),
@@ -55,6 +70,9 @@ final class MacWindowSnapshotTests: XCTestCase {
             ("inbox", AnyView(MacInboxView(selection: .constant(.inbox)))),
             ("agents", AnyView(NavigationStack { AgentsView(create: {}) })),
             ("agent", AnyView(NavigationStack { AgentProjectView(botId: botId) })),
+            ("usage", AnyView(NavigationStack { UsageView() })),
+            ("usage-agent", AnyView(NavigationStack { UsageView(botId: botId) })),
+            ("models", AnyView(ModelPickerSheet(botId: botId) { _ in }.frame(maxWidth: .infinity, maxHeight: .infinity).background(BoardStyle.paper))),
         ]
         for (name, detail) in windows {
             let selection: MacSelection = switch name {
@@ -66,16 +84,19 @@ final class MacWindowSnapshotTests: XCTestCase {
             case "coconut": .bot(coconutId)
             default: .agents
             }
-            let view = HStack(spacing: 0) {
+            let content = HStack(spacing: 0) {
                 MacSidebar(selection: .constant(selection)).frame(width: 260)
                 Divider()
                 detail.frame(maxWidth: .infinity, maxHeight: .infinity)
             }
             .environment(store)
-            .frame(width: 1180, height: 760)
+            // The page of an agent is long. Its shot is tall, so it shows the usage card too.
+            let height: CGFloat = name == "agent" ? 1240 : 760
+            let view = content
+            .frame(width: 1180, height: height)
             .background(.background)
             .environment(\.colorScheme, .light)
-            let data = try render(view, size: NSSize(width: 1180, height: 760))
+            let data = try render(view, size: NSSize(width: 1180, height: height))
             XCTAssertGreaterThan(data.count, 20_000)
             if let folder = ProcessInfo.processInfo.environment["COCONUT_WINDOW_SHOTS"] {
                 try data.write(to: URL(fileURLWithPath: folder).appendingPathComponent("window-\(name).png"))
@@ -83,12 +104,80 @@ final class MacWindowSnapshotTests: XCTestCase {
         }
     }
 
+    /// The live view of a running turn next to its chat: the timeline, the files, a file of the turn, and the sheet
+    /// of a chat without a details column. The images of the film strip are the drawn pages of the preview data.
+    func testTheLiveActivityRenders() async throws {
+        let store = AppStore(demo: true)
+        let bot = try XCTUnwrap(store.bots.first { store.conversationActivity($0.id) != nil })
+        let task = try XCTUnwrap(store.liveTask(bot.id))
+        store.watchActivity(task.id)
+        await store.loadActivity(task.id)
+        let feed = try XCTUnwrap(store.turnActivity[task.id])
+        for image in feed.images { _ = await store.activityImage(taskId: task.id, image: image) }
+        func window(_ tab: LiveActivityPanel.Tab, dark: Bool = false) -> some View {
+            HStack(spacing: 0) {
+                MacSidebar(selection: .constant(.bot(bot.id))).frame(width: 260)
+                Divider()
+                NavigationStack { ConversationView(botId: bot.id).environment(\.showLiveActivity) {} }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                Divider()
+                VStack(spacing: 0) {
+                    HStack(spacing: BoardStyle.Space.xs) {
+                        ChipButton(title: "Details", selected: false) {}
+                        ChipButton(title: "Pages", selected: false) {}
+                        ChipButton(title: "Live", selected: true) {}
+                    }
+                    .frame(height: 34).padding(.horizontal, 12).padding(.top, 8)
+                    LiveActivityPanel(botId: bot.id, tab: tab)
+                }
+                .frame(width: 320)
+                .background(BoardStyle.paper)
+            }
+            .environment(store)
+            .frame(width: 1180, height: 760)
+            .background(.background)
+            .environment(\.colorScheme, dark ? .dark : .light)
+        }
+        let file = try XCTUnwrap(feed.recentFiles.first)
+        let shots: [(String, AnyView, NSSize, Bool)] = [
+            ("live", AnyView(window(.activity)), NSSize(width: 1180, height: 760), false),
+            ("live-files", AnyView(window(.files)), NSSize(width: 1180, height: 760), false),
+            ("live-dark", AnyView(window(.activity, dark: true)), NSSize(width: 1180, height: 760), true),
+            ("live-file", AnyView(ActivityFileView(route: ActivityFileRoute(taskId: task.id, path: file.path))
+                .environment(store).frame(width: 760, height: 560).background(.background)
+                .environment(\.colorScheme, .light)), NSSize(width: 760, height: 560), false),
+            ("live-sheet", AnyView(LiveActivitySheet(botId: bot.id).environment(store).background(.background)
+                .environment(\.colorScheme, .light)), NSSize(width: 420, height: 620), false),
+        ]
+        for (name, view, size, dark) in shots {
+            let data = try render(view, size: size, dark: dark)
+            XCTAssertGreaterThan(data.count, 20_000, name)
+            if let folder = ProcessInfo.processInfo.environment["COCONUT_WINDOW_SHOTS"] {
+                try data.write(to: URL(fileURLWithPath: folder).appendingPathComponent("window-\(name).png"))
+            }
+        }
+    }
+
+    private static let catalog = #"""
+        {"default": {"model": "claude-opus-5-5", "provider": "Anthropic", "base_url": null, "reasoning_effort": "high"},
+         "models": [
+          {"id": "claude-opus-5-5", "name": "Claude Opus 5.5", "provider": "Anthropic", "base_url": null, "reasoning_efforts": ["low", "medium", "high"], "default_reasoning_effort": "high"},
+          {"id": "claude-sonnet-5", "name": "Claude Sonnet 5", "provider": "Anthropic", "base_url": null, "reasoning_efforts": ["low", "medium", "high"], "default_reasoning_effort": "medium"},
+          {"id": "claude-haiku-5", "name": "Claude Haiku 5", "provider": "Anthropic", "base_url": null, "reasoning_efforts": []},
+          {"id": "gpt-5.5", "name": "GPT-5.5", "provider": "OpenAI", "base_url": null, "reasoning_efforts": ["low", "medium", "high"], "default_reasoning_effort": "medium"},
+          {"id": "gpt-5.5-mini", "name": "GPT-5.5 mini", "provider": "OpenAI", "base_url": null, "reasoning_efforts": ["low", "medium", "high"], "default_reasoning_effort": "medium"},
+          {"id": "gemini-3-pro", "name": "Gemini 3 Pro", "provider": "Google", "base_url": null, "reasoning_efforts": []},
+          {"id": "gemini-3-flash", "name": "Gemini 3 Flash", "provider": "Google", "base_url": null, "reasoning_efforts": []},
+          {"id": "qwen3-coder", "name": "Qwen3 Coder", "provider": "OpenRouter", "base_url": null, "reasoning_efforts": []}
+         ], "model_source": "Hermes", "default_source": "Hermes config.yaml"}
+        """#
+
     // A list is an AppKit table, which ImageRenderer does not draw. A window off the screen draws it.
-    private func render(_ view: some View, size: NSSize) throws -> Data {
+    private func render(_ view: some View, size: NSSize, dark: Bool = false) throws -> Data {
         let host = NSHostingView(rootView: view)
         host.frame = NSRect(origin: .zero, size: size)
         let window = NSWindow(contentRect: host.frame, styleMask: [.borderless], backing: .buffered, defer: false)
-        window.appearance = NSAppearance(named: .aqua)
+        window.appearance = NSAppearance(named: dark ? .darkAqua : .aqua)
         window.contentView = host
         window.setFrameOrigin(NSPoint(x: -10_000, y: -10_000))
         window.orderBack(nil)

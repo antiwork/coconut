@@ -100,6 +100,8 @@ struct BoardRow: View {
     var detail: String? = nil
     var value: String? = nil
     var chevron = true
+    /// The row opens a menu of choices for its value.
+    var menu = false
 
     var body: some View {
         HStack(spacing: BoardStyle.Space.m) {
@@ -118,6 +120,8 @@ struct BoardRow: View {
             }
             if chevron {
                 Image(systemName: "chevron.right").font(.footnote.weight(.semibold)).foregroundStyle(.tertiary)
+            } else if menu {
+                Image(systemName: "chevron.up.chevron.down").font(.footnote.weight(.semibold)).foregroundStyle(.tertiary)
             }
         }
         .padding(.horizontal, BoardStyle.Space.m).padding(.vertical, 10)

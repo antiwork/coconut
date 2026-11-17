@@ -1,7 +1,7 @@
 import XCTest
 
 final class BotMentionsFlowTests: XCTestCase {
-    private let forgeId = "00000000-0000-4000-8000-000000000001"
+    private let releasesId = "00000000-0000-4000-8000-000000000001"
     private let scoutId = "00000000-0000-4000-8000-000000000002"
 
     @MainActor
@@ -12,13 +12,13 @@ final class BotMentionsFlowTests: XCTestCase {
         app.launch()
         XCTAssertTrue(app.tabBars.buttons["Chats"].waitForExistence(timeout: 15))
         app.tabBars.buttons["Chats"].tap()
-        let forge = app.buttons["bot-conversation-\(forgeId)"]
-        XCTAssertTrue(forge.waitForExistence(timeout: 10))
-        forge.tap()
+        let releases = app.buttons["bot-conversation-\(releasesId)"]
+        XCTAssertTrue(releases.waitForExistence(timeout: 10))
+        releases.tap()
         let input = app.descendants(matching: .any).matching(identifier: "message-input").firstMatch
         XCTAssertTrue(input.waitForExistence(timeout: 5))
         input.tap()
-        input.typeText("@sc")
+        input.typeText("@su")
         let option = app.buttons["mention-bot-\(scoutId)"]
         XCTAssertTrue(option.waitForExistence(timeout: 5))
         XCTAssertTrue(option.isHittable)
@@ -30,7 +30,7 @@ final class BotMentionsFlowTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(remove.frame.height, 44)
         remove.tap()
         XCTAssertFalse(remove.exists)
-        XCTAssertFalse((input.value as? String ?? "").contains("@Scout"))
+        XCTAssertFalse((input.value as? String ?? "").contains("@Support"))
     }
 
     @MainActor
@@ -41,16 +41,16 @@ final class BotMentionsFlowTests: XCTestCase {
         app.launch()
         XCTAssertTrue(app.tabBars.buttons["Chats"].waitForExistence(timeout: 15))
         app.tabBars.buttons["Chats"].tap()
-        let forge = app.buttons["bot-conversation-\(forgeId)"]
-        XCTAssertTrue(forge.waitForExistence(timeout: 10))
-        forge.tap()
+        let releases = app.buttons["bot-conversation-\(releasesId)"]
+        XCTAssertTrue(releases.waitForExistence(timeout: 10))
+        releases.tap()
         let input = app.descendants(matching: .any).matching(identifier: "message-input").firstMatch
         XCTAssertTrue(input.waitForExistence(timeout: 5))
         input.tap()
-        input.typeText("@sc")
+        input.typeText("@su")
         let scoutOption = app.buttons["mention-bot-\(scoutId)"]
         XCTAssertTrue(scoutOption.waitForExistence(timeout: 5))
-        XCTAssertFalse(app.buttons["mention-bot-\(forgeId)"].exists)
+        XCTAssertFalse(app.buttons["mention-bot-\(releasesId)"].exists)
         capture("Filtered bot mention picker")
         scoutOption.tap()
         XCTAssertTrue(app.buttons["remove-mention-\(scoutId)"].waitForExistence(timeout: 5))
@@ -58,10 +58,10 @@ final class BotMentionsFlowTests: XCTestCase {
         input.typeText("Check the plan.")
         capture("Selected mention in composer")
         app.buttons["send-message"].tap()
-        XCTAssertTrue(app.staticTexts["@Scout Check the plan."].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["@Support Check the plan."].waitForExistence(timeout: 5))
         XCTAssertFalse(app.buttons["message-sender-\(scoutId)"].firstMatch.exists)
-        XCTAssertTrue(app.buttons["bot-settings"].label.contains("Forge"))
-        XCTAssertFalse(app.staticTexts["To Scout"].exists)
+        XCTAssertTrue(app.buttons["bot-settings"].label.contains("Releases"))
+        XCTAssertFalse(app.staticTexts["To Support"].exists)
         capture("Mention stays in the current conversation")
     }
 
@@ -83,13 +83,13 @@ final class BotMentionsFlowTests: XCTestCase {
         for _ in 0..<5 where !option.isHittable { app.swipeUp() }
         XCTAssertTrue(option.isHittable)
         input.tap()
-        input.typeText("@Sc")
+        input.typeText("@Su")
         let scout = app.buttons["mention-bot-\(scoutId)"]
         XCTAssertTrue(scout.waitForExistence(timeout: 5))
         scout.tap()
         input.typeText("Please check this decision.")
         app.buttons["send-message"].tap()
-        XCTAssertTrue(app.staticTexts["@Scout Please check this decision."].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["@Support Please check this decision."].waitForExistence(timeout: 5))
         XCTAssertFalse(app.buttons["message-sender-\(scoutId)"].firstMatch.exists)
         for _ in 0..<7 where !option.isHittable { app.swipeDown() }
         XCTAssertTrue(option.exists && option.isEnabled, "Mentioning another bot must preserve the exact pending choices.")
@@ -112,7 +112,7 @@ final class BotMentionsFlowTests: XCTestCase {
         let input = app.descendants(matching: .any).matching(identifier: "message-input").firstMatch
         XCTAssertTrue(input.waitForExistence(timeout: 5)); input.tap()
         input.typeText("Tell me about @Fo")
-        let mention = app.buttons["mention-bot-\(forgeId)"]
+        let mention = app.buttons["mention-bot-\(releasesId)"]
         XCTAssertTrue(mention.waitForExistence(timeout: 5)); mention.tap()
         XCTAssertTrue(app.staticTexts["Mentioned"].exists)
         XCTAssertFalse(app.staticTexts["New task"].exists)
@@ -124,11 +124,11 @@ final class BotMentionsFlowTests: XCTestCase {
         XCTAssertEqual(requests.count, 1)
         XCTAssertEqual(requests[0]["path"] as? String, "/v1/bots/\(scoutId)/messages")
         let body = try XCTUnwrap(requests[0]["body"] as? [String: Any])
-        XCTAssertEqual(body["mentioned_bot_ids"] as? [String], [forgeId])
+        XCTAssertEqual(body["mentioned_bot_ids"] as? [String], [releasesId])
         XCTAssertEqual(body["recipient_bot_ids"] as? [String], [])
         XCTAssertEqual(body["mode"] as? String, "auto")
-        XCTAssertTrue(app.buttons["bot-settings"].label.contains("Scout"))
-        XCTAssertFalse(app.staticTexts["To Forge"].exists)
+        XCTAssertTrue(app.buttons["bot-settings"].label.contains("Support"))
+        XCTAssertFalse(app.staticTexts["To Releases"].exists)
         capture("Mention keeps the original bot as recipient")
     }
 

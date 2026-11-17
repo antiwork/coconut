@@ -1772,6 +1772,66 @@ class GatewayAdapterTests(unittest.TestCase):
         # Outside a Coconut turn the hook does nothing.
         self.assertIsNone(hooks.save_todos(tool_name='todo_list', result=json.dumps({'todos': todos})))
 
+    def test_the_tool_calls_of_a_turn_reach_coconut_as_its_live_activity(self):
+        hooks = sys.modules['hermes_plugins.coconut.hooks']
+        try:
+            from PIL import Image
+        except ImportError:
+            self.skipTest('Pillow makes the copy of an image. It ships with Hermes.')
+        shot = Path(self.temp.name) / 'browser_screenshot_1.png'
+        Image.new('RGB', (1440, 900), (30, 90, 160)).save(shot)
+        async def runner(event):
+            def tool_calls():
+                token = self.session(event.source.chat_id)
+                try:
+                    # As Hermes reports a tool call before it runs and after it returned.
+                    command = {'command': 'GITHUB_TOKEN=ghp_abcdefghijklmnopqrstuvwxyz0123 gh pr list', 'timeout': 30}
+                    hooks.report_tool(tool_name='terminal', args=command, tool_call_id='call-1')
+                    hooks.report_tool_result(tool_name='terminal', args=command, result='{"output": "secret output"}',
+                                             tool_call_id='call-1', duration_ms=420, status='ok')
+                    hooks.report_tool(tool_name='write_file', tool_call_id='call-2',
+                                      args={'path': '/repo/notes.md', 'content': 'The whole file.'})
+                    hooks.report_tool_result(tool_name='write_file', args={'path': '/repo/notes.md'}, result='{}',
+                                             tool_call_id='call-2', duration_ms=8, status='error',
+                                             error_message='Permission denied')
+                    hooks.report_tool(tool_name='browser_vision', args={'question': 'What is on the page?'},
+                                      tool_call_id='call-3')
+                    hooks.report_tool_result(tool_name='browser_vision', args={}, tool_call_id='call-3', duration_ms=1900,
+                                             result=json.dumps({'success': True, 'screenshot_path': str(shot)}))
+                    # A call that the guard blocks does not run, so the feed does not list it.
+                    hooks.report_tool(tool_name='kanban_show', args={}, tool_call_id='call-4')
+                    for thread in threading.enumerate():
+                        if thread.name.startswith('coconut-tool-'):
+                            thread.join(10)
+                finally:
+                    from gateway.session_context import SESSION
+                    SESSION.reset(token)
+            await asyncio.to_thread(tool_calls)
+            return 'Done.'
+        self.connect(runner)
+        task = self.write('POST', f'/v1/bots/{self.bot["id"]}/messages', {'text': 'Check the pull requests.'})
+        self.service._run_task(task['id'])
+        view = self.service.task_activity(task['id'])
+        entries = {entry['call_id']: entry for entry in view['entries']}
+        self.assertEqual(sorted(entries), ['call-1', 'call-2', 'call-3'])
+        self.assertEqual((entries['call-1']['phase'], entries['call-1']['status'], entries['call-1']['seconds']),
+                         ('command', 'ok', 0.4))
+        self.assertIn('gh pr list', entries['call-1']['detail'])
+        # No token, no output of a command and no content of a file leaves the gateway.
+        text = json.dumps(view)
+        for private in ('ghp_abcdefghijklmnopqrstuvwxyz0123', 'secret output', 'The whole file.'):
+            self.assertNotIn(private, text)
+        self.assertEqual((entries['call-2']['status'], entries['call-2']['error']), ('error', 'Permission denied'))
+        self.assertEqual([(row['path'], row['action']) for row in view['files']], [('/repo/notes.md', 'edit')])
+        # The screenshot of the browser is a small JPEG of the feed.
+        [image] = view['images']
+        self.assertEqual((image['name'], entries['call-3']['images']), ('browser_screenshot_1.png', [image['id']]))
+        copy = self.service.activity_image(task['id'], image['id'])
+        self.assertTrue(copy.startswith(b'\xff\xd8\xff'))
+        self.assertLess(len(copy), 90_000)
+        # Outside a Coconut turn the hooks do nothing.
+        self.assertIsNone(hooks.report_tool_result(tool_name='terminal', args={}, result='{}'))
+
     def test_the_context_of_a_turn_goes_to_its_model_calls_and_hermes_saves_only_its_own_text(self):
         hooks = sys.modules['hermes_plugins.coconut.hooks']
         adapter = self.adapter_module
@@ -2127,7 +2187,8 @@ class GatewayAdapterTests(unittest.TestCase):
                                                              'coconut_kanban_request_review', 'coconut_kanban_link',
                                                              'coconut_kanban_unblock'])
         self.assertEqual(hook_names, ['pre_gateway_dispatch', 'on_session_start', 'on_interim_message', 'post_llm_call', 'on_session_end',
-                                      'pre_tool_call', 'pre_tool_call', 'post_tool_call', 'post_api_request',
+                                      'pre_tool_call', 'pre_tool_call', 'post_tool_call', 'post_tool_call',
+                                      'post_api_request',
                                       'on_session_reset'])
         # The card tool states the order rule, as the worker's tool does.
         self.assertIn('must be the first item of options',

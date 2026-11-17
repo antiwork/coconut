@@ -62,7 +62,9 @@ MAX_LACKING = 200
 MAX_TEXT = 200_000
 # `delta` stays known: a gateway that still runs the plugin of an earlier version sends partial text for each turn.
 # The bridge drops it (event), so the turn goes on with its complete sends. Remove `delta` when no install has that plugin.
-KINDS = ('typing', 'send', 'edit', 'delete', 'question', 'done', 'delta', 'tool')
+# `tool` and `tool_result` are the start and the end of a tool call. Both go to the live activity of the turn
+# (turn_activity.py), and `tool` also sets the phase of the turn.
+KINDS = ('typing', 'send', 'edit', 'delete', 'question', 'done', 'delta', 'tool', 'tool_result')
 QUESTION_KINDS = ('clarify', 'approval')
 
 # The chat of a turn (gateway_chat.run_gateway_chat). A turn of the bot's conversation runs in the bot's chat
@@ -184,6 +186,9 @@ class GatewayBridge:
         # Answers to questions, for the next poll of each Hermes home.
         self.answers: dict[str, list[dict]] = {}
         self.closed = False
+        # Takes the start and the end of each tool call of a turn: (task ID, event). The service sets it
+        # (turn_activity.TurnActivity.record_activity).
+        self.activity = None
 
     @property
     def address_file(self) -> Path:
@@ -285,6 +290,19 @@ class GatewayBridge:
             turn.seen, turn.shown = time.monotonic(), True
             if kind == 'delta':
                 return {'ok': True}
+            observed = turn.task_id if kind in ('tool', 'tool_result') and self.activity is not None else None
+        if observed is not None:
+            # Outside the lock of the bridge: the service writes the feed of the turn under its own locks.
+            try:
+                self.activity(observed, data)
+            except Exception:
+                import logging
+                logging.getLogger(__name__).exception('The live activity of a turn did not take a tool call.')
+        if kind == 'tool_result':
+            return {'ok': True}
+        with self.lock:
+            if turn.state != 'active':
+                return {'ok': False}
             turn.events.append({key: data[key] for key in ('kind', 'text', 'message_id', 'interim', 'outcome', 'quiet',
                                                            'question_id', 'question_kind', 'detail', 'choices',
                                                            'tool', 'args')

@@ -1244,7 +1244,7 @@ class GatewayChat:
         from .service import ServiceError, now, require_text, uid
         home = os.path.realpath(require_text(data, 'home', 4096))
         chat_id = chat_bot(require_text(data, 'chat_id', 200))
-        if (self._gateway_profile(home) or {}).get('bot_id') != chat_id:
+        if not self._gateway_serves(home, chat_id):
             raise ServiceError(404, 'This chat is not the agent of this Hermes profile.')
         filename = os.path.basename(require_text(data, 'filename', 160)) or 'photo'
         try:
@@ -1293,7 +1293,7 @@ class GatewayChat:
         # The chat of a work session or of a status question belongs to its bot. The message goes to the bot's chat.
         # The Hermes chat stays on the message, so a message ID belongs to one Hermes chat.
         hermes_chat, chat_id = chat_id, chat_bot(chat_id)
-        if (self._gateway_profile(home) or {}).get('bot_id') != chat_id:
+        if not self._gateway_serves(home, chat_id):
             raise ServiceError(404, 'This chat is not the agent of this Hermes profile.')
         with self.transaction():
             bot = self._get('bots', chat_id)
@@ -1325,6 +1325,11 @@ class GatewayChat:
             self._refresh_bot(bot['id'])
         LOG.info('The Hermes gateway sent a message to bot %s outside a Coconut turn (task %s).', chat_id, task['id'])
         return {'recorded': True, 'task_id': task['id']}
+
+    def _gateway_serves(self, home: str, bot_id: str) -> bool:
+        """True when the bot runs in the profile of this Hermes home: the agent of the profile or one of its chats."""
+        row = (self.profiles.rows or {}).get(bot_id)
+        return bool(row) and row.get('state') == 'active' and os.path.realpath(row['home']) == home
 
     def _gateway_profile(self, home: str) -> dict | None:
         """The active profile row of a Hermes home (a real path), or None for a home that is not a bot's profile."""
@@ -1573,7 +1578,7 @@ class GatewayChat:
         home = os.path.realpath(require_text(data, 'home', 4096))
         chat_id, message_id = require_text(data, 'chat_id', 200), require_text(data, 'message_id', 200)
         row = self._gateway_profile(home)
-        if row is None or row['bot_id'] != chat_id:
+        if row is None or not self._gateway_serves(home, chat_id):
             return {'skip': True}
         with self.transaction():
             known = self.gateway_wakes.get(message_id)

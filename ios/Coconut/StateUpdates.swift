@@ -28,6 +28,8 @@ struct StateUpdates: Decodable, Sendable {
     var teamBotDirectsChanged: [TeamBotDirectChange]?
     /// The teams where who types changed. The list of the teams says who types now.
     var teamTypingChanged: [String]?
+    /// The tasks whose live activity changed. The feed is not part of the state: an open live panel reads it again.
+    var activityChanged: [String]?
     var confirmedRequestIds: [String]?
 
     /// The chats that changed: each Team chat, each direct chat and each direct chat with a bot of this page.

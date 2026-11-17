@@ -572,7 +572,8 @@ class Documents:
         notes = page_notes(document_format, content)
         with self.transaction():
             task = self._running_task(task_id)
-            bot = self._get('bots', task['bot_id'])
+            # A chat of an agent keeps its pages in the Library of the agent.
+            bot = self._get('bots', self._agent_id(task['bot_id']))
             if bot['archived'] or bot.get('_deleted'):
                 raise ServiceError(409, 'The agent is archived or deleted.')
             audience = self._page_audience(arguments, self._document_of_key(bot['id'], key),
@@ -652,7 +653,7 @@ class Documents:
     def read_document(self, task_id: str, arguments: dict) -> dict:
         """coconut_read_document of a bot turn: one document of the bot with its content, or the list of them."""
         with self._read_view() as view, view._read_transaction():
-            return view._read_pages(view._get('tasks', task_id)['bot_id'], arguments)
+            return view._read_pages(view._agent_id(view._get('tasks', task_id)['bot_id']), arguments)
 
     def read_page(self, bot_id: str, arguments: dict) -> dict:
         """coconut_read_document outside a Coconut chat turn, for the bot of the profile that runs the conversation."""
@@ -684,7 +685,7 @@ class Documents:
     def delete_bot_document(self, task_id: str, arguments: dict) -> dict:
         """coconut_delete_document of a bot turn."""
         with self.transaction():
-            return self._delete_key(self._running_task(task_id)['bot_id'], arguments.get('key'), task_id)
+            return self._delete_key(self._agent_id(self._running_task(task_id)['bot_id']), arguments.get('key'), task_id)
 
     def delete_page(self, bot_id: str, arguments: dict) -> dict:
         """coconut_delete_document outside a Coconut chat turn. No turn asked for the delete, so the event names no

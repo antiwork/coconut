@@ -5,6 +5,8 @@ struct BotStatusRow: View {
     static let minimumDwell = 1.2
     let bot: Bot
     let activity: ConversationActivity
+    /// Opens the live view of the turn: its steps, its files and its images. Nil for a row without one.
+    var openLive: (() -> Void)? = nil
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var shown: BotPhase?
     @State private var shownAt = Date.distantPast
@@ -19,19 +21,46 @@ struct BotStatusRow: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 3) {
             HStack(spacing: 8) {
-                if writing { TypingDots().transition(.opacity) }
-                ZStack(alignment: .leading) {
-                    ShimmerText(text: label, active: !activity.reconnecting)
-                        .id(label)
-                        .transition(.opacity)
-                }
-                // The time of the turn to the second, and the model, as a professional tool shows them.
-                if !activity.reconnecting {
-                    TimelineView(.periodic(from: .now, by: 1)) { timeline in
-                        Text(meta(at: timeline.date))
-                            .monospacedDigit()
-                            .foregroundStyle(.secondary)
+                HStack(spacing: 8) {
+                    if writing { TypingDots().transition(.opacity) }
+                    ZStack(alignment: .leading) {
+                        ShimmerText(text: label, active: !activity.reconnecting)
+                            .id(label)
+                            .transition(.opacity)
                     }
+                    // The time of the turn to the second, and the model, as a professional tool shows them.
+                    if !activity.reconnecting {
+                        TimelineView(.periodic(from: .now, by: 1)) { timeline in
+                            Text(meta(at: timeline.date))
+                                .monospacedDigit()
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                }
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel(([bot.name + ": " + label, detail, meta(at: .now)].compactMap { $0 }).joined(separator: ", "))
+                .accessibilityIdentifier("bot-working-\(bot.id)")
+                // The line opens the live view of the turn. A small control says so.
+                if let openLive, !activity.reconnecting {
+                    Button(action: openLive) {
+                        HStack(spacing: 3) {
+                            Text("Live")
+                            Image(systemName: "chevron.right").imageScale(.small)
+                        }
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, BoardStyle.Space.s).padding(.vertical, 3)
+                        .background(BoardStyle.surface, in: Capsule())
+                        #if os(iOS)
+                        // A finger needs more room than the capsule.
+                        .frame(minWidth: 44, minHeight: 32)
+                        #endif
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .help("Show what \(bot.name) does now")
+                    .accessibilityLabel("Show what \(bot.name) does now")
+                    .accessibilityIdentifier("live-activity-open")
                 }
             }
             .font(.subheadline)
@@ -43,6 +72,7 @@ struct BotStatusRow: View {
                     .truncationMode(.middle)
                     .textSelection(.enabled)
                     .transition(.opacity)
+                    .accessibilityHidden(true)
             }
         }
         .animation(fade, value: label)
@@ -51,9 +81,6 @@ struct BotStatusRow: View {
         .frame(minHeight: 32, alignment: .leading)
         // The text starts at the edge of the text in a bubble.
         .padding(.leading, BoardStyle.Space.m)
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel(([bot.name + ": " + label, detail, meta(at: .now)].compactMap { $0 }).joined(separator: ", "))
-        .accessibilityIdentifier("bot-working-\(bot.id)")
         .task(id: activity.phase) {
             // Hold each label long enough to read, so fast tool calls do not flicker.
             let wait = Self.minimumDwell - Date().timeIntervalSince(shownAt)

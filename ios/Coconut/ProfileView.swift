@@ -58,8 +58,11 @@ struct ProfileView: View {
                     .boardButton("mcp-settings") { pushRoute?(ProfileRoute.connections) }
             }
             BoardSection("Defaults for agents") {
-                BoardRow(symbol: "cpu", title: "Model", value: modelSummary)
-                    .boardButton("profile-model") { pushRoute?(ProfileRoute.model) }
+                // The row is a menu of the models. Its last line opens the page with the effort and the fallback.
+                ModelMenu(settings: { pushRoute?(ProfileRoute.model) }) { _ in
+                    BoardRow(symbol: "cpu", title: "Model", value: modelSummary, chevron: false, menu: true)
+                }
+                .accessibilityIdentifier("profile-model")
                 BoardRow(symbol: "lock.shield", title: "Access",
                          value: store.approvals?.label(for: store.approvals?.defaults) ?? "Hermes default")
                     .boardButton("profile-access") { pushRoute?(ProfileRoute.access) }
@@ -79,6 +82,8 @@ struct ProfileView: View {
                     .accessibilityIdentifier("profile-mode")
                 BoardRow(symbol: "person.2", title: "Team", value: teamSummary)
                     .boardButton("profile-team") { pushRoute?(ProfileRoute.team) }
+                BoardRow(symbol: "chart.bar", title: "Usage", detail: "Turns, tokens, cost and time of the agents")
+                    .boardButton("profile-usage") { pushRoute?(UsageRoute()) }
                 BoardRow(symbol: "chart.xyaxis.line", title: "Business", detail: "Functions, projects and reports")
                     .boardButton("profile-business") { pushRoute?(ProfileRoute.business) }
             }

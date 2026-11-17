@@ -49,8 +49,8 @@ final class ConversationRowHoldTests: XCTestCase {
 final class ConversationRowHoldViewTests: XCTestCase {
     func testAnOffsetChangeWithoutTheReaderShowsTheOpenedCardAgain() async throws {
         let store = AppStore(demo: true)
-        let forge = try XCTUnwrap(store.bots.first { $0.name == "Forge" })
-        let first = try XCTUnwrap(store.decisions.first { $0.botId == forge.id && $0.isPending })
+        let releases = try XCTUnwrap(store.bots.first { $0.name == "Releases" })
+        let first = try XCTUnwrap(store.decisions.first { $0.botId == releases.id && $0.isPending })
         let paragraph = "The plan keeps your instructions and prior decisions together. Each update continues the same conversation. "
         // Cards of different heights make the lazy stack's estimates for the rows above the opened card wrong.
         let cards = [4, 2, 1].enumerated().map { index, optionCount in
@@ -71,13 +71,13 @@ final class ConversationRowHoldViewTests: XCTestCase {
         // The demo moves its times to now, so the later messages take their times from the cards.
         let cardTime = try XCTUnwrap(first.createdAt.apiDate)
         store.messages += [paragraph + paragraph + paragraph, String(repeating: paragraph, count: 12), "Latest note after the cards."].enumerated().map { index, text in
-            Message(id: "later-\(index)", botId: forge.id, taskId: first.taskId, role: "assistant", kind: "text", text: text,
+            Message(id: "later-\(index)", botId: releases.id, taskId: first.taskId, role: "assistant", kind: "text", text: text,
                     decisionId: nil, artifactId: nil, createdAt: cardTime.addingTimeInterval(Double(index + 1) * 60).formatted(.iso8601), streaming: false)
         }
         let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
         let window = UIWindow(windowScene: scene)
         window.rootViewController = UIHostingController(rootView: NavigationStack {
-            ConversationView(botId: forge.id, focusDecisionId: cards[2].id)
+            ConversationView(botId: releases.id, focusDecisionId: cards[2].id)
         }.environment(store))
         window.makeKeyAndVisible()
         defer { window.isHidden = true }

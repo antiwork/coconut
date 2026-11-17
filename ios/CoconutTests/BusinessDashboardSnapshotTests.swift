@@ -19,6 +19,9 @@ final class BusinessDashboardSnapshotTests: XCTestCase {
                              "Revenue", "$12.0M", "EBITDA", "$3.2M", "26.7%", "$870.0K", "$1.93M", "non-cash write-off"] {
                 XCTAssertTrue(text.contains(expected), "Missing rendered text: \(expected), width \(width)\n\(text)")
             }
+            for absent in ["includes", "vs the same weekday", "All clear", "Nothing past SLA"] {
+                XCTAssertFalse(text.contains(absent), "Unexpected rendered text: \(absent), width \(width)\n\(text)")
+            }
         }
     }
 
@@ -46,15 +49,16 @@ final class BusinessDashboardSnapshotTests: XCTestCase {
         XCTAssertTrue(model.previousVolume.isEmpty)
     }
 
-    func testAllClearHomeAndLightModeRemainReadable() throws {
+    func testHomeWithNothingPastSLAAndLightModeRemainReadable() throws {
         let model = try homeFixture { data in
             data["support"] = ["gumroad_past_sla": 0]
             data["issues"] = ["past_sla": 0]
             data["high_priority"] = ["count": 0]
         }
         let text = try renderHome(model, width: 390, name: "home-clear-light", scheme: .light)
-        XCTAssertTrue(text.contains("All clear"))
-        XCTAssertFalse(text.contains("past SLA"))
+        XCTAssertTrue(text.contains("Nothing past SLA"))
+        XCTAssertFalse(text.contains("All clear"))
+        XCTAssertFalse(text.replacingOccurrences(of: "Nothing past SLA", with: "").contains("past SLA"))
         XCTAssertTrue(text.contains("Risk review"))
     }
 
@@ -81,44 +85,65 @@ final class BusinessDashboardSnapshotTests: XCTestCase {
             try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
             try (png as Data).write(to: folder.appendingPathComponent(attachment.name! + ".png"))
         }
+        // Vision can read a block of a tall image as upside down (the Mac phone-width render lost "GMV" that way),
+        // so read the whole image and then overlapping bands of it. A text can therefore appear more than once.
+        var lines = try recognizedText(image)
+        for top in stride(from: 0, to: image.height, by: 900) {
+            let band = CGRect(x: 0, y: top, width: image.width, height: min(1200, image.height - top))
+            lines += try recognizedText(try XCTUnwrap(image.cropping(to: band)))
+        }
+        // Vision occasionally reads the monospaced zero before a unit as O (e.g. $12.OM).
+        // Exact numeric formatting is also asserted in BusinessTests; normalize only that glyph ambiguity.
+        return lines.joined(separator: "\n")
+            .replacingOccurrences(of: #"(?<=\.)O(?=[KMB]\b)"#, with: "0", options: .regularExpression)
+    }
+
+    private func recognizedText(_ image: CGImage) throws -> [String] {
         let request = VNRecognizeTextRequest()
         request.recognitionLevel = .accurate
         request.recognitionLanguages = ["en-US"]
         request.usesLanguageCorrection = false
         try VNImageRequestHandler(cgImage: image).perform([request])
-        // Vision occasionally reads the monospaced zero before a unit as O (e.g. $12.OM).
-        // Exact numeric formatting is also asserted in BusinessTests; normalize only that glyph ambiguity.
-        return (request.results ?? []).compactMap { $0.topCandidates(1).first?.string }.joined(separator: "\n")
-            .replacingOccurrences(of: #"(?<=\.)O(?=[KMB]\b)"#, with: "0", options: .regularExpression)
+        return (request.results ?? []).compactMap { $0.topCandidates(1).first?.string }
     }
 
     #if os(macOS)
-    func testReportsRenderAtDesktopAndPhoneWidths() throws {
+    /// Every business screen with the preview data, at a Mac width and at an iPhone width, in a window off the screen.
+    func testEveryDashboardRendersAtDesktopAndPhoneWidths() throws {
         let store = AppStore(demo: true)
-        for (key, width, scheme) in [("overview", 1100.0, ColorScheme.light), ("accounting", 1100.0, .dark), ("support", 390.0, .light)] {
-            let initial = try BusinessReport.preview(key)
-            let view = NavigationStack {
-                BusinessReportView(key: key, initial: initial)
-                    .navigationDestination(for: BusinessRoute.self) { BusinessDestinationView(route: $0) }
-            }.environment(store).environment(\.colorScheme, scheme).frame(width: width, height: 1000)
-            let host = NSHostingView(rootView: view)
-            host.frame = NSRect(x: 0, y: 0, width: width, height: 1000)
-            let window = NSWindow(contentRect: host.frame, styleMask: [.borderless], backing: .buffered, defer: false)
-            window.appearance = NSAppearance(named: scheme == .dark ? .darkAqua : .aqua)
-            window.contentView = host
-            window.setFrameOrigin(NSPoint(x: -10_000, y: -10_000))
-            window.orderBack(nil)
-            for _ in 0..<5 { RunLoop.main.run(until: Date().addingTimeInterval(0.1)) }
-            host.layoutSubtreeIfNeeded()
-            let rep = try XCTUnwrap(host.bitmapImageRepForCachingDisplay(in: host.bounds))
-            host.cacheDisplay(in: host.bounds, to: rep)
-            window.orderOut(nil)
-            let image = try XCTUnwrap(rep.representation(using: .png, properties: [:]))
-            XCTAssertGreaterThan(image.count, 20_000)
-            if let path = ProcessInfo.processInfo.environment["COCONUT_BUSINESS_SHOTS"] {
-                let folder = URL(fileURLWithPath: path)
-                try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-                try image.write(to: folder.appendingPathComponent("\(key)-\(Int(width))-\(scheme).png"))
+        store.businessCatalog = .preview
+        var screens: [(String, AnyView)] = [("home", AnyView(BusinessHomeView(initial: try BusinessReport.preview("overview"))))]
+        for key in BusinessReport.keys {
+            screens.append((key, AnyView(BusinessReportView(key: key, initial: try BusinessReport.preview(key)))))
+        }
+        screens.append(("library", AnyView(BusinessReportLibrary())))
+        screens.append(("workspace", AnyView(BusinessWorkspaceView(function: "support"))))
+        for (name, screen) in screens {
+            for (width, scheme) in [(1100.0, ColorScheme.light), (1100.0, .dark), (390.0, .light)] {
+                let height = name == "library" || name == "workspace" ? 900.0 : 2000.0
+                let view = NavigationStack {
+                    screen.navigationDestination(for: BusinessRoute.self) { BusinessDestinationView(route: $0) }
+                }.environment(store).environment(\.colorScheme, scheme).environment(\.locale, Locale(identifier: "en_US"))
+                    .frame(width: width, height: height)
+                let host = NSHostingView(rootView: view)
+                host.frame = NSRect(x: 0, y: 0, width: width, height: height)
+                let window = NSWindow(contentRect: host.frame, styleMask: [.borderless], backing: .buffered, defer: false)
+                window.appearance = NSAppearance(named: scheme == .dark ? .darkAqua : .aqua)
+                window.contentView = host
+                window.setFrameOrigin(NSPoint(x: -10_000, y: -10_000))
+                window.orderBack(nil)
+                for _ in 0..<8 { RunLoop.main.run(until: Date().addingTimeInterval(0.1)) }
+                host.layoutSubtreeIfNeeded()
+                let rep = try XCTUnwrap(host.bitmapImageRepForCachingDisplay(in: host.bounds))
+                host.cacheDisplay(in: host.bounds, to: rep)
+                window.orderOut(nil)
+                let image = try XCTUnwrap(rep.representation(using: .png, properties: [:]))
+                XCTAssertGreaterThan(image.count, 20_000, name)
+                if let path = ProcessInfo.processInfo.environment["COCONUT_BUSINESS_SHOTS"] {
+                    let folder = URL(fileURLWithPath: path)
+                    try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+                    try image.write(to: folder.appendingPathComponent("\(name)-\(Int(width))-\(scheme).png"))
+                }
             }
         }
     }

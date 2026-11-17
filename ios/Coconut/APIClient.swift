@@ -89,6 +89,19 @@ final class APIClient: @unchecked Sendable {
         return try await transfer("artifacts/\(id)/content")
     }
 
+    /// The JPEG copy of an image of the live activity of a task.
+    func activityImage(taskId: String, imageId: String) async throws -> Data {
+        guard UUID(uuidString: taskId) != nil, imageId.allSatisfy(\.isHexDigit) else { throw ServiceError.invalidResponse }
+        return try await transfer("tasks/\(taskId)/activity/images/\(imageId)")
+    }
+
+    /// The path of the route that gives the start of a file that a turn touched.
+    static func activityFilePath(taskId: String, file: String) -> String {
+        var allowed = CharacterSet.urlQueryAllowed
+        allowed.remove(charactersIn: "&+=?#")
+        return "tasks/\(taskId)/activity/file?path=" + (file.addingPercentEncoding(withAllowedCharacters: allowed) ?? "")
+    }
+
     /// The bytes of a file of a message of a team chat. The route names the message, so the Mac never answers with
     /// the bytes of another message (docs/team-log.md, "Files").
     func teamFileContent(_ address: TeamFileAddress) async throws -> Data {
@@ -98,7 +111,7 @@ final class APIClient: @unchecked Sendable {
     // Short foreground reads fail fast. Writes, long polls, and full downloads get the longer budget.
     static func isShortRead(_ path: String, method: String) -> Bool {
         let wait = URLComponents(string: path)?.queryItems?.first(where: { $0.name == "wait" })?.value.flatMap(Double.init) ?? 0
-        return method == "GET" && (path == "state" || path.hasPrefix("cards/")
+        return method == "GET" && (path == "state" || path.hasPrefix("cards/") || path.hasPrefix("tasks/")
             || path.hasPrefix("history/") || path.hasPrefix("search?")
             || (path.hasPrefix("updates?") && wait <= 0))
     }
