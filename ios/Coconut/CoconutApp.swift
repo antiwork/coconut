@@ -124,7 +124,7 @@ struct CoconutHome: View {
             Tab(value: HomeTab.business) {
                 root(tab: .business, path: $businessPath)
             } label: {
-                Label { Text("Business") } icon: {
+                Label { Text("Finance") } icon: {
                     Image(systemName: "chart.xyaxis.line")
                 }
             }.accessibilityIdentifier("home-business")

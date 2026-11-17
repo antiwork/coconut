@@ -164,7 +164,7 @@ struct BusinessReportsView: View {
                 .chartXAxis {
                     AxisMarks(values: .automatic(desiredCount: 4)) { value in
                         AxisValueLabel {
-                            if let raw = value.as(String.self) { Text(BusinessPeriodFormat.day(raw)).font(.caption2) }
+                            if let raw = value.as(String.self) { Text(BusinessFormat.axisDay(raw)).font(.caption2) }
                         }
                     }
                 }

@@ -130,7 +130,7 @@ struct BusinessReportContent: View {
     private var status: some View {
         HStack(spacing: BoardStyle.Space.s) {
             Circle().fill(report.stale ? BoardStyle.attention : BoardStyle.positive).frame(width: 7, height: 7).accessibilityHidden(true)
-            Text(report.generatedAt?.apiDate.map { $0.formatted(date: .abbreviated, time: .shortened) } ?? "Unknown")
+            Text(report.generatedAt?.apiDate.map { BusinessFormat.time($0) } ?? "Unknown")
             Spacer(minLength: BoardStyle.Space.s)
             if sample {
                 Text("Sample data").font(.caption2.weight(.semibold)).padding(.horizontal, BoardStyle.Space.s).padding(.vertical, BoardStyle.Space.xs)
@@ -357,7 +357,7 @@ private struct SupportDashboard: View {
                                 .alignmentGuide(.firstTextBaseline) { $0[.bottom] + 1 }.accessibilityHidden(true)
                             Text(item["subject"].text).font(.subheadline).lineLimit(2).textSelection(.enabled)
                             Spacer(minLength: BoardStyle.Space.s)
-                            Text([item["queue"].text.capitalized, item["createdAt"].text.apiDate?.formatted(date: .abbreviated, time: .omitted) ?? ""].filter { !$0.isEmpty }.joined(separator: " · "))
+                            Text([item["queue"].text.capitalized, item["createdAt"].text.apiDate.map { BusinessFormat.date($0) } ?? ""].filter { !$0.isEmpty }.joined(separator: " · "))
                                 .font(.caption).foregroundStyle(.secondary).lineLimit(1)
                             if queue == "issues", let url = SupportFormat.issueURL(item) {
                                 Link(destination: url) { Image(systemName: "arrow.up.right").font(.caption.weight(.semibold)) }.accessibilityLabel("Open issue")
@@ -678,7 +678,7 @@ private struct ReportChart: View {
         return points.filter { $0.date == closest.date }
     }
     private func label(_ point: ReportPoint) -> String {
-        many ? point.day.formatted(.dateTime.month(.abbreviated).year()) : point.day.formatted(.dateTime.month(.abbreviated).day())
+        many ? BusinessFormat.month(String(point.date.prefix(7))) : BusinessFormat.day(point.date)
     }
 
     var body: some View {

@@ -259,7 +259,7 @@ struct MacMainWindow: View {
         case .people:
             placeStack { PeopleView(openTeamChat: { selection = .team($0) }).navigationTitle("People") }
         case .business:
-            placeStack { BusinessHomeView().navigationTitle("Business") }
+            placeStack { BusinessHomeView().navigationTitle("Finance") }
         case .profile:
             placeStack { ProfileView().navigationTitle("Profile") }
         case .document(let documentId):
@@ -456,7 +456,7 @@ struct MacSidebar: View {
             MacSidebarLabel(title: "Spend", symbol: "dollarsign.circle")
                 .tag(MacSelection.spend)
                 .accessibilityIdentifier("sidebar-spend")
-            MacSidebarLabel(title: "Business", symbol: "chart.xyaxis.line")
+            MacSidebarLabel(title: "Finance", symbol: "chart.xyaxis.line")
                 .tag(MacSelection.business)
                 .accessibilityIdentifier("sidebar-business")
             MacSidebarLabel(title: "Agents", symbol: "square.stack.3d.up")

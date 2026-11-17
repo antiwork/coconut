@@ -16,14 +16,14 @@ struct BusinessHomeView: View {
                     BusinessHomeContent(model: BusinessHomePresentation(report: report, now: context.date, refreshFailed: error != nil))
                 }
             } else if error == nil {
-                BoardLoading(title: "Loading business")
+                BoardLoading(title: "Loading finance")
             }
             if let error {
                 BoardLoadNotice(message: error) { Task { await load() } }
                     .accessibilityIdentifier("business-home-refresh-error")
             }
         }
-        .navigationTitle("Business")
+        .navigationTitle("Finance")
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
                 Menu {

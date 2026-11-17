@@ -241,8 +241,8 @@ enum BusinessFormat {
         return sign + decimals(value, 1) + "%"
     }
 
-    /// `2026-10` as `Oct 2026`, `2026Q4` as `Q4 2026`, `2021` as it is.
-    static func month(_ raw: String) -> String {
+    /// `2026-10` as `October` in the current year and `Oct 2025` before it, `2026Q4` as `Q4 2026`, `2021` as it is.
+    static func month(_ raw: String, now: Date = .now, calendar: Calendar = .current) -> String {
         if let q = raw.firstIndex(of: "Q"), q != raw.startIndex { return String(raw[q...]) + " " + String(raw[..<q]) }
         let parts = raw.split(separator: "-")
         guard parts.count >= 2, let year = Int(parts[0]), let month = Int(parts[1]) else { return raw }
@@ -251,6 +251,7 @@ enum BusinessFormat {
         components.month = month
         components.day = 1
         guard let date = Calendar(identifier: .gregorian).date(from: components) else { return raw }
+        if calendar.component(.year, from: now) == year { return date.formatted(.dateTime.month(.wide)) }
         return date.formatted(.dateTime.month(.abbreviated).year())
     }
 
@@ -266,16 +267,47 @@ enum BusinessFormat {
         return date.formatted(.dateTime.month(.abbreviated))
     }
 
-    /// `2026-11-16` as `Nov 16`.
-    static func day(_ raw: String) -> String {
-        let parts = raw.split(separator: "-")
-        guard parts.count == 3, let year = Int(parts[0]), let month = Int(parts[1]), let day = Int(parts[2]) else { return raw }
-        var components = DateComponents()
-        components.year = year
-        components.month = month
-        components.day = day
-        guard let date = Calendar(identifier: .gregorian).date(from: components) else { return raw }
+    /// A published day as a person says it: `Today`, `Yesterday`, `Monday` within the week, `Nov 16` this year, `Nov 16, 2025` before.
+    static func day(_ raw: String, now: Date = .now, calendar: Calendar = .current) -> String {
+        guard let date = calendarDay(raw, calendar: calendar) else { return raw }
+        return Self.date(date, now: now, calendar: calendar)
+    }
+
+    /// `2026-11-16` as `Nov 16`, for a chart axis where every label must stay short and in order.
+    static func axisDay(_ raw: String) -> String {
+        guard let date = calendarDay(raw, calendar: .current) else { return raw }
         return date.formatted(.dateTime.month(.abbreviated).day())
+    }
+
+    /// The day of a moment: `Today`, `Yesterday`, `Monday`, `Nov 16`, or `Nov 16, 2025`.
+    static func date(_ date: Date, now: Date = .now, calendar: Calendar = .current) -> String {
+        let today = calendar.startOfDay(for: now)
+        let day = calendar.startOfDay(for: date)
+        let days = calendar.dateComponents([.day], from: day, to: today).day ?? 0
+        if days == 0 { return "Today" }
+        if days == 1 { return "Yesterday" }
+        if days == -1 { return "Tomorrow" }
+        if days > 1, days < 7 { return date.formatted(.dateTime.weekday(.wide)) }
+        if calendar.component(.year, from: date) == calendar.component(.year, from: now) {
+            return date.formatted(.dateTime.month(.abbreviated).day())
+        }
+        return date.formatted(.dateTime.month(.abbreviated).day().year())
+    }
+
+    /// A moment as a person says it: `Just now`, `5 minutes ago`, `3 hours ago` today, then `Yesterday at 4:02 PM` or `Nov 16 at 4:02 PM`.
+    static func time(_ date: Date, now: Date = .now, calendar: Calendar = .current) -> String {
+        let age = now.timeIntervalSince(date)
+        if age >= -60, age < 60 { return "Just now" }
+        if age > 0, age < 3600 { let minutes = Int(age / 60); return "\(minutes) minute\(minutes == 1 ? "" : "s") ago" }
+        if age > 0, calendar.isDate(date, inSameDayAs: now) { let hours = Int(age / 3600); return "\(hours) hour\(hours == 1 ? "" : "s") ago" }
+        return Self.date(date, now: now, calendar: calendar) + " at " + date.formatted(date: .omitted, time: .shortened)
+    }
+
+    /// `2026-11-16` as noon of that day in the person's calendar, so a time zone never moves it to another day.
+    private static func calendarDay(_ raw: String, calendar: Calendar) -> Date? {
+        let parts = raw.prefix(10).split(separator: "-")
+        guard parts.count == 3, let year = Int(parts[0]), let month = Int(parts[1]), let day = Int(parts[2]) else { return nil }
+        return calendar.date(from: DateComponents(year: year, month: month, day: day, hour: 12))
     }
 
     /// A write-off keeps the publisher's two-decimal-million precision, because it is the figure a person checks.

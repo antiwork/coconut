@@ -13,8 +13,7 @@ struct BusinessHomePresentation {
     var currentStatusUnknown: Bool { refreshFailed || (age.map { $0 > 3600 || $0 < -60 } ?? true) }
     var freshness: String {
         guard let age, age >= -60 else { return "Freshness unknown" }
-        let minutes = max(0, Int(age / 60))
-        return "\(minutes)m ago" + (age > 3600 ? " · Stale" : "")
+        return BusinessFormat.time(now.addingTimeInterval(-max(0, age)), now: now) + (age > 3600 ? " · Stale" : "")
     }
 
     func sourceNotice(_ key: String) -> String? {
@@ -368,7 +367,7 @@ struct BusinessHomeContent: View {
             AxisMarks(values: .automatic(desiredCount: 4)) { value in
                 AxisValueLabel {
                     if let index = value.as(Int.self), let point = model.volume.first(where: { $0.id == index }) {
-                        Text(BusinessHomePresentation.day(point.date))
+                        Text(BusinessFormat.axisDay(point.date))
                     }
                 }
             }
