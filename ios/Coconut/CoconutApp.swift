@@ -58,6 +58,9 @@ struct CoconutApp: App {
 /// The five tabs of the iPhone in their order: Finance, Support, To-dos, Chats and You. Chats (the case `home`) has
 /// every chat and the message box under the list. The page of a project opens from the name of its chat, and the list
 /// of all projects from the project chip of the box. The Mac sidebar has its own list.
+///
+/// The tab bar always has exactly five tabs. With a sixth, iOS puts the last tabs behind a More tab, and the person
+/// does not want More. A new place goes on the page of a tab, or it takes the place of a tab.
 enum HomeTab: Hashable { case business, support, todos, home, profile }
 
 struct CoconutHome: View {
