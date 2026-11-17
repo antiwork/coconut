@@ -478,15 +478,7 @@ struct ConversationView: View {
                         .accessibilityIdentifier("bot-settings")
                         .simultaneousGesture(TapGesture().onEnded { focusAfterPush = nil; composerFocused = false })
                     }
-                    // The model of the agent, as a menu: a tap, then a model.
-                    ToolbarItem(placement: .trailingBar) {
-                        ModelMenu(botId: bot.id) { name in
-                            ModelMenuLabel(name: name, symbol: false).font(.subheadline.weight(.medium))
-                                .frame(maxWidth: 150).padding(.horizontal, BoardStyle.Space.xs)
-                                .frame(minHeight: 44)
-                        }
-                        .accessibilityIdentifier("chat-model-menu")
-                    }
+                    // The model and its reasoning are in the composer, under the text (ComposerModelMenu).
                     ToolbarItem(placement: .trailingBar) { NewChatHeaderButton(bot: bot) }
                     #endif
                 }
@@ -1026,43 +1018,51 @@ struct ConversationComposer: View {
                 DatePicker("Start", selection: $scheduledAt, in: Date()...)
                     .font(.footnote)
             }
-            HStack(alignment: .bottom, spacing: BoardStyle.Space.s) {
-                ComposerPlusMenu(uploading: uploading, enabled: connected) {
-                    Button("Mention an agent", systemImage: "at") {
-                        text += text.isEmpty || text.last?.isWhitespace == true ? "@" : " @"
-                        selection = TextSelection(insertionPoint: text.endIndex)
-                        focused = true
-                    }
-                    AttachMenuItems(importing: $importing, pickingPhotos: $pickingPhotos)
-                    if workContext == nil {
-                        Button(scheduling ? "Send now" : "Schedule task", systemImage: "clock") {
-                            scheduling.toggle()
-                        }
-                    }
-                }
-                HStack(alignment: .bottom, spacing: 4) {
+            // One box, as in Codex: the text on top, and under it the plus, the model and its reasoning, and Send.
+            VStack(alignment: .leading, spacing: 0) {
                 TextField("Message \(bot.name)", text: $text, selection: $selection, axis: .vertical)
                     .focused($focused)
-                    .modifier(ComposerFieldStyle(send: { send() }, sendInNewChat: canSendInNewChat ? { send(inNewChat: true) } : nil))
+                    .modifier(ComposerFieldStyle(send: { send() }, sendInNewChat: canSendInNewChat ? { send(inNewChat: true) } : nil,
+                                                 stacked: true))
+                    .padding(.horizontal, BoardStyle.Space.m)
                     .accessibilityIdentifier("message-input")
-                if hasContent {
-                    ComposerSendButton(symbol: scheduling ? "clock.fill" : "arrow.up", enabled: canSend,
-                                       label: scheduling ? "Schedule task" : "Send message", action: { send() },
-                                       newChat: canSendInNewChat ? { send(inNewChat: true) } : nil)
-                } else if let task, task.isRunning, connected {
-                    Button { onStop(task) } label: {
-                        Image(systemName: "stop.fill").font(.footnote)
-                            .foregroundStyle(.secondary).frame(minWidth: 44, minHeight: 44)
-                            .contentShape(Rectangle())
-                    }.buttonStyle(.plain).accessibilityLabel("Stop \(executorName)'s task").accessibilityIdentifier("stop-current-task")
+                HStack(alignment: .center, spacing: 0) {
+                    ComposerPlusMenu(uploading: uploading, enabled: connected, embedded: true) {
+                        Button("Mention an agent", systemImage: "at") {
+                            text += text.isEmpty || text.last?.isWhitespace == true ? "@" : " @"
+                            selection = TextSelection(insertionPoint: text.endIndex)
+                            focused = true
+                        }
+                        AttachMenuItems(importing: $importing, pickingPhotos: $pickingPhotos)
+                        if workContext == nil {
+                            Button(scheduling ? "Send now" : "Schedule task", systemImage: "clock") {
+                                scheduling.toggle()
+                            }
+                        }
+                    }
+                    #if os(iOS)
+                    ComposerModelMenu(botId: bot.id)
+                    #endif
+                    Spacer(minLength: BoardStyle.Space.s)
+                    if hasContent {
+                        ComposerSendButton(symbol: scheduling ? "clock.fill" : "arrow.up", enabled: canSend,
+                                           label: scheduling ? "Schedule task" : "Send message", action: { send() },
+                                           newChat: canSendInNewChat ? { send(inNewChat: true) } : nil)
+                    } else if let task, task.isRunning, connected {
+                        Button { onStop(task) } label: {
+                            Image(systemName: "stop.fill").font(.footnote)
+                                .foregroundStyle(.secondary).frame(minWidth: 44, minHeight: 44)
+                                .contentShape(Rectangle())
+                        }.buttonStyle(.plain).accessibilityLabel("Stop \(executorName)'s task").accessibilityIdentifier("stop-current-task")
+                    }
                 }
-                }
-                .padding(.leading, BoardStyle.Space.m).padding(.trailing, BoardStyle.Space.xs)
-                .modifier(ComposerClickArea(shape: RoundedRectangle(cornerRadius: BoardStyle.Radius.large, style: .continuous)) {
-                    focused = true
-                })
-                .modifier(ComposerSurface(shape: RoundedRectangle(cornerRadius: BoardStyle.Radius.large, style: .continuous)))
+                .padding(.horizontal, BoardStyle.Space.xs)
             }
+            .modifier(ComposerClickArea(shape: RoundedRectangle(cornerRadius: BoardStyle.Radius.large, style: .continuous)) {
+                focused = true
+            })
+            .modifier(ComposerSurface(shape: RoundedRectangle(cornerRadius: BoardStyle.Radius.large, style: .continuous)))
+
             .modifier(ComposerGlassGroup())
         }
         .padding(.horizontal, 16)
@@ -1314,6 +1314,8 @@ struct ComposerFieldStyle: ViewModifier {
     let send: () -> Void
     /// Option-Return on a Mac: send the draft in a new chat with the same agent.
     var sendInNewChat: (() -> Void)? = nil
+    /// The field sits above a row of controls in the same box: less space under the text.
+    var stacked = false
 
     func body(content: Content) -> some View {
         content
@@ -1323,9 +1325,9 @@ struct ComposerFieldStyle: ViewModifier {
             // and the box is taller than the line, so a click does not need to hit the line itself (ComposerClickArea).
             .textFieldStyle(.plain)
             .frame(maxWidth: .infinity, minHeight: 24, alignment: .leading)
-            .padding(.vertical, 16)
+            .padding(.top, 16).padding(.bottom, stacked ? 4 : 16)
             #else
-            .padding(.vertical, 12)
+            .padding(.top, stacked ? 14 : 12).padding(.bottom, stacked ? 2 : 12)
             #endif
             #if os(macOS)
             .onKeyPress(.return, phases: .down) { press in

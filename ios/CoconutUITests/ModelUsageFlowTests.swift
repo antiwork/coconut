@@ -77,6 +77,29 @@ final class ModelUsageFlowTests: XCTestCase {
         capture("The agents and the models of the usage")
     }
 
+    /// A new chat opens at once with the keyboard up in its message field.
+    @MainActor
+    func testNewChatOpensWithTheKeyboard() throws {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launchArguments = ["--demo"]
+        app.launch()
+        XCTAssertTrue(app.tabBars.buttons["Agents"].waitForExistence(timeout: 15))
+        app.tabBars.buttons["Agents"].tap()
+        app.buttons["agent-" + releasesId].tap()
+        let chat = app.buttons["agent-chat-button"]
+        XCTAssertTrue(chat.waitForExistence(timeout: 10))
+        chat.tap()
+        let new = element("new-chat", in: app)
+        XCTAssertTrue(new.waitForExistence(timeout: 10))
+        new.tap()
+        XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 5), "The new chat has the keyboard up.")
+        let input = element("message-input", in: app)
+        XCTAssertTrue(input.waitForExistence(timeout: 5))
+        XCTAssertEqual(input.value(forKey: "hasKeyboardFocus") as? Bool, true)
+        capture("New chat with the keyboard")
+    }
+
     /// A line of an open menu. A line with a check mark is a switch, the others are buttons.
     @MainActor
     private func item(_ label: String, in app: XCUIApplication) -> XCUIElement {
