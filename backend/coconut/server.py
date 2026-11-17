@@ -387,6 +387,12 @@ class Handler(BaseHTTPRequestHandler):
                     self._json(200, service.events(after, wait))
                 elif url.path == '/v1/learning':
                     self._json(200, service.learning())
+                elif url.path == '/v1/usage':
+                    try:
+                        days = int(parse_qs(url.query).get('days', ['30'])[0])
+                    except ValueError:
+                        raise ServiceError(400, 'days must contain a number.')
+                    self._json(200, service.usage(days))
                 elif url.path == '/v1/setup':
                     self._json(200, service.hermes_setup())
                 elif url.path == '/v1/documents':
