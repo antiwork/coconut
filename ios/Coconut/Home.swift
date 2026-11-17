@@ -145,6 +145,14 @@ struct HomeView: View {
                     ForEach(unread) { unreadRow($0) }
                 }
             }
+            // The quick to-dos (QuickTodos), with + to add one. The Mac has no To-dos tab, so they show on Home.
+            BoardSection("To-dos", count: QuickTodos.list(store).count) {
+                Button("New to-do", systemImage: "plus") { PendingTodos.shared.adding = true }
+                    .accessibilityIdentifier("home-new-todo")
+            } rows: {
+                QuickTodoRows(inList: false)
+            }
+            .sheet(isPresented: Binding(get: { PendingTodos.shared.adding }, set: { PendingTodos.shared.adding = $0 })) { NewTodoSheet() }
             if !progress.isEmpty {
                 let shown = allProgress ? progress : Array(progress.prefix(Self.progressLimit))
                 BoardSection("In progress", count: progress.count) {

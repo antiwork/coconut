@@ -460,6 +460,18 @@ extension CoconutHome {
                 guard let chat = await store.sendNewChat(in: project, text: "Draft the weekly payout summary for Gumroad.") else { return }
                 homePath.append(ConversationRoute(botId: chat.id))
             }
+        // Quick to-dos: the sheet of a new one, a to-do added as Add does, and the comments of one.
+        case "new-todo": show(.todos); later { PendingTodos.shared.adding = true }
+        case "todo-add", "todo-comments":
+            show(.todos)
+            later {
+                let choices = QuickTodos.choices(in: store.bots, latest: store.chatSummaries.newestActivity)
+                guard let bot = QuickTodos.defaultAgent(last: UserDefaults.standard.string(forKey: QuickTodos.agentKey) ?? "", in: choices),
+                      await store.addTodo("Find the three refunds over $500 from last week", agent: bot),
+                      place == "todo-comments", let chat = QuickTodos.list(store).first else { return }
+                await store.commentOnTodo(chat, text: "Only the ones in USD, please.")
+                PendingTodos.shared.commenting = chat.id
+            }
         case "agents": show(.home, [AgentListRoute()])
         case "cards": show(.todos, [HomeDestination.inbox])
         case "chat": show(.home, [ConversationRoute(botId: agent)])

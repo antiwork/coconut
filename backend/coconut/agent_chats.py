@@ -8,6 +8,9 @@ new conversation, and it has a row in the `profiles` table with the name and the
 The first message of the person gives the chat its title (`chat_title`). The apps list the chats under their agent,
 newest first. A chat can be archived or removed by itself. The settings belong to the agent: a chat takes only
 `archived`, `pinned`, `notifications` and `chat_title`.
+
+A quick to-do of the apps is such a chat with `todo: true`: the apps start it with the to-do as its first message, list
+it on To-dos, and follow its state through the tasks of the chat. Archiving the chat checks the to-do off.
 """
 from __future__ import annotations
 
@@ -42,8 +45,8 @@ class AgentChats:
             if not isinstance(data['chat_title'], str) or not data['chat_title'].strip() or len(data['chat_title']) > 160:
                 raise ServiceError(400, 'chat_title must contain 1 to 160 characters.')
 
-    def _new_chat(self, bot: dict) -> dict:
-        """Start a new chat with the agent of this bot. The caller holds the transaction."""
+    def _new_chat(self, bot: dict, *, todo: bool = False) -> dict:
+        """Start a new chat with the agent of this bot, a quick to-do with `todo`. The caller holds the transaction."""
         from .service_base import ServiceError, now, uid
         agent = self._get('bots', bot.get('chat_of') or bot['id'])
         if agent.get('_deleted'):
@@ -56,6 +59,8 @@ class AgentChats:
         # Older apps read `avatar` and `color`. A chat has no face, so both stay empty.
         chat = dict(id=uid(), session_id=uid(), chat_of=agent['id'], chat_title='', avatar='', color='', notifications=agent.get('notifications', True),
                     status='idle', last_message='', unread_count=0, last_read_message_id=None, archived=False, pinned=False, created_at=now())
+        if todo:
+            chat['todo'] = True
         chat.update({field: agent[field] for field in SHARED if field in agent})
         chat['profile_id'] = chat['id']
         # The chat runs in the agent's profile. Hermes creates nothing, and no file is copied.

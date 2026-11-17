@@ -125,6 +125,7 @@
 		5BF5A35704DB08507DD8BE49 /* TeamViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = 150449BCD1EA051889FBAC65 /* TeamViews.swift */; };
 		5F4856214E42FB7053D23BD8 /* ShareSender.swift in Sources */ = {isa = PBXBuildFile; fileRef = 82602E2D220A58254B9DC80A /* ShareSender.swift */; };
 		5F81DA3AC176F712E00DB95D /* ShareSender.swift in Sources */ = {isa = PBXBuildFile; fileRef = 82602E2D220A58254B9DC80A /* ShareSender.swift */; };
+		61E8A4A4F7CD796DFDAA0664 /* QuickTodos.swift in Sources */ = {isa = PBXBuildFile; fileRef = FD0B782A050395C96EDB6CDC /* QuickTodos.swift */; };
 		62117FA99CDEACFEA1A5D08A /* LiveView.swift in Sources */ = {isa = PBXBuildFile; fileRef = CF0EF03F4354527795B0C7B8 /* LiveView.swift */; };
 		6311986E94DE683D9505A53F /* TeamAlertViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = F57307766B130CB4F400B4A9 /* TeamAlertViews.swift */; };
 		63432758C5476346F4222543 /* Team.swift in Sources */ = {isa = PBXBuildFile; fileRef = 89E9F80C1D8CD858F6D8D921 /* Team.swift */; };
@@ -279,6 +280,7 @@
 		E7A2236459A678FDFAB49020 /* Business.swift in Sources */ = {isa = PBXBuildFile; fileRef = 69409F2D054CB7924336C9A0 /* Business.swift */; };
 		E84C6776DACDBC6DFC611F43 /* Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = 92F9D270338BED68C35CC516 /* Models.swift */; };
 		E8CA00EBB93D51E7C7040E6B /* GitHubSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4648B3469FA391A1202D1BD7 /* GitHubSettingsView.swift */; };
+		E94C8937B0422F30FA00C1C0 /* QuickTodos.swift in Sources */ = {isa = PBXBuildFile; fileRef = FD0B782A050395C96EDB6CDC /* QuickTodos.swift */; };
 		E9E8298FC7733957D8CCAACE /* TeamNotices.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2336F49F73947060895D6AAD /* TeamNotices.swift */; };
 		EAC04248C852201538C8E66C /* ConversationTimestamps.swift in Sources */ = {isa = PBXBuildFile; fileRef = 85FE35330C6B3578235F72A6 /* ConversationTimestamps.swift */; };
 		EC9731506236390E56953EF1 /* mermaid.min.js in Resources */ = {isa = PBXBuildFile; fileRef = A1E9016F6861BCC1AAFCD8EB /* mermaid.min.js */; };
@@ -507,6 +509,7 @@
 		FC3D517D9892D6B9E7E1783B /* ComposerToolbar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ComposerToolbar.swift; sourceTree = "<group>"; };
 		FC5588CE8E93B2033A90C4CE /* Cards.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Cards.swift; sourceTree = "<group>"; };
 		FCABC9E056D35D74FCE1B244 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
+		FD0B782A050395C96EDB6CDC /* QuickTodos.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QuickTodos.swift; sourceTree = "<group>"; };
 		FFA30EC67D5486818D86E824 /* BusinessReports.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BusinessReports.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
@@ -689,6 +692,7 @@
 				AF78ECA5AAF444C7B0B3A210 /* ProfileView.swift */,
 				314EA7AAB131B25EAEEE8971 /* PushNotifications.swift */,
 				A60CFE7EAB28FA54EB0D2203 /* PushRelayClient.swift */,
+				FD0B782A050395C96EDB6CDC /* QuickTodos.swift */,
 				AA07287D8E8B821C1C945D80 /* Routes.swift */,
 				22ECF8C307532AF3869C15F7 /* SettingsStyle.swift */,
 				B5C532B556E6AC4611DC4B3F /* SettingsViews.swift */,
@@ -1123,6 +1127,7 @@
 				10C9671B69BF4F67B8D5BFE8 /* ProfileView.swift in Sources */,
 				C1A26CA830CEA2D0DC65C986 /* PushNotifications.swift in Sources */,
 				8DEBB58B2324219CE7F2058E /* PushRelayClient.swift in Sources */,
+				E94C8937B0422F30FA00C1C0 /* QuickTodos.swift in Sources */,
 				14BD77FBCA794E39EA10CE7E /* Routes.swift in Sources */,
 				D9AC0C6E8EFDFAE1A3086D03 /* SettingsStyle.swift in Sources */,
 				D211684A74A593F1EAD7A983 /* SettingsViews.swift in Sources */,
@@ -1245,6 +1250,7 @@
 				56F4547B2E7EA8702BA828F5 /* ProfileView.swift in Sources */,
 				26418D4226589A02C99AF807 /* PushNotifications.swift in Sources */,
 				162DBDC6EC96A90E4269536F /* PushRelayClient.swift in Sources */,
+				61E8A4A4F7CD796DFDAA0664 /* QuickTodos.swift in Sources */,
 				B8412C94199949B9ACE8F165 /* Routes.swift in Sources */,
 				8CE9F0466AB8D6B1E352CD5B /* SettingsStyle.swift in Sources */,
 				F44E98A6DDB9163438280BAD /* SettingsViews.swift in Sources */,

@@ -1565,8 +1565,9 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
                 self._delete_agent_chats(bot, callbacks, audit={'deleted_by': device})
                 return {'ok': True}
             if parts[3:] == ['chats'] and method == 'POST':
-                # A new chat: a fresh conversation with the same agent (agent_chats.py).
-                return self._bot_view(self._new_chat(bot), self._request_model_catalog)
+                # A new chat: a fresh conversation with the same agent, or a quick to-do (agent_chats.py).
+                todo = isinstance(data, dict) and data.get('todo') is True
+                return self._bot_view(self._new_chat(bot, todo=todo), self._request_model_catalog)
             if parts[3:] == ['read'] and method == 'POST':
                 unread.mark_read(self.db, bot)
                 self._put('bots', bot)

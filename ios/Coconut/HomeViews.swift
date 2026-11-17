@@ -20,11 +20,13 @@ struct HomeLaunchView: View {
     private var todoList: some View {
         let todos = AgentTodos.make(artifacts: store.artifacts, bots: store.bots)
         let cards = store.pendingCardCount
+        let quick = QuickTodos.list(store).count + PendingTodos.shared.items.count
         return List {
             attention(cards: cards)
+            QuickTodoRows()
             ForEach(todos) { item in todoRow(item).homeRow() }
-            if todos.isEmpty && cards == 0 {
-                Text("No to-dos.")
+            if todos.isEmpty && cards == 0 && quick == 0 {
+                Text("No to-dos. Tap + to add one.")
                     .font(.subheadline).foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity).padding(.vertical, BoardStyle.Space.xxl)
                     .accessibilityIdentifier("todos-empty")
@@ -38,6 +40,14 @@ struct HomeLaunchView: View {
         .contentMargins(.bottom, BoardStyle.Space.xl, for: .scrollContent)
         .background(BoardStyle.paper)
         .navigationTitle("To-dos")
+        .toolbar {
+            // One tap and one line add a to-do, which an agent starts on at once (QuickTodos).
+            ToolbarItem(placement: .primaryAction) {
+                Button("New to-do", systemImage: "plus") { PendingTodos.shared.adding = true }
+                    .accessibilityIdentifier("new-todo")
+            }
+        }
+        .sheet(isPresented: Binding(get: { PendingTodos.shared.adding }, set: { PendingTodos.shared.adding = $0 })) { NewTodoSheet() }
         .task(id: "\(store.connection)/\(store.businessChanges)") { await store.loadBusinessAttention() }
         .refreshable { await store.reconnect(); await store.loadBusinessAttention() }
     }
