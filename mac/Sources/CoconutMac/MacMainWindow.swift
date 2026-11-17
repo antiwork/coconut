@@ -191,8 +191,13 @@ struct MacMainWindow: View {
             }
         case .teamChat(let chat): selection = .team(chat)
         case .cards(let decisionId):
-            inboxCard = decisionId
-            selection = .inbox
+            // A card opens in the chat of its agent. Only "Review cards" opens the list of cards.
+            if let decisionId, let decision = store.decisions.first(where: { $0.id == decisionId }) {
+                selection = .bot(store.decisionChatRoute(for: decision).botId)
+            } else {
+                inboxCard = decisionId
+                selection = .inbox
+            }
         case .agent(let botId): go(.agents, pushing: [AgentRoute(botId: botId)])
         case .agents: go(.agents)
         case .connection: go(.profile, pushing: [ProfileRoute.mac])

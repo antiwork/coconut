@@ -328,6 +328,15 @@ struct CoconutHome: View {
 
     /// Shows the cards that wait on the Home tab, with Home under them. The card with this ID comes first.
     private func showCards(_ decisionId: String?) {
+        // A card opens in the chat of its agent, where its work is. Only "Review cards", or a card that the app does
+        // not have yet, opens the list of cards.
+        if let decisionId, let decision = store.decisions.first(where: { $0.id == decisionId }) {
+            notificationDecisionId = nil
+            selectedTab = .home
+            homePath = NavigationPath()
+            homePath.append(store.decisionChatRoute(for: decision))
+            return
+        }
         notificationDecisionId = decisionId
         selectedTab = .home
         homePath = NavigationPath([HomeDestination.inbox])
