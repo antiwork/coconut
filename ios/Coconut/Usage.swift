@@ -19,8 +19,6 @@ struct UsageDay: Codable, Equatable, Sendable, Identifiable {
     /// All that the model read: the new input and the input that the provider had in its cache.
     var tokensIn: Int { inputTokens + cacheReadTokens + cacheWriteTokens }
     var tokens: Int { tokensIn + outputTokens }
-    /// The part of the input that came from the cache of the provider, from 0 to 1.
-    var cachedShare: Double { tokensIn == 0 ? 0 : Double(cacheReadTokens) / Double(tokensIn) }
     var isEmpty: Bool { turns == 0 && modelCalls == 0 && tokens == 0 && costUsd == 0 }
 
     static func + (left: UsageDay, right: UsageDay) -> UsageDay {
@@ -234,12 +232,6 @@ enum UsageMath {
         let minutes = seconds / 60
         if minutes < 60 { return "\(minutes)m" }
         return String(format: "%dh %02dm", minutes / 60, minutes % 60)
-    }
-
-    /// "92% cached". Nil when the input had no cache.
-    static func cached(_ day: UsageDay) -> String? {
-        let percent = Int((day.cachedShare * 100).rounded())
-        return percent > 0 ? "\(percent)% cached" : nil
     }
 }
 

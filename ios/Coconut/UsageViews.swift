@@ -6,23 +6,22 @@ struct UsageRoute: Hashable {
     var botId: String? = nil
 }
 
-/// What a usage page shows for a range: the bars, their sum, and the words under them.
+/// What a usage page shows for a range: the bars and their sum.
 struct UsageSummary: Equatable {
     let buckets: [UsageBucket]
     let total: UsageDay
     let costKnown: Bool
-    let costEstimated: Bool
 
     init(agents: [AgentUsage], range: UsageRange, today: String, calendar: Calendar = .current) {
         buckets = UsageMath.buckets(UsageMath.combined(agents), range: range, today: today, calendar: calendar)
         total = UsageMath.sum(buckets.map(\.total))
         costKnown = agents.contains(where: \.costKnown)
-        costEstimated = agents.contains(where: \.costEstimated)
     }
 
     /// "$12.40", or a dash when Hermes has no price for the models.
     var cost: String { costKnown ? UsageMath.cost(total.costUsd) : "\u{2014}" }
-    var costDetail: String { !costKnown ? "No price known" : costEstimated ? "Estimate at list prices" : "Billed by the provider" }
+    /// The one note of the cost: why the number is a dash.
+    var costNote: String? { costKnown ? nil : "No price" }
 }
 
 extension AppStore {
@@ -34,7 +33,8 @@ extension AppStore {
     }
 }
 
-/// One number of a usage page with its name over it and a quiet line under it.
+/// One number of a usage page with its name over it. Data only: a line under the number says why it did not load, and
+/// nothing else.
 struct UsageStat: View {
     let title: String
     let value: String
@@ -51,7 +51,7 @@ struct UsageStat: View {
     }
 }
 
-/// The bars of a usage page. Tokens show the input and the output as two parts of a bar.
+/// The bars of a usage page: one number for each day or week, so the chart needs no legend.
 struct UsageChart: View {
     let buckets: [UsageBucket]
     let metric: UsageMetric
@@ -62,19 +62,14 @@ struct UsageChart: View {
     var body: some View {
         Chart {
             ForEach(buckets) { bucket in
-                if metric == .tokens {
-                    bar(bucket.start, Double(bucket.total.tokensIn), "In").foregroundStyle(BoardStyle.ink.opacity(0.7))
-                    bar(bucket.start, Double(bucket.total.outputTokens), "Out").foregroundStyle(BoardStyle.accent)
-                } else {
-                    bar(bucket.start, metric.value(bucket.total), metric.title).foregroundStyle(BoardStyle.ink.opacity(0.7))
-                }
+                bar(bucket.start, metric.value(bucket.total), metric.title).foregroundStyle(BoardStyle.ink.opacity(0.7))
             }
         }
         .chartLegend(.hidden)
         .chartXAxis(compact ? .hidden : .visible)
         .chartYAxis(compact ? .hidden : .visible)
         .chartXAxis {
-            AxisMarks(values: .automatic(desiredCount: 6)) { _ in
+            AxisMarks(values: labelDates) { _ in
                 AxisValueLabel(format: .dateTime.month(.abbreviated).day())
             }
         }
@@ -92,10 +87,17 @@ struct UsageChart: View {
                 y: .value(series, value))
             .cornerRadius(compact ? 1.5 : 2.5)
     }
+
+    /// The bars that get a date: each fifth part of the range from its start. A date has the width of that part, so the
+    /// edge of the chart cuts none: a bar near the end has no date.
+    private var labelDates: [Date] {
+        let step = max(1, (buckets.count + 4) / 5)
+        return buckets.indices.filter { $0 % step == 0 && buckets.count - $0 >= step }.map { buckets[$0].start }
+    }
 }
 
-/// The usage of an agent on its page: the last 7 days in four numbers and a small chart of 30 days. A tap opens the
-/// usage page of the agent.
+/// The usage of an agent on its page: today, the last 7 days in four numbers, and the tokens of 30 days as small bars.
+/// A tap opens the usage page of the agent.
 struct AgentUsageCard: View {
     @Environment(AppStore.self) private var store
     @Environment(\.pushRoute) private var pushRoute
@@ -140,46 +142,44 @@ struct AgentUsageCard: View {
                             UsageChart(buckets: month, metric: .tokens, byWeek: false, compact: true).frame(height: 40)
                             Image(systemName: "chevron.right").font(.footnote.weight(.semibold)).foregroundStyle(.tertiary)
                         }
-                        Text("Tokens by day, last 30 days").font(.caption).foregroundStyle(.secondary)
                     }
                     .padding(BoardStyle.Space.m)
                     .contentShape(Rectangle())
                     .boardButton("agent-usage") { pushRoute?(UsageRoute(botId: botId)) }
                 }
             } else {
-                BoardEmptyRow(text: store.usageIssue ?? "Loading usage from your Mac.")
+                BoardEmptyRow(text: store.usageIssue ?? "Loading usage")
             }
         }
         .task(id: store.connection == .connected) { await store.loadUsage() }
     }
 
-    /// What the agent used today: the cost and the tokens.
+    /// What the agent cost today.
     private func today(_ usage: AgentUsage, _ today: String) -> UsageStat {
         let day = usage.days.first { $0.day == today } ?? UsageDay(day: today)
-        return UsageStat(title: "Today", value: usage.costKnown ? UsageMath.cost(day.costUsd) : "\u{2014}",
-                         detail: UsageMath.count(day.tokens) + " tokens")
+        return UsageStat(title: "Today", value: usage.costKnown ? UsageMath.cost(day.costUsd) : "\u{2014}")
     }
 
     private func turns(_ week: UsageSummary) -> UsageStat {
-        UsageStat(title: "Turns", value: UsageMath.count(week.total.turns), detail: UsageMath.count(week.total.toolCalls) + " tool calls")
+        UsageStat(title: "Turns", value: UsageMath.count(week.total.turns))
     }
 
     private func tokens(_ week: UsageSummary) -> UsageStat {
-        UsageStat(title: "Tokens", value: UsageMath.count(week.total.tokens),
-                  detail: UsageMath.count(week.total.tokensIn) + " in · " + UsageMath.count(week.total.outputTokens) + " out")
+        UsageStat(title: "Tokens", value: UsageMath.count(week.total.tokens))
     }
 
     private func cost(_ week: UsageSummary) -> UsageStat {
-        UsageStat(title: "7 days", value: week.cost, detail: week.costDetail)
+        UsageStat(title: "7 days", value: week.cost, detail: week.costNote)
     }
 
     private func time(_ week: UsageSummary) -> UsageStat {
-        UsageStat(title: "Time working", value: UsageMath.duration(week.total.workingSeconds),
-                  detail: UsageMath.count(week.total.modelCalls) + " model calls")
+        UsageStat(title: "Time working", value: UsageMath.duration(week.total.workingSeconds))
     }
 }
 
-/// The usage page: the numbers of a range, a chart by day or by week, each agent, and each model.
+/// The usage page: the numbers of a range, a chart by day or by week, each agent, and each model. Data only: the bar
+/// has the title, a number has its name, the chart has its axis values, and a note shows only for a number that did
+/// not load.
 struct UsageView: View {
     @Environment(AppStore.self) private var store
     @Environment(\.pushRoute) private var pushRoute
@@ -191,8 +191,6 @@ struct UsageView: View {
 
     var body: some View {
         BoardPage {
-            BoardPageTitle(title: bot.map { $0.name + " usage" } ?? "Usage",
-                           detail: botId == nil ? "All agents on your Mac" : "Turns, tokens, cost and time of this agent")
             if let report = store.usage {
                 let agents = store.usageOf(botId)
                 let summary = UsageSummary(agents: agents, range: range, today: report.today)
@@ -203,39 +201,28 @@ struct UsageView: View {
                     chips(UsageMetric.allCases, selected: metric, title: \.title) { metric = $0 }
                         .accessibilityIdentifier("usage-metric")
                     UsageChart(buckets: summary.buckets, metric: metric, byWeek: range.byWeek).frame(height: 220)
-                    HStack(spacing: BoardStyle.Space.m) {
-                        if metric == .tokens {
-                            legend("In", BoardStyle.ink.opacity(0.7))
-                            legend("Out", BoardStyle.accent)
-                        }
-                        Text(range.byWeek ? "By week" : "By day")
-                    }
-                    .font(.caption).foregroundStyle(.secondary)
                 }
                 .padding(BoardStyle.Space.m)
                 .background(BoardStyle.surface, in: RoundedRectangle(cornerRadius: BoardStyle.Radius.small))
                 if botId == nil { agentRows(report) }
                 let models = UsageMath.models(agents)
                 if !models.isEmpty {
-                    BoardSection("Models · last \(report.days) days", count: models.count) {
+                    BoardSection("Models · \(report.days) days", count: models.count) {
                         ForEach(models) { model in
-                            BoardRow(symbol: "cpu", title: store.modelCatalog?.models.first { $0.id == model.model }?.name ?? model.model,
+                            BoardRow(title: store.modelCatalog?.models.first { $0.id == model.model }?.name ?? model.model,
                                      detail: model.provider.isEmpty ? nil : model.provider,
                                      value: UsageMath.count(model.tokens) + " tokens" + (summary.costKnown ? " · " + UsageMath.cost(model.costUsd) : ""),
                                      chevron: false)
                         }
                     }
                 }
-                Text("Hermes records turns, tool calls and time by message, and tokens and cost by session. A day gets the share of a session that equals its share of the model calls."
-                     + (summary.costEstimated ? " Cost is an estimate at list prices, not a bill." : ""))
-                    .font(.footnote).foregroundStyle(.secondary)
             } else if let issue = store.usageIssue {
-                QuietEmptyState(symbol: "chart.bar", title: "No usage yet", message: issue)
+                BoardLoadNotice(title: "Usage unavailable", message: issue) { Task { await store.loadUsage(force: true) } }
             } else {
-                ProgressView().frame(maxWidth: .infinity).padding(.vertical, 70)
+                BoardLoading(title: "Loading usage")
             }
         }
-        .navigationTitle("Usage").inlineNavigationTitle()
+        .navigationTitle(bot.map { $0.name + " usage" } ?? "Usage").inlineNavigationTitle()
         .task(id: store.connection == .connected) { await store.loadUsage() }
         .refreshable { await store.loadUsage(force: true) }
     }
@@ -243,15 +230,12 @@ struct UsageView: View {
     private func stats(_ summary: UsageSummary) -> some View {
         let total = summary.total
         let tiles = [
-            UsageStat(title: "Turns", value: UsageMath.count(total.turns), detail: UsageMath.count(total.modelCalls) + " model calls"),
-            UsageStat(title: "Tokens in", value: UsageMath.count(total.tokensIn), detail: UsageMath.cached(total)),
-            UsageStat(title: "Tokens out", value: UsageMath.count(total.outputTokens),
-                      detail: total.reasoningTokens > 0 ? UsageMath.count(total.reasoningTokens) + " reasoning" : nil),
-            UsageStat(title: "Cost", value: summary.cost, detail: summary.costDetail),
-            UsageStat(title: "Time working", value: UsageMath.duration(total.workingSeconds),
-                      detail: total.turns > 0 ? UsageMath.duration(total.workingSeconds / total.turns) + " per turn" : nil),
-            UsageStat(title: "Tool calls", value: UsageMath.count(total.toolCalls),
-                      detail: total.turns > 0 ? String(format: "%.1f per turn", Double(total.toolCalls) / Double(total.turns)) : nil),
+            UsageStat(title: "Turns", value: UsageMath.count(total.turns)),
+            UsageStat(title: "Tokens in", value: UsageMath.count(total.tokensIn)),
+            UsageStat(title: "Tokens out", value: UsageMath.count(total.outputTokens)),
+            UsageStat(title: "Cost", value: summary.cost, detail: summary.costNote),
+            UsageStat(title: "Time working", value: UsageMath.duration(total.workingSeconds)),
+            UsageStat(title: "Tool calls", value: UsageMath.count(total.toolCalls)),
         ]
         // Three numbers in a row of a Mac window, two on an iPhone, so each row is full.
         #if os(macOS)
@@ -275,14 +259,20 @@ struct UsageView: View {
             let summary = UsageSummary(agents: [usage], range: range, today: report.today)
             return summary.total.isEmpty ? nil : (bot, summary)
         }.sorted { (metric.value($0.1.total), $1.0.name) > (metric.value($1.1.total), $0.0.name) }
-        BoardSection("Agents", count: rows.count) {
-            if rows.isEmpty { BoardEmptyRow(text: "No agent worked in this range.") }
+        // The list of the Projects page, so it has that name.
+        BoardSection("Projects", count: rows.count) {
+            if rows.isEmpty { BoardEmptyRow(text: "No work in this range.") }
             ForEach(rows, id: \.0.id) { bot, summary in
                 HStack(spacing: BoardStyle.Space.m) {
                     VStack(alignment: .leading, spacing: BoardStyle.Space.line) {
                         Text(bot.name).lineLimit(1)
-                        Text("\(UsageMath.count(summary.total.turns)) turns · \(UsageMath.count(summary.total.tokens)) tokens · \(UsageMath.duration(summary.total.workingSeconds))")
-                            .font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
+                        // The whole line where it fits. A narrow row leaves the time out, so no number is cut.
+                        let counts = "\(UsageMath.count(summary.total.turns)) turns · \(UsageMath.count(summary.total.tokens)) tokens"
+                        ViewThatFits(in: .horizontal) {
+                            Text(counts + " · " + UsageMath.duration(summary.total.workingSeconds))
+                            Text(counts)
+                        }
+                        .font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
                     }
                     Spacer(minLength: BoardStyle.Space.s)
                     Text(metric == .cost || metric == .tokens ? summary.cost : metric.text(metric.value(summary.total)))
@@ -304,13 +294,6 @@ struct UsageView: View {
                     ChipButton(title: value[keyPath: title], selected: value == selected) { choose(value) }
                 }
             }
-        }
-    }
-
-    private func legend(_ title: String, _ color: Color) -> some View {
-        HStack(spacing: BoardStyle.Space.xs) {
-            RoundedRectangle(cornerRadius: 2).fill(color).frame(width: 8, height: 8)
-            Text(title)
         }
     }
 }
