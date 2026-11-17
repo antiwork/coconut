@@ -8,6 +8,16 @@ ROOT = Path(__file__).resolve().parents[1]
 SMOKE = ('test_idempotency_rejects_payload_and_device_collisions',
          'test_message_request_id_survives_retry_and_restart',
          'test_pairing_expiry_single_use_and_rate_limit')
+# Git names the repository of the hook in these, and GIT_DIR outranks the -C of a command. A test that makes a
+# repository of its own would commit into this one, and its index, refs and core.bare would change.
+HOOK_GIT = ('GIT_DIR', 'GIT_WORK_TREE', 'GIT_INDEX_FILE', 'GIT_COMMON_DIR', 'GIT_PREFIX', 'GIT_NAMESPACE',
+            'GIT_OBJECT_DIRECTORY', 'GIT_ALTERNATE_OBJECT_DIRECTORIES')
+
+
+def environment():
+    """The tree under test on PYTHONPATH, without the repository of the hook that runs the tests."""
+    return {**{key: value for key, value in os.environ.items() if key not in HOOK_GIT},
+            'PYTHONPATH': str(ROOT / 'backend')}
 
 
 def checks(paths):
@@ -37,10 +47,10 @@ def main():
     if not commands:
         print('No service regressions needed for these staged files. Run app checks locally when needed.')
         return
-    environment = dict(os.environ, PYTHONPATH=str(ROOT / 'backend'))
+    env = environment()
     for command in commands:
         print('Local regression:', ' '.join(command), flush=True)
-        subprocess.run([sys.executable, *command], cwd=ROOT, env=environment, check=True)
+        subprocess.run([sys.executable, *command], cwd=ROOT, env=env, check=True)
 
 
 if __name__ == '__main__':

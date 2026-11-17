@@ -1,5 +1,7 @@
 """The hook selects local regressions without turning every commit into a full suite."""
+import os
 import unittest
+from unittest.mock import patch
 
 import pre_commit
 
@@ -20,3 +22,10 @@ class PreCommitTests(unittest.TestCase):
     def test_script_changes_run_their_own_regressions(self):
         self.assertEqual(pre_commit.checks(['scripts/release_gate.py', 'scripts/test_release_gate.py']),
                          [['-m', 'unittest', 'discover', '-s', 'scripts', '-p', 'test_release_gate.py']])
+
+    def test_the_tests_never_inherit_the_repository_of_the_hook(self):
+        with patch.dict(os.environ, {'GIT_DIR': '/tmp/hook/.git', 'GIT_INDEX_FILE': '/tmp/hook/.git/index'}):
+            environment = pre_commit.environment()
+        self.assertNotIn('GIT_DIR', environment)
+        self.assertNotIn('GIT_INDEX_FILE', environment)
+        self.assertEqual(environment['PYTHONPATH'], str(pre_commit.ROOT / 'backend'))
