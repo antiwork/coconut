@@ -128,6 +128,7 @@ Each agent is one Hermes profile of the person, keyed by the profile name. `defa
 - Coconut creates a profile only through the Hermes profile API, once. A failure fails the request. A folder that Hermes left behind becomes an agent at the next scan.
 - A settings write to a missing profile fails. Coconut never creates a profile folder itself.
 - Coconut keeps its own files of an agent in `<data-dir>/bots/<uuid>`: workspace, browser, temporary files, and terminal scripts.
+- An agent can have more chats. `POST /v1/bots/<id>/chats` makes a bot with `chat_of` (the agent's ID), a new session, and a `profiles` row with the name and folder of the agent's profile. Hermes creates nothing and no file is copied, so the chat has the agent's instructions, model, access, skills, memory and Library. Its first message is its title (`chat_title`). A chat can be archived or removed by itself; removing the agent removes its chats.
 - Deleting an agent means "Remove from Coconut": the folder stays, and a scan does not add it again. To delete the Hermes profile itself, the person sends `POST /v1/bots/<id>/profile/delete` with `{"confirm": "<profile name>"}`. Coconut uses Hermes's `delete_profile` and never deletes `default`. An agent cannot request this deletion.
 `HOME` remains the Mac account home so macOS Keychain works.
 `USER` identifies the Mac account so Claude Code selects its saved Keychain login.

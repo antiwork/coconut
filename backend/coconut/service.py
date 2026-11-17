@@ -158,6 +158,7 @@ from .silent_responses import SilentResponses, is_silent_message, is_silent_resp
 from .technical_lane import TechnicalLane
 from .hermes_setup import HermesSetup
 from .bot_profiles import BotProfiles
+from .agent_chats import AgentChats
 from .gateway_chat import GatewayChat
 from .documents import SCHEMA as DOCUMENTS_SCHEMA, Documents
 from .team import SCHEMA as TEAM_SCHEMA, Team
@@ -190,7 +191,7 @@ def marked(field):
     return f"json_type(data,'$.{field}') IN ('object','true')"
 
 
-class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness, WithdrawalCorrections, WorkRecovery, WorkSources, SilentResponses, TrackedWork, WorkStatus, WorkProgress, PullRequestReviews, DecisionInbox, BackgroundProcesses, NativeExecution, NativeRoutines, ApprovalUpdates, ParallelWorkUpdates, ServiceRestart, WorkspaceRecovery, WorktreeRetirement, SessionMaintenance, DatabaseMaintenance, TechnicalLane, HermesSetup, BotProfiles, GatewayChat, Documents, Team, Usage):
+class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness, WithdrawalCorrections, WorkRecovery, WorkSources, SilentResponses, TrackedWork, WorkStatus, WorkProgress, PullRequestReviews, DecisionInbox, BackgroundProcesses, NativeExecution, NativeRoutines, ApprovalUpdates, ParallelWorkUpdates, ServiceRestart, WorkspaceRecovery, WorktreeRetirement, SessionMaintenance, DatabaseMaintenance, TechnicalLane, HermesSetup, BotProfiles, AgentChats, GatewayChat, Documents, Team, Usage):
     ACTIVE = {'queued', 'working', 'scheduled', 'needs_you', 'paused', 'waiting'}
     TABLES = ('bots', 'tasks', 'messages', 'decisions', 'artifacts', 'routines')
     BOT_CHANGE_LIMIT = 8
@@ -1303,6 +1304,7 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
                 raise ServiceError(404, 'This agent was deleted.')
             from .coconut_chat import refuse_removal
             refuse_removal(self, bot_id, data)
+            self._check_chat_change(bot, data)
             if 'profile_id' in data and data['profile_id'] != bot['profile_id']:
                 raise ServiceError(409, 'An agent keeps its original Hermes profile ID.')
             for field in ('instructions', 'memory'):
@@ -1583,6 +1585,9 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
             if bot.get('_deleted'):
                 raise ServiceError(404, 'This agent was deleted.')
             if len(parts) == 3 and method == 'PATCH':
+                self._check_chat_change(bot, data)
+                if 'chat_title' in data:
+                    bot['chat_title'] = data['chat_title'].strip()
                 if 'model_override' in data:
                     bot['model_override'] = self._model_override(data['model_override'], self._request_model_catalog)
                     # null makes the bot follow the default model again. A model makes it the bot's own.
@@ -1606,6 +1611,7 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
                         bot[field] = data[field]
                 self._sync_profile(bot)
                 self._put('bots', bot)
+                self._follow_agent(bot)
                 if self.team_store.shared(bot['id']):
                     # The team sync writes the `bot` entry again, or deletes it for an archived bot (team_pages.py).
                     self.team_wake()
@@ -1616,7 +1622,11 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
                 return self._bot_view(bot, self._request_model_catalog)
             if len(parts) == 3 and method == 'DELETE':
                 self._delete_bot(bot, callbacks, audit={'deleted_by': device})
+                self._delete_agent_chats(bot, callbacks, audit={'deleted_by': device})
                 return {'ok': True}
+            if parts[3:] == ['chats'] and method == 'POST':
+                # A new chat: a fresh conversation with the same agent (agent_chats.py).
+                return self._bot_view(self._new_chat(bot), self._request_model_catalog)
             if parts[3:] == ['profile', 'delete'] and method == 'POST':
                 return self._delete_profile_request(bot, data, callbacks, device)
             if parts[3:] == ['read'] and method == 'POST':
@@ -2335,6 +2345,8 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
         origin = self._get('bots', conversation_bot_id)
         if origin['archived'] or origin.get('_deleted'):
             raise ServiceError(409, 'Restore this conversation before sending work.')
+        if human_authored and record_message and not source_task:
+            self._title_chat(origin, text)
         recipients = self._recipient_ids(data.get('recipient_bot_ids', []))
         if recipients:
             if mode == 'steer':
@@ -3697,7 +3709,7 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
                     timing.mark('context_decisions')
                     provider_task.update(view._bot_deletion_input(task))
                     provider_task['attachments'] = [view._public(view._get('artifacts', a)) | {'content_base64': None} | view.turn_attachment_content(a) for a in task['_turn_attachment_ids']]
-                    provider_task['_available_bots'] = [{'id': b['id'], 'name': b['name'], 'role': b['role']} for b in view._all('bots') if b['id'] != bot['id'] and not b['archived'] and not b.get('_deleted')]
+                    provider_task['_available_bots'] = [{'id': b['id'], 'name': b['name'], 'role': b['role']} for b in view._all('bots') if b['id'] != bot['id'] and not b['archived'] and not b.get('_deleted') and not b.get('chat_of')]
                     if task.get('_is_return') and task.get('source_task_id'):
                         rows = view.db.execute(
                             "SELECT data FROM messages WHERE json_extract(data,'$.task_id')=? "

@@ -1,5 +1,8 @@
 """Map each Coconut bot to one Hermes profile of the person, by the profile name.
 
+An agent can have more chats (bots with `chat_of`). Each chat has a row of its own with the name and the folder of the
+agent's profile, so several rows can share a name. The row of the agent is the oldest one.
+
 The `profiles` table in coconut.sqlite3 maps a bot UUID to a profile name and its folder. `default` is the Hermes home
 itself ($HERMES_HOME or ~/.hermes). Each other profile is `<Hermes home>/profiles/<name>`. Coconut writes no marker
 file into a profile and does not follow renames: a renamed folder is a missing bot and a new bot.
@@ -14,7 +17,7 @@ from pathlib import Path
 import re
 import sqlite3
 
-SCHEMA = ('CREATE TABLE IF NOT EXISTS profiles (bot_id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE, home TEXT NOT NULL, '
+SCHEMA = ('CREATE TABLE IF NOT EXISTS profiles (bot_id TEXT PRIMARY KEY, name TEXT NOT NULL, home TEXT NOT NULL, '
           'state TEXT NOT NULL, seen_at TEXT NOT NULL)')
 # active: the folder exists. missing: the folder is gone; the bot keeps its history and returns with the folder.
 # removed: the person removed the bot from Coconut. The folder stays, and a scan does not add it again.
@@ -63,12 +66,19 @@ def scan(hermes_home: str | Path) -> dict[str, Path]:
 
 def ensure_table(db: sqlite3.Connection) -> None:
     db.execute(SCHEMA)
+    found = db.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='profiles'").fetchone()
+    if found and 'UNIQUE' in found[0]:
+        # An earlier table allowed one bot for each profile name. The chats of an agent share its name.
+        db.execute('ALTER TABLE profiles RENAME TO profiles_unique_name')
+        db.execute(SCHEMA)
+        db.execute('INSERT INTO profiles SELECT bot_id,name,home,state,seen_at FROM profiles_unique_name ORDER BY rowid')
+        db.execute('DROP TABLE profiles_unique_name')
 
 
 def rows(db: sqlite3.Connection) -> dict[str, dict]:
     ensure_table(db)
     return {row[0]: dict(bot_id=row[0], name=row[1], home=row[2], state=row[3], seen_at=row[4])
-            for row in db.execute('SELECT bot_id,name,home,state,seen_at FROM profiles')}
+            for row in db.execute('SELECT bot_id,name,home,state,seen_at FROM profiles ORDER BY rowid')}
 
 
 def write(db: sqlite3.Connection, row: dict) -> None:
@@ -102,12 +112,12 @@ def lookup(data_dir, bot_id: str) -> dict | None:
 
 
 def bot_for_home(data_dir, home) -> str | None:
-    found = _query(data_dir, "SELECT bot_id FROM profiles WHERE home=? AND state!='removed'", (str(Path(home).absolute()),))
+    found = _query(data_dir, "SELECT bot_id FROM profiles WHERE home=? AND state!='removed' ORDER BY rowid", (str(Path(home).absolute()),))
     return found[0][0] if found else None
 
 
 def homes(data_dir) -> list[str]:
-    return [row[0] for row in _query(data_dir, "SELECT home FROM profiles WHERE state!='removed'")]
+    return [row[0] for row in _query(data_dir, "SELECT DISTINCT home FROM profiles WHERE state!='removed'")]
 
 
 def slug(name: str, taken) -> str:

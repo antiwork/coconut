@@ -447,7 +447,7 @@ class Team(TeamSync, TeamSocket, TeamPages, TeamMessages, TeamChats, TeamDirects
         with self.lock:
             rooms = [self._team_view(room, direct) for room in self.team_store.rooms()]
             bots = sorted(({'id': bot['id'], 'name': bot['name']} for bot in self._all('bots')
-                           if not bot.get('archived') and not bot.get('_deleted')),
+                           if not bot.get('archived') and not bot.get('_deleted') and not bot.get('chat_of')),
                           key=lambda bot: (bot['name'].casefold(), bot['id']))
         return {'rooms': rooms, 'helper': self.team_helper.available, 'mac_bots': bots}
 

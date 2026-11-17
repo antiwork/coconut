@@ -141,27 +141,33 @@ class BotProfiles:
             return []
         changes = []
         with self.transaction():
-            by_name = {row['name']: row for row in profile_registry.rows(self.db).values()}
+            # The chats of an agent share its profile, so a name can have several rows.
+            by_name = {}
+            for row in profile_registry.rows(self.db).values():
+                by_name.setdefault(row['name'], []).append(row)
             for name, home in found.items():
-                row = by_name.get(name)
-                if row is None:
+                rows = by_name.get(name)
+                if not rows:
                     title = profile_registry.meta_value(home, 'display_name')[:80] or (
                         DEFAULT_BOT_NAME if name == profile_registry.DEFAULT else name)
                     role = profile_registry.meta_value(home, 'description')[:160]
                     self._create_bot({'name': title, 'role': role}, audit={'hermes_profile': name},
                                      profile=dict(name=name, home=str(home)))
                     changes.append(('new', name))
-                elif row['state'] == 'missing':
-                    self._set_profile_state(dict(row, home=str(home)), 'active')
-                    changes.append(('returned', name))
-                elif row['state'] == 'active' and row['home'] != str(home):
-                    # The service started with another Hermes home (HERMES_HOME). The name now maps to this folder.
-                    self._write_profile_row(dict(row, home=str(home), seen_at=profile_registry.now()))
-                    changes.append(('moved', name))
-            for row in by_name.values():
-                if row['state'] == 'active' and row['name'] not in found:
-                    self._set_profile_state(row, 'missing')
-                    changes.append(('missing', row['name']))
+                    continue
+                for row in rows:
+                    if row['state'] == 'missing':
+                        self._set_profile_state(dict(row, home=str(home)), 'active')
+                        changes.append(('returned', name))
+                    elif row['state'] == 'active' and row['home'] != str(home):
+                        # The service started with another Hermes home (HERMES_HOME). The name now maps to this folder.
+                        self._write_profile_row(dict(row, home=str(home), seen_at=profile_registry.now()))
+                        changes.append(('moved', name))
+            for rows in by_name.values():
+                for row in rows:
+                    if row['state'] == 'active' and row['name'] not in found:
+                        self._set_profile_state(row, 'missing')
+                        changes.append(('missing', row['name']))
         if changes:
             LOG.info('The Hermes profiles changed: %s', ', '.join(f'{change} {name}' for change, name in changes))
         return changes
@@ -353,12 +359,15 @@ class BotProfiles:
         row = self.profiles.rows.get(bot['id'])
         if row is None:
             raise ServiceError(409, NO_PROFILE)
+        if bot.get('chat_of'):
+            raise ServiceError(409, 'A chat shares the Hermes profile of its agent. Delete the profile from the agent.')
         home = Path(row['home'])
         if row['name'] == profile_registry.DEFAULT or home.parent != self.hermes_home / 'profiles':
             raise ServiceError(409, 'Coconut deletes only a named profile in <Hermes home>/profiles, never default.')
         if not isinstance(data, dict) or set(data) != {'confirm'} or data['confirm'] != row['name']:
             raise ServiceError(400, f'Type the profile name, {row["name"]}, in confirm to delete this Hermes profile.')
         self._delete_bot(bot, callbacks, audit={'deleted_by': device, 'hermes_profile_deleted': row['name']})
+        self._delete_agent_chats(bot, callbacks, audit={'deleted_by': device, 'hermes_profile_deleted': row['name']})
         callbacks.append(lambda: self._finish_profile_deletion(bot['id'], row['name']))
         return {'ok': True, 'profile': row['name']}
 
@@ -377,3 +386,7 @@ class BotProfiles:
         with self.transaction():
             self.db.execute('DELETE FROM profiles WHERE bot_id=? AND name=?', (bot_id, name))
             self.profiles.rows.pop(bot_id, None)
+            # The rows of the agent's other chats go too. They are removed with the agent.
+            for chat_id in [key for key, row in self.profiles.rows.items() if row['name'] == name and row['state'] == 'removed']:
+                self.db.execute('DELETE FROM profiles WHERE bot_id=?', (chat_id,))
+                self.profiles.rows.pop(chat_id, None)

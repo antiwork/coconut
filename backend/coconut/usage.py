@@ -164,7 +164,8 @@ class Usage:
                 return cached[2]
             # The list of the agents comes from a read view, so the read of the stores holds no service lock.
             with self._read_view() as view, view._read_transaction():
-                bots = [dict(id=bot['id']) for bot in view._all('bots')]
+                # The chats of an agent use its profile, so the agent has their usage.
+                bots = [dict(id=bot['id']) for bot in view._all('bots') if not bot.get('chat_of')]
             agents = {}
             for bot in bots:
                 try:

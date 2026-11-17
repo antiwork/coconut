@@ -59,7 +59,7 @@ def is_coconut(service, bot_id) -> bool:
 
 def view(service, bot: dict, result: dict) -> dict:
     """The fields of the Coconut chat in a bot view: `coconut` true, and the name Coconut in place of the old name."""
-    if is_coconut(service, bot['id']):
+    if is_coconut(service, bot['id']) and not bot.get('chat_of'):
         result['coconut'] = True
         if result.get('name') in OLD_NAMES:
             result['name'] = NAME
@@ -70,14 +70,20 @@ def view(service, bot: dict, result: dict) -> dict:
 def refuse_removal(service, bot_id, data: dict | None = None) -> None:
     """The Coconut chat stays: no archive and no delete."""
     from .service_base import ServiceError
-    if is_coconut(service, bot_id) and (data is None or data.get('archived') is True):
+    if not is_coconut(service, bot_id):
+        return
+    with service.lock:
+        # A further chat of the Coconut agent can go. The Coconut chat itself stays.
+        extra = bool(service._get('bots', bot_id).get('chat_of'))
+    if not extra and (data is None or data.get('archived') is True):
         raise ServiceError(409, 'The Coconut chat stays: it is where you change Coconut.')
 
 
 def _agent(service, value):
     from .service_base import ServiceError
     text = str(value or '').strip()
-    bots = [bot for bot in service._all('bots') if not bot.get('_deleted')]
+    # A setting belongs to the agent, not to one of its chats.
+    bots = [bot for bot in service._all('bots') if not bot.get('_deleted') and not bot.get('chat_of')]
     match = next((bot for bot in bots if bot['id'] == text), None) or next(
         (bot for bot in bots if bot['name'].casefold() == text.casefold()), None)
     if match is None and text.casefold() == NAME.casefold():
@@ -100,7 +106,7 @@ def read(service) -> dict:
         approvals = {}
     agents = []
     with service.lock:
-        bots = [bot for bot in service._all('bots') if not bot.get('_deleted')]
+        bots = [bot for bot in service._all('bots') if not bot.get('_deleted') and not bot.get('chat_of')]
     for bot in bots:
         shown = view(service, bot, dict(bot))
         agents.append({'id': bot['id'], 'name': shown['name'], 'coconut': bool(shown.get('coconut')),
