@@ -1,15 +1,8 @@
-"""Library replies: a report in a chat reply goes to the Library, and each new document shows as a card in the chat.
+"""Library replies: each new document shows as a card in the chat.
 
-The model rule (card_tools.LIBRARY_INSTRUCTIONS) asks each bot to save a report as a document. A bot can forget the
-rule, and a gateway that started before an update does not have it. So Coconut itself keeps a report: when a turn
-ends with a long, structured reply and the bot saved no document in that turn, Coconut saves the reply as a Markdown
-document of the bot. The reply stays in the chat. Its photos stay in the document as `coconut-file://` lines, which the
-phone loads through the Mac.
-
-Coconut keeps a report only for a turn that a person's message started or joined (asked_by_person). A routine, an
-exchange between bots and automatic work keep their pages only when the bot saves them.
-
-A report keeps one document for each title. The same report on another day adds a version to that document.
+Coconut does not save a chat reply as a page by itself. Those pages cost a model turn each and were rarely wanted: a
+page exists only when a bot saves one because the person asked. The helpers that read the shape of a report stay for
+the removal of pages that earlier builds kept (remove_unasked_reports).
 """
 from __future__ import annotations
 
@@ -128,22 +121,6 @@ def asked_by_person(service, task: dict) -> bool:
         if message and json.loads(message[0]).get('_human_source_kind') == 'chat':
             return True
     return False
-
-
-def keep_report(service, task: dict, person_asked: bool):
-    """Save the report of a finished turn as a document, when a person asked for it (asked_by_person). The caller
-    holds the transaction."""
-    if not person_asked or saved_in_turn(service, task):
-        return
-    text = turn_reply(service, task)
-    if not text or not is_report(text):
-        return
-    bot = service._get('bots', task['bot_id'])
-    if bot['archived'] or bot.get('_deleted'):
-        return
-    document = document_of(text, task.get('title') or 'Report')
-    service._write_document(task, bot, document['key'], document['title'], 'markdown', document['content'],
-                            document['summary'], expires=None)
 
 
 def show_card(service, task: dict, document: dict, created: bool):

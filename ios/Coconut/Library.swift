@@ -512,8 +512,8 @@ struct DocumentView: View {
 
 }
 
-/// A document in a chat: a card that opens it in the Library. The service adds one when a bot saves a new document, or
-/// when Coconut keeps a report of the bot (backend/coconut/library_replies.py).
+/// A document in a chat: a card that opens it in the Library. The service adds one when a bot saves a new document
+/// (backend/coconut/library_replies.py).
 struct DocumentCard: View {
     @Environment(AppStore.self) private var store
     @Environment(\.openDocument) private var openDocument
