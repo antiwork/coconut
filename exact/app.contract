@@ -1,8 +1,9 @@
 // Coconut on Exact. Home: Needs attention, one flat list of chats (newest first) and a message box that is always open,
 // with a project picker that names the project the message goes to. A chat: its messages with Markdown, the working
 // line, and the composer. app.ts answers all of it from the preview fixture of the Swift app (ios/Coconut/Fixtures);
-// app.forma has the palette of Theme.swift. Colours, fonts, sizes and the safe area are the platform's unless a row
-// says otherwise.
+// app.forma has the palette of Theme.swift. The rows write its values out, because the SDK snapshot that Exact Build
+// compiles with (2026-11-14) refuses a token name as a colour; name the tokens again once its catalog is newer.
+// Colours, fonts, sizes and the safe area are the platform's unless a row says otherwise.
 use Ack, Chat, Home, Made, Time from "./shapes.contract"
 use ArtifactCard, AttentionRow, Bubble, ChatRowView, DecisionCard, Face, NoticeCard, OptionButton, WorkingLine from "./parts.contract"
 
@@ -118,7 +119,7 @@ component Coconut
     main navigationKey=`${top(nav).id}` navigationBack="back" interactive-widget="resizes-content" testId="app" width="100%" height="100%"
       for e in stack(nav) key=e.id
         if e.name == "home"
-          column navigationKey=`${e.id}` navigationScroll="home-scroll" position="absolute" inset=0 display="flex" flex-direction="column" background-color="surface.page"
+          column navigationKey=`${e.id}` navigationScroll="home-scroll" position="absolute" inset=0 display="flex" flex-direction="column" background-color="light-dark(#ffffff, #111111)"
             header display="flex" align-items="center" padding="8px 16px"
               text "Coconut" role="heading" aria-level=1 flex=1
             scroll id="home-scroll" flex=1 min-height=0 keyboardDismissMode="on-drag" testId="home-scroll"
@@ -126,14 +127,14 @@ component Coconut
                 column gap=8 padding="4px 16px 12px" testId="attention-card"
                   row align-items="center" gap=8 testId="attention-header"
                     text "Needs attention" font="-exact-subheadline" font-weight=600 color="-exact-system-red"
-                    text `${attentionTotal}` font="-exact-caption1" font-weight=600 font-variant-numeric="tabular-nums" color="ink.on-red" background-color="-exact-system-red" border-radius=9 min-width=18 height=18 padding="0px 6px" text-align="center" line-height="18px" box-sizing="border-box" testId="attention-count"
-                  column border-radius=12 background-color="attention.fill" border-width=1 border-style="solid" border-color="attention.line" overflow="hidden"
+                    text `${attentionTotal}` font="-exact-caption1" font-weight=600 font-variant-numeric="tabular-nums" color="#ffffff" background-color="-exact-system-red" border-radius=9 min-width=18 height=18 padding="0px 6px" text-align="center" line-height="18px" box-sizing="border-box" testId="attention-count"
+                  column border-radius=12 background-color="light-dark(rgb(255 56 60 / 0.08), rgb(255 66 69 / 0.08))" border-width=1 border-style="solid" border-color="light-dark(rgb(255 56 60 / 0.22), rgb(255 66 69 / 0.22))" overflow="hidden"
                     for a, i in home.attention key=a.id
                       AttentionRow(item=a, first=(i == 0), choose=openChat(a.chat))
               for c in home.chats key=c.id
                 ChatRowView(chat=c, now=now, offset=time.utcOffset, choose=openChat(c.id))
             column flex-shrink=0 padding="6px 12px 8px" testId="home-bar"
-              column border-radius=24 background-color="surface.card" testId="home-box"
+              column border-radius=24 background-color="light-dark(#f4f4f4, #212121)" testId="home-box"
                 textarea id="home-input" value=draft input=editDraft rows=1 field-sizing="content" max-height=140 placeholder=`Message ${home.target.name}` aria-label="Message" border="none" background-color="transparent" min-width=0 padding="12px 16px 4px" testId="home-input"
                 row align-items="center" gap=4 height=44 padding="0px 6px 6px 6px"
                   button appearance="none" popovertarget="project-menu" retainFocus=true aria-label=`Project, ${home.target.name}` display="flex" flex-direction="row" align-items="center" gap=6 padding="4px 8px" min-width=0 testId="project-picker"
@@ -144,7 +145,7 @@ component Coconut
                   button appearance="none" press=sendHome disabled=(not hasText or pending(started)) retainFocus=true aria-label="Send" width=32 height=32 border-radius=16 background-color="-exact-label" opacity=(hasText ? 1 : 0.35) display="flex" align-items="center" justify-content="center" testId="home-send"
                     image "symbol:send" width=16 height=16 color="-exact-background"
         if e.name == "chat"
-          column navigationKey=`${e.id}` navigationScroll="transcript" position="absolute" inset=0 display="flex" flex-direction="column" background-color="surface.page"
+          column navigationKey=`${e.id}` navigationScroll="transcript" position="absolute" inset=0 display="flex" flex-direction="column" background-color="light-dark(#ffffff, #111111)"
             header display="flex" align-items="center" padding="8px 16px"
               text chat.title role="heading" aria-level=2 line-clamp=1 flex=1 testId="chat-title"
             list id="transcript" appearance="none" virtualized=true scroll-start="end" scrollFollowEnd=true keyboardDismissMode="interactive" flex=1 min-height=0 testId="transcript"
@@ -166,7 +167,7 @@ component Coconut
                   else
                     WorkingLine(turn=chat.turn, now=now)
             column flex-shrink=0 padding="6px 12px 8px" testId="composer-bar"
-              column position="relative" border-radius=24 background-color="surface.card" testId="composer-box"
+              column position="relative" border-radius=24 background-color="light-dark(#f4f4f4, #212121)" testId="composer-box"
                 if attached.length > 0
                   row flex-wrap="wrap" gap=6 padding="10px 12px 0px 12px" testId="attachments"
                     for n in attached key=n
