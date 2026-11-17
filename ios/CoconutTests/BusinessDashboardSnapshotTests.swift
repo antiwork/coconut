@@ -58,7 +58,7 @@ final class BusinessDashboardSnapshotTests: XCTestCase {
         let text = try renderHome(model, width: 390, name: "home-clear-light", scheme: .light)
         XCTAssertTrue(text.contains("Nothing past SLA"))
         XCTAssertFalse(text.contains("All clear"))
-        XCTAssertEqual(text.components(separatedBy: "past SLA").count, 2)
+        XCTAssertFalse(text.replacingOccurrences(of: "Nothing past SLA", with: "").contains("past SLA"))
         XCTAssertTrue(text.contains("Risk review"))
     }
 
@@ -85,15 +85,26 @@ final class BusinessDashboardSnapshotTests: XCTestCase {
             try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
             try (png as Data).write(to: folder.appendingPathComponent(attachment.name! + ".png"))
         }
+        // Vision can read a block of a tall image as upside down (the Mac phone-width render lost "GMV" that way),
+        // so read the whole image and then overlapping bands of it. A text can therefore appear more than once.
+        var lines = try recognizedText(image)
+        for top in stride(from: 0, to: image.height, by: 900) {
+            let band = CGRect(x: 0, y: top, width: image.width, height: min(1200, image.height - top))
+            lines += try recognizedText(try XCTUnwrap(image.cropping(to: band)))
+        }
+        // Vision occasionally reads the monospaced zero before a unit as O (e.g. $12.OM).
+        // Exact numeric formatting is also asserted in BusinessTests; normalize only that glyph ambiguity.
+        return lines.joined(separator: "\n")
+            .replacingOccurrences(of: #"(?<=\.)O(?=[KMB]\b)"#, with: "0", options: .regularExpression)
+    }
+
+    private func recognizedText(_ image: CGImage) throws -> [String] {
         let request = VNRecognizeTextRequest()
         request.recognitionLevel = .accurate
         request.recognitionLanguages = ["en-US"]
         request.usesLanguageCorrection = false
         try VNImageRequestHandler(cgImage: image).perform([request])
-        // Vision occasionally reads the monospaced zero before a unit as O (e.g. $12.OM).
-        // Exact numeric formatting is also asserted in BusinessTests; normalize only that glyph ambiguity.
-        return (request.results ?? []).compactMap { $0.topCandidates(1).first?.string }.joined(separator: "\n")
-            .replacingOccurrences(of: #"(?<=\.)O(?=[KMB]\b)"#, with: "0", options: .regularExpression)
+        return (request.results ?? []).compactMap { $0.topCandidates(1).first?.string }
     }
 
     #if os(macOS)
