@@ -46,7 +46,8 @@ So put the column that names each row first, and a short status last.
 
 ## The rules for content
 
-- A column header has at most 16 characters.
+- A column header has at most 16 characters, also the header of a key-number tile. Count spaces: a three-word label such as "New GitHub logins" is 17 and triggers a note. Shorten or drop the tile before the first save.
+- Before a new page, list your documents with `coconut_read_document` (no key) and update the one that covers the topic instead of adding a second page.
 - A column holds one fact. Do not join several facts with dashes in one cell.
 - Write an age as "6 days", not as a date.
 - Write the days of a chart as dates.

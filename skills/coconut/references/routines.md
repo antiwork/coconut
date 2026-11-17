@@ -33,6 +33,10 @@ A script ending in `.sh` or `.bash` runs with bash. Hermes runs any other script
 
 To remove the gate, run `hermes cron edit <id> --script ""`.
 
+`hermes cron run <id>` only triggers the job: the gateway runs it at its next tick, so wait about a minute, then read the run in `~/.hermes/profiles/<profile>/cron/output/<id>/` (newest `.md`) and the gate's own log. A run whose output shows `## Script Error` with "dependency environment interpreter is missing" means Hermes' Python environment for scripts is gone; wrap the gate in a `.sh` file that sets `PATH` and runs `exec /usr/bin/python3 "$(dirname "$0")/<gate>.py"`, then point the job at the `.sh`.
+
+A gate that calls `gh` from cron needs `PATH` with `/opt/homebrew/bin`; set it in the wrapper.
+
 ## Wait for delegated work
 
 Do not create a cron job to poll for the result of a delegated task or of another agent, for example a one-time job "result pickup in 10 minutes". Each such run is a model turn, and it often finds no result yet.
