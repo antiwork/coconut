@@ -64,7 +64,7 @@ struct HomeLaunchView: View {
             if conversations.isEmpty && pinned.isEmpty && filter == .unread && (coconut?.unreadCount ?? 0) == 0 {
                 Text("No unread messages.")
                     .font(.subheadline).foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity).padding(.vertical, 45)
+                    .frame(maxWidth: .infinity).padding(.vertical, BoardStyle.Space.xxl)
                     .accessibilityIdentifier("chats-empty")
                     .homeRow()
             }
@@ -72,7 +72,7 @@ struct HomeLaunchView: View {
                 // The quiet line of the Team screen for a Mac without bots.
                 Text("This Mac has no agents yet.")
                     .font(.subheadline).foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity).padding(.vertical, 45)
+                    .frame(maxWidth: .infinity).padding(.vertical, BoardStyle.Space.xxl)
                     .accessibilityIdentifier("chats-empty")
                     .homeRow()
             }
@@ -253,7 +253,7 @@ struct ArchivedAgentsView: View {
             if archived.isEmpty {
                 Text("No archived agents.")
                     .font(.subheadline).foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity).padding(.vertical, 45)
+                    .frame(maxWidth: .infinity).padding(.vertical, BoardStyle.Space.xxl)
                     .homeRow()
             }
             ForEach(archived) { bot in

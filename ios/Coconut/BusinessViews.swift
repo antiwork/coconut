@@ -80,7 +80,7 @@ struct BusinessProjectsView: View {
         List {
             ForEach(store.businessCatalog?.projects ?? []) { project in
                 NavigationLink(value: BusinessRoute.project(project.key)) {
-                    VStack(alignment: .leading, spacing: 4) {
+                    VStack(alignment: .leading, spacing: BoardStyle.Space.xs) {
                         Text(project.displayName)
                         Text(project.fullName).font(.caption).foregroundStyle(.secondary)
                     }
@@ -138,12 +138,12 @@ struct BusinessWorkListView: View {
             if loading && shownItems.isEmpty { ProgressView("Loading work") }
             ForEach(shownItems) { item in
                 NavigationLink { BusinessWorkDetailView(work: item) } label: {
-                    VStack(alignment: .leading, spacing: 5) {
+                    VStack(alignment: .leading, spacing: BoardStyle.Space.xs) {
                         Text(item.title).foregroundStyle(.primary)
                         Text([function == nil ? BusinessFunction.name(item.functionKey) : nil,
                               project == nil ? item.projectKey : nil, "#\(item.number)"].compactMap { $0 }.joined(separator: " · "))
                             .font(.caption).foregroundStyle(.secondary)
-                    }.padding(.vertical, 3)
+                    }.padding(.vertical, BoardStyle.Space.xs)
                 }.accessibilityIdentifier("business-work-" + item.id)
             }
             if !loading && shownItems.isEmpty && error == nil {
@@ -186,7 +186,7 @@ struct BusinessWorkDetailView: View {
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 20) {
+            VStack(alignment: .leading, spacing: BoardStyle.Space.xl) {
                 Text(shownWork.title).font(.title2.bold())
                 Text([BusinessFunction.name(shownWork.functionKey), shownWork.projectKey, shownWork.isOpen ? "Open" : "Completed"].compactMap { $0 }.joined(separator: " · "))
                     .font(.subheadline).foregroundStyle(.secondary)
@@ -203,7 +203,7 @@ struct BusinessWorkDetailView: View {
                 Button("Ask an agent", systemImage: "bubble.left.and.bubble.right") { asking = true }
                     .disabled(store.bots.allSatisfy(\.archived)).accessibilityIdentifier("business-ask-agent")
                 if let url = URL(string: shownWork.url) { Link("Open on GitHub", destination: url).font(.subheadline) }
-            }.frame(maxWidth: 720, alignment: .leading).padding(24).frame(maxWidth: .infinity, alignment: .leading)
+            }.frame(maxWidth: 720, alignment: .leading).padding(BoardStyle.Space.xl).frame(maxWidth: .infinity, alignment: .leading)
         }
         .background(BoardStyle.paper).navigationTitle("Work").inlineNavigationTitle()
         .sheet(isPresented: $asking) { BusinessAgentSheet(work: work) }

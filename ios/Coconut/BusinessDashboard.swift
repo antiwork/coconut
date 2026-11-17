@@ -135,12 +135,12 @@ struct BusinessReportContent: View {
 
     /// One quiet line in place of a headline: how fresh the snapshot is and what its numbers are.
     private var status: some View {
-        HStack(spacing: 6) {
+        HStack(spacing: BoardStyle.Space.s) {
             Circle().fill(report.stale ? BoardStyle.attention : BoardStyle.positive).frame(width: 7, height: 7).accessibilityHidden(true)
             Text(report.generatedAt?.apiDate.map { $0.formatted(date: .abbreviated, time: .shortened) } ?? "Unknown")
             Spacer(minLength: BoardStyle.Space.s)
             if sample {
-                Text("Sample data").font(.caption2.weight(.semibold)).padding(.horizontal, BoardStyle.Space.s).padding(.vertical, 3)
+                Text("Sample data").font(.caption2.weight(.semibold)).padding(.horizontal, BoardStyle.Space.s).padding(.vertical, BoardStyle.Space.xs)
                     .background(Color.primary.opacity(0.07), in: Capsule())
             }
         }.font(.caption).foregroundStyle(.secondary).lineLimit(1)
@@ -300,7 +300,7 @@ private struct SupportDashboard: View {
                     BarMark(x: .value("Time", SupportResolution.labels[index]), y: .value("Resolved", count), width: .ratio(0.7))
                         .foregroundStyle(index >= 6 ? BoardStyle.attention : BentoColor.money).cornerRadius(4)
                         .accessibilityLabel(SupportResolution.labels[index]).accessibilityValue("\(count) resolved")
-                        .annotation(position: .top, spacing: 2) {
+                        .annotation(position: .top, spacing: BoardStyle.Space.line) {
                             if count > 0 { Text("\(count)").font(.caption2.weight(.semibold)).monospacedDigit().foregroundStyle(.secondary) }
                         }
                 }
@@ -388,11 +388,11 @@ private struct SupportDashboard: View {
         Picker("Status", selection: $status) { Text("Open").tag("open"); Text("Closed").tag("closed") }.pickerStyle(.segmented).labelsHidden().fixedSize()
     }
     private var searchField: some View {
-        HStack(spacing: 6) {
+        HStack(spacing: BoardStyle.Space.s) {
             Image(systemName: "magnifyingglass").font(.caption).foregroundStyle(.secondary).accessibilityHidden(true)
             TextField("Search conversations", text: $search).textFieldStyle(.plain).font(.subheadline)
         }
-        .padding(.horizontal, BoardStyle.Space.s).padding(.vertical, 6)
+        .padding(.horizontal, BoardStyle.Space.s).padding(.vertical, BoardStyle.Space.s)
         .background(Color.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
     }
 
@@ -464,7 +464,7 @@ private struct RiskDashboard: View {
                 HStack(alignment: .top, spacing: BoardStyle.Space.l) {
                     ForEach(Array([first, second].enumerated()), id: \.offset) { _, part in
                         VStack(alignment: .leading, spacing: 0) {
-                            HStack(alignment: .firstTextBaseline, spacing: 5) {
+                            HStack(alignment: .firstTextBaseline, spacing: BoardStyle.Space.xs) {
                                 BentoNumber(part.1, size: .medium)
                                 Text(part.2).font(.caption).monospacedDigit().foregroundStyle(.secondary).lineLimit(1)
                             }
@@ -638,7 +638,7 @@ private struct EngineeringDashboard: View {
                 Text([pull.detail, pull.state].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " · ")).font(.caption).foregroundStyle(.secondary).lineLimit(1)
             }
             Spacer(minLength: BoardStyle.Space.s)
-            HStack(spacing: 6) {
+            HStack(spacing: BoardStyle.Space.s) {
                 Text(pull.additions).foregroundStyle(BoardStyle.positive)
                 Text(pull.deletions).foregroundStyle(BoardStyle.attention)
             }.font(.caption.weight(.medium)).monospacedDigit().lineLimit(1)
@@ -812,9 +812,9 @@ private struct BusinessLedgerFileView: View {
     @State private var error: String?
     var body: some View {
         ScrollView([.horizontal, .vertical]) {
-            if let file { Text(file.content).font(.system(.caption, design: .monospaced)).textSelection(.enabled).padding(24) }
-            else if let error { Text(error).padding(24) }
-            else { ProgressView().padding(24) }
+            if let file { Text(file.content).font(.system(.caption, design: .monospaced)).textSelection(.enabled).padding(BoardStyle.Space.xl) }
+            else if let error { Text(error).padding(BoardStyle.Space.xl) }
+            else { ProgressView().padding(BoardStyle.Space.xl) }
         }.navigationTitle(path.components(separatedBy: "/").last ?? path)
             .toolbar { if let file, let url = URL(string: file.url) { Link("GitHub", destination: url) } }
             .task { do { file = try await store.businessLedgerFile(path) } catch { self.error = error.localizedDescription } }

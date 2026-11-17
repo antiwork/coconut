@@ -311,7 +311,7 @@ struct BusinessHomeContent: View {
             }
             if !model.previousVolume.isEmpty {
                 HStack(spacing: BoardStyle.Space.xs) {
-                    HStack(spacing: 2) { ForEach(0..<3, id: \.self) { _ in Capsule().fill(Color.secondary.opacity(0.6)).frame(width: 4, height: 2) } }
+                    HStack(spacing: BoardStyle.Space.line) { ForEach(0..<3, id: \.self) { _ in Capsule().fill(Color.secondary.opacity(0.6)).frame(width: 4, height: 2) } }
                     Text("Prior period")
                 }
             }

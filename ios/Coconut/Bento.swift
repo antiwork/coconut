@@ -180,7 +180,7 @@ struct BentoLabel: View {
     }
 
     var body: some View {
-        HStack(spacing: 5) {
+        HStack(spacing: BoardStyle.Space.xs) {
             Text(title).foregroundStyle(.secondary).lineLimit(1)
         }
         .font(.caption.weight(.semibold))
@@ -218,7 +218,7 @@ struct BentoDelta: View {
 
     var body: some View {
         let tint = percent >= 0 ? BoardStyle.positive : BoardStyle.attention
-        HStack(spacing: 4) {
+        HStack(spacing: BoardStyle.Space.xs) {
             Image(systemName: percent > 0 ? "arrow.up.right" : percent < 0 ? "arrow.down.right" : "arrow.right")
                 .font(.caption2.weight(.bold)).foregroundStyle(tint)
             Text(BusinessHomePresentation.percent(percent, signed: true)).fontWeight(.semibold).monospacedDigit().foregroundStyle(tint)
@@ -268,7 +268,7 @@ struct BentoSplit: View {
     var body: some View {
         let total = parts.reduce(0) { $0 + max($1.value, 0) }
         GeometryReader { proxy in
-            HStack(spacing: 2) {
+            HStack(spacing: BoardStyle.Space.line) {
                 ForEach(Array(parts.enumerated()), id: \.offset) { _, part in
                     Capsule().fill(part.tint)
                         .frame(width: total > 0 ? max(3, (proxy.size.width - CGFloat(parts.count - 1) * 2) * max(part.value, 0) / total) : 0)
@@ -309,7 +309,7 @@ struct BentoStat: View {
                 Spacer(minLength: BoardStyle.Space.xs)
                 HStack(alignment: .bottom, spacing: BoardStyle.Space.m) {
                     VStack(alignment: .leading, spacing: BoardStyle.Space.line) {
-                        HStack(alignment: .firstTextBaseline, spacing: 5) {
+                        HStack(alignment: .firstTextBaseline, spacing: BoardStyle.Space.xs) {
                             BentoNumber(value, size: size)
                             if let unit { Text(unit).font(.caption).foregroundStyle(.secondary).lineLimit(1) }
                         }

@@ -151,14 +151,14 @@ struct BusinessReportsView: View {
             BusinessReportHeadline(title: periods.asOf.map(BusinessPeriodFormat.day) ?? "Last day",
                                    value: BusinessPeriodFormat.money(periods.lastDayGmv, compact: false),
                                    note: periods.weekday)
-            HStack(spacing: 10) {
+            HStack(spacing: BoardStyle.Space.m) {
                 BusinessReportDelta(value: periods.vsAverage, caption: "vs the 30-day average")
                 BusinessReportDelta(value: periods.vsWeekday, caption: "vs the same weekday")
             }
             if periods.days.count > 1 {
                 Chart(periods.days) { day in
                     BarMark(x: .value("Day", day.date), y: .value("GMV", day.gmv))
-                        .foregroundStyle(day.id == periods.days.last?.id ? Color.accentColor : Color.secondary.opacity(0.35))
+                        .foregroundStyle(day.id == periods.days.last?.id ? BoardStyle.accent : Color.secondary.opacity(0.35))
                 }
                 .frame(height: 150)
                 .chartXAxis {
@@ -244,7 +244,7 @@ struct BusinessReportHeadline: View {
     let value: String
     var note: String?
     var body: some View {
-        VStack(alignment: .leading, spacing: 2) {
+        VStack(alignment: .leading, spacing: BoardStyle.Space.line) {
             Text(title).font(.subheadline).foregroundStyle(.secondary)
             Text(value).font(.system(.largeTitle, design: .rounded, weight: .semibold)).monospacedDigit()
             if let note { Text(note).font(.caption).foregroundStyle(.secondary) }
@@ -259,8 +259,8 @@ struct BusinessReportDelta: View {
     private var known: Bool { value?.isFinite == true }
     private var up: Bool { (value ?? 0) >= 0 }
     var body: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            HStack(spacing: 4) {
+        VStack(alignment: .leading, spacing: BoardStyle.Space.line) {
+            HStack(spacing: BoardStyle.Space.xs) {
                 if known {
                     Image(systemName: up ? "arrow.up.right" : "arrow.down.right").font(.caption.weight(.semibold))
                 }
@@ -280,12 +280,12 @@ struct BusinessReportRow: View {
     var trailing: String?
     var body: some View {
         HStack(alignment: .firstTextBaseline) {
-            VStack(alignment: .leading, spacing: 2) {
+            VStack(alignment: .leading, spacing: BoardStyle.Space.line) {
                 Text(title)
                 Text(detail).font(.caption).foregroundStyle(.secondary)
             }
             Spacer(minLength: 8)
-            VStack(alignment: .trailing, spacing: 2) {
+            VStack(alignment: .trailing, spacing: BoardStyle.Space.line) {
                 Text(value).monospacedDigit()
                 if let trailing { Text(trailing).font(.caption).foregroundStyle(.secondary).monospacedDigit() }
             }

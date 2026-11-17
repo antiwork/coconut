@@ -128,7 +128,7 @@ struct CountPill: View {
 
     var body: some View {
         Text("\(count)").font(.caption.weight(.semibold).monospacedDigit()).foregroundStyle(.secondary)
-            .padding(.horizontal, 6).frame(minWidth: 18, minHeight: 18)
+            .padding(.horizontal, BoardStyle.Space.s).frame(minWidth: 18, minHeight: 18)
             .background(Color.primary.opacity(0.08), in: Capsule())
     }
 }
@@ -166,7 +166,7 @@ struct BoardRow: View {
                 Image(systemName: "chevron.up.chevron.down").font(.footnote.weight(.semibold)).foregroundStyle(.tertiary)
             }
         }
-        .padding(.horizontal, BoardStyle.Space.m).padding(.vertical, 10)
+        .padding(.horizontal, BoardStyle.Space.m).padding(.vertical, BoardStyle.Space.m)
         .frame(minHeight: 40)
         .contentShape(Rectangle())
     }
