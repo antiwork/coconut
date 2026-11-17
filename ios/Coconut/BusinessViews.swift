@@ -53,6 +53,7 @@ struct BusinessDestinationView: View {
         case .project(let key): BusinessWorkListView(project: key)
         case .report(let key): BusinessReportView(key: key)
         case .ledger: BusinessLedgerView()
+        case .supportConversation(let id, let subject): SupportConversationView(id: id, subject: subject)
         }
         }.id(store.businessGeneration)
     }

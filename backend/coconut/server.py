@@ -379,6 +379,9 @@ class Handler(BaseHTTPRequestHandler):
                     self._json(200, service.github_connection('status'))
                 elif url.path == '/v1/settings/google':
                     self._json(200, service.google_connection('status', {}, device))
+                elif url.path.startswith('/v1/support/conversations/'):
+                    from .support_threads import conversation
+                    self._json(200, conversation(service.root, url.path.rsplit('/', 1)[1]))
                 elif url.path == '/v1/device/push':
                     self._json(200, service.push_status(device))
                 elif url.path == '/v1/push/config':

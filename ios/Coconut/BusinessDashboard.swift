@@ -358,17 +358,16 @@ private struct SupportDashboard: View {
                 VStack(alignment: .leading, spacing: 0) {
                     ForEach(Array(items.prefix(shown).enumerated()), id: \.offset) { index, item in
                         if index > 0 { Divider() }
-                        HStack(alignment: .firstTextBaseline, spacing: BoardStyle.Space.m) {
-                            Circle().fill(status == "open" ? BoardStyle.attention : BoardStyle.positive).frame(width: 7, height: 7)
-                                .alignmentGuide(.firstTextBaseline) { $0[.bottom] + 1 }.accessibilityHidden(true)
-                            Text(item["subject"].text).font(.subheadline).lineLimit(2).textSelection(.enabled)
-                            Spacer(minLength: BoardStyle.Space.s)
-                            Text([item["queue"].text.capitalized, item["createdAt"].text.apiDate.map { BusinessFormat.date($0) } ?? ""].filter { !$0.isEmpty }.joined(separator: " · "))
-                                .font(.caption).foregroundStyle(.secondary).lineLimit(1)
-                            if queue == "issues", let url = SupportFormat.issueURL(item) {
-                                Link(destination: url) { Image(systemName: "arrow.up.right").font(.caption.weight(.semibold)) }.accessibilityLabel("Open issue")
+                        // A conversation of the customer queue opens its Gmail thread in Coconut (SupportConversationView).
+                        if queue == "support", !item["slug"].text.isEmpty {
+                            NavigationLink(value: BusinessRoute.supportConversation(id: item["slug"].text, subject: item["subject"].text)) {
+                                conversationRow(item, opens: true)
                             }
-                        }.padding(.vertical, BoardStyle.Space.s)
+                            .buttonStyle(.plain)
+                            .accessibilityIdentifier("support-conversation-" + item["slug"].text)
+                        } else {
+                            conversationRow(item, opens: false)
+                        }
                     }
                 }
                 if items.count > shown {
@@ -382,6 +381,28 @@ private struct SupportDashboard: View {
             BentoLabel("Conversations", symbol: "bubble.left.and.bubble.right")
             if !items.isEmpty { CountPill(count: items.count) }
         }
+    }
+    /// A row of the queue. A row that opens its conversation has a chevron and no text selection, so a tap opens it.
+    @ViewBuilder private func conversationRow(_ item: BusinessValue, opens: Bool) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: BoardStyle.Space.m) {
+            Circle().fill(status == "open" ? BoardStyle.attention : BoardStyle.positive).frame(width: 7, height: 7)
+                .alignmentGuide(.firstTextBaseline) { $0[.bottom] + 1 }.accessibilityHidden(true)
+            if opens {
+                Text(item["subject"].text).font(.subheadline).lineLimit(2).multilineTextAlignment(.leading)
+            } else {
+                Text(item["subject"].text).font(.subheadline).lineLimit(2).textSelection(.enabled)
+            }
+            Spacer(minLength: BoardStyle.Space.s)
+            Text([item["queue"].text.capitalized, item["createdAt"].text.apiDate.map { BusinessFormat.date($0) } ?? ""].filter { !$0.isEmpty }.joined(separator: " · "))
+                .font(.caption).foregroundStyle(.secondary).lineLimit(1)
+            if opens {
+                Image(systemName: "chevron.right").font(.caption.weight(.semibold)).foregroundStyle(.tertiary).accessibilityHidden(true)
+            } else if queue == "issues", let url = SupportFormat.issueURL(item) {
+                Link(destination: url) { Image(systemName: "arrow.up.right").font(.caption.weight(.semibold)) }.accessibilityLabel("Open issue")
+            }
+        }
+        .padding(.vertical, BoardStyle.Space.s)
+        .contentShape(Rectangle())
     }
     private var statusPicker: some View {
         Picker("Status", selection: $status) { Text("Open").tag("open"); Text("Closed").tag("closed") }.pickerStyle(.segmented).labelsHidden().fixedSize()

@@ -2,6 +2,8 @@ import Foundation
 
 enum BusinessRoute: Hashable {
     case home, projects, reports, function(String), project(String), report(String), ledger
+    /// A conversation of the customer queue of Support: the ID of its Gmail thread and the subject of its row.
+    case supportConversation(id: String, subject: String)
 }
 
 struct BusinessRepository: Decodable, Identifiable, Hashable, Sendable {
