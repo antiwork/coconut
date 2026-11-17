@@ -46,7 +46,7 @@ extension EnvironmentValues {
 }
 
 extension Notification.Name {
-    /// The command Show All Chats of the Mac menu asks the main window for the deck.
+    /// The command Show all chats of the Mac menu asks the main window for the deck.
     static let showChatDeck = Notification.Name("coconut.showChatDeck")
 }
 

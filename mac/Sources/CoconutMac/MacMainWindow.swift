@@ -441,7 +441,7 @@ struct MacSidebar: View {
                 CoconutChatRow(bot: coconut).tag(MacSelection.bot(coconut.id))
                     .contextMenu {
                         NewChatButton(bot: coconut) { selection = .bot($0.id) }
-                        Button("Show All Chats") { showDeck(from: coconut) }
+                        Button("Show all chats") { showDeck(from: coconut) }
                     }
                 chatRows(of: coconut)
             }
@@ -562,7 +562,7 @@ struct MacSidebar: View {
             .contextMenu {
                 if !bot.archived {
                     NewChatButton(bot: bot) { selection = .bot($0.id) }
-                    Button("Show All Chats") { showDeck(from: bot) }
+                    Button("Show all chats") { showDeck(from: bot) }
                     Divider()
                     if !bot.isChat {
                         Button(bot.pinned ? "Unstar" : "Star") { Task { await store.pinBot(bot, pinned: !bot.pinned) } }

@@ -58,7 +58,7 @@ struct CoconutApp: App {
         // device and the defaults of the agents. The Coconut chat changes the rest.
         .commands {
             CommandGroup(replacing: .appSettings) { ProfileCommand(model: model) }
-            // Show All Chats, with Command-Shift-\ in the View menu.
+            // Show all chats, with Command-Shift-\ in the View menu.
             ChatDeckCommands()
         }
 

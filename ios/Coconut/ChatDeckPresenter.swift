@@ -111,7 +111,7 @@ extension View {
 struct ChatDeckCommands: Commands {
     var body: some Commands {
         CommandGroup(after: .sidebar) {
-            Button("Show All Chats") {
+            Button("Show all chats") {
                 NotificationCenter.default.post(name: .showChatDeck, object: nil)
             }
             .keyboardShortcut("\\", modifiers: [.command, .shift])

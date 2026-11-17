@@ -76,7 +76,7 @@ struct ChatDeckView: View {
         .onChange(of: cards.map(\.id)) { old, new in cardsChanged(from: old, to: new) }
         #if os(macOS)
         .onDisappear { removeKeys() }
-        // The command Show All Chats shows the deck, and it closes the deck while it shows, as Show Tab Overview does.
+        // The command Show all chats shows the deck, and it closes the deck while it shows, as Show Tab Overview does.
         .onReceive(NotificationCenter.default.publisher(for: .showChatDeck)) { _ in close() }
         #endif
     }
