@@ -339,7 +339,7 @@ struct AgentProjectView: View {
             BoardSection(project.chats.isEmpty ? AgentSection.chat.title : "Chats", count: project.count(.chat)) {
                 // A new chat is a fresh conversation with the same agent: its instructions, model, memory and pages.
                 if !bot.archived {
-                    Button { newChat(bot) } label: { Label("New Chat", systemImage: "square.and.pencil") }
+                    Button { newChat(bot) } label: { Label("New chat", systemImage: "square.and.pencil") }
                         .accessibilityIdentifier("agent-new-chat")
                 }
             } rows: {
