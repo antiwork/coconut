@@ -115,6 +115,8 @@ struct MessageQueueStack: View {
     @Environment(AppStore.self) private var store
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let botId: String
+    /// Counts the requests of Up-Arrow in the empty field: each one edits the last message that can change.
+    var editLast = 0
     @State private var editing: String?
     @State private var draft = ""
     @State private var dropTarget: String?
@@ -160,6 +162,12 @@ struct MessageQueueStack: View {
             .padding(.bottom, BoardStyle.Space.s)
             .animation(BoardStyle.fade(reduceMotion: reduceMotion), value: items.map(\.id))
             .accessibilityIdentifier("message-queue")
+            .onChange(of: editLast) { _, _ in
+                guard editing == nil, let item = items.last(where: \.canChange) else { return }
+                draft = AttachmentOnly.isMarker(item.text) ? "" : item.text
+                editing = item.id
+                editorFocused = true
+            }
             .onChange(of: items.map(\.id)) { _, ids in
                 // A turn took the message that the person edits.
                 if let editing, !ids.contains(editing) { self.editing = nil }

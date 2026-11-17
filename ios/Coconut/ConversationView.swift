@@ -12,9 +12,6 @@ struct ConversationView: View {
         if focusMessageId != nil, let focusTarget { return messages.contains { $0.id == focusTarget } }
         return false
     }
-    #if os(macOS)
-    @State private var modelOpen = false
-    #endif
     @State private var messageDraft = ""
     @State private var workContext: WorkReference?
     @State private var replyTo: MessageReference?
@@ -471,6 +468,9 @@ struct ConversationView: View {
                     composerFocused = true
                 }
                 .onChange(of: composerFocused) { _, _ in footerScroll.reset() }
+                // The unsent text of each chat stays when the person leaves it.
+                .task(id: botId) { messageDraft = ComposerDrafts.read(botId) }
+                .onChange(of: messageDraft) { _, draft in ComposerDrafts.write(draft, chat: botId) }
                 .toolbar {
                     #if os(iOS)
                     if #available(iOS 26.0, *) {
@@ -519,28 +519,6 @@ struct ConversationView: View {
                     }
                     .buttonStyle(.plain)
                     .padding(.top, 8)
-                }
-                // The model of the agent has a pill of its own at the end of that row. A click opens the models with a
-                // search, and a click on a model changes it. A Mac menu draws only the text of its label, so the pill
-                // is a button with a popover.
-                .overlay(alignment: .topTrailing) {
-                    Button { modelOpen = true } label: {
-                        ModelMenuLabel(name: store.modelName(bot.id) ?? "Model").font(.subheadline.weight(.medium))
-                            .padding(.horizontal, BoardStyle.Space.m)
-                            .frame(height: 34)
-                            .modifier(FloatingCapsule())
-                            .contentShape(Capsule())
-                    }
-                    .buttonStyle(.plain)
-                    .fixedSize()
-                    .help("Change the model of \(bot.name)")
-                    .popover(isPresented: $modelOpen, arrowEdge: .bottom) {
-                        ModelPickerSheet(botId: bot.id) { ModelChoice(store: store, botId: bot.id).choose($0) }
-                            .environment(store)
-                    }
-                    .padding(.top, 8).padding(.trailing, BoardStyle.Space.m)
-                    .accessibilityLabel("Model, " + (store.modelName(bot.id) ?? "not set"))
-                    .accessibilityIdentifier("chat-model-menu")
                 }
                 #endif
                 // The Coconut chat has its bar: where Coconut runs, and the things that need this device.
@@ -1027,6 +1005,8 @@ struct ConversationComposer: View {
     @Binding var text: String
     @State private var importing = false
     @State private var pickingPhotos = false
+    @State private var takingPhoto = false
+    @State private var editLast = 0
     @Binding var attachments: [Artifact]
     /// The attachments from the pick until the Mac has them, in the order of the picks.
     @State private var uploads = OrderedUploads<Artifact>()
@@ -1054,7 +1034,7 @@ struct ConversationComposer: View {
     var body: some View {
         VStack(spacing: 0) {
             // The messages that wait for the next turn of the agent.
-            MessageQueueStack(botId: bot.id)
+            MessageQueueStack(botId: bot.id, editLast: editLast)
             if let work = workContext {
                 HStack(spacing: 8) {
                     Label(work.title, systemImage: "checklist")
@@ -1083,45 +1063,32 @@ struct ConversationComposer: View {
                 DatePicker("Start", selection: $scheduledAt, in: Date()...)
                     .font(.footnote)
             }
-            // One box, as in Codex: the text on top, and under it the plus, the model and its reasoning, and Send.
+            ComposerSlashMenu(suggestions: slashSuggestions) { run($0) }
+            // One box, as in Codex. A short draft is one line with the plus and Send beside it. When the box opens, the
+            // text is on top, and under it are the plus, the model, its reasoning, the access mode, and Send or Stop.
             VStack(alignment: .leading, spacing: 0) {
-                TextField("Message \(bot.name)", text: $text, selection: $selection, axis: .vertical)
-                    .focused($focused)
-                    .modifier(ComposerFieldStyle(send: { send() }, sendInNewChat: canSendInNewChat ? { send(inNewChat: true) } : nil,
-                                                 stacked: true))
-                    .padding(.horizontal, BoardStyle.Space.m)
-                    .accessibilityIdentifier("message-input")
-                HStack(alignment: .center, spacing: 0) {
-                    ComposerPlusMenu(uploading: uploading, enabled: connected, embedded: true) {
-                        Button("Mention an agent", systemImage: "at") {
-                            text += text.isEmpty || text.last?.isWhitespace == true ? "@" : " @"
-                            selection = TextSelection(insertionPoint: text.endIndex)
-                            focused = true
-                        }
-                        AttachMenuItems(importing: $importing, pickingPhotos: $pickingPhotos)
-                        if workContext == nil {
-                            Button(scheduling ? "Send now" : "Schedule task", systemImage: "clock") {
-                                scheduling.toggle()
-                            }
-                        }
-                    }
-                    #if os(iOS)
-                    ComposerModelMenu(botId: bot.id)
-                    #endif
-                    Spacer(minLength: BoardStyle.Space.s)
-                    if hasContent {
-                        ComposerSendButton(symbol: scheduling ? "clock.fill" : "arrow.up", enabled: canSend,
-                                           label: scheduling ? "Schedule task" : "Send message", action: { send() },
-                                           newChat: canSendInNewChat ? { send(inNewChat: true) } : nil)
-                    } else if let task, task.isRunning, connected {
-                        Button { onStop(task) } label: {
-                            Image(systemName: "stop.fill").font(.footnote)
-                                .foregroundStyle(.secondary).frame(minWidth: 44, minHeight: 44)
-                                .contentShape(Rectangle())
-                        }.buttonStyle(.plain).accessibilityLabel("Stop \(executorName)'s task").accessibilityIdentifier("stop-current-task")
-                    }
+                HStack(alignment: .bottom, spacing: 0) {
+                    if !expanded { plusMenu }
+                    TextField("Message \(bot.name)", text: $text, selection: $selection, axis: .vertical)
+                        .focused($focused)
+                        .modifier(ComposerFieldStyle(send: { send() }, sendInNewChat: canSendInNewChat ? { send(inNewChat: true) } : nil,
+                                                     stacked: expanded,
+                                                     upArrow: text.isEmpty && canEditLast ? { editLast += 1; return true } : nil))
+                        .padding(.horizontal, BoardStyle.Space.m)
+                        .accessibilityIdentifier("message-input")
+                    if !expanded { sendControls }
                 }
-                .padding(.horizontal, BoardStyle.Space.xs)
+                if expanded {
+                    HStack(alignment: .center, spacing: 0) {
+                        plusMenu
+                        ComposerModelMenu(botId: bot.id, showsEffort: false)
+                        ComposerEffortMenu(botId: bot.id)
+                        ComposerAccessMenu(botId: bot.id)
+                        Spacer(minLength: BoardStyle.Space.s)
+                        sendControls
+                    }
+                    .padding(.horizontal, BoardStyle.Space.xs)
+                }
             }
             .modifier(ComposerClickArea(shape: RoundedRectangle(cornerRadius: BoardStyle.Radius.large, style: .continuous)) {
                 focused = true
@@ -1134,6 +1101,19 @@ struct ConversationComposer: View {
         .padding(.top, 4)
         .padding(.bottom, 8)
         .modifier(ComposerBackdrop())
+        #if os(iOS)
+        .fullScreenCover(isPresented: $takingPhoto) {
+            CameraPicker { data in
+                takingPhoto = false
+                guard let data else { return }
+                upload {
+                    let outcome = await FileFit.fitted(PickedFile(data: data, name: FileFit.photoName(at: .now, ext: "jpg")), removesPosition: false)
+                    guard let fitted = outcome.file else { store.error = outcome.text; return nil }
+                    return await store.uploadAttachment(bot: bot, data: fitted.data, filename: fitted.name)
+                }
+            }.ignoresSafeArea()
+        }
+        #endif
         .modifier(ComposerAttachmentSources(importing: $importing, pickingPhotos: $pickingPhotos,
                                             pasteEnabled: focused && connected) { url in
             upload { await store.uploadAttachment(bot: bot, url: url) }
@@ -1154,6 +1134,105 @@ struct ConversationComposer: View {
         } report: { store.error = $0 })
         // Only after a send: a key without a send changes no state.
         .onChange(of: draftKey) { _, draft in if draftSend.sent != nil { draftSend.shows(draft) } }
+    }
+
+    #if os(iOS)
+    private let phone = true
+    #else
+    private let phone = false
+    #endif
+
+    /// The box shows its toolbar under the text (ComposerExpansion).
+    private var expanded: Bool {
+        ComposerExpansion.isOpen(text: text, focused: focused, phone: phone, hasAttachments: !attachments.isEmpty)
+    }
+
+    private var canEditLast: Bool { store.messageQueue(bot.id).contains(where: \.canChange) }
+
+    private var slashSuggestions: [ComposerSlash.Suggestion] {
+        let choice = ModelChoice(store: store, botId: bot.id)
+        return ComposerSlash.suggestions(for: text, models: choice.catalog?.models ?? [], efforts: choice.entry?.reasoningEfforts ?? [],
+                                         running: task?.isRunning == true && connected,
+                                         canStartChat: !bot.coconut && !bot.archived && connected)
+    }
+
+    /// Runs a command of the slash menu.
+    private func run(_ suggestion: ComposerSlash.Suggestion) {
+        let choice = ModelChoice(store: store, botId: bot.id)
+        switch suggestion.action {
+        case .complete(let next):
+            text = next
+            selection = TextSelection(insertionPoint: text.endIndex)
+            focused = true
+        case .newChat:
+            text = ""
+            Task {
+                guard let chat = await store.newChat(with: bot) else { return }
+                if let openChat { openChat(chat.id) } else { pushRoute?(ConversationRoute(botId: chat.id)) }
+            }
+        case .compact:
+            text = ""
+            Task { _ = await store.send(bot: bot, text: "/compress") }
+        case .stop:
+            text = ""
+            if let task { onStop(task) }
+        case .model(let key):
+            text = ""
+            if let model = choice.catalog?.models.first(where: { $0.selectionKey == key }) { choice.choose(model) }
+        case .effort(let value):
+            text = ""
+            if let model = choice.entry { choice.choose(model, effort: value) }
+        }
+    }
+
+    private var plusMenu: some View {
+        ComposerPlusMenu(uploading: uploading, enabled: connected, embedded: true) {
+            Button("Mention an agent", systemImage: "at") {
+                text += text.isEmpty || text.last?.isWhitespace == true ? "@" : " @"
+                selection = TextSelection(insertionPoint: text.endIndex)
+                focused = true
+            }
+            AttachMenuItems(importing: $importing, pickingPhotos: $pickingPhotos)
+            #if os(iOS)
+            if CameraPicker.isAvailable {
+                Button("Take photo", systemImage: "camera") { takingPhoto = true }
+            }
+            #endif
+            Button("Paste", systemImage: "doc.on.clipboard") { pasteFromPasteboard() }
+            if workContext == nil {
+                Button(scheduling ? "Send now" : "Schedule task", systemImage: "clock") {
+                    scheduling.toggle()
+                }
+            }
+        }
+    }
+
+    /// Stop while the agent works, and Send when there is a draft.
+    @ViewBuilder
+    private var sendControls: some View {
+        if let task, task.isRunning, connected {
+            Button { onStop(task) } label: {
+                Image(systemName: "stop.fill").font(.footnote)
+                    .foregroundStyle(.secondary).frame(minWidth: 44, minHeight: 44)
+                    .contentShape(Rectangle())
+            }.buttonStyle(.plain).accessibilityLabel("Stop \(executorName)'s task").accessibilityIdentifier("stop-current-task")
+        }
+        if hasContent {
+            ComposerSendButton(symbol: scheduling ? "clock.fill" : "arrow.up", enabled: canSend,
+                               label: scheduling ? "Schedule task" : "Send message", action: { send() },
+                               newChat: canSendInNewChat ? { send(inNewChat: true) } : nil)
+        }
+    }
+
+    private func pasteFromPasteboard() {
+        switch ComposerPaste.read() {
+        case .file(let file): upload { await store.uploadAttachment(bot: bot, data: file.data, filename: file.name) }
+        case .text(let pasted):
+            text += pasted
+            selection = TextSelection(insertionPoint: text.endIndex)
+            focused = true
+        case nil: break
+        }
     }
 
     private var uploading: Bool { uploads.count > 0 }
@@ -1191,6 +1270,8 @@ struct ConversationComposer: View {
 
     /// Sends the draft. In a new chat, the draft starts a fresh chat with the same agent, which then opens.
     private func send(inNewChat: Bool = false) {
+        // A command that the text begins runs instead of sending the text.
+        if let first = slashSuggestions.first, attachments.isEmpty { run(first); return }
         guard canSend, draftSend.begin(draftKey) else { return }
         let submittedText = text
         let submittedWork = workContext
@@ -1381,6 +1462,8 @@ struct ComposerFieldStyle: ViewModifier {
     var sendInNewChat: (() -> Void)? = nil
     /// The field sits above a row of controls in the same box: less space under the text.
     var stacked = false
+    /// Up-Arrow in an empty field. Returns true when it took the key (it edits the last queued message).
+    var upArrow: (() -> Bool)? = nil
 
     func body(content: Content) -> some View {
         content
@@ -1405,7 +1488,18 @@ struct ComposerFieldStyle: ViewModifier {
                 send()
                 return .handled
             }
+            #else
+            // A keyboard on an iPhone sends with Command-Return. Return alone is a new line.
+            .onKeyPress(.return, phases: .down) { press in
+                guard press.modifiers.contains(.command) else { return .ignored }
+                send()
+                return .handled
+            }
             #endif
+            .onKeyPress(.upArrow, phases: .down) { press in
+                guard press.modifiers.isEmpty, let upArrow, upArrow() else { return .ignored }
+                return .handled
+            }
     }
 }
 

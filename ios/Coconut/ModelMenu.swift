@@ -175,6 +175,8 @@ struct ModelMenu<MenuLabel: View>: View {
 /// models and the reasoning efforts of the model.
 struct ComposerModelMenu: View {
     let botId: String
+    /// The effort shows in its own chip (ComposerEffortMenu) where the toolbar has one.
+    var showsEffort = true
     @Environment(AppStore.self) private var store
 
     var body: some View {
@@ -182,7 +184,7 @@ struct ComposerModelMenu: View {
         ModelMenu(botId: botId) { name in
             HStack(spacing: BoardStyle.Space.xs) {
                 Text(name).lineLimit(1).truncationMode(.middle)
-                if let effort = choice.effort {
+                if showsEffort, let effort = choice.effort {
                     Text(ModelPresentation.effortName(effort)).foregroundStyle(.secondary).lineLimit(1)
                 }
                 Image(systemName: "chevron.down").font(.caption2.weight(.semibold)).foregroundStyle(.secondary)

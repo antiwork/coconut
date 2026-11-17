@@ -231,11 +231,13 @@
 		C7820112E6CDC411CCCBA9F9 /* GitHubPreview.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7DBCCB336B2F41DAE298813E /* GitHubPreview.swift */; };
 		C8427246A70911092D23585B /* GitHubSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4648B3469FA391A1202D1BD7 /* GitHubSettingsView.swift */; };
 		C84F647461A60485AEF11FB4 /* MessageText.swift in Sources */ = {isa = PBXBuildFile; fileRef = 766B7FAF417AC083D750B041 /* MessageText.swift */; };
+		C8530A5C3922D790B87241A3 /* ComposerToolbar.swift in Sources */ = {isa = PBXBuildFile; fileRef = FC3D517D9892D6B9E7E1783B /* ComposerToolbar.swift */; };
 		CA600F0080EC075E89DB8547 /* PreviewDiagnostics.swift in Sources */ = {isa = PBXBuildFile; fileRef = A3A43A7E155EAC1270A61B25 /* PreviewDiagnostics.swift */; };
 		CA614F81435252679031DB1E /* Theme.swift in Sources */ = {isa = PBXBuildFile; fileRef = B08638DC7DBFF79E2F881694 /* Theme.swift */; };
 		CAA73F2BBE057BA1AFCD0464 /* AgentChats.swift in Sources */ = {isa = PBXBuildFile; fileRef = E2DA8840FE2FA69768725079 /* AgentChats.swift */; };
 		CAB397DAAC2D22BCB7EE1F78 /* MessageForward.swift in Sources */ = {isa = PBXBuildFile; fileRef = D5A5CE6296CF737CD3589D6C /* MessageForward.swift */; };
 		CC73B1C63BD25B51544BFABD /* ModelMenu.swift in Sources */ = {isa = PBXBuildFile; fileRef = C93C38364B82E8492A11DCDE /* ModelMenu.swift */; };
+		CD0BF7C5A2B04B915F3228F5 /* ComposerToolbar.swift in Sources */ = {isa = PBXBuildFile; fileRef = FC3D517D9892D6B9E7E1783B /* ComposerToolbar.swift */; };
 		CD4C8A4AE372F43D9F728581 /* HeldMessage.swift in Sources */ = {isa = PBXBuildFile; fileRef = ABB93BC3FB7B88CF0D544A31 /* HeldMessage.swift */; };
 		CD5693A56901AE570AE9AA08 /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = 476BBFA2AA250D24EBB60A7B /* Sparkle */; };
 		CF22339084AE575384926D18 /* TeamAlertViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = F57307766B130CB4F400B4A9 /* TeamAlertViews.swift */; };
@@ -493,6 +495,7 @@
 		F85BED295D4BCB7E12AA75B6 /* APIClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = APIClient.swift; sourceTree = "<group>"; };
 		F8C0E15F61D290FC6AF37B21 /* BusinessDashboard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BusinessDashboard.swift; sourceTree = "<group>"; };
 		F96F779A147806A0315D3491 /* NewChatBar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NewChatBar.swift; sourceTree = "<group>"; };
+		FC3D517D9892D6B9E7E1783B /* ComposerToolbar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ComposerToolbar.swift; sourceTree = "<group>"; };
 		FC5588CE8E93B2033A90C4CE /* Cards.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Cards.swift; sourceTree = "<group>"; };
 		FCABC9E056D35D74FCE1B244 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		FFA30EC67D5486818D86E824 /* BusinessReports.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BusinessReports.swift; sourceTree = "<group>"; };
@@ -625,6 +628,7 @@
 				AC13C2194F02562B923FE8C8 /* CoconutApp.swift */,
 				CB7BBA080AF54770A3DC2C8C /* CoconutChat.swift */,
 				3449C2277EDAF3BB0C2BA0E3 /* ComposerAttachments.swift */,
+				FC3D517D9892D6B9E7E1783B /* ComposerToolbar.swift */,
 				DF7BF2FB5CEF695737612D1D /* ConnectionBanners.swift */,
 				805A9491257C01754953F04F /* ConversationFooterScroll.swift */,
 				7C93C22E1E2019B2F523CCF8 /* ConversationRowHold.swift */,
@@ -1046,6 +1050,7 @@
 				1374C513472E49A360E09502 /* CoconutApp.swift in Sources */,
 				C4A3336477ABA9AD7543CF97 /* CoconutChat.swift in Sources */,
 				FF787ED2C645FD254020FB6E /* ComposerAttachments.swift in Sources */,
+				C8530A5C3922D790B87241A3 /* ComposerToolbar.swift in Sources */,
 				C132BF946842AB821846E4D2 /* ConnectionBanners.swift in Sources */,
 				FBD02F36A314DFF8684B013E /* ConversationFooterScroll.swift in Sources */,
 				16F97F74E4DAE95666538255 /* ConversationRowHold.swift in Sources */,
@@ -1170,6 +1175,7 @@
 				A8E1E20FB19C388ACD17CA87 /* CoconutApp.swift in Sources */,
 				32BA3E9196F5888A8FD5D413 /* CoconutChat.swift in Sources */,
 				B0757E4EDC933C2771C8903A /* ComposerAttachments.swift in Sources */,
+				CD0BF7C5A2B04B915F3228F5 /* ComposerToolbar.swift in Sources */,
 				FF4B28FAB762CCA4B4555420 /* ConnectionBanners.swift in Sources */,
 				2951DD63A1B66779D5B5FB54 /* ConversationFooterScroll.swift in Sources */,
 				E42641486746B9515E864490 /* ConversationRowHold.swift in Sources */,
