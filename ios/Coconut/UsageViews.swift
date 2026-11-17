@@ -113,20 +113,26 @@ struct AgentUsageCard: View {
                 } else {
                     VStack(alignment: .leading, spacing: BoardStyle.Space.m) {
                         Grid(alignment: .leading, horizontalSpacing: BoardStyle.Space.m, verticalSpacing: BoardStyle.Space.m) {
+                            #if os(macOS)
                             GridRow {
-                                UsageStat(title: "Turns", value: UsageMath.count(week.total.turns),
-                                          detail: UsageMath.count(week.total.toolCalls) + " tool calls")
-                                UsageStat(title: "Tokens", value: UsageMath.count(week.total.tokens),
-                                          detail: UsageMath.count(week.total.tokensIn) + " in · " + UsageMath.count(week.total.outputTokens) + " out")
-                                #if os(macOS)
+                                today(usage, report.today)
+                                turns(week)
+                                tokens(week)
                                 cost(week)
                                 time(week)
-                                #endif
                             }
-                            #if os(iOS)
+                            #else
                             GridRow {
+                                today(usage, report.today)
                                 cost(week)
+                            }
+                            GridRow {
+                                turns(week)
+                                tokens(week)
+                            }
+                            GridRow {
                                 time(week)
+                                Color.clear.frame(height: 0)
                             }
                             #endif
                         }
@@ -147,8 +153,24 @@ struct AgentUsageCard: View {
         .task(id: store.connection == .connected) { await store.loadUsage() }
     }
 
+    /// What the agent used today: the cost and the tokens.
+    private func today(_ usage: AgentUsage, _ today: String) -> UsageStat {
+        let day = usage.days.first { $0.day == today } ?? UsageDay(day: today)
+        return UsageStat(title: "Today", value: usage.costKnown ? UsageMath.cost(day.costUsd) : "\u{2014}",
+                         detail: UsageMath.count(day.tokens) + " tokens")
+    }
+
+    private func turns(_ week: UsageSummary) -> UsageStat {
+        UsageStat(title: "Turns", value: UsageMath.count(week.total.turns), detail: UsageMath.count(week.total.toolCalls) + " tool calls")
+    }
+
+    private func tokens(_ week: UsageSummary) -> UsageStat {
+        UsageStat(title: "Tokens", value: UsageMath.count(week.total.tokens),
+                  detail: UsageMath.count(week.total.tokensIn) + " in · " + UsageMath.count(week.total.outputTokens) + " out")
+    }
+
     private func cost(_ week: UsageSummary) -> UsageStat {
-        UsageStat(title: "Cost", value: week.cost, detail: week.costDetail)
+        UsageStat(title: "7 days", value: week.cost, detail: week.costDetail)
     }
 
     private func time(_ week: UsageSummary) -> UsageStat {

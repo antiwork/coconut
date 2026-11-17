@@ -14,10 +14,16 @@ struct TurnActivity: Codable, Equatable, Sendable {
     var entries: [ActivityEntry]
     var files: [ActivityFile]
     var images: [ActivityImage]
+    /// The helpers that delegate_task started in the turn. A Mac before this field sends none.
+    var subagents: [ActivitySubagent]? = nil
 
     static func empty(_ taskId: String) -> TurnActivity {
         TurnActivity(taskId: taskId, revision: 0, startedAt: nil, endedAt: nil, entries: [], files: [], images: [])
     }
+
+    var helpers: [ActivitySubagent] { subagents ?? [] }
+    /// The helpers that work now, oldest first.
+    var runningHelpers: [ActivitySubagent] { endedAt == nil ? helpers.filter(\.isRunning) : [] }
 
     var isEmpty: Bool { entries.isEmpty && files.isEmpty && images.isEmpty }
     var isRunning: Bool { startedAt != nil && endedAt == nil }
@@ -103,6 +109,50 @@ struct ActivityEntry: Codable, Equatable, Identifiable, Sendable {
 
     /// The file that a tap on the entry opens.
     var file: String? { [.reading, .editing].contains(botPhase) ? path : nil }
+}
+
+/// A helper of a turn: a subagent that delegate_task started, with its goal, its time and the call it runs now.
+struct ActivitySubagent: Codable, Equatable, Identifiable, Sendable {
+    var id: String
+    var goal: String
+    var role: String? = nil
+    /// "running", "ok" or "error".
+    var status: String
+    var startedAt: String
+    var endedAt: String? = nil
+    /// The tool call that the helper runs now: its tool, its phase and its one line.
+    var tool: String? = nil
+    var phase: String? = nil
+    var detail: String? = nil
+    var path: String? = nil
+    /// How many tool calls the helper made.
+    var calls: Int = 0
+    var seconds: Double? = nil
+
+    var isRunning: Bool { status == "running" }
+    var failed: Bool { status == "error" }
+    var botPhase: BotPhase { phase.flatMap(BotPhase.init(rawValue:)) ?? .working }
+
+    /// The goal as one line.
+    var title: String {
+        let line = goal.split(whereSeparator: \.isNewline).first.map(String.init) ?? goal
+        return line.isEmpty ? "Helper" : line
+    }
+
+    /// What the helper does now: "Run bin/rails runner script/affected_sellers.rb", or nothing before its first call.
+    var now: String? {
+        guard isRunning, let tool else { return nil }
+        let step = ActivityEntry(id: 0, tool: tool, phase: phase ?? "working", detail: detail, path: path, status: "running", at: startedAt)
+        return step.line.isEmpty ? step.title : step.title + " " + step.line
+    }
+
+    /// The time that the helper ran, to the second, at a time.
+    func elapsed(at date: Date) -> String? {
+        guard let start = startedAt.apiDate else { return nil }
+        if isRunning { return ConversationActivity.elapsed(date.timeIntervalSince(start)) }
+        if let seconds { return ConversationActivity.elapsed(seconds) }
+        return endedAt?.apiDate.map { ConversationActivity.elapsed($0.timeIntervalSince(start)) }
+    }
 }
 
 struct ActivityFile: Codable, Equatable, Identifiable, Sendable {
@@ -258,8 +308,18 @@ extension TurnActivity {
             ActivityImage(id: "preview-image-1", entry: 6, tool: "browser_vision", name: "browser_screenshot_1.png", at: ago(186)),
             ActivityImage(id: "preview-image-2", entry: 14, tool: "browser_vision", name: "browser_screenshot_2.png", at: ago(31)),
         ]
+        let helpers = [
+            ActivitySubagent(id: "preview-helper-1", goal: "Find the sellers that were paid twice on Friday", role: "leaf",
+                             status: "running", startedAt: ago(74), tool: "terminal", phase: BotPhase.command.rawValue,
+                             detail: "bin/rails runner script/affected_sellers.rb --since friday", calls: 6),
+            ActivitySubagent(id: "preview-helper-2", goal: "Check the refund queue for matching charges", role: "leaf",
+                             status: "running", startedAt: ago(41), tool: "read_file", phase: BotPhase.reading.rawValue,
+                             detail: root + "/app/models/refund.rb", path: root + "/app/models/refund.rb", calls: 3),
+            ActivitySubagent(id: "preview-helper-3", goal: "Read the payout specs", role: "leaf", status: "ok",
+                             startedAt: ago(120), endedAt: ago(90), calls: 4, seconds: 29.6),
+        ]
         return TurnActivity(taskId: taskId, revision: 31, startedAt: ago(258), endedAt: nil, entries: entries,
-                            files: files, images: images)
+                            files: files, images: images, subagents: helpers)
     }
 }
 

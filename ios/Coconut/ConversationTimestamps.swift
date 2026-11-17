@@ -68,6 +68,8 @@ struct MessageTimestamp: ViewModifier {
     let createdAt: String
     /// True for a message of the person, whose time sits at the right edge under it.
     var trailing = false
+    /// The model and the cost of the turn that this reply ends: "Opus 5.5 · $0.42".
+    var note: String? = nil
     @Environment(\.timestampReveal) private var reveal
     @ScaledMetric(relativeTo: .footnote) private var width = 88.0
 
@@ -75,7 +77,7 @@ struct MessageTimestamp: ViewModifier {
         if let date = createdAt.apiDate {
             VStack(alignment: trailing ? .trailing : .leading, spacing: 2) {
                 content
-                Text(MessageTimes.label(date))
+                Text(MessageTimes.label(date) + (note.map { " · " + $0 } ?? ""))
                     .font(.caption2).monospacedDigit().foregroundStyle(.tertiary)
                     .padding(.horizontal, BoardStyle.Space.m)
                     .help(MessageTimes.exact(date))

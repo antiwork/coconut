@@ -215,6 +215,8 @@ struct AgentsView: View {
                     .boardButton("agents-all-pages") { pushRoute?(AllPagesRoute()) }
                 BoardRow(symbol: "chart.bar", title: "Usage", detail: "Turns, tokens, cost and time of each agent")
                     .boardButton("agents-usage") { pushRoute?(UsageRoute()) }
+                BoardRow(symbol: "dollarsign.circle", title: "Spend", value: store.spendTodayTotal)
+                    .boardButton("agents-spend") { pushRoute?(SpendRoute()) }
                 if archived > 0 {
                     BoardRow(symbol: "archivebox", title: "Archived", value: "\(archived)")
                         .boardButton("agents-archived") { pushRoute?(ArchivedAgentsRoute()) }
@@ -224,6 +226,7 @@ struct AgentsView: View {
         // The page counts need the list of the pages, also before any page opens.
         .task(id: store.connection == .connected) {
             if store.documents == nil { await store.loadDocuments(quiet: true) }
+            await store.loadUsage()
         }
         .refreshable { await store.reconnect() }
     }
@@ -246,6 +249,7 @@ struct AgentsView: View {
 
 /// One agent in the list: its icon, its name and role, its state, its open work, and its last activity.
 struct AgentProjectRow: View {
+    @Environment(AppStore.self) private var store
     let project: AgentProject
 
     var body: some View {
@@ -261,9 +265,17 @@ struct AgentProjectRow: View {
             Spacer(minLength: BoardStyle.Space.s)
             VStack(alignment: .trailing, spacing: BoardStyle.Space.line) {
                 AgentStatusLabel(status: project.status, short: true)
-                if let date = project.lastActivity {
-                    CompactAgeLabel(date: date).font(.footnote.monospacedDigit()).foregroundStyle(.secondary)
+                HStack(spacing: BoardStyle.Space.xs) {
+                    if let date = project.lastActivity { CompactAgeLabel(date: date) }
+                    // What the agent cost today.
+                    if let spend = store.spendToday(agent: project.bot.id) {
+                        if project.lastActivity != nil { Text("·") }
+                        Text(spend)
+                            .accessibilityLabel("\(spend) today")
+                            .accessibilityIdentifier("agent-spend-" + project.bot.id)
+                    }
                 }
+                .font(.footnote.monospacedDigit()).foregroundStyle(.secondary)
             }
             Image(systemName: "chevron.right").font(.footnote.weight(.semibold)).foregroundStyle(.tertiary)
         }
@@ -500,6 +512,8 @@ struct AgentDestinations: ViewModifier {
             .navigationDestination(for: AgentRoute.self) { AgentProjectView(botId: $0.botId) }
             .navigationDestination(for: AllPagesRoute.self) { _ in AllPagesView() }
             .navigationDestination(for: UsageRoute.self) { UsageView(botId: $0.botId).id($0.botId) }
+            .navigationDestination(for: SpendRoute.self) { _ in SpendView() }
+            .navigationDestination(for: LiveRoute.self) { _ in LiveView() }
             .navigationDestination(for: AgentSettingRoute.self) { route in
                 switch route {
                 case .model(let id): ModelSettingsView(botId: id)

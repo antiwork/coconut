@@ -15,12 +15,29 @@ struct ChatUsageTotal: Codable, Equatable, Sendable {
     var tokens: Int { inputTokens + outputTokens + cacheReadTokens + cacheWriteTokens }
 }
 
+/// One turn of a chat: the model that ran it and its share of the tokens and the cost of its session. Hermes stores
+/// the cost for each session, so the Mac gives a turn the share of the model calls that it made.
+struct ChatTurnSpend: Codable, Equatable, Sendable {
+    /// The time of the first and of the last message of the turn, in seconds since 1970.
+    var startedAt: Double
+    var endedAt: Double
+    var model: String
+    var provider: String = ""
+    var modelCalls = 0
+    var tokens = 0
+    var costUsd = 0.0
+    var costKnown = false
+    var costEstimated = false
+}
+
 /// The usage of one chat: the total since its start, and its last days.
 struct ChatUsage: Codable, Equatable, Sendable {
     var botId: String
     var today: String
     var days: [UsageDay]
     var total: ChatUsageTotal
+    /// The newest turns of the chat, oldest first. A Mac before this field sends none.
+    var turns: [ChatTurnSpend]? = nil
 
     /// "184k tokens · $2.41". The cost is left out when Hermes has no price for the model.
     var line: String {
@@ -44,6 +61,49 @@ struct ChatUsage: Codable, Equatable, Sendable {
                          total: ChatUsageTotal(inputTokens: 21_400, outputTokens: 8_900, cacheReadTokens: 151_000,
                                                cacheWriteTokens: 3_100, costUsd: 2.41, models: [model], costKnown: true,
                                                costEstimated: true))
+    }
+}
+
+/// The cost of a turn on its last reply, next to its time and its model: "Opus 5.5 · $0.42".
+enum ReplySpend {
+    /// A reply that lands this long after the last message of its turn still belongs to it.
+    static let slack = 120.0
+
+    /// The note of each reply that ends a turn, by message ID. A turn of the chat with several replies shows its
+    /// note on the newest one, and a reply outside every turn shows none.
+    static func notes(messages: [Message], usage: ChatUsage?, modelName: (String) -> String) -> [String: String] {
+        guard let turns = usage?.turns, !turns.isEmpty else { return [:] }
+        var lastReply: [Int: (id: String, at: Double)] = [:]
+        for message in messages where message.role == "assistant" && message.kind == "text" && !message.streaming {
+            guard let at = message.createdAt.apiDate?.timeIntervalSince1970 else { continue }
+            // The newest turn that began before the reply, if the reply is within its slack.
+            guard let index = turns.lastIndex(where: { $0.startedAt <= at + 1 }), at <= turns[index].endedAt + slack else { continue }
+            if lastReply[index].map({ at >= $0.at }) ?? true { lastReply[index] = (message.id, at) }
+        }
+        var result: [String: String] = [:]
+        for (index, reply) in lastReply {
+            if let note = note(turns[index], modelName: modelName) { result[reply.id] = note }
+        }
+        return result
+    }
+
+    static func note(_ turn: ChatTurnSpend, modelName: (String) -> String) -> String? {
+        var parts: [String] = []
+        if !turn.model.isEmpty { parts.append(modelName(turn.model)) }
+        if turn.costKnown { parts.append((turn.costEstimated ? "~" : "") + UsageMath.cost(turn.costUsd)) }
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
+    }
+}
+
+private struct ReplySpendKey: EnvironmentKey {
+    static let defaultValue: [String: String] = [:]
+}
+
+extension EnvironmentValues {
+    /// The cost note of the replies of the open chat, by message ID.
+    var replySpend: [String: String] {
+        get { self[ReplySpendKey.self] }
+        set { self[ReplySpendKey.self] = newValue }
     }
 }
 

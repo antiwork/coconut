@@ -7,6 +7,10 @@ enum MacSelection: Hashable {
     case home
     /// The cards that wait for an answer. A card row of Home opens them.
     case inbox
+    /// What the agents and the teammates do now, as a grid of live tiles.
+    case live
+    /// What the agents cost: today, 7 days and 30 days, by agent, model and chat.
+    case spend
     /// The agents as projects. The page of an agent and its pages open on the stack of this place.
     case agents
     /// The overview of the business: the figures, the queues, the functions and their reports.
@@ -230,6 +234,10 @@ struct MacMainWindow: View {
             placeStack { HomeView { open($0) }.navigationTitle("Home") }
         case .inbox:
             MacInboxView(selection: $selection, first: inboxCard)
+        case .live:
+            placeStack { LiveView() }
+        case .spend:
+            placeStack { SpendView() }
         case .agents:
             placeStack { AgentsView(create: createAgent).navigationTitle("Agents") }
         case .people:
@@ -421,6 +429,13 @@ struct MacSidebar: View {
                 .badge(HomeFeed.badge(store.homeUnread))
                 .tag(MacSelection.home)
                 .accessibilityIdentifier("sidebar-home")
+            MacSidebarLabel(title: "Live", symbol: "dot.radiowaves.left.and.right")
+                .badge(LiveFeed.agents(bots: store.bots, tasks: store.tasks).count)
+                .tag(MacSelection.live)
+                .accessibilityIdentifier("sidebar-live")
+            MacSidebarLabel(title: "Spend", symbol: "dollarsign.circle")
+                .tag(MacSelection.spend)
+                .accessibilityIdentifier("sidebar-spend")
             MacSidebarLabel(title: "Business", symbol: "chart.xyaxis.line")
                 .tag(MacSelection.business)
                 .accessibilityIdentifier("sidebar-business")

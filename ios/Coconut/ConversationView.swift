@@ -80,6 +80,12 @@ struct ConversationView: View {
         transcript.current(in: store, botId: botId, focusDecisionId: focusDecisionId, calendar: .current)
     }
     private var activity: ConversationActivity? { store.conversationActivity(botId) }
+    /// The model and the cost of each turn, on its last reply.
+    private var replyNotes: [String: String] {
+        ReplySpend.notes(messages: current.messages, usage: store.chatUsage[botId]) { model in
+            store.modelCatalog?.models.first { $0.id == model }?.name ?? model
+        }
+    }
     /// The row that the window must hold: the card or the message that the chat opens at.
     private var windowFocus: String? { focusTarget.flatMap { Self.entryId(containing: $0, in: current.entries) } }
     private var activeTask: AgentTask? {
@@ -234,6 +240,8 @@ struct ConversationView: View {
                             if let activity {
                                 BotStatusRow(bot: bot, activity: activity)
                                     .transition(.opacity.animation(BoardStyle.fade(reduceMotion: reduceMotion)))
+                                // The helpers that run under the working line: goal, time and current call.
+                                if let task = activeTask, task.isRunning { ChatHelpersRow(taskId: task.id).id(task.id) }
                             }
                             // What the chat cost so far. It shows between turns, so the number does not move while
                             // the agent works.
@@ -257,6 +265,7 @@ struct ConversationView: View {
                     .environment(\.defaultMinListRowHeight, 1)
                     .accessibilityIdentifier("conversation-transcript")
                     .modifier(ConversationTimestamps())
+                    .environment(\.replySpend, replyNotes)
                     .defaultScrollAnchor(focusTarget == nil ? .bottom : .top, for: .initialOffset)
                     .defaultScrollAnchor(focusTarget == nil ? .bottom : .top, for: .alignment)
                     .scrollDismissesKeyboard(.interactively)
@@ -664,6 +673,7 @@ struct NewMessagesLine: View {
 
 struct TranscriptMessageRow: View {
     @Environment(AppStore.self) private var store
+    @Environment(\.replySpend) private var replySpend
     let message: Message
     var photos: [MessagePhoto] = []
     /// The messages of the photos, in the same order.
@@ -709,7 +719,7 @@ struct TranscriptMessageRow: View {
             MessageBubble(message: message, scrollToDecision: scrollToDecision, onReply: onReply.map { reply in { reply(message) } })
         }
         }
-        .modifier(MessageTimestamp(createdAt: message.createdAt, trailing: message.role == "user"))
+        .modifier(MessageTimestamp(createdAt: message.createdAt, trailing: message.role == "user", note: replySpend[message.id]))
         }
     }
 

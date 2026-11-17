@@ -48,6 +48,17 @@ struct UsageModel: Codable, Equatable, Sendable, Identifiable {
     var tokens: Int { inputTokens + outputTokens + cacheReadTokens + cacheWriteTokens }
 }
 
+/// The cost of one chat with one model on one day. The Mac sends these rows for each agent, so a page can total the
+/// spend by agent, by model and by chat for any period. A chat is the ID of its bot. An empty chat is a run that
+/// no chat started, such as a routine.
+struct UsageRow: Codable, Equatable, Sendable {
+    var chat: String
+    var model: String
+    var day: String
+    var costUsd = 0.0
+    var tokens = 0
+}
+
 struct AgentUsage: Codable, Equatable, Sendable {
     /// Each day of the report, the oldest first.
     var days: [UsageDay]
@@ -56,6 +67,8 @@ struct AgentUsage: Codable, Equatable, Sendable {
     var costKnown = false
     /// The cost comes from the price list of Hermes, not from a bill of the provider.
     var costEstimated = false
+    /// The cost by chat, model and day. A Mac before this field sends none.
+    var rows: [UsageRow]? = nil
 }
 
 struct UsageReport: Codable, Equatable, Sendable {
@@ -254,7 +267,11 @@ extension UsageReport {
                                      cacheWriteTokens: total.cacheWriteTokens, costUsd: total.costUsd * 0.86),
                           UsageModel(model: "claude-haiku-5", provider: "Anthropic", inputTokens: total.inputTokens / 6,
                                      outputTokens: total.outputTokens / 9, costUsd: total.costUsd * 0.14)]
-            agents[bot.id] = AgentUsage(days: list, models: models, costKnown: true, costEstimated: true)
+            let rows = list.flatMap { day in
+                [UsageRow(chat: bot.id, model: "claude-opus-5-5", day: day.day, costUsd: day.costUsd * 0.86, tokens: Int(Double(day.tokens) * 0.8)),
+                 UsageRow(chat: bot.id, model: "claude-haiku-5", day: day.day, costUsd: day.costUsd * 0.14, tokens: Int(Double(day.tokens) * 0.2))]
+            }.filter { $0.costUsd > 0 }
+            agents[bot.id] = AgentUsage(days: list, models: models, costKnown: true, costEstimated: true, rows: rows)
         }
         return UsageReport(days: days, today: UsageMath.day(now, calendar: calendar), agents: agents)
     }

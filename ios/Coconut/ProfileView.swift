@@ -84,6 +84,8 @@ struct ProfileView: View {
                     .boardButton("profile-team") { pushRoute?(ProfileRoute.team) }
                 BoardRow(symbol: "chart.bar", title: "Usage", detail: "Turns, tokens, cost and time of the agents")
                     .boardButton("profile-usage") { pushRoute?(UsageRoute()) }
+                BoardRow(symbol: "dollarsign.circle", title: "Spend", value: store.spendTodayTotal)
+                    .boardButton("profile-spend") { pushRoute?(SpendRoute()) }
             }
             BoardSection("About") {
                 BoardRow(symbol: "info.circle", title: "Version", detail: "Execution stays on your Mac",

@@ -106,6 +106,7 @@ extension AppStore {
 /// with unread messages and each pending card. "In progress" has what the agents do now and the active notices.
 struct HomeView: View {
     @Environment(AppStore.self) private var store
+    @Environment(\.pushRoute) private var pushRoute
     let open: (HomeTarget) -> Void
 
     /// The rows of "In progress" that show before "Show all".
@@ -128,6 +129,7 @@ struct HomeView: View {
             TimelineView(.periodic(from: .now, by: 60)) { timeline in
                 AttentionCard(items: store.attentionItems(now: timeline.date), open: open)
             }
+            liveSpend
             let cards = unread.filter { if case .card = $0 { true } else { false } }.count
             BoardSection("Unread", count: HomeFeed.badge(unread)) {
                 // The cards one after the other in their recommended order, as the Inbox showed them.
@@ -157,6 +159,26 @@ struct HomeView: View {
             }
         }
         .refreshable { await store.reconnect() }
+    }
+
+    /// Two tiles that open the Live page and the Spend page: how many agents work now, and what the agents cost today.
+    private var liveSpend: some View {
+        let working = LiveFeed.agents(bots: store.bots, tasks: store.tasks).count
+        return BentoBoard {
+            BentoStat(title: "Live", value: "\(working)", unit: "working", size: .medium, chevron: true)
+                .contentShape(Rectangle())
+                .onTapGesture { pushRoute?(LiveRoute()) }
+                .accessibilityAddTraits(.isButton)
+                .accessibilityIdentifier("home-live")
+                .bento(6, 1, compact: (1, 1))
+            BentoStat(title: "Spend", value: store.spendTodayTotal ?? "\u{2014}", unit: "today", size: .medium, chevron: true)
+                .contentShape(Rectangle())
+                .onTapGesture { pushRoute?(SpendRoute()) }
+                .accessibilityAddTraits(.isButton)
+                .accessibilityIdentifier("home-spend")
+                .bento(6, 1, compact: (1, 1))
+        }
+        .task(id: store.connection == .connected) { await store.loadUsage() }
     }
 
     private func unreadRow(_ row: HomeUnread) -> some View {
