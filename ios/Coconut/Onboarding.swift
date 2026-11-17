@@ -185,7 +185,7 @@ struct OnboardingView: View {
                 Pasteboard.copy(messageText)
                 copied = true
             } label: {
-                Label(copied ? "Copied" : "Copy Message", systemImage: copied ? "checkmark" : "doc.on.doc")
+                Label(copied ? "Copied" : "Copy message", systemImage: copied ? "checkmark" : "doc.on.doc")
             }
             .buttonStyle(.borderedProminent)
             // The window tints its controls black and white. The one action of the page keeps the system blue.

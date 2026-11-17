@@ -109,8 +109,8 @@ struct GitHubEmbedCard: View {
         Button { if let link = preview.link { openURL(link) } } label: { label }
             .buttonStyle(.plain)
             .contextMenu {
-                Button("Copy Link", systemImage: "link") { Pasteboard.copy(preview.url) }
-                Button("Open in Browser", systemImage: "safari") { if let link = preview.link { openURL(link) } }
+                Button("Copy link", systemImage: "link") { Pasteboard.copy(preview.url) }
+                Button("Open in browser", systemImage: "safari") { if let link = preview.link { openURL(link) } }
             }
             .accessibilityElement(children: .ignore)
             .accessibilityLabel(preview.spoken)

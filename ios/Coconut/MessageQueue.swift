@@ -332,10 +332,10 @@ private struct QueueRow: View {
 
     @ViewBuilder
     private var menuItems: some View {
-        if item.canSteer { Button("Send Now", systemImage: "arrow.turn.down.right") { perform(.steer) } }
+        if item.canSteer { Button("Send now", systemImage: "arrow.turn.down.right") { perform(.steer) } }
         Button("Edit", systemImage: "pencil") { perform(.edit) }
-        if canMoveUp { Button("Move Up", systemImage: "arrow.up") { perform(.moveUp) } }
-        if canMoveDown { Button("Move Down", systemImage: "arrow.down") { perform(.moveDown) } }
+        if canMoveUp { Button("Move up", systemImage: "arrow.up") { perform(.moveUp) } }
+        if canMoveDown { Button("Move down", systemImage: "arrow.down") { perform(.moveDown) } }
         Button("Remove", systemImage: "trash", role: .destructive) { perform(.remove) }
     }
 }

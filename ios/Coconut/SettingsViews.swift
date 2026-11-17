@@ -52,7 +52,7 @@ struct MacConnectionSettingsView: View {
             }
             if store.hasPairing || store.isDemo {
                 Section {
-                    Button(restartRequested ? "Restart Requested" : "Restart Agents") {
+                    Button(restartRequested ? "Restart requested" : "Restart agents") {
                         restartingBots = true
                         Task {
                             restartRequested = await store.restartBots()
@@ -66,10 +66,13 @@ struct MacConnectionSettingsView: View {
                 }
             }
             Section("When the app closes") {
-                Text("Your Mac keeps working when you close Coconut.")
-                Text("Open the app to sync messages and decisions. Push alerts can arrive while the app is closed.")
-                Text("When your phone cannot reach the Mac, it shows the last known state.")
-            }.font(.subheadline).foregroundStyle(.secondary)
+                // The style is on the lines, not on the section: the header keeps the look of each other header.
+                Group {
+                    Text("Your Mac keeps working when you close Coconut.")
+                    Text("Open the app to sync messages and decisions. Push alerts can arrive while the app is closed.")
+                    Text("When your phone cannot reach the Mac, it shows the last known state.")
+                }.font(.subheadline).foregroundStyle(.secondary)
+            }
             if let error = store.syncIssue ?? shownError {
                 Section { InlineError(error) }
             }
