@@ -236,10 +236,11 @@ enum UsageMath {
 }
 
 extension UsageReport {
-    /// The usage of the preview: each agent has work on the weekdays, and the first agent has the most.
+    /// The usage of the preview: each agent has work on the weekdays, and the first agent has the most. As on the Mac,
+    /// an agent has the usage of its further chats too, and each row names its chat.
     static func preview(bots: [Bot], days: Int = 84, now: Date = Date(), calendar: Calendar = .current) -> UsageReport {
         var agents: [String: AgentUsage] = [:]
-        for (index, bot) in bots.enumerated() {
+        for (index, bot) in bots.filter({ !$0.isChat }).enumerated() {
             let weight = Double(max(1, 4 - index))
             let list = (0..<days).reversed().map { offset -> UsageDay in
                 let date = calendar.date(byAdding: .day, value: -offset, to: now) ?? now
@@ -259,9 +260,17 @@ extension UsageReport {
                                      cacheWriteTokens: total.cacheWriteTokens, costUsd: total.costUsd * 0.86),
                           UsageModel(model: "claude-haiku-5", provider: "Anthropic", inputTokens: total.inputTokens / 6,
                                      outputTokens: total.outputTokens / 9, costUsd: total.costUsd * 0.14)]
+            // The first chat of the agent has three parts of four of each day, and its further chats share the rest.
+            let further = bots.filter { $0.chatOf == bot.id }.map(\.id)
+            var shares: [(chat: String, part: Double)] = [(chat: bot.id, part: further.isEmpty ? 1 : 0.75)]
+            shares += further.map { (chat: $0, part: 0.25 / Double(further.count)) }
             let rows = list.flatMap { day in
-                [UsageRow(chat: bot.id, model: "claude-opus-5-5", day: day.day, costUsd: day.costUsd * 0.86, tokens: Int(Double(day.tokens) * 0.8)),
-                 UsageRow(chat: bot.id, model: "claude-haiku-5", day: day.day, costUsd: day.costUsd * 0.14, tokens: Int(Double(day.tokens) * 0.2))]
+                shares.flatMap { share in
+                    [UsageRow(chat: share.chat, model: "claude-opus-5-5", day: day.day, costUsd: day.costUsd * 0.86 * share.part,
+                              tokens: Int(Double(day.tokens) * 0.8 * share.part)),
+                     UsageRow(chat: share.chat, model: "claude-haiku-5", day: day.day, costUsd: day.costUsd * 0.14 * share.part,
+                              tokens: Int(Double(day.tokens) * 0.2 * share.part))]
+                }
             }.filter { $0.costUsd > 0 }
             agents[bot.id] = AgentUsage(days: list, models: models, costKnown: true, costEstimated: true, rows: rows)
         }
