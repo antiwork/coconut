@@ -371,16 +371,6 @@ struct BentoPlace: View {
     }
 }
 
-/// The space at the sides of a dashboard: the space of a Mac page, and of an iPhone page.
-enum BentoPage {
-    #if os(macOS)
-    static let padding: CGFloat = BoardStyle.Space.xl
-    #else
-    static let padding: CGFloat = BoardStyle.Space.l
-    #endif
-    static let width: CGFloat = 1160
-}
-
 extension View {
     /// A segmented control over a grid: its own width at the leading edge on the Mac, the whole width on an iPhone.
     func bentoLeadingControl() -> some View {

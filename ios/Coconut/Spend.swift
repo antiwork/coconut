@@ -76,7 +76,7 @@ struct SpendSummary: Equatable, Sendable {
             let sum = UsageMath.sum(days)
             costKnown = costKnown || usage.costKnown
             if sum.costUsd > 0 || sum.tokens > 0 {
-                agents.append(SpendSlice(id: agentId, title: bots.name(of: agentId, fallback: "Deleted agent"), botId: agentId,
+                agents.append(SpendSlice(id: agentId, title: bots.name(of: agentId, fallback: "Deleted project"), botId: agentId,
                                          cost: sum.costUsd, tokens: sum.tokens))
                 cost += sum.costUsd
                 tokens += sum.tokens
@@ -128,7 +128,7 @@ struct SpendSummary: Equatable, Sendable {
             for (agentId, usage) in report.agents.sorted(by: { $0.key < $1.key }) {
                 let cost = usage.days.first { $0.day == name }?.costUsd ?? 0
                 if top.contains(agentId) {
-                    points.append(SpendDaily(date: date, series: bots.name(of: agentId, fallback: "Deleted agent"), cost: cost))
+                    points.append(SpendDaily(date: date, series: bots.name(of: agentId, fallback: "Deleted project"), cost: cost))
                 } else {
                     rest += cost
                 }

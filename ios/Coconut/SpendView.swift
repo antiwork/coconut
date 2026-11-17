@@ -21,46 +21,42 @@ struct SpendView: View {
     }
 
     var body: some View {
-        ScrollView {
+        // The page, the spinner and the notice of each other page of tiles.
+        BoardPage(width: .wide, spacing: BoardStyle.Space.l) {
             if let report = store.usage {
                 content(report)
-                    .padding(BentoPage.padding)
-                    .frame(maxWidth: BentoPage.width, alignment: .leading).frame(maxWidth: .infinity)
             } else if let issue = store.usageIssue {
-                QuietEmptyState(symbol: "dollarsign.circle", title: "No spend yet", message: issue)
-                    .padding(BentoPage.padding)
+                BoardLoadNotice(title: "Spend unavailable", message: issue) { Task { await store.loadUsage(force: true) } }
             } else {
-                ProgressView().frame(maxWidth: .infinity).padding(.vertical, 90)
+                BoardLoading(title: "Loading spend")
             }
         }
-        .background(BoardStyle.paper)
         .navigationTitle("Spend").inlineNavigationTitle()
         .task(id: store.connection == .connected) { await store.loadUsage() }
         .refreshable { await store.loadUsage(force: true) }
         .accessibilityIdentifier("spend-page")
     }
 
-    private func content(_ report: UsageReport) -> some View {
+    @ViewBuilder private func content(_ report: UsageReport) -> some View {
         let selected = SpendSummary(report: report, bots: store.bots, period: period, modelName: modelName)
         let daily = SpendSummary.daily(report: report, bots: store.bots)
-        return VStack(alignment: .leading, spacing: BoardStyle.Space.l) {
-            BentoBoard {
-                periodTile(report, .today).bento(4, 1, compact: (2, 1))
-                periodTile(report, .week).bento(4, 1, compact: (2, 1))
-                periodTile(report, .month).bento(4, 1, compact: (2, 1))
-                dailyTile(daily).bento(8, 3, compact: (2, 3))
-                modelsTile(selected).bento(4, 3, compact: (2, 3))
-            }
-            Picker("Period", selection: $period) {
-                ForEach(SpendPeriod.allCases) { Text($0.title).tag($0) }
-            }
-            .pickerStyle(.segmented).labelsHidden().bentoLeadingControl()
-            .accessibilityIdentifier("spend-period")
-            BentoBoard {
-                ranking("Agents", selected.agents, summary: selected, symbol: "square.stack.3d.up").bento(6, nil, compact: (2, nil))
-                ranking("Chats", Array(selected.chats.prefix(SpendSummary.chatLimit)), summary: selected, symbol: "bubble.left")
-                    .bento(6, nil, compact: (2, nil))
-            }
+        BentoBoard {
+            periodTile(report, .today).bento(4, 1, compact: (2, 1))
+            periodTile(report, .week).bento(4, 1, compact: (2, 1))
+            periodTile(report, .month).bento(4, 1, compact: (2, 1))
+            dailyTile(daily).bento(8, 3, compact: (2, 3))
+            modelsTile(selected).bento(4, 3, compact: (2, 3))
+        }
+        Picker("Period", selection: $period) {
+            ForEach(SpendPeriod.allCases) { Text($0.title).tag($0) }
+        }
+        .pickerStyle(.segmented).labelsHidden().bentoLeadingControl()
+        .accessibilityIdentifier("spend-period")
+        BentoBoard {
+            // The list of the Projects page, so it has that name.
+            ranking("Projects", selected.agents, summary: selected).bento(6, nil, compact: (2, nil))
+            ranking("Chats", Array(selected.chats.prefix(SpendSummary.chatLimit)), summary: selected)
+                .bento(6, nil, compact: (2, nil))
         }
     }
 
@@ -89,7 +85,7 @@ struct SpendView: View {
                 BentoLabel("Cost by day")
                 Chart(points) { point in
                     BarMark(x: .value("Day", point.date, unit: .day), y: .value("Cost", point.cost), width: .ratio(0.72))
-                        .foregroundStyle(by: .value("Agent", point.series))
+                        .foregroundStyle(by: .value("Project", point.series))
                         .cornerRadius(2)
                 }
                 .chartForegroundStyleScale(domain: series, range: colors)
@@ -106,7 +102,7 @@ struct SpendView: View {
                     }
                 }
                 .frame(maxHeight: .infinity)
-                .accessibilityLabel("Cost by day, by agent")
+                .accessibilityLabel("Cost by day, by project")
             }
         }
         .accessibilityIdentifier("spend-daily")
@@ -153,7 +149,7 @@ struct SpendView: View {
 
     // MARK: Rankings
 
-    private func ranking(_ title: String, _ slices: [SpendSlice], summary: SpendSummary, symbol: String) -> some View {
+    private func ranking(_ title: String, _ slices: [SpendSlice], summary: SpendSummary) -> some View {
         let top = slices.map(\.cost).max() ?? 0
         return BentoTile(padding: BoardStyle.Space.m) {
             VStack(alignment: .leading, spacing: BoardStyle.Space.xs) {

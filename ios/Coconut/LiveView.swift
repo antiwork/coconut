@@ -76,26 +76,22 @@ struct LiveView: View {
     var body: some View {
         let agents = LiveFeed.agents(bots: store.bots, tasks: store.tasks)
         let people = LiveFeed.people(rooms: store.shownTeamRooms)
-        ScrollView {
-            VStack(alignment: .leading, spacing: BoardStyle.Space.l) {
-                summary(agents)
-                if agents.isEmpty && people.isEmpty {
-                    VStack(spacing: BoardStyle.Space.m) {
-                        Image(systemName: "dot.radiowaves.left.and.right").font(.largeTitle.weight(.light)).foregroundStyle(.secondary)
-                        Text("Nothing running").font(.title3.weight(.semibold))
-                    }
-                    .frame(maxWidth: .infinity).padding(.vertical, 60)
-                } else {
-                    LazyVGrid(columns: Self.columns, alignment: .leading, spacing: BoardStyle.Space.m) {
-                        ForEach(agents) { LiveAgentTile(agent: $0) }
-                        ForEach(people) { LivePersonTile(person: $0) }
-                    }
+        // The page of each other page of tiles.
+        BoardPage(width: .wide, spacing: BoardStyle.Space.l) {
+            summary(agents)
+            if agents.isEmpty && people.isEmpty {
+                VStack(spacing: BoardStyle.Space.m) {
+                    Image(systemName: "dot.radiowaves.left.and.right").font(.largeTitle.weight(.light)).foregroundStyle(.secondary)
+                    Text("Nothing running").font(.title3.weight(.semibold))
+                }
+                .frame(maxWidth: .infinity).padding(.vertical, BoardStyle.Space.xxl)
+            } else {
+                LazyVGrid(columns: Self.columns, alignment: .leading, spacing: BoardStyle.Space.m) {
+                    ForEach(agents) { LiveAgentTile(agent: $0) }
+                    ForEach(people) { LivePersonTile(person: $0) }
                 }
             }
-            .padding(BentoPage.padding)
-            .frame(maxWidth: BentoPage.width, alignment: .leading).frame(maxWidth: .infinity)
         }
-        .background(BoardStyle.paper)
         .navigationTitle("Live").inlineNavigationTitle()
         .task(id: store.connection == .connected) { await store.loadUsage() }
         .onChange(of: agents.map(\.task.id), initial: true) { _, ids in watch(Set(ids)) }
