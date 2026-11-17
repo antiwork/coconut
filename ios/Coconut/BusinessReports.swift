@@ -58,7 +58,7 @@ struct BusinessReport: Decodable, Sendable {
     let ledgerUrl: String
     var stale: Bool { generatedAt?.apiDate.map { Date().timeIntervalSince($0) > 3600 } ?? true }
 
-    static let titles = ["overview": "Business", "accounting": "Accounting", "support": "Support", "risk": "Risk", "engineering": "Engineering", "periods": "Reports"]
+    static let titles = ["overview": "Business", "accounting": "Accounting", "support": "Support", "risk": "Risk", "engineering": "Engineering", "periods": "History"]
     static let symbols = ["overview": "chart.xyaxis.line", "accounting": "books.vertical", "support": "lifepreserver", "risk": "shield.lefthalf.filled", "engineering": "chevron.left.forwardslash.chevron.right", "periods": "chart.bar.doc.horizontal"]
     static let keys = ["overview", "accounting", "support", "risk", "engineering", "periods"]
 }

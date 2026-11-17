@@ -157,27 +157,12 @@ struct BusinessHomePresentation {
     }
     var closedThrough: String? { sourceNotice("ledger") == nil ? nonempty(data["money"]["closed_through"].text) : nil }
     private func nonempty(_ text: String) -> String? { text.isEmpty ? nil : text }
-    static func decimal(_ value: Double) -> String { value.formatted(.number.precision(.fractionLength(0...1))) }
-    static func percent(_ value: Double, signed: Bool = false) -> String {
-        value.formatted(.number.precision(.fractionLength(0...1)).sign(strategy: signed ? .always() : .automatic)) + "%"
-    }
-    static func day(_ date: String) -> String {
-        // Calendar formatting only, never a financial comparison.
-        let point = ReportPoint(date: date, value: 0, series: "")
-        return point.day == .distantPast ? date : point.day.formatted(.dateTime.month(.abbreviated).day())
-    }
+    static func decimal(_ value: Double) -> String { BusinessFormat.number(value) }
+    static func percent(_ value: Double, signed: Bool = false) -> String { BusinessFormat.percent(value, signed: signed) }
+    static func day(_ date: String) -> String { BusinessFormat.day(date) }
     /// "2026-10" as "Oct 2026". Calendar formatting only.
-    static func month(_ month: String) -> String {
-        let point = ReportPoint(date: month + "-01", value: 0, series: "")
-        return point.day == .distantPast ? month : point.day.formatted(.dateTime.month(.abbreviated).year())
-    }
-    static func writeOff(_ value: Double) -> String {
-        // Display units, not financial math. Keep the publisher's two-decimal-million precision.
-        if abs(value) >= 1_000_000 {
-            return "$" + (value / 1_000_000).formatted(.number.precision(.fractionLength(0...2))) + "M"
-        }
-        return value.formatted(.currency(code: "USD").precision(.fractionLength(0...2)))
-    }
+    static func month(_ month: String) -> String { BusinessFormat.month(month) }
+    static func writeOff(_ value: Double) -> String { BusinessFormat.writeOff(value) }
 }
 
 struct BusinessHomeContent: View {
@@ -219,6 +204,9 @@ struct BusinessHomeContent: View {
                 BentoLink(route: .projects) {
                     BentoPlace(title: "Projects", detail: "Repositories", symbol: "square.stack.3d.up")
                 }.accessibilityIdentifier("business-home-projects").bento(3, 1, compact: (1, 1))
+                BentoLink(route: .reports) {
+                    BentoPlace(title: "History", detail: "Daily, monthly, yearly", symbol: "chart.bar.doc.horizontal")
+                }.accessibilityIdentifier("business-home-history").bento(3, 1, compact: (1, 1))
             }
             if let closed = model.closedThrough {
                 Text("Books closed through " + BusinessHomePresentation.month(closed) + " · USD").font(.caption).foregroundStyle(.secondary)

@@ -30,7 +30,9 @@ struct BusinessReportTiles: View {
     static let details = ["overview": "GMV, money and queues", "accounting": "Revenue, EBITDA, net income", "support": "Queues and resolution times",
                           "risk": "Review queue and chargebacks", "engineering": "Open pull requests"]
     private var keys: [String] {
-        BusinessReport.keys.filter { function == nil || $0 == function || $0 == "overview" || (function == "support" && $0 == "risk") }
+        // History is a tile of its own on Business home, so the report grid never offers it as a report.
+        BusinessReport.keys.filter { $0 != "periods" }
+            .filter { function == nil || $0 == function || $0 == "overview" || (function == "support" && $0 == "risk") }
     }
 
     var body: some View {
@@ -132,8 +134,6 @@ struct BusinessReportContent: View {
             default: MoneyDashboard(data: report.data, accounting: key == "accounting")
             }
             HStack {
-                if let url = URL(string: report.source.url) {
-                }
                 Spacer()
                 Button("Explore all data", systemImage: "tablecells", action: explore).buttonStyle(.borderless)
             }.font(.caption).foregroundStyle(.secondary)
@@ -773,11 +773,7 @@ private struct ReportChart: View {
 }
 
 func reportNumber(_ number: Double?, money: Bool = false) -> String {
-    guard let number else { return "—" }
-    let magnitude = abs(number)
-    let divisor: Double = magnitude >= 1_000_000_000 ? 1_000_000_000 : magnitude >= 1_000_000 ? 1_000_000 : magnitude >= 10_000 ? 1_000 : 1
-    let suffix = divisor == 1_000_000_000 ? "B" : divisor == 1_000_000 ? "M" : divisor == 1_000 ? "K" : ""
-    return (number < 0 ? "−" : "") + (money ? "$" : "") + (magnitude / divisor).formatted(.number.precision(.fractionLength(divisor == 1 ? 0 : 1))) + suffix
+    BusinessFormat.number(number, money: money)
 }
 
 struct BusinessDataExplorer: View {

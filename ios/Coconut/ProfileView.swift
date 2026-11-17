@@ -2,7 +2,7 @@ import SwiftUI
 
 /// A page that Profile opens: a thing of this device, or a default for the agents.
 enum ProfileRoute: Hashable {
-    case mac, notifications, connections, model, access, parallelWork, business, team
+    case mac, notifications, connections, model, access, parallelWork, team
 }
 
 /// What Profile shows of the person, from the state of the store.
@@ -84,8 +84,6 @@ struct ProfileView: View {
                     .boardButton("profile-team") { pushRoute?(ProfileRoute.team) }
                 BoardRow(symbol: "chart.bar", title: "Usage", detail: "Turns, tokens, cost and time of the agents")
                     .boardButton("profile-usage") { pushRoute?(UsageRoute()) }
-                BoardRow(symbol: "chart.xyaxis.line", title: "Business", detail: "Functions, projects and reports")
-                    .boardButton("profile-business") { pushRoute?(ProfileRoute.business) }
             }
             BoardSection("About") {
                 BoardRow(symbol: "info.circle", title: "Version", detail: "Execution stays on your Mac",
@@ -148,7 +146,6 @@ struct ProfileDestinations: ViewModifier {
             case .model: ModelSettingsView()
             case .access: ApprovalSettingsView()
             case .parallelWork: ParallelWorkSettingsView()
-            case .business: BusinessHomeView()
             case .team: TeamView()
             }
         }

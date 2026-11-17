@@ -87,41 +87,11 @@ enum BusinessReportPeriod: String, CaseIterable, Identifiable {
 
 /// Formatting only: the numbers below the labels are the published ones, untouched.
 enum BusinessPeriodFormat {
-    static func money(_ value: Double?, compact: Bool = true) -> String {
-        guard let value, value.isFinite else { return "—" }
-        let magnitude = abs(value)
-        let sign = value < 0 ? "-" : ""
-        if compact, magnitude >= 1_000_000 { return sign + "$" + String(format: "%.2f", magnitude / 1_000_000) + "M" }
-        if compact, magnitude >= 1_000 { return sign + "$" + String(format: "%.0f", magnitude / 1_000) + "K" }
-        let formatter = NumberFormatter()
-        formatter.numberStyle = .decimal
-        formatter.maximumFractionDigits = 0
-        return sign + "$" + (formatter.string(from: NSNumber(value: magnitude)) ?? String(format: "%.0f", magnitude))
-    }
-    static func percent(_ value: Double?, signed: Bool = false) -> String {
-        guard let value, value.isFinite else { return "—" }
-        return (signed && value > 0 ? "+" : "") + String(format: "%.1f", value) + "%"
-    }
+    static func money(_ value: Double?, compact: Bool = true) -> String { BusinessFormat.money(value, compact: compact) }
+    static func percent(_ value: Double?, signed: Bool = false) -> String { BusinessFormat.percent(value, signed: signed) }
     /// "2026-10" as "Oct 2026"; "2026Q4" as "Q4 2026"; "2021" stays as it is.
-    static func label(_ raw: String) -> String {
-        let parts = raw.split(separator: "-")
-        if parts.count == 2, let month = Int(parts[1]) {
-            let names = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
-            guard (1...12).contains(month) else { return raw }
-            return names[month - 1] + " " + parts[0]
-        }
-        if let q = raw.firstIndex(of: "Q"), q != raw.startIndex {
-            return String(raw[q...]) + " " + raw[..<q]
-        }
-        return raw
-    }
-    static func day(_ raw: String) -> String {
-        let parts = raw.split(separator: "-")
-        guard parts.count == 3, let month = Int(parts[1]), let day = Int(parts[2]) else { return raw }
-        let names = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
-        guard (1...12).contains(month) else { return raw }
-        return names[month - 1] + " " + String(day)
-    }
+    static func label(_ raw: String) -> String { BusinessFormat.month(raw) }
+    static func day(_ raw: String) -> String { BusinessFormat.day(raw) }
 }
 
 struct BusinessReportsView: View {
@@ -166,7 +136,7 @@ struct BusinessReportsView: View {
             .frame(maxWidth: BentoPage.width, alignment: .leading)
             .frame(maxWidth: .infinity)
         }
-        .navigationTitle("Reports")
+        .navigationTitle("History")
         .background(BoardStyle.paper)
         .task(id: "\(store.connection)/\(store.businessChanges)") { await load() }
         .refreshable { await load() }
@@ -210,7 +180,9 @@ struct BusinessReportsView: View {
                 }
                 .chartYAxis { AxisMarks(position: .leading, values: .automatic(desiredCount: 3)) }
                 .accessibilityIdentifier("business-reports-daily-chart")
-                Text("$" + String(format: "%.0f", periods.averageGmv ?? 0) + " a day on average over the last 30 days.")
+                Text(periods.averageGmv == nil
+                     ? "No daily average in the last 30 days."
+                     : BusinessFormat.money(periods.averageGmv) + " a day on average over the last 30 days.")
                     .font(.caption).foregroundStyle(.secondary)
             }
         }
@@ -221,9 +193,10 @@ struct BusinessReportsView: View {
     private func monthly(_ periods: BusinessPeriods) -> some View {
         VStack(alignment: .leading, spacing: BoardStyle.Space.l) {
             if !periods.months.isEmpty {
-                Chart(periods.months) { month in
+                // A month with no published net income draws no bar, so a gap never reads as a loss of zero.
+                Chart(periods.months.filter { $0.netIncome != nil }) { month in
                     BarMark(x: .value("Month", month.month), y: .value("Net income", month.netIncome ?? 0))
-                        .foregroundStyle(month.id == periods.months.last?.id ? Color.accentColor : Color.secondary.opacity(0.35))
+                        .foregroundStyle(month.id == periods.months.last?.id ? BoardStyle.accent : Color.secondary.opacity(0.35))
                 }
                 .frame(height: 160)
                 .chartXAxis {
@@ -257,9 +230,9 @@ struct BusinessReportsView: View {
     private func yearly(_ periods: BusinessPeriods) -> some View {
         VStack(alignment: .leading, spacing: BoardStyle.Space.l) {
             if !periods.years.isEmpty {
-                Chart(periods.years) { year in
+                Chart(periods.years.filter { $0.netIncome != nil }) { year in
                     BarMark(x: .value("Year", year.year), y: .value("Net income", year.netIncome ?? 0))
-                        .foregroundStyle(year.id == periods.years.last?.id ? Color.accentColor : Color.secondary.opacity(0.35))
+                        .foregroundStyle(year.id == periods.years.last?.id ? BoardStyle.accent : Color.secondary.opacity(0.35))
                 }
                 .frame(height: 160)
                 .chartYAxis { AxisMarks(position: .leading, values: .automatic(desiredCount: 3)) }
@@ -282,7 +255,7 @@ struct BusinessReportHeadline: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
             Text(title).font(.subheadline).foregroundStyle(.secondary)
-            Text(value).font(.system(size: 34, weight: .semibold)).monospacedDigit()
+            Text(value).font(.system(.largeTitle, design: .rounded, weight: .semibold)).monospacedDigit()
             if let note { Text(note).font(.caption).foregroundStyle(.secondary) }
         }
     }
@@ -291,14 +264,18 @@ struct BusinessReportHeadline: View {
 struct BusinessReportDelta: View {
     let value: Double?
     let caption: String
+    /// A figure that did not arrive has no direction: it reads as a dash in the colour of a caption, not as a rise.
+    private var known: Bool { value?.isFinite == true }
     private var up: Bool { (value ?? 0) >= 0 }
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
             HStack(spacing: 4) {
-                Image(systemName: up ? "arrow.up.right" : "arrow.down.right").font(.caption.weight(.semibold))
+                if known {
+                    Image(systemName: up ? "arrow.up.right" : "arrow.down.right").font(.caption.weight(.semibold))
+                }
                 Text(BusinessPeriodFormat.percent(value, signed: true)).font(.subheadline.weight(.semibold)).monospacedDigit()
             }
-            .foregroundStyle(up ? Color.green : Color.red)
+            .foregroundStyle(known ? (up ? BoardStyle.positive : BoardStyle.attention) : Color.secondary)
             Text(caption).font(.caption2).foregroundStyle(.secondary)
         }
         .frame(maxWidth: .infinity, alignment: .leading)

@@ -49,7 +49,7 @@ struct CoconutApp: App {
 }
 
 /// The five places of the app, in the order of the tab bar. The Mac sidebar has the same five.
-enum HomeTab: Hashable { case home, chats, agents, reports, people, profile }
+enum HomeTab: Hashable { case home, chats, business, agents, profile }
 
 struct CoconutHome: View {
     @Environment(AppStore.self) private var store
@@ -67,8 +67,7 @@ struct CoconutHome: View {
     @State private var homePath = NavigationPath()
     @State private var cardsShown = false
     @State private var agentsPath = NavigationPath()
-    @State private var peoplePath = NavigationPath()
-    @State private var reportsPath = NavigationPath()
+    @State private var businessPath = NavigationPath()
     @State private var profilePath = NavigationPath()
     @State private var keyboardVisible = false
     @State private var conversationFooters: [HomeTab: Bool] = [:]
@@ -86,9 +85,8 @@ struct CoconutHome: View {
         switch selectedTab {
         case .home: homePath
         case .chats: chatsPath
+        case .business: businessPath
         case .agents: agentsPath
-        case .people: peoplePath
-        case .reports: reportsPath
         case .profile: profilePath
         }
     }
@@ -125,7 +123,15 @@ struct CoconutHome: View {
                 Label { Text("Chats") } icon: {
                     Image(systemName: "bubble.left.and.bubble.right.fill")
                 }
-            }.accessibilityIdentifier("home-chats")
+            }.badge(store.shownTeamRooms.reduce(0) { $0 + $1.unseenNotices })
+                .accessibilityIdentifier("home-chats")
+            Tab(value: HomeTab.business) {
+                root(tab: .business, path: $businessPath)
+            } label: {
+                Label { Text("Business") } icon: {
+                    Image(systemName: "chart.xyaxis.line")
+                }
+            }.accessibilityIdentifier("home-business")
             Tab(value: HomeTab.agents) {
                 root(tab: .agents, path: $agentsPath)
             } label: {
@@ -133,21 +139,6 @@ struct CoconutHome: View {
                     Image(systemName: "square.stack.3d.up.fill")
                 }
             }.accessibilityIdentifier("home-agents")
-            Tab(value: HomeTab.reports) {
-                root(tab: .reports, path: $reportsPath)
-            } label: {
-                Label { Text("Reports") } icon: {
-                    Image(systemName: "chart.bar.doc.horizontal.fill")
-                }
-            }.accessibilityIdentifier("home-reports")
-            Tab(value: HomeTab.people) {
-                root(tab: .people, path: $peoplePath)
-            } label: {
-                Label { Text("People") } icon: {
-                    Image(systemName: "person.2.fill")
-                }
-            }.badge(store.shownTeamRooms.reduce(0) { $0 + $1.unseenNotices })
-                .accessibilityIdentifier("home-people")
             Tab(value: HomeTab.profile) {
                 root(tab: .profile, path: $profilePath)
             } label: {
@@ -208,8 +199,7 @@ struct CoconutHome: View {
                 switch tab {
                 case .home: HomeView { open($0) }
                 case .chats: HomeLaunchView()
-                case .reports: BusinessReportsView()
-                case .people: PeopleView()
+                case .business: BusinessHomeView()
                 case .profile: ProfileView()
                 case .agents: AgentsView()
                 }
@@ -416,11 +406,11 @@ struct CoconutHome: View {
             selectedTab = .chats
             chatsPath = NavigationPath()
         case .notices(let room):
-            // The board of a team is a page of People, so Back leads to the team.
+            // The board of a team is part of the Chats stack now, so Back leads to the chats.
             notificationDecisionId = nil
-            selectedTab = .people
-            peoplePath = NavigationPath()
-            peoplePath.append(NoticeBoardRoute(roomId: room))
+            selectedTab = .chats
+            chatsPath = NavigationPath()
+            chatsPath.append(NoticeBoardRoute(roomId: room))
         }
     }
 

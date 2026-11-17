@@ -9,10 +9,11 @@ enum MacSelection: Hashable {
     case inbox
     /// The agents as projects. The page of an agent and its pages open on the stack of this place.
     case agents
-    /// The teams, their people and their notice boards.
+    /// The overview of the business: the figures, the queues, the functions and their reports.
+    case business
+    /// The teams, their people and their notice boards. No row of the sidebar leads here: a notice notification does,
+    /// and the boards also sit under Profile > Team.
     case people
-    /// The daily, monthly and yearly figures of the business.
-    case reports
     /// The person and this device.
     case profile
     case bot(String)
@@ -233,8 +234,8 @@ struct MacMainWindow: View {
             placeStack { AgentsView(create: createAgent).navigationTitle("Agents") }
         case .people:
             placeStack { PeopleView(openTeamChat: { selection = .team($0) }).navigationTitle("People") }
-        case .reports:
-            placeStack { BusinessReportsView().navigationTitle("Reports") }
+        case .business:
+            placeStack { BusinessHomeView().navigationTitle("Business") }
         case .profile:
             placeStack { ProfileView().navigationTitle("Profile") }
         case .document(let documentId):
@@ -420,16 +421,12 @@ struct MacSidebar: View {
                 .badge(HomeFeed.badge(store.homeUnread))
                 .tag(MacSelection.home)
                 .accessibilityIdentifier("sidebar-home")
+            MacSidebarLabel(title: "Business", symbol: "chart.xyaxis.line")
+                .tag(MacSelection.business)
+                .accessibilityIdentifier("sidebar-business")
             MacSidebarLabel(title: "Agents", symbol: "square.stack.3d.up")
                 .tag(MacSelection.agents)
                 .accessibilityIdentifier("sidebar-agents")
-            MacSidebarLabel(title: "Reports", symbol: "chart.bar.doc.horizontal")
-                .tag(MacSelection.reports)
-                .accessibilityIdentifier("sidebar-reports")
-            MacSidebarLabel(title: "People", symbol: "person.2")
-                .badge(store.shownTeamRooms.reduce(0) { $0 + $1.unseenNotices })
-                .tag(MacSelection.people)
-                .accessibilityIdentifier("sidebar-people")
             MacSidebarLabel(title: "Profile", symbol: "person.crop.circle")
                 .tag(MacSelection.profile)
                 .accessibilityIdentifier("sidebar-profile")

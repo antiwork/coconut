@@ -208,3 +208,85 @@ struct StopConfirmation<Item> {
 
     mutating func request(_ item: Item) { self.item = item }
 }
+
+/// The one place that turns a published figure into the string a person reads. Nothing here computes a number: every
+/// value arrives already published by the generator, and a value that did not arrive reads as a dash, never as zero.
+enum BusinessFormat {
+    /// Millions keep two decimals, thousands one, and anything smaller shows whole dollars. `$8.50M`, `$268.4K`, `$842`.
+    static func money(_ value: Double?, compact: Bool = true) -> String {
+        guard let value, value.isFinite else { return "—" }
+        let magnitude = abs(value)
+        let sign = value < 0 ? "-" : ""
+        if compact, magnitude >= 1_000_000_000 { return sign + "$" + decimals(magnitude / 1_000_000_000, 2) + "B" }
+        if compact, magnitude >= 1_000_000 { return sign + "$" + decimals(magnitude / 1_000_000, 2) + "M" }
+        if compact, magnitude >= 1_000 { return sign + "$" + decimals(magnitude / 1_000, 1) + "K" }
+        return sign + "$" + whole(magnitude)
+    }
+
+    /// The same scale without a dollar sign, for a count that a person reads at the same size as money.
+    static func number(_ value: Double?, money: Bool = false) -> String {
+        money ? Self.money(value) : compact(value)
+    }
+
+    /// A published count of things: `1,284`.
+    static func count(_ value: Double?) -> String {
+        guard let value, value.isFinite else { return "—" }
+        return whole(value)
+    }
+
+    /// `51.8%`, or `+2.3%` when the sign carries the meaning.
+    static func percent(_ value: Double?, signed: Bool = false) -> String {
+        guard let value, value.isFinite else { return "—" }
+        let sign = signed && value > 0 ? "+" : ""
+        return sign + decimals(value, 1) + "%"
+    }
+
+    /// `2026-10` as `Oct 2026`, `2026Q4` as `Q4 2026`, `2021` as it is.
+    static func month(_ raw: String) -> String {
+        if let q = raw.firstIndex(of: "Q"), q != raw.startIndex { return String(raw[q...]) + " " + String(raw[..<q]) }
+        let parts = raw.split(separator: "-")
+        guard parts.count >= 2, let year = Int(parts[0]), let month = Int(parts[1]) else { return raw }
+        var components = DateComponents()
+        components.year = year
+        components.month = month
+        components.day = 1
+        guard let date = Calendar(identifier: .gregorian).date(from: components) else { return raw }
+        return date.formatted(.dateTime.month(.abbreviated).year())
+    }
+
+    /// `2026-11-16` as `Nov 16`.
+    static func day(_ raw: String) -> String {
+        let parts = raw.split(separator: "-")
+        guard parts.count == 3, let year = Int(parts[0]), let month = Int(parts[1]), let day = Int(parts[2]) else { return raw }
+        var components = DateComponents()
+        components.year = year
+        components.month = month
+        components.day = day
+        guard let date = Calendar(identifier: .gregorian).date(from: components) else { return raw }
+        return date.formatted(.dateTime.month(.abbreviated).day())
+    }
+
+    /// A write-off keeps the publisher's two-decimal-million precision, because it is the figure a person checks.
+    static func writeOff(_ value: Double) -> String {
+        if abs(value) >= 1_000_000 { return (value < 0 ? "-" : "") + "$" + decimals(abs(value) / 1_000_000, 2) + "M" }
+        return value.formatted(.currency(code: "USD").precision(.fractionLength(0...2)))
+    }
+
+    private static func compact(_ value: Double?) -> String {
+        guard let value, value.isFinite else { return "—" }
+        let magnitude = abs(value)
+        let sign = value < 0 ? "-" : ""
+        if magnitude >= 1_000_000_000 { return sign + decimals(magnitude / 1_000_000_000, 2) + "B" }
+        if magnitude >= 1_000_000 { return sign + decimals(magnitude / 1_000_000, 2) + "M" }
+        if magnitude >= 1_000 { return sign + decimals(magnitude / 1_000, 1) + "K" }
+        return sign + whole(magnitude)
+    }
+
+    private static func decimals(_ value: Double, _ places: Int) -> String {
+        value.formatted(.number.precision(.fractionLength(places)))
+    }
+
+    private static func whole(_ value: Double) -> String {
+        value.formatted(.number.precision(.fractionLength(0)).grouping(.automatic))
+    }
+}
