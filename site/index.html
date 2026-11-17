@@ -2,177 +2,137 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#d0efea">
 <title>Coconut</title>
-<meta name="description" content="Coconut: work with your agents and your team, on your own Mac.">
+<meta name="description" content="Coconut: your agents and your team on your iPhone, running on your own Mac.">
 <meta property="og:title" content="Coconut">
-<meta property="og:description" content="Work with your agents and your team, on your own Mac.">
-<meta property="og:image" content="https://workcoconut.com/coconut.png">
+<meta property="og:description" content="Your agents and your team, on your own Mac.">
+<meta property="og:image" content="https://workcoconut.com/og.jpg">
+<meta name="twitter:card" content="summary_large_image">
 <link rel="icon" type="image/png" href="/coconut.png">
 <link rel="apple-touch-icon" href="/coconut.png">
 <style>
   * { box-sizing: border-box; margin: 0; }
-  html, body { overflow-x: hidden; }
-  .hero { position: relative; height: 100vh; min-height: 560px; overflow: hidden; }
+  html, body { height: 100%; }
   body {
     font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Helvetica Neue", sans-serif;
-    background: linear-gradient(#86cff2, #e9f8ff 72%);
-    color: #3b2614;
+    background: radial-gradient(110% 90% at 32% 42%, #e6f7f4, #d0efea 58%, #bfe4dd);
+    color: #271910; -webkit-font-smoothing: antialiased;
   }
-  header { position: absolute; top: 9vh; width: 100%; text-align: center; z-index: 5; padding: 0 16px; }
-  h1 { font-size: clamp(44px, 7vw, 78px); font-weight: 700; letter-spacing: -0.03em; }
-  header p { margin-top: 6px; font-size: clamp(15px, 2vw, 19px); opacity: .75; }
-  header a { color: inherit; }
-  .sun { position: absolute; top: 7vh; right: 12vw; width: 96px; height: 96px; border-radius: 50%;
-         background: radial-gradient(#fff7cc, #ffd767 58%, rgba(255, 215, 103, 0) 72%); }
+  a { color: inherit; }
 
-  .scene { position: absolute; left: 50%; bottom: 0; width: min(900px, 100vw); height: 100%; transform: translateX(-50%); }
-  .island { position: absolute; left: 50%; bottom: 12vh; width: 340px; height: 74px; transform: translateX(-50%);
-            border-radius: 50% 50% 0 0 / 100% 100% 0 0;
-            background: linear-gradient(#f4d79f, #e0b872); z-index: 2; }
-  .tree { position: absolute; left: 50%; bottom: calc(12vh + 52px); width: 260px; transform: translateX(-36%); z-index: 3; }
-  .tree svg { display: block; width: 100%; height: auto; overflow: visible; }
-  .fronds { transform-origin: 112px 64px; animation: sway 5s ease-in-out infinite; }
-  @keyframes sway { 50% { transform: rotate(3deg); } }
+  /* A computer: the recording plays in an iPhone, next to the code that a phone scans. */
+  main { min-height: 100%; display: flex; align-items: center; justify-content: center;
+         gap: clamp(56px, 9vw, 150px); padding: 5vh 48px; }
+  .phone {
+    /* The height of the phone sets every other measure, so it keeps the shape of an iPhone 17 Pro at any size. */
+    --h: min(88vh, 900px);
+    --b: calc(var(--h) * .0135);
+    --sw: calc((var(--h) - 2 * var(--b)) * 1206 / 2622);
+    position: relative; flex: none; height: var(--h); width: calc(var(--sw) + 2 * var(--b)); padding: var(--b);
+    border-radius: calc(var(--sw) * .155 + var(--b));
+    background: linear-gradient(150deg, #48484c, #1d1d1f 22%, #0d0d0e 70%, #3a3a3d);
+    box-shadow: inset 0 0 0 1.5px #66666b, inset 0 0 0 3px #111, 0 60px 110px -30px rgba(18, 70, 62, .5),
+                0 30px 50px -30px rgba(0, 0, 0, .45);
+  }
+  /* The buttons on the sides: the action button and the volume on the left, the side button on the right. */
+  .phone::before, .phone::after { content: ""; position: absolute; width: 3px; border-radius: 2px; background: #2c2c2e; }
+  .phone::before { left: -3px; top: 17%; height: 3.6%;
+                   box-shadow: 0 calc(var(--h) * .072) #2c2c2e, 0 calc(var(--h) * .144) #2c2c2e; }
+  .phone::after { right: -3px; top: 25%; height: 11%; }
+  .screen { position: relative; width: 100%; height: 100%; overflow: hidden; background: #fff;
+            border-radius: calc(var(--sw) * .155); }
+  video { display: block; width: 100%; height: 100%; object-fit: cover; background: #fff; }
 
-  /* The coconut of the app icon, cut out of its white square. */
-  .coconut { position: absolute; left: 0; top: 0; width: 52px; height: 52px; z-index: 4;
-             pointer-events: none; will-change: transform, opacity; }
+  .get { width: 300px; }
+  .icon { display: block; width: 76px; height: 76px; border-radius: 17px;
+          box-shadow: 0 8px 22px rgba(39, 25, 16, .14), 0 0 0 1px rgba(39, 25, 16, .06); }
+  h1 { margin-top: 22px; font-size: 64px; font-weight: 700; letter-spacing: -0.035em; line-height: 1; }
+  .line { margin-top: 12px; font-size: 20px; line-height: 1.35; color: rgba(39, 25, 16, .7); text-wrap: balance; }
+  .short { display: none; }
+  .qr { display: block; width: 196px; margin-top: 40px; padding: 18px; border-radius: 26px; background: #fff;
+        box-shadow: 0 14px 36px rgba(18, 70, 62, .16); }
+  .qr img { display: block; width: 100%; height: auto; }
+  .scan { margin-top: 14px; font-size: 15px; color: rgba(39, 25, 16, .62); }
+  .button { display: none; padding: 10px 22px; border-radius: 999px; background: #845d40; color: #fff;
+            font-size: 17px; font-weight: 600; text-decoration: none; }
+  .more { margin-top: 34px; font-size: 14px; color: rgba(39, 25, 16, .55); }
+  .more a { text-decoration: none; }
+  .more a + a { margin-left: 16px; }
 
-  .sea { position: absolute; left: 0; right: 0; bottom: 0; height: 17vh; z-index: 6; overflow: hidden; }
-  .wave { position: absolute; left: 0; width: 200%; height: 100%; background-repeat: repeat-x;
-          background-size: 50% 100%; animation: drift linear infinite; }
-  .wave.back  { bottom: 22px; opacity: .55; animation-duration: 14s; animation-direction: reverse;
-                background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 800 100' preserveAspectRatio='none'%3E%3Cpath d='M0 40 Q100 10 200 40 T400 40 T600 40 T800 40 V100 H0Z' fill='%234cb6e6'/%3E%3C/svg%3E"); }
-  .wave.mid   { bottom: 10px; opacity: .85; animation-duration: 10s;
-                background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 800 100' preserveAspectRatio='none'%3E%3Cpath d='M0 45 Q100 20 200 45 T400 45 T600 45 T800 45 V100 H0Z' fill='%232c9fd6'/%3E%3C/svg%3E"); }
-  .wave.front { bottom: 0; animation-duration: 7s; animation-direction: reverse;
-                background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 800 100' preserveAspectRatio='none'%3E%3Cpath d='M0 50 Q100 28 200 50 T400 50 T600 50 T800 50 V100 H0Z' fill='%23168bc4'/%3E%3C/svg%3E"); }
-  @keyframes drift { to { transform: translateX(-50%); } }
+  /* A short window, as on a laptop: the same column, tighter, so it fits beside the phone. */
+  @media (max-height: 760px) {
+    .icon { width: 64px; height: 64px; border-radius: 14px; }
+    h1 { margin-top: 16px; font-size: 52px; }
+    .qr { width: 164px; margin-top: 26px; padding: 14px; border-radius: 22px; }
+    .more { margin-top: 22px; }
+  }
 
-  /* Below the waves: the rest of the iceberg. The island is the tip, the app is what is under it. */
-  .deep { position: relative; margin-top: -1px; padding: 4vh 24px 18vh;
-          background: linear-gradient(#168bc4, #0b5f92 30%, #06345a 75%, #041f38); overflow: hidden; }
-  .berg { position: relative; width: min(1080px, 100%); margin: 0 auto; display: grid; gap: 56px; }
-  .shot { margin: 0; border-radius: 14px; overflow: hidden; background: #fff;
-          box-shadow: 0 30px 80px rgba(0, 20, 40, .45), 0 0 0 1px rgba(255, 255, 255, .12);
-          animation: bob 7s ease-in-out infinite; }
-  .shot img { display: block; width: 100%; height: auto; filter: saturate(.92) brightness(.97); }
-  .shot:nth-child(2) { width: 88%; justify-self: end; animation-delay: -2.3s; }
-  .shot:nth-child(3) { width: 78%; justify-self: center; animation-delay: -4.6s; }
-  /* The water tints each window more the deeper it sits. */
-  .shot::after { content: ""; position: absolute; inset: 0; pointer-events: none; border-radius: inherit; }
-  .shot { position: relative; }
-  .shot:nth-child(1)::after { background: rgba(22, 139, 196, .06); }
-  .shot:nth-child(2)::after { background: rgba(11, 95, 146, .16); }
-  .shot:nth-child(3)::after { background: rgba(6, 52, 90, .28); }
-  @keyframes bob { 50% { transform: translateY(-10px); } }
-  .bubble { position: absolute; bottom: -20px; border-radius: 50%; border: 1.5px solid rgba(255, 255, 255, .45);
-            animation: rise linear infinite; }
-  @keyframes rise { to { transform: translateY(-120vh); opacity: 0; } }
-  footer { text-align: center; padding-top: 10vh; color: rgba(255, 255, 255, .7); font-size: 15px; }
-  footer a { color: #fff; }
+  /* A tablet, or a phone on its side: the same page with a button in place of the code. */
+  @media (hover: none) {
+    .qr, .scan { display: none; }
+    .button { display: inline-block; margin-top: 32px; }
+  }
 
-  @media (prefers-reduced-motion: reduce) { .wave, .fronds, .shot, .bubble { animation: none; } }
+  /* A phone: the recording is the page, edge to edge, with a small bar to get the app. */
+  @media (max-width: 600px) and (orientation: portrait) {
+    html, body { overflow: hidden; overscroll-behavior: none; background: #fff; }
+    main { display: block; min-height: 0; padding: 0; }
+    .phone { position: fixed; inset: 0; width: auto; height: auto; padding: 0; border-radius: 0; background: none;
+             box-shadow: none; }
+    .phone::before, .phone::after, .long { display: none; }
+    .short { display: inline; }
+    .screen { border-radius: 0; }
+    video { object-position: 50% 0; }
+    .get { position: fixed; left: 10px; right: 10px; bottom: calc(10px + env(safe-area-inset-bottom)); width: auto;
+           display: grid; grid-template-columns: auto 1fr auto; align-items: center; column-gap: 12px; padding: 10px;
+           border-radius: 24px; background: rgba(255, 255, 255, .74);
+           -webkit-backdrop-filter: saturate(180%) blur(20px); backdrop-filter: saturate(180%) blur(20px);
+           box-shadow: 0 10px 34px rgba(0, 0, 0, .18), inset 0 0 0 .5px rgba(0, 0, 0, .1); }
+    .icon { grid-row: 1 / 3; width: 48px; height: 48px; border-radius: 11px; box-shadow: 0 0 0 1px rgba(39, 25, 16, .06); }
+    h1 { grid-column: 2; margin: 0; font-size: 17px; letter-spacing: -0.01em; }
+    .line { grid-column: 2; margin: 1px 0 0; font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .qr, .scan, .more { display: none; }
+    .button { display: inline-block; grid-column: 3; grid-row: 1 / 3; margin: 0; padding: 9px 22px; font-size: 16px; }
+  }
 </style>
 </head>
 <body>
-<section class="hero">
-  <div class="sun" aria-hidden="true"></div>
-  <header>
-    <h1>Coconut</h1>
-    <p>Your agents and your team, on your own Mac. <a href="https://github.com/antiwork/coconut">GitHub</a></p>
-  </header>
-
-  <div class="scene" id="scene" aria-hidden="true">
-    <div class="tree">
-      <svg viewBox="0 0 240 300">
-        <path d="M118 300 C112 230 100 160 112 64" stroke="#8a5a2b" stroke-width="16" fill="none" stroke-linecap="round"/>
-        <path d="M118 300 C112 230 100 160 112 64" stroke="#a97039" stroke-width="16" fill="none" stroke-dasharray="3 14"/>
-        <g class="fronds">
-          <path d="M112 64 C80 30 40 30 6 58 C44 44 78 50 112 70Z" fill="#3f9b4a"/>
-          <path d="M112 64 C140 26 186 24 232 52 C190 42 150 50 112 70Z" fill="#3f9b4a"/>
-          <path d="M112 64 C96 20 70 0 34 2 C66 14 90 36 108 68Z" fill="#4fb35a"/>
-          <path d="M112 64 C132 18 162 2 200 6 C166 18 136 38 116 68Z" fill="#4fb35a"/>
-          <path d="M112 64 C90 70 60 96 46 132 C70 104 92 86 114 72Z" fill="#358a3f"/>
-          <path d="M112 64 C138 72 168 96 182 132 C158 104 134 86 110 72Z" fill="#358a3f"/>
-        </g>
-      </svg>
+<main>
+  <div class="phone">
+    <div class="screen">
+      <video id="app" muted loop playsinline disablepictureinpicture disableremoteplayback preload="auto"
+             poster="/app.jpg" aria-label="A recording of the Coconut iPhone app in use"></video>
     </div>
-    <div class="island"></div>
   </div>
-
-  <div class="sea" aria-hidden="true">
-    <div class="wave back"></div>
-    <div class="wave mid"></div>
-    <div class="wave front"></div>
+  <div class="get">
+    <img class="icon" src="/coconut.png" alt="">
+    <h1>Coconut</h1>
+    <p class="line"><span class="long">Your agents and your team, on your own Mac.</span><span class="short">Your agents, on your own Mac.</span></p>
+    <a class="qr" href="/iphone"><img src="/qr.svg" width="29" height="29" alt="QR code for the iPhone app"></a>
+    <p class="scan">Scan to get the iPhone app.</p>
+    <a class="button" href="/iphone">Get</a>
+    <p class="more"><a href="https://github.com/antiwork/coconut">GitHub</a><a href="/privacy">Privacy</a></p>
   </div>
-</section>
-
-<section class="deep" id="deep">
-  <div class="berg">
-    <figure class="shot"><img src="/app-chat.jpg" width="1600" height="1030" alt="An agent chat in Coconut on the Mac, with a decision card"></figure>
-    <figure class="shot"><img src="/app-inbox.jpg" width="1600" height="1030" alt="The Coconut Inbox with a decision from an agent" loading="lazy"></figure>
-    <figure class="shot"><img src="/app-library.jpg" width="1600" height="1030" alt="The Coconut Library with pages from agents" loading="lazy"></figure>
-  </div>
-  <footer><a href="https://github.com/antiwork/coconut">github.com/antiwork/coconut</a></footer>
-</section>
+</main>
 
 <script>
-  // Coconuts fall from the crown of the tree, bounce once on the sand, and roll into the sea.
-  const scene = document.getElementById('scene');
-  const reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
-
-  function drop() {
-    const box = scene.getBoundingClientRect();
-    const tree = scene.querySelector('.tree').getBoundingClientRect();
-    const island = scene.querySelector('.island').getBoundingClientRect();
-    const sea = document.querySelector('.sea').getBoundingClientRect();
-    const nut = document.createElement('img');
-    nut.src = '/coconut-small.png';
-    nut.alt = '';
-    nut.className = 'coconut';
-    scene.appendChild(nut);
-
-    let x = tree.left - box.left + tree.width * (0.36 + Math.random() * 0.18);
-    let y = tree.top - box.top + tree.height * 0.18;
-    const ground = island.top - box.top - 34;
-    const side = Math.random() < 0.5 ? -1 : 1;
-    const shore = island.left - box.left + (side < 0 ? -30 : island.width + 30);
-    const surface = sea.top - box.top + sea.height * 0.35;
-    let vx = side * (0.3 + Math.random() * 0.5), vy = 0, spin = Math.random() * 360, landed = false;
-
-    function step() {
-      vy += 0.45;
-      x += vx; y += vy; spin += vx * 5;
-      if (!landed && y >= ground) {
-        y = ground; vy = -vy * 0.35; vx = (shore - x) / 45; landed = true;
-      }
-      const fade = y > surface ? Math.max(0, 1 - (y - surface) / 30) : 1;
-      nut.style.opacity = fade;
-      nut.style.transform = `translate(${x - 26}px, ${y}px) rotate(${spin}deg)`;
-      if (fade > 0) requestAnimationFrame(step); else nut.remove();
-    }
-    requestAnimationFrame(step);
+  // A phone gets the recording without the status bar, because the phone shows its own. A computer gets the whole
+  // screen in the iPhone frame. Reduce Motion keeps the first frame until a tap.
+  const video = document.getElementById('app');
+  const bleed = matchMedia('(max-width: 600px) and (orientation: portrait)');
+  const still = matchMedia('(prefers-reduced-motion: reduce)');
+  function choose() {
+    const name = bleed.matches ? 'app-bleed' : 'app';
+    if (video.getAttribute('src') === `/${name}.mp4`) return;
+    video.poster = `/${name}.jpg`;
+    video.src = `/${name}.mp4`;
+    if (!still.matches) video.play().catch(() => {});
   }
-
-  // Bubbles rise past the windows under the water.
-  if (!reduced) {
-    const deep = document.getElementById('deep');
-    for (let i = 0; i < 18; i++) {
-      const b = document.createElement('span');
-      const size = 4 + Math.random() * 10;
-      b.className = 'bubble';
-      Object.assign(b.style, { left: Math.random() * 100 + '%', width: size + 'px', height: size + 'px',
-        animationDuration: 9 + Math.random() * 10 + 's', animationDelay: -Math.random() * 18 + 's' });
-      deep.appendChild(b);
-    }
-  }
-
-  if (!reduced) {
-    setTimeout(drop, 500);
-    setInterval(() => { if (!document.hidden) drop(); }, 2000);
-  }
+  choose();
+  bleed.addEventListener('change', choose);
+  video.addEventListener('click', () => { if (video.paused) video.play(); else video.pause(); });
 </script>
 </body>
 </html>

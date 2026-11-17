@@ -1,3 +1,4 @@
 .gitignore
 wrangler.toml
 .assetsignore
+.wrangler
