@@ -1,0 +1,41 @@
+{
+  "host": {
+    "web": {},
+    "ios": {
+      "minimumOS": "17.0",
+      "deviceFamily": [
+        "iphone",
+        "ipad"
+      ]
+    }
+  },
+  "deploy": {
+    "store": {
+      "web": "0",
+      "ios": "0"
+    }
+  },
+  "dev": {
+    "rebuild": {
+      "typescript": "save"
+    }
+  },
+  "$schema": "../../exact/scripts/app.schema.json",
+  "name": "Coconut",
+  "short_name": "Coconut",
+  "id": "com.gumroad.coconut.exact",
+  "start_url": "/",
+  "display": "standalone",
+  "icons": [
+    {
+      "src": "assets/icon-1024.png",
+      "sizes": "1024x1024",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ],
+  "app": {
+    "id": "com.gumroad.coconut.exact",
+    "name": "Coconut"
+  }
+}

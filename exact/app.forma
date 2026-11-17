@@ -1,0 +1,41 @@
+// Coconut's palette, from ios/Coconut/Theme.swift (BoardStyle). Text, symbols, separators, the red of Needs attention
+// and every control are the platform's roles; what is written here is what the Swift app paints itself: its page,
+// the surface of a card and a bubble, the bubble of the person, the warm accent of a status, the green of work, the
+// tints of the Needs attention card and the eight faces.
+forma coconut
+
+theme
+  // BoardStyle.paper: the page is white, and in the dark a near black, not the system's black.
+  surface.page = light-dark(#ffffff, #111111)
+  // BoardStyle.surface.
+  surface.card = light-dark(#f4f4f4, #212121)
+  // BoardStyle.userBubble.
+  bubble.user = light-dark(#e0c4a6, #63422e)
+  // BoardStyle.accent (BoardStyle.attention): the label of Needs you and of a health.
+  accent.warm = light-dark(#b84524, #fc855c)
+  // BoardStyle.green (BoardStyle.positive): the dot of an agent that works.
+  status.positive = light-dark(#456d52, #8fbf99)
+  // The Needs attention card (AttentionCard): the destructive red at 8% under the card, 22% on its edge, 18% between
+  // its rows, and white on the pill of the count.
+  attention.fill = light-dark(rgb(255 56 60 / 0.08), rgb(255 66 69 / 0.08))
+  attention.line = light-dark(rgb(255 56 60 / 0.22), rgb(255 66 69 / 0.22))
+  attention.divider = light-dark(rgb(255 56 60 / 0.18), rgb(255 66 69 / 0.18))
+  ink.on-red = #ffffff  scheme=fixed
+  // BoardStyle.faceColors: a letter takes the face at its place in the alphabet modulo eight (AgentLetter.colors),
+  // the same in light and in dark. A fn of the contract names them: face0, face0-ink.
+  face0 = #7e99d3  scheme=fixed
+  face0-ink = #1f334e  scheme=fixed
+  face1 = #70a779  scheme=fixed
+  face1-ink = #fcedce  scheme=fixed
+  face2 = #aa79c2  scheme=fixed
+  face2-ink = #fcf0dd  scheme=fixed
+  face3 = #f2a088  scheme=fixed
+  face3-ink = #263329  scheme=fixed
+  face4 = #eaa052  scheme=fixed
+  face4-ink = #263329  scheme=fixed
+  face5 = #d76c91  scheme=fixed
+  face5-ink = #ffebd6  scheme=fixed
+  face6 = #b6c493  scheme=fixed
+  face6-ink = #263329  scheme=fixed
+  face7 = #ebc96c  scheme=fixed
+  face7-ink = #263329  scheme=fixed

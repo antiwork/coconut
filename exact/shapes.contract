@@ -1,0 +1,104 @@
+// The records the data module (app.ts) answers and the parts draw. A shape has no optional field: a value that may be
+// missing is an empty string, zero or an empty list. Every `at` is a time in milliseconds since 1970.
+
+shape Time
+  epochAtZero: number
+  utcOffset: number
+
+// Where a message can go: an agent, which the app calls a project.
+shape Project
+  id: string
+  name: string
+  letter: string
+  face: number
+
+// One row of Needs attention: a rule that breaches, how many things breach it, the chat that holds the fix, and the
+// symbol of the rule. `value` is the big number of the row.
+shape Attention
+  id: string
+  chat: string
+  label: string
+  detail: string
+  value: string
+  count: number
+  symbol: string
+
+// One row of the list of chats. `status` is needs_you, working, health or idle: it picks what the line under the name
+// is, and the line holds its words.
+shape ChatRow
+  id: string
+  kind: string
+  title: string
+  letter: string
+  face: number
+  circle: bool
+  line: string
+  status: string
+  active: bool
+  unread: number
+  at: number
+
+shape Home
+  target: Project
+  projects: Project[]
+  attention: Attention[]
+  chats: ChatRow[]
+
+shape Choice
+  id: string
+  label: string
+  explanation: string
+
+// A line of a chat. `kind` is text, activity, decision, artifact, notice or status; the working line is the last row
+// of a chat whose agent works. A decision has its `ref`, its `status` (pending or replied) and the `receipt` of the
+// option that was chosen.
+shape Message
+  id: string
+  kind: string
+  mine: bool
+  author: string
+  at: number
+  title: string
+  body: string
+  detail: string
+  ref: string
+  status: string
+  receipt: string
+  options: Choice[]
+
+// What the agent of a chat does now. `startedAt` is the start of the turn, `queued` the messages that wait for the next.
+shape Turn
+  running: bool
+  startedAt: number
+  phase: string
+  detail: string
+  model: string
+  queued: number
+
+shape Model
+  id: string
+  name: string
+
+shape Chat
+  id: string
+  kind: string
+  title: string
+  project: string
+  letter: string
+  face: number
+  circle: bool
+  messages: Message[]
+  turn: Turn
+  model: string
+  modelName: string
+  effort: string
+  efforts: string[]
+  models: Model[]
+  toolbar: bool
+
+shape Ack
+  ok: bool
+
+// The reply of a write that makes a thing: the id of the chat or of the project.
+shape Made
+  id: string

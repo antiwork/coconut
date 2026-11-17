@@ -1,0 +1,19 @@
+{
+  "room": "gumroad",
+  "name": "Gumroad",
+  "members": [
+    { "id": "m1", "name": "Ada", "admin": true, "self": true },
+    { "id": "m2", "name": "Grace", "admin": false, "self": false },
+    { "id": "m3", "name": "Lin", "admin": false, "self": false }
+  ],
+  "last": { "member": "m3", "name": "Lin", "text": "The payout fix is in review.", "minutes_ago": 42 },
+  "directs": [
+    { "member": "m2", "name": "Grace", "unread": 1, "text": "Can you check the refund for the Friday double payouts?", "minutes_ago": 9 }
+  ],
+  "notices": [
+    { "id": "n1", "type": "status", "text": "Deploys are frozen until the payout fix ships. Don't merge to main.", "minutes_ago": 35, "author": "Grace", "seen": false, "active": true },
+    { "id": "n2", "type": "deadline", "text": "Creator payout report is due Friday. One page per team in the Library.", "minutes_ago": 360, "author": "Ada", "seen": true, "active": true },
+    { "id": "n3", "type": "rule", "text": "Every PR needs a real screenshot of the app.", "minutes_ago": 5760, "author": "Ada", "seen": true, "active": true },
+    { "id": "n4", "type": "announcement", "text": "Coconut 0.2 ships Thursday.", "minutes_ago": 8640, "author": "Grace", "seen": true, "active": false }
+  ]
+}

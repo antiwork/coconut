@@ -1,0 +1,165 @@
+// The parts of Coconut's screens: a face, a count, a row of the list of chats, a row of Needs attention, the lines of a
+// chat and the working line. A part draws what it is given. An action is the caller's: a part takes one as a prop,
+// already bound to its item (`choose=openChat(c.id)`), as ItemSections does in the list-detail pattern.
+use Attention, ChatRow, Message, Turn from "./shapes.contract"
+
+fn two(n: number): string = n < 10 ? `0${n}` : `${n}`
+// The time of a turn to the second: 9s, 4m 05s, 1h 02m 05s (ConversationActivity.elapsed).
+fn elapsed(ms: number): string = ms < 60000 ? `${floor(max(ms, 0) / 1000)}s` : ms < 3600000 ? `${floor(ms / 60000)}m ${two(floor(ms / 1000) % 60)}s` : `${floor(ms / 3600000)}h ${two(floor(ms / 60000) % 60)}m ${two(floor(ms / 1000) % 60)}s`
+// The count of an unread badge: over 99 shows 99+ (UnreadBadge.text).
+fn badgeText(n: number): string = n > 99 ? "99+" : `${n}`
+// The colours of a face, by name: the eight of app.forma.
+fn faceFill(i: number): string = `face${i}`
+fn faceInk(i: number): string = `face${i}-ink`
+// The day of an instant as a key in the zone of the person; two keys are the same day when they are equal.
+fn dayKey(ms: number, offset: number): string = formatDate(ms, offset, "iso")
+// The time of a message, as MessageTimes.label shows it: 4:02 PM today, Yesterday 4:02 PM, Mon 4:02 PM within six days,
+// else Nov 3, 4:02 PM.
+fn messageTime(at: number, now: number, offset: number): string = dayKey(at, offset) == dayKey(now, offset) ? formatTime(at, offset, "short") : dayKey(at, offset) == dayKey(now - 86400000, offset) ? `Yesterday ${formatTime(at, offset, "short")}` : now - at < 518400000 ? `${formatDay(at, now, offset, "section").slice(0, 3)} ${formatTime(at, offset, "short")}` : `${formatDate(at, offset, "month-day")}, ${formatTime(at, offset, "short")}`
+
+// The face of an agent is a rounded square, the face of a person or a team a circle; its letter is bold at 56% of the
+// size (LetterTile).
+component Face
+  props
+    letter: string
+    face: number
+    size: number
+    circle: bool
+  view
+    column width=size height=size border-radius=(circle ? size / 2 : size * 0.3) background-color=faceFill(face) color=faceInk(face) align-items="center" justify-content="center" flex-shrink=0 aria-hidden=true
+      text letter font-size=(size * 0.56) font-weight=700
+
+// The unread count of a chat: the ink of the app with the count in the colour of the page (UnreadBadge).
+component CountBadge
+  props
+    count: number
+  view
+    text badgeText(count) font="-exact-caption2" font-weight=600 font-variant-numeric="tabular-nums" color="-exact-background" background-color="-exact-label" border-radius=9 min-width=18 height=18 padding="0px 6px" text-align="center" line-height="18px" flex-shrink=0 box-sizing="border-box" aria-label=`${count} unread` testId="unread-badge"
+
+// One row of the list of chats (ChatRowLayout): the face, the name with the age of the newest message, and under it the
+// line with the unread count. The line is the status of the chat in words, or its last message.
+component ChatRowView
+  props
+    chat: ChatRow
+    now: number
+    offset: number
+    choose: action
+  derive since = max(now - chat.at, 0)
+  derive age = since < 60000 ? "Now" : since < 3600000 ? `${floor(since / 60000)} min` : since < 86400000 ? `${floor(since / 3600000)} hr` : formatDate(chat.at, offset, "month-day")
+  view
+    button press=choose appearance="none" display="flex" flex-direction="row" align-items="center" gap=12 text-align="start" padding="8px 16px" min-height=52 width="100%" testId=`chat-${chat.id}`
+      column position="relative" width=46 height=46 flex-shrink=0
+        Face(letter=chat.letter, face=chat.face, size=46, circle=chat.circle)
+        if chat.active
+          view position="absolute" right=-2 bottom=-2 width=12 height=12 border-radius=6 background-color="status.positive" border-width=2 border-style="solid" border-color="surface.page" aria-hidden=true testId=`active-${chat.id}`
+      column flex=1 min-width=0 gap=2
+        row align-items="baseline" gap=8
+          text chat.title font="-exact-body" font-weight=(chat.unread > 0 ? 600 : 400) line-clamp=1 flex=1 min-width=0 testId=`title-${chat.id}`
+          text age font="-exact-footnote" font-variant-numeric="tabular-nums" color="-exact-secondary-label" flex-shrink=0 testId=`age-${chat.id}`
+        row align-items="center" gap=8
+          if chat.status == "needs_you"
+            row align-items="center" gap=4 flex=1 min-width=0
+              image "symbol:sf/circle.inset.filled" font="-exact-subheadline" color="accent.warm" aria-hidden=true
+              text chat.line font="-exact-subheadline" color="accent.warm" line-clamp=1 testId=`line-${chat.id}`
+          else
+            text chat.line font="-exact-subheadline" color=(chat.status == "health" ? "accent.warm" : "-exact-secondary-label") line-clamp=1 flex=1 min-width=0 testId=`line-${chat.id}`
+          if chat.unread > 0
+            CountBadge(count=chat.unread)
+
+// One row of Needs attention (AttentionCard.row): the symbol of the rule, its label and detail, and the big number.
+component AttentionRow
+  props
+    item: Attention
+    first: bool
+    choose: action
+  view
+    column width="100%"
+      if not first
+        view height=1 margin-left=44 background-color="attention.divider"
+      button press=choose appearance="none" display="flex" flex-direction="row" align-items="center" gap=12 text-align="start" padding="10px 12px" width="100%" testId=`attention-${item.id}`
+        image item.symbol width=20 height=20 color="-exact-system-red" aria-hidden=true
+        column flex=1 min-width=0 gap=2
+          text item.label font="-exact-body" font-weight=600 color="-exact-system-red" line-clamp=1
+          text item.detail font="-exact-subheadline" color="-exact-secondary-label" line-clamp=1
+        text item.value font="-exact-title2" font-weight=600 font-variant-numeric="tabular-nums" color="-exact-system-red" flex-shrink=0
+        image "symbol:forward-chevron" color="-exact-system-red" opacity=0.6 aria-hidden=true
+
+// A message: on the right in the bubble of the person, on the left in the surface of a card (ChatBubbleBackground), with
+// its time under it (MessageTimestamp). A team's message names who wrote it.
+component Bubble
+  props
+    m: Message
+    now: number
+    offset: number
+  view
+    column gap=2 align-items=(m.mine ? "flex-end" : "flex-start") testId=`entry-${m.id}`
+      if m.author != ""
+        text m.author font="-exact-footnote" color="-exact-secondary-label" padding-left=12
+      text m.body markup="markdown" padding=12 border-radius=24 max-width="82%" overflow-wrap="break-word" background-color=(m.mine ? "bubble.user" : "surface.card") testId=`message-${m.id}`
+      text messageTime(m.at, now, offset) font="-exact-caption2" font-variant-numeric="tabular-nums" color="-exact-tertiary-label" padding="0px 12px" testId=`time-${m.id}`
+
+// A notice of a team: its kind, its words, who posted it and when.
+component NoticeCard
+  props
+    m: Message
+    now: number
+    offset: number
+  view
+    column gap=2 padding=12 border-radius=16 background-color="surface.card" testId=`notice-${m.id}`
+      text m.title font="-exact-footnote" font-weight=600 color="accent.warm"
+      text m.body markup="markdown"
+      text `${m.author} · ${messageTime(m.at, now, offset)}` font="-exact-caption2" font-variant-numeric="tabular-nums" color="-exact-secondary-label"
+
+// A file an agent made: its name and the first lines of it.
+component ArtifactCard
+  props
+    m: Message
+  view
+    column gap=6 padding=12 border-radius=16 background-color="surface.card" testId=`artifact-${m.id}`
+      row gap=8 align-items="center"
+        image "symbol:document" aria-hidden=true
+        text m.title font-weight=600 flex=1 min-width=0 line-clamp=1
+      text m.body font="-exact-subheadline" color="-exact-secondary-label"
+
+// A card that waits for an answer, with the options the caller indents under it. Once it has an answer it shows the
+// option that was chosen.
+component DecisionCard
+  props
+    m: Message
+  slot
+  view
+    column gap=12 padding=16 border-radius=16 background-color="surface.card" testId=`decision-${m.id}`
+      text m.title font="-exact-headline"
+      text m.body markup="markdown"
+      text m.detail markup="markdown"
+      children
+      if m.status != "pending"
+        row gap=6 align-items="center"
+          image "symbol:checkmark" aria-hidden=true
+          text m.receipt testId=`receipt-${m.id}`
+
+// One option of a card: the button, and under it what it does.
+component OptionButton
+  props
+    label: string
+    explanation: string
+    pick: action
+  view
+    column gap=4
+      button press=pick buttonStyle="bordered" testId=`option-${label}`
+        text label
+      text explanation font="-exact-footnote" color="-exact-secondary-label"
+
+// What the agent does now, as BotStatusRow shows it under the newest message: the phase, then the time of the turn to
+// the second, the model and the messages that wait, and the command in monospace under them.
+component WorkingLine
+  props
+    turn: Turn
+    now: number
+  view
+    column padding="6px 14px 10px" gap=2 testId="working"
+      row gap=6 align-items="baseline" flex-wrap="wrap"
+        text turn.phase font="-exact-subheadline" color="-exact-secondary-label" testId="working-phase"
+        text `· ${elapsed(now - turn.startedAt)} · ${turn.model}${turn.queued > 0 ? ` · ${turn.queued} queued` : ""}` font="-exact-subheadline" font-variant-numeric="tabular-nums" color="-exact-secondary-label" testId="working-meta"
+      if turn.detail != ""
+        text turn.detail font="-exact-caption1" font-family="monospace" color="-exact-secondary-label" line-clamp=1 testId="working-detail"
