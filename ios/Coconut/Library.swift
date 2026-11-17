@@ -495,7 +495,7 @@ struct DocumentView: View {
 
     /// Opens the chat of the target with the page quoted in the composer, as a reply quotes a message. The chat of a
     /// bot of this Mac opens as today. The direct chat with a team bot opens where each other way to it opens it: on
-    /// the Chats tab of an iPhone, and in the sidebar of the Mac window.
+    /// Home on an iPhone, and in the sidebar of the Mac window.
     private func ask(_ target: DocumentChatTarget, about document: BotDocument) {
         store.ask(about: document, in: target)
         switch target {

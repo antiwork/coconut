@@ -498,19 +498,22 @@ struct ConversationView: View {
                         .fixedSize(horizontal: true, vertical: false)
                         .padding(.leading, 4).padding(.trailing, BoardStyle.Space.m)
                         .frame(minHeight: 44).contentShape(Capsule())
-                        // A tap opens the settings of the agent. A long press shows the deck of all chats, which a link
-                        // cannot tell apart from a tap: it opens its page when the finger lifts after the hold.
+                        // A tap opens the page of the agent: its chats, tasks, pages, routines and settings. A long press
+                        // shows the deck of all chats, which a link cannot tell apart from a tap: it opens its page when
+                        // the finger lifts after the hold.
                         .onTapGesture {
                             focusAfterPush = nil
                             composerFocused = false
-                            pushRoute?(BotSettingsRoute(botId: bot.agentId))
+                            // The Coconut chat is not a project: its name opens its settings, as before.
+                            if bot.coconut { pushRoute?(BotSettingsRoute(botId: bot.agentId)) }
+                            else { pushRoute?(AgentRoute(botId: bot.agentId)) }
                         }
                         .onLongPressGesture(minimumDuration: 0.4) { showDeck(bot) }
                         .accessibilityElement(children: .combine)
                         .accessibilityAddTraits(.isButton)
-                        .accessibilityLabel("\(bot.name) settings")
+                        .accessibilityLabel("Open \(bot.name)")
                         .accessibilityAction(named: "Show all chats") { showDeck(bot) }
-                        .accessibilityIdentifier("bot-settings")
+                        .accessibilityIdentifier("agent-page")
                     }
                     // The model and its reasoning are in the composer, under the text (ComposerModelMenu).
                     ToolbarItem(placement: .trailingBar) { NewChatHeaderButton(bot: bot) }

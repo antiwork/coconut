@@ -33,7 +33,7 @@ extension EnvironmentValues {
     @Entry var openDocument: ((String) -> Void)? = nil
     /// Opens the chat of a bot. Only the Mac window sets it. Without it, a page pushes the chat onto its stack.
     @Entry var openChat: ((String) -> Void)? = nil
-    /// Shows a chat of a team: the Chats tab on the iPhone, the main window on the Mac. The Team screen and the name
+    /// Shows a chat of a team: Home on the iPhone, the main window on the Mac. The Team screen and the name
     /// above a message open a direct chat with it.
     @Entry var showTeamChat: ((TeamChatKey) -> Void)? = nil
     /// Shows the Team screen of a team by its room ID. Only the Mac window sets it: the title of a Team chat opens
@@ -53,3 +53,6 @@ struct NoticeBoardRoute: Hashable {
 
 /// The archived agents of the Chats list.
 struct ArchivedAgentsRoute: Hashable {}
+
+/// The list of all agents, with the pages, the live work, the spend and the archive. The project menu of Home opens it.
+struct AgentListRoute: Hashable {}

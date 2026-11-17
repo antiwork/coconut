@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// The page of a chat of a team on the stack of the Chats tab. A chat can take the place of another chat at the same
+/// The page of a chat of a team on the stack of Home. A chat can take the place of another chat at the same
 /// depth (the name above a message, a tapped notification). The identity of the chat makes it a new page: it loads its
 /// own messages, and the draft, the reply quote and the edit of the first chat stay behind. The Mac window does the
 /// same with `.id(chat)`. A page that "Chat about this page" quotes waits in the store under the key of its chat, so it

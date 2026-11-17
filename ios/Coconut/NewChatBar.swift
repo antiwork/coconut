@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// The project of the message box and of the Chats list. An empty project is all projects.
+/// The project of the message box and of the chat list of Home. An empty project is all projects.
 enum ChatProject {
     static let projectKey = "chatProject"
     static let lastKey = "chatProjectLast"
@@ -26,8 +26,8 @@ enum ChatProject {
 }
 
 #if os(iOS)
-/// The message box at the bottom of Home and Chats, above the tab bar. A message starts a new chat with the agent of
-/// the menu above the box, as Send does in a new chat. The same menu filters the Chats list.
+/// The message box at the bottom of Home, above the tab bar. A message starts a new chat with the agent of the menu
+/// above the box, as Send does in a new chat. The same menu filters the chat list, and opens the page of the agent.
 struct NewChatBar: View {
     @Environment(AppStore.self) private var store
     @Environment(\.pushRoute) private var pushRoute
@@ -53,7 +53,8 @@ struct NewChatBar: View {
     }
 
     private func projectMenu(_ choices: [Bot], project: String) -> some View {
-        Menu {
+        let shown = choices.first { $0.id == project }
+        return Menu {
             Button { chosen = "" } label: {
                 if project.isEmpty { Label("All projects", systemImage: "checkmark") } else { Text("All projects") }
             }
@@ -65,9 +66,17 @@ struct NewChatBar: View {
                     if project == agent.id { Label(agent.name, systemImage: "checkmark") } else { Text(agent.name) }
                 }
             }
+            Divider()
+            // The page of the agent: its chats, tasks, pages, routines and settings.
+            if let shown, !shown.coconut {
+                Button("Open \(shown.name)", systemImage: "square.stack.3d.up") { pushRoute?(AgentRoute(botId: shown.id)) }
+                    .accessibilityIdentifier("new-chat-open-agent")
+            }
+            Button("All agents", systemImage: "list.bullet") { pushRoute?(AgentListRoute()) }
+                .accessibilityIdentifier("new-chat-all-agents")
         } label: {
-            HStack(spacing: 6) {
-                if let shown = choices.first(where: { $0.id == project }) {
+            HStack(spacing: BoardStyle.Space.s) {
+                if let shown {
                     LiveBotAvatar(bot: shown, size: 20)
                     Text(shown.name).lineLimit(1)
                 } else {
@@ -87,21 +96,15 @@ struct NewChatBar: View {
 
     private func field(_ target: Bot) -> some View {
         let canSend = !sending && !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        return HStack(alignment: .bottom, spacing: BoardStyle.Space.s) {
+        return HStack(alignment: .bottom, spacing: BoardStyle.Space.xs) {
             TextField("Message \(target.name)", text: $text, axis: .vertical)
-                .lineLimit(1...5)
+                .modifier(ComposerFieldStyle(send: { send(to: target) }))
                 .focused($focused)
-                .padding(.leading, 14).padding(.vertical, 10)
+                .padding(.leading, BoardStyle.Space.l)
                 .accessibilityIdentifier("new-chat-input")
-            Button { send(to: target) } label: {
-                Image(systemName: "arrow.up.circle.fill").font(.system(size: 32))
-                    .foregroundStyle(canSend ? Color.accentColor : Color.secondary.opacity(0.4))
-            }
-            .disabled(!canSend)
-            .padding(.trailing, 4).padding(.bottom, 4)
-            .accessibilityLabel("Send").accessibilityIdentifier("new-chat-send")
+            ComposerSendButton(symbol: "arrow.up", enabled: canSend, label: "Send") { send(to: target) }
         }
-        .background(Color.primary.opacity(0.07), in: RoundedRectangle(cornerRadius: 22, style: .continuous))
+        .modifier(ComposerSurface(shape: RoundedRectangle(cornerRadius: BoardStyle.Radius.large, style: .continuous)))
     }
 
     private func send(to agent: Bot) {

@@ -1,9 +1,13 @@
 import SwiftUI
 
+/// Home on the iPhone, as the Codex app is one screen: what needs attention first, then every chat with its newest
+/// activity first, and the message box under the list (NewChatBar). The project menu of the box filters the chats.
 struct HomeLaunchView: View {
     @Environment(AppStore.self) private var store
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @Environment(\.pushRoute) private var pushRoute
+    /// Opens the place of a row of Needs attention, or the cards that wait.
+    let open: (HomeTarget) -> Void
     @ScaledMetric(relativeTo: .subheadline) private var pinWidth = 108
     @ScaledMetric(relativeTo: .title3) private var todoIconWidth = 24
 
@@ -43,7 +47,10 @@ struct HomeLaunchView: View {
             } : []
         let coconut = store.bots.coconutChat.flatMap { project.isEmpty || project == $0.id ? $0 : nil }
         // A list, not a stack, so that a row of an agent has the swipe of the system: swipe left to archive.
+        // The cards that wait for an answer, also the ones that do not wait long enough for Needs attention.
+        let cards = store.pendingCardCount
         return List {
+            attention(cards: cards)
             // The Coconut chat comes first: it is where the person changes Coconut.
             if let coconut, filter != .unread || coconut.unreadCount > 0 {
                 CoconutChatRow(bot: coconut)
@@ -138,6 +145,35 @@ struct HomeLaunchView: View {
         .refreshable { await store.reconnect() }
         // The message box under the list gives the keyboard back when the list moves.
         .scrollDismissesKeyboard(.interactively)
+    }
+
+    /// What asks for the person comes before the chats: the rules that breach now, then the cards that wait. Each row
+    /// draws nothing when there is nothing to show.
+    @ViewBuilder
+    private func attention(cards: Int) -> some View {
+        // The rules read the clock, so the card checks them again each minute.
+        TimelineView(.periodic(from: .now, by: 60)) { timeline in
+            let items = store.attentionItems(now: timeline.date)
+            AttentionCard(items: items, open: open)
+                .padding(.bottom, items.isEmpty ? 0 : BoardStyle.Space.m)
+        }
+        .homeRow(top: BoardStyle.Space.s)
+        if cards > 0 {
+            Button { open(.cards(nil)) } label: {
+                HStack(spacing: BoardStyle.Space.m) {
+                    Image(systemName: "rectangle.stack.fill").foregroundStyle(BoardStyle.attention)
+                    Text(cards == 1 ? "1 card waits for you" : "\(cards) cards wait for you")
+                        .font(.body.weight(.semibold)).foregroundStyle(.primary)
+                    Spacer(minLength: 0)
+                    Image(systemName: "chevron.right").font(.footnote.weight(.semibold)).foregroundStyle(.tertiary)
+                }
+                .padding(.vertical, BoardStyle.Space.m)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(HomePressStyle())
+            .accessibilityIdentifier("home-review-cards")
+            .homeRow()
+        }
     }
 
     /// The further chats of an agent, under its row: a smaller face, the title of the chat, and its last message.

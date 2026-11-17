@@ -172,7 +172,8 @@ extension AppStore {
     }
 }
 
-/// The Agents tab: each agent as a project, with its role, its state, its open work and its last activity.
+/// The list of the agents: each agent as a project, with its role, its state, its open work and its last activity. The
+/// Mac window shows it as a place. The iPhone opens it from the project menu of Home.
 struct AgentsView: View {
     @Environment(AppStore.self) private var store
     @Environment(\.pushRoute) private var pushRoute
@@ -221,6 +222,11 @@ struct AgentsView: View {
                 }
             }
             BoardSection("Usage") {
+                #if os(iOS)
+                // The iPhone Home has no tile for the agents that work now, so the page of the agents has the row.
+                BoardRow(symbol: "circle.dotted", title: "Live", value: "\(LiveFeed.agents(bots: store.bots, tasks: store.tasks).count) working")
+                    .boardButton("agents-live") { pushRoute?(LiveRoute()) }
+                #endif
                 BoardRow(symbol: "chart.bar", title: "Usage", detail: "Turns, tokens, cost and time of each agent")
                     .boardButton("agents-usage") { pushRoute?(UsageRoute()) }
             }
