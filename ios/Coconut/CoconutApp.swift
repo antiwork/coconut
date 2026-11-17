@@ -451,68 +451,65 @@ private struct NativeTabCollapse: ViewModifier {
     }
 }
 
+#if DEBUG && targetEnvironment(simulator)
+// The names of the tabs, so `--open profile` finds a tab by its name and stays right when the tabs change.
+extension HomeTab: CaseIterable {}
+#endif
+
 extension CoconutHome {
     /// Shows one place of the app at launch, for a screenshot of the preview data: `--demo --open agent`. A simulator
-    /// takes no taps from a terminal, so the hand check of a screen starts the app on it. Only a debug build on a
-    /// simulator reads the argument.
+    /// takes no taps from a terminal, so the hand check of a screen starts the app on it. The name of a tab shows
+    /// its root. Each other place opens on the stack of Home. Only a debug build on a simulator reads the argument.
     private func showPreviewPlace() {
         #if DEBUG && targetEnvironment(simulator)
         let arguments = ProcessInfo.processInfo.arguments
         guard store.isDemo, let index = arguments.firstIndex(of: "--open"), index + 1 < arguments.count else { return }
+        let place = arguments[index + 1]
+        if let tab = HomeTab.allCases.first(where: { String(describing: $0) == place }) {
+            selectedTab = tab
+            return
+        }
         let agent = store.bots.agents.first { !$0.archived }?.id ?? ""
         let room = store.shownTeamRooms.first?.room ?? ""
-        func show(_ tab: HomeTab, _ routes: [any Hashable] = []) {
+        func show(_ routes: [any Hashable]) {
             var path = NavigationPath()
             for route in routes { path.append(route) }
-            switch tab {
-            case .home: homePath = path
-            case .chats: chatsPath = path
-            case .agents: agentsPath = path
-            case .reports: reportsPath = path
-            case .people: peoplePath = path
-            case .profile: profilePath = path
-            }
-            selectedTab = tab
+            homePath = path
+            selectedTab = .home
         }
-        switch arguments[index + 1] {
-        case "chats": show(.chats)
-        case "agents": show(.agents)
-        case "reports": show(.reports)
-        case "people": show(.people)
-        case "profile": show(.profile)
-        case "cards": show(.home, [HomeDestination.inbox])
-        case "chat": show(.chats, [ConversationRoute(botId: agent)])
-        case "coconut": show(.chats, [ConversationRoute(botId: store.bots.coconutChat?.id ?? agent)])
-        case "archived": show(.chats, [ArchivedAgentsRoute()])
-        case "team-chat": show(.chats, [TeamChatRoute(chat: TeamChatKey(room: room))])
-        case "agent": show(.agents, [AgentRoute(botId: agent)])
-        case "agent-settings": show(.agents, [AgentRoute(botId: agent), BotSettingsRoute(botId: agent)])
-        case "agent-model": show(.agents, [AgentRoute(botId: agent), AgentSettingRoute.model(agent)])
-        case "agent-access": show(.agents, [AgentRoute(botId: agent), AgentSettingRoute.access(agent)])
-        case "all-pages": show(.agents, [AllPagesRoute()])
-        case "usage": show(.agents, [UsageRoute()])
+        switch place {
+        case "cards": show([HomeDestination.inbox])
+        case "chat": show([ConversationRoute(botId: agent)])
+        case "coconut": show([ConversationRoute(botId: store.bots.coconutChat?.id ?? agent)])
+        case "archived": show([ArchivedAgentsRoute()])
+        case "team-chat": show([TeamChatRoute(chat: TeamChatKey(room: room))])
+        case "agent": show([AgentRoute(botId: agent)])
+        case "agent-settings": show([AgentRoute(botId: agent), BotSettingsRoute(botId: agent)])
+        case "agent-model": show([AgentRoute(botId: agent), AgentSettingRoute.model(agent)])
+        case "agent-access": show([AgentRoute(botId: agent), AgentSettingRoute.access(agent)])
+        case "all-pages": show([AllPagesRoute()])
+        case "usage": show([UsageRoute()])
         case "page":
             // The list of the pages loads first. The page then opens over the page of its agent.
             Task {
                 if store.documents == nil { await store.loadDocuments(quiet: true) }
                 guard let page = store.documents?.first else { return }
-                show(.agents, store.documentPath(page.id))
+                show(store.documentPath(page.id))
             }
-        case "notices": show(.people, [NoticeBoardRoute(roomId: room)])
-        case "team": show(.people, [TeamScreenRoute(roomId: room)])
+        case "notices": show([NoticeBoardRoute(roomId: room)])
+        case "team": show([TeamScreenRoute(roomId: room)])
         case "direct":
             let member = store.shownTeamRooms.first?.directList.first?.member
-            show(.people, [TeamChatRoute(chat: TeamChatKey(room: room, member: member))])
+            show([TeamChatRoute(chat: TeamChatKey(room: room, member: member))])
         // The tap on the notification of a notice.
         case "notice-tap": showNotification(.notices(room))
-        case "profile-mac": show(.profile, [ProfileRoute.mac])
-        case "profile-notifications": show(.profile, [ProfileRoute.notifications])
-        case "profile-connections": show(.profile, [ProfileRoute.connections])
-        case "profile-model": show(.profile, [ProfileRoute.model])
-        case "profile-access": show(.profile, [ProfileRoute.access])
-        case "profile-parallel": show(.profile, [ProfileRoute.parallelWork])
-        case "profile-business": show(.profile, [ProfileRoute.business])
-        case "profile-team": show(.profile, [ProfileRoute.team])
+        case "profile-mac": show([ProfileRoute.mac])
+        case "profile-notifications": show([ProfileRoute.notifications])
+        case "profile-connections": show([ProfileRoute.connections])
+        case "profile-model": show([ProfileRoute.model])
+        case "profile-access": show([ProfileRoute.access])
+        case "profile-parallel": show([ProfileRoute.parallelWork])
+        case "profile-team": show([ProfileRoute.team])
         default: break
         }
         #endif
