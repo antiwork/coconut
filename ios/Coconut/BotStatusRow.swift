@@ -83,6 +83,7 @@ struct BotStatusRow: View {
 // Three dots show that the bot writes a reply.
 struct TypingDots: View {
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @ScaledMetric(relativeTo: .subheadline) private var dot = 6
 
     var body: some View {
@@ -100,6 +101,8 @@ struct TypingDots: View {
                 }
             }
             .frame(width: dot * 2.6, height: dot * 2.3)
+            // The coconut rolls: one turn in 1.6 s while the wave crosses its holes. Reduce Motion keeps it upright.
+            .rotationEffect(.degrees(reduceMotion ? 0 : Self.roll(time: time)))
         }
         .accessibilityHidden(true)
     }
@@ -108,6 +111,11 @@ struct TypingDots: View {
     static func hole(_ index: Int, dot: CGFloat) -> CGSize {
         [CGSize(width: -dot * 0.8, height: -dot * 0.65), CGSize(width: dot * 0.8, height: -dot * 0.65),
          CGSize(width: 0, height: dot * 0.65)][index]
+    }
+
+    /// The angle of the rolling triangle at `time`, in degrees: a full turn every 1.6 s.
+    static func roll(time: Double) -> Double {
+        time.truncatingRemainder(dividingBy: 1.6) / 1.6 * 360
     }
 
     // A wave crosses the three dots in 0.6 s, then rests for 0.4 s.
