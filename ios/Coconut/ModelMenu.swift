@@ -134,8 +134,8 @@ struct ModelMenu<MenuLabel: View>: View {
                         }
                     }
                 }
-                if !choice.usesDefault, let model = choice.entry, !model.reasoningEfforts.isEmpty {
-                    Menu("Effort · " + ModelPresentation.effortName(choice.effort)) {
+                if let model = choice.entry, !model.reasoningEfforts.isEmpty {
+                    Menu("Reasoning · " + ModelPresentation.effortName(choice.effort)) {
                         ForEach(model.reasoningEfforts, id: \.self) { value in
                             Toggle(isOn: Binding(get: { choice.effort == value }, set: { _ in choice.choose(model, effort: value) })) {
                                 Text(ModelPresentation.effortName(value))
@@ -168,6 +168,33 @@ struct ModelMenu<MenuLabel: View>: View {
     private func choose(_ model: ModelCatalogEntry, _ choice: ModelChoice) {
         choice.choose(model)
         recent = RecentModels.read()
+    }
+}
+
+/// The model and the reasoning effort of a chat, as a pill in the composer under the text, as in Codex. A tap opens the
+/// models and the reasoning efforts of the model.
+struct ComposerModelMenu: View {
+    let botId: String
+    @Environment(AppStore.self) private var store
+
+    var body: some View {
+        let choice = ModelChoice(store: store, botId: botId)
+        ModelMenu(botId: botId) { name in
+            HStack(spacing: BoardStyle.Space.xs) {
+                Text(name).lineLimit(1).truncationMode(.middle)
+                if let effort = choice.effort {
+                    Text(ModelPresentation.effortName(effort)).foregroundStyle(.secondary).lineLimit(1)
+                }
+                Image(systemName: "chevron.down").font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
+            }
+            .font(.subheadline.weight(.medium))
+            .foregroundStyle(.primary)
+            .frame(maxWidth: 220, alignment: .leading)
+            .padding(.horizontal, BoardStyle.Space.s)
+            .frame(minHeight: 44)
+            .contentShape(Rectangle())
+        }
+        .accessibilityIdentifier("chat-model-menu")
     }
 }
 

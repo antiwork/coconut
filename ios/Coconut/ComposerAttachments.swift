@@ -10,23 +10,47 @@ import UniformTypeIdentifiers
 struct ComposerPlusMenu<Items: View>: View {
     let uploading: Bool
     let enabled: Bool
+    /// Inside the box of the composer, under the text: a solid white circle. Outside it, a glass circle of its own.
+    var embedded = false
     @ViewBuilder let items: () -> Items
+    @ScaledMetric(relativeTo: .body) private var size = 32
 
     var body: some View {
-        Menu {
-            items()
-        } label: {
-            Image(systemName: uploading ? "hourglass" : "plus").font(.title3)
-                .foregroundStyle(.secondary).frame(width: 46, height: 46)
-                .contentShape(Circle())
+        Group {
+            if embedded {
+                Menu {
+                    items()
+                } label: {
+                    Image(systemName: uploading ? "hourglass" : "plus")
+                        .font(.body.weight(.semibold))
+                        .foregroundStyle(Color.black)
+                        .frame(width: size, height: size)
+                        .background(Color.white, in: Circle())
+                        .overlay(Circle().stroke(Color.black.opacity(0.12), lineWidth: 0.5))
+                        .frame(minWidth: 44, minHeight: 44)
+                        .contentShape(Circle())
+                }
+                #if os(macOS)
+                .menuStyle(.button).buttonStyle(.plain).menuIndicator(.hidden).fixedSize()
+                #endif
+            } else {
+                Menu {
+                    items()
+                } label: {
+                    Image(systemName: uploading ? "hourglass" : "plus").font(.title3)
+                        .foregroundStyle(.secondary).frame(width: 46, height: 46)
+                        .contentShape(Circle())
+                }
+                #if os(macOS)
+                // A Mac draws a menu as a pull-down button with an arrow. The composer shows only its icon.
+                .menuStyle(.button).buttonStyle(.plain).menuIndicator(.hidden).fixedSize()
+                #endif
+                .modifier(ComposerSurface(shape: Circle()))
+            }
         }
-        #if os(macOS)
-        // A Mac draws a menu as a pull-down button with an arrow. The composer shows only its icon.
-        .menuStyle(.button).buttonStyle(.plain).menuIndicator(.hidden).fixedSize()
-        #endif
-        .modifier(ComposerSurface(shape: Circle()))
         .disabled(!enabled || uploading)
         .accessibilityLabel("More options")
+        .accessibilityIdentifier("composer-plus")
     }
 }
 
