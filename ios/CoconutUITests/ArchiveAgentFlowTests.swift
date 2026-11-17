@@ -57,9 +57,12 @@ final class ArchiveAgentFlowTests: XCTestCase {
     func testToDosAndFiltersRemainReachableAtLargeText() throws {
         let app = try launchChats(largeText: true)
         let working = app.buttons["chats-todo-working"]
+        // The extra Coconut chat puts To-dos below the first screen at this text size.
+        app.swipeUp()
         XCTAssertTrue(working.waitForExistence(timeout: 10))
         XCTAssertTrue(working.isHittable)
         capture("To-dos with large text in dark mode")
+        app.swipeDown()
         app.buttons["chats-filter-unread"].tap()
         XCTAssertTrue(app.buttons["chats-filter-unread"].isSelected)
         capture("Unread with large text in dark mode")
