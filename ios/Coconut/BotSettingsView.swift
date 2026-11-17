@@ -1,7 +1,6 @@
 import SwiftUI
 
-// The routines of an agent. Its settings have no screen: the Coconut chat changes its name and its notifications
-// (coconut_settings), and the `coconut` command does the same.
+// The routines of an agent, and its scheduled checks.
 struct BotSettingsView: View {
     @Environment(AppStore.self) private var store
     @ShownError private var shownError

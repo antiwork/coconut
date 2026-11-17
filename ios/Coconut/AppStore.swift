@@ -790,22 +790,6 @@ final class AppStore {
         await write("bots/\(agentId)/chats", payload: EmptyRequest(), as: Bot.self)
     }
 
-    func updateBot(_ bot: Bot, comparedTo original: Bot) async {
-        guard bot.id == original.id else { return }
-        let patch = BotPatch(updated: bot, original: original)
-        guard !patch.isEmpty else { return }
-        if isDemo {
-            if let index = bots.firstIndex(where: { $0.id == bot.id }) {
-                patch.apply(to: &bots[index])
-            }
-            return
-        }
-        optimistically("bot/\(bot.id)", change: { transaction in
-            if let value = patch.name { optimisticBot(bot.id, \.name, value, in: transaction) }
-            if let value = patch.notifications { optimisticBot(bot.id, \.notifications, value, in: transaction) }
-        }, save: { let _: Bot? = await self.write("bots/\(bot.id)", method: "PATCH", payload: patch, as: Bot.self) })
-    }
-
     func createRoutine(bot: Bot, name: String, prompt: String, cron: String, timezone: String, enabled: Bool = true) async {
         if isDemo {
             routines.append(Routine(id: UUID().uuidString, botId: bot.id, name: name, prompt: prompt, cron: cron, timezone: timezone, enabled: enabled, nextRunAt: nil, lastRunAt: nil,
@@ -1683,28 +1667,6 @@ final class AppStore {
     func updateMCP(_ request: MCPRequest) async -> MCPResponse? {
         let result: MCPResponse? = await write("settings/mcp", payload: request, as: MCPResponse.self)
         return result
-    }
-
-    /// Replace the whole fallback chain of Hermes with `models`, in order.
-    func setFallback(_ models: [FallbackModel]) async {
-        if isDemo {
-            fallback = FallbackSettings(models: models)
-            return
-        }
-        optimistically("settings/fallback", change: { optimisticValue(\.fallback, Optional(FallbackSettings(models: models)), in: $0) },
-                       save: { let _: FallbackSettings? = await self.write("settings/fallback", method: "PUT", payload: FallbackRequest(models: models), as: FallbackSettings.self) })
-    }
-
-    /// The access of every chat: one Hermes profile runs them all.
-    func setApproval(_ value: String) async {
-        if isDemo {
-            if let settings = approvals { approvals = ApprovalSettings(defaults: value, modes: settings.modes) }
-            return
-        }
-        optimistically("settings/approvals", change: { transaction in
-            if let settings = approvals { optimisticValue(\.approvals, Optional(ApprovalSettings(defaults: value, modes: settings.modes)), in: transaction) }
-            for bot in bots { optimisticBot(bot.id, \.effectiveApproval, Optional(value), in: transaction) }
-        }, save: { let _: ApprovalSettings? = await self.write("settings/approvals", method: "PUT", payload: ApprovalRequest(mode: value), as: ApprovalSettings.self) })
     }
 
     func uploadAttachment(bot: Bot, url: URL) async -> Artifact? {
@@ -4004,6 +3966,5 @@ private extension AppStore {
     }
 }
 
-private struct ApprovalRequest: Encodable { let mode: String }
 
 

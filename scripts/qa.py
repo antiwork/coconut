@@ -6,7 +6,7 @@
     python3 scripts/qa.py shot [file]    save a screenshot of the simulator (default: .build/qa/shot.png)
 
 A place is a name of the app's --open launch argument (CoconutHome.showPreviewPlace in ios/Coconut/CoconutApp.swift),
-for example home, chats, cards, chat, agent, agent-settings, business, team. The app runs with its demo data
+for example home, chats, cards, chat, agent, agent-routines, business, team. The app runs with its demo data
 (--demo), so it needs no Mac and no pairing.
 """
 from __future__ import annotations

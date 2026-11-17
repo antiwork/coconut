@@ -1,7 +1,7 @@
 import SwiftUI
 
-/// The model of every chat, and its reasoning effort. One Hermes profile runs them all. No screen lists them: the
-/// person types `/model` or `/effort` in the message box, or asks an agent to change it (coconut_settings).
+/// The model of every chat, and its reasoning effort. One Hermes profile runs them all. The person types `/model` or
+/// `/effort` in the message box, or asks the Coconut chat (coconut_settings).
 @MainActor
 struct ModelChoice {
     let store: AppStore

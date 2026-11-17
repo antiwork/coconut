@@ -31,7 +31,7 @@ enum MacSelection: Hashable {
     case team(TeamChatKey)
 }
 
-/// The tabs of the details next to a chat: the settings of the agent and its pages.
+/// The tabs of the details next to a chat: the routines of the agent and its pages.
 enum InspectorTab: Hashable {
     case details, pages
 }
@@ -334,7 +334,7 @@ struct MacMainWindow: View {
             .ignoresSafeArea(.container, edges: .top)
             .toolbarBackgroundVisibility(.hidden, for: .windowToolbar)
             // The pill over the chat names the bot, so the window shows no title of its own. Without this, the title of
-            // the bot settings in the details repeats the bot name.
+            // the routines in the details repeats the bot name.
             .toolbar(removing: .title)
         case .team(let chat):
             // A team has no details column, so the chat takes the whole detail column and has no control for one.
@@ -707,7 +707,7 @@ private struct MacConnectionFooter: View {
     }
 }
 
-/// The details of an agent next to its chat: its settings or its pages.
+/// The details of an agent next to its chat: its routines or its pages.
 struct MacBotDetails: View {
     let botId: String
     @Binding var tab: InspectorTab
@@ -717,7 +717,7 @@ struct MacBotDetails: View {
             // Text tabs. The current one sits on a soft capsule. The same height and top space as the bot's title over
             // the chat, so both sit in one row.
             HStack(spacing: BoardStyle.Space.xs) {
-                tabButton("Details", .details)
+                tabButton("Routines", .details)
                 tabButton("Pages", .pages)
             }
             .frame(height: 34)
@@ -725,8 +725,7 @@ struct MacBotDetails: View {
             // The background of the form below reaches up into the toolbar area. The tabs stay in front of it.
             .zIndex(1)
             NavigationStack {
-                // Each bot gets its own settings view. Leaving it saves its edits to that bot, so an unsaved edit
-                // never moves to the next bot.
+                // Each bot gets its own view, so an open routine never moves to the next bot.
                 switch tab {
                 case .details: BotSettingsView(botId: botId).id(botId)
                 case .pages:

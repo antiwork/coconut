@@ -47,7 +47,7 @@ enum ComposerSlash {
         ("effort", "Change the reasoning effort", "brain"),
         ("compact", "Summarize the chat to free up context", "arrow.down.right.and.arrow.up.left"),
         ("stop", "Stop the running task", "stop.fill"),
-        ("help", "See what you can ask for and change here", "questionmark.circle"),
+        ("help", "See what you can ask for", "questionmark.circle"),
     ]
 
     /// The suggestions for the text of the field. Empty when the text is not a command in the making.

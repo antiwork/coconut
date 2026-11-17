@@ -478,13 +478,13 @@ struct ConversationView: View {
                         .fixedSize(horizontal: true, vertical: false)
                         .padding(.leading, 4).padding(.trailing, BoardStyle.Space.m)
                         .frame(minHeight: 44).contentShape(Capsule())
-                        // A tap opens the page of the agent: its chats, tasks, pages, routines and settings. A long press
+                        // A tap opens the page of the agent: its chats, tasks, pages and routines. A long press
                         // shows the deck of all chats, which a link cannot tell apart from a tap: it opens its page when
                         // the finger lifts after the hold.
                         .onTapGesture {
                             focusAfterPush = nil
                             composerFocused = false
-                            // The Coconut chat is not a project: its name opens its settings, as before.
+                            // The Coconut chat is not a project: its name opens its routines.
                             if bot.coconut { pushRoute?(BotSettingsRoute(botId: bot.agentId)) }
                             else { pushRoute?(AgentRoute(botId: bot.agentId)) }
                         }
@@ -495,7 +495,6 @@ struct ConversationView: View {
                         .accessibilityAction(named: "Show all chats") { showDeck(bot) }
                         .accessibilityIdentifier("agent-page")
                     }
-                    // The model has no item here: the person types `/model` in the message box.
                     ToolbarItem(placement: .trailingBar) { NewChatHeaderButton(bot: bot) }
                     #endif
                 }
@@ -513,10 +512,10 @@ struct ConversationView: View {
                                     .help("Show or hide the details of \(bot.name)")
                             } else {
                                 NavigationLink(value: BotSettingsRoute(botId: bot.agentId)) { botPill(bot) }
-                                    .help("Settings of \(bot.name)")
+                                    .help("Routines of \(bot.name)")
                             }
                         }
-                        .accessibilityLabel("\(bot.name) settings")
+                        .accessibilityLabel("\(bot.name) routines")
                         .accessibilityIdentifier("bot-settings")
                         NewChatHeaderButton(bot: bot)
                     }
@@ -1076,8 +1075,7 @@ struct ConversationComposer: View {
             }
             ComposerSlashMenu(suggestions: slashSuggestions, highlighted: slashIndex) { run($0) }
             // One box, as in Codex. A short draft is one line with the plus and Send beside it. When the box opens, the
-            // text is on top, and under it are the plus and Send or Stop. The model and the access have no chip: the
-            // person types `/model`, or asks an agent to change them.
+            // text is on top, and under it are the plus and Send or Stop.
             VStack(alignment: .leading, spacing: 0) {
                 HStack(alignment: .bottom, spacing: 0) {
                     if !expanded { plusMenu }

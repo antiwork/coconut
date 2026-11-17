@@ -1,7 +1,6 @@
 import Foundation
 
-// The limits of parallel work have no screen. The person asks the Coconut chat to change them (coconut_settings).
-
+/// A limit of parallel work, as the Mac reports it. The Coconut chat changes it (coconut_settings).
 struct ParallelWorkSettings: Codable, Equatable, Sendable {
     var limit: Int?
     let effectiveLimit: Int
