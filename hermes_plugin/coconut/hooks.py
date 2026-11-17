@@ -437,14 +437,16 @@ def steer_live_message(request=None, **_):
     if key is None:
         return None
     try:
-        from agent.prompt_builder import STEER_DISPLAY_KIND, format_steer_marker
+        from agent.prompt_builder import format_steer_marker
     except Exception:
-        STEER_DISPLAY_KIND, format_steer_marker = 'steer', lambda text: text
+        def format_steer_marker(text):
+            return text
     items = list(request[key])
     for message in messages:
         content = format_steer_marker(str(message['text'])).lstrip()
-        items.append({'role': 'user', 'content': content, 'display_kind': STEER_DISPLAY_KIND}
-                     if key == 'messages' else
+        # This is the request that goes to the provider, so an item has only the fields of its API. The Anthropic API
+        # refuses any other field ("display_kind: Extra inputs are not permitted"), and the whole turn then fails.
+        items.append({'role': 'user', 'content': content} if key == 'messages' else
                      {'type': 'message', 'role': 'user', 'content': [{'type': 'input_text', 'text': content}]})
     try:
         bridge.request('/v1/gateway/events', dict(
