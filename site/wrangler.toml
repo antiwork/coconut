@@ -1,0 +1,11 @@
+# workcoconut.com: the static site of this folder, with no script. A push to main that changes site/ deploys this
+# Worker (.github/workflows/site-deploy.yml). The Mac release deploys only coconut-updates. The Workers subdomain
+# stays off, because the two custom domains are the site.
+name = "workcoconut"
+account_id = "7c48de80b2886bfac114048cdb29febb"
+compatibility_date = "2026-11-01"
+workers_dev = false
+preview_urls = false
+
+[assets]
+directory = "./"
