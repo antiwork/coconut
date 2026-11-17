@@ -1433,6 +1433,9 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
         if letter:
             # A Hermes profile that a scan finds still becomes an agent when all 26 letters are taken. It has no letter.
             agent_letters.assign(bot, letter)
+            # An agent named only by its letter takes its name from the first message of the person (agent_chats).
+            if profile is None and name == letter:
+                bot['auto_name'] = True
         bot['profile_id'] = profile_id(bot)
         bot['model_override'] = None
         if profile is None:

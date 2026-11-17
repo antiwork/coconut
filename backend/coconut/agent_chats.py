@@ -65,10 +65,19 @@ class AgentChats:
         return chat
 
     def _title_chat(self, bot: dict, text: str) -> None:
-        """The first message of the person names the chat."""
+        """The first message of the person names the chat, and names a new agent that has only its letter."""
         if bot.get('chat_of') and not bot.get('chat_title'):
             bot['chat_title'] = chat_title(text)
             self._put('bots', bot)
+        elif bot.pop('auto_name', False):
+            from .service_base import encoded
+            title = chat_title(text)
+            if title:
+                bot['name'] = title
+            self._put('bots', bot)
+            self._event('bot.updated', self._public(bot), bot['id'])
+            self._note_published(bot['id'], encoded(self._public(bot)))
+            self._follow_agent(bot)
 
     def _follow_agent(self, agent: dict) -> None:
         """Give the chats of an agent its changed name, look and settings."""
