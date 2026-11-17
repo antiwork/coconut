@@ -153,6 +153,19 @@ def allowed_path(name):
     )
 
 
+# Paths that earlier packages shipped and current packages no longer do. A new package may not contain them, but the
+# marker of an earlier install still lists them, so an update reads that marker and removes the files.
+RETIRED_PATHS = frozenset({
+    # The sprite sheet of the fruit faces, until the agents got letters (backend/coconut/agent_letters.py).
+    'backend/coconut/assets/agent-sprites.png',
+})
+
+
+def owned_path(name):
+    """Whether a marker or journal may list this path: a current package path or a retired one."""
+    return allowed_path(name) or (isinstance(name, str) and name in RETIRED_PATHS)
+
+
 def file_mode(name):
     if name.endswith('.command'):
         return 0o700
@@ -264,7 +277,7 @@ def read_marker(root):
         marker = json.loads(path.read_text(), object_pairs_hook=unique_object)
         if type(marker['version']) is not int or marker['version'] != 1 or str(UUID(marker['installation_id'])) != marker['installation_id'] or not isinstance(marker['files'], dict) or len(marker['files']) > MAX_FILES:
             raise ValueError()
-        if any(not allowed_path(name) or not isinstance(value, str) or not re.fullmatch(r'[0-9a-f]{64}', value) for name, value in marker['files'].items()):
+        if any(not owned_path(name) or not isinstance(value, str) or not re.fullmatch(r'[0-9a-f]{64}', value) for name, value in marker['files'].items()):
             raise ValueError()
         if marker['state'] not in ('installed', 'pending', 'failed'):
             raise ValueError()
@@ -641,7 +654,7 @@ def reconcile(root, operations, helper=None):
                 or record['service_state'].get('mode') not in SERVICE_MODES):
             raise ValueError()
         for names in (old['files'], record['new_files']):
-            if any(not allowed_path(name) or not isinstance(value, str) or not re.fullmatch(r'[0-9a-f]{64}', value) for name, value in names.items()):
+            if any(not owned_path(name) or not isinstance(value, str) or not re.fullmatch(r'[0-9a-f]{64}', value) for name, value in names.items()):
                 raise ValueError()
         staging, backup = journal_paths(root, record)
     except (ValueError, KeyError, TypeError, OSError, AttributeError):
