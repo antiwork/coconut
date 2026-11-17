@@ -210,6 +210,19 @@ struct AgentsView: View {
                     }
                 }
             }
+            // One lane for each agent with work on the Hermes board of the Mac.
+            let lanes = projects.filter { !(store.queues[$0.id]?.isEmpty ?? true) }
+            if !lanes.isEmpty {
+                BoardSection("Work", count: lanes.count) {
+                    ForEach(lanes) { project in
+                        let queue = store.queues[project.id] ?? AgentQueue()
+                        BoardRow(symbol: queue.running > 0 ? "play.circle" : queue.needsYou > 0 ? "circle.inset.filled" : "clock",
+                                 tint: queue.running > 0 ? BoardStyle.positive : queue.needsYou > 0 ? BoardStyle.attention : .secondary,
+                                 title: project.bot.name, detail: queue.summary)
+                            .boardButton("agent-queue-" + project.id) { show(project.id) }
+                    }
+                }
+            }
             BoardSection("Library") {
                 BoardRow(symbol: "rectangle.3.group", title: "All pages",
                          value: store.documents.map { "\($0.count)" })
@@ -386,6 +399,16 @@ struct AgentProjectView: View {
                             chat(ConversationRoute(botId: item.botId, workContext: WorkReference(id: item.id, title: item.title)))
                         }
                 }
+            }
+            // The agent's queue on the Hermes board of the Mac.
+            let queue = store.queues[bot.id] ?? AgentQueue()
+            BoardSection("Queue") {
+                BoardRow(symbol: "play.circle", tint: queue.running > 0 ? BoardStyle.positive : .secondary,
+                         title: "Running", value: "\(queue.running)", chevron: false)
+                BoardRow(symbol: "clock", title: "Waiting", value: "\(queue.waiting)", chevron: false)
+                BoardRow(symbol: "circle.inset.filled", tint: queue.needsYou > 0 ? BoardStyle.attention : .secondary,
+                         title: "Needs you", value: "\(queue.needsYou)", chevron: false)
+                BoardRow(symbol: "checkmark.circle", title: "Done today", value: "\(queue.doneToday)", chevron: false)
             }
             BoardSection(AgentSection.pages.title, count: project.count(.pages)) {
                 if project.pages.isEmpty { BoardEmptyRow(text: "No pages. The agent keeps notes, checklists and charts here.") }
