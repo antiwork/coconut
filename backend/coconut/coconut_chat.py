@@ -25,7 +25,8 @@ ACCESS_TEXT = {'off': 'runs commands without asking', 'smart': 'asks for risky c
 SETTINGS_SCHEMA = {
     'name': 'coconut_settings',
     'description': (
-        'Read or change the settings of this Coconut. Only the Coconut chat has it. Coconut has no settings screens, '
+        'Read or change the settings of this Coconut. Only a turn of Coconut has it: the Coconut chat, and the change '
+        'that another agent hands to it with coconut_message_bot. Coconut has no settings screens, '
         'so the person changes everything here, in plain words: "use Opus for Scout", "let agents run commands '
         'without asking", "mute Desk". First call with action "read" to see the current values and the choices. '
         'Then call action "change" with one setting. Say in one line what changed, from what to what, and that '
@@ -175,12 +176,16 @@ def change(service, arguments: dict) -> dict:
 
 
 def settings_tool(service, task_id: str, arguments: dict) -> dict:
-    """coconut_settings of a gateway turn. Only a turn of the Coconut chat changes Coconut."""
+    """coconut_settings of a gateway turn. Only a turn of the Coconut agent changes Coconut."""
     from .service_base import ServiceError
     with service.lock:
         task = service._get('tasks', task_id)
+    # The privilege belongs to the Coconut AGENT, not to the chat the turn shows in. Another agent hands a change to
+    # the Coconut chat with coconut_message_bot, and that turn runs as Coconut in a work session whose conversation is
+    # the requester's (`_store_bot_message` keeps conversation_bot_id at the origin). Reading only the conversation
+    # refused every delegated change with 403, after the requester had promised the person to report back.
     chat = task.get('conversation_bot_id') or task['bot_id']
-    if not is_coconut(service, chat):
+    if not (is_coconut(service, task['bot_id']) or is_coconut(service, chat)):
         raise ServiceError(403, 'Only the Coconut chat changes the settings of Coconut. Ask the person to open it.')
     if arguments.get('action') == 'read':
         return read(service)
