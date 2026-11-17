@@ -62,7 +62,7 @@ struct HomeLaunchView: View {
                 Section {
                     ForEach(todos) { item in todoRow(item).homeRow() }
                 } header: {
-                    Text("To-dos").font(.subheadline.weight(.semibold)).textCase(nil)
+                    Text("Tasks").font(.subheadline.weight(.semibold)).textCase(nil)
                 }
             }
             if conversations.isEmpty && pinned.isEmpty && filter == .unread && (coconut?.unreadCount ?? 0) == 0 {

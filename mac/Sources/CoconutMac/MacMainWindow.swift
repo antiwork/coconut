@@ -464,7 +464,7 @@ struct MacSidebar: View {
                 }
             }
             if !sections.unread.isEmpty {
-                Section("Unreads", isExpanded: $unreadsOpen) {
+                Section("Unread", isExpanded: $unreadsOpen) {
                     ForEach(sections.unread) { item in itemRow(item) }
                 }
             }

@@ -254,6 +254,18 @@ enum BusinessFormat {
         return date.formatted(.dateTime.month(.abbreviated).year())
     }
 
+    /// `2026-10` as `Oct`, for an axis whose year is already written beside it.
+    static func shortMonth(_ raw: String) -> String {
+        let parts = raw.split(separator: "-")
+        guard parts.count >= 2, let month = Int(parts[1]) else { return raw }
+        var components = DateComponents()
+        components.year = 2000
+        components.month = month
+        components.day = 1
+        guard let date = Calendar(identifier: .gregorian).date(from: components) else { return raw }
+        return date.formatted(.dateTime.month(.abbreviated))
+    }
+
     /// `2026-11-16` as `Nov 16`.
     static func day(_ raw: String) -> String {
         let parts = raw.split(separator: "-")

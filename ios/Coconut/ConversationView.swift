@@ -540,7 +540,7 @@ struct ConversationView: View {
                     Text(StopCopy.message)
                 }
             } else {
-                QuietEmptyState(symbol: "bubble.left", title: "Conversation unavailable", message: "This agent may have been deleted. Return to your team to continue.")
+                QuietEmptyState(symbol: "bubble.left", title: "Chat unavailable", message: "This agent may have been deleted. Return to your team to continue.")
             }
         }
         .inlineNavigationTitle()

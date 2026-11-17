@@ -26,14 +26,14 @@ struct NoticeBoardView: View {
             if let room {
                 board(room)
             } else {
-                QuietEmptyState(symbol: "megaphone", title: "Board unavailable", message: "This Mac is no longer in this team.")
+                QuietEmptyState(symbol: "megaphone", title: "Notices unavailable", message: "This Mac is no longer in this team.")
             }
         }
         .navigationTitle(room.map { "Notices · \($0.name)" } ?? "Notices")
         .toolbar {
             if room?.status == .active {
                 ToolbarItem(placement: .primaryAction) {
-                    Button { composing = true } label: { Label("New Notice", systemImage: "plus") }
+                    Button { composing = true } label: { Label("New notice", systemImage: "plus") }
                         .keyboardShortcut("n", modifiers: [.command, .shift])
                         .accessibilityIdentifier("notice-new")
                 }
@@ -113,9 +113,9 @@ struct NoticeRow: View {
         .contextMenu {
             if notice.own {
                 if notice.active {
-                    Button("Close Notice") { Task { await store.closeTeamNotice(room, notice: notice) } }
+                    Button("Close notice") { Task { await store.closeTeamNotice(room, notice: notice) } }
                 }
-                Button("Remove Notice", role: .destructive) { Task { await store.deleteTeamNotice(room, notice: notice) } }
+                Button("Remove notice", role: .destructive) { Task { await store.deleteTeamNotice(room, notice: notice) } }
             }
         }
         .accessibilityElement(children: .combine)
@@ -170,7 +170,7 @@ struct NoticeComposer: View {
                 }
             }
             .formStyle(.grouped)
-            .navigationTitle("New Notice")
+            .navigationTitle("New notice")
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
                 ToolbarItem(placement: .confirmationAction) {

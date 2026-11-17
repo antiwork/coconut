@@ -202,7 +202,8 @@ struct BusinessReportsView: View {
                 .chartXAxis {
                     AxisMarks(values: .automatic(desiredCount: 4)) { value in
                         AxisValueLabel {
-                            if let raw = value.as(String.self) { Text(BusinessPeriodFormat.label(raw)).font(.caption2) }
+                            // The year is in the list below and in the section title, so an axis tick names only its month.
+                            if let raw = value.as(String.self) { Text(BusinessFormat.shortMonth(raw)).font(.caption2) }
                         }
                     }
                 }

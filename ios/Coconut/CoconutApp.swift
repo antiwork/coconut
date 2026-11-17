@@ -471,45 +471,54 @@ extension CoconutHome {
         }
         let agent = store.bots.agents.first { !$0.archived }?.id ?? ""
         let room = store.shownTeamRooms.first?.room ?? ""
-        func show(_ routes: [any Hashable]) {
+        func show(_ tab: HomeTab, _ routes: [any Hashable] = []) {
             var path = NavigationPath()
             for route in routes { path.append(route) }
-            homePath = path
-            selectedTab = .home
+            switch tab {
+            case .home: homePath = path
+            case .chats: chatsPath = path
+            case .agents: agentsPath = path
+            case .business: businessPath = path
+            case .profile: profilePath = path
+            }
+            selectedTab = tab
         }
         switch place {
-        case "cards": show([HomeDestination.inbox])
-        case "chat": show([ConversationRoute(botId: agent)])
-        case "coconut": show([ConversationRoute(botId: store.bots.coconutChat?.id ?? agent)])
-        case "archived": show([ArchivedAgentsRoute()])
-        case "team-chat": show([TeamChatRoute(chat: TeamChatKey(room: room))])
-        case "agent": show([AgentRoute(botId: agent)])
-        case "agent-settings": show([AgentRoute(botId: agent), BotSettingsRoute(botId: agent)])
-        case "agent-model": show([AgentRoute(botId: agent), AgentSettingRoute.model(agent)])
-        case "agent-access": show([AgentRoute(botId: agent), AgentSettingRoute.access(agent)])
-        case "all-pages": show([AllPagesRoute()])
-        case "usage": show([UsageRoute()])
+        case "cards": show(.home, [HomeDestination.inbox])
+        case "chat": show(.chats, [ConversationRoute(botId: agent)])
+        case "coconut": show(.chats, [ConversationRoute(botId: store.bots.coconutChat?.id ?? agent)])
+        case "archived": show(.chats, [ArchivedAgentsRoute()])
+        case "team-chat": show(.chats, [TeamChatRoute(chat: TeamChatKey(room: room))])
+        case "agent": show(.agents, [AgentRoute(botId: agent)])
+        case "agent-settings": show(.agents, [AgentRoute(botId: agent), BotSettingsRoute(botId: agent)])
+        case "agent-model": show(.agents, [AgentRoute(botId: agent), AgentSettingRoute.model(agent)])
+        case "agent-access": show(.agents, [AgentRoute(botId: agent), AgentSettingRoute.access(agent)])
+        case "all-pages": show(.agents, [AllPagesRoute()])
+        case "usage": show(.agents, [UsageRoute()])
+        case "business": show(.business, [])
+        case "reports": show(.business, [BusinessRoute.reports])
+        case "history": show(.business, [BusinessRoute.reports])
         case "page":
             // The list of the pages loads first. The page then opens over the page of its agent.
             Task {
                 if store.documents == nil { await store.loadDocuments(quiet: true) }
                 guard let page = store.documents?.first else { return }
-                show(store.documentPath(page.id))
+                show(.agents, store.documentPath(page.id))
             }
-        case "notices": show([NoticeBoardRoute(roomId: room)])
-        case "team": show([TeamScreenRoute(roomId: room)])
+        case "notices": show(.chats, [NoticeBoardRoute(roomId: room)])
+        case "team": show(.profile, [ProfileRoute.team])
         case "direct":
             let member = store.shownTeamRooms.first?.directList.first?.member
-            show([TeamChatRoute(chat: TeamChatKey(room: room, member: member))])
+            show(.chats, [TeamChatRoute(chat: TeamChatKey(room: room, member: member))])
         // The tap on the notification of a notice.
         case "notice-tap": showNotification(.notices(room))
-        case "profile-mac": show([ProfileRoute.mac])
-        case "profile-notifications": show([ProfileRoute.notifications])
-        case "profile-connections": show([ProfileRoute.connections])
-        case "profile-model": show([ProfileRoute.model])
-        case "profile-access": show([ProfileRoute.access])
-        case "profile-parallel": show([ProfileRoute.parallelWork])
-        case "profile-team": show([ProfileRoute.team])
+        case "profile-mac": show(.profile, [ProfileRoute.mac])
+        case "profile-notifications": show(.profile, [ProfileRoute.notifications])
+        case "profile-connections": show(.profile, [ProfileRoute.connections])
+        case "profile-model": show(.profile, [ProfileRoute.model])
+        case "profile-access": show(.profile, [ProfileRoute.access])
+        case "profile-parallel": show(.profile, [ProfileRoute.parallelWork])
+        case "profile-team": show(.profile, [ProfileRoute.team])
         default: break
         }
         #endif

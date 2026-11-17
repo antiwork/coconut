@@ -138,7 +138,7 @@ extension AppStore {
     }
 }
 
-/// The menu item "New Chat" of an agent or of one of its chats.
+/// The menu item "New chat" of an agent or of one of its chats.
 struct NewChatButton: View {
     let bot: Bot
     let open: (Bot) -> Void
@@ -147,9 +147,9 @@ struct NewChatButton: View {
     var body: some View {
         // A Mac menu has titles only, as the other items of these menus. An iPhone menu shows the symbol too.
         #if os(macOS)
-        Button("New Chat", action: start).accessibilityIdentifier("new-chat-\(bot.id)")
+        Button("New chat", action: start).accessibilityIdentifier("new-chat-\(bot.id)")
         #else
-        Button("New Chat", systemImage: "square.and.pencil", action: start).accessibilityIdentifier("new-chat-\(bot.id)")
+        Button("New chat", systemImage: "square.and.pencil", action: start).accessibilityIdentifier("new-chat-\(bot.id)")
         #endif
     }
 

@@ -17,7 +17,7 @@ enum AgentSection: String, CaseIterable, Identifiable {
     var title: String {
         switch self {
         case .chat: "Chat"
-        case .todos: "To-dos"
+        case .todos: "Tasks"
         case .pages: "Pages"
         case .routines: "Routines"
         case .settings: "Settings"
@@ -146,7 +146,7 @@ struct AgentProject: Identifiable, Equatable {
         func part(_ count: Int, _ one: String, _ many: String) -> String? {
             count == 0 ? nil : "\(count) \(count == 1 ? one : many)"
         }
-        let parts = [part(todos.count, "To-do", "To-dos"), part(pages.count, "page", "pages"),
+        let parts = [part(todos.count, "Task", "Tasks"), part(pages.count, "page", "pages"),
                      part(routines.count + checks.count, "routine", "routines")].compactMap { $0 }
         return parts.isEmpty ? nil : parts.joined(separator: " · ")
     }
@@ -195,9 +195,9 @@ struct AgentsView: View {
             }
             if projects.isEmpty {
                 QuietEmptyState(symbol: "person.crop.square.badge.plus", title: "No agents yet",
-                                message: "An agent is a project: a chat, its work, its pages and its routines.")
+                                message: "An agent keeps its chats, its work, its pages and its routines.")
             } else {
-                BoardSection("Projects", count: projects.count) {
+                BoardSection("Agents", count: projects.count) {
                     ForEach(projects) { project in
                         AgentProjectRow(project: project)
                             .boardButton("agent-" + project.id) { show(project.id) }
@@ -209,18 +209,20 @@ struct AgentsView: View {
                     }
                 }
             }
-            BoardSection("More") {
+            BoardSection("Library") {
                 BoardRow(symbol: "rectangle.3.group", title: "All pages",
                          value: store.documents.map { "\($0.count)" })
                     .boardButton("agents-all-pages") { pushRoute?(AllPagesRoute()) }
-                BoardRow(symbol: "chart.bar", title: "Usage", detail: "Turns, tokens, cost and time of each agent")
-                    .boardButton("agents-usage") { pushRoute?(UsageRoute()) }
                 BoardRow(symbol: "dollarsign.circle", title: "Spend", value: store.spendTodayTotal)
                     .boardButton("agents-spend") { pushRoute?(SpendRoute()) }
                 if archived > 0 {
                     BoardRow(symbol: "archivebox", title: "Archived", value: "\(archived)")
                         .boardButton("agents-archived") { pushRoute?(ArchivedAgentsRoute()) }
                 }
+            }
+            BoardSection("Usage") {
+                BoardRow(symbol: "chart.bar", title: "Usage", detail: "Turns, tokens, cost and time of each agent")
+                    .boardButton("agents-usage") { pushRoute?(UsageRoute()) }
             }
         }
         // The page counts need the list of the pages, also before any page opens.
@@ -350,8 +352,8 @@ struct AgentProjectView: View {
                         .contentShape(Rectangle())
                         .boardButton("agent-chat-" + extra.id) { chat(ConversationRoute(botId: extra.id)) }
                         .contextMenu {
-                            Button("Archive Chat", systemImage: "archivebox") { Task { await store.archiveBot(extra, archived: true) } }
-                            Button("Delete Chat…", systemImage: "trash", role: .destructive) { deleting = extra }
+                            Button("Archive chat", systemImage: "archivebox") { Task { await store.archiveBot(extra, archived: true) } }
+                            Button("Delete chat…", systemImage: "trash", role: .destructive) { deleting = extra }
                         }
                 }
                 BotContactRow(bot: bot, avatarSize: 32)
