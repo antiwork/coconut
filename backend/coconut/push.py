@@ -20,6 +20,7 @@ import tempfile
 import threading
 import time
 from uuid import NAMESPACE_URL, uuid5
+from . import app_badge
 from .push_relay import RelayTransport, validate_route, notification_alert, group_text, team_alert, direct_alert, notice_alert
 from .team_store import ACTIVE
 from .push_schedule import (LEGACY_SCHEDULE, OUTSIDE, due, holds_urgent, in_window, merge as merge_schedule,
@@ -557,17 +558,13 @@ class PushDelivery:
         turn = task.get('_native_turn_id') or task.get('updated_at') or task['created_at']
         return task['status'] == item['kind'] and turn == item['turn_id']
 
+    def badge_count(self):
+        """The number on the app icon: pending cards, unread chats and the items of "Needs attention" (app_badge)."""
+        return app_badge.badge_count(self.service)
+
     def inbox_badge_count(self):
-        visible = {b['id'] for b in self.service._all('bots') if not b.get('_deleted')}
-        count = 0
-        for (raw,) in self.service.db.execute("SELECT data FROM decisions WHERE json_extract(data,'$.status')='pending'"):
-            decision = json.loads(raw)
-            if any(decision.get(key) for key in ('_hidden', '_deleted')) or decision['bot_id'] not in visible:
-                continue
-            task = self.service._get('tasks', decision['task_id'])
-            if task['bot_id'] in visible and task.get('conversation_bot_id', task['bot_id']) in visible:
-                count += 1
-        return count
+        """The pending cards that the person can see."""
+        return app_badge.pending_cards(self.service)
 
     def start(self):
         if self.thread:
@@ -785,7 +782,7 @@ class PushDelivery:
                 items = live
             payload, subject = self._payload(job['device_id'], items, sealed=bool(route))
             if route:
-                payload['aps']['badge'] = self.inbox_badge_count()
+                payload['aps']['badge'] = self.badge_count()
             collapse = hashlib.sha256((subject or job['id']).encode()).hexdigest()
             if route:
                 if job['envelope']:

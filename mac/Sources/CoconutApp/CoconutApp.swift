@@ -76,6 +76,7 @@ struct CoconutApp: App {
             // the main window.
             Image(nsImage: model.status.service == .running ? MenuBarIcon.running : MenuBarIcon.stopped)
                 .modifier(BannerWindowOpener(banners: banners))
+                .modifier(DockBadge(store: store, enabled: model.mode == .full && !TestIsolation.active))
         }
         .menuBarExtraStyle(.menu)
 

@@ -114,3 +114,16 @@ struct BannerWindowOpener: ViewModifier {
         content.onAppear { banners.openWindow = openWindow }
     }
 }
+
+/// Keeps the badge on the Dock tile at the count of the app (AppStore.appBadgeCount). It sits on the menu bar label,
+/// which shows while the app runs, so the number stays right with the window closed.
+struct DockBadge: ViewModifier {
+    let store: AppStore
+    let enabled: Bool
+
+    func body(content: Content) -> some View {
+        content.onChange(of: store.reconciledBadgeCount, initial: true) { _, _ in
+            if enabled && !store.isDemo { store.reconcileBadge() }
+        }
+    }
+}

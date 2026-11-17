@@ -3,6 +3,9 @@ import Observation
 #if canImport(UIKit)
 import UIKit
 #endif
+#if os(macOS)
+import AppKit
+#endif
 import UserNotifications
 import SwiftUI
 
@@ -595,7 +598,12 @@ final class PushNotifications {
         let previous = badgeTask
         badgeTask = Task {
             await previous?.value
+            #if os(macOS)
+            // The Dock tile of the Mac app shows the same number. Zero clears it.
+            NSApp.dockTile.badgeLabel = count > 0 ? String(count) : nil
+            #else
             try? await UNUserNotificationCenter.current().setBadgeCount(max(0, count))
+            #endif
         }
     }
 

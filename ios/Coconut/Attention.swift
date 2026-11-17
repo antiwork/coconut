@@ -72,6 +72,12 @@ enum AttentionRules {
     /// The sum for the pill of the header.
     static func total(_ items: [AttentionItem]) -> Int { items.reduce(0) { $0 + $1.count } }
 
+    /// The part of "Needs attention" that the badge of the app icon adds. A late card is a pending card already, and
+    /// stale data is something only the app can see, so neither counts here.
+    static func badgeCount(_ items: [AttentionItem]) -> Int {
+        items.filter { $0.kind != .waiting && $0.kind != .stale }.reduce(0) { $0 + $1.count }
+    }
+
     /// The pending cards that are older than `cardWait`, oldest first.
     static func overdueCards(_ input: Input, now: Date) -> [Decision] {
         input.decisions

@@ -240,8 +240,15 @@ final class AppStore {
     var canSubmitDecision: Bool { isDemo || hasPairing }
     var isBusy: Bool { writeCount > 0 }
     var pendingDecisions: [Decision] { decisions.filter(\.isPending) }
-    var inboxBadgeCount: Int { pendingDecisions.filter { !answeringDecisionIds.contains($0.id) }.count }
-    var reconciledBadgeCount: Int? { lastSync.map { _ in inboxBadgeCount } }
+    /// The number on the app icon: the pending cards and the unread chats of "Unread" on Home, plus the items of
+    /// "Needs attention" (AttentionRules.badgeCount). The Mac service counts the same for the push badge of the
+    /// iPhone (backend app_badge.py).
+    func appBadgeCount(now: Date = Date()) -> Int {
+        HomeFeed.badge(homeUnread) + AttentionRules.badgeCount(attentionItems(now: now))
+    }
+    /// The pending cards that the person did not answer yet.
+    var pendingCardCount: Int { pendingDecisions.filter { !answeringDecisionIds.contains($0.id) }.count }
+    var reconciledBadgeCount: Int? { lastSync.map { _ in appBadgeCount() } }
     @ObservationIgnored var setBadge: (Int) -> Void = { PushNotifications.shared.setBadgeCount($0) }
     /// Gets the list of the teams before and after each list that the Mac sent. The list before is nil for the first
     /// list after a start or a new pairing. The Mac app posts its banners from it (MessageBanners). The iPhone app
