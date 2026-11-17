@@ -1,8 +1,8 @@
 import SwiftUI
 
 /// Two tabs of the iPhone. Chats has every chat with its newest activity first, and the message box under the list
-/// (NewChatBar), whose project menu filters the chats. To-dos has what asks for the person: the rules that breach,
-/// the cards that wait, and the tasks of the agents.
+/// (NewChatBar). To-dos has what asks for the person: the rules that breach, the cards that wait, and the tasks of
+/// the agents.
 struct HomeLaunchView: View {
     enum Part { case chats, todos }
     var part = Part.chats
@@ -13,9 +13,6 @@ struct HomeLaunchView: View {
     let open: (HomeTarget) -> Void
     @ScaledMetric(relativeTo: .subheadline) private var pinWidth = 108
     @ScaledMetric(relativeTo: .title3) private var todoIconWidth = 24
-
-    // The project of the menu above the message box. Empty is all projects.
-    @AppStorage(ChatProject.projectKey) private var chosenProject = ""
 
     var body: some View {
         if part == .todos { todoList } else { chatList }
@@ -46,12 +43,11 @@ struct HomeLaunchView: View {
     }
 
     private var chatList: some View {
-        let project = ChatProject.effective(chosenProject, in: store.bots)
         // The store keeps the newest activity of each bot (ChatSummaries). The list sorts by it one time.
         // An agent keeps its place by the newest of its chats, which show under it.
         let ownLatest = store.chatSummaries.newestActivity
         let latest = AgentChats.activity(bots: store.bots, latest: ownLatest)
-        let activeBots = store.bots.agents.filter { !$0.archived && (project.isEmpty || $0.id == project) }.sorted {
+        let activeBots = store.bots.agents.filter { AgentChats.isListed($0, latest: ownLatest) }.sorted {
             (latest[$0.id] ?? $0.createdAt.apiDate ?? .distantPast) > (latest[$1.id] ?? $1.createdAt.apiDate ?? .distantPast)
         }
         let archivedCount = store.bots.filter(\.archived).count
@@ -61,18 +57,17 @@ struct HomeLaunchView: View {
             return first == second ? $0.id < $1.id : first < second
         }
         // The choices that wait for the Mac show at once (TeamChatChoices).
-        // A project shows its own chats only, so the teams stay out.
-        let rooms = project.isEmpty ? store.shownTeamRooms : []
+        let rooms = store.shownTeamRooms
         let filter = ChatFilter.effective(store.chatFilter, rooms: rooms)
         // The tiles of the pinned agents come first. Then the rows (ChatList.rows): the pinned chats of the teams, each
         // with the star mark, then the other rows newest activity first.
         let rowBots = filter == .unread
-            ? AgentChats.unread(in: store.bots, latest: ownLatest).filter { !$0.coconut && ($0.isChat || !$0.pinned) && (project.isEmpty || $0.agentId == project) }
+            ? AgentChats.unread(in: store.bots, latest: ownLatest).filter { !$0.coconut && ($0.isChat || !$0.pinned) }
             : activeBots.filter { !$0.pinned }
         let conversations = ChatList.rows(filter, bots: rowBots, latest: filter == .unread ? ownLatest : latest,
                                           rooms: rooms, local: store.newestLocalMessages)
         let pinned = filter.showsPinned ? pinnedBots.filter { filter != .unread || $0.unreadCount > 0 } : []
-        let coconut = store.bots.coconutChat.flatMap { project.isEmpty || project == $0.id ? $0 : nil }
+        let coconut = store.bots.coconutChat
         // A list, not a stack, so that a row of an agent has the swipe of the system: swipe left to archive.
         return List {
             // The Coconut chat comes first: it is where the person changes Coconut.
@@ -137,7 +132,7 @@ struct HomeLaunchView: View {
                 }
             }
             // The archived agents wait behind one row at the end, as the archived chats of WhatsApp.
-            if archivedCount > 0 && project.isEmpty && filter != .people && filter != .unread {
+            if archivedCount > 0 && filter != .people && filter != .unread {
                 Button { pushRoute?(ArchivedAgentsRoute()) } label: {
                     HStack(spacing: BoardStyle.Space.m) {
                         Image(systemName: "archivebox").foregroundStyle(.secondary)

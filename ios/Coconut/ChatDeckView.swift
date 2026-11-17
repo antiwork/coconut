@@ -146,8 +146,8 @@ struct ChatDeckView: View {
     }
 
     private func card(_ bot: Bot, layout: ChatDeckLayout, calm: Bool) -> some View {
-        ChatDeckCard(bot: bot, layout: layout, tap: { tapped(bot.id) }, pullDown: { close() },
-                     openChat: { zoom(into: $0) }, delete: { deleting = $0 })
+        ChatDeckCard(bot: bot, layout: layout, tap: { tapped(bot.id) }, close: { close() },
+                     delete: { deleting = $0 })
             .containerRelativeFrame(.horizontal) { _, _ in layout.card.width }
             .frame(height: layout.card.height)
             .opacity(phase == .opening && bot.id != selected ? 0 : 1)
@@ -311,9 +311,8 @@ struct ChatDeckCard: View {
     let bot: Bot
     let layout: ChatDeckLayout
     let tap: () -> Void
-    let pullDown: () -> Void
-    /// Shows another chat, for example the new chat that the menu started.
-    let openChat: (String) -> Void
+    /// Takes the deck away: a pull down on the header, and a New chat of the menu, which shows the message box.
+    let close: () -> Void
     let delete: (Bot) -> Void
 
     var body: some View {
@@ -368,7 +367,7 @@ struct ChatDeckCard: View {
         // A pull down on the header closes the deck. The conversation under it scrolls instead.
         .simultaneousGesture(
             DragGesture(minimumDistance: 18).onEnded { value in
-                if value.translation.height > 80 && value.translation.height > abs(value.translation.width) { pullDown() }
+                if value.translation.height > 80 && value.translation.height > abs(value.translation.width) { close() }
             }
         )
     }
@@ -383,17 +382,17 @@ struct ChatDeckCard: View {
     /// What a row of the Chats list offered on a long press, before the long press showed the deck.
     private var menu: some View {
         Menu {
-            NewChatButton(bot: bot) { chat in openChat(chat.id) }
+            NewChatButton(bot: bot, done: close)
             if !bot.isChat && !bot.coconut {
-                item(bot.pinned ? "Unstar agent" : "Star agent", bot.pinned ? "star.slash" : "star") {
+                item(bot.pinned ? "Unstar project" : "Star project", bot.pinned ? "star.slash" : "star") {
                     Task { await store.pinBot(bot, pinned: !bot.pinned) }
                 }
             }
             if !bot.coconut {
-                item(bot.isChat ? "Archive chat" : "Archive agent", "archivebox") {
+                item(bot.isChat ? "Archive chat" : "Archive project", "archivebox") {
                     Task { await store.archiveBot(bot, archived: true) }
                 }
-                item(bot.isChat ? "Delete chat" : "Delete agent", "trash", role: .destructive) { delete(bot) }
+                item(bot.isChat ? "Delete chat" : "Delete project", "trash", role: .destructive) { delete(bot) }
             }
         } label: {
             Image(systemName: "ellipsis")

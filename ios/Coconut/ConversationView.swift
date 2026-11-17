@@ -452,12 +452,6 @@ struct ConversationView: View {
                     nearBottom = true
                     focusAfterPush = UUID()
                 }
-                // A new chat opens with the cursor in its message field (AppStore.newChat).
-                .onChange(of: store.composerFocusRequest == botId, initial: true) { _, wanted in
-                    guard wanted else { return }
-                    store.composerFocusRequest = nil
-                    focusAfterPush = UUID()
-                }
                 // The view cancels this task when it leaves the screen, and a new ID when the request changes.
                 .task(id: focusAfterPush) {
                     guard focusAfterPush != nil else { return }
@@ -1214,10 +1208,7 @@ struct ConversationComposer: View {
             focused = true
         case .newChat:
             text = ""
-            Task {
-                guard let chat = await store.newChat(with: bot) else { return }
-                if let openChat { openChat(chat.id) } else { pushRoute?(ConversationRoute(botId: chat.id)) }
-            }
+            store.startChat(in: bot)
         case .compact:
             text = ""
             Task { _ = await store.send(bot: bot, text: "/compress") }
@@ -1349,13 +1340,18 @@ struct ConversationComposer: View {
             #endif
             var target = bot
             if inNewChat {
-                guard let chat = await store.newChat(with: bot) else {
+                // The same chat as the message box makes: a chat that nobody wrote in comes before a new one. When
+                // the Mac does not make it, the notice says why and the draft comes back.
+                guard let chat = await store.chatForFirstMessage(in: bot) else {
                     draftSend.failed()
                     if text.isEmpty { text = submittedText; attachments = submittedArtifacts }
                     return
                 }
                 target = chat
-                if let openChat { openChat(chat.id) } else { pushRoute?(ConversationRoute(botId: chat.id)) }
+                // A chat that nobody wrote in can be this chat: the message then goes here.
+                if chat.id != bot.id {
+                    if let openChat { openChat(chat.id) } else { pushRoute?(ConversationRoute(botId: chat.id)) }
+                }
             }
             let success = await store.send(bot: target, text: submittedText,
                                            attachments: submittedAttachments,

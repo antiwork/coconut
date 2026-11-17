@@ -1,7 +1,8 @@
 import SwiftUI
 
-/// Forward: a held message goes to a new chat with any agent, or to a chat that exists. The chat opens with the message
-/// quoted in its composer, so the person can add a line before sending it.
+/// Forward: a held message goes to a new chat in any project, or to a chat that exists. A new chat is the message box
+/// with the project chosen and the message quoted in it, and an old chat opens with the message quoted in its
+/// composer, so the person can add a line before sending it.
 enum MessageForward {
     /// The text that a forwarded message puts into the composer: where it came from, then the message as a quote.
     static func text(_ message: String, from source: String) -> String {
@@ -28,7 +29,6 @@ struct ForwardMessageSheet: View {
     let message: Message
     /// The chat that the message is in. It is not offered.
     let fromBotId: String
-    @State private var working = false
 
     private var source: String {
         let bot = store.bots.first { $0.id == fromBotId }
@@ -36,9 +36,9 @@ struct ForwardMessageSheet: View {
         return message.role == "user" ? "my message to \(agent)" : agent
     }
     private var agents: [Bot] { store.bots.filter { !$0.isChat && !$0.archived } }
-    /// The open chats, newest first. The Coconut chat has one chat, so it is only here.
+    /// The open chats that someone wrote in, newest first. The Coconut chat has one chat, so it is only here.
     private var chats: [Bot] {
-        store.bots.filter { !$0.archived && $0.id != fromBotId }
+        store.bots.filter { $0.id != fromBotId && AgentChats.isListed($0, latest: store.chatSummaries.newestActivity) }
             .sorted { (store.chatSummaries[$0.id].newestDate ?? .distantPast) > (store.chatSummaries[$1.id].newestDate ?? .distantPast) }
     }
 
@@ -47,16 +47,21 @@ struct ForwardMessageSheet: View {
             List {
                 Section("New chat") {
                     ForEach(agents.filter { !$0.coconut }) { agent in
-                        row(agent, title: agent.name, detail: "New chat") { await store.newChat(with: agent) }
+                        row(agent, title: agent.name, detail: "New chat") {
+                            if store.startChat(in: agent, text: MessageForward.text(message.text, from: source)) { dismiss() }
+                        }
                     }
                 }
                 Section("Chats") {
                     ForEach(chats) { chat in
-                        row(chat, title: chat.isChat ? chat.chatLabel : chat.name, detail: chat.isChat ? chat.name : nil) { chat }
+                        row(chat, title: chat.isChat ? chat.chatLabel : chat.name, detail: chat.isChat ? chat.name : nil) {
+                            store.forward(MessageForward.text(message.text, from: source), to: chat.id)
+                            dismiss()
+                            if let openChat { openChat(chat.id) } else { pushRoute?(ConversationRoute(botId: chat.id)) }
+                        }
                     }
                 }
             }
-            .disabled(working)
             .navigationTitle("Forward").inlineNavigationTitle()
             .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } } }
             #if os(macOS)
@@ -65,16 +70,8 @@ struct ForwardMessageSheet: View {
         }
     }
 
-    private func row(_ bot: Bot, title: String, detail: String?, target: @escaping () async -> Bot?) -> some View {
-        Button {
-            working = true
-            Task {
-                guard let chat = await target() else { working = false; return }
-                store.forward(MessageForward.text(message.text, from: source), to: chat.id)
-                dismiss()
-                if let openChat { openChat(chat.id) } else { pushRoute?(ConversationRoute(botId: chat.id)) }
-            }
-        } label: {
+    private func row(_ bot: Bot, title: String, detail: String?, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
             HStack(spacing: BoardStyle.Space.m) {
                 BotAvatar(bot: bot, size: 30, animated: false)
                 VStack(alignment: .leading, spacing: BoardStyle.Space.line) {

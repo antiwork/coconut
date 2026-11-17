@@ -4,12 +4,11 @@ import SwiftUI
 /// a row that scrolls sideways. A long press on a chat row, or on the title of an open chat, shows it on the iPhone. A
 /// pinch on a chat, the menu of a chat and Command-Shift-\ show it on the Mac.
 enum ChatDeck {
-    /// The chats of the deck, in the order of the cards: the chats that work first, then the newest activity first. A
-    /// chat without a message counts from its start, so a new chat comes before an old one. An archived chat has no
-    /// card, except the chat in `keeping`.
+    /// The chats of the deck, in the order of the cards: the chats that work first, then the newest activity first. An
+    /// archived chat has no card, except the chat in `keeping`, and a chat that nobody wrote in has none.
     static func cards(_ bots: [Bot], latest: [String: Date], working: Set<String>, keeping: String? = nil) -> [Bot] {
         func activity(_ bot: Bot) -> Date { latest[bot.id] ?? bot.createdAt.apiDate ?? .distantPast }
-        return bots.filter { !$0.archived || $0.id == keeping }.sorted { first, second in
+        return bots.filter { AgentChats.isListed($0, latest: latest) || $0.id == keeping }.sorted { first, second in
             let firstWorks = working.contains(first.id)
             let secondWorks = working.contains(second.id)
             if firstWorks != secondWorks { return firstWorks }

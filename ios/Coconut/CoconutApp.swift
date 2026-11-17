@@ -55,9 +55,9 @@ struct CoconutApp: App {
     }
 }
 
-/// The places of the tab bar of the iPhone. Home has the chats under what needs attention, and the page of an agent opens
-/// from the project menu of Home. The Mac sidebar has its own list.
-/// The five tabs in their order: Finance, Support, To-dos, Chats and You.
+/// The five tabs of the iPhone in their order: Finance, Support, To-dos, Chats and You. Chats (the case `home`) has
+/// every chat and the message box under the list. The page of a project opens from the name of its chat, and the list
+/// of all projects from the project chip of the box. The Mac sidebar has its own list.
 enum HomeTab: Hashable { case business, support, todos, home, profile }
 
 struct CoconutHome: View {
@@ -65,7 +65,6 @@ struct CoconutHome: View {
     @State private var onboardingOpen = false
     // The first run hides Close, because Coconut needs a pairing before it can show anything.
     @State private var onboardingFirstRun = false
-    @State private var creatingAgent = false
     @State private var selectedTab: HomeTab = .home
     @State private var notificationDecisionId: String?
     @State private var openingNotification = false
@@ -140,6 +139,11 @@ struct CoconutHome: View {
         }
         // A long press on a chat shows the deck of all chats (ChatDeck).
         .modifier(ChatDeckPresenter())
+        // A New chat, from a page or from the deck, shows Chats with the message box. The box takes the project.
+        .onChange(of: store.chatStarts) { _, _ in
+            selectedTab = .home
+            homePath = NavigationPath()
+        }
         .onChange(of: selectedTab) { _, tab in
             if previewedNotification?.decisionId != nil && tab != .home && tab != .todos {
                 PushNotifications.shared.target = nil
@@ -188,13 +192,12 @@ struct CoconutHome: View {
                 }
             }
                 .toolbar(tabBarVisibility, for: .tabBar)
-                // The message box of a new chat sits above the tab bar on Home.
+                // The message box sits above the tab bar on Home. Every New chat leads to it.
                 .safeAreaInset(edge: .bottom, spacing: 0) {
                     if tab == .home { NewChatBar() }
                 }
                 .navigationTitle("")
                 .navigationBarTitleDisplayMode(.inline)
-                .toolbar { rootToolbar(create: tab == .home, path: path) }
                 .topBanners { area in
                     RootBanners(area: area) {
                         onboardingFirstRun = false
@@ -240,30 +243,6 @@ struct CoconutHome: View {
         }
         // On the stack itself, so that the pushed pages get it too.
         .environment(\.pushRoute) { route in path.wrappedValue.append(route) }
-    }
-
-    @ToolbarContentBuilder
-    private func rootToolbar(create: Bool, path: Binding<NavigationPath>) -> some ToolbarContent {
-        // Coconut has no settings screen: Profile has the things of this device, and the Coconut chat changes the rest.
-        if create {
-            ToolbarItem(placement: .topBarTrailing) {
-                Button { createAgent(path) } label: {
-                    Image(systemName: "plus")
-                }
-                .disabled(creatingAgent)
-                .accessibilityLabel("Create agent").accessibilityIdentifier("create-bot")
-            }
-        }
-    }
-
-    /// Makes an agent with a random letter and opens its chat (AppStore.newAgent).
-    private func createAgent(_ path: Binding<NavigationPath>) {
-        creatingAgent = true
-        Task {
-            defer { creatingAgent = false }
-            guard let bot = await store.newAgent() else { return }
-            path.wrappedValue.append(ConversationRoute(botId: bot.id))
-        }
     }
 
     /// Shows the join sheet of a tapped invite link. An open sheet closes first, because a second sheet cannot show
@@ -436,6 +415,13 @@ extension CoconutHome {
         }
         let agent = store.bots.agents.first { !$0.archived }?.id ?? ""
         let room = store.shownTeamRooms.first?.room ?? ""
+        /// Runs the action after the first screen shows, so the screenshot sees what a tap would do.
+        func later(_ action: @escaping @MainActor () async -> Void) {
+            Task {
+                try? await Task.sleep(for: .seconds(1.5))
+                await action()
+            }
+        }
         func show(_ tab: HomeTab, _ routes: [any Hashable] = []) {
             var path = NavigationPath()
             for route in routes { path.append(route) }
@@ -449,8 +435,30 @@ extension CoconutHome {
             selectedTab = tab
         }
         switch place {
-        // The chat list is the Chats tab, and an agent opens from its project menu.
+        // The chat list is the Chats tab, and a project opens from the name of its chat.
         case "chats": show(.home)
+        // Each way to start a chat, run as the person would: the message box of Home shows with the project chosen.
+        case "new-chat": show(.home); later { store.startChat(in: store.bots.first { $0.id == agent }) }
+        case "agent-new-chat": show(.home, [AgentRoute(botId: agent)]); later { store.startChat(in: store.bots.first { $0.id == agent }) }
+        case "chat-new-chat": show(.home, [ConversationRoute(botId: agent)]); later { store.startChat(in: store.bots.first { $0.id == agent }) }
+        case "new-project": show(.home); later { await store.newProject() }
+        // The first message of the box, sent as its Send does: in a new chat of the project, or in a new project.
+        case "new-chat-send":
+            show(.home)
+            later {
+                guard let bot = store.bots.first(where: { $0.id == agent }),
+                      let chat = await store.sendNewChat(in: bot, text: "Which sellers had a payout held on Friday?") else { return }
+                homePath.append(ConversationRoute(botId: chat.id))
+            }
+        case "new-project-send":
+            show(.home)
+            later {
+                guard let project = await store.newProject() else { return }
+                // The person types for a moment before Send.
+                try? await Task.sleep(for: .seconds(1.5))
+                guard let chat = await store.sendNewChat(in: project, text: "Draft the weekly payout summary for Gumroad.") else { return }
+                homePath.append(ConversationRoute(botId: chat.id))
+            }
         case "agents": show(.home, [AgentListRoute()])
         case "cards": show(.todos, [HomeDestination.inbox])
         case "chat": show(.home, [ConversationRoute(botId: agent)])

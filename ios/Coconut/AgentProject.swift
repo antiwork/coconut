@@ -177,7 +177,6 @@ extension AppStore {
 struct AgentsView: View {
     @Environment(AppStore.self) private var store
     @Environment(\.pushRoute) private var pushRoute
-    @Environment(\.openChat) private var openChat
     /// Opens the page of an agent. The Mac window selects it; without it the page goes onto the stack.
     var open: ((String) -> Void)? = nil
     var create: (() -> Void)? = nil
@@ -187,26 +186,22 @@ struct AgentsView: View {
         let archived = store.bots.agents.filter(\.archived).count
         BoardPage {
             HStack(alignment: .firstTextBaseline) {
-                BoardPageTitle(title: "Agents", detail: Self.detail(projects))
+                BoardPageTitle(title: "Projects", detail: Self.detail(projects))
                 Spacer(minLength: 0)
                 if let create {
-                    Button(action: create) { Label("New agent", systemImage: "plus") }
+                    Button(action: create) { Label("New project", systemImage: "plus") }
                         .accessibilityIdentifier("agents-new")
                 }
             }
             if projects.isEmpty {
-                QuietEmptyState(symbol: "person.crop.square.badge.plus", title: "No agents yet",
-                                message: "An agent keeps its chats, its work, its pages and its routines.")
+                QuietEmptyState(symbol: "person.crop.square.badge.plus", title: "No projects yet",
+                                message: "A project keeps its chats, its work, its pages and its routines.")
             } else {
-                BoardSection("Agents", count: projects.count) {
+                BoardSection("Projects", count: projects.count) {
                     ForEach(projects) { project in
                         AgentProjectRow(project: project)
                             .boardButton("agent-" + project.id) { show(project.id) }
-                            .contextMenu {
-                                NewChatButton(bot: project.bot) { chat in
-                                    if let openChat { openChat(chat.id) } else { pushRoute?(ConversationRoute(botId: chat.id)) }
-                                }
-                            }
+                            .contextMenu { NewChatButton(bot: project.bot) }
                     }
                 }
             }
@@ -261,7 +256,7 @@ struct AgentsView: View {
         let working = projects.filter { $0.status == .working }.count
         let waiting = projects.filter { $0.status == .needsYou }.count
         let halted = projects.filter { if case .cannotRun = $0.status { true } else { false } }.count
-        return (["\(projects.count) \(projects.count == 1 ? "agent" : "agents")"]
+        return (["\(projects.count) \(projects.count == 1 ? "project" : "projects")"]
             + (working > 0 ? ["\(working) working"] : [])
             + (waiting > 0 ? ["\(waiting) \(waiting == 1 ? "needs" : "need") you"] : [])
             + (halted > 0 ? ["\(halted) can't run"] : [])).joined(separator: " · ")
@@ -345,8 +340,8 @@ struct AgentProjectView: View {
         if let bot = store.bots.first(where: { $0.id == botId }) {
             page(AgentProject(bot: bot, input: store.agentProjectInput))
         } else {
-            QuietEmptyState(symbol: "person.crop.square", title: "Agent unavailable",
-                            message: "This agent is no longer on your Mac.")
+            QuietEmptyState(symbol: "person.crop.square", title: "Project unavailable",
+                            message: "This project is no longer on your Mac.")
         }
     }
 
@@ -358,12 +353,6 @@ struct AgentProjectView: View {
             chatButton(bot)
             #endif
             BoardSection(project.chats.isEmpty ? AgentSection.chat.title : "Chats", count: project.count(.chat)) {
-                // A new chat is a fresh conversation with the same agent: its instructions, model, memory and pages.
-                if !bot.archived {
-                    Button { newChat(bot) } label: { Label("New chat", systemImage: "square.and.pencil") }
-                        .accessibilityIdentifier("agent-new-chat")
-                }
-            } rows: {
                 // The newest chats come first. The first chat of the agent, with its name, is the last row.
                 ForEach(project.chats) { extra in
                     BotContactRow(bot: extra, avatarSize: 32, title: extra.chatLabel)
@@ -449,11 +438,13 @@ struct AgentProjectView: View {
                 BoardRow(symbol: bot.archived ? "tray.and.arrow.up" : "archivebox",
                          title: bot.archived ? "Unarchive" : "Archive", chevron: false)
                     .boardButton("agent-archive") { Task { await store.archiveBot(bot, archived: !bot.archived) } }
-                BoardRow(symbol: "trash", tint: BoardStyle.destructive, title: "Delete agent", chevron: false)
+                BoardRow(symbol: "trash", tint: BoardStyle.destructive, title: "Delete project", chevron: false)
                     .boardButton("agent-delete") { deleting = bot }
             }
         }
         .navigationTitle(bot.name).inlineNavigationTitle()
+        // A pushed page covers the banner of Home, so the page shows why a New chat or a change failed.
+        .pageErrorBanner()
         .modifier(DeleteBotDialog(bot: $deleting))
         // The page of a deleted agent closes.
         .onChange(of: store.bots.contains { $0.id == botId }) { _, exists in if !exists { dismiss() } }
@@ -502,9 +493,10 @@ struct AgentProjectView: View {
         }
     }
 
-    /// An agent has many chats, so the button starts a fresh one and opens it. The old chats are in the list below.
+    /// A project has many chats, so the button starts a fresh one: the message box of Home with this project chosen.
+    /// The old chats are in the list below. It is the one New chat control of this page.
     private func chatButton(_ bot: Bot) -> some View {
-        Button { newChat(bot) } label: {
+        Button { store.startChat(in: bot) } label: {
             Label("New chat", systemImage: "square.and.pencil")
                 #if os(iOS)
                 .frame(maxWidth: .infinity)
@@ -513,10 +505,6 @@ struct AgentProjectView: View {
         .buttonStyle(CoconutButtonStyle())
         .disabled(bot.archived)
         .accessibilityIdentifier("agent-new-chat-button")
-    }
-
-    private func newChat(_ bot: Bot) {
-        Task { if let new = await store.newChat(with: bot) { chat(ConversationRoute(botId: new.id)) } }
     }
 
     /// The Mac window shows a chat in its own place. An iPhone pushes it onto the stack of the tab.

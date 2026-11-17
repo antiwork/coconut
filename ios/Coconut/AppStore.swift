@@ -139,8 +139,10 @@ final class AppStore {
     var pageQuotes: [String: MessageReference] = [:]
     /// Forwarded messages that a chat puts into its composer when it opens (MessageForward). By bot ID.
     var forwardedDrafts: [String: String] = [:]
-    /// The new chat that puts the cursor in its message field when it opens (newChat). The chat takes it one time.
-    var composerFocusRequest: String?
+    /// The project and the text that wait for the message box (startChat). The box takes them one time.
+    var newChatRequest: NewChatRequest?
+    /// Counts the starts of a chat. The window that holds the box shows it when the count changes.
+    var chatStarts = 0
     /// A Library page that a direct chat with a team bot quotes in its composer when it opens: "Chat about this page".
     /// By chat key, so only the chat of that key shows it.
     var teamPageQuotes: [TeamChatKey: TeamAboutPage] = [:]
@@ -780,7 +782,7 @@ final class AppStore {
     func createBot(name: String, role: String, avatar: String, color: String, instructions: String, memory: String = "", pinned: Bool = false) async -> Bot? {
         if isDemo {
             let bot = Bot(id: UUID().uuidString, sessionId: UUID().uuidString, name: name, role: role, avatar: avatar,
-                          color: color, instructions: instructions, status: "idle", lastMessage: "Ready when you are.",
+                          color: color, instructions: instructions, status: "idle", lastMessage: "",
                           unreadCount: 0, archived: false, createdAt: Self.now, memory: memory, pinned: pinned)
             bots.append(bot)
             return bot
@@ -788,8 +790,8 @@ final class AppStore {
         return await write("bots", payload: BotRequest(name: name, role: role, avatar: avatar, color: color, instructions: instructions, memory: memory, pinned: pinned), as: Bot.self)
     }
 
-    /// Asks the Mac for a new chat of an agent (newChat).
-    func startChat(_ agentId: String) async -> Bot? {
+    /// Asks the Mac for a new chat of an agent (makeChat).
+    func createChat(of agentId: String) async -> Bot? {
         await write("bots/\(agentId)/chats", payload: EmptyRequest(), as: Bot.self)
     }
 

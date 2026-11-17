@@ -47,7 +47,6 @@ struct MacMainWindow: View {
     @State private var inboxCard: String?
     @State private var inspectorShown = true
     @State private var inspectorTab = InspectorTab.details
-    @State private var creatingAgent = false
     @State private var pairingOpen = false
     // The pages that a chat opened. A row of the chat list pushes onto it (pushRoute); another bot starts at its chat.
     @State private var chatPath = NavigationPath()
@@ -56,6 +55,8 @@ struct MacMainWindow: View {
     // The right edge of the sidebar in the window. The notice centers right of it while the sidebar shows.
     @State private var sidebarRight: CGFloat = 0
     @State private var sidebarShown = true
+    // The project of the message box of Home. File > New chat starts there when no chat is on the screen.
+    @AppStorage(ChatProject.projectKey) private var boxProject = ""
 
     var body: some View {
         if model.mode == .team {
@@ -81,14 +82,6 @@ struct MacMainWindow: View {
                         // sidebar that the person hid. So the right edge counts only while AppKit shows the sidebar.
                         .background(OnScreenProbe { sidebarShown = $0 })
                         .navigationSplitViewColumnWidth(min: 220, ideal: 260, max: 300)
-                        .toolbar {
-                            ToolbarItem {
-                                Button(action: createAgent) { Label("New agent", systemImage: "plus") }
-                                    .disabled(creatingAgent)
-                                    .keyboardShortcut("n", modifiers: .command)
-                                    .help("Create an agent")
-                            }
-                        }
                 } detail: {
                     detail
                 }
@@ -125,6 +118,23 @@ struct MacMainWindow: View {
             guard let bot else { return }
             selection = .bot(bot)
             model.shownBot = nil
+        }
+        // Every New chat shows Home, where the message box takes the project (AppStore.startChat).
+        .onChange(of: store.chatStarts) { _, _ in
+            selection = .home
+            chatPath = NavigationPath()
+        }
+        // File > New chat: a new chat in the project of the chat on the screen, else of the message box.
+        .onChange(of: model.newChatRequested, initial: true) { _, requested in
+            guard requested else { return }
+            model.newChatRequested = false
+            startChat()
+        }
+        // File > New project.
+        .onChange(of: model.newProjectRequested, initial: true) { _, requested in
+            guard requested else { return }
+            model.newProjectRequested = false
+            Task { await store.newProject() }
         }
         // A document card in a chat selects the pinned row of its page, else it opens the page over its agent.
         .environment(\.openDocument) { id in show(MacPagePlace.card(id, documents: store.documents)) }
@@ -236,20 +246,24 @@ struct MacMainWindow: View {
         }
     }
 
-    /// Makes an agent with a random letter and selects its chat (AppStore.newAgent).
-    private func createAgent() {
-        creatingAgent = true
-        Task {
-            defer { creatingAgent = false }
-            if let bot = await store.newAgent() { selection = .bot(bot.id) }
+    /// File > New chat, and the shortcut of its menu: the message box with the project of the chat on the screen, else
+    /// the project that the box shows.
+    private func startChat() {
+        if let id = currentChat, let bot = store.bots.first(where: { $0.id == id }) {
+            store.startChat(in: bot)
+            return
         }
+        let latest = AgentChats.activity(bots: store.bots, latest: store.chatSummaries.newestActivity)
+        let project = ChatProject.target(chosen: boxProject, in: ChatProject.choices(in: store.bots, latest: latest))
+        store.startChat(in: project)
     }
 
     // A new case, with or without a stack of its own, needs no code for the notice of the window (MacNoticeArea).
     @ViewBuilder private var detail: some View {
         switch selection {
         case .home, nil:
-            placeStack { HomeView { open($0) }.navigationTitle("Home") }
+            // The message box is the end of Home, as on the iPhone. Every New chat leads to it.
+            placeStack { HomeView { open($0) }.safeAreaInset(edge: .bottom, spacing: 0) { NewChatBar() }.navigationTitle("Home") }
         case .inbox:
             MacInboxView(selection: $selection, first: inboxCard)
         case .live:
@@ -257,7 +271,7 @@ struct MacMainWindow: View {
         case .spend:
             placeStack { SpendView() }
         case .agents:
-            placeStack { AgentsView(create: createAgent).navigationTitle("Agents") }
+            placeStack { AgentsView(create: { Task { await store.newProject() } }).navigationTitle("Projects") }
         case .people:
             placeStack { PeopleView(openTeamChat: { selection = .team($0) }).navigationTitle("People") }
         case .business:
@@ -413,7 +427,7 @@ struct DetailColumnBottomInset: NSViewRepresentable {
     }
 }
 
-/// The sidebar: the Coconut chat, then Home, Agents, People and Profile, then the chats: the pinned bots and the pinned pages, and the chats: every other bot and each team, with the
+/// The sidebar: the Coconut chat, then Home, Projects, People and Profile, then the chats: the pinned bots and the pinned pages, and the chats: every other bot and each team, with the
 /// last message.
 struct MacSidebar: View {
     @Environment(AppStore.self) private var store
@@ -433,8 +447,9 @@ struct MacSidebar: View {
         // over the messages for each body cost about 3 ms with 1,500 messages.
         // An agent keeps its place by the newest of its chats, which show under it.
         let latest = AgentChats.activity(bots: store.bots, latest: store.chatSummaries.newestActivity)
-        let sections = ChatSections.make(bots: store.bots.agents, latest: latest,
-                                         rooms: store.shownTeamRooms, local: store.newestLocalMessages)
+        // A project that nobody wrote in, and has no chat, is in the message box only (AgentChats.isBlank).
+        let sections = ChatSections.make(bots: store.bots.agents.filter { AgentChats.isListed($0, latest: latest) },
+                                         latest: latest, rooms: store.shownTeamRooms, local: store.newestLocalMessages)
         let pins = SidebarPins(pinnedBots: sections.pinned, documents: store.documents ?? [], bots: store.bots,
                                teamBots: store.teamBots)
         // The cards are a page of Home, so Home stays marked while they show.
@@ -443,10 +458,7 @@ struct MacSidebar: View {
             // The Coconut chat: where the person changes Coconut. Coconut has no settings window for it.
             if let coconut = store.bots.coconutChat {
                 CoconutChatRow(bot: coconut).tag(MacSelection.bot(coconut.id))
-                    .contextMenu {
-                        NewChatButton(bot: coconut) { selection = .bot($0.id) }
-                        Button("Show all chats") { showDeck(from: coconut) }
-                    }
+                    .contextMenu { Button("Show all chats") { showDeck(from: coconut) } }
                 chatRows(of: coconut)
             }
             MacSidebarLabel(title: "Home", symbol: "house")
@@ -466,7 +478,7 @@ struct MacSidebar: View {
             MacSidebarLabel(title: "Support", symbol: "lifepreserver")
                 .tag(MacSelection.support)
                 .accessibilityIdentifier("sidebar-support")
-            MacSidebarLabel(title: "Agents", symbol: "square.stack.3d.up")
+            MacSidebarLabel(title: "Projects", symbol: "square.stack.3d.up")
                 .tag(MacSelection.agents)
                 .accessibilityIdentifier("sidebar-agents")
             MacSidebarLabel(title: "Profile", symbol: "person.crop.circle")
@@ -493,7 +505,7 @@ struct MacSidebar: View {
                 }
             }
             if !sections.bots.isEmpty {
-                Section("Agent chats", isExpanded: $agentsOpen) {
+                Section("Project chats", isExpanded: $agentsOpen) {
                     ForEach(sections.bots) { item in itemRow(item) }
                 }
             }
@@ -568,7 +580,7 @@ struct MacSidebar: View {
             .tag(MacSelection.bot(bot.id))
             .contextMenu {
                 if !bot.archived {
-                    NewChatButton(bot: bot) { selection = .bot($0.id) }
+                    NewChatButton(bot: bot)
                     Button("Show all chats") { showDeck(from: bot) }
                     Divider()
                     if !bot.isChat {
@@ -577,7 +589,7 @@ struct MacSidebar: View {
                 }
                 Button(bot.archived ? "Unarchive" : "Archive") { Task { await store.archiveBot(bot, archived: !bot.archived) } }
                 Divider()
-                Button(bot.isChat ? "Delete Chat…" : "Delete Agent…", role: .destructive) { deleting = bot }
+                Button(bot.isChat ? "Delete Chat…" : "Delete Project…", role: .destructive) { deleting = bot }
             }
             // A swipe to the left on the trackpad archives the agent, as in the Chats list of the iPhone.
             .swipeActions(edge: .trailing, allowsFullSwipe: true) {
