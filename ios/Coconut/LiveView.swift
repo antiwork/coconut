@@ -171,11 +171,12 @@ struct LiveAgentTile: View {
                 Text(name).font(.headline).lineLimit(1)
                 if let working {
                     TimelineView(.periodic(from: .now, by: 1)) { timeline in
-                        HStack(spacing: BoardStyle.Space.xs) {
-                            ShimmerText(text: working.reconnecting ? "Reconnecting…" : working.phase.label, active: !working.reconnecting)
-                            Text(Self.meta(working, at: timeline.date)).monospacedDigit().foregroundStyle(.secondary)
+                        // The whole line where it fits. A narrow tile leaves the model out, so no word is cut in two
+                        // places.
+                        ViewThatFits(in: .horizontal) {
+                            workingLine(working, meta: Self.meta(working, at: timeline.date))
+                            workingLine(working, meta: Self.meta(working, at: timeline.date, model: false))
                         }
-                        .font(.subheadline).lineLimit(1)
                     }
                 }
             }
@@ -184,11 +185,20 @@ struct LiveAgentTile: View {
         }
     }
 
+    private func workingLine(_ working: ConversationActivity, meta: String) -> some View {
+        HStack(spacing: BoardStyle.Space.xs) {
+            ShimmerText(text: working.reconnecting ? "Reconnecting…" : working.phase.label, active: !working.reconnecting)
+                .layoutPriority(1)
+            Text(meta).monospacedDigit().foregroundStyle(.secondary)
+        }
+        .font(.subheadline).lineLimit(1)
+    }
+
     /// "· 4m 05s · Claude Opus 5.5": the time of the turn to the second, and its model.
-    static func meta(_ working: ConversationActivity, at date: Date) -> String {
+    static func meta(_ working: ConversationActivity, at date: Date, model: Bool = true) -> String {
         var parts: [String] = []
         if let start = working.startedAt { parts.append(ConversationActivity.elapsed(date.timeIntervalSince(start))) }
-        if let model = working.model, !model.isEmpty { parts.append(model) }
+        if model, let name = working.model, !name.isEmpty { parts.append(name) }
         return parts.map { "· " + $0 }.joined(separator: " ")
     }
 
