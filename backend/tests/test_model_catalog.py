@@ -27,6 +27,15 @@ def example_catalog():
                         'default_reasoning_effort': None}]}
 
 
+class DefaultEffortTests(unittest.TestCase):
+    def test_a_session_without_a_named_effort_uses_medium(self):
+        from coconut.model_catalog import chosen_effort
+        self.assertEqual(chosen_effort(None, ['low', 'medium', 'high']), 'medium')
+        self.assertEqual(chosen_effort('high', ['low', 'medium', 'high']), 'high', 'A named effort stays.')
+        self.assertEqual(chosen_effort('none', ['none', 'medium']), 'none')
+        self.assertIsNone(chosen_effort(None, []), 'A route without efforts gets none.')
+
+
 class ModelSelectionTests(unittest.TestCase):
     def test_model_resolution_uses_the_same_account_home_as_bot_terminals(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -535,7 +544,8 @@ with open(os.devnull, 'w') as quiet, contextlib.redirect_stdout(quiet), contextl
         path = self.home / 'config.yaml'
         path.write_text('model: {default: first, provider: provider-a}\nagent:\n  reasoning_effort: high\n  reasoning_overrides: {second: high, unrelated: low}\n')
         result = self.run_native("m._write_default({'model': 'second', 'provider': 'provider-b'}, request)\nfrom hermes_cli.config import load_config\nfrom hermes_constants import resolve_reasoning_config\nconfig = load_config()\nresult = [resolve_reasoning_config(config, 'second'), resolve_reasoning_config(config, 'unrelated')]", example_catalog())
-        self.assertEqual(result, [None, {'enabled': True, 'effort': 'low'}])
+        # No named effort saves medium, clamped to the levels of the model (none, low, high: low).
+        self.assertEqual(result, [{'enabled': True, 'effort': 'low'}, {'enabled': True, 'effort': 'low'}])
 
     def test_native_profile_selection_and_reset_preserve_unrelated_settings(self):
         profile = self.root / 'bot'

@@ -717,10 +717,27 @@ def _block_style(path):
             raise
 
 
+# The effort of a session when the person names none: medium, on the default and on each agent. A model that has no
+# medium takes the nearest weaker level that it has, as Hermes clamps it.
+DEFAULT_EFFORT = 'medium'
+
+
+def chosen_effort(effort, supported):
+    """The effort to save for a choice: the named one, else DEFAULT_EFFORT on a route that takes an effort."""
+    if effort is not None:
+        return effort
+    if not supported:
+        return None
+    return DEFAULT_EFFORT if DEFAULT_EFFORT in supported else _sent_effort(DEFAULT_EFFORT, supported)
+
+
 def _write_default(selection, catalog):
     from hermes_cli.config import get_config_path
     selected = resolve_selection(selection, catalog)
-    _write_model(get_config_path(), selected, selection.get('reasoning_effort'), catalog['default'])
+    row = next((item for item in catalog['models']
+                if item['id'] == selected['model'] and item['provider'] == selected['provider']), None)
+    effort = chosen_effort(selection.get('reasoning_effort'), row['reasoning_efforts'] if row else None)
+    _write_model(get_config_path(), selected, effort, catalog['default'])
 
 
 def _write_model(path, selected, effort, previous):
