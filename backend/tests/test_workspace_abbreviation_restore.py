@@ -725,6 +725,8 @@ class AbbreviationRestoreTests(unittest.TestCase):
         hooks.mkdir(exist_ok=True)
         (hooks / 'post-checkout').write_text('#!/bin/sh\n' + script)
         (hooks / 'post-checkout').chmod(0o755)
+        # A host core.hooksPath makes Git ignore this repository's hooks, and the restore would then run none.
+        git(self.repo, 'config', 'core.hooksPath', str(hooks))
 
     def test_a_real_difference_still_fails_and_keeps_the_partial_checkout(self):
         for name, script in (('untracked', f'echo late > {EVIDENCE}-late.txt\n'),

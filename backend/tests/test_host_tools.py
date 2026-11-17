@@ -198,6 +198,10 @@ class HostLifecycleTests(unittest.TestCase):
             patcher = patch.object(target, name, value)
             patcher.start()
             self.addCleanup(patcher.stop)
+        # This Mac can run the login item of Coconut.app, which every lifecycle check would then prefer.
+        login_item = patch.object(host, 'login_item_loaded', return_value=False)
+        login_item.start()
+        self.addCleanup(login_item.stop)
         self.options = {'port': 9000, 'provider': 'fixture'}
         self.path = self.root / 'Library/LaunchAgents/local.coconut.agent.plist'
 
