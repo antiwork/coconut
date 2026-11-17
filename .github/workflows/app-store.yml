@@ -1,0 +1,69 @@
+name: App Store
+
+# Prepares the App Store version of the iPhone app in App Store Connect, and sends it to App Review.
+# `status` only reads, and prints what a submission still needs. `prepare` writes the listing of app-store/ (the text and
+# the screenshots), the age rating, the price, the availability and the review details, and picks the build. `submit`
+# prepares, then sends the version to App Review. A person starts each run. Apple releases the app after approval.
+#
+# The build must come from a TestFlight run with `public`: App Review does not take an internal-only build.
+# The logs of this repository are public, so scripts/appstore.py prints no personal data.
+#
+# The job uses the environment `mac-release` (main branch only) for these secrets:
+#   ASC_KEY_ID, ASC_ISSUER_ID, ASC_KEY_P8   the App Store Connect API key
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: status reads, prepare writes the listing, submit also sends the version to App Review.
+        type: choice
+        options: [status, prepare, submit]
+        default: status
+      build:
+        description: The build number. Empty picks the newest valid build that App Review takes.
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+
+# Two runs must not write the same version at the same time.
+concurrency:
+  group: app-store
+  cancel-in-progress: false
+
+jobs:
+  app-store:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: mac-release
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Write the App Store Connect API key
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
+        run: |
+          set -euo pipefail
+          if [ -z "$ASC_KEY_ID" ] || [ -z "$ASC_ISSUER_ID" ] || [ -z "$ASC_KEY_P8" ]; then
+            echo "::error::The environment mac-release needs ASC_KEY_ID, ASC_ISSUER_ID and ASC_KEY_P8."
+            exit 1
+          fi
+          key="$RUNNER_TEMP/AuthKey.p8"
+          (umask 077; printf '%s\n' "$ASC_KEY_P8" > "$key")
+          { echo "ASC_KEY=$key"; echo "ASC_KEY_ID=$ASC_KEY_ID"; echo "ASC_ISSUER_ID=$ASC_ISSUER_ID"; } >> "$GITHUB_ENV"
+      - name: Run ${{ inputs.action }}
+        env:
+          ACTION: ${{ inputs.action }}
+          BUILD_NUMBER: ${{ inputs.build }}
+        run: |
+          set -euo pipefail
+          arguments=("$ACTION" --key "$ASC_KEY" --key-id "$ASC_KEY_ID" --issuer "$ASC_ISSUER_ID")
+          if [ -n "$BUILD_NUMBER" ]; then arguments+=(--build "$BUILD_NUMBER"); fi
+          python3 scripts/appstore.py "${arguments[@]}"
+      - name: Remove the API key
+        if: always()
+        run: rm -f "$RUNNER_TEMP/AuthKey.p8"
