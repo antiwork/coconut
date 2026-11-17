@@ -153,6 +153,8 @@ struct BoardRow: View {
     var tint: Color = .secondary
     let title: String
     var detail: String? = nil
+    /// The lines that the detail can take. More than one is for a detail of numbers, where a cut hides a number.
+    var detailLines = 1
     var value: String? = nil
     var chevron = true
     /// The row opens a menu of choices for its value.
@@ -166,7 +168,7 @@ struct BoardRow: View {
             VStack(alignment: .leading, spacing: BoardStyle.Space.line) {
                 Text(title).foregroundStyle(.primary).lineLimit(1)
                 if let detail, !detail.isEmpty {
-                    Text(detail).font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
+                    Text(detail).font(.subheadline).foregroundStyle(.secondary).lineLimit(detailLines)
                 }
             }
             Spacer(minLength: BoardStyle.Space.s)

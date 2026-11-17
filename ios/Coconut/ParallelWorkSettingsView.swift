@@ -17,9 +17,10 @@ struct AgentQueue: Codable, Equatable, Sendable {
 
     var isEmpty: Bool { running + waiting + needsYou + doneToday == 0 }
 
-    /// "1 running · 2 waiting · 1 needs you · 3 done today", without the empty lanes.
+    /// "1 running · 2 waiting · 1 needs you · 3 done today", without the empty lanes. A count stays with its words when
+    /// the line breaks: only the space after a dot breaks.
     var summary: String {
-        [(running, "running"), (waiting, "waiting"), (needsYou, "needs you"), (doneToday, "done today")]
-            .filter { $0.0 > 0 }.map { "\($0.0) \($0.1)" }.joined(separator: " · ")
+        [(running, "running"), (waiting, "waiting"), (needsYou, "needs\u{00A0}you"), (doneToday, "done\u{00A0}today")]
+            .filter { $0.0 > 0 }.map { "\($0.0)\u{00A0}\($0.1)" }.joined(separator: "\u{00A0}· ")
     }
 }

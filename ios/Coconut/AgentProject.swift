@@ -185,6 +185,9 @@ struct AgentsView: View {
         let projects = AgentProject.list(store.agentProjectInput)
         let archived = store.bots.agents.filter(\.archived).count
         BoardPage {
+            // The Mac window shows the title of this place in the page, with the counts and New project. An iPhone has
+            // the title in the bar, as each pushed page.
+            #if os(macOS)
             HStack(alignment: .firstTextBaseline) {
                 BoardPageTitle(title: "Projects", detail: Self.detail(projects))
                 Spacer(minLength: 0)
@@ -193,6 +196,7 @@ struct AgentsView: View {
                         .accessibilityIdentifier("agents-new")
                 }
             }
+            #endif
             if projects.isEmpty {
                 QuietEmptyState(symbol: "person.crop.square.badge.plus", title: "No projects yet",
                                 message: "A project keeps its chats, its work, its pages and its routines.")
@@ -211,34 +215,39 @@ struct AgentsView: View {
                 BoardSection("Work", count: lanes.count) {
                     ForEach(lanes) { project in
                         let queue = store.queues[project.id] ?? AgentQueue()
-                        BoardRow(symbol: queue.running > 0 ? "play.circle" : queue.needsYou > 0 ? "circle.inset.filled" : "clock",
+                        BoardRow(symbol: queue.running > 0 ? "circle.dotted" : queue.needsYou > 0 ? "circle.inset.filled" : "clock",
                                  tint: queue.running > 0 ? BoardStyle.positive : queue.needsYou > 0 ? BoardStyle.attention : .secondary,
-                                 title: project.bot.name, detail: queue.summary)
+                                 title: project.bot.name, detail: queue.summary, detailLines: 2)
                             .boardButton("agent-queue-" + project.id) { show(project.id) }
                     }
                 }
             }
+            // What the projects keep: their pages, and the projects that the person put away.
             BoardSection("Library") {
                 BoardRow(symbol: "rectangle.3.group", title: "All pages",
                          value: store.documents.map { "\($0.count)" })
                     .boardButton("agents-all-pages") { pushRoute?(AllPagesRoute()) }
-                BoardRow(symbol: "dollarsign.circle", title: "Spend", value: store.spendTodayTotal)
-                    .boardButton("agents-spend") { pushRoute?(SpendRoute()) }
                 if archived > 0 {
                     BoardRow(symbol: "archivebox", title: "Archived", value: "\(archived)")
                         .boardButton("agents-archived") { pushRoute?(ArchivedAgentsRoute()) }
                 }
             }
+            // What the projects use: the work that runs now, the money, and the turns and tokens.
             BoardSection("Usage") {
                 #if os(iOS)
                 // The iPhone Home has no tile for the agents that work now, so the page of the agents has the row.
                 BoardRow(symbol: "circle.dotted", title: "Live", value: "\(LiveFeed.agents(bots: store.bots, tasks: store.tasks).count) working")
                     .boardButton("agents-live") { pushRoute?(LiveRoute()) }
                 #endif
-                BoardRow(symbol: "chart.bar", title: "Usage", detail: "Turns, tokens, cost and time of each agent")
+                BoardRow(symbol: "dollarsign.circle", title: "Spend", value: store.spendTodayTotal)
+                    .boardButton("agents-spend") { pushRoute?(SpendRoute()) }
+                BoardRow(symbol: "chart.bar", title: "Usage")
                     .boardButton("agents-usage") { pushRoute?(UsageRoute()) }
             }
         }
+        #if os(iOS)
+        .navigationTitle("Projects").inlineNavigationTitle()
+        #endif
         // The page counts need the list of the pages, also before any page opens.
         .task(id: store.connection == .connected) {
             if store.documents == nil { await store.loadDocuments(quiet: true) }
@@ -291,6 +300,8 @@ struct AgentProjectRow: View {
                     }
                 }
                 .font(.footnote.monospacedDigit()).foregroundStyle(.secondary)
+                // The numbers keep one line: the role next to them is the text that gets cut.
+                .lineLimit(1).fixedSize()
             }
             Image(systemName: "chevron.right").font(.footnote.weight(.semibold)).foregroundStyle(.tertiary)
         }
@@ -391,7 +402,7 @@ struct AgentProjectView: View {
             // The agent's queue on the Hermes board of the Mac.
             let queue = store.queues[bot.id] ?? AgentQueue()
             BoardSection("Queue") {
-                BoardRow(symbol: "play.circle", tint: queue.running > 0 ? BoardStyle.positive : .secondary,
+                BoardRow(symbol: "circle.dotted", tint: queue.running > 0 ? BoardStyle.positive : .secondary,
                          title: "Running", value: "\(queue.running)", chevron: false)
                 BoardRow(symbol: "clock", title: "Waiting", value: "\(queue.waiting)", chevron: false)
                 BoardRow(symbol: "circle.inset.filled", tint: queue.needsYou > 0 ? BoardStyle.attention : .secondary,
