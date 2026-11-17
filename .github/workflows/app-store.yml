@@ -1,8 +1,9 @@
 name: App Store
 
 # Sends the App Store version of the iPhone app to App Review. `status` only reads App Store Connect: the listing, the
-# build, the age rating, the price, the availability, the review details and the submissions. `screenshots` puts the
-# images of app-store/screenshots into the listing. `submit` gives the version its build, keeps the app out of China
+# build, the age rating, the price, the availability, the review details, the TestFlight groups with their public link
+# and beta review, and the submissions. `screenshots` puts the images of app-store/screenshots into the listing.
+# `submit` gives the version its build, keeps the app out of China
 # mainland, and sends the version to App Review. A person starts each run. Apple releases the app after approval. The
 # rest of the listing (text, review notes, age rating) lives in App Store Connect. `submit-when-ready` ends a run that
 # only waits for the App Privacy answers without a failure, so a routine can start it until a person publishes them.

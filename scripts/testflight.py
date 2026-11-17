@@ -86,10 +86,11 @@ def der_to_raw(signature: bytes) -> bytes:
 
 
 def token(key: Path, key_id: str, issuer: str, now: int | None = None) -> str:
-    """A JSON Web Token for the App Store Connect API. It expires after 20 minutes, the longest time Apple accepts."""
+    """A JSON Web Token for the App Store Connect API. It expires after 19 minutes. Apple accepts at most 20, and refuses
+    a token signed for exactly 20 when the clock of the runner is a second ahead of Apple's."""
     now = int(time.time()) if now is None else now
     header = base64url(json.dumps({'alg': 'ES256', 'kid': key_id, 'typ': 'JWT'}).encode())
-    claims = base64url(json.dumps({'iss': issuer, 'iat': now, 'exp': now + 20 * 60, 'aud': 'appstoreconnect-v1'}).encode())
+    claims = base64url(json.dumps({'iss': issuer, 'iat': now, 'exp': now + 19 * 60, 'aud': 'appstoreconnect-v1'}).encode())
     message = f'{header}.{claims}'
     signature = subprocess.run(['openssl', 'dgst', '-sha256', '-sign', str(key)], input=message.encode(),
                                capture_output=True, check=True).stdout

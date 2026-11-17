@@ -7,8 +7,9 @@
   appstore.py submit-when-ready --key AuthKey.p8 --key-id KEY --issuer ISSUER [--build 315]
 
 status only reads App Store Connect: the listing, the build, the age rating, the price, the availability, the review
-details and the submissions. screenshots puts the images of app-store/screenshots into the listing, in place of the
-ones it has. submit gives the iOS version its build (the newest one that App Review takes, unless --build names one),
+details, the TestFlight groups with their public link and beta review, and the submissions. screenshots puts the
+images of app-store/screenshots into the listing, in place of the ones it has. submit gives the iOS version its build
+(the newest one that App Review takes, unless --build names one),
 keeps the app out of China mainland, and sends the version to App Review. Apple releases it after approval. The rest
 of the listing (text, review notes, age rating) lives in App Store Connect. submit-when-ready does the same, but ends
 without an error while the App Privacy answers are unpublished, so a routine can run it until they are.
@@ -230,6 +231,29 @@ def status(api: Api) -> None:
         values = localization['attributes']
         print('  ', values.get('locale'), filled(values, ['description', 'feedbackEmail', 'privacyPolicyUrl',
                                                           'marketingUrl']))
+
+    print('\nTestFlight groups:')
+    link = ['publicLinkEnabled', 'publicLink', 'publicLinkLimitEnabled', 'publicLinkLimit']
+    for group in api.all(f'/apps/{APP_ID}/betaGroups' + query(**{
+            'fields[betaGroups]': ','.join(['name', 'isInternalGroup'] + link), 'limit': 50})):
+        values = group['attributes']
+        external = not values.get('isInternalGroup')
+        # A count only: the testers of a group are people, and this log is public.
+        testers = api.get(f"/betaGroups/{group['id']}/relationships/betaTesters" + query(limit=1), quiet=True)
+        print('  ', values.get('name'), 'external' if external else 'internal',
+              {key: values.get(key) for key in link} if external else '',
+              'testers:', (testers.get('meta') or {}).get('paging', {}).get('total'))
+        if not external:
+            continue
+        # An external tester gets a build only after Apple's beta review approves it.
+        for build in api.all(f"/betaGroups/{group['id']}/builds" + query(**{'fields[builds]': 'version,expired',
+                                                                            'limit': 50})):
+            review = (api.get(f"/builds/{build['id']}/betaAppReviewSubmission", quiet=True).get('data') or {})
+            detail = (api.get(f"/builds/{build['id']}/buildBetaDetail", quiet=True).get('data') or {})
+            print('      build', build['attributes'].get('version'), 'expired' if build['attributes'].get('expired')
+                  else '', 'beta review:', (review.get('attributes') or {}).get('betaReviewState'),
+                  (review.get('attributes') or {}).get('submittedDate'),
+                  'external state:', (detail.get('attributes') or {}).get('externalBuildState'))
 
     print('\nReview submissions:')
     for submission in api.all('/reviewSubmissions' + query(**{'filter[app]': APP_ID, 'limit': 20})):
