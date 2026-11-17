@@ -134,6 +134,8 @@ final class AppStore {
     @ObservationIgnored private var teamListVersion = 0
     /// A Library page that a chat quotes in its composer when it opens: "Ask the bot about this page". By bot ID.
     var pageQuotes: [String: MessageReference] = [:]
+    /// The new chat that puts the cursor in its message field when it opens (newChat). The chat takes it one time.
+    var composerFocusRequest: String?
     /// A Library page that a direct chat with a team bot quotes in its composer when it opens: "Chat about this page".
     /// By chat key, so only the chat of that key shows it.
     var teamPageQuotes: [TeamChatKey: TeamAboutPage] = [:]
@@ -747,6 +749,11 @@ final class AppStore {
         let _: Bot? = await write("bots", payload: BotRequest(name: name, role: role, avatar: avatar, color: color, instructions: instructions, memory: memory, pinned: pinned), as: Bot.self)
     }
 
+    /// Asks the Mac for a new chat of an agent (newChat).
+    func startChat(_ agentId: String) async -> Bot? {
+        await write("bots/\(agentId)/chats", payload: EmptyRequest(), as: Bot.self)
+    }
+
     func updateBot(_ bot: Bot, comparedTo original: Bot) async {
         guard bot.id == original.id else { return }
         let patch = BotPatch(updated: bot, original: original)
@@ -923,6 +930,7 @@ final class AppStore {
                 tasks.append(target)
             } else if let currentTask { target = currentTask }
             else { return false }
+            nameDemoChat(bot.id, from: text)
             messages.append(Message(id: UUID().uuidString, botId: bot.id, taskId: target.id, role: "user", kind: "text", text: text,
                                     decisionId: nil, artifactId: nil, createdAt: Self.now, streaming: false, threadId: target.threadId, replyTo: replyTo, workContext: workContext))
             messages.append(Message(id: UUID().uuidString, botId: bot.id, taskId: target.id, role: "system", kind: "text",

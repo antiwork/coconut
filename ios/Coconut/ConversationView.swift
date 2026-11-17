@@ -435,6 +435,12 @@ struct ConversationView: View {
                     nearBottom = true
                     focusAfterPush = UUID()
                 }
+                // A new chat opens with the cursor in its message field (AppStore.newChat).
+                .onChange(of: store.composerFocusRequest == botId, initial: true) { _, wanted in
+                    guard wanted else { return }
+                    store.composerFocusRequest = nil
+                    focusAfterPush = UUID()
+                }
                 // The view cancels this task when it leaves the screen, and a new ID when the request changes.
                 .task(id: focusAfterPush) {
                     guard focusAfterPush != nil else { return }
@@ -450,10 +456,10 @@ struct ConversationView: View {
                         ToolbarSpacer(.fixed, placement: .leadingBar)
                     }
                     ToolbarItem(placement: .leadingBar) {
-                        NavigationLink(value: BotSettingsRoute(botId: bot.id)) {
+                        NavigationLink(value: BotSettingsRoute(botId: bot.agentId)) {
                             HStack(spacing: 8) {
                                 LiveBotAvatar(bot: bot, size: 28)
-                                Text(bot.name).font(.body.weight(.semibold))
+                                Text(bot.isChat ? bot.chatLabel : bot.name).font(.body.weight(.semibold))
                                     .lineLimit(1).truncationMode(.tail)
                                     .frame(maxWidth: nameWidth, alignment: .leading)
                             }
@@ -474,6 +480,7 @@ struct ConversationView: View {
                         }
                         .accessibilityIdentifier("chat-model-menu")
                     }
+                    ToolbarItem(placement: .trailingBar) { NewChatHeaderButton(bot: bot) }
                     #endif
                 }
                 #if os(macOS)
@@ -482,20 +489,23 @@ struct ConversationView: View {
                 // A Mac toolbar groups its items into one glass bar. The bot gets a pill of its own over the top of the
                 // chat instead. Next to an inspector it shows and hides the details; elsewhere it opens the settings.
                 .overlay(alignment: .top) {
-                    Group {
-                        if let toggleBotDetails {
-                            Button(action: toggleBotDetails) { botPill(bot) }
-                                .keyboardShortcut("i", modifiers: .command)
-                                .help("Show or hide the details of \(bot.name)")
-                        } else {
-                            NavigationLink(value: BotSettingsRoute(botId: bot.id)) { botPill(bot) }
-                                .help("Settings of \(bot.name)")
+                    HStack(spacing: BoardStyle.Space.s) {
+                        Group {
+                            if let toggleBotDetails {
+                                Button(action: toggleBotDetails) { botPill(bot) }
+                                    .keyboardShortcut("i", modifiers: .command)
+                                    .help("Show or hide the details of \(bot.name)")
+                            } else {
+                                NavigationLink(value: BotSettingsRoute(botId: bot.agentId)) { botPill(bot) }
+                                    .help("Settings of \(bot.name)")
+                            }
                         }
+                        .accessibilityLabel("\(bot.name) settings")
+                        .accessibilityIdentifier("bot-settings")
+                        NewChatHeaderButton(bot: bot)
                     }
                     .buttonStyle(.plain)
                     .padding(.top, 8)
-                    .accessibilityLabel("\(bot.name) settings")
-                    .accessibilityIdentifier("bot-settings")
                 }
                 // The model of the agent has a pill of its own at the end of that row. A click opens the models with a
                 // search, and a click on a model changes it. A Mac menu draws only the text of its label, so the pill
@@ -544,6 +554,11 @@ struct ConversationView: View {
         HStack(spacing: 8) {
             LiveBotAvatar(bot: bot, size: 24)
             Text(bot.name).font(.body.weight(.semibold)).lineLimit(1).truncationMode(.tail)
+            // A further chat of the agent shows its title after the name.
+            if bot.isChat {
+                Text(bot.chatLabel).font(.body).foregroundStyle(.secondary).lineLimit(1).truncationMode(.tail)
+                    .frame(maxWidth: 260, alignment: .leading).fixedSize(horizontal: true, vertical: false)
+            }
         }
         .padding(.leading, BoardStyle.Space.xs).padding(.trailing, BoardStyle.Space.m)
         .frame(height: 34)
@@ -962,7 +977,7 @@ struct ConversationComposer: View {
     var onSend: () -> Void = {}
 
     private var connected: Bool { store.hasPairing || store.isDemo }
-    private var recipients: [SelectedBotMention] { BotMentions.recipients(in: text, selected: mentions, bots: store.bots) }
+    private var recipients: [SelectedBotMention] { BotMentions.recipients(in: text, selected: mentions, bots: store.bots.withoutChats) }
     private var executorName: String { store.bots.first { $0.id == task?.botId }?.name ?? bot.name }
 
     var body: some View {
@@ -984,7 +999,7 @@ struct ConversationComposer: View {
                                  cancelLabel: reference.documentId == nil ? "Cancel reply" : PageQuoteText.remove) { replyTo = nil }
                     .accessibilityIdentifier("reply-preview")
             }
-            BotMentionControls(text: $text, selection: $selection, selected: $mentions, bots: store.bots, focused: focused) { focused = true }
+            BotMentionControls(text: $text, selection: $selection, selected: $mentions, bots: store.bots.withoutChats, focused: focused) { focused = true }
             ComposerAttachmentChips(chips: attachments.map {
                 ComposerChip(id: $0.id, title: $0.title,
                              image: TranscriptPresentation.isImageName($0.title) ? URL(string: "coconut-file://" + $0.id) : nil)

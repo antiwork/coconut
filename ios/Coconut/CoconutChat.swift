@@ -10,8 +10,6 @@ enum CoconutMode: String, CaseIterable, Identifiable {
 extension Array where Element == Bot {
     /// The Coconut chat, when the Mac has one.
     var coconutChat: Bot? { first { $0.coconut && !$0.archived } }
-    /// The agents without the Coconut chat, which has its own place at the top.
-    var agents: [Bot] { filter { !$0.coconut } }
 }
 
 /// The bar at the top of the Coconut chat: where Coconut runs, and the few things that need this device itself.

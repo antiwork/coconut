@@ -221,6 +221,7 @@
 		7AC7407FA152936A65D9E178 /* TunnelFrames.swift in Sources */ = {isa = PBXBuildFile; fileRef = 124BFA46377F786FAC3CB2EE /* TunnelFrames.swift */; };
 		7B8283EA5BB8836258391E06 /* TeamAlertTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A8CA081F4B253929243155B6 /* TeamAlertTests.swift */; };
 		7BC447DBE41CF5861E87ECED /* Updater.swift in Sources */ = {isa = PBXBuildFile; fileRef = 827E50B0C8764B4452C6036D /* Updater.swift */; };
+		7BC900DAEB298308E9027828 /* AgentChats.swift in Sources */ = {isa = PBXBuildFile; fileRef = E2DA8840FE2FA69768725079 /* AgentChats.swift */; };
 		7CDAF16CC3E1DBA0F06D8CEF /* LiveActivityTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A2F333C198067BAC18E6ADD /* LiveActivityTests.swift */; };
 		7E6BE2B190E6D5186E0DDE7A /* ConversationView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 86E50B95FC8F9D964C273561 /* ConversationView.swift */; };
 		7F2A1F8323D13C03B0B00DD0 /* FooterScrollTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = FD3D7B8187421A70C0F88FDD /* FooterScrollTests.swift */; };
@@ -345,6 +346,7 @@
 		CA3B0A7D9DC6BA690D950580 /* FruitVolumeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 40653BD96299864095392261 /* FruitVolumeTests.swift */; };
 		CA600F0080EC075E89DB8547 /* PreviewDiagnostics.swift in Sources */ = {isa = PBXBuildFile; fileRef = A3A43A7E155EAC1270A61B25 /* PreviewDiagnostics.swift */; };
 		CA614F81435252679031DB1E /* Theme.swift in Sources */ = {isa = PBXBuildFile; fileRef = B08638DC7DBFF79E2F881694 /* Theme.swift */; };
+		CAA73F2BBE057BA1AFCD0464 /* AgentChats.swift in Sources */ = {isa = PBXBuildFile; fileRef = E2DA8840FE2FA69768725079 /* AgentChats.swift */; };
 		CC73B1C63BD25B51544BFABD /* ModelMenu.swift in Sources */ = {isa = PBXBuildFile; fileRef = C93C38364B82E8492A11DCDE /* ModelMenu.swift */; };
 		CC8D07212E93CA4C141A8E85 /* DecisionInboxTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5BE7BF6459CF088AB520BD12 /* DecisionInboxTests.swift */; };
 		CCF78268762CF60A9952C93B /* UsageTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E23583B66B329A223019B4B8 /* UsageTests.swift */; };
@@ -707,6 +709,7 @@
 		E047A026D090ABDE156F4AAF /* StateUpdates.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StateUpdates.swift; sourceTree = "<group>"; };
 		E071D5849425BFD67FAEE846 /* DecisionInboxTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DecisionInboxTests.swift; sourceTree = "<group>"; };
 		E23583B66B329A223019B4B8 /* UsageTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UsageTests.swift; sourceTree = "<group>"; };
+		E2DA8840FE2FA69768725079 /* AgentChats.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentChats.swift; sourceTree = "<group>"; };
 		E580343AB979B3EEC0F063B0 /* KeychainRefusalTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeychainRefusalTests.swift; sourceTree = "<group>"; };
 		E64B8D243B3B47A49BFE4878 /* NotificationSentenceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationSentenceTests.swift; sourceTree = "<group>"; };
 		E6BADED5520F6428F59143DF /* Platform.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Platform.swift; sourceTree = "<group>"; };
@@ -924,6 +927,7 @@
 		A946F02C983D8DB412F22B38 /* Coconut */ = {
 			isa = PBXGroup;
 			children = (
+				E2DA8840FE2FA69768725079 /* AgentChats.swift */,
 				E965675846C512EBE08ADB77 /* AgentProject.swift */,
 				F85BED295D4BCB7E12AA75B6 /* APIClient.swift */,
 				2580B8702C72C82BDCCF6F55 /* ApprovalSettingsView.swift */,
@@ -1486,6 +1490,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				9E55E259DA5AE72520DC997C /* APIClient.swift in Sources */,
+				CAA73F2BBE057BA1AFCD0464 /* AgentChats.swift in Sources */,
 				8A07D811CC110F560AF8F0A0 /* AgentProject.swift in Sources */,
 				65639DFCA34F1D1BF612DB84 /* AppModel.swift in Sources */,
 				791509763056114A84032BFA /* AppStore.swift in Sources */,
@@ -1594,6 +1599,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				A7CFCB73B2FE06224655F73F /* APIClient.swift in Sources */,
+				7BC900DAEB298308E9027828 /* AgentChats.swift in Sources */,
 				44C35F34533B9BC2BD6C59E0 /* AgentProject.swift in Sources */,
 				FA3273EAC8CD61785B0DA57F /* AppStore.swift in Sources */,
 				62A94C16202D5232CFFE7B67 /* ApprovalSettingsView.swift in Sources */,

@@ -172,6 +172,73 @@ final class MacWindowSnapshotTests: XCTestCase {
          ], "model_source": "Hermes", "default_source": "Hermes config.yaml"}
         """#
 
+    /// Two chats of one agent: the sidebar lists the chats under the agent, and each chat has its own conversation.
+    func testTheChatsOfAnAgentRender() async throws {
+        let store = AppStore(demo: true)
+        store.bots[store.bots.count - 1].coconut = true
+        store.bots[store.bots.count - 1].name = "Coconut"
+        let agent = try XCTUnwrap(store.bots.first)
+        let formatter = ISO8601DateFormatter()
+        func ago(_ minutes: Double) -> String { formatter.string(from: Date().addingTimeInterval(-minutes * 60)) }
+        func talk(_ chat: Bot, _ minutes: Double, _ lines: [(String, String)]) {
+            for (index, line) in lines.enumerated() {
+                store.messages.append(Message(id: UUID().uuidString, botId: chat.id, taskId: nil, role: line.0, kind: "text",
+                                              text: line.1, decisionId: nil, artifactId: nil,
+                                              createdAt: ago(minutes - Double(index)), streaming: false, threadId: nil))
+            }
+            if let index = store.bots.firstIndex(where: { $0.id == chat.id }) {
+                store.bots[index].chatTitle = AgentChats.title(from: lines[0].1)
+                store.bots[index].createdAt = ago(minutes)
+                store.bots[index].lastMessage = lines.last?.1 ?? ""
+            }
+        }
+        var first = try await unwrapNewChat(store, agent)
+        talk(first, 190, [
+            ("user", "Why did the Friday payout run twice for 14 creators?"),
+            ("assistant", "The payout job retried after a Stripe timeout and did not check the idempotency key. 14 creators got two transfers, $8,412 in total."),
+            ("user", "Draft the fix and the reversal plan."),
+            ("assistant", "The fix stores the key before the transfer call. I opened a pull request with a test that replays the timeout. The reversal plan is in the page \"Double payout reversal\"."),
+        ])
+        var second = try await unwrapNewChat(store, agent)
+        talk(second, 12, [
+            ("user", "Cut the 4.2 release notes from the merged pull requests"),
+            ("assistant", "4.2 has 23 merged pull requests. The notes group them as Payouts, Checkout and Fixes. Two need a line from you: the new refund window and the Ping retry change."),
+        ])
+        let third = try await unwrapNewChat(store, agent)
+        first = try XCTUnwrap(store.bots.first { $0.id == first.id })
+        second = try XCTUnwrap(store.bots.first { $0.id == second.id })
+        if let index = store.bots.firstIndex(where: { $0.id == second.id }) { store.bots[index].unreadCount = 1 }
+        XCTAssertEqual(AgentChats.chats(of: agent.id, in: store.bots, latest: store.chatSummaries.newestActivity).map(\.id),
+                       [third.id, second.id, first.id], "Newest first.")
+        let windows: [(String, MacSelection, AnyView)] = [
+            ("chats-first", .bot(first.id), AnyView(NavigationStack { ConversationView(botId: first.id) })),
+            ("chats-second", .bot(second.id), AnyView(NavigationStack { ConversationView(botId: second.id) })),
+            ("chats-new", .bot(third.id), AnyView(NavigationStack { ConversationView(botId: third.id) })),
+            ("chats-agent-page", .agents, AnyView(NavigationStack { AgentProjectView(botId: agent.id) })),
+        ]
+        for (name, selection, detail) in windows {
+            let view = HStack(spacing: 0) {
+                MacSidebar(selection: .constant(selection)).frame(width: 260)
+                Divider()
+                detail.frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+            .environment(store)
+            .frame(width: 1180, height: 760)
+            .background(.background)
+            .environment(\.colorScheme, .light)
+            let data = try render(view, size: NSSize(width: 1180, height: 760))
+            XCTAssertGreaterThan(data.count, 20_000)
+            if let folder = ProcessInfo.processInfo.environment["COCONUT_WINDOW_SHOTS"] {
+                try data.write(to: URL(fileURLWithPath: folder).appendingPathComponent("window-\(name).png"))
+            }
+        }
+    }
+
+    private func unwrapNewChat(_ store: AppStore, _ agent: Bot) async throws -> Bot {
+        let made = await store.newChat(with: agent)
+        return try XCTUnwrap(made)
+    }
+
     // A list is an AppKit table, which ImageRenderer does not draw. A window off the screen draws it.
     private func render(_ view: some View, size: NSSize, dark: Bool = false) throws -> Data {
         let host = NSHostingView(rootView: view)
