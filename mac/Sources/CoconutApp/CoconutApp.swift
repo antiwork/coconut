@@ -32,6 +32,10 @@ struct CoconutApp: App {
     var body: some Scene {
         Window("Coconut", id: "main") {
             MacMainWindow(model: model)
+                // The share extension lists the chats that the app wrote for it, and the app sends each share that
+                // the extension left (MacShareInbox).
+                .modifier(ShareDirectoryPublisher())
+                .modifier(MacShareDelivery(model: model))
                 .environment(store)
                 .tint(.primary)
                 .modifier(BannerWindowOpener(banners: banners))
@@ -42,6 +46,8 @@ struct CoconutApp: App {
                     if PairingSetup.isLink(url) { store.setupLink = url.absoluteString }
                     // An invite link of a team opens the join sheet. The link stays in memory only.
                     if TeamLinkCheck.isLink(url) { store.teamJoin = TeamJoinRequest(link: url.absoluteString) }
+                    // The share extension wrote a share and brought the app to the front.
+                    if ShareInbox.isWake(url) { Task { await MacShareInbox.deliver(store: store, model: model) } }
                 }
         }
         .defaultSize(width: 1100, height: 760)

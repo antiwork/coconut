@@ -5,69 +5,8 @@ import UIKit
 import AppKit
 #endif
 
-// The iPhone app and the Mac app compile the same views. These names hide the few UIKit and AppKit differences.
-#if canImport(UIKit)
-typealias PlatformColor = UIColor
-typealias PlatformImage = UIImage
-#else
-typealias PlatformColor = NSColor
-typealias PlatformImage = NSImage
-#endif
-
-extension PlatformColor {
-    /// The background of a page: white in light mode.
-    static var pageBackground: PlatformColor {
-        #if canImport(UIKit)
-        .systemBackground
-        #else
-        .textBackgroundColor
-        #endif
-    }
-
-    /// The background of a grouped settings page, which sets its rows apart.
-    static var groupedPageBackground: PlatformColor {
-        #if canImport(UIKit)
-        .systemGroupedBackground
-        #else
-        .windowBackgroundColor
-        #endif
-    }
-}
-
-extension Color {
-    /// A colour that the system picks again when the appearance changes: dark mode, and increased contrast.
-    static func adaptive(_ pick: @escaping @Sendable (_ dark: Bool, _ highContrast: Bool) -> PlatformColor) -> Color {
-        #if canImport(UIKit)
-        Color(uiColor: UIColor { pick($0.userInterfaceStyle == .dark, $0.accessibilityContrast == .high) })
-        #else
-        Color(nsColor: NSColor(name: nil) { appearance in
-            let names: [NSAppearance.Name] = [.aqua, .darkAqua, .accessibilityHighContrastAqua,
-                                              .accessibilityHighContrastDarkAqua]
-            let name = appearance.bestMatch(from: names)
-            return pick(name == .darkAqua || name == .accessibilityHighContrastDarkAqua,
-                        name == .accessibilityHighContrastAqua || name == .accessibilityHighContrastDarkAqua)
-        })
-        #endif
-    }
-
-    init(platformColor: PlatformColor) {
-        #if canImport(UIKit)
-        self.init(uiColor: platformColor)
-        #else
-        self.init(nsColor: platformColor)
-        #endif
-    }
-}
-
-extension Image {
-    init(platformImage: PlatformImage) {
-        #if canImport(UIKit)
-        self.init(uiImage: platformImage)
-        #else
-        self.init(nsImage: platformImage)
-        #endif
-    }
-}
+// The few UIKit and AppKit differences of the views. The colour names are in PlatformColor.swift, which the share
+// extensions compile too.
 
 /// A file or an image that a paste attaches to a message.
 struct PastedAttachment: Equatable {
@@ -75,7 +14,7 @@ struct PastedAttachment: Equatable {
     let filename: String
 
     /// The largest attachment that the Mac accepts.
-    static let limit = 4 * 1024 * 1024
+    static let limit = FileRules.largest
 
     /// The name of a pasted image without a file: "Pasted image 10.42.05.png". A Mac file name has no colon.
     static func imageName(at date: Date = .now, ext: String) -> String { timedName("Pasted image", at: date, ext: ext) }

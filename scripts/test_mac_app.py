@@ -112,6 +112,38 @@ class MacAppTests(unittest.TestCase):
             self.assertEqual(command[:7], ['codesign', '--force', '--options', 'runtime', '--sign', 'ABCDEF', '--timestamp'])
         self.assertEqual(commands[7][:4], ['codesign', '--verify', '--deep', '--strict'])
 
+    def test_the_share_extension_is_signed_with_its_sandbox_before_the_app(self):
+        extension = self.app / 'Contents/PlugIns/CoconutMacShare.appex'
+        extension.mkdir(parents=True)
+        for identity in ('ABCDEF', '-'):
+            with mock.patch.object(mac_app, 'run') as run:
+                mac_app.sign(self.app, identity)
+            commands = [call.args[0] for call in run.call_args_list]
+            self.assertEqual([command[-1] for command in commands][-3:], [extension, self.app, self.app])
+            signed = commands[-3]
+            self.assertEqual(signed[-3:-1], ['--entitlements', mac_app.EXTENSION_ENTITLEMENTS['CoconutMacShare.appex']])
+        with mac_app.EXTENSION_ENTITLEMENTS['CoconutMacShare.appex'].open('rb') as handle:
+            entitlements = plistlib.load(handle)
+        self.assertIs(entitlements['com.apple.security.app-sandbox'], True)
+        # The one folder that the extension shares with the app (ShareFolder in ios/ShareShared/ShareHandoff.swift).
+        self.assertEqual(entitlements['com.apple.security.temporary-exception.files.home-relative-path.read-write'],
+                         ['/Library/Application Support/Coconut/Share/'])
+
+    def test_each_extension_gets_the_version_of_the_app_and_an_unknown_one_stops_the_build(self):
+        built = self.folder / 'built/PlugIns'
+        (built / 'CoconutMacShare.appex/Contents').mkdir(parents=True)
+        with (built / 'CoconutMacShare.appex/Contents/Info.plist').open('wb') as handle:
+            plistlib.dump({'CFBundleIdentifier': 'com.gumroad.coconut.mac.share', 'CFBundleVersion': '1'}, handle)
+        mac_app.add_extensions(built, self.app / 'Contents/PlugIns', '1.2.0', '512')
+        with (self.app / 'Contents/PlugIns/CoconutMacShare.appex/Contents/Info.plist').open('rb') as handle:
+            info = plistlib.load(handle)
+        self.assertEqual((info['CFBundleShortVersionString'], info['CFBundleVersion']), ('1.2.0', '512'))
+        # The extension ID starts with the ID of the app, as macOS requires.
+        self.assertTrue(info['CFBundleIdentifier'].startswith(mac_app.BUNDLE_ID + '.'))
+        (built / 'Other.appex').mkdir()
+        with self.assertRaises(SystemExit):
+            mac_app.add_extensions(built, self.folder / 'again', '1.2.0', '512')
+
     def test_each_helper_is_one_binary_for_both_architectures(self):
         with mock.patch.object(mac_app, 'run') as run:
             mac_app.compile_helper(mac_app.TEAM_HELPER_SOURCES, self.folder / 'team-helper', self.folder)

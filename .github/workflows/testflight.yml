@@ -22,6 +22,8 @@ on:
       - 'ios/project.yml'
       - 'ios/Coconut/**'
       - 'ios/CoconutNotificationService/**'
+      - 'ios/CoconutShare/**'
+      - 'ios/ShareShared/**'
       - 'ios/PushShared/**'
       - 'ios/Tunnel/**'
       - 'ios/Coconut.xcodeproj/project.pbxproj'

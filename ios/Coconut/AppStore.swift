@@ -219,6 +219,18 @@ final class AppStore {
     @ObservationIgnored private var snapshotRequest: (id: UUID, generation: UUID, epoch: UUID, client: APIClient, task: Task<StateSnapshot, Error>)?
 
     var hasPairing: Bool { pairing != nil || savedPairingLocked }
+    /// The relay route of the paired Mac for the share extension of the iPhone, which sends through the relay itself
+    /// (ShareDirectory.Endpoint). It holds no secret. Nil without a relay pairing, and on a Mac, where the app sends
+    /// each share.
+    var shareEndpoint: ShareDirectory.Endpoint? {
+        #if os(macOS)
+        nil
+        #else
+        guard let pairing, pairing.usesTunnel, let relay = pairing.relay, let route = pairing.route,
+              let macKey = pairing.macKey else { return nil }
+        return ShareDirectory.Endpoint(relay: relay, route: route, macKey: macKey)
+        #endif
+    }
     var pairedMacDescription: String {
         guard let pairing else { return savedPairingLocked ? "your Mac" : "no Mac" }
         return pairing.macName ?? "your Mac"

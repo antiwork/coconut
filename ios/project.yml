@@ -31,9 +31,12 @@ targets:
       - package: MarkdownUI
       - target: CoconutNotificationService
         embed: true
+      - target: CoconutShare
+        embed: true
     sources:
       - Coconut
       - PushShared
+      - ShareShared
       - Tunnel
       - ../scripts/push-envelope.swift
     settings:
@@ -96,6 +99,9 @@ targets:
       - package: Sparkle
       - package: CoconutMacKit
         product: CoconutKit
+      # scripts/mac_app.py copies the extension into Coconut.app and signs it with its sandbox.
+      - target: CoconutMacShare
+        embed: true
     sources:
       - path: Coconut
         excludes:
@@ -104,6 +110,7 @@ targets:
           - Info.plist
           - Coconut.entitlements
       - PushShared
+      - ShareShared
       - Tunnel
       - ../scripts/push-envelope.swift
       - ../mac/Sources/CoconutApp
@@ -148,6 +155,92 @@ targets:
         NSExtension:
           NSExtensionPointIdentifier: com.apple.usernotifications.service
           NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).NotificationService
+  # "Coconut" in the share sheet of the iPhone. It sends a share to the paired Mac itself, with the pairing of the app
+  # (ShareShared/ShareSender.swift), so it compiles the tunnel and none of the views of the app.
+  CoconutShare:
+    type: app-extension
+    platform: iOS
+    sources:
+      - CoconutShare
+      - ShareShared
+      - Tunnel/Noise.swift
+      - Tunnel/TunnelFrames.swift
+      - Coconut/TunnelConnection.swift
+      - Coconut/FileFit.swift
+      - Coconut/PlatformColor.swift
+      - Coconut/Theme.swift
+      - PushShared/TestIsolation.swift
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.gumroad.coconut.share
+        PRODUCT_NAME: CoconutShare
+        GENERATE_INFOPLIST_FILE: YES
+        CODE_SIGN_ENTITLEMENTS: CoconutShare/CoconutShare.entitlements
+        TARGETED_DEVICE_FAMILY: "1,2"
+        MARKETING_VERSION: "0.1.0"
+        CURRENT_PROJECT_VERSION: "1"
+        APPLICATION_EXTENSION_API_ONLY: YES
+        SKIP_INSTALL: YES
+    info:
+      path: CoconutShare/Info.plist
+      properties:
+        CFBundleDisplayName: Coconut
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        CoconutPushKeychainGroup: $(AppIdentifierPrefix)com.gumroad.coconut.push
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.share-services
+          NSExtensionPrincipalClass: ShareViewController
+          NSExtensionAttributes:
+            # Text, links, images, PDFs and other files. A message takes at most four files (ShareComposer.fileLimit).
+            NSExtensionActivationRule:
+              NSExtensionActivationSupportsText: true
+              NSExtensionActivationSupportsWebURLWithMaxCount: 4
+              NSExtensionActivationSupportsWebPageWithMaxCount: 1
+              NSExtensionActivationSupportsImageWithMaxCount: 4
+              NSExtensionActivationSupportsFileWithMaxCount: 4
+  # "Coconut" in the share menu of the Mac. It hands a share to Coconut.app, which sends it (ShareShared/ShareHandoff.swift).
+  CoconutMacShare:
+    type: app-extension
+    platform: macOS
+    sources:
+      - CoconutMacShare
+      - path: ShareShared
+        excludes:
+          - ShareSender.swift
+      - Coconut/FileFit.swift
+      - Coconut/PlatformColor.swift
+      - Coconut/Theme.swift
+      - PushShared/TestIsolation.swift
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.gumroad.coconut.mac.share
+        PRODUCT_NAME: CoconutMacShare
+        GENERATE_INFOPLIST_FILE: YES
+        CODE_SIGN_ENTITLEMENTS: CoconutMacShare/CoconutMacShare.entitlements
+        CODE_SIGN_IDENTITY: "-"
+        ENABLE_HARDENED_RUNTIME: NO
+        MARKETING_VERSION: "0.1.0"
+        CURRENT_PROJECT_VERSION: "1"
+        APPLICATION_EXTENSION_API_ONLY: YES
+        SKIP_INSTALL: YES
+    info:
+      path: CoconutMacShare/Info.plist
+      properties:
+        CFBundleDisplayName: Coconut
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.share-services
+          NSExtensionPrincipalClass: ShareViewController
+          NSExtensionAttributes:
+            # Text, links, images, PDFs and other files. A message takes at most four files (ShareComposer.fileLimit).
+            NSExtensionActivationRule:
+              NSExtensionActivationSupportsText: true
+              NSExtensionActivationSupportsWebURLWithMaxCount: 4
+              NSExtensionActivationSupportsWebPageWithMaxCount: 1
+              NSExtensionActivationSupportsImageWithMaxCount: 4
+              NSExtensionActivationSupportsFileWithMaxCount: 4
   CoconutTests:
     type: bundle.unit-test
     platform: iOS

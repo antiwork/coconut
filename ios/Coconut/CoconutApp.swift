@@ -10,6 +10,8 @@ struct CoconutApp: App {
     var body: some Scene {
         WindowGroup {
             CoconutHome()
+                // The share extension lists the chats that the app wrote for it.
+                .modifier(ShareDirectoryPublisher())
                 .environment(store)
                 .tint(.primary)
                 .task { store.start() }

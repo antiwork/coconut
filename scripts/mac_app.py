@@ -7,6 +7,7 @@ The bundle:
   Contents/Helpers/tunnel-sidecar             the relay sidecar (scripts/tunnel-sidecar.swift)
   Contents/Helpers/team-helper                the helper of the team log (scripts/team-helper.swift)
   Contents/Frameworks/Sparkle.framework       the updater, which reads FEED_URL
+  Contents/PlugIns/CoconutMacShare.appex      "Coconut" in the share menu (ios/CoconutMacShare), with its sandbox
   Contents/Library/LaunchAgents/*.plist       the login items (mac/LaunchAgents)
   Contents/Resources/coconut-source.tar.gz    the source package of scripts/remote.py, which `coconut update` installs
   Contents/Resources/package.json             its package ID
@@ -55,6 +56,11 @@ ICON_SOURCE = ROOT / 'ios/Coconut/Assets.xcassets/CoconutAppIcon.appiconset/Coco
 # The app target of ios/project.yml. It compiles the views of the iPhone app with the menu bar code.
 PROJECT = ROOT / 'ios/Coconut.xcodeproj'
 APP_SCHEME = 'CoconutMac'
+# The entitlements of each app extension of the bundle, by its name in Contents/PlugIns. macOS loads an app extension
+# only with a sandbox, so each one is signed with its own entitlements, also in an ad-hoc build.
+EXTENSION_ENTITLEMENTS = {
+    'CoconutMacShare.appex': ROOT / 'ios/CoconutMacShare/CoconutMacShare.entitlements',
+}
 # Xcode keeps its build and the downloaded packages here. The release takes sign_update from the Sparkle package.
 XCODE_BUILD = MAC / '.build/xcode'
 
@@ -154,6 +160,7 @@ def assemble(output: Path, version: str, build: str) -> Path:
         for resource in sorted((built / 'Contents/Resources').iterdir()):
             copy = shutil.copytree if resource.is_dir() else shutil.copy2
             copy(resource, contents / 'Resources' / resource.name)
+        add_extensions(built / 'Contents/PlugIns', contents / 'PlugIns', version, build)
         shutil.copy2(swift_tool(MAC / '.build'), contents / 'Helpers/coconut')
         add_sparkle(built / 'Contents/Frameworks/Sparkle.framework', contents / 'Frameworks/Sparkle.framework')
         compile_helper(SIDECAR_SOURCES, contents / 'Helpers/tunnel-sidecar', scratch)
@@ -173,6 +180,25 @@ def make_icon(output: Path, scratch: Path) -> None:
     iconset = scratch / 'Coconut.iconset'
     run(['xcrun', 'swift', ROOT / 'scripts/mac-icon.swift', ICON_SOURCE, iconset])
     run(['iconutil', '-c', 'icns', iconset, '-o', output])
+
+
+def add_extensions(built: Path, destination: Path, version: str, build: str) -> None:
+    """Copy the app extensions that Xcode built, and give each one the version and the build of the app.
+
+    An extension without entitlements in EXTENSION_ENTITLEMENTS stops the build: macOS would not load it.
+    """
+    names = sorted(path.name for path in built.glob('*.appex'))
+    if names != sorted(EXTENSION_ENTITLEMENTS):
+        raise SystemExit(f'The app has the extensions {names}. mac_app.py signs {sorted(EXTENSION_ENTITLEMENTS)}.')
+    for name in names:
+        shutil.copytree(built / name, destination / name, symlinks=True)
+        path = destination / name / 'Contents/Info.plist'
+        with path.open('rb') as handle:
+            info = plistlib.load(handle)
+        info['CFBundleShortVersionString'] = version
+        info['CFBundleVersion'] = build
+        with path.open('wb') as handle:
+            plistlib.dump(info, handle)
 
 
 def add_sparkle(framework: Path, destination: Path) -> None:
@@ -207,6 +233,9 @@ def sign(app: Path, identity: str) -> None:
     for code in [sparkle / 'Versions/B/Autoupdate', sparkle / 'Versions/B/Updater.app', sparkle,
                  *sorted((app / 'Contents/Helpers').iterdir())]:
         run(['codesign', *options, code])
+    # Each extension keeps its sandbox: without it, macOS does not offer the extension.
+    for extension in sorted((app / 'Contents/PlugIns').glob('*.appex')):
+        run(['codesign', *options, '--entitlements', EXTENSION_ENTITLEMENTS[extension.name], extension])
     run(['codesign', *options, app])
     run(['codesign', '--verify', '--deep', '--strict', app])
 
