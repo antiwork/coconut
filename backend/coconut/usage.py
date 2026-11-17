@@ -2,7 +2,8 @@
 
 Hermes records the turns, the model calls and the tool calls as messages with a time. It records the tokens and the
 cost only as a total of each session, per model. So a day gets the share of a session's tokens and cost that equals its
-share of the model calls of that session. Coconut keeps no copy: each read comes from `state.db`, opened read-only.
+share of the model calls of that session. A turn of a chat (a message of the person up to the next one) gets its share
+in the same way (`chat_turns`). Coconut keeps no copy: each read comes from `state.db`, opened read-only.
 """
 from __future__ import annotations
 
@@ -23,6 +24,8 @@ CACHE_SECONDS = 60
 # example a message that a routine added to a quiet chat.
 WORK_GAP_SECONDS = 30 * 60
 TOKEN_FIELDS = ('input_tokens', 'output_tokens', 'cache_read_tokens', 'cache_write_tokens', 'reasoning_tokens')
+# The turns of a chat that a report lists, the newest last.
+TURNS = 80
 COUNT_FIELDS = ('turns', 'model_calls', 'tool_calls', 'working_seconds')
 
 
@@ -95,6 +98,30 @@ def chat_sessions(db, chat_id):
     return found
 
 
+def session_chats(db):
+    """The chat of each session: its own `chat_id`, or the chat of the session that started it (a subagent or a
+    compression). A session of a cron run or of a terminal has no chat and maps to an empty name."""
+    columns = _columns(db, 'sessions')
+    if 'chat_id' not in columns:
+        return {}
+    parent = 'parent_session_id' if 'parent_session_id' in columns else 'NULL'
+    source = 'source' if 'source' in columns else "''"
+    rows = {row[0]: row[1:] for row in db.execute(f'SELECT id, chat_id, {parent}, {source} FROM sessions')}
+    chats = {}
+    for session_id in rows:
+        current, seen = session_id, set()
+        while current in rows and current not in seen:
+            seen.add(current)
+            chat, up, kind = rows[current]
+            if chat and kind == 'coconut':
+                chats[session_id] = str(chat)
+                break
+            current = up
+        else:
+            chats.setdefault(session_id, '')
+    return chats
+
+
 def read_usage(path, days=DEFAULT_DAYS, now=None, chat_id=None):
     """The usage of one profile for the last `days` days in the time of the Mac, the oldest day first. With `chat_id`,
     only the sessions of that chat count, and the report has the totals of the chat since its start in `total`."""
@@ -103,6 +130,8 @@ def read_usage(path, days=DEFAULT_DAYS, now=None, chat_id=None):
     window = [today - timedelta(days=offset) for offset in range(days - 1, -1, -1)]
     result = {day: _empty_day(day) for day in window}
     models, cost_known, cost_exact = {}, False, True
+    rows_by = {}
+    turns = []
     path = Path(path)
     if not path.is_file() or path.stat().st_size == 0:
         return _report(result, models, False, False)
@@ -114,11 +143,21 @@ def read_usage(path, days=DEFAULT_DAYS, now=None, chat_id=None):
         if chat is not None:
             usage = {key: rows for key, rows in usage.items() if key in chat}
         # The share of each day in the model calls of a session, and the counts of each day.
+        owners = session_chats(db) if chat is None else {}
         calls, session, previous = {}, None, None
+        # The turns of a chat: each message of the person starts one. Its model calls are counted per turn.
+        spans, begun = {}, {}
         for session_id, role, timestamp in db.execute(
                 'SELECT session_id, role, timestamp FROM messages ORDER BY session_id, timestamp, id'):
             if timestamp is None or (chat is not None and session_id not in chat):
                 continue
+            if chat is not None:
+                begun.setdefault(session_id, timestamp)
+                if role == 'user':
+                    spans.setdefault(session_id, []).append(dict(started_at=timestamp, ended_at=timestamp, calls=0))
+                elif spans.get(session_id) and role in ('assistant', 'tool'):
+                    spans[session_id][-1]['ended_at'] = timestamp
+                    spans[session_id][-1]['calls'] += role == 'assistant'
             if session_id != session:
                 session, previous = session_id, None
             day = _day(timestamp)
@@ -153,6 +192,11 @@ def read_usage(path, days=DEFAULT_DAYS, now=None, chat_id=None):
                 for field in TOKEN_FIELDS:
                     entry[field] += row[field] * share
                 entry['cost_usd'] += row['cost_usd'] * share
+                if chat is None:
+                    spent = rows_by.setdefault((owners.get(session_id, ''), row['model'], day.isoformat()),
+                                               dict(cost_usd=0.0, tokens=0.0))
+                    spent['cost_usd'] += row['cost_usd'] * share
+                    spent['tokens'] += sum(row[field] for field in TOKEN_FIELDS if field != 'reasoning_tokens') * share
                 cost_known = cost_known or row['cost_known']
                 cost_exact = cost_exact and row['cost_exact']
                 model = models.setdefault((row['model'], row['provider']), dict(
@@ -163,7 +207,53 @@ def read_usage(path, days=DEFAULT_DAYS, now=None, chat_id=None):
     report = _report(result, models, cost_known, cost_known and cost_exact)
     if chat is not None:
         report['total'] = _total(usage)
+        report['turns'] = _chat_turns(spans, usage, begun)
+    else:
+        report['rows'] = [dict(chat=key[0], model=key[1], day=key[2], cost_usd=round(value['cost_usd'], 4),
+                               tokens=round(value['tokens']))
+                          for key, value in sorted(rows_by.items()) if value['cost_usd'] > 0 or value['tokens'] >= 1]
     return report
+
+
+def _chat_turns(spans, usage, begun):
+    """The turns of a chat with their share of the tokens and the cost of their session: the share of the model
+    calls. The model of a turn is the model that cost the session most. A session without a message of the person (a
+    subagent) counts whole for the turn that was running when it began. The newest TURNS turns, oldest first."""
+    result = []
+
+    def weigh(rows, share):
+        return (sum(row[field] * share for row in rows for field in TOKEN_FIELDS if field != 'reasoning_tokens'),
+                sum(row['cost_usd'] for row in rows) * share)
+
+    for session_id, listed in spans.items():
+        rows = usage.get(session_id) or []
+        calls = sum(span['calls'] for span in listed)
+        if not rows or not calls:
+            continue
+        top = max(rows, key=lambda row: (row['cost_usd'], sum(row[field] for field in TOKEN_FIELDS)))
+        for span in listed:
+            if not span['calls']:
+                continue
+            tokens, cost = weigh(rows, span['calls'] / calls)
+            result.append(dict(
+                started_at=span['started_at'], ended_at=span['ended_at'], model=top['model'], provider=top['provider'],
+                model_calls=span['calls'], tokens=tokens, cost_usd=cost,
+                cost_known=any(row['cost_known'] for row in rows), cost_estimated=not all(row['cost_exact'] for row in rows)))
+    result.sort(key=lambda turn: turn['started_at'])
+    for session_id, rows in usage.items():
+        if session_id in spans or session_id not in begun:
+            continue
+        running = [turn for turn in result if turn['started_at'] <= begun[session_id]]
+        if running:
+            tokens, cost = weigh(rows, 1)
+            running[-1]['tokens'] += tokens
+            running[-1]['cost_usd'] += cost
+            running[-1]['cost_known'] = running[-1]['cost_known'] or any(row['cost_known'] for row in rows)
+            running[-1]['cost_estimated'] = running[-1]['cost_estimated'] or not all(row['cost_exact'] for row in rows)
+    for turn in result:
+        turn.update(started_at=round(turn['started_at'], 3), ended_at=round(turn['ended_at'], 3),
+                    tokens=round(turn['tokens']), cost_usd=round(turn['cost_usd'], 4))
+    return result[-TURNS:]
 
 
 def _total(usage):
@@ -241,4 +331,5 @@ class Usage:
             report['total'] = _total({})
         # A chat without a store, or a store without its sessions, has nothing yet.
         report.setdefault('total', _total({}))
+        report.setdefault('turns', [])
         return dict(report, bot_id=bot_id, today=date.fromtimestamp(current).isoformat())
