@@ -88,17 +88,26 @@ struct TypingDots: View {
     var body: some View {
         TimelineView(.animation(minimumInterval: 1.0 / 30, paused: scenePhase != .active)) { timeline in
             let time = timeline.date.timeIntervalSinceReferenceDate
-            HStack(spacing: dot / 2) {
+            // The three dots sit in a triangle, as the three holes of a coconut: two eyes above, the mouth below.
+            ZStack {
                 ForEach(0..<3) { index in
                     let level = Self.level(index: index, time: time)
                     Circle()
                         .fill(Color.primary.opacity(0.35 + 0.65 * level))
                         .frame(width: dot, height: dot)
                         .scaleEffect(1 + 0.18 * level)
+                        .offset(Self.hole(index, dot: dot))
                 }
             }
+            .frame(width: dot * 2.6, height: dot * 2.3)
         }
         .accessibilityHidden(true)
+    }
+
+    /// The place of a dot around the center: the left eye, the right eye, then the mouth.
+    static func hole(_ index: Int, dot: CGFloat) -> CGSize {
+        [CGSize(width: -dot * 0.8, height: -dot * 0.65), CGSize(width: dot * 0.8, height: -dot * 0.65),
+         CGSize(width: 0, height: dot * 0.65)][index]
     }
 
     // A wave crosses the three dots in 0.6 s, then rests for 0.4 s.
