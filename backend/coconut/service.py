@@ -327,6 +327,8 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
         self.github = GitHubConnection(self.root)
         from .business import GitHubBusiness
         self.business = GitHubBusiness(self.github)
+        from .github_preview import GitHubPreviews
+        self.github_previews = GitHubPreviews(lambda: self.business)
         self.github_requests = threading.Lock()
         try:
             self._recover_workspace_binding()

@@ -369,6 +369,8 @@ class Handler(BaseHTTPRequestHandler):
                 elif url.path == '/v1/business/ledger':
                     from .business_reports import ledger
                     self._json(200, ledger(service.business, parse_qs(url.query).get('path', [None])[0]))
+                elif url.path == '/v1/github/preview':
+                    self._json(200, service.github_previews.preview(parse_qs(url.query).get('url', [''])[0]))
                 elif url.path == '/v1/settings/github':
                     self._json(200, service.github_connection('status'))
                 elif url.path == '/v1/settings/google':
