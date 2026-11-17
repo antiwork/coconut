@@ -485,6 +485,8 @@ extension CoconutHome {
         case "projects": show(.business, [BusinessRoute.projects])
         case "accounting": show(.business, [BusinessRoute.function("accounting")])
         case "support-work": show(.business, [BusinessRoute.function("support")])
+        case "support-conversation": show(.support, [BusinessRoute.supportConversation(id: "sample-0", subject: "Payout timing question")])
+        case "todos": show(.todos)
         case "reports": show(.business, [BusinessRoute.reports])
         case "history": show(.business, [BusinessRoute.reports])
         case "marketing": show(.business, [BusinessRoute.function("marketing")])
