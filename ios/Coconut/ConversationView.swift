@@ -49,6 +49,20 @@ struct ConversationView: View {
     #endif
     @FocusState private var composerFocused: Bool
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.scenePhase) private var scenePhase
+    #if os(macOS)
+    /// False while the window of the chat is in the back: another app, or another window of Coconut, is in front.
+    @Environment(\.appearsActive) private var appearsActive
+    #endif
+    /// True while the person can see the chat: the app is in front, and on a Mac the window of the chat too. A Mac
+    /// scene stays active behind another app, so the Mac asks whether the window appears active.
+    private var seesChat: Bool {
+        #if os(macOS)
+        appearsActive
+        #else
+        scenePhase == .active
+        #endif
+    }
     @Environment(\.toggleBotDetails) private var toggleBotDetails
     @Environment(\.showChatDeck) private var showChatDeck
     @Environment(\.openChat) private var openChat
@@ -387,9 +401,18 @@ struct ConversationView: View {
                     // the task below starts.
                     .onAppear { if unreadMark?.botId != botId, let mark = UnreadMark(bot: bot) { unreadMark = mark } }
                     .onChange(of: botId) { unreadMark = self.bot.flatMap(UnreadMark.init(bot:)) }
-                    // The chat reads each reply that comes while it is open, not only the replies before it opened. Before,
-                    // a chat that stayed open on a Mac counted each new reply as unread until the person left and came back.
-                    .task(id: bot.unreadCount) { if bot.unreadCount > 0 { await store.markRead(bot) } }
+                    // Replies that came while the window was in the back get the line above them when the person comes
+                    // back, as when the chat opens.
+                    .onChange(of: seesChat) { _, seen in
+                        if seen, let mark = self.bot.flatMap(UnreadMark.init(bot:)) { unreadMark = mark }
+                    }
+                    // The chat reads each reply that comes while the person sees it, not only the replies before it
+                    // opened. A reply that comes while the app or the window is in the back stays unread until the
+                    // person comes back, as in Slack. Before, a Mac with the chat open behind another app read each reply
+                    // as it came, so the person never saw it as unread.
+                    .task(id: [bot.unreadCount, seesChat ? 1 : 0]) {
+                        if seesChat, bot.unreadCount > 0 { await store.markRead(bot) }
+                    }
                     // From now on a new message does not push the first row out of the window.
                     .onAppear { window.keep(current.entries.map(\.id), focusId: windowFocus) }
                     .task(id: "\(focusMessageId ?? ""):\(store.connection.rawValue):\(store.hasOlderMessages(botId))") {

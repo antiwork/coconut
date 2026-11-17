@@ -13,6 +13,13 @@ UNREAD = ("json_extract(data,'$.bot_id')=? AND json_extract(data,'$.role')='assi
 MARK = 'last_read_message_id'
 
 
+def is_read(method: str, path: str) -> bool:
+    """True for a read: POST /v1/read (every chat) and POST /v1/bots/<id>/read (one chat)."""
+    parts = path.strip('/').split('/')
+    return method == 'POST' and (parts == ['v1', 'read'] or (len(parts) == 4 and parts[:2] == ['v1', 'bots']
+                                                             and parts[3] == 'read'))
+
+
 def _count(db, bot_id: str, after: int) -> int:
     return db.execute(f'SELECT COUNT(*) FROM messages WHERE {UNREAD} AND rowid>?', (bot_id, after)).fetchone()[0]
 

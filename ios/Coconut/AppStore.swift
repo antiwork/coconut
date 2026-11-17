@@ -895,7 +895,8 @@ final class AppStore {
         }, save: { let _: Acknowledgement? = await self.write("bots/\(bot.id)", method: "DELETE", payload: EmptyRequest(), as: Acknowledgement.self) })
     }
 
-    /// The chats whose read the Mac has not confirmed yet (markRead).
+    /// The chats whose read the Mac has not confirmed yet (markRead, markAllRead). An update shows them read
+    /// (withReadsInFlight).
     @ObservationIgnored private var readsInFlight: Set<String> = []
 
     func markRead(_ bot: Bot) async {
@@ -910,9 +911,25 @@ final class AppStore {
             defer { readsInFlight.remove(bot.id) }
             for wait in [0, 2, 6, 20] {
                 if wait > 0 { try? await Task.sleep(for: .seconds(wait)) }
-                let answer: Acknowledgement? = await write("bots/\(bot.id)/read", payload: EmptyRequest(), as: Acknowledgement.self, quiet: true)
+                // Each try has a new key: a read reads through the newest message when it runs, so it never repeats an
+                // earlier read. An older Mac answers a known key with the saved answer of the first read and reads nothing
+                // (backend unread.is_read), and the key of a read that got no answer came back with the next read.
+                let answer: Acknowledgement? = await write("bots/\(bot.id)/read", payload: EmptyRequest(), as: Acknowledgement.self,
+                                                           quiet: true, idempotencyKey: UUID().uuidString)
                 if answer != nil { return }
             }
+        }
+    }
+
+    /// The bots of an update from the Mac, with each chat whose read is on its way read. The Mac can make an update
+    /// before it reads the chat, and the count of that update came back on the row and the badge for a moment.
+    private func withReadsInFlight(_ bots: [Bot]) -> [Bot] {
+        guard !readsInFlight.isEmpty else { return bots }
+        return bots.map { bot in
+            guard bot.unreadCount > 0, readsInFlight.contains(bot.id) else { return bot }
+            var bot = bot
+            bot.unreadCount = 0
+            return bot
         }
     }
 
@@ -925,13 +942,19 @@ final class AppStore {
             bot.unreadCount = 0
             return bot
         }
+        let unread = Set(bots.filter { $0.unreadCount > 0 }.map(\.id))
         if readBots != bots { bots = readBots }
         if let rooms = team?.rooms {
             let readRooms = rooms.map(\.read)
             if readRooms != rooms { team?.rooms = readRooms }
         }
         guard !isDemo else { return }
-        let _: Acknowledgement? = await write("read", payload: EmptyRequest(), as: Acknowledgement.self)
+        // An update that the Mac made before the read does not bring the counts back. A new key, as for markRead.
+        let added = unread.subtracting(readsInFlight)
+        readsInFlight.formUnion(added)
+        defer { readsInFlight.subtract(added) }
+        let _: Acknowledgement? = await write("read", payload: EmptyRequest(), as: Acknowledgement.self,
+                                              idempotencyKey: UUID().uuidString)
     }
 
     @discardableResult
@@ -3350,7 +3373,7 @@ final class AppStore {
                     try? saveOutgoing()
                 }
             }
-            assign(\.bots, snapshot.bots)
+            assign(\.bots, withReadsInFlight(snapshot.bots))
             assign(\.tasks, snapshot.tasks)
             assign(\.messages, snapshot.messages)
             assign(\.decisions, snapshot.decisions)

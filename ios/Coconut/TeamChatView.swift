@@ -26,6 +26,10 @@ struct TeamChatDestination: View {
 struct TeamChatView: View {
     @Environment(AppStore.self) private var store
     @Environment(\.scenePhase) private var scenePhase
+    #if os(macOS)
+    /// False while the window of the chat is in the back: another app, or another window of Coconut, is in front.
+    @Environment(\.appearsActive) private var appearsActive
+    #endif
     @Environment(\.dismiss) private var dismiss
     let chatKey: TeamChatKey
     /// The draft, and the reply, the page or the edit above the field.
@@ -42,6 +46,15 @@ struct TeamChatView: View {
     @State private var atBottom = true
     @State private var userScrolling = false
     @State private var isVisible = false
+    /// True while the person can see the chat: it is on screen, the app is in front, and on a Mac its window too. A Mac
+    /// scene stays active behind another app, so the Mac asks whether the window appears active.
+    private var seesChat: Bool {
+        #if os(macOS)
+        isVisible && appearsActive
+        #else
+        isVisible && scenePhase == .active
+        #endif
+    }
     @State private var rows = TeamRowsCache()
     /// The rows that the list builds (see TranscriptWindow).
     @State private var window = TranscriptWindow()
@@ -146,7 +159,7 @@ struct TeamChatView: View {
         let listId = TeamAlertFilters.listIdentity(window.isUsed && !shown.isEmpty ? ids[shown.lowerBound] : nil,
                                                    filter: filter)
         // A filter hides messages, so the read position moves only while the chat shows each message.
-        let readKey = [chat.newestFirst ?? 0, atBottom ? 1 : 0, isVisible && scenePhase == .active ? 1 : 0,
+        let readKey = [chat.newestFirst ?? 0, atBottom ? 1 : 0, seesChat ? 1 : 0,
                        filter.isAll ? 1 : 0]
         ScrollViewReader { proxy in
             List {
@@ -272,7 +285,7 @@ struct TeamChatView: View {
             .onChange(of: readKey, initial: true) { _, _ in
                 guard filter.isAll,
                       let first = TeamReadPosition.toPost(newest: chat.newestFirst, posted: store.teamReadMark(chatKey),
-                                                           visible: isVisible && scenePhase == .active,
+                                                           visible: seesChat,
                                                            atBottom: atBottom) else { return }
                 Task { await store.markTeamRead(chatKey, first: first) }
             }

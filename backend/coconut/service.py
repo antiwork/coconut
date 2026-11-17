@@ -1126,6 +1126,12 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
             # A delete or a pin is the same each time, so it needs no saved response.
             document_id = path.rsplit('/', 1)[1]
             return self.delete_document(document_id) if method == 'DELETE' else self.pin_document(document_id, data)
+        if unread.is_read(method, path):
+            # A read reads through the newest message at the time it runs, so it runs each time and keeps no saved
+            # response. A saved one read nothing: an app that lost the answer of a read kept its key, and each later
+            # read of that chat got the old answer back while the chat stayed unread (1,200 of 1,490 reads on one Mac).
+            with self.transaction():
+                return self._write(method, path.strip('/').split('/'), data, device_id, [])
         if method == 'POST' and path in ('/v1/settings/github/start', '/v1/settings/github/disconnect'):
             # A retried request returns the current status, without starting or disconnecting a second login.
             with self.github_requests:
