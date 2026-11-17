@@ -474,6 +474,11 @@ struct ConversationView: View {
                                 .lineLimit(1).truncationMode(.tail)
                                 .frame(maxWidth: nameWidth, alignment: .leading)
                             BotActivityDot(bot: bot)
+                            // A muted chat says so where Slack says it: next to the name of the channel.
+                            if !bot.notifications {
+                                Image(systemName: TeamChatMute.mark).font(.footnote).foregroundStyle(.secondary)
+                                    .accessibilityLabel(TeamChatMute.spoken)
+                            }
                         }
                         .fixedSize(horizontal: true, vertical: false)
                         .padding(.leading, 4).padding(.trailing, BoardStyle.Space.m)
@@ -1161,7 +1166,8 @@ struct ConversationComposer: View {
         let choice = ModelChoice(store: store)
         return ComposerSlash.suggestions(for: text, models: choice.catalog?.models ?? [], efforts: choice.entry?.reasoningEfforts ?? [],
                                          running: task?.isRunning == true && connected,
-                                         canStartChat: !bot.coconut && !bot.archived && connected)
+                                         canStartChat: !bot.coconut && !bot.archived && connected,
+                                         muted: connected ? !bot.notifications : nil)
     }
 
     /// The row of the slash menu that Return runs.
@@ -1204,6 +1210,9 @@ struct ConversationComposer: View {
             // The agent answers with what the person can ask for. Settings have no screens, so the answer lists them.
             text = ""
             Task { _ = await store.send(bot: bot, text: "/help") }
+        case .mute(let muted):
+            text = ""
+            Task { await store.muteBot(bot, muted: muted) }
         case .model(let key):
             text = ""
             if let model = choice.catalog?.models.first(where: { $0.selectionKey == key }) { choice.choose(model) }

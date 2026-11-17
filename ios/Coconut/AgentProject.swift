@@ -283,7 +283,8 @@ struct AgentProjectRow: View {
             VStack(alignment: .leading, spacing: BoardStyle.Space.line) {
                 HStack(spacing: BoardStyle.Space.s) {
                     Text(project.bot.name).font(.body.weight(.semibold)).lineLimit(1)
-                    if project.bot.unreadCount > 0 { UnreadBadge(count: project.bot.unreadCount) }
+                    if project.bot.unreadCount > 0 && project.bot.notifications { UnreadBadge(count: project.bot.unreadCount) }
+                    if !project.bot.notifications { MutedMark() }
                 }
                 Text(Self.line(project)).font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
             }

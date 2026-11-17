@@ -65,8 +65,9 @@ def team_unread(service) -> int:
 
 
 def unread_chats(service) -> int:
-    """The unread messages of the agents and of the teams."""
-    return sum(max(0, bot.get('unread_count', 0)) for bot in shown_bots(service).values()) + team_unread(service)
+    """The unread messages of the agent chats that are not muted, and of the teams."""
+    return sum(max(0, bot.get('unread_count', 0)) for bot in shown_bots(service).values()
+               if bot.get('notifications', True)) + team_unread(service)
 
 
 def halted_agents(service) -> int:

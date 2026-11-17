@@ -26,6 +26,8 @@ enum ComposerExpansion {
 enum ComposerSlash {
     enum Action: Equatable {
         case newChat, compact, stop, help
+        /// Mutes the chat (true) or unmutes it (false), as `/mute` in Slack (BotChatMute).
+        case mute(Bool)
         /// Fills the field with this text and keeps the menu open for the next step.
         case complete(String)
         /// The key of the model (ModelCatalogEntry.selectionKey).
@@ -47,12 +49,15 @@ enum ComposerSlash {
         ("effort", "Change the reasoning effort", "brain"),
         ("compact", "Summarize the chat to free up context", "arrow.down.right.and.arrow.up.left"),
         ("stop", "Stop the running task", "stop.fill"),
+        ("mute", "Stop the notifications of this chat", TeamChatMute.mark),
+        ("unmute", "Get the notifications of this chat again", "bell"),
         ("help", "See what you can ask for", "questionmark.circle"),
     ]
 
-    /// The suggestions for the text of the field. Empty when the text is not a command in the making.
+    /// The suggestions for the text of the field. Empty when the text is not a command in the making. `muted` is
+    /// whether the chat is muted now, so the menu offers the other choice. Nil leaves both out.
     static func suggestions(for text: String, models: [ModelCatalogEntry], efforts: [String], running: Bool,
-                            canStartChat: Bool) -> [Suggestion] {
+                            canStartChat: Bool, muted: Bool? = nil) -> [Suggestion] {
         guard text.hasPrefix("/"), !text.contains(where: \.isNewline) else { return [] }
         let body = String(text.dropFirst())
         guard let space = body.firstIndex(of: " ") else {
@@ -61,12 +66,16 @@ enum ComposerSlash {
                 guard command.name.hasPrefix(head) else { return nil }
                 if command.name == "stop" && !running { return nil }
                 if command.name == "new" && !canStartChat { return nil }
+                if command.name == "mute" && muted != false { return nil }
+                if command.name == "unmute" && muted != true { return nil }
                 let action: Action
                 switch command.name {
                 case "new": action = .newChat
                 case "compact": action = .compact
                 case "stop": action = .stop
                 case "help": action = .help
+                case "mute": action = .mute(true)
+                case "unmute": action = .mute(false)
                 default: action = .complete("/" + command.name + " ")
                 }
                 return Suggestion(id: command.name, title: "/" + command.name, detail: command.detail,

@@ -459,7 +459,10 @@ struct MacSidebar: View {
             // The Coconut chat: where the person changes Coconut. Coconut has no settings window for it.
             if let coconut = store.bots.coconutChat {
                 CoconutChatRow(bot: coconut).tag(MacSelection.bot(coconut.id))
-                    .contextMenu { Button("Show all chats") { showDeck(from: coconut) } }
+                    .contextMenu {
+                        Button("Show all chats") { showDeck(from: coconut) }
+                        Button(BotChatMute.label(coconut)) { Task { await store.muteBot(coconut, muted: coconut.notifications) } }
+                    }
                 chatRows(of: coconut)
             }
             MacSidebarLabel(title: "Home", symbol: "house")
@@ -569,7 +572,8 @@ struct MacSidebar: View {
     }
 
     private func botRow(_ bot: Bot) -> some View {
-        MacSidebarRow(name: bot.archived ? bot.listName : bot.isChat ? bot.chatLabel : bot.name, unread: bot.unreadCount) {
+        MacSidebarRow(name: bot.archived ? bot.listName : bot.isChat ? bot.chatLabel : bot.name, unread: bot.unreadCount,
+                      muted: !bot.notifications) {
             // A project has no face. A further chat shows a bubble under its project, and a dot marks work.
             if bot.isChat && !bot.archived {
                 Image(systemName: "bubble.left").font(.caption).foregroundStyle(.tertiary)
@@ -587,6 +591,7 @@ struct MacSidebar: View {
                     if !bot.isChat {
                         Button(bot.pinned ? "Unstar" : "Star") { Task { await store.pinBot(bot, pinned: !bot.pinned) } }
                     }
+                    Button(BotChatMute.label(bot)) { Task { await store.muteBot(bot, muted: bot.notifications) } }
                 }
                 Button(bot.archived ? "Unarchive" : "Archive") { Task { await store.archiveBot(bot, archived: !bot.archived) } }
                 Divider()

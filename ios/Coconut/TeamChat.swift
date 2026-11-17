@@ -188,6 +188,20 @@ enum TeamChatMute {
     }
 }
 
+/// The choice of this person to mute a chat with an agent, as a channel of Slack and a named chat of a team
+/// (TeamChatMute). A muted chat sends no notification, its unread messages count nowhere, and its row shows the mark.
+/// A card of the chat still notifies, as a mention does in a muted team chat. The Mac keeps the choice as the
+/// `notifications` of the chat, so every device of the person has it. A new chat of a muted project starts muted.
+enum BotChatMute {
+    static func label(_ bot: Bot) -> String { bot.notifications ? TeamChatMute.mute : TeamChatMute.unmute }
+
+    /// The symbol of the action in a menu and a swipe.
+    static func symbol(_ bot: Bot) -> String { bot.notifications ? TeamChatMute.mark : "bell" }
+
+    /// The unread messages that count: none for a muted chat, so it never moves to "Unread" or the badge.
+    static func unread(_ bot: Bot) -> Int { bot.notifications ? bot.unreadCount : 0 }
+}
+
 /// The choice of this person to pin a chat of a team: the Team chat or a named chat (docs/team-log.md, "Starred
 /// chats"). The words and the symbols are those of a pinned agent. A direct chat has no pin.
 enum TeamChatPin {
@@ -1739,10 +1753,10 @@ extension ChatListItem {
         return teamActivity
     }
 
-    /// The unread messages of the chat. A muted team chat counts none, so it never moves to "Unreads".
+    /// The unread messages of the chat. A muted chat counts none, so it never moves to "Unreads".
     var unreadCount: Int {
         switch self {
-        case .bot(let bot): bot.unreadCount
+        case .bot(let bot): BotChatMute.unread(bot)
         case .team(let room): room.shownChatMuted ? 0 : room.unread ?? 0
         case .direct(_, let direct): direct.unread ?? 0
         case .botDirect(_, let direct): direct.unread ?? 0

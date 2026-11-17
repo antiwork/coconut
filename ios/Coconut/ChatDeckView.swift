@@ -357,7 +357,8 @@ struct ChatDeckCard: View {
                 Text(subtitle).font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
             }
             Spacer(minLength: BoardStyle.Space.s)
-            if bot.unreadCount > 0 { UnreadBadge(count: bot.unreadCount) }
+            if !bot.notifications { MutedMark() }
+            if BotChatMute.unread(bot) > 0 { UnreadBadge(count: bot.unreadCount) }
             menu
         }
         .padding(.leading, BoardStyle.Space.l).padding(.trailing, BoardStyle.Space.xs)
@@ -386,6 +387,9 @@ struct ChatDeckCard: View {
                 item(bot.pinned ? "Unstar project" : "Star project", bot.pinned ? "star.slash" : "star") {
                     Task { await store.pinBot(bot, pinned: !bot.pinned) }
                 }
+            }
+            item(BotChatMute.label(bot), BotChatMute.symbol(bot)) {
+                Task { await store.muteBot(bot, muted: bot.notifications) }
             }
             if !bot.coconut {
                 item(bot.isChat ? "Archive chat" : "Archive project", "archivebox") {

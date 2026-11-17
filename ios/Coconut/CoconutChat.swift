@@ -93,16 +93,19 @@ struct CoconutChatArea: ViewModifier {
     }
 }
 
-/// The row of the Coconut chat at the top of the Chats list and of the Mac sidebar.
+/// The row of the Coconut chat at the top of the Chats list and of the Mac sidebar. A muted chat stays quiet and shows
+/// the mark (BotChatMute).
 struct CoconutChatRow: View {
     let bot: Bot
 
     var body: some View {
+        let unread = BotChatMute.unread(bot)
         HStack(spacing: BoardStyle.Space.s) {
-            Text("Coconut").fontWeight(bot.unreadCount > 0 ? .semibold : .regular)
+            Text("Coconut").fontWeight(unread > 0 ? .semibold : .regular)
             Spacer(minLength: 0)
-            if bot.unreadCount > 0 {
-                Text("\(bot.unreadCount)").font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+            if !bot.notifications { MutedMark() }
+            if unread > 0 {
+                Text("\(unread)").font(.caption.monospacedDigit()).foregroundStyle(.secondary)
             }
         }
         .accessibilityElement(children: .combine)

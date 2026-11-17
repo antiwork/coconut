@@ -69,10 +69,12 @@ struct HomeLaunchView: View {
                         .swipeActions(edge: .trailing, allowsFullSwipe: true) {
                             // The Coconut chat stays: it is where the person changes Coconut.
                             if !ChatList.isCoconut(bot) { archiveButton(bot) }
+                            muteButton(bot)
                         }
                         .homeRow()
                 case .team, .direct, .botDirect:
-                    // A team chat has Star and Mute in its menu. The Team screen has the leave action.
+                    // A team chat has Star and Mute in its menu, and a named chat has Mute in its swipe too. The Team
+                    // screen has the leave action.
                     if let chat = item.chat {
                         Button { pushRoute?(TeamChatRoute(chat: chat)) } label: {
                             PeopleRow(item: item, pinMark: item.isPinnedChat)
@@ -83,6 +85,9 @@ struct HomeLaunchView: View {
                         }
                             .buttonStyle(HomePressStyle())
                             .accessibilityIdentifier(Self.identifier(chat))
+                            .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+                                if let mute = TeamChatMute.listAction(item) { teamMuteButton(mute) }
+                            }
                             .homeRow()
                     }
                 }
@@ -150,6 +155,28 @@ struct HomeLaunchView: View {
         }
         .tint(.gray)
         .accessibilityIdentifier("archive-bot-\(bot.id)")
+    }
+
+    /// Mute or Unmute, beside Archive, as "Hide Alerts" in Messages and Mute in Telegram (BotChatMute).
+    private func muteButton(_ bot: Bot) -> some View {
+        Button { Task { await store.muteBot(bot, muted: bot.notifications) } } label: {
+            Label(BotChatMute.label(bot), systemImage: BotChatMute.symbol(bot))
+        }
+        .tint(.indigo)
+        .accessibilityIdentifier("mute-bot-\(bot.id)")
+    }
+
+    /// Mute or Unmute for a named chat of a team: the same choice as its menu (TeamChatMuteMenu).
+    private func teamMuteButton(_ mute: TeamChatMute.ListAction) -> some View {
+        Button {
+            store.error = nil
+            Task { await store.setTeamChatNotifications(mute.room, chat: mute.chat, enabled: mute.enabled) }
+        } label: {
+            Label(mute.label, systemImage: mute.symbol)
+        }
+        .tint(.indigo)
+        .disabled(TeamChatMute.waits(mute.chat, store.teamChatMuteChoices))
+        .accessibilityIdentifier("chat-row-mute-swipe")
     }
 
     private func todoRow(_ item: Artifact) -> some View {
@@ -320,7 +347,8 @@ enum BotRowSubtitle: Equatable {
         case .health(let health): parts.append(health.label)
         case .preview: parts += [bot.status.replacingOccurrences(of: "_", with: " "), preview]
         }
-        if bot.unreadCount > 0 { parts.append(UnreadBadge.spoken(bot.unreadCount)) }
+        if !bot.notifications { parts.append(TeamChatMute.spoken) }
+        if BotChatMute.unread(bot) > 0 { parts.append(UnreadBadge.spoken(bot.unreadCount)) }
         return parts.joined(separator: ", ")
     }
 }
@@ -355,7 +383,8 @@ struct BotContactRow: View {
     var body: some View {
         let subtitle = BotRowSubtitle(needsYou: store.botNeedsYou(bot), phase: phase, health: bot.health)
         // A project has no face: its name and its state are the row.
-        ChatRowLayout(name: title ?? bot.name, unread: bot.unreadCount, date: lastMessageDate, pinned: pinned) {
+        ChatRowLayout(name: title ?? bot.name, unread: BotChatMute.unread(bot), date: lastMessageDate,
+                      muted: !bot.notifications, pinned: pinned) {
             EmptyView()
         } subtitle: {
             Group {

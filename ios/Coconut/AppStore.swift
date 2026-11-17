@@ -880,6 +880,16 @@ final class AppStore {
                        save: { let _: Bot? = await self.write("bots/\(bot.id)", method: "PATCH", payload: ArchiveRequest(archived: archived), as: Bot.self) })
     }
 
+    /// Mutes a chat with an agent, or unmutes it (BotChatMute). The Mac keeps the choice, so every device has it.
+    func muteBot(_ bot: Bot, muted: Bool) async {
+        if isDemo {
+            if let index = bots.firstIndex(where: { $0.id == bot.id }) { bots[index].notifications = !muted }
+            return
+        }
+        optimistically("bot/\(bot.id)", change: { optimisticBot(bot.id, \.notifications, !muted, in: $0) },
+                       save: { let _: Bot? = await self.write("bots/\(bot.id)", method: "PATCH", payload: MuteRequest(notifications: !muted), as: Bot.self) })
+    }
+
     func deleteBot(_ bot: Bot) async {
         if isDemo {
             bots.removeAll { $0.id == bot.id }; tasks.removeAll { $0.botId == bot.id }; messages.removeAll { $0.botId == bot.id }
@@ -3779,6 +3789,7 @@ private struct Acknowledgement: Decodable, Sendable { let ok: Bool }
 private struct BotRequest: Encodable { let name: String; let pinned: Bool? }
 private struct PinRequest: Encodable { let pinned: Bool }
 private struct ArchiveRequest: Encodable { let archived: Bool }
+private struct MuteRequest: Encodable { let notifications: Bool }
 private struct TeamCreateRequest: Encodable { let name: String; let memberName: String }
 private struct TeamJoinBody: Encodable { let link: String; let memberName: String }
 private struct TeamProfileRequest: Encodable { let memberName: String }

@@ -425,7 +425,8 @@ class PushDelivery:
                 return
             bot_id = message['bot_id']
         bot = self.service._get('bots', bot_id)
-        if not bot.get('notifications', True) or bot.get('archived') or bot.get('_deleted'):
+        # A muted chat notifies only its cards: a card asks the person, as a mention does in a muted team chat.
+        if (not bot.get('notifications', True) and kind != 'decision') or bot.get('archived') or bot.get('_deleted'):
             return
         if kind == 'completed' and task.get('_silent_completion'):
             return
@@ -546,8 +547,10 @@ class PushDelivery:
         task = service._get('tasks', item['task_id'])
         bot = service._get('bots', item['bot_id'])
         conversation = service._get('bots', task.get('conversation_bot_id', bot['id']))
-        if (bot.get('_deleted') or bot.get('archived') or not bot.get('notifications', True)
-                or conversation.get('_deleted') or conversation.get('archived') or not conversation.get('notifications', True)
+        # A muted chat still notifies its cards (record).
+        muted = not bot.get('notifications', True) or not conversation.get('notifications', True)
+        if (bot.get('_deleted') or bot.get('archived') or conversation.get('_deleted') or conversation.get('archived')
+                or (muted and not item['decision_id'])
                 or not self.allows(item['device_id'], item['kind'], item['urgent'])):
             return False
         if item['decision_id']:
