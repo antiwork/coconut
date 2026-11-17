@@ -38,7 +38,8 @@ struct HomeLaunchView: View {
         .contentMargins(.bottom, BoardStyle.Space.xl, for: .scrollContent)
         .background(BoardStyle.paper)
         .navigationTitle("To-dos")
-        .refreshable { await store.reconnect() }
+        .task(id: "\(store.connection)/\(store.businessChanges)") { await store.loadBusinessAttention() }
+        .refreshable { await store.reconnect(); await store.loadBusinessAttention() }
     }
 
     private var chatList: some View {

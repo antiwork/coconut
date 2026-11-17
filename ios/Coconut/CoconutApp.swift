@@ -340,6 +340,7 @@ struct CoconutHome: View {
             profilePath = NavigationPath([ProfileRoute.mac])
             selectedTab = .profile
         case .notices(let room): path.wrappedValue.append(NoticeBoardRoute(roomId: room))
+        case .business(let route): path.wrappedValue.append(route)
         }
     }
 

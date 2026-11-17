@@ -34,14 +34,19 @@ struct BusinessHomePresentation {
         let unavailable: Bool
         /// The published count of an informational row, when its source is current.
         var value: String? = nil
+        /// The count of a row that breaches, and its short name in Needs attention on To-dos.
+        var count = 0
+        var label = ""
     }
     var attention: [AttentionRow] {
         [attentionRow("support", source: "support", title: "Support", count: data["support"]["gumroad_past_sla"].number,
-                      suffix: "past SLA", detail: supportDetail, symbol: "lifepreserver", route: .function("support")),
+                      suffix: "past SLA", label: "Support past SLA", detail: supportDetail, symbol: "lifepreserver",
+                      route: .function("support")),
          attentionRow("issues", source: "issues", title: "Product issues", count: data["issues"]["past_sla"].number,
-                      suffix: "past SLA", detail: nil, symbol: "wrench.and.screwdriver", route: .report("support")),
+                      suffix: "past SLA", label: "Product issues past SLA", detail: nil, symbol: "wrench.and.screwdriver",
+                      route: .report("support")),
          attentionRow("high-priority", source: "issues", title: "High priority", count: data["high_priority"]["count"].number,
-                      suffix: "open", detail: highPriorityDetail,
+                      suffix: "open", label: "High-priority issues", detail: highPriorityDetail,
                       symbol: "exclamationmark.circle", route: .report("support"))].compactMap { $0 }
     }
     private var supportDetail: String? {
@@ -62,7 +67,7 @@ struct BusinessHomePresentation {
         let counts = data["prs"]["data"].object.values.compactMap { $0["pullRequests"]["totalCount"].number }
         return counts.isEmpty ? nil : counts.reduce(0, +)
     }
-    private func attentionRow(_ id: String, source: String, title: String, count: Double?, suffix: String,
+    private func attentionRow(_ id: String, source: String, title: String, count: Double?, suffix: String, label: String,
                               detail: String?, symbol: String, route: BusinessRoute) -> AttentionRow? {
         if let notice = sourceNotice(source) {
             return AttentionRow(id: id, title: title + " · " + notice, detail: nil, symbol: symbol, route: route, unavailable: true)
@@ -73,7 +78,8 @@ struct BusinessHomePresentation {
         }
         guard let count, count > 0 else { return nil }
         return AttentionRow(id: id, title: title + " · " + Self.decimal(count) + " " + suffix,
-                            detail: detail, symbol: symbol, route: route, unavailable: false)
+                            detail: detail, symbol: symbol, route: route, unavailable: false,
+                            count: Int(count.rounded(.up)), label: label)
     }
     var informational: [AttentionRow] {
         [("risk", "Risk review", "shield.lefthalf.filled", BusinessRoute.report("risk")),

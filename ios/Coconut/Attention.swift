@@ -16,12 +16,14 @@ enum HomeTarget: Equatable {
     case connection
     /// The notice board of a team, by its room ID.
     case notices(String)
+    /// A place of Finance: the Support function or a report.
+    case business(BusinessRoute)
 }
 
 /// One row of "Needs attention": a rule that breaches now, how many things breach it, and the place to fix it.
 struct AttentionItem: Identifiable, Equatable {
     enum Kind: String, CaseIterable {
-        case waiting, agents, work, stale, notices
+        case waiting, agents, work, stale, notices, business
     }
 
     let kind: Kind
@@ -33,8 +35,10 @@ struct AttentionItem: Identifiable, Equatable {
     let detail: String
     let symbol: String
     let target: HomeTarget
+    /// Names one of several rows of the same kind: the rows of Finance each have their own.
+    var key: String? = nil
 
-    var id: String { kind.rawValue }
+    var id: String { key.map { kind.rawValue + "-" + $0 } ?? kind.rawValue }
 }
 
 /// The rules of "Needs attention" on Home. A rule shows only while something breaches it, so a clear day shows no
@@ -62,20 +66,23 @@ enum AttentionRules {
         var connection: ConnectionState = .connected
         var lastSync: Date? = nil
         var rooms: [TeamRoom] = []
+        /// The overview of Finance, when the app loaded it. Its breaches of Needs attention show here too.
+        var business: BusinessReport? = nil
     }
 
-    /// The rows in a fixed order: the person first, then the agents, their work, the data, and the team.
+    /// The rows in a fixed order: the person first, then the business, the agents, their work, the data, and the team.
     static func items(_ input: Input, now: Date = Date()) -> [AttentionItem] {
-        [waiting(input, now), agents(input), work(input, now), stale(input, now), notices(input, now)].compactMap { $0 }
+        [waiting(input, now)].compactMap { $0 } + business(input, now)
+            + [agents(input), work(input, now), stale(input, now), notices(input, now)].compactMap { $0 }
     }
 
     /// The sum for the pill of the header.
     static func total(_ items: [AttentionItem]) -> Int { items.reduce(0) { $0 + $1.count } }
 
     /// The part of "Needs attention" that the badge of the app icon adds. A late card is a pending card already, and
-    /// stale data is something only the app can see, so neither counts here.
+    /// stale data and the breaches of Finance are something only the app can see, so none of them counts here.
     static func badgeCount(_ items: [AttentionItem]) -> Int {
-        items.filter { $0.kind != .waiting && $0.kind != .stale }.reduce(0) { $0 + $1.count }
+        items.filter { $0.kind != .waiting && $0.kind != .stale && $0.kind != .business }.reduce(0) { $0 + $1.count }
     }
 
     /// The pending cards that are older than `cardWait`, oldest first.
@@ -146,6 +153,18 @@ enum AttentionRules {
                              detail: "Past 4h · oldest \(age)", symbol: "hourglass", target: .cards(oldest.id))
     }
 
+    /// The rows of Needs attention on Finance that breach now. A source that is stale or unavailable shows on Finance
+    /// only: a To-do must be a breach that the current numbers prove.
+    private static func business(_ input: Input, _ now: Date) -> [AttentionItem] {
+        guard let report = input.business else { return [] }
+        return BusinessHomePresentation(report: report, now: now).attention.compactMap { row in
+            guard !row.unavailable, row.count > 0 else { return nil }
+            return AttentionItem(kind: .business, count: row.count, value: "\(row.count)", label: row.label,
+                                 detail: row.detail ?? "Finance", symbol: row.symbol, target: .business(row.route),
+                                 key: row.id)
+        }
+    }
+
     private static func agents(_ input: Input) -> AttentionItem? {
         let halted = haltedAgents(input)
         guard let first = halted.first else { return nil }
@@ -205,7 +224,14 @@ extension AppStore {
     func attentionItems(now: Date = Date()) -> [AttentionItem] {
         AttentionRules.items(AttentionRules.Input(
             decisions: decisions, answering: answeringDecisionIds, bots: bots, artifacts: artifacts, tasks: tasks,
-            connection: connection, lastSync: lastSync, rooms: shownTeamRooms), now: now)
+            connection: connection, lastSync: lastSync, rooms: shownTeamRooms, business: businessReports["overview"]),
+            now: now)
+    }
+
+    /// Loads the overview of Finance, so its breaches show in Needs attention before the person opens Finance. A Mac
+    /// without Finance fails here, and then the rows stay empty.
+    func loadBusinessAttention() async {
+        _ = try? await businessReport("overview")
     }
 }
 
@@ -283,6 +309,6 @@ struct AttentionCard: View {
         .buttonStyle(HomePressStyle())
         .accessibilityElement(children: .combine)
         .accessibilityLabel("\(item.label), \(item.value), \(item.detail)")
-        .accessibilityIdentifier("attention-\(item.kind.rawValue)")
+        .accessibilityIdentifier("attention-\(item.id)")
     }
 }

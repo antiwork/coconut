@@ -243,6 +243,7 @@ struct MacMainWindow: View {
         case .agents: go(.agents)
         case .connection: go(.profile, pushing: [ProfileRoute.mac])
         case .notices(let room): go(.people, pushing: [NoticeBoardRoute(roomId: room)])
+        case .business(let route): go(.business, pushing: [route])
         }
     }
 

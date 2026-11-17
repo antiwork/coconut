@@ -158,7 +158,8 @@ struct HomeView: View {
                 }
             }
         }
-        .refreshable { await store.reconnect() }
+        .task(id: "\(store.connection)/\(store.businessChanges)") { await store.loadBusinessAttention() }
+        .refreshable { await store.reconnect(); await store.loadBusinessAttention() }
     }
 
     /// Two tiles that open the Live page and the Spend page: how many agents work now, and what the agents cost today.
