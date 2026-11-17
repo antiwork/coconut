@@ -20,7 +20,7 @@ import tempfile
 import threading
 import time
 from uuid import NAMESPACE_URL, uuid5
-from . import app_badge
+from . import app_badge, unread
 from .push_relay import RelayTransport, validate_route, notification_alert, group_text, team_alert, direct_alert, notice_alert
 from .team_store import ACTIVE
 from .push_schedule import (LEGACY_SCHEDULE, OUTSIDE, due, holds_urgent, in_window, merge as merge_schedule,
@@ -557,7 +557,10 @@ class PushDelivery:
             decision = service._get('decisions', item['decision_id'])
             return decision['status'] == 'pending' and not decision.get('_hidden', False)
         if item['message_id']:
-            return self.visible_message(service._get('messages', item['message_id']), task)
+            # A reply that the person read on another device, for example in the chat open on the Mac, notifies no
+            # more, as a team message before the read position of its chat.
+            return (self.visible_message(service._get('messages', item['message_id']), task)
+                    and not unread.read_through(service.db, bot, item['message_id']))
         turn = task.get('_native_turn_id') or task.get('updated_at') or task['created_at']
         return task['status'] == item['kind'] and turn == item['turn_id']
 

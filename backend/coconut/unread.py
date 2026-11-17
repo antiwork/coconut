@@ -65,6 +65,12 @@ def recount(db, bot: dict) -> bool:
     return before != (bot['unread_count'], bot[MARK])
 
 
+def read_through(db, bot: dict, message_id: str) -> bool:
+    """True when the person read the chat through this message: its read mark is at the message or after it."""
+    row = db.execute('SELECT rowid FROM messages WHERE id=?', (message_id,)).fetchone()
+    return row is not None and bool(bot.get(MARK)) and _mark_row(db, bot) >= row[0]
+
+
 def mark_read(db, bot: dict, message_id: str | None = None):
     """Read the chat through one message, or through its newest message. A mark never moves back."""
     ensure_mark(db, bot)
