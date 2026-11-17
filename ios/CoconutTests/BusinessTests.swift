@@ -16,7 +16,7 @@ final class BusinessTests: XCTestCase {
         XCTAssertEqual(model.change, 7.3)
         XCTAssertEqual(model.changeLabel, "vs prior 30 days")
         XCTAssertEqual(model.latest, "Nov 15 · $268.4K")
-        XCTAssertEqual(model.weekdayComparison, "+6.5% vs the same weekday")
+        XCTAssertEqual(model.weekdayComparison, "+6.5% vs weekday")
         XCTAssertEqual(model.moneyRows.map(\.value), [12000000, 3200000, 870000])
         XCTAssertEqual(model.moneyRows.map(\.formattedValue), ["$12.0M", "$3.2M", "$870.0K"])
         XCTAssertEqual(model.moneyRows.map(\.months.count), [12, 12, 12])
@@ -80,13 +80,13 @@ final class BusinessTests: XCTestCase {
     func testHomeFreshnessThresholdAndStaleSnapshotRetention() throws {
         var model = try homeFixture()
         model.now = try XCTUnwrap("2026-11-16T12:06:00Z".apiDate)
-        XCTAssertEqual(model.freshness, "Updated 6m ago")
+        XCTAssertEqual(model.freshness, "6m ago")
         XCTAssertFalse(model.freshnessWarning)
         model.now = try XCTUnwrap("2026-11-16T12:46:00Z".apiDate)
         XCTAssertTrue(model.freshnessWarning)
         XCTAssertFalse(model.currentStatusUnknown)
         model.now = try XCTUnwrap("2026-11-16T13:01:00Z".apiDate)
-        XCTAssertEqual(model.freshness, "Updated 61m ago · Stale snapshot")
+        XCTAssertEqual(model.freshness, "61m ago · Stale")
         XCTAssertTrue(model.currentStatusUnknown)
         XCTAssertTrue(model.attention.allSatisfy(\.unavailable))
         XCTAssertEqual(model.sourceNotice("gmv"), "Stale source · current status unknown")
@@ -288,7 +288,7 @@ final class BusinessBentoTests: XCTestCase {
     func testSourceDaysAndMonthsReadAsDates() throws {
         // The snapshot publishes the day of a source as a day, not as a time. It is shown and never makes a source stale.
         let model = try homeFixture { $0["sections"] = ["gmv": ["ok": true, "as_of": "2026-11-15"], "ledger": ["ok": true, "as_of": "soon"]] }
-        XCTAssertEqual(model.asOf("gmv"), "as of Nov 15")
+        XCTAssertEqual(model.asOf("gmv"), "Nov 15")
         XCTAssertNil(model.sourceNotice("gmv"))
         XCTAssertNil(model.asOf("ledger"))
         XCTAssertNil(model.asOf("support"))

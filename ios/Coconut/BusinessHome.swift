@@ -14,7 +14,7 @@ struct BusinessHomePresentation {
     var freshness: String {
         guard let age, age >= -60 else { return "Freshness unknown" }
         let minutes = max(0, Int(age / 60))
-        return "Updated \(minutes)m ago" + (age > 3600 ? " · Stale snapshot" : "")
+        return "\(minutes)m ago" + (age > 3600 ? " · Stale" : "")
     }
 
     func sourceNotice(_ key: String) -> String? {
@@ -114,7 +114,7 @@ struct BusinessHomePresentation {
     func asOf(_ key: String) -> String? {
         let text = data["sections"][key]["as_of"].text
         guard text.count == 10, ReportPoint(date: text, value: 0, series: "").day != .distantPast else { return nil }
-        return "as of " + Self.day(text)
+        return Self.day(text)
     }
     var latest: String? {
         guard sourceNotice("gmv") == nil, let value = data["gmv"]["last_day_gmv"].number,
@@ -123,7 +123,7 @@ struct BusinessHomePresentation {
     }
     var weekdayComparison: String? {
         guard sourceNotice("gmv") == nil else { return nil }
-        return data["gmv"]["same_weekday_pct"].number.map { Self.percent($0, signed: true) + " vs the same weekday" }
+        return data["gmv"]["same_weekday_pct"].number.map { Self.percent($0, signed: true) + " vs weekday" }
     }
     func selectedPoint(at position: Double?) -> Point? {
         guard let position else { return nil }
@@ -187,11 +187,11 @@ struct BusinessHomeContent: View {
     var body: some View {
         VStack(alignment: .leading, spacing: BoardStyle.Space.l) {
             VStack(alignment: .leading, spacing: BoardStyle.Space.xs) {
-                Label(model.freshness, systemImage: "clock")
+                Text(model.freshness)
                     .foregroundStyle(model.freshnessWarning ? AnyShapeStyle(BoardStyle.attention) : AnyShapeStyle(.secondary))
                     .accessibilityIdentifier("business-home-freshness")
                 if model.currentStatusUnknown {
-                    Text("Current status unknown. Historical values below are the last published snapshot.")
+                    Text("Unknown")
                         .foregroundStyle(.secondary).accessibilityIdentifier("business-home-stale")
                 }
             }.font(.caption)
@@ -207,9 +207,9 @@ struct BusinessHomeContent: View {
                     }
                 }
                 ForEach(model.informational) { row in infoTile(row).bento(3, 1, compact: (1, 1)) }
-                BentoStat(title: "Run rate", symbol: "calendar", value: reportNumber(model.runRate, money: true), note: "GMV, annualized", size: .medium)
+                BentoStat(title: "Run rate", symbol: "calendar", value: reportNumber(model.runRate, money: true), size: .medium)
                     .accessibilityIdentifier("business-home-run-rate").bento(3, 1, compact: (1, 1))
-                BentoStat(title: "Daily average", symbol: "sum", value: reportNumber(model.dailyAverage, money: true), note: "GMV, trailing", size: .medium)
+                BentoStat(title: "Daily average", symbol: "sum", value: reportNumber(model.dailyAverage, money: true), size: .medium)
                     .accessibilityIdentifier("business-home-daily-average").bento(3, 1, compact: (1, 1))
                 ForEach(BusinessFunction.builtIns) { function in
                     BentoLink(route: .function(function.key)) {
@@ -242,7 +242,6 @@ struct BusinessHomeContent: View {
                         Image(systemName: "checkmark.circle.fill").font(.system(size: 30)).foregroundStyle(BoardStyle.positive)
                             .accessibilityHidden(true)
                         Text("All clear").font(.system(.title2, design: .rounded, weight: .semibold))
-                        Text("No breaches, nothing high priority.").font(.caption).foregroundStyle(.secondary)
                     }
                     .padding(.vertical, BoardStyle.Space.s)
                     .accessibilityElement(children: .combine).accessibilityIdentifier("business-home-all-clear")
@@ -258,7 +257,6 @@ struct BusinessHomeContent: View {
     private func attentionLink(_ row: BusinessHomePresentation.AttentionRow) -> some View {
         NavigationLink(value: row.route) {
             HStack(alignment: .top, spacing: BoardStyle.Space.m) {
-                BentoSymbol(name: row.symbol, tint: row.unavailable ? .secondary : BoardStyle.attention)
                 VStack(alignment: .leading, spacing: BoardStyle.Space.line) {
                     Text(row.title).font(.subheadline.weight(.semibold)).fixedSize(horizontal: false, vertical: true)
                     if let detail = row.detail {
@@ -302,8 +300,8 @@ struct BusinessHomeContent: View {
                     }
                     volumeChart
                     ViewThatFits(in: .horizontal) {
-                        HStack(spacing: BoardStyle.Space.l) { legend; Spacer(minLength: 0); reading }
-                        VStack(alignment: .leading, spacing: BoardStyle.Space.xs) { reading; legend }
+                        HStack(spacing: BoardStyle.Space.l) { Spacer(minLength: 0); reading }
+                        VStack(alignment: .leading, spacing: BoardStyle.Space.xs) { reading }
                     }
                 }
             }

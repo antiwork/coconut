@@ -181,7 +181,6 @@ struct BentoLabel: View {
 
     var body: some View {
         HStack(spacing: 5) {
-            if let symbol { Image(systemName: symbol).foregroundStyle(tint).accessibilityHidden(true) }
             Text(title).foregroundStyle(.secondary).lineLimit(1)
         }
         .font(.caption.weight(.semibold))
@@ -357,7 +356,7 @@ struct BentoPlace: View {
         BentoTile {
             VStack(alignment: .leading, spacing: 0) {
                 HStack(alignment: .top) {
-                    BentoSymbol(name: symbol, tint: tint)
+
                     Spacer(minLength: 0)
                     BentoChevron()
                 }

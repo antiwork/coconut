@@ -15,8 +15,8 @@ final class BusinessDashboardSnapshotTests: XCTestCase {
     func testFullHomeRendersPublishedValuesAtPhoneAndDesktopMeasures() throws {
         for width in [390.0, 1040.0] {
             let text = try renderHome(try homeFixture(), width: width, name: "home-full")
-            for expected in ["Attention", "GMV", "$7.2M", "7.3%", "vs prior 30 days", "$268.4K", "6.5%", "same weekday",
-                             "Revenue", "$12.0M", "EBITDA", "$3.2M", "26.7%", "$870.0K", "$1.93M", "non-cash write-off",
+            for expected in ["Attention", "GMV", "$7.2M", "7.3%", "vs prior 30 days", "$268.4K", "6.5%", "vs weekday",
+                             "Revenue", "$12.0M", "EBITDA", "$3.2M", "26.7%", "$870.0K", "$1.93M",
                              "Risk review", "Pull requests", "Run rate", "$84.6M", "Daily average", "$231.7K",
                              "Accounting", "Marketing", "Support", "Projects", "Oct 2026"] {
                 XCTAssertTrue(text.contains(expected), "Missing rendered text: \(expected), width \(width)\n\(text)")
@@ -29,7 +29,7 @@ final class BusinessDashboardSnapshotTests: XCTestCase {
         XCTAssertTrue(text.contains("GMV"))
         XCTAssertTrue(text.contains("Revenue"))
         XCTAssertTrue(text.contains("Not published"))
-        for absent in ["vs prior 30 days", "margin", "write-off", "same weekday", "$0"] {
+        for absent in ["vs prior 30 days", "margin", "write-off", "vs weekday", "$0"] {
             XCTAssertFalse(text.contains(absent), "Unexpected rendered text: \(absent)\n\(text)")
         }
     }
@@ -39,7 +39,7 @@ final class BusinessDashboardSnapshotTests: XCTestCase {
         let text = try renderHome(model, width: 390, name: "home-gmv-failed")
         XCTAssertTrue(text.contains("Unavailable"))
         XCTAssertTrue(text.contains("Revenue"))
-        for absent in ["Current period", "Prior period", "$268.4K", "7.3%", "same weekday", "$7.2M", "$84.6M"] {
+        for absent in ["Current period", "Prior period", "$268.4K", "7.3%", "vs weekday", "$7.2M", "$84.6M"] {
             XCTAssertFalse(text.contains(absent), "Unexpected chart content: \(absent)\n\(text)")
         }
         XCTAssertTrue(model.volume.isEmpty)
