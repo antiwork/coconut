@@ -52,7 +52,7 @@ name = "BUDGETS"
 class_name = "BudgetAccount"
 
 [[migrations]]
-tag = "v4"
+tag = "v5"
 new_sqlite_classes = ["BudgetAccount"]
 
 [[ratelimits]]
