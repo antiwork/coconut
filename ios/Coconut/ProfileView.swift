@@ -122,7 +122,9 @@ struct ProfileView: View {
 
     private var parallelWorkSummary: String {
         guard let capacity = store.workCapacity else { return "Automatic" }
-        return capacity.limit == nil ? "Automatic · up to \(capacity.effectiveLimit)" : "Up to \(capacity.effectiveLimit)"
+        let total = capacity.limit == nil ? "Automatic · up to \(capacity.effectiveLimit)" : "Up to \(capacity.effectiveLimit)"
+        guard let agent = store.agentLimit else { return total }
+        return total + " · \(agent.effectiveLimit) per agent"
     }
 
     private var modelSummary: String {

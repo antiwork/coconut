@@ -343,5 +343,9 @@
         "description": "Hermes asks before flagged actions."
       }
     ]
+  },
+  "queues": {
+    "00000000-0000-4000-8000-000000000001": {"running": 1, "waiting": 2, "needs_you": 1, "done_today": 3},
+    "00000000-0000-4000-8000-000000000002": {"running": 1, "waiting": 0, "needs_you": 0, "done_today": 5}
   }
 }

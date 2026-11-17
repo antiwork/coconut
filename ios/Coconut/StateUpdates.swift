@@ -15,6 +15,8 @@ struct StateUpdates: Decodable, Sendable {
     var removedDecisions: [String]?
     var removedArtifacts: [String]?
     var workCapacity: ParallelWorkSettings?
+    var agentLimit: ParallelWorkSettings?
+    var queues: [String: AgentQueue]?
     var settingsChanged: Bool?
     /// A document or a team page changed. The list of the Library is not part of the state.
     var documentsChanged: Bool?
@@ -64,6 +66,8 @@ struct StateUpdates: Decodable, Sendable {
             if let artifacts { result.artifacts = artifacts }
         }
         if let workCapacity { result.workCapacity = workCapacity }
+        if let agentLimit { result.agentLimit = agentLimit }
+        if let queues { result.queues = queues }
         if let confirmedRequestIds { result.confirmedRequestIds = confirmedRequestIds }
         result.cursor = cursor
         result.serverTime = serverTime
