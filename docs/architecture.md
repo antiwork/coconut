@@ -61,6 +61,19 @@ publisher's Helper, mail and reporting integrations. Reading their GitHub snapsh
 
 ## Native integration
 
+Local edits update the interface before their network requests finish. `OptimisticUpdates` keeps confirmed values
+under pending edits, reapplies the latest choice over background snapshots, and restores the newest confirmed value
+after a failed save. Writes of native settings and writes within one team run in order. A failed save uses the shared
+error banner. Pairing changes discard pending projections and private reading caches.
+
+Pins, archives, settings, routine edits, Library actions and business issue states use this path. Messages and decision
+answers retain their existing durable outboxes. Opening a previously read Library page or report draws its cached
+content while revalidating it. New execution waits for pending model and access edits to finish; a failed prerequisite
+leaves the message or task unsent. Each local intent gets a distinct receipt key, including a return to an earlier value.
+Saves return after their receipt; background refreshes coalesce instead of delaying
+the control that initiated the save. Creating remote identities, authentication, uploads and first reads show their
+actual progress until the service returns the required data.
+
 Coconut installs no files into the Hermes source checkout.
 Coconut ships its `coconut` skill in `skills/` of the install folder. Hermes loads it through `skills.external_dirs`: setup adds that folder to the person's Hermes profiles, which are also the agents, and a profile that Coconut creates gets it at creation. The person's other Hermes surfaces, such as the Telegram gateway, then know how to update, pair, and repair Coconut. See [the coconut skill](install-and-update.md#the-coconut-skill-for-hermes).
 The gateway of the person's Hermes runs each turn with the agent's profile: its tools, context, memory and skills.
@@ -196,6 +209,7 @@ A Mac that runs Coconut for a team only has no person, and its agents answer the
   - the fields `trusted_inbound` and `display_overrides` of the registration (`PlatformEntry`, `team.REGISTRATION_FIELDS`). Without `trusted_inbound`, Hermes refuses each member as an unknown user ("Unauthorized user") and ends the turn with no reply. Without `display_overrides`, Hermes sends its tool progress into the chat as messages of the agent (the tier `high` and the global defaults show it).
   - The other options of the registration can go. Without `display_tier`, the overrides go over the global defaults, which give the same display. Without `platform_hint`, the rules of the chat still come with each turn (`channel_prompt`). Without `max_message_length`, Hermes does not split a reply. Without `emoji`, only the label in a list of Hermes changes.
   - Coconut supports Hermes 0.22.4 or later (`backend/coconut/hermes_versions.json`), and each of these versions has all of this.
+- A send outside a turn can be an alert with a type and a level: a script names it in `alert` of its send to `POST /v1/gateway/messages`, and a cron job names it at the end of the chat ID of its target, which Hermes gives to the adapter and to `send_standalone` as the job has it. The service reads both (`backend/coconut/team_alerts.py`), so the plugin does not change. See [Alerts](team-log.md#alerts).
 - An approval and a clarify question go to the service as questions. The service denies each approval and puts a clarify question into the chat (`team_turns.Reply`). The adapter opens no turn for a run that Hermes starts by itself: such a send goes to `POST /v1/gateway/messages`. It compresses no session and keeps no photo file: Hermes sends its notice for a file.
 - A production agent runs in that gateway. Each entry point of the adapter catches its own faults, so a fault of Coconut never stops the gateway or its other channels. A Hermes without a field of the message event or a method that the adapter needs (`team.missing`), or a registration that raises, gives one log line, and the gateway runs without the Coconut channel.
 - A Hermes that lacks only a field of the registration (`team.unregistered`) or the middleware of the guard (`tool_execution`) gets the channel in a form that takes no message. Without the guard, a turn of each chat can read each direct chat that ran before, so the Team chat and the named chats stop too, not only the direct chats. At the start of the gateway, the plugin writes one log line: "Coconut: the team chat takes no message, because this Hermes lacks <names>. Update Hermes." The adapter polls, and each poll names the fields (`lacking`). The bridge keeps the text while the polls of that home name it, takes only a short list of names, and gives that adapter no turn. The service answers each trigger at once with a notice (`team_turns.OUTDATED`), and `coconut status` says that this Hermes is too old for the team chat. The adapter also gives no turn to Hermes when one reaches it.

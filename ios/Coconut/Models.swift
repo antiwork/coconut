@@ -28,6 +28,8 @@ struct Bot: Codable, Identifiable, Equatable, Sendable {
     /// True for the Coconut chat: the agent of the default Hermes profile, where the person changes Coconut. It stays
     /// at the top of the lists and is never archived.
     var coconut: Bool = false
+    /// The artifact ID of the icon that the image backend made for the agent. Nil shows the fruit face.
+    var avatarImage: String? = nil
 }
 
 /// A bot that cannot run: its provider limit or error, and the source items that wait for it.
@@ -93,7 +95,7 @@ struct BotPatch: Encodable {
 extension Bot {
     enum CodingKeys: String, CodingKey {
         case id, sessionId, name, role, avatar, color, instructions, status
-        case lastMessage, unreadCount, archived, createdAt, memory, pinned, preferences, modelOverride, effectiveModel, modelError, notifications, approvalOverride, effectiveApproval, workerLimit, health, coconut
+        case lastMessage, unreadCount, archived, createdAt, memory, pinned, preferences, modelOverride, effectiveModel, modelError, notifications, approvalOverride, effectiveApproval, workerLimit, health, coconut, avatarImage
     }
 
     init(from decoder: Decoder) throws {
@@ -122,6 +124,7 @@ extension Bot {
         modelError = try values.decodeIfPresent(String.self, forKey: .modelError)
         health = try values.decodeIfPresent(BotHealth.self, forKey: .health)
         coconut = try values.decodeIfPresent(Bool.self, forKey: .coconut) ?? false
+        avatarImage = try values.decodeIfPresent(String.self, forKey: .avatarImage)
     }
 }
 

@@ -3002,6 +3002,7 @@ final class LibraryDocumentTests: XCTestCase {
             try await waitUntil { server.heldLists == 1 }
             XCTAssertEqual(server.heldLists, 1)
             await store.pinDocument(page, pinned: true)
+            await store.optimisticUpdates.wait()
             XCTAssertEqual(store.documents?.first?.isPinned, true)
             server.releaseLists()
             _ = await refresh.value
@@ -3012,6 +3013,7 @@ final class LibraryDocumentTests: XCTestCase {
             try await waitUntil { server.heldLists == 1 }
             XCTAssertEqual(server.heldLists, 1)
             let deleted = await store.deleteDocument(page)
+            await store.optimisticUpdates.wait()
             XCTAssertTrue(deleted)
             server.releaseLists()
             _ = await second.value

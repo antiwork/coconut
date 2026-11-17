@@ -31,7 +31,7 @@ final class NotificationOpenPerformanceTests: XCTestCase {
         notification.tap()
         XCTAssertTrue(app.wait(for: .runningForeground, timeout: 5))
         XCTAssertTrue(app.staticTexts["Review the deferred notification?"].waitForExistence(timeout: 1))
-        XCTAssertTrue(app.tabBars.buttons["Inbox"].isSelected)
+        XCTAssertTrue(app.tabBars.buttons["Home"].isSelected)
         let choice = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "decision-option-")).firstMatch
         XCTAssertTrue(choice.exists)
         XCTAssertFalse(choice.isEnabled, "A cached notification card must wait for current state before accepting a choice.")

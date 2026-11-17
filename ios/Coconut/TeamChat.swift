@@ -510,6 +510,9 @@ struct TeamMessage: Decodable, Identifiable, Equatable, Sendable {
     var files: [TeamFile] = []
     /// True when the Mac sent the key `files`, also as an empty list. A Mac without files sends no key.
     var filesKey = false
+    /// The alert of a message of an agent: its type and its level (docs/team-log.md, "Alerts"). Nil for a plain
+    /// message, and from a Mac without alerts.
+    var alert: TeamAlert? = nil
 
     /// A message of this Mac's person. A bot of this Mac writes as itself, not as the person.
     var isOwn: Bool { thisMac == true && bot == nil }
@@ -571,11 +574,14 @@ extension TeamMessage {
         filesKey = container.contains(.files)
         files = ((try? container.decodeIfPresent([Lossy<TeamFile>].self, forKey: .files)) ?? nil)?
             .compactMap(\.value) ?? []
+        // An alert of a wrong shape, or of a level that this app does not know, decodes to nil: a plain message.
+        let decodedAlert: TeamAlert? = try? container.decodeIfPresent(TeamAlert.self, forKey: .alert)
+        alert = bot == nil ? nil : decodedAlert
     }
 
     private enum CodingKeys: String, CodingKey {
         case id, first, member, memberName, thisMac, bot, botName, text, replyTo, reply, mentions, createdAt, editedAt
-        case page, reactions, preview, files
+        case page, reactions, preview, files, alert
     }
 }
 
@@ -1013,19 +1019,25 @@ enum DocumentChatTarget: Equatable {
 struct TeamMessagePage: Decodable, Sendable {
     var messages: [TeamMessage]
     var before: Int?
+    /// The alerts of the whole chat, for its filter. Only the newest page has them, and only from a Mac with alerts.
+    var alerts: TeamAlertSummary?
 
-    init(messages: [TeamMessage], before: Int?) {
+    init(messages: [TeamMessage], before: Int?, alerts: TeamAlertSummary? = nil) {
         self.messages = messages
         self.before = before
+        self.alerts = alerts
     }
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         messages = (try container.decodeIfPresent([Lossy<TeamMessage>].self, forKey: .messages) ?? []).compactMap(\.value)
         before = try? container.decodeIfPresent(Int.self, forKey: .before)
+        // Counts of a wrong shape decode to nil, and the chat then shows no filter.
+        let decoded: TeamAlertSummary? = try? container.decodeIfPresent(TeamAlertSummary.self, forKey: .alerts)
+        alerts = decoded
     }
 
-    private enum CodingKeys: String, CodingKey { case messages, before }
+    private enum CodingKeys: String, CodingKey { case messages, before, alerts }
 }
 
 /// A value that decodes to nil when its JSON does not fit, so one bad item does not fail the list.
@@ -1135,6 +1147,10 @@ struct TeamChat: Equatable, Sendable {
                                createdAt: message.createdAt)
     }
 
+    /// The alerts of the whole chat, as the newest page of the Mac counted them. Nil from a Mac without alerts, and
+    /// then the chat shows no filter (TeamAlertFilters.shows).
+    var alerts: TeamAlertSummary?
+
     /// The lower end of the range of the newest page: the `before` of its answer. Nil when the newest page reaches the
     /// start of the chat. The older pages are the messages under it.
     var newestFloor: Int?
@@ -1168,6 +1184,8 @@ struct TeamChat: Equatable, Sendable {
             }
             // Else the chat keeps its older pages, and their `before`.
             newestFloor = lower
+            // The newest page counts the alerts of the whole chat.
+            alerts = page.alerts
         } else {
             before = lower
         }
@@ -1724,6 +1742,17 @@ enum AgentTodos {
             }
     }
 
+    /// The word for the state of a To-do. "waiting" is the agent that waits, not a card for the person.
+    static func label(_ status: String) -> String {
+        switch status {
+        case "working": "Working"
+        case "blocked": "Blocked"
+        case "waiting": "Waiting"
+        case "ready": "Ready for review"
+        default: StatusLabel.label(for: status)
+        }
+    }
+
     /// The symbol of a To-do: a dot that fills while the agent works on it.
     static func symbol(_ status: String) -> String {
         switch status {
@@ -1737,6 +1766,13 @@ enum AgentTodos {
 }
 
 extension ChatListItem {
+    /// The newest activity of the chat. `latest` is the date of the newest message of each bot
+    /// (ChatList.lastMessageDates). Home sorts its unread chats by it.
+    func activity(latest: [String: Date]) -> Date {
+        if case .bot(let bot) = self { return latest[bot.id] ?? bot.createdAt.apiDate ?? .distantPast }
+        return teamActivity
+    }
+
     /// The unread messages of the chat. A muted team chat counts none, so it never moves to "Unreads".
     var unreadCount: Int {
         switch self {

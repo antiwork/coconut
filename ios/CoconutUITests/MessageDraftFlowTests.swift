@@ -12,9 +12,9 @@ final class MessageDraftFlowTests: XCTestCase {
         let app = XCUIApplication()
         app.launchEnvironment = ["COCONUT_SERVER_URL": url, "COCONUT_PAIR_CODE": code]
         app.launch()
-        let inbox = app.tabBars.buttons["Inbox"]
+        let inbox = app.tabBars.buttons["Home"]
         XCTAssertTrue(inbox.waitForExistence(timeout: 20))
-        inbox.tap()
+        app.openCards()
         app.buttons["2 decisions left. Show all"].tap()
         app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "Move Friday’s review?")).firstMatch.tap()
         XCTAssertTrue(app.staticTexts["Move Friday’s review?"].waitForExistence(timeout: 10))
@@ -63,8 +63,8 @@ final class MessageDraftFlowTests: XCTestCase {
         app.launchEnvironment = ["COCONUT_SERVER_URL": url, "COCONUT_PAIR_CODE": code]
         app.launchArguments = ["-AppleInterfaceStyle", "Dark"]
         app.launch()
-        XCTAssertTrue(app.tabBars.buttons["Inbox"].waitForExistence(timeout: 20))
-        app.tabBars.buttons["Inbox"].tap()
+        XCTAssertTrue(app.tabBars.buttons["Home"].waitForExistence(timeout: 20))
+        app.openCards()
         XCTAssertTrue(app.buttons["2 decisions left. Show all"].waitForExistence(timeout: 10))
         app.buttons["2 decisions left. Show all"].tap()
         app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "Move Friday’s review?")).firstMatch.tap()

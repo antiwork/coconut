@@ -710,7 +710,7 @@ class TeamAdapterTests(TeamTurnMacs, unittest.TestCase):
         file = Path(self.temp.name) / 'report.pdf'
         content = b'%PDF-1.4\n' + b'The scheduled report.\n' * 8000
         file.write_bytes(content)
-        chat = chat_id(self.room, self.bot['id'], named)
+        chat = chat_id(self.room, self.bot['id'], named) + ':alert:deploy:info'
         result = self.complete(self.adapter.send_document(chat, str(file), caption='The report is ready.'))
         self.assertTrue(result.success, result.error)
         self.sync()
@@ -718,6 +718,7 @@ class TeamAdapterTests(TeamTurnMacs, unittest.TestCase):
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]['text'], 'The report is ready.')
         self.assertEqual(rows[0]['bot_name'], 'Reporter')
+        self.assertEqual(rows[0]['alert'], {'type': 'deploy', 'level': 'info'})
         attachment, = rows[0]['files']
         self.assertEqual((attachment['name'], attachment['type'], attachment['size']),
                          ('report.pdf', 'application/pdf', len(content)))
@@ -798,6 +799,23 @@ class TeamAdapterTests(TeamTurnMacs, unittest.TestCase):
         self.assertIn(('Reporter', 'The weekly report is ready.', None), self.chat())
         self.assertIn(chat, self.adapter._turns)
         release.set()
+
+    def test_a_cron_delivery_to_a_target_with_an_alert_is_an_alert_of_that_type(self):
+        async def runner(event):
+            return None
+        self.connect(runner)
+        chat = chat_id(self.room, self.bot['id'])
+        with self.assertLogs('hermes_plugins.coconut', logging.INFO):
+            # Hermes gives the chat ID of the job to the adapter as the job has it, with the ID of the job.
+            typed = self.complete(self.adapter.send(chat + ':alert:deploy:critical', 'The deploy failed.',
+                                                    metadata={'job_id': 'job1'}))
+            plain = self.complete(self.adapter.send(chat, 'The weekly report is ready.', metadata={'job_id': 'job2'}))
+        self.assertTrue(typed.success and plain.success)
+        self.sync()
+        rows = self.call('GET', f'/v1/team/rooms/{self.room}/messages', service=self.first)['messages']
+        self.assertEqual([(row['text'], row['alert']) for row in reversed(rows)],
+                         [('The deploy failed.', {'type': 'deploy', 'level': 'critical'}),
+                          ('The weekly report is ready.', None)])
 
     def test_a_cron_send_with_only_some_parts_in_the_log_is_a_partial_delivery(self):
         from coconut.team_turns import MAX_TEXT
@@ -938,6 +956,23 @@ class StandaloneSenderTests(DirectTurnMacs, unittest.TestCase):
         token = json.loads(Path(self.only.gateway_bridge.address_file).read_text())['token']
         for word in ('ready', 'Ada', 'Reporter', 'Example Team', 'Design', token):
             self.assertNotIn(word, '\n'.join(logs.output))
+
+    def test_a_delivery_to_a_target_with_an_alert_is_an_alert_and_a_wrong_one_is_an_error(self):
+        design = self.named('Alerts')
+        with self.assertLogs('hermes_plugins.coconut', logging.DEBUG):
+            logging.getLogger('hermes_plugins.coconut').debug('start')
+            self.sent(self.deliver(chat_id(self.room, self.bot['id'], design) + ':alert:risk', 'Exposure is high.'))
+            self.sent(self.deliver(chat_id(self.room, self.bot['id']) + ':alert:infra:info', 'The disk is at 70%.'))
+            refused = self.deliver(chat_id(self.room, self.bot['id']) + ':alert:not a type', 'Lost?')
+        self.assertEqual(set(refused), {'error'})
+        self.assertIn('HTTP 400', refused['error'])
+        self.sync()
+        alerts = self.call('GET', f'/v1/team/rooms/{self.room}/messages', {'chat': design}, service=self.first)
+        self.assertEqual([(row['text'], row['alert']) for row in alerts['messages']],
+                         [('Exposure is high.', {'type': 'risk', 'level': 'notice'})])
+        team_chat = self.call('GET', f'/v1/team/rooms/{self.room}/messages', service=self.first)['messages']
+        self.assertEqual([(row['text'], row['alert']) for row in team_chat],
+                         [('The disk is at 70%.', {'type': 'infra', 'level': 'info'})])
 
     def test_a_refusal_or_an_unreachable_service_is_an_error_and_no_exception(self):
         design = self.named()

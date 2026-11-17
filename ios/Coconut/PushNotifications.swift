@@ -397,6 +397,8 @@ enum NotificationDestination: Equatable {
     case chat(TeamChatKey)
     /// The Chats list: a team notification of a team that the app no longer has.
     case chatList
+    /// The notice board of a team, by its room ID: a notification of a new notice.
+    case notices(String)
 
     /// The place of the chat of a team: the Team chat, a named chat or a direct chat.
     init(chat: TeamChatKey) {
@@ -430,12 +432,15 @@ struct NotificationTarget: Equatable, Sendable {
     var bot: String? = nil
     /// The named chat of a team message, or of a group of the messages of one named chat. An older Mac sends none.
     var named: String? = nil
+    /// The room of a new notice: a tap opens the notice board of that team.
+    var noticeRoom: String? = nil
 
     var conversationRoute: ConversationRoute { ConversationRoute(botId: botId, decisionId: decisionId, messageId: messageId) }
     /// The chat of a team that the notification opens: a Team chat, a named chat or a direct chat.
     var chat: TeamChatKey? { team.map { TeamChatKey(room: $0, member: member, chat: named, bot: bot) } }
 
     func destination(pendingDecisionIds: Set<String>, snapshotReady: Bool) -> NotificationDestination? {
+        if let noticeRoom { return .notices(noticeRoom) }
         if let chat { return NotificationDestination(chat: chat) }
         if group { return .inboxList }
         if let decisionId {
@@ -473,6 +478,11 @@ struct NotificationTarget: Equatable, Sendable {
             deviceId = device; botId = ""; taskId = ""; decisionId = nil; messageId = nil; group = true
             team = direct?.room ?? room; member = direct?.member; bot = direct?.bot
             self.named = direct == nil && room != nil ? named : nil
+            return
+        }
+        if data["kind"] as? String == "notice" {
+            guard let room else { return nil }
+            deviceId = device; botId = ""; taskId = ""; decisionId = nil; messageId = nil; noticeRoom = room
             return
         }
         if data["kind"] as? String == "team" {

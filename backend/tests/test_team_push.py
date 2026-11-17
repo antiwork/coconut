@@ -516,3 +516,38 @@ class OldStores(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class Notices(TeamPushMacs, unittest.TestCase):
+    """A new notice of another member notifies each phone, and a tap opens the notice board of the team."""
+
+    def post(self, service=None, **body):
+        return self.phone(service or self.first)('POST', f'/v1/team/rooms/{self.room}/notices',
+                                                  dict({'type': 'deadline', 'text': 'Ship the release notes'}, **body))['notice']
+
+    def test_a_new_notice_of_another_member_notifies_with_its_kind_and_opens_the_board(self):
+        self.seal()
+        notice = self.post()
+        self.second.team_sync_pass()
+        self.assertEqual([(row[1], row[6], row[7]) for row in self.items()], [('notice', notice, self.room)])
+        flush(self.second)
+        (payload,) = self.relay.sealed
+        self.assertEqual(payload['aps']['alert'], {'title': 'Grace', 'subtitle': 'Deadline · Example Team',
+                                                   'body': 'Ship the release notes'})
+        self.assertEqual(payload['coconut'], {'version': 1, 'device_id': self.phone_id, 'kind': 'notice',
+                                              'team': self.room, 'notice': notice})
+        self.assertNotIn('release notes', json.dumps(self.relay.sent))
+
+    def test_an_own_notice_and_a_seen_or_closed_notice_send_nothing(self):
+        self.post(service=self.second)
+        self.second.team_sync_pass()
+        self.assertEqual(self.items(), [])
+        seen = self.post(text='Seen on the Mac')
+        closed = self.post(text='Closed soon')
+        self.second.team_sync_pass()
+        self.phone(self.second)('POST', f'/v1/team/rooms/{self.room}/notices/seen', {'notices': [seen]})
+        self.phone(self.first)('PATCH', f'/v1/team/rooms/{self.room}/notices/{closed}', {'closed': True})
+        self.first.team_sync_pass()
+        self.second.team_sync_pass()
+        flush(self.second)
+        self.assertEqual(self.payloads(), [])

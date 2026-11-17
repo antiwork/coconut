@@ -622,6 +622,11 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
         for entry in entries:
             self.push.record_direct(room_id, entry)
 
+    def _team_notify_notices(self, room_id: str, entries: list[str]):
+        # TeamSync._team_tell calls this in the transaction that accepts the notices.
+        for entry in entries:
+            self.push.record_notice(room_id, entry)
+
     def _message(self, bot_id: str, text: str, *, task_id: str | None = None, role: str = 'assistant', kind: str = 'text', decision_id: str | None = None, artifact_id: str | None = None, document_id: str | None = None, streaming: bool = False, sender_bot_id: str | None = None, recipient_bot_ids: list[str] | None = None, human_authored: bool = False, direct_reply_message_id: str | None = None, interim: bool = False) -> dict:
         task = self._get('tasks', task_id) if task_id else None
         thread_id = task['thread_id'] if task else None
@@ -1407,6 +1412,11 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
         self._attach_profile(bot, profile)
         self._put('bots', bot)
         self._event('bot.created', bot | (audit or {}), bot['id'], (audit or {}).get('source_task_id'))
+        if profile is None and 'avatar' not in data:
+            # A new agent gets an icon of its own from the image backend of Hermes. The thread waits for this
+            # transaction (the service lock), and the fruit face shows until the icon is there (agent_icons.py).
+            from .agent_icons import start
+            start(self, bot['id'])
         return bot
 
     def _bot_deletion_scope(self, bot_id: str) -> set[str]:

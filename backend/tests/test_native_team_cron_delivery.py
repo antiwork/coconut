@@ -161,7 +161,7 @@ class NativeTeamCronDeliveryTests(AsThePerson, TeamOnlyMacs, unittest.TestCase):
         file = Path(self.temp.name) / 'report.pdf'
         content = b'%PDF-1.4\nThe scheduled report.'
         file.write_bytes(content)
-        chat = team_turns.chat_id(self.room, self.bot['id'], named)
+        chat = team_turns.chat_id(self.room, self.bot['id'], named) + ':alert:deploy:info'
         run = subprocess.run([PYTHON, '-I', '-B', '-c', DELIVER, SOURCE, 'coconut:' + chat, TEXT, str(file)],
                              env=self.environment, capture_output=True, text=True, timeout=120, cwd=self.temp.name)
         self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
@@ -173,6 +173,7 @@ class NativeTeamCronDeliveryTests(AsThePerson, TeamOnlyMacs, unittest.TestCase):
         rows = self.call('GET', f'/v1/team/rooms/{self.room}/messages', {'chat': named}, service=self.first)['messages']
         file_message, = [row for row in rows if row['files']]
         attachment, = file_message['files']
+        self.assertEqual(file_message['alert'], {'type': 'deploy', 'level': 'info'})
         self.assertEqual(self.first.team_file_content(self.room, file_message['id'], attachment['id']).content, content)
 
     def live(self, deliveries):
@@ -244,6 +245,31 @@ class NativeTeamCronDeliveryTests(AsThePerson, TeamOnlyMacs, unittest.TestCase):
         self.assertEqual([row['bot_name'] for row in rows], ['Reporter'])
         # The scheduler puts a header and a footer around the output of the job.
         self.assertIn(TEXT, rows[0]['text'])
+
+    def test_a_target_with_an_alert_at_its_end_delivers_a_typed_alert_on_each_lane(self):
+        """Hermes gives the chat ID of `deliver` to the plugin as the job has it, so its end can name an alert
+        (docs/team-log.md, "Alerts"): from a process without a gateway, through the live adapter, and from the
+        scheduler."""
+        alerts = self.call('POST', f'/v1/team/rooms/{self.room}/chats', {'name': 'Alerts'}, service=self.first)['chat']
+        self.sync()
+        chat = team_turns.chat_id(self.room, self.bot['id'], alerts)
+        run = subprocess.run([PYTHON, '-I', '-B', '-c', DELIVER, SOURCE, f'coconut:{chat}:alert:risk:critical', 'One.'],
+                             env=self.environment, capture_output=True, text=True, timeout=120, cwd=self.temp.name)
+        self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+        answer = json.loads(run.stdout.strip().splitlines()[-1])
+        self.assertEqual((answer['chat_id'], answer['thread_id']), (chat + ':alert:risk:critical', None))
+        self.assertTrue(answer['result'].get('success'), answer['result'])
+        (live,) = self.live([(chat + ':alert:deploy', 'Two.')])
+        self.assertEqual(live, {'error': None, 'unverified': None, 'sends': [['job_id', 'notify']]})
+        answer, run = self.hermes(SCHEDULED, f'coconut:{chat}:alert:payouts:info', 'Three.')
+        self.assertEqual(answer, {'processed': True, 'status': 'ok', 'error': None, 'delivery_error': None},
+                         run.stderr[-3000:])
+        self.sync()
+        rows = self.call('GET', f'/v1/team/rooms/{self.room}/messages', {'chat': alerts}, service=self.first)
+        self.assertEqual([row['alert'] for row in reversed(rows['messages'])], [
+            {'type': 'risk', 'level': 'critical'}, {'type': 'deploy', 'level': 'notice'},
+            {'type': 'payouts', 'level': 'info'}])
+        self.assertEqual(rows['alerts']['total'], 3)
 
 
 if __name__ == '__main__':

@@ -26,7 +26,7 @@ final class NavigationPerformanceTests: XCTestCase {
             XCTAssertTrue(bot.waitForExistence(timeout: 3))
             let tabsStart = ContinuousClock.now
             XCTAssertFalse(app.tabBars.buttons["Work"].exists)
-            app.tabBars.buttons["Inbox"].tap()
+            app.openCards()
             XCTAssertTrue(app.staticTexts["Review the old report?"].waitForExistence(timeout: 3))
             print("COCONUT_TABS_\(attempt)=\(tabsStart.duration(to: .now))")
             if attempt == 1 {

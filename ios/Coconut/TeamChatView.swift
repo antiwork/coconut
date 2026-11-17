@@ -77,7 +77,24 @@ struct TeamChatView: View {
     private var chat: TeamChat { store.teamChats[chatKey] ?? TeamChat() }
     /// The other side of a direct chat: a person or a bot. Nil for the Team chat and a named chat.
     private func peer(_ room: TeamRoom) -> TeamDirectPeer? { room.peer(of: chatKey) }
-    private func currentRows() -> [TeamChatRow] { rows.current(chat, calendar: .current) }
+    /// The choice of the person in the filter of the alerts of this chat. "All" in a chat without an alert.
+    private var alertFilter: TeamAlertFilter { store.teamAlertFilter(chatKey) }
+    /// The chat that the list shows: each message, or the alerts of the choice of the filter.
+    private var listedChat: TeamChat {
+        let filter = alertFilter
+        guard !filter.isAll else { return chat }
+        return TeamAlertFilters.listed(store.teamAlertChats[chatKey] ?? TeamChat(), over: chat, filter: filter)
+    }
+    private func currentRows() -> [TeamChatRow] { rows.current(listedChat, calendar: .current) }
+    /// The height of the title of the Mac window with the filter of the alerts under it. On an iPhone the bar has its
+    /// own space above the chat.
+    private func topHeight(_ chat: TeamChat) -> CGFloat {
+        #if os(macOS)
+        Self.titleHeight + (TeamAlertFilters.shows(chat.alerts) ? TeamAlertFilterBar.macHeight : 0)
+        #else
+        Self.titleHeight
+        #endif
+    }
     /// A sent message waits for the layout of its row, and the other scroll rules wait too (SentMessageScroll). Only on
     /// a Mac.
     private var sentWaits: Bool {
@@ -119,30 +136,36 @@ struct TeamChatView: View {
     @ViewBuilder
     private func chatBody(_ room: TeamRoom) -> some View {
         let chat = chat
+        let filter = alertFilter
+        // The messages of the list. With "All" it is the chat itself, so a chat without an alert is as before.
+        let listed = listedChat
         let allRows = currentRows()
         let ids = allRows.map(\.id)
         let shown = window.range(of: ids)
         // A new first row of the window makes a new list, so the list measures every row (see TranscriptWindow).
-        let listId = window.isUsed && !shown.isEmpty ? ids[shown.lowerBound] : nil
-        let readKey = [chat.newestFirst ?? 0, atBottom ? 1 : 0, isVisible && scenePhase == .active ? 1 : 0]
+        let listId = TeamAlertFilters.listIdentity(window.isUsed && !shown.isEmpty ? ids[shown.lowerBound] : nil,
+                                                   filter: filter)
+        // A filter hides messages, so the read position moves only while the chat shows each message.
+        let readKey = [chat.newestFirst ?? 0, atBottom ? 1 : 0, isVisible && scenePhase == .active ? 1 : 0,
+                       filter.isAll ? 1 : 0]
         ScrollViewReader { proxy in
             List {
                 Group {
                     #if os(macOS)
-                    ChatTitleSpace(titleHeight: Self.titleHeight)
+                    ChatTitleSpace(titleHeight: topHeight(chat))
                     #endif
-                    header(room, chat: chat, empty: allRows.isEmpty)
-                    if shown.lowerBound > 0 || chat.before != nil {
+                    header(room, chat: listed, empty: allRows.isEmpty, filtered: !filter.isAll)
+                    if shown.lowerBound > 0 || listed.before != nil {
                         Button {
                             follows = false
                             let anchor = allRows[shown].first?[keyPath: Self.rowIdentity]
                             Task { await loadEarlier(anchor: anchor, proxy: proxy) }
                         } label: {
-                            if chat.loadingEarlier || growingAbove { ProgressView() }
+                            if listed.loadingEarlier || growingAbove { ProgressView() }
                             else { Text("Load earlier messages").font(.footnote) }
                         }
                         .frame(maxWidth: .infinity, minHeight: 44)
-                        .disabled(chat.loadingEarlier || growingAbove)
+                        .disabled(listed.loadingEarlier || growingAbove)
                         .accessibilityIdentifier("load-earlier-messages")
                     }
                     let writable = canWrite(room)
@@ -233,19 +256,38 @@ struct TeamChatView: View {
                 follows = true
                 if !sentWaits { proxy.scrollTo(Self.bottom, anchor: .bottom) }
             }
-            .pinnedDayPill(pinnedDay, now: dayReference, below: Self.titleHeight)
+            .pinnedDayPill(pinnedDay, now: dayReference, below: topHeight(chat))
             .background(BoardStyle.paper)
             // From the first page on, a new message does not push the first row out of the window.
-            .onChange(of: chat.loaded, initial: true) { _, loaded in
+            .onChange(of: listed.loaded, initial: true) { _, loaded in
                 if loaded { window.keep(currentRows().map(\.id)) }
             }
+            // A new choice of the filter is a new list: it starts at its newest alert.
+            .onChange(of: filter) { _, _ in
+                window = TranscriptWindow()
+                follows = true
+                if listed.loaded { window.keep(currentRows().map(\.id)) }
+                proxy.scrollTo(Self.bottom, anchor: .bottom)
+            }
             .onChange(of: readKey, initial: true) { _, _ in
-                guard let first = TeamReadPosition.toPost(newest: chat.newestFirst, posted: store.teamReadMark(chatKey),
+                guard filter.isAll,
+                      let first = TeamReadPosition.toPost(newest: chat.newestFirst, posted: store.teamReadMark(chatKey),
                                                            visible: isVisible && scenePhase == .active,
                                                            atBottom: atBottom) else { return }
                 Task { await store.markTeamRead(chatKey, first: first) }
             }
         }
+        #if os(iOS)
+        // The filter of the alerts stays above the messages, under the title. Only a chat with an alert has it.
+        .safeAreaInset(edge: .top, spacing: 0) {
+            if TeamAlertFilters.shows(chat.alerts) {
+                alertFilterBar(chat, filter)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, BoardStyle.Space.s)
+                    .background(BoardStyle.paper)
+            }
+        }
+        #endif
         #if os(iOS)
         // The notice stays below the header at each scroll position, over the messages only.
         .modifier(ChatErrorNotice())
@@ -263,6 +305,7 @@ struct TeamChatView: View {
             // A load without a connection does nothing, so the chat loads again when the Mac connects.
             guard room.hasChat, store.connection == .connected || store.isDemo else { return }
             await store.loadTeamChat(chatKey)
+            await store.loadTeamAlerts(chatKey)
         }
         .onAppear { isVisible = true; store.openTeamChat(chatKey); takePageQuote() }
         // "Chat about this page" opens the chat with the page quoted above the text field.
@@ -348,6 +391,18 @@ struct TeamChatView: View {
         #else
         // The window moves with a drag in the band above the chat, under the title.
         .overlay(alignment: .top) { WindowDragStrip() }
+        // The filter of the alerts floats under the title. Only a chat with an alert has it.
+        .overlay(alignment: .top) {
+            if TeamAlertFilters.shows(chat.alerts) {
+                alertFilterBar(chat, filter)
+                    .frame(height: TeamAlertFilterBar.macHeight - BoardStyle.Space.xs)
+                    .modifier(FloatingCapsule())
+                    .clipShape(Capsule())
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 12)
+                    .padding(.top, Self.titleHeight - BoardStyle.Space.xs)
+            }
+        }
         // The title floats over the top of the chat, as the title of a bot does. It opens the Team screen in the
         // Settings window.
         .overlay(alignment: .top) {
@@ -406,13 +461,20 @@ struct TeamChatView: View {
     /// The first row of the chat: what the chat cannot show yet, or where a message goes. It is always a row, also an
     /// empty one, as the header of the bot chat (ConversationView.conversationHeader) is. So the first day pill has the
     /// same gap below the title in both chats.
-    private func header(_ room: TeamRoom, chat: TeamChat, empty: Bool) -> some View {
-        VStack(spacing: 0) { headerContent(room, chat: chat, empty: empty) }
+    private func header(_ room: TeamRoom, chat: TeamChat, empty: Bool, filtered: Bool = false) -> some View {
+        VStack(spacing: 0) { headerContent(room, chat: chat, empty: empty, filtered: filtered) }
             .frame(maxWidth: .infinity)
     }
 
+    /// The bar of the filter of the alerts. A tap chooses for this chat on this device only.
+    private func alertFilterBar(_ chat: TeamChat, _ filter: TeamAlertFilter) -> some View {
+        TeamAlertFilterBar(chips: TeamAlertFilters.chips(chat.alerts, filter: filter)) { choice in
+            store.setTeamAlertFilter(chatKey, choice)
+        }
+    }
+
     @ViewBuilder
-    private func headerContent(_ room: TeamRoom, chat: TeamChat, empty: Bool) -> some View {
+    private func headerContent(_ room: TeamRoom, chat: TeamChat, empty: Bool, filtered: Bool) -> some View {
         if !room.hasChat {
             EmptyView()
         } else if !chat.loaded {
@@ -420,7 +482,14 @@ struct TeamChatView: View {
                 if let error = chat.error { Text(error).font(.subheadline).foregroundStyle(.secondary) }
                 else { ProgressView() }
             }
-            .frame(maxWidth: .infinity).padding(.vertical, 45)
+            // The alerts of a choice that the app already has show under the progress, so it takes little space.
+            .frame(maxWidth: .infinity).padding(.vertical, filtered && !empty ? BoardStyle.Space.m : 45)
+        } else if filtered {
+            if empty && chat.before == nil {
+                Text(TeamAlertFilters.empty).font(.subheadline).foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity).padding(.vertical, 45)
+                    .accessibilityIdentifier("team-alert-filter-empty")
+            }
         } else if empty && chat.before == nil {
             // The structure of the empty bot chat (ConversationView.conversationHeader): face, title, one line.
             VStack(spacing: BoardStyle.Space.m) {
@@ -518,6 +587,8 @@ struct TeamChatView: View {
             let named = BotMentions.recipients(in: composer.draft, selected: mentions, bots: mentionTargets(room))
                 .map(\.id)
             guard store.sendTeamMessage(chatKey, from: composer, mentions: named) else { return }
+            // A message of a person is no alert. The chat shows each message again, so the person sees it.
+            store.setTeamAlertFilter(chatKey, .all)
             #if os(macOS)
             sentScroll.sent()
             #endif
@@ -562,7 +633,8 @@ struct TeamChatView: View {
         case .loadPage:
             // The page from the Mac arrives above the window. Then the window takes a batch of it.
             window.keep(ids)
-            await store.loadEarlierTeamMessages(chatKey)
+            if alertFilter.isAll { await store.loadEarlierTeamMessages(chatKey) }
+            else { await store.loadEarlierTeamAlerts(chatKey) }
         case .growWindow:
             growingAbove = true
             // A frame with the progress, then the new list.
@@ -660,6 +732,7 @@ struct TeamMessageRow: View {
     var body: some View {
         VStack(alignment: .leading, spacing: BoardStyle.Space.xs) {
             if row.startsRun && !own && peer == nil { writerLabel }
+            if let alert = message?.alert { TeamAlertLabel(alert: alert) }
             if row.files.isEmpty {
                 bubbleRow.modifier(MessageTimestamp(createdAt: row.createdAt, trailing: own))
             } else {
@@ -971,6 +1044,7 @@ struct TeamMessageRow: View {
         let time = row.createdAt.apiDate?.formatted(date: .abbreviated, time: .shortened)
         var parts = [writerName]
         if let time { parts.append(time) }
+        if let alert = message?.alert { parts.append(alert.spoken) }
         parts.append(text)
         if message?.isEdited == true || editedText != nil { parts.append("Edited") }
         if pending?.failed == true { parts.append("Not sent") }

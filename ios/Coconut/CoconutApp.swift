@@ -46,25 +46,27 @@ struct CoconutApp: App {
     }
 }
 
-enum HomeTab: Hashable { case bots, inbox, library, business }
+/// The five places of the app, in the order of the tab bar. The Mac sidebar has the same five.
+enum HomeTab: Hashable { case home, chats, agents, people, profile }
 
 struct CoconutHome: View {
     @Environment(AppStore.self) private var store
-    @State private var settingsOpen = false
     @State private var onboardingOpen = false
     // The first run hides Close, because Coconut needs a pairing before it can show anything.
     @State private var onboardingFirstRun = false
     @State private var createOpen = false
-    @State private var selectedTab: HomeTab = .inbox
+    @State private var selectedTab: HomeTab = .home
     @State private var notificationDecisionId: String?
     @State private var openingNotification = false
     @State private var previewedNotification: NotificationTarget?
     /// The place that the preview of `previewedNotification` showed.
     @State private var previewedPlace: NotificationDestination?
-    @State private var botsPath = NavigationPath()
-    @State private var inboxPath = NavigationPath()
-    @State private var libraryPath = NavigationPath()
-    @State private var businessPath = NavigationPath()
+    @State private var chatsPath = NavigationPath()
+    @State private var homePath = NavigationPath()
+    @State private var cardsShown = false
+    @State private var agentsPath = NavigationPath()
+    @State private var peoplePath = NavigationPath()
+    @State private var profilePath = NavigationPath()
     @State private var keyboardVisible = false
     @State private var conversationFooters: [HomeTab: Bool] = [:]
     @State private var teamJoin: TeamJoinRequest?
@@ -72,65 +74,84 @@ struct CoconutHome: View {
 
     private var conversationCanMinimize: Bool? { conversationFooters[selectedTab] }
 
+    /// The cards that wait show alone on the stack of Home. They keep the tab bar, as a tab root does.
+    private var cardsOnTop: Bool { selectedTab == .home && cardsShown && homePath.count == 1 }
+
     private var tabBarVisibility: Visibility {
-        let activePath = switch selectedTab { case .inbox: inboxPath; case .bots: botsPath; case .library: libraryPath; case .business: businessPath }
-        return keyboardVisible || (!activePath.isEmpty && conversationCanMinimize == nil) ? .hidden : .automatic
+        let activePath = switch selectedTab {
+        case .home: homePath
+        case .chats: chatsPath
+        case .agents: agentsPath
+        case .people: peoplePath
+        case .profile: profilePath
+        }
+        return keyboardVisible || (!activePath.isEmpty && conversationCanMinimize == nil && !cardsOnTop) ? .hidden : .automatic
     }
 
     var body: some View {
+        // The tab bar shows filled symbols, as the system tab bars do.
         TabView(selection: $selectedTab) {
-            Tab(value: HomeTab.inbox) {
-                root(tab: .inbox, path: $inboxPath)
+            Tab(value: HomeTab.home) {
+                root(tab: .home, path: $homePath)
             } label: {
-                Label { Text("Inbox") } icon: {
-                    Image(systemName: "tray").environment(\.symbolVariants, .none)
+                Label { Text("Home") } icon: {
+                    Image(systemName: "house.fill")
                 }
-            }.badge(store.inboxBadgeCount)
-                .accessibilityIdentifier("home-inbox")
-            Tab(value: HomeTab.bots) {
-                root(tab: .bots, path: $botsPath)
+            }.badge(HomeFeed.badge(store.homeUnread))
+                .accessibilityIdentifier("home-home")
+            Tab(value: HomeTab.chats) {
+                root(tab: .chats, path: $chatsPath)
             } label: {
                 Label { Text("Chats") } icon: {
-                    Image(systemName: "bubble.left.and.bubble.right").environment(\.symbolVariants, .none)
+                    Image(systemName: "bubble.left.and.bubble.right.fill")
                 }
-            }.accessibilityIdentifier("home-bots")
-            Tab(value: HomeTab.business) {
-                root(tab: .business, path: $businessPath)
+            }.accessibilityIdentifier("home-chats")
+            Tab(value: HomeTab.agents) {
+                root(tab: .agents, path: $agentsPath)
             } label: {
-                Label("Business", systemImage: "square.grid.2x2")
-            }.accessibilityIdentifier("home-business")
-            Tab(value: HomeTab.library) {
-                root(tab: .library, path: $libraryPath)
-            } label: {
-                Label { Text("Library") } icon: {
-                    Image(systemName: "rectangle.3.group").environment(\.symbolVariants, .none)
+                Label { Text("Agents") } icon: {
+                    Image(systemName: "square.stack.3d.up.fill")
                 }
-            }.accessibilityIdentifier("home-library")
+            }.accessibilityIdentifier("home-agents")
+            Tab(value: HomeTab.people) {
+                root(tab: .people, path: $peoplePath)
+            } label: {
+                Label { Text("People") } icon: {
+                    Image(systemName: "person.2.fill")
+                }
+            }.badge(store.shownTeamRooms.reduce(0) { $0 + $1.unseenNotices })
+                .accessibilityIdentifier("home-people")
+            Tab(value: HomeTab.profile) {
+                root(tab: .profile, path: $profilePath)
+            } label: {
+                Label { Text("Profile") } icon: {
+                    Image(systemName: "person.crop.circle.fill")
+                }
+            }.accessibilityIdentifier("home-profile")
         }
         .modifier(NativeTabCollapse(enabled: conversationCanMinimize == true && !keyboardVisible))
-        // A document card in a chat opens the document on the Library tab, so Back leads to the Library.
+        // A document card in a chat opens the page on the Agents tab over the page of its agent, so Back leads to the
+        // agent that keeps it.
         .environment(\.openDocument) { id in
-            libraryPath = NavigationPath()
-            libraryPath.append(DocumentRoute(id: id))
-            selectedTab = .library
+            agentsPath = NavigationPath()
+            for route in store.documentPath(id) { agentsPath.append(route) }
+            selectedTab = .agents
         }
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { _ in keyboardVisible = true }
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in keyboardVisible = false }
         .onChange(of: selectedTab) { _, tab in
-            if previewedNotification?.decisionId != nil && tab != .inbox {
+            if previewedNotification?.decisionId != nil && tab != .home {
                 PushNotifications.shared.target = nil
                 previewedNotification = nil
             }
         }
-        .sheet(isPresented: $settingsOpen) { AppSettingsView() }
         .fullScreenCover(isPresented: $onboardingOpen) { OnboardingView(firstRun: onboardingFirstRun) }
         .onAppear { if OnboardingView.showsOnLaunch(store) { onboardingFirstRun = true; onboardingOpen = true } }
         .onChange(of: store.setupLink, initial: true) { _, link in
             // A tapped pairing link opens the pairing screen. A pairing screen that shows, also one from Settings, takes the link itself.
             guard link != nil, !onboardingOpen, !OnboardingView.isOpen else { return }
             onboardingFirstRun = false
-            let sheetOpen = settingsOpen || createOpen
-            settingsOpen = false
+            let sheetOpen = createOpen
             createOpen = false
             Task {
                 // UIKit presents the full-screen page only after the open sheet has gone.
@@ -148,7 +169,7 @@ struct CoconutHome: View {
         // page of Settings has its own state, so the count of the pages decides.
         .onChange(of: onboardingOpen) { _, _ in showTeamJoin() }
         .onChange(of: PairingPages.shared.isOpen) { _, _ in showTeamJoin() }
-        // After the sheets, so that the Team screen in Settings gets it too.
+        // After the sheets, so that each sheet gets it too.
         .environment(\.showTeamChat) { chat in showTeamChat(chat) }
         .onChange(of: PushNotifications.shared.target) { _, _ in openNotification() }
         .onChange(of: store.lastSync) { _, _ in openNotification() }
@@ -164,16 +185,17 @@ struct CoconutHome: View {
         NavigationStack(path: path) {
             Group {
                 switch tab {
-                case .inbox: DecisionInboxView(focusDecisionId: $notificationDecisionId, refreshingDecisionId: PushNotifications.shared.target?.decisionId)
-                case .bots: HomeLaunchView()
-                case .library: LibraryView()
-                case .business: BusinessHomeView()
+                case .home: HomeView { open($0) }
+                case .chats: HomeLaunchView()
+                case .people: PeopleView()
+                case .profile: ProfileView()
+                case .agents: AgentsView()
                 }
             }
                 .toolbar(tabBarVisibility, for: .tabBar)
                 .navigationTitle("")
                 .navigationBarTitleDisplayMode(.inline)
-                .toolbar { rootToolbar(inbox: tab != .bots) }
+                .toolbar { rootToolbar(create: tab == .chats || tab == .agents) }
                 .topBanners { area in
                     RootBanners(area: area) {
                         onboardingFirstRun = false
@@ -183,7 +205,12 @@ struct CoconutHome: View {
                 .navigationDestination(for: HomeDestination.self) { destination in
                     switch destination {
                     case .inbox:
-                        DecisionInboxView().navigationTitle("Inbox").navigationBarTitleDisplayMode(.inline)
+                        // The cards that wait, with the card of the row or of the notification first.
+                        DecisionInboxView(focusDecisionId: $notificationDecisionId,
+                                          refreshingDecisionId: PushNotifications.shared.target?.decisionId)
+                            .navigationBarTitleDisplayMode(.inline)
+                            .onAppear { cardsShown = true }
+                            .onDisappear { cardsShown = false }
                     }
                 }
                 .navigationDestination(for: ConversationRoute.self) { route in
@@ -206,6 +233,9 @@ struct CoconutHome: View {
                 .navigationDestination(for: TeamScreenRoute.self) { route in
                     TeamRoomView(roomId: route.roomId, pushed: true)
                 }
+                .navigationDestination(for: NoticeBoardRoute.self) { NoticeBoardView(roomId: $0.roomId) }
+                .modifier(AgentDestinations())
+                .modifier(ProfileDestinations())
                 .background(BoardStyle.paper)
         }
         // On the stack itself, so that the pushed pages get it too.
@@ -216,9 +246,9 @@ struct CoconutHome: View {
     }
 
     @ToolbarContentBuilder
-    private func rootToolbar(inbox: Bool) -> some ToolbarContent {
-        // Coconut has no settings screen: the Coconut chat at the top of Chats changes it.
-        if !inbox {
+    private func rootToolbar(create: Bool) -> some ToolbarContent {
+        // Coconut has no settings screen: Profile has the things of this device, and the Coconut chat changes the rest.
+        if create {
             ToolbarItem(placement: .topBarTrailing) {
                 Button { createOpen = true } label: {
                     Image(systemName: "plus")
@@ -233,8 +263,7 @@ struct CoconutHome: View {
         guard TeamJoinGate.canShow(store.teamJoin, showing: teamJoin?.id,
                                    pairingOpen: onboardingOpen || PairingPages.shared.isOpen),
               let request = store.teamJoin else { return }
-        let sheetOpen = settingsOpen || createOpen || teamJoin != nil
-        settingsOpen = false
+        let sheetOpen = createOpen || teamJoin != nil
         createOpen = false
         teamJoin = nil
         Task {
@@ -249,6 +278,13 @@ struct CoconutHome: View {
         guard let target = PushNotifications.shared.target else { return }
         guard store.acceptsNotification(target) else {
             PushNotifications.shared.target = nil
+            return
+        }
+        // A notice opens the board of its team. The board reads the team from the store, so nothing waits for the Mac.
+        if let room = target.noticeRoom {
+            PushNotifications.shared.target = nil
+            previewedNotification = nil
+            showNotification(.notices(room))
             return
         }
         if target.team == nil && (target.group || target.decisionId == nil) {
@@ -281,38 +317,62 @@ struct CoconutHome: View {
         }
     }
 
-    /// Shows a Team chat or a direct chat on the Chats tab, with the Chats list under it. Settings and the sheets close.
+    /// Shows a Team chat or a direct chat on the Chats tab, with the Chats list under it. The sheets close.
     private func showTeamChat(_ chat: TeamChatKey) {
-        settingsOpen = false; createOpen = false
+        createOpen = false
         notificationDecisionId = nil
-        selectedTab = .bots
-        botsPath = NavigationPath()
-        botsPath.append(TeamChatRoute(chat: chat))
+        selectedTab = .chats
+        chatsPath = NavigationPath()
+        chatsPath.append(TeamChatRoute(chat: chat))
+    }
+
+    /// Shows the cards that wait on the Home tab, with Home under them. The card with this ID comes first.
+    private func showCards(_ decisionId: String?) {
+        notificationDecisionId = decisionId
+        selectedTab = .home
+        homePath = NavigationPath([HomeDestination.inbox])
+    }
+
+    /// Opens the place of a row of Home on the stack of Home, so Back leads to Home.
+    private func open(_ target: HomeTarget) {
+        switch target {
+        case .conversation(let route): homePath.append(route)
+        case .teamChat(let chat): homePath.append(TeamChatRoute(chat: chat))
+        case .cards(let decisionId): showCards(decisionId)
+        case .agent(let botId): homePath.append(AgentRoute(botId: botId))
+        case .agents: selectedTab = .agents
+        case .connection:
+            profilePath = NavigationPath([ProfileRoute.mac])
+            selectedTab = .profile
+        case .notices(let room): homePath.append(NoticeBoardRoute(roomId: room))
+        }
     }
 
     private func showNotification(_ destination: NotificationDestination) {
-        settingsOpen = false; createOpen = false
+        createOpen = false
         UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
         switch destination {
         case .inbox(let decisionId):
-            inboxPath = NavigationPath()
-            notificationDecisionId = decisionId
-            selectedTab = .inbox
+            showCards(decisionId)
         case .inboxList:
-            inboxPath = NavigationPath()
-            notificationDecisionId = nil
-            selectedTab = .inbox
+            showCards(nil)
         case .conversation(let route):
             notificationDecisionId = nil
-            selectedTab = .bots
-            botsPath = NavigationPath()
-            botsPath.append(route)
+            selectedTab = .chats
+            chatsPath = NavigationPath()
+            chatsPath.append(route)
         case .team, .chat:
             if let chat = destination.teamChat { showTeamChat(chat) }
         case .chatList:
             notificationDecisionId = nil
-            selectedTab = .bots
-            botsPath = NavigationPath()
+            selectedTab = .chats
+            chatsPath = NavigationPath()
+        case .notices(let room):
+            // The board of a team is a page of People, so Back leads to the team.
+            notificationDecisionId = nil
+            selectedTab = .people
+            peoplePath = NavigationPath()
+            peoplePath.append(NoticeBoardRoute(roomId: room))
         }
     }
 

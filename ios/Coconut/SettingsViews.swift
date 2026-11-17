@@ -1,114 +1,7 @@
 import SwiftUI
 
-struct AppSettingsView: View {
-    @Environment(AppStore.self) private var store
-    @ShownError private var shownError
-    @Environment(\.dismiss) private var dismiss
-    private var paired: Bool { store.hasPairing || store.isDemo }
-
-    var body: some View {
-        NavigationStack {
-            Form {
-                Section("Your Mac") {
-                    if paired {
-                        NavigationLink {
-                            MacConnectionSettingsView()
-                        } label: {
-                            SettingsNavigationLabel(title: "Your Mac", subtitle: connectionSummary)
-                        }
-                        .accessibilityIdentifier("mac-settings")
-                    } else {
-                        PairMacButton()
-                    }
-                }
-                Section("General") {
-                    NavigationLink { ModelSettingsView() } label: {
-                        SettingsNavigationLabel(title: "Model", subtitle: modelSummary)
-                    }
-                    NavigationLink { ApprovalSettingsView() } label: {
-                        SettingsNavigationLabel(title: "Access", subtitle: store.approvals?.label(for: store.approvals?.defaults) ?? "Hermes default")
-                    }
-                    NotificationSettingsRow()
-                    NavigationLink { MCPSettingsView() } label: {
-                        SettingsNavigationLabel(title: "Connections", subtitle: "Google, GitHub and other tools")
-                    }
-                    .accessibilityIdentifier("mcp-settings")
-                    TeamSettingsRow()
-                }
-                let bots = store.bots.filter { !$0.archived }
-                if !bots.isEmpty {
-                    Section("Agents") {
-                        ForEach(bots) { bot in
-                            NavigationLink { BotSettingsView(botId: bot.id) } label: {
-                                HStack(spacing: 12) {
-                                    BotAvatar(bot: bot, size: botAvatarSize, animated: false)
-                                    Text(bot.name)
-                                }
-                            }
-                            .accessibilityIdentifier("settings-bot-" + bot.id)
-                        }
-                    }
-                }
-                Section("Advanced") {
-                    NavigationLink { ParallelWorkSettingsView() } label: {
-                        SettingsNavigationLabel(title: "Parallel work", subtitle: parallelWorkSummary)
-                    }
-                    .accessibilityIdentifier("parallel-work-settings")
-                }
-                if let error = shownError {
-                    Section { InlineError(error) }
-                }
-                Section {} footer: {
-                    Text("Coconut \(appVersion) · Execution stays on your Mac.")
-                }
-            }
-            #if os(iOS)
-            .listSectionSpacing(24)
-            #endif
-            .settingsBackground()
-            .navigationTitle("Settings").inlineNavigationTitle()
-            // The Team row names the team, so Settings reads the teams of a connected Mac.
-            .task(id: store.connection) { if store.connection == .connected { await store.loadTeam() } }
-            .toolbar {
-                ToolbarItem(placement: .leadingBar) {
-                    Button { dismiss() } label: {
-                        Image(systemName: "xmark").font(.body.weight(.semibold))
-                            .frame(minWidth: 44, minHeight: 44)
-                    }
-                    .foregroundStyle(.primary)
-                    .accessibilityLabel("Close settings")
-                    .accessibilityIdentifier("close-settings")
-                }
-            }
-        }
-        .presentationCornerRadius(32)
-    }
-
-    @ScaledMetric(relativeTo: .body) private var botAvatarSize = 28.0
-
-    private var connectionSummary: String {
-        if store.isDemo { return "Preview data" }
-        let status = store.connection.title
-        guard let lastSync = store.lastSync else { return status }
-        return status + " · Synced " + lastSync.formatted(date: .abbreviated, time: .shortened)
-    }
-
-    private var parallelWorkSummary: String {
-        guard let capacity = store.workCapacity else { return "Agents working at once" }
-        return capacity.limit == nil ? "Automatic · up to \(capacity.effectiveLimit) agents at once" : "Up to \(capacity.effectiveLimit) agents at once"
-    }
-
-    private var appVersion: String {
-        let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "Unknown"
-        let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "Unknown"
-        return "\(version) (\(build))"
-    }
-
-    private var modelSummary: String {
-        guard let catalog = store.modelCatalog else { return store.model.isEmpty ? "Configure on your Mac" : store.model }
-        return catalog.name(for: catalog.defaults.selection) + " · " + ModelPresentation.effortName(catalog.defaults.reasoningEffort)
-    }
-}
+// Coconut has no Settings screen. Profile (ProfileView) has the things of this device and the defaults of the agents,
+// and the Coconut chat changes the rest.
 
 struct SettingsNavigationLabel: View {
     let title: String
@@ -122,7 +15,7 @@ struct SettingsNavigationLabel: View {
     }
 }
 
-private struct MacConnectionSettingsView: View {
+struct MacConnectionSettingsView: View {
     @Environment(AppStore.self) private var store
     @ShownError private var shownError
     @State private var disconnectOpen = false

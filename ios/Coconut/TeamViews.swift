@@ -6,6 +6,8 @@ import SwiftUI
 /// list, so the screen shows none.
 struct TeamView: View {
     @Environment(AppStore.self) private var store
+    /// The title of the screen without a team to name. The People tab shows the screen under its own name.
+    var emptyTitle = "Team"
 
     private var screen: TeamScreen {
         TeamScreen(paired: store.hasPairing || store.isDemo, connection: store.connection, rooms: store.team,
@@ -23,7 +25,7 @@ struct TeamView: View {
 
     private func title(_ screen: TeamScreen) -> String {
         if case .team(let room) = screen { return room.name }
-        return "Team"
+        return emptyTitle
     }
 
     @ViewBuilder private func content(_ screen: TeamScreen) -> some View {

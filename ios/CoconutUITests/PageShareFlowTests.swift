@@ -49,7 +49,7 @@ final class PageShareFlowTests: XCTestCase {
         try launch()
         switch look {
         case "grace":
-            app.tabBars.buttons["Library"].tap()
+            app.openAllPages()
             let page = app.buttons["library-document-weekly-report"]
             XCTAssertTrue(page.waitForExistence(timeout: 15))
             XCTAssertTrue(app.staticTexts["Reporter"].exists)
@@ -72,7 +72,7 @@ final class PageShareFlowTests: XCTestCase {
             shot("06-iphone-menu-two-teams")
         default:
             let suffix = look == "dark" ? "-dark" : ""
-            app.tabBars.buttons["Library"].tap()
+            app.openAllPages()
             XCTAssertTrue(app.buttons["library-document-weekly-report"].waitForExistence(timeout: 15))
             XCTAssertTrue(app.buttons["library-document-draft-notes"].exists)
             if look == "shared" { shot("03-iphone-library-shared-and-private") }
@@ -110,11 +110,11 @@ final class PageShareFlowTests: XCTestCase {
         app = XCUIApplication()
         app.launchEnvironment = ["COCONUT_SERVER_URL": url, "COCONUT_PAIR_CODE": code]
         app.launch()
-        XCTAssertTrue(app.tabBars.buttons["Library"].waitForExistence(timeout: 20))
+        XCTAssertTrue(app.tabBars.buttons["Agents"].waitForExistence(timeout: 20))
     }
 
     private func openPage(_ key: String) {
-        app.tabBars.buttons["Library"].tap()
+        app.openAllPages()
         let row = app.buttons["library-document-\(key)"]
         XCTAssertTrue(row.waitForExistence(timeout: 15))
         row.tap()
@@ -162,7 +162,7 @@ final class AgentPageChatFlowTests: XCTestCase {
         app = XCUIApplication()
         app.launchEnvironment = ["COCONUT_SERVER_URL": url, "COCONUT_PAIR_CODE": code]
         app.launch()
-        XCTAssertTrue(app.tabBars.buttons["Library"].waitForExistence(timeout: 30))
+        XCTAssertTrue(app.tabBars.buttons["Agents"].waitForExistence(timeout: 30))
 
         // The item opens the chat of the agent with the page above the text field.
         openPage()
@@ -214,18 +214,18 @@ final class AgentPageChatFlowTests: XCTestCase {
 
     /// The page "Sales" in the Library.
     private func openPage() {
-        app.tabBars.buttons["Library"].tap()
+        app.openAllPages()
         let page = app.buttons["library-document-sales"]
         XCTAssertTrue(page.waitForExistence(timeout: 15))
         page.tap()
     }
 
-    /// Back from the chat to the Chats list, where the tab bar shows, and then the Library tab with its open page.
+    /// Back from the chat to the Chats list, where the tab bar shows, and then the Agents tab with its open page.
     private func toLibrary() {
         app.navigationBars.buttons.element(boundBy: 0).tap()
-        let library = app.tabBars.buttons["Library"]
-        XCTAssertTrue(library.waitForExistence(timeout: 10))
-        library.tap()
+        let agents = app.tabBars.buttons["Agents"]
+        XCTAssertTrue(agents.waitForExistence(timeout: 10))
+        agents.tap()
     }
 
     /// "Chat about this page" on the open page.

@@ -14,7 +14,7 @@ final class ChatCardDismissTests: XCTestCase {
         app.tabBars.buttons["Chats"].tap()
         let bot = app.buttons["bot-conversation-00000000-0000-4000-8000-000000000002"]
         XCTAssertTrue(bot.waitForExistence(timeout: 15))
-        app.tabBars.buttons["Inbox"].tap()
+        app.openCards()
         let dismiss = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "dismiss-card-")).firstMatch
         XCTAssertTrue(app.staticTexts["Delete the sample export?"].waitForExistence(timeout: 5))
         XCTAssertFalse(dismiss.exists, "Inbox dismissal stays in the swipe interaction.")

@@ -108,10 +108,11 @@ async def send_tries(request, home: str, chat_id: str, fields: dict):
 
 async def send_file(request, home, chat_id, file_path, caption=None, file_name=None, deadline=None) -> SendResult:
     """Send bytes through the team file transport. A text notice never counts as a delivered file."""
+    limit = time.monotonic() + FILE_SECONDS
+    deadline = min(deadline, limit) if deadline is not None else limit
     path = BasePlatformAdapter.validate_media_delivery_path(file_path)
     if not path:
         return SendResult(success=False, error='The file is not available for delivery.')
-    deadline = min(deadline or time.monotonic() + FILE_SECONDS, time.monotonic() + FILE_SECONDS)
     try:
         with open(path, 'rb') as source:
             content = source.read(PHOTO_LIMIT + 1)

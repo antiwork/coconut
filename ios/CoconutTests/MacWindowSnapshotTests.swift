@@ -4,7 +4,7 @@ import SwiftUI
 import XCTest
 @testable import Coconut
 
-/// Renders whole Mac windows with the preview data: the sidebar next to an agent chat, the Inbox and the Library. Set
+/// Renders whole Mac windows with the preview data: the sidebar next to Home, the agents, an agent and a chat. Set
 /// COCONUT_WINDOW_SHOTS to a folder to keep the images, for example for the screenshots of the website.
 @MainActor
 final class MacWindowSnapshotTests: XCTestCase {
@@ -20,20 +20,51 @@ final class MacWindowSnapshotTests: XCTestCase {
         let coconutId = store.bots[store.bots.count - 1].id
         let botId = try XCTUnwrap(store.bots.first?.id)
         store.team = try APIJSON.decoder().decode(TeamRooms.self, from: Data(TeamNoticeTests.rooms.utf8))
+        // People: the members of the team, a direct chat with an unread message, and the invite.
+        let formatter = ISO8601DateFormatter()
+        func ago(_ minutes: Double) -> String { formatter.string(from: Date().addingTimeInterval(-minutes * 60)) }
+        store.team?.rooms[0].canInvite = true
+        store.team?.rooms[0].lastMessage = TeamLastMessage(member: "m3", memberName: "Lin", text: "Relay fix is in review.", createdAt: ago(42))
+        store.team?.rooms[0].members = [
+            TeamMember(member: "m1", name: "Ada", admin: true, thisMac: true),
+            TeamMember(member: "m2", name: "Grace", direct: true),
+            TeamMember(member: "m3", name: "Lin", direct: true),
+        ]
+        store.team?.rooms[0].directs = [
+            TeamDirect(member: "m2", memberName: "Grace", unread: 1,
+                       lastMessage: TeamLastMessage(text: "Can you look at the relay fix today?", createdAt: ago(9))),
+        ]
+        // Home: a card that waits past 4 hours and a blocked To-do breach next to the unseen notice. The agent page
+        // gets a To-do that runs and a routine.
+        if let index = store.decisions.firstIndex(where: \.isPending) { store.decisions[index].createdAt = ago(5 * 60) }
+        store.artifacts += [
+            Artifact(id: "shot-work-1", botId: botId, taskId: nil, title: "Add retry to the webhook sender", kind: "work",
+                     status: "working", preview: "Tests pass. Opening the pull request.", url: nil, createdAt: ago(25)),
+            Artifact(id: "shot-work-2", botId: botId, taskId: nil, title: "Upgrade the payments SDK", kind: "work",
+                     status: "blocked", preview: "Waits for the new API key.", url: nil, createdAt: ago(90)),
+        ]
+        store.routines.append(Routine(id: "shot-routine", botId: botId, name: "Morning pull request review", prompt: "",
+                                      cron: "Weekdays at 9:00", timezone: "UTC", enabled: true, nextRunAt: nil,
+                                      lastRunAt: nil, lastTaskId: nil, createdAt: ago(9000), updatedAt: ago(9000)))
         let windows: [(String, AnyView)] = [
-            ("notices", AnyView(NavigationStack { NoticeBoardView(roomId: "example") })),
+            ("home", AnyView(NavigationStack { HomeView { _ in } })),
+            ("people", AnyView(NavigationStack { PeopleView() })),
+            ("profile", AnyView(NavigationStack { ProfileView() })),
             ("coconut", AnyView(NavigationStack { ConversationView(botId: coconutId) })),
             ("chat", AnyView(NavigationStack { ConversationView(botId: botId) })),
             ("inbox", AnyView(MacInboxView(selection: .constant(.inbox)))),
-            ("library", AnyView(NavigationStack { LibraryView().navigationTitle("Library") })),
+            ("agents", AnyView(NavigationStack { AgentsView(create: {}) })),
+            ("agent", AnyView(NavigationStack { AgentProjectView(botId: botId) })),
         ]
         for (name, detail) in windows {
             let selection: MacSelection = switch name {
             case "chat": .bot(botId)
             case "inbox": .inbox
-            case "notices": .notices("example")
+            case "home": .home
+            case "people": .people
+            case "profile": .profile
             case "coconut": .bot(coconutId)
-            default: .library
+            default: .agents
             }
             let view = HStack(spacing: 0) {
                 MacSidebar(selection: .constant(selection)).frame(width: 260)

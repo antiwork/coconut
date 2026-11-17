@@ -21,6 +21,7 @@ import pairing
 class RemoteToolsTests(unittest.TestCase):
     def fixture(self, root):
         for name in remote.TOP_FILES | {"backend/coconut/service.py", "backend/coconut/hermes_versions.json",
+                                        "backend/coconut/assets/agent-sprites.png",
                                         "scripts/host.py", "docs/setup.md"}:
             path = root / name
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -226,6 +227,20 @@ class RemoteToolsTests(unittest.TestCase):
             expected = " ".join(key.with_suffix(".pub").read_text().split()[:2])
             self.assertEqual(actual, expected)
             self.assertNotIn("comment", actual)
+
+
+class SourcePackageTests(unittest.TestCase):
+    def test_the_update_accepts_each_file_of_the_real_source_package(self):
+        """remote.source_files chooses the files of the package and deploy.validate_package accepts them. A file that
+        only the first one knows makes the service update of each Mac fail."""
+        import deploy
+        with tempfile.TemporaryDirectory() as folder:
+            destination = Path(folder) / "package.tar.gz"
+            remote.package(destination)
+            with destination.open("rb") as stream:
+                result = deploy.validate_package(stream)
+        self.assertIn("backend/coconut/assets/agent-sprites.png", result.files)
+        self.assertEqual(set(result.files), set(remote.source_files()))
 
 
 class PairingToolsTests(unittest.TestCase):

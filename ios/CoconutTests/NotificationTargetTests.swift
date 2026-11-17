@@ -40,6 +40,16 @@ final class NotificationTargetTests: XCTestCase {
 
     private let room = String(repeating: "ab", count: 32)
 
+    func testANoticeOpensTheNoticeBoardOfItsTeam() throws {
+        let target = try XCTUnwrap(NotificationTarget(userInfo: ["coconut": [
+            "version": 1, "device_id": device, "kind": "notice", "team": room, "notice": String(repeating: "c", count: 32)]]))
+        XCTAssertEqual(target.noticeRoom, room)
+        XCTAssertNil(target.chat, "A notice opens the board, not the Team chat.")
+        XCTAssertEqual(target.destination(pendingDecisionIds: [], snapshotReady: false), .notices(room))
+        XCTAssertNil(NotificationTarget(userInfo: ["coconut": [
+            "version": 1, "device_id": device, "kind": "notice", "team": "not a room"]]))
+    }
+
     func testATeamMessageOpensTheChatOfItsTeam() throws {
         let target = try XCTUnwrap(NotificationTarget(userInfo: ["coconut": [
             "version": 1, "device_id": device, "kind": "team", "team": room]]))

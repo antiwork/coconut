@@ -9,6 +9,7 @@ final class AppStore {
     private static let deliveryLog = Logger(subsystem: "com.gumroad.coconut", category: "delivery")
     /// Each line names a reason why the app has no usable pairing. A line holds no token, key or code.
     private static let pairingLog = Logger(subsystem: "com.gumroad.coconut", category: "pairing")
+    @ObservationIgnored let optimisticUpdates = OptimisticUpdates()
     var bots: [Bot] = []
     var tasks: [AgentTask] = []
     var messages: [Message] = [] {
@@ -49,6 +50,10 @@ final class AppStore {
     var learning: [LearningGroup] = []
     /// The documents of the Library, newest first, without their content. Nil until the first load.
     var documents: [BotDocument]?
+    var documentContents: [String: BotDocument] = [:]
+    var businessReports: [String: BusinessReport] = [:]
+    var businessItems: [String: BusinessWork] = [:]
+    @ObservationIgnored var businessGeneration = UUID()
     var businessCatalog: BusinessCatalog?
     var businessChanges = 0
     var demoBusinessWork = BusinessWork.previews
@@ -87,8 +92,6 @@ final class AppStore {
         TeamChatChoices.applying(mutes: teamChatMuteChoices, pins: teamChatPinChoices, to: team?.rooms ?? [])
     }
     /// The number of the latest share or stop of each page. Only the answer of that act goes into the list.
-    @ObservationIgnored private var pageShareActs: [String: Int] = [:]
-    @ObservationIgnored private var pageShareCount = 0
     @ObservationIgnored private var teamWriteCount = 0
     /// The filter chip of the Chats list. It stays while the app runs. A new pairing, an unpair and a Mac without a
     /// team set People or Agents to All (`ChatFilter.effective`). Unread also works without a team.
@@ -96,6 +99,11 @@ final class AppStore {
     /// The chats of the teams that the person opened, by chat: the Team chat of a room, or a direct chat. The updates
     /// keep them fresh.
     var teamChats: [TeamChatKey: TeamChat] = [:]
+    /// The choice of the person in the filter of the alerts of a chat on screen, and the alerts of that choice
+    /// (TeamAlertFilters). "All" has no entry. Both live in this app only, and both go when the chat closes.
+    var teamAlertFilters: [TeamChatKey: TeamAlertFilter] = [:]
+    var teamAlertChats: [TeamChatKey: TeamChat] = [:]
+    @ObservationIgnored private var teamAlertRequests: [TeamChatKey: Int] = [:]
     /// The number of the latest request of the newest page, by chat. Only its answer goes into the chat.
     @ObservationIgnored private var teamChatRequests: [TeamChatKey: Int] = [:]
     @ObservationIgnored private var teamChatRequestCount = 0
@@ -161,9 +169,7 @@ final class AppStore {
     private var savedPairingLocked = false
     @ObservationIgnored private var savedPairingRetry: Task<Void, Never>?
     private var writeCount = 0
-    @ObservationIgnored private var client: APIClient? {
-        didSet { businessCatalog = nil }
-    }
+    @ObservationIgnored private var client: APIClient?
     // The one tunnel socket of a version 2 pairing. Every client of the pairing shares it.
     @ObservationIgnored private var tunnel: TunnelConnection?
     // The relay or the Mac refused this pairing. Automatic polling stays off until a pairing succeeds or the
@@ -183,6 +189,8 @@ final class AppStore {
     @ObservationIgnored private var networkAvailable: Bool?
     @ObservationIgnored private var cachedState: StateSnapshot?
     @ObservationIgnored private var cacheTask: Task<Void, Never>?
+    @ObservationIgnored private var writeRefreshTask: Task<Void, Never>?
+    @ObservationIgnored private var writeRefreshNeeded = false
     @ObservationIgnored private var pendingCache: SnapshotCache?
     @ObservationIgnored private var cacheWrittenAt = Date.distantPast
     @ObservationIgnored private let cacheQueue = DispatchQueue(label: "coconut.display-cache", qos: .utility)
@@ -303,6 +311,9 @@ final class AppStore {
             setBadge = { _ in }
             apply(Self.previewSnapshot(), persist: false)
             connection = .preview
+            #if DEBUG && targetEnvironment(simulator)
+            if ProcessInfo.processInfo.arguments.contains("--attention-preview") { applyAttentionPreview() }
+            #endif
             return
         }
         loadSavedPairing()
@@ -536,6 +547,8 @@ final class AppStore {
 
     // The new pairing starts without the outgoing items and the cursor of the earlier one.
     private func adopt(_ configuration: PairingConfiguration) async {
+        optimisticUpdates.reset()
+        documentContents = [:]; resetBusiness()
         resetDelivery()
         chatFilter = .all
         outgoingMessages = []; outgoingAnswers = []; answeringDecisionIds = []; sendingAnswerIds = []; restoredDecisionId = nil
@@ -667,7 +680,7 @@ final class AppStore {
         bots = []; tasks = []; messages = []; decisions = []; artifacts = []; learning = []
         routines = []
         // The team bots name the team pages of the earlier Mac, so the Library of a later pairing would show them.
-        documents = nil; teamBots = []; latestDocumentLoad = nil; pageShareActs = [:]
+        documents = nil; teamBots = []; latestDocumentLoad = nil
         // The teams are the teams of the earlier Mac. A list request of that Mac that is still on its way gets no
         // place to go: its client is not the client of the store.
         team = nil; teamLoadError = nil; latestTeamLoad = nil; teamWrites = [:]; teamChatMuteChoices = [:]
@@ -675,8 +688,11 @@ final class AppStore {
         teamChats = [:]; teamChatRequests = [:]; teamChatChanges = [:]; teamReadPosted = [:]; teamReadPosting = [:]
         teamChatsOnScreen = []; teamOlderRequests = [:]; teamMessageChanges = [:]; teamTypingPace = [:]
         teamReactionWriters = [:]
+        teamAlertFilters = [:]; teamAlertChats = [:]; teamAlertRequests = [:]
         chatFilter = .all
         approvals = nil; parallelWork = nil; fallback = nil; workCapacity = nil; mcpServers = []
+        optimisticUpdates.reset()
+        documentContents = [:]; resetBusiness()
         reactionOverrides = [:]; decisionReplyDrafts = [:]; answeringDecisionIds = []
         cursor = 0
         lastSync = nil
@@ -690,6 +706,22 @@ final class AppStore {
         nativeSettingsRequiredCursor = 0
         provider = ""
         connection = .unconfigured
+    }
+
+    /// Acceptance is local. The shared error banner reports a failed save and the projection restores confirmed data.
+    @discardableResult
+    func optimistically(_ resource: String, change: (UUID) -> Void, save: @escaping @MainActor () async -> Void) -> Bool {
+        guard isDemo || pairing != nil else { error = "Pair with your Mac in Settings to continue."; return false }
+        let pairing = pairing
+        error = nil
+        let parts = resource.split(separator: "/")
+        let queue = resource.hasPrefix("bot/") || resource.hasPrefix("settings/") || resource.hasPrefix("routine/") ? "native-settings"
+            : parts.first == "team" && parts.count > 1 ? "team/" + String(parts[1]) : resource
+        optimisticUpdates.enqueue(queue, change: change) {
+            guard self.pairing == pairing else { return }
+            await save()
+        }
+        return true
     }
 
     func createBot(name: String, role: String, avatar: String, color: String, instructions: String, memory: String = "", pinned: Bool = false) async {
@@ -713,7 +745,14 @@ final class AppStore {
             }
             return
         }
-        let _: Bot? = await write("bots/\(bot.id)", method: "PATCH", payload: patch, as: Bot.self)
+        optimistically("bot/\(bot.id)", change: { transaction in
+            if let value = patch.name { optimisticBot(bot.id, \.name, value, in: transaction) }
+            if let value = patch.role { optimisticBot(bot.id, \.role, value, in: transaction) }
+            if let value = patch.avatar { optimisticBot(bot.id, \.avatar, value, in: transaction) }
+            if let value = patch.color { optimisticBot(bot.id, \.color, value, in: transaction) }
+            if let value = patch.instructions { optimisticBot(bot.id, \.instructions, value, in: transaction) }
+            if let value = patch.notifications { optimisticBot(bot.id, \.notifications, value, in: transaction) }
+        }, save: { let _: Bot? = await self.write("bots/\(bot.id)", method: "PATCH", payload: patch, as: Bot.self) })
     }
 
     func updateBotInstructions(bot: Bot, text: String) async {
@@ -721,7 +760,8 @@ final class AppStore {
             if let index = bots.firstIndex(where: { $0.id == bot.id }) { bots[index].instructions = text }
             return
         }
-        let _: Bot? = await write("bots/\(bot.id)", method: "PATCH", payload: InstructionsRequest(instructions: text), as: Bot.self)
+        optimistically("bot/\(bot.id)", change: { optimisticBot(bot.id, \.instructions, text, in: $0) },
+                       save: { let _: Bot? = await self.write("bots/\(bot.id)", method: "PATCH", payload: InstructionsRequest(instructions: text), as: Bot.self) })
     }
 
 
@@ -750,13 +790,25 @@ final class AppStore {
             }
             return
         }
-        let _: Routine? = await write("routines/\(routine.id)", method: "PATCH", payload: RoutineRequest(name: routine.name, prompt: routine.prompt,
-            cron: routine.cron, timezone: routine.timezone, enabled: routine.enabled), as: Routine.self)
+        optimistically("routine/\(routine.id)", change: { transaction in
+            optimisticRoutine(routine.id, \.name, routine.name, in: transaction)
+            optimisticRoutine(routine.id, \.prompt, routine.prompt, in: transaction)
+            optimisticRoutine(routine.id, \.cron, routine.cron, in: transaction)
+            optimisticRoutine(routine.id, \.timezone, routine.timezone, in: transaction)
+            optimisticRoutine(routine.id, \.enabled, routine.enabled, in: transaction)
+        }, save: { let _: Routine? = await self.write("routines/\(routine.id)", method: "PATCH", payload: RoutineRequest(name: routine.name, prompt: routine.prompt,
+            cron: routine.cron, timezone: routine.timezone, enabled: routine.enabled), as: Routine.self) })
     }
 
     func deleteRoutine(_ routine: Routine) async {
         if isDemo { routines.removeAll { $0.id == routine.id }; return }
-        let _: Acknowledgement? = await write("routines/\(routine.id)", method: "DELETE", payload: EmptyRequest(), as: Acknowledgement.self)
+        optimistically("routine/\(routine.id)", change: { transaction in
+            optimisticUpdates.set("0:routine/\(routine.id)", to: Optional<Routine>.none, in: transaction,
+                read: { self.routines.first { $0.id == routine.id } }, write: { value in
+                    if let value { self.routines = StateUpdates.merge([value], into: self.routines) }
+                    else { self.routines.removeAll { $0.id == routine.id } }
+                })
+        }, save: { let _: Acknowledgement? = await self.write("routines/\(routine.id)", method: "DELETE", payload: EmptyRequest(), as: Acknowledgement.self) })
     }
 
     @discardableResult
@@ -791,7 +843,8 @@ final class AppStore {
             if let index = bots.firstIndex(where: { $0.id == bot.id }) { bots[index].pinned = pinned }
             return
         }
-        let _: Bot? = await write("bots/\(bot.id)", method: "PATCH", payload: PinRequest(pinned: pinned), as: Bot.self)
+        optimistically("bot/\(bot.id)", change: { optimisticBot(bot.id, \.pinned, pinned, in: $0) },
+                       save: { let _: Bot? = await self.write("bots/\(bot.id)", method: "PATCH", payload: PinRequest(pinned: pinned), as: Bot.self) })
     }
 
     /// Archives an agent, or brings it back. An archived agent leaves the Chats list and the sidebar, and its routines
@@ -801,7 +854,8 @@ final class AppStore {
             if let index = bots.firstIndex(where: { $0.id == bot.id }) { bots[index].archived = archived }
             return
         }
-        let _: Bot? = await write("bots/\(bot.id)", method: "PATCH", payload: ArchiveRequest(archived: archived), as: Bot.self)
+        optimistically("bot/\(bot.id)", change: { optimisticBot(bot.id, \.archived, archived, in: $0) },
+                       save: { let _: Bot? = await self.write("bots/\(bot.id)", method: "PATCH", payload: ArchiveRequest(archived: archived), as: Bot.self) })
     }
 
     func deleteBot(_ bot: Bot) async {
@@ -811,7 +865,13 @@ final class AppStore {
             routines.removeAll { $0.botId == bot.id }
             return
         }
-        let _: Acknowledgement? = await write("bots/\(bot.id)", method: "DELETE", payload: EmptyRequest(), as: Acknowledgement.self)
+        optimistically("bot/\(bot.id)", change: { transaction in
+            optimisticUpdates.set("0:bot/\(bot.id)", to: Optional<Bot>.none, in: transaction,
+                read: { self.bots.first { $0.id == bot.id } }, write: { value in
+                    if let value { self.bots = StateUpdates.merge([value], into: self.bots) }
+                    else { self.bots.removeAll { $0.id == bot.id } }
+                })
+        }, save: { let _: Acknowledgement? = await self.write("bots/\(bot.id)", method: "DELETE", payload: EmptyRequest(), as: Acknowledgement.self) })
     }
 
     func markRead(_ bot: Bot) async {
@@ -1403,15 +1463,27 @@ final class AppStore {
             for index in bots.indices where bots[index].modelOverride == nil { bots[index].effectiveModel = resolved }
             return true
         }
-        let response: ModelResponse? = await write("settings/model", method: "PUT", payload: selection, as: ModelResponse.self)
-        return response != nil
+        return optimistically("settings/model", change: { transaction in
+            let resolved = modelCatalog?.resolved(selection) ?? selection
+            var catalog = modelCatalog
+            catalog?.defaults.model = selection.model; catalog?.defaults.provider = selection.provider
+            let baseUrl = catalog?.entry(for: selection)?.baseUrl
+            catalog?.defaults.baseUrl = baseUrl
+            catalog?.defaults.reasoningEffort = resolved.reasoningEffort
+            optimisticValue(\.model, selection.model, in: transaction)
+            optimisticValue(\.modelBaseURL, catalog?.defaults.baseUrl ?? "", in: transaction)
+            optimisticValue(\.modelCatalog, catalog, in: transaction)
+            optimisticValue(\.modelConfigured, true, in: transaction)
+            for bot in bots where bot.modelOverride == nil { optimisticBot(bot.id, \.effectiveModel, Optional(resolved), in: transaction) }
+        }, save: { let _: ModelResponse? = await self.write("settings/model", method: "PUT", payload: selection, as: ModelResponse.self) })
     }
 
     func businessRequest<Response: Decodable & Sendable>(_ path: String, method: String = "GET", body: Data? = nil, requestId: String? = nil) async throws -> Response {
         guard let client else { throw ServiceError.configuration("Connect your Mac to continue.") }
         let generation = connectionGeneration
+        let business = businessGeneration
         let response: Response = try await client.request(path, method: method, body: body, idempotencyKey: requestId, retryTransient: method != "POST")
-        guard generation == connectionGeneration else { throw CancellationError() }
+        guard generation == connectionGeneration, business == businessGeneration else { throw CancellationError() }
         return response
     }
 
@@ -1454,8 +1526,9 @@ final class AppStore {
             workCapacity = ParallelWorkSettings(limit: value, effectiveLimit: value ?? automatic, automaticLimit: automatic)
             return
         }
-        let _: ParallelWorkSettings? = await write("settings/work-capacity", method: "PUT",
-            payload: WorkerLimitRequest(limit: value, bot: false), as: ParallelWorkSettings.self)
+        let automatic = workCapacity?.automaticLimit ?? 4
+        optimistically("settings/work-capacity", change: { optimisticValue(\.workCapacity, Optional(ParallelWorkSettings(limit: value, effectiveLimit: value ?? automatic, automaticLimit: automatic)), in: $0) },
+                       save: { let _: ParallelWorkSettings? = await self.write("settings/work-capacity", method: "PUT", payload: WorkerLimitRequest(limit: value, bot: false), as: ParallelWorkSettings.self) })
     }
 
     /// Replace the whole fallback chain of Hermes with `models`, in order.
@@ -1464,8 +1537,8 @@ final class AppStore {
             fallback = FallbackSettings(models: models)
             return
         }
-        let _: FallbackSettings? = await write("settings/fallback", method: "PUT",
-            payload: FallbackRequest(models: models), as: FallbackSettings.self)
+        optimistically("settings/fallback", change: { optimisticValue(\.fallback, Optional(FallbackSettings(models: models)), in: $0) },
+                       save: { let _: FallbackSettings? = await self.write("settings/fallback", method: "PUT", payload: FallbackRequest(models: models), as: FallbackSettings.self) })
     }
 
     func setWorkerLimit(_ value: Int?, botId: String? = nil) async {
@@ -1478,9 +1551,12 @@ final class AppStore {
             return
         }
         if let botId {
-            let _: Bot? = await write("bots/\(botId)", method: "PATCH", payload: WorkerLimitRequest(limit: value, bot: true), as: Bot.self)
+            optimistically("bot/\(botId)", change: { optimisticBot(botId, \.workerLimit, value, in: $0) },
+                           save: { let _: Bot? = await self.write("bots/\(botId)", method: "PATCH", payload: WorkerLimitRequest(limit: value, bot: true), as: Bot.self) })
         } else {
-            let _: ParallelWorkSettings? = await write("settings/parallel-work", method: "PUT", payload: WorkerLimitRequest(limit: value, bot: false), as: ParallelWorkSettings.self)
+            let automatic = parallelWork?.automaticLimit ?? 4
+            optimistically("settings/parallel-work", change: { optimisticValue(\.parallelWork, Optional(ParallelWorkSettings(limit: value, effectiveLimit: value ?? automatic, automaticLimit: automatic)), in: $0) },
+                           save: { let _: ParallelWorkSettings? = await self.write("settings/parallel-work", method: "PUT", payload: WorkerLimitRequest(limit: value, bot: false), as: ParallelWorkSettings.self) })
         }
     }
 
@@ -1494,9 +1570,15 @@ final class AppStore {
             return
         }
         if let botId {
-            let _: Bot? = await write("bots/\(botId)", method: "PATCH", payload: BotApprovalRequest(value: value), as: Bot.self)
+            optimistically("bot/\(botId)", change: { transaction in
+                optimisticBot(botId, \.approvalOverride, value, in: transaction)
+                optimisticBot(botId, \.effectiveApproval, value ?? approvals?.defaults, in: transaction)
+            }, save: { let _: Bot? = await self.write("bots/\(botId)", method: "PATCH", payload: BotApprovalRequest(value: value), as: Bot.self) })
         } else if let value {
-            let _: ApprovalSettings? = await write("settings/approvals", method: "PUT", payload: ApprovalRequest(mode: value), as: ApprovalSettings.self)
+            optimistically("settings/approvals", change: { transaction in
+                if let settings = approvals { optimisticValue(\.approvals, Optional(ApprovalSettings(defaults: value, modes: settings.modes)), in: transaction) }
+                for bot in bots where bot.approvalOverride == nil { optimisticBot(bot.id, \.effectiveApproval, Optional(value), in: transaction) }
+            }, save: { let _: ApprovalSettings? = await self.write("settings/approvals", method: "PUT", payload: ApprovalRequest(mode: value), as: ApprovalSettings.self) })
         }
     }
 
@@ -1511,9 +1593,10 @@ final class AppStore {
             bots[index].effectiveModel = selection.map { modelCatalog?.resolved($0) ?? $0 } ?? modelCatalog?.defaults.selection
             return true
         }
-        let response: Bot? = await write("bots/\(botId)", method: "PATCH",
-                                          payload: BotModelRequest(modelOverride: selection), as: Bot.self)
-        return response != nil
+        return optimistically("bot/\(botId)", change: { transaction in
+            optimisticBot(botId, \.modelOverride, selection, in: transaction)
+            optimisticBot(botId, \.effectiveModel, selection.map { modelCatalog?.resolved($0) ?? $0 } ?? modelCatalog?.defaults.selection, in: transaction)
+        }, save: { let _: Bot? = await self.write("bots/\(botId)", method: "PATCH", payload: BotModelRequest(modelOverride: selection), as: Bot.self) })
     }
 
     func uploadAttachment(bot: Bot, url: URL) async -> Artifact? {
@@ -1680,7 +1763,7 @@ final class AppStore {
         // The Mac confirmed a pin or a delete during this request, so this list can be older. Ask again.
         guard changes == documentChanges else { return await loadDocuments(quiet: quiet) }
         teamBots = response.teamBots ?? []
-        documents = response.documents
+        optimisticUpdates.receive { documents = response.documents }
         return true
     }
 
@@ -1728,7 +1811,7 @@ final class AppStore {
         guard changes == teamChanges else { return await loadTeam() }
         // Each change of a chat loads the list. A list that changes nothing does not draw the Chats list again.
         let before = team
-        assign(\.team, response)
+        optimisticUpdates.receive { assign(\.team, response) }
         teamListLoaded(before, response)
         assign(\.teamLoadError, nil)
         teamListVersion += 1
@@ -1764,6 +1847,8 @@ final class AppStore {
     private func reloadTeamChats(_ chats: Set<TeamChatKey>) {
         for chat in chats where teamChats[chat] != nil {
             Task { await loadTeamChat(chat) }
+            // The alerts of a choice of the filter change with the chat.
+            if teamAlertFilters[chat] != nil { Task { await loadTeamAlerts(chat) } }
         }
     }
 
@@ -1799,14 +1884,17 @@ final class AppStore {
         teamChanges += 1
         defer { Task { await loadTeam() } }
         if let room, let write, teamWrites[room.room] != write { return }
-        var rooms = team ?? TeamRooms(rooms: [], helper: true)
-        if let room {
-            if let index = rooms.rooms.firstIndex(where: { $0.room == room.room }) { rooms.rooms[index] = room }
-            else { rooms.rooms.append(room) }
+        optimisticUpdates.receive {
+            var rooms = team ?? TeamRooms(rooms: [], helper: true)
+            if let room {
+                if let index = rooms.rooms.firstIndex(where: { $0.room == room.room }) { rooms.rooms[index] = room }
+                else { rooms.rooms.append(room) }
         }
         if let id { rooms.rooms.removeAll { $0.room == id } }
         team = rooms
         teamLoadError = nil
+        }
+
     }
 
     /// Makes a team. This Mac is its admin. Return whether the Mac made it.
@@ -1836,83 +1924,81 @@ final class AppStore {
 
     /// Changes the name that the team sees for this person.
     func renameTeamMember(_ room: TeamRoom, to memberName: String) async -> Bool {
-        let ticket = startTeamWrite(room.room)
-        let answer: TeamRoomAnswer? = await write("team/rooms/\(room.room)", method: "PATCH",
-                                                  payload: TeamProfileRequest(memberName: memberName),
-                                                  as: TeamRoomAnswer.self, refreshInBackground: true)
-        guard let answer else { return false }
-        TeamMemberName.remember(memberName)
-        applyTeamChange(room: answer.room, write: ticket)
-        return true
+        guard let member = room.ownMember?.id else { return false }
+        return optimistically("team/\(room.room)", change: { transaction in
+            optimisticUpdates.set("team/\(room.room)/member/\(member)/name", to: memberName, in: transaction,
+                read: { self.team?.rooms.first { $0.room == room.room }?.members?.first { $0.id == member }?.name ?? "" },
+                write: { value in
+                    if let i = self.team?.rooms.firstIndex(where: { $0.room == room.room }), let j = self.team?.rooms[i].members?.firstIndex(where: { $0.id == member }) { self.team?.rooms[i].members?[j].name = value }
+                })
+        }, save: {
+            let answer: TeamRoomAnswer? = await self.write("team/rooms/\(room.room)", method: "PATCH", payload: TeamProfileRequest(memberName: memberName), as: TeamRoomAnswer.self)
+            if let answer { TeamMemberName.remember(memberName); self.applyTeamChange(room: answer.room) }
+        })
     }
 
     /// Turns the notifications of a team on or off for the phones of this Mac. Return whether the Mac did it. The list
     /// then loads again, so a later write of the same room keeps the order of the Mac.
     func setTeamNotifications(_ room: String, enabled: Bool) async -> Bool {
-        let ticket = startTeamWrite(room)
-        let answer: TeamNotificationsAnswer? = await write("team/rooms/\(room)/notifications", method: "PUT",
-                                                           payload: TeamNotificationsRequest(enabled: enabled),
-                                                           as: TeamNotificationsAnswer.self, refreshInBackground: true)
-        guard let answer else { return false }
-        var changed = team?.rooms.first { $0.room == room }
-        changed?.notifications = answer.notifications
-        applyTeamChange(room: changed, write: ticket)
-        return true
+        return optimistically("team/\(room)", change: { optimisticTeam(room, \.notifications, Optional(enabled), in: $0) }, save: {
+            let answer: TeamNotificationsAnswer? = await self.write("team/rooms/\(room)/notifications", method: "PUT", payload: TeamNotificationsRequest(enabled: enabled), as: TeamNotificationsAnswer.self)
+            self.optimisticUpdates.receive {
+                if let answer, let index = self.team?.rooms.firstIndex(where: { $0.room == room }) { self.team?.rooms[index].notifications = answer.notifications }
+            }
+            self.teamChanges += 1
+        })
     }
 
     /// Mutes or unmutes one named chat of a team for this person (TeamChatMute). Return whether the Mac did it.
     ///
-    /// One request of a chat runs at a time: a second one while the first runs does nothing (TeamChatMute.waits).
+    /// The choice is local immediately. Saves of the same team run in order.
     /// The answer changes only the choice of its own chat in the list as it is now, so a request of another chat or
     /// of the switch of the team does not drop it. The choice that waits goes only when this request ends: after the
     /// answer is in the list, or after a failure, which shows the old state again.
     @discardableResult
     func setTeamChatNotifications(_ room: String, chat: String, enabled: Bool) async -> Bool {
-        guard !TeamChatMute.waits(chat, teamChatMuteChoices) else { return false }
-        teamChatMuteChoices[chat] = enabled
-        defer { teamChatMuteChoices[chat] = nil }
-        let answer: TeamChatNotificationsAnswer? = await write(
-            "team/rooms/\(room)/chats/\(chat)/notifications", method: "PUT",
-            payload: TeamNotificationsRequest(enabled: enabled), as: TeamChatNotificationsAnswer.self,
-            refreshInBackground: true)
-        guard let answer else { return false }
-        if var list = team, let index = list.rooms.firstIndex(where: { $0.room == room }) {
-            list.rooms[index] = TeamChatMute.applying([answer.chat: answer.notifications], to: list.rooms[index])
-            team = list
-        }
-        // A list that the app asked for before the answer can be older than it, so the list loads again.
-        teamChanges += 1
-        Task { await loadTeam() }
-        return true
+        let path = "team/rooms/\(room)/chats/\(chat)/notifications"
+        return optimistically(path, change: { transaction in
+            optimisticUpdates.set(path, to: Optional(enabled), in: transaction,
+                read: { self.team?.rooms.first { $0.room == room }?.chats?.first { $0.id == chat }?.notifications },
+                write: { value in
+                    if let value, let i = self.team?.rooms.firstIndex(where: { $0.room == room }),
+                       let j = self.team?.rooms[i].chats?.firstIndex(where: { $0.id == chat }) { self.team?.rooms[i].chats?[j].notifications = value }
+                })
+        }, save: {
+            let answer: TeamChatNotificationsAnswer? = await self.write(path, method: "PUT", payload: TeamNotificationsRequest(enabled: enabled), as: TeamChatNotificationsAnswer.self)
+            self.optimisticUpdates.receive {
+                if let answer, let i = self.team?.rooms.firstIndex(where: { $0.room == room }) { self.team?.rooms[i] = TeamChatMute.applying([answer.chat: answer.notifications], to: self.team!.rooms[i]) }
+            }
+            self.teamChanges += 1
+        })
     }
 
     /// Pins or unpins a chat of a team for this person (TeamChatPin): the Team chat when `chat` is nil, else a named
-    /// chat. Return whether the Mac did it. One request of a chat runs at a time, and the answer changes only that chat
+    /// chat. Return whether the change was queued. Each answer changes only that chat
     /// in the list as it is now, as for a mute.
     @discardableResult
     func setTeamChatPinned(_ room: String, chat: String?, pinned: Bool) async -> Bool {
-        let key = TeamChatPin.key(room: room, chat: chat)
-        guard !TeamChatPin.waits(key, teamChatPinChoices) else { return false }
-        teamChatPinChoices[key] = pinned
-        defer { teamChatPinChoices[key] = nil }
         let path = "team/rooms/\(room)" + (chat.map { "/chats/\($0)" } ?? "") + "/pin"
-        let answer: TeamChatPinAnswer? = await write(path, method: "PUT", payload: TeamPinRequest(pinned: pinned),
-                                                     as: TeamChatPinAnswer.self, refreshInBackground: true)
-        guard let answer else { return false }
-        if var list = team, let index = list.rooms.firstIndex(where: { $0.room == room }) {
-            if let chat = answer.chat {
-                if let named = list.rooms[index].chats?.firstIndex(where: { $0.id == chat }) {
-                    list.rooms[index].chats?[named].pinned = answer.pinned
-                }
-            } else {
-                list.rooms[index].pinned = answer.pinned
+        return optimistically(path, change: { transaction in
+            optimisticUpdates.set(path, to: Optional(pinned), in: transaction,
+                read: {
+                    guard let value = self.team?.rooms.first(where: { $0.room == room }) else { return nil }
+                    return chat.flatMap { id in value.chats?.first { $0.id == id }?.pinned } ?? (chat == nil ? value.pinned : nil)
+                }, write: { value in
+                    guard let value, let i = self.team?.rooms.firstIndex(where: { $0.room == room }) else { return }
+                    if let chat, let j = self.team?.rooms[i].chats?.firstIndex(where: { $0.id == chat }) { self.team?.rooms[i].chats?[j].pinned = value }
+                    else if chat == nil { self.team?.rooms[i].pinned = value }
+                })
+        }, save: {
+            let answer: TeamChatPinAnswer? = await self.write(path, method: "PUT", payload: TeamPinRequest(pinned: pinned), as: TeamChatPinAnswer.self)
+            self.optimisticUpdates.receive {
+                guard let answer, let i = self.team?.rooms.firstIndex(where: { $0.room == room }) else { return }
+                if let chat = answer.chat, let j = self.team?.rooms[i].chats?.firstIndex(where: { $0.id == chat }) { self.team?.rooms[i].chats?[j].pinned = answer.pinned }
+                else if answer.chat == nil { self.team?.rooms[i].pinned = answer.pinned }
             }
-            team = list
-        }
-        // A list that the app asked for before the answer can be older than it, so the list loads again.
-        teamChanges += 1
-        Task { await loadTeam() }
-        return true
+            self.teamChanges += 1
+        })
     }
 
     /// Shares a page of this Mac with a team, or stops (backend/coconut/team_pages.py). Return whether the Mac did it.
@@ -1922,24 +2008,25 @@ final class AppStore {
     /// keeps only the newest list, which has each act that the Mac confirmed.
     @discardableResult
     func sharePage(_ document: BotDocument, with room: String, shared: Bool) async -> Bool {
-        pageShareCount += 1
-        let act = pageShareCount
-        pageShareActs[document.id] = act
-        // The service reads the path as it comes, so an ID keeps its unreserved characters, such as the dashes of a
-        // UUID.
-        let unreserved = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-._~"))
-        func part(_ text: String) -> String { text.addingPercentEncoding(withAllowedCharacters: unreserved) ?? text }
-        let answer: PageShareAnswer? = await write("team/rooms/\(part(room))/pages/\(part(document.id))",
-                                                   method: shared ? "PUT" : "DELETE", payload: EmptyRequest(),
-                                                   as: PageShareAnswer.self, refreshInBackground: true)
-        guard let answer else { return false }
+        let name = team?.rooms.first(where: { $0.room == room })?.name ?? room
+        let path = "team/rooms/\(room)/pages/\(document.id)"
         documentChanges += 1
-        if pageShareActs[document.id] == act, let index = documents?.firstIndex(where: { $0.id == document.id }) {
-            documents?[index].teams = answer.document.teams
-            documents?[index].audience = answer.document.audience
-        }
-        await loadDocuments()
-        return true
+        return optimistically("document/\(document.id)", change: { transaction in
+            optimisticUpdates.set("document/\(document.id)/share/\(room)", to: shared, in: transaction,
+                read: { self.documents?.first { $0.id == document.id }?.teams?.contains { $0.room == room } ?? false },
+                write: { value in
+                    guard let i = self.documents?.firstIndex(where: { $0.id == document.id }) else { return }
+                    self.documents?[i].teams?.removeAll { $0.room == room }
+                    if value { self.documents?[i].teams = (self.documents?[i].teams ?? []) + [DocumentTeam(room: room, name: name)] }
+                    self.documents?[i].audience = self.documents?[i].teams?.isEmpty == false ? "team" : nil
+                })
+        }, save: {
+            let answer: PageShareAnswer? = await self.write(path, method: shared ? "PUT" : "DELETE", payload: EmptyRequest(), as: PageShareAnswer.self)
+            self.optimisticUpdates.receive {
+                if let answer, let i = self.documents?.firstIndex(where: { $0.id == document.id }) { self.documents?[i].teams = answer.document.teams; self.documents?[i].audience = answer.document.audience }
+            }
+            self.documentChanges += 1
+        })
     }
 
     /// Asks the Mac for a new invite link. The link is a secret: the caller gives it to the share sheet and keeps no
@@ -1955,13 +2042,18 @@ final class AppStore {
     /// The admin takes another member out of a team (backend/coconut/team.py, `team_remove`). Return whether the Mac
     /// did it. The answer is the room without the member.
     func removeTeamMember(_ member: String, from room: TeamRoom) async -> Bool {
-        let ticket = startTeamWrite(room.room)
-        let answer: TeamRoomAnswer? = await write("team/rooms/\(room.room)/members/\(member)", method: "DELETE",
-                                                  payload: EmptyRequest(), as: TeamRoomAnswer.self,
-                                                  refreshInBackground: true)
-        guard let answer else { return false }
-        applyTeamChange(room: answer.room, write: ticket)
-        return true
+        return optimistically("team/\(room.room)", change: { transaction in
+            optimisticUpdates.set("0:team/\(room.room)/member/\(member)", to: Optional<TeamMember>.none, in: transaction,
+                read: { self.team?.rooms.first { $0.room == room.room }?.members?.first { $0.id == member } },
+                write: { value in
+                    guard let i = self.team?.rooms.firstIndex(where: { $0.room == room.room }) else { return }
+                    self.team?.rooms[i].members?.removeAll { $0.id == member }
+                    if let value { self.team?.rooms[i].members?.append(value) }
+                })
+        }, save: {
+            let answer: TeamRoomAnswer? = await self.write("team/rooms/\(room.room)/members/\(member)", method: "DELETE", payload: EmptyRequest(), as: TeamRoomAnswer.self)
+            if let answer { self.applyTeamChange(room: answer.room) }
+        })
     }
 
     /// Makes a named chat of a team (docs/team-log.md, "Chats of a team"). Return the ID of the chat, or nil when the Mac
@@ -1972,12 +2064,26 @@ final class AppStore {
 
     /// Gives a named chat a new name. Return whether the Mac did it.
     func renameTeamChat(_ room: TeamRoom, chat: String, name: String) async -> Bool {
-        await changeTeamChat(room, path: "team/rooms/\(room.room)/chats/\(chat)", method: "PATCH", name: name) != nil
+        return optimistically("team/\(room.room)", change: { transaction in
+            optimisticUpdates.set("team/\(room.room)/chat/\(chat)/name", to: name, in: transaction,
+                read: { self.team?.rooms.first { $0.room == room.room }?.chats?.first { $0.id == chat }?.name ?? "" },
+                write: { value in
+                    if let i = self.team?.rooms.firstIndex(where: { $0.room == room.room }), let j = self.team?.rooms[i].chats?.firstIndex(where: { $0.id == chat }) { self.team?.rooms[i].chats?[j].name = value }
+                })
+        }, save: { _ = await self.changeTeamChat(room, path: "team/rooms/\(room.room)/chats/\(chat)", method: "PATCH", name: name) })
     }
 
     /// Deletes a named chat for each member. Return whether the Mac did it. The chat and its messages leave the app.
     func deleteTeamChat(_ room: TeamRoom, chat: String) async -> Bool {
-        await changeTeamChat(room, path: "team/rooms/\(room.room)/chats/\(chat)", method: "DELETE", name: nil) != nil
+        return optimistically("team/\(room.room)", change: { transaction in
+            optimisticUpdates.set("0:team/\(room.room)/chat/\(chat)", to: Optional<TeamNamedChat>.none, in: transaction,
+                read: { self.team?.rooms.first { $0.room == room.room }?.chats?.first { $0.id == chat } },
+                write: { value in
+                    guard let i = self.team?.rooms.firstIndex(where: { $0.room == room.room }) else { return }
+                    self.team?.rooms[i].chats?.removeAll { $0.id == chat }
+                    if let value { self.team?.rooms[i].chats?.append(value) }
+                })
+        }, save: { _ = await self.changeTeamChat(room, path: "team/rooms/\(room.room)/chats/\(chat)", method: "DELETE", name: nil) })
     }
 
     /// One write of the named chats of a room. The answer is the room with its chats, and the list loads again.
@@ -2002,22 +2108,32 @@ final class AppStore {
 
     /// Closes an own notice for each member. It stays on the board as ended.
     func closeTeamNotice(_ room: TeamRoom, notice: WorkspaceNotice) async -> Bool {
-        await changeTeamNotices(room, path: "team/rooms/\(room.room)/notices/\(notice.id)", method: "PATCH",
-                                payload: TeamNoticeChange(closed: true))
+        optimistically("team/\(room.room)", change: { transaction in
+            optimisticNotice(room.room, notice.id, \.closed, true, in: transaction)
+            optimisticNotice(room.room, notice.id, \.active, false, in: transaction)
+        }, save: { _ = await self.changeTeamNotices(room, path: "team/rooms/\(room.room)/notices/\(notice.id)", method: "PATCH", payload: TeamNoticeChange(closed: true)) })
     }
 
     /// Removes an own notice from the board of each member.
     func deleteTeamNotice(_ room: TeamRoom, notice: WorkspaceNotice) async -> Bool {
-        await changeTeamNotices(room, path: "team/rooms/\(room.room)/notices/\(notice.id)", method: "DELETE",
-                                payload: EmptyRequest())
+        optimistically("team/\(room.room)", change: { transaction in
+            optimisticUpdates.set("0:team/\(room.room)/notice/\(notice.id)", to: Optional<WorkspaceNotice>.none, in: transaction,
+                read: { self.team?.rooms.first { $0.room == room.room }?.notices?.first { $0.id == notice.id } },
+                write: { value in
+                    guard let i = self.team?.rooms.firstIndex(where: { $0.room == room.room }) else { return }
+                    self.team?.rooms[i].notices?.removeAll { $0.id == notice.id }
+                    if let value { self.team?.rooms[i].notices?.append(value) }
+                })
+        }, save: { _ = await self.changeTeamNotices(room, path: "team/rooms/\(room.room)/notices/\(notice.id)", method: "DELETE", payload: EmptyRequest()) })
     }
 
     /// Tells the team that this person has seen these notices. A notice that the person has seen writes nothing.
     func markTeamNoticesSeen(_ room: TeamRoom, notices: [WorkspaceNotice]) async {
         let ids = notices.filter { !$0.seen }.map(\.id)
         guard !ids.isEmpty, !isDemo else { return }
-        _ = await changeTeamNotices(room, path: "team/rooms/\(room.room)/notices/seen", method: "POST",
-                                    payload: TeamNoticesSeen(notices: ids), quiet: true)
+        optimistically("team/\(room.room)", change: { transaction in
+            for id in ids { optimisticNotice(room.room, id, \.seen, true, in: transaction) }
+        }, save: { _ = await self.changeTeamNotices(room, path: "team/rooms/\(room.room)/notices/seen", method: "POST", payload: TeamNoticesSeen(notices: ids), quiet: true) })
     }
 
     private func changeTeamNotices<Payload: Encodable>(_ room: TeamRoom, path: String, method: String,
@@ -2063,6 +2179,7 @@ final class AppStore {
             teamReadPosted[chat] = nil
             teamReadPosting[chat] = nil
             teamChatsOnScreen.remove(chat)
+            dropTeamAlertFilter(chat)
         }
         if pending { try? saveOutgoing() }
     }
@@ -2228,6 +2345,85 @@ final class AppStore {
         teamChatsOnScreen.remove(chat)
         teamOlderRequests[chat] = nil
         teamChats[chat]?.keepNewestPage()
+        // A chat opens with each message, so a message of a notification is never behind a filter.
+        dropTeamAlertFilter(chat)
+    }
+
+    // MARK: Alerts of a team chat
+
+    /// The filter that a chat uses: the choice of the person while the chat offers it, else "All".
+    func teamAlertFilter(_ chat: TeamChatKey) -> TeamAlertFilter {
+        TeamAlertFilters.effective(teamAlertFilters[chat] ?? .all, summary: teamChats[chat]?.alerts)
+    }
+
+    /// The person chose a filter of the alerts of a chat. The chat shows the alerts of the choice that the app has at
+    /// once, and reads the newest page of the choice from the Mac. The choice changes no read position and goes to no
+    /// Mac.
+    func setTeamAlertFilter(_ chat: TeamChatKey, _ filter: TeamAlertFilter) {
+        guard filter != teamAlertFilters[chat] ?? .all else { return }
+        guard !filter.isAll else { return dropTeamAlertFilter(chat) }
+        teamAlertRequests[chat] = nil
+        teamAlertFilters[chat] = filter
+        var start = TeamAlertFilters.start(from: teamChats[chat], filter: filter)
+        // The preview has no Mac to ask.
+        if isDemo { start.loaded = true }
+        teamAlertChats[chat] = start
+        Task { await loadTeamAlerts(chat) }
+    }
+
+    private func dropTeamAlertFilter(_ chat: TeamChatKey) {
+        teamAlertRequests[chat] = nil
+        if teamAlertFilters[chat] != nil { teamAlertFilters[chat] = nil }
+        if teamAlertChats[chat] != nil { teamAlertChats[chat] = nil }
+    }
+
+    /// Reads the newest page of the alerts of the choice of a chat. Only the answer of the latest request of the
+    /// same choice goes into the chat.
+    @discardableResult
+    func loadTeamAlerts(_ chat: TeamChatKey) async -> Bool {
+        guard !isDemo, let client, let filter = teamAlertFilters[chat] else { return false }
+        teamChatRequestCount += 1
+        let request = teamChatRequestCount
+        teamAlertRequests[chat] = request
+        let page: TeamMessagePage
+        do {
+            page = try await client.request("\(chat.path)/messages?limit=\(Self.teamPage)\(chat.query)\(filter.query)")
+        } catch {
+            guard self.client === client, teamAlertRequests[chat] == request else { return false }
+            if !(error is CancellationError) { teamAlertChats[chat]?.error = Self.teamMessage(error) }
+            return false
+        }
+        guard self.client === client, teamAlertRequests[chat] == request, teamAlertFilters[chat] == filter,
+              teamListHas(chat) else { return false }
+        var merged = teamAlertChats[chat] ?? TeamChat()
+        merged.merge(page, requested: nil)
+        merged.error = nil
+        if teamAlertChats[chat] != merged { teamAlertChats[chat] = merged }
+        return true
+    }
+
+    /// Reads the next older page of the alerts of the choice of a chat.
+    @discardableResult
+    func loadEarlierTeamAlerts(_ chat: TeamChatKey) async -> Bool {
+        guard !isDemo, let client, let filter = teamAlertFilters[chat], let before = teamAlertChats[chat]?.before,
+              teamAlertChats[chat]?.loadingEarlier == false else { return false }
+        teamAlertChats[chat]?.loadingEarlier = true
+        defer { if self.client === client { teamAlertChats[chat]?.loadingEarlier = false } }
+        let page: TeamMessagePage
+        do {
+            page = try await client.request(
+                "\(chat.path)/messages?before=\(before)&limit=\(Self.teamPage)\(chat.query)\(filter.query)")
+        } catch {
+            guard self.client === client else { return false }
+            if !(error is CancellationError) { report(error) }
+            return false
+        }
+        // A new choice, or a newer page that started the list again, leaves this page without a place.
+        guard self.client === client, teamAlertFilters[chat] == filter, teamAlertChats[chat]?.before == before else {
+            return false
+        }
+        teamAlertChats[chat]?.merge(page, requested: before)
+        return true
     }
 
     /// The messages of one page. The chat reads the newest page first, and one more for each "Load earlier messages".
@@ -2563,39 +2759,72 @@ final class AppStore {
     /// One document with the content of its current version. Nil when the Mac cannot send it.
     func loadDocument(id: String) async -> BotDocument? {
         if isDemo { return BotDocument.previews(bots: bots).first { $0.id == id } }
-        guard let client else { return nil }
-        do { return try await client.request("documents/\(id)") }
-        catch { report(error); return nil }
+        guard let client else { return documentContents[id] }
+        let generation = connectionGeneration
+        do {
+            let value: BotDocument = try await client.request("documents/\(id)")
+            guard generation == connectionGeneration, self.client === client else { return nil }
+            if documentContents.count >= 30, documentContents[id] == nil { documentContents.removeValue(forKey: documentContents.keys.sorted().first!) }
+            if let current = documentContents[id], current.version > value.version { return current }
+            documentContents[id] = value
+            return value
+        } catch {
+            guard generation == connectionGeneration else { return nil }
+            if let failure = error as? ServiceError, case .response(let status, _) = failure, [403, 404, 410].contains(status) {
+                documentContents[id] = nil
+                report(error)
+                return nil
+            }
+            if documentContents[id] == nil { report(error) }
+            return documentContents[id]
+        }
     }
 
-    /// Delete a document on the Mac. The row leaves the list only after the Mac confirms. Return whether it did.
+    /// Local list actions finish immediately. A failed save restores the row and reports the error.
     @discardableResult
     func deleteDocument(_ document: BotDocument) async -> Bool {
-        if !isDemo {
-            let result: Acknowledgement? = await write("documents/\(document.id)", method: "DELETE",
-                                                       payload: EmptyRequest(), as: Acknowledgement.self)
-            guard result?.ok == true else { return false }
-            documentChanges += 1
-        }
-        documents?.removeAll { $0.id == document.id }
-        return true
+        if isDemo { documents?.removeAll { $0.id == document.id }; return true }
+        documentChanges += 1
+        return optimistically("document/\(document.id)", change: { transaction in
+            optimisticUpdates.set("0:document/\(document.id)", to: Optional<BotDocument>.none, in: transaction,
+                read: { self.documents?.first { $0.id == document.id } }, write: { value in
+                    if let value { self.documents = StateUpdates.merge([value], into: self.documents ?? []) }
+                    else { self.documents?.removeAll { $0.id == document.id } }
+                })
+        }, save: {
+            let result: Acknowledgement? = await self.write("documents/\(document.id)", method: "DELETE", payload: EmptyRequest(), as: Acknowledgement.self)
+            self.optimisticUpdates.receive {
+                if result?.ok == true { self.documents?.removeAll { $0.id == document.id }; self.documentContents[document.id] = nil }
+            }
+            self.documentChanges += 1
+        })
     }
 
-    /// Pin a document in the Library, or remove its pin. The document moves only after the Mac confirms.
     func pinDocument(_ document: BotDocument, pinned: Bool) async {
-        if !isDemo {
-            let result: BotDocument? = await write("documents/\(document.id)", method: "PATCH",
-                                                   payload: PinRequest(pinned: pinned), as: BotDocument.self,
-                                                   refreshInBackground: true)
-            guard result != nil else { return }
-            documentChanges += 1
-        }
-        // An open document reads its pin from the list. A list without the document is not loaded yet.
-        if documents?.contains(where: { $0.id == document.id }) != true { await loadDocuments() }
-        if let index = documents?.firstIndex(where: { $0.id == document.id }) { documents?[index].pinned = pinned }
+        if isDemo { if let i = documents?.firstIndex(where: { $0.id == document.id }) { documents?[i].pinned = pinned }; return }
+        documentChanges += 1
+        optimistically("document/\(document.id)", change: { optimisticDocument(document.id, \.pinned, Optional(pinned), in: $0) }, save: {
+            let result: BotDocument? = await self.write("documents/\(document.id)", method: "PATCH", payload: PinRequest(pinned: pinned), as: BotDocument.self)
+            self.optimisticUpdates.receive {
+                if let result, let i = self.documents?.firstIndex(where: { $0.id == document.id }) { self.documents?[i].pinned = result.pinned }
+            }
+            self.documentChanges += 1
+        })
     }
 
-    private func write<Response: Decodable & Sendable, Payload: Encodable>(_ path: String, method: String = "POST", payload: Payload, as type: Response.Type, quiet: Bool = false, refreshInBackground: Bool = false, idempotencyKey: String? = nil, onFailure: ((Error) -> Void)? = nil, onSuccess: ((Response) -> Void)? = nil) async -> Response? {
+    private func write<Response: Decodable & Sendable, Payload: Encodable>(_ path: String, method: String = "POST", payload: Payload, as type: Response.Type, quiet: Bool = false, refreshInBackground: Bool = true, idempotencyKey: String? = nil, onFailure: ((Error) -> Void)? = nil, onSuccess: ((Response) -> Void)? = nil) async -> Response? {
+        let origin = pairing
+        var confirmed = false
+        defer { if !confirmed { optimisticUpdates.markFailed() } }
+        if method == "POST", ["/messages", "/replies", "/run", "/context"].contains(where: { path.hasSuffix($0) }),
+           !(await optimisticUpdates.wait(for: "native-settings")) {
+            guard pairing == origin else { return nil }
+            let message = "Your agent settings did not save. Review them before retrying this message or task."
+            error = message
+            onFailure?(ServiceError.configuration(message))
+            return nil
+        }
+        guard pairing == origin else { return nil }
         let storedToken: String?
         do { storedToken = try PairingToken.lookup() } catch {
             if !quiet { self.error = error.localizedDescription }
@@ -2623,78 +2852,74 @@ final class AppStore {
             let body = try APIJSON.encode(payload)
             let requestSignature = method + " " + path + " " + SHA256.hash(data: body).description
             signature = requestSignature
-            let key = idempotencyKey ?? uncertainWriteKeys[requestSignature] ?? UUID().uuidString
-            if idempotencyKey == nil { uncertainWriteKeys[requestSignature] = key }
-            let receiptModel = model
-            let receiptBaseURL = modelBaseURL
-            let receiptCatalog = modelCatalog
-            let receiptApproval = approvals?.defaults
-            let receiptMCP = mcpServers
-            let receiptCapacityLimit = workCapacity?.limit
-            let receiptParallelLimit = parallelWork?.limit
-            let receiptFallback = fallback
-            let receiptMessages = messages
-            let receiptDecisions = decisions
-            let receiptBots = bots
-            let receiptRoutines = routines
-            let receiptNativeReadAt = nativeSettingsReadAt
-            let receiptCursor = cachedState?.cursor
-            let receiptEpoch = snapshotEpoch
+            let explicitKey = idempotencyKey ?? OptimisticRequest.id
+            let key = explicitKey ?? uncertainWriteKeys[requestSignature] ?? UUID().uuidString
+            if explicitKey == nil { uncertainWriteKeys[requestSignature] = key }
+            let (receiptModel, receiptBaseURL, receiptCatalog, receiptApproval, receiptMCP, receiptCapacityLimit, receiptParallelLimit, receiptFallback, receiptMessages, receiptDecisions, receiptBots, receiptRoutines, receiptNativeReadAt, receiptCursor, receiptEpoch) = optimisticUpdates.receive {
+                (model, modelBaseURL, modelCatalog, approvals?.defaults, mcpServers, workCapacity?.limit, parallelWork?.limit, fallback, messages, decisions, bots, routines, nativeSettingsReadAt, cachedState?.cursor, snapshotEpoch)
+            }
             let result: Response = try await client.request(path, method: method, body: body, idempotencyKey: key)
             guard belongsToPairing() else { return nil }
+            confirmed = true
             uncertainWriteKeys.removeValue(forKey: requestSignature)
             if !quiet { error = nil }
             let updatesNativeSettings = path.hasPrefix("settings/") || path.contains("routines") || (path.hasPrefix("bots/") && method == "PATCH")
             let receiptIsCurrent = cachedState?.cursor == receiptCursor && snapshotEpoch == receiptEpoch
+            snapshotEpoch = UUID()
             if updatesNativeSettings {
-                snapshotEpoch = UUID()
                 nativeSettingsTask?.cancel()
             }
-            if let bot = result as? Bot {
-                if let previous = receiptBots.first(where: { $0.id == bot.id }), let current = bots.first(where: { $0.id == bot.id }) {
-                    bots = StateUpdates.merge([StateUpdates.mergeBotReceipt(bot, original: previous, current: current)], into: bots)
-                } else if receiptIsCurrent { bots = StateUpdates.merge([bot], into: bots) }
-                cachedState?.bots = bots
-            } else if let routine = result as? Routine {
-                if bots.contains(where: { $0.id == routine.botId }) {
-                    let previous = receiptRoutines.first { $0.id == routine.id }
-                    let current = routines.first { $0.id == routine.id }
-                    if let previous, let current {
-                        routines = StateUpdates.merge([StateUpdates.mergeRoutineReceipt(routine, original: previous, current: current)], into: routines)
-                    } else if previous == nil, current == nil, receiptNativeReadAt == nativeSettingsReadAt {
-                        routines.append(routine)
+            optimisticUpdates.receive {
+                if let bot = result as? Bot {
+                    if let previous = receiptBots.first(where: { $0.id == bot.id }), let current = bots.first(where: { $0.id == bot.id }) {
+                        bots = StateUpdates.merge([StateUpdates.mergeBotReceipt(bot, original: previous, current: current)], into: bots)
+                    } else if receiptIsCurrent || path == "bots" { bots = StateUpdates.merge([bot], into: bots) }
+                    cachedState?.bots = bots
+                } else if let routine = result as? Routine {
+                    if bots.contains(where: { $0.id == routine.botId }) {
+                        let previous = receiptRoutines.first { $0.id == routine.id }
+                        let current = routines.first { $0.id == routine.id }
+                        if let previous, let current {
+                            routines = StateUpdates.merge([StateUpdates.mergeRoutineReceipt(routine, original: previous, current: current)], into: routines)
+                        } else if previous == nil, current == nil, receiptNativeReadAt == nativeSettingsReadAt {
+                            routines.append(routine)
+                        }
+                        cachedState?.routines = routines
                     }
+                }
+                if let settings = result as? ModelResponse, model == receiptModel, modelBaseURL == receiptBaseURL, modelCatalog == receiptCatalog {
+                    model = settings.model; modelConfigured = settings.modelConfigured
+                    modelBaseURL = settings.baseUrl ?? ""; modelCatalog = settings.modelCatalog
+                    for index in bots.indices where bots[index].modelOverride == nil {
+                        bots[index].effectiveModel = settings.modelCatalog?.defaults.selection
+                    }
+                } else if let settings = result as? ApprovalSettings, approvals?.defaults == receiptApproval { approvals = settings }
+                else if let settings = result as? FallbackSettings, fallback == receiptFallback { fallback = settings }
+                else if let settings = result as? MCPResponse, mcpServers == receiptMCP { mcpServers = settings.servers }
+                else if let settings = result as? ParallelWorkSettings {
+                    if path == "settings/work-capacity", workCapacity?.limit == receiptCapacityLimit {
+                        workCapacity = settings; cachedState?.workCapacity = settings
+                    } else if path == "settings/parallel-work", parallelWork?.limit == receiptParallelLimit { parallelWork = settings }
+                }
+                if method == "DELETE", path.hasPrefix("routines/") {
+                    routines.removeAll { "routines/" + $0.id == path }
                     cachedState?.routines = routines
                 }
-            }
-            if let settings = result as? ModelResponse, model == receiptModel, modelBaseURL == receiptBaseURL, modelCatalog == receiptCatalog {
-                model = settings.model; modelConfigured = settings.modelConfigured
-                modelBaseURL = settings.baseUrl ?? ""; modelCatalog = settings.modelCatalog
-                for index in bots.indices where bots[index].modelOverride == nil {
-                    bots[index].effectiveModel = settings.modelCatalog?.defaults.selection
+                if method == "DELETE", path.hasPrefix("bots/"), path.split(separator: "/").count == 2 {
+                    bots.removeAll { "bots/" + $0.id == path }
+                    cachedState?.bots = bots
                 }
-            } else if let settings = result as? ApprovalSettings, approvals?.defaults == receiptApproval { approvals = settings }
-            else if let settings = result as? FallbackSettings, fallback == receiptFallback { fallback = settings }
-            else if let settings = result as? MCPResponse, mcpServers == receiptMCP { mcpServers = settings.servers }
-            else if let settings = result as? ParallelWorkSettings {
-                if path == "settings/work-capacity", workCapacity?.limit == receiptCapacityLimit {
-                    workCapacity = settings; cachedState?.workCapacity = settings
-                } else if path == "settings/parallel-work", parallelWork?.limit == receiptParallelLimit { parallelWork = settings }
+                var callbackIsCurrent = receiptIsCurrent
+                if let receipt = result as? Message {
+                    callbackIsCurrent = receiptMessages.first(where: { $0.id == receipt.id })?.reactions == savedMessage(id: receipt.id)?.reactions
+                } else if let receipt = result as? Decision {
+                    callbackIsCurrent = receiptDecisions.first(where: { $0.id == receipt.id }) == decisions.first(where: { $0.id == receipt.id })
+                }
+                if callbackIsCurrent { onSuccess?(result) }
             }
-            if method == "DELETE", path.hasPrefix("routines/"),
-               StateUpdates.sameRoutineSettings(receiptRoutines.first(where: { "routines/" + $0.id == path }), routines.first(where: { "routines/" + $0.id == path })) {
-                routines.removeAll { "routines/" + $0.id == path }
-                cachedState?.routines = routines
-            }
-            var callbackIsCurrent = receiptIsCurrent
-            if let receipt = result as? Message {
-                callbackIsCurrent = receiptMessages.first(where: { $0.id == receipt.id })?.reactions == savedMessage(id: receipt.id)?.reactions
-            } else if let receipt = result as? Decision {
-                callbackIsCurrent = receiptDecisions.first(where: { $0.id == receipt.id }) == decisions.first(where: { $0.id == receipt.id })
-            }
-            if callbackIsCurrent { onSuccess?(result) }
+
             if refreshInBackground {
-                Task { await refreshAfterWrite(using: client) }
+                scheduleWriteRefresh(using: client)
             } else {
                 await refreshAfterWrite(using: client)
                 guard belongsToPairing() else { return nil }
@@ -2721,6 +2946,19 @@ final class AppStore {
                 if Self.isTransportFailure(error) && transportIsCurrent { recordSyncFailure(error) }
             }
             return nil
+        }
+    }
+
+    private func scheduleWriteRefresh(using client: APIClient) {
+        writeRefreshNeeded = true
+        guard writeRefreshTask == nil else { return }
+        writeRefreshTask = Task {
+            while writeRefreshNeeded {
+                writeRefreshNeeded = false
+                guard self.client === client else { break }
+                await refreshAfterWrite(using: client)
+            }
+            writeRefreshTask = nil
         }
     }
 
@@ -2875,53 +3113,55 @@ final class AppStore {
     }
 
     private func apply(_ incoming: StateSnapshot, persist: Bool) {
-        for reply in Self.newReplies(in: incoming, after: cachedState) {
-            Self.deliveryLog.info("reply_applied task=\(reply.taskId ?? "", privacy: .public) message=\(reply.id, privacy: .public) created=\(reply.createdAt, privacy: .public)")
-        }
-        var snapshot = incoming
-        if snapshot.contentOnly == true && cachedState != nil {
-            snapshot.model = model
-            snapshot.modelConfigured = modelConfigured
-            snapshot.baseUrl = modelBaseURL
-            snapshot.modelCatalog = modelCatalog
-            snapshot.approvals = approvals
-            snapshot.parallelWork = parallelWork
-            snapshot.fallback = fallback
-            snapshot.mcpServers = mcpServers
-            snapshot.routines = routines
-            snapshot.bots = preservingNativeSettings(in: snapshot.bots)
-        }
-        // The set holds each sent message of the state. Only a message that waits needs it.
-        if !outgoingMessages.isEmpty {
-            let confirmed = Set(snapshot.messages.compactMap(\.clientRequestId) + (snapshot.confirmedRequestIds ?? []))
-            if outgoingMessages.contains(where: { confirmed.contains($0.id) }) {
-                outgoingMessages.removeAll { confirmed.contains($0.id) }
-                try? saveOutgoing()
+        optimisticUpdates.receive {
+            for reply in Self.newReplies(in: incoming, after: cachedState) {
+                Self.deliveryLog.info("reply_applied task=\(reply.taskId ?? "", privacy: .public) message=\(reply.id, privacy: .public) created=\(reply.createdAt, privacy: .public)")
             }
+            var snapshot = incoming
+            if snapshot.contentOnly == true && cachedState != nil {
+                snapshot.model = model
+                snapshot.modelConfigured = modelConfigured
+                snapshot.baseUrl = modelBaseURL
+                snapshot.modelCatalog = modelCatalog
+                snapshot.approvals = approvals
+                snapshot.parallelWork = parallelWork
+                snapshot.fallback = fallback
+                snapshot.mcpServers = mcpServers
+                snapshot.routines = routines
+                snapshot.bots = preservingNativeSettings(in: snapshot.bots)
+            }
+            // The set holds each sent message of the state. Only a message that waits needs it.
+            if !outgoingMessages.isEmpty {
+                let confirmed = Set(snapshot.messages.compactMap(\.clientRequestId) + (snapshot.confirmedRequestIds ?? []))
+                if outgoingMessages.contains(where: { confirmed.contains($0.id) }) {
+                    outgoingMessages.removeAll { confirmed.contains($0.id) }
+                    try? saveOutgoing()
+                }
+            }
+            assign(\.bots, snapshot.bots)
+            assign(\.tasks, snapshot.tasks)
+            assign(\.messages, snapshot.messages)
+            assign(\.decisions, snapshot.decisions)
+            assign(\.artifacts, snapshot.artifacts)
+            assign(\.approvals, snapshot.approvals)
+            let previewLimit = ParallelWorkSettings(limit: nil, effectiveLimit: 4, automaticLimit: 4)
+            assign(\.workCapacity, snapshot.workCapacity ?? (isDemo ? previewLimit : nil))
+            assign(\.parallelWork, snapshot.parallelWork ?? (isDemo ? previewLimit : nil))
+            assign(\.fallback, snapshot.fallback ?? (isDemo ? FallbackSettings(models: []) : nil))
+            assign(\.mcpServers, snapshot.mcpServers ?? [])
+            assign(\.routines, snapshot.routines ?? [])
+            if foreground { scheduleDelivery() }
+            cursor = snapshot.cursor
+            assign(\.provider, snapshot.provider)
+            assign(\.model, snapshot.model)
+            assign(\.modelBaseURL, snapshot.baseUrl ?? "")
+            assign(\.modelConfigured, snapshot.modelConfigured)
+            assign(\.modelCatalog, snapshot.modelCatalog)
+            assign(\.pushConfigured, snapshot.pushConfigured ?? false)
+            lastSync = Date()
+            cachedState = snapshot
+            if persist { saveCache(snapshot) }
         }
-        assign(\.bots, snapshot.bots)
-        assign(\.tasks, snapshot.tasks)
-        assign(\.messages, snapshot.messages)
-        assign(\.decisions, snapshot.decisions)
-        assign(\.artifacts, snapshot.artifacts)
-        assign(\.approvals, snapshot.approvals)
-        let previewLimit = ParallelWorkSettings(limit: nil, effectiveLimit: 4, automaticLimit: 4)
-        assign(\.workCapacity, snapshot.workCapacity ?? (isDemo ? previewLimit : nil))
-        assign(\.parallelWork, snapshot.parallelWork ?? (isDemo ? previewLimit : nil))
-        assign(\.fallback, snapshot.fallback ?? (isDemo ? FallbackSettings(models: []) : nil))
-        assign(\.mcpServers, snapshot.mcpServers ?? [])
-        assign(\.routines, snapshot.routines ?? [])
-        if foreground { scheduleDelivery() }
-        cursor = snapshot.cursor
-        assign(\.provider, snapshot.provider)
-        assign(\.model, snapshot.model)
-        assign(\.modelBaseURL, snapshot.baseUrl ?? "")
-        assign(\.modelConfigured, snapshot.modelConfigured)
-        assign(\.modelCatalog, snapshot.modelCatalog)
-        assign(\.pushConfigured, snapshot.pushConfigured ?? false)
-        lastSync = Date()
-        cachedState = snapshot
-        if persist { saveCache(snapshot) }
     }
 
     /// Observation notifies the readers of a property on every assignment, also of an equal value.
@@ -3104,37 +3344,39 @@ final class AppStore {
                 let native: NativeSnapshot = try await client.request("state/settings")
                 guard !Task.isCancelled, self.client === client, generation == self.connectionGeneration else { return }
                 guard native.cursor >= self.nativeSettingsRequiredCursor else { self.nativeSettingsPending = true; return }
-                let values = Dictionary(uniqueKeysWithValues: native.bots.map { ($0.id, $0) })
-                var bots = self.bots
-                for index in bots.indices {
-                    guard let bot = values[bots[index].id] else { continue }
-                    bots[index].name = bot.name
-                    bots[index].role = bot.role
-                    bots[index].instructions = bot.instructions
-                    bots[index].modelOverride = bot.modelOverride
-                    bots[index].effectiveModel = bot.effectiveModel
-                    bots[index].approvalOverride = bot.approvalOverride
-                    bots[index].effectiveApproval = bot.effectiveApproval
-                    bots[index].workerLimit = bot.workerLimit
-                    bots[index].modelError = bot.modelError
+                self.optimisticUpdates.receive {
+                    let values = Dictionary(uniqueKeysWithValues: native.bots.map { ($0.id, $0) })
+                    var bots = self.bots
+                    for index in bots.indices {
+                        guard let bot = values[bots[index].id] else { continue }
+                        bots[index].name = bot.name
+                        bots[index].role = bot.role
+                        bots[index].instructions = bot.instructions
+                        bots[index].modelOverride = bot.modelOverride
+                        bots[index].effectiveModel = bot.effectiveModel
+                        bots[index].approvalOverride = bot.approvalOverride
+                        bots[index].effectiveApproval = bot.effectiveApproval
+                        bots[index].workerLimit = bot.workerLimit
+                        bots[index].modelError = bot.modelError
+                    }
+                    self.assign(\.bots, bots)
+                    self.assign(\.modelCatalog, native.modelCatalog)
+                    self.assign(\.model, native.modelCatalog?.defaults.model ?? "")
+                    self.assign(\.modelBaseURL, native.modelCatalog?.defaults.baseUrl ?? "")
+                    self.assign(\.modelConfigured, native.modelConfigured)
+                    self.assign(\.approvals, native.approvals)
+                    self.assign(\.parallelWork, native.parallelWork)
+                    self.assign(\.fallback, native.fallback)
+                    self.assign(\.mcpServers, native.mcpServers ?? [])
+                    self.assign(\.routines, native.routines ?? [])
+                    if let configured = native.pushConfigured { self.assign(\.pushConfigured, configured) }
+                    self.nativeSettingsReadAt = Date()
+                    if var state = self.cachedState {
+                        state.bots = self.bots
+                        state.pushConfigured = self.pushConfigured
+                        self.apply(state, persist: true)
+                        Task { await self.syncPushRegistration() }
                 }
-                self.assign(\.bots, bots)
-                self.assign(\.modelCatalog, native.modelCatalog)
-                self.assign(\.model, native.modelCatalog?.defaults.model ?? "")
-                self.assign(\.modelBaseURL, native.modelCatalog?.defaults.baseUrl ?? "")
-                self.assign(\.modelConfigured, native.modelConfigured)
-                self.assign(\.approvals, native.approvals)
-                self.assign(\.parallelWork, native.parallelWork)
-                self.assign(\.fallback, native.fallback)
-                self.assign(\.mcpServers, native.mcpServers ?? [])
-                self.assign(\.routines, native.routines ?? [])
-                if let configured = native.pushConfigured { self.assign(\.pushConfigured, configured) }
-                self.nativeSettingsReadAt = Date()
-                if var state = self.cachedState {
-                    state.bots = self.bots
-                    state.pushConfigured = self.pushConfigured
-                    self.apply(state, persist: true)
-                    Task { await self.syncPushRegistration() }
                 }
             } catch { /* Content remains usable while native settings are unavailable. */ }
         }
@@ -3178,6 +3420,7 @@ final class AppStore {
 
     func notificationDestination(_ target: NotificationTarget) async -> NotificationDestination? {
         guard acceptsNotification(target) else { return nil }
+        if let room = target.noticeRoom { return .notices(room) }
         if target.team != nil { return await teamNotificationDestination(target) }
         if target.group { return .inboxList }
         if target.decisionId == nil { return .conversation(target.conversationRoute) }
@@ -3221,7 +3464,8 @@ final class AppStore {
     /// The place that a tapped notification shows at once, before the Mac confirms it: the chat of a team, the card,
     /// or the conversation.
     func notificationPreview(_ target: NotificationTarget) -> NotificationDestination {
-        target.chat.map(teamNotificationPlace)
+        if let room = target.noticeRoom { return .notices(room) }
+        return target.chat.map(teamNotificationPlace)
             ?? target.decisionId.map(NotificationDestination.inbox) ?? .conversation(target.conversationRoute)
     }
 

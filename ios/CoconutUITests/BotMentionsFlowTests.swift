@@ -71,9 +71,9 @@ final class BotMentionsFlowTests: XCTestCase {
         let app = XCUIApplication()
         app.launchArguments = ["--demo"]
         app.launch()
-        let inbox = app.tabBars.buttons["Inbox"]
+        let inbox = app.tabBars.buttons["Home"]
         XCTAssertTrue(inbox.waitForExistence(timeout: 10))
-        inbox.tap()
+        app.openCards()
         let openChat = app.buttons["inbox-context-00000000-0000-4000-8000-000000000031"]
         XCTAssertTrue(openChat.waitForExistence(timeout: 5))
         openChat.tap()

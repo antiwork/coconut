@@ -39,7 +39,13 @@ extension EnvironmentValues {
 }
 
 enum HomeDestination: Hashable {
+    /// The cards that wait for an answer. A card row of Home and a notification of a card open it.
     case inbox
+}
+
+/// The notice board of a team, by its room ID.
+struct NoticeBoardRoute: Hashable {
+    let roomId: String
 }
 
 /// The archived agents of the Chats list.

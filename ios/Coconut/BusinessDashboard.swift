@@ -57,6 +57,7 @@ struct BusinessReportView: View {
     @Environment(AppStore.self) private var store
     let key: String
     @State private var report: BusinessReport?
+    private var shownReport: BusinessReport? { store.businessReports[key] ?? report }
     @State private var error: String?
     @State private var details = false
 
@@ -65,7 +66,7 @@ struct BusinessReportView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 24) {
-                if let report {
+                if let report = shownReport {
                     header(report)
                     if report.stale {
                         Label(report.generatedAt == nil ? "This snapshot has no timestamp. Its freshness is unknown." : "This snapshot is over an hour old. Check the publisher before acting.", systemImage: "clock.badge.exclamationmark")
@@ -96,10 +97,11 @@ struct BusinessReportView: View {
         }
         .background(BoardStyle.paper).navigationTitle(BusinessReport.titles[key] ?? key).inlineNavigationTitle()
         .task(id: "\(key)/\(store.connection)/\(store.businessChanges)") { await load() }
+        .onChange(of: store.businessGeneration) { _, _ in report = nil }
         .refreshable { await load() }
         .sheet(isPresented: $details) {
             NavigationStack {
-                if let report { BusinessDataExplorer(value: report.data).navigationTitle("Report data") }
+                if let report = shownReport { BusinessDataExplorer(value: report.data).navigationTitle("Report data") }
             }.frame(minWidth: 380, minHeight: 420)
         }
     }
@@ -185,8 +187,8 @@ private struct MoneyDashboard: View {
         }
     }
     private var growth: String {
-        guard let current = gmv["gmv_30d"].number, let previous = gmv["gmv_prev_30d"].number, previous > 0 else { return "Previous period unavailable" }
-        return ((current / previous - 1) * 100).formatted(.number.precision(.fractionLength(1)).sign(strategy: .always())) + "% vs previous 30 days"
+        guard let change = gmv["change_pct"].number else { return "Comparison not published" }
+        return BusinessHomePresentation.percent(change, signed: true) + (gmv["change_label"].text.isEmpty ? "" : " " + gmv["change_label"].text)
     }
     private func sum(_ a: BusinessValue, _ b: BusinessValue) -> Double? { guard let a = a.number, let b = b.number else { return nil }; return a + b }
 }

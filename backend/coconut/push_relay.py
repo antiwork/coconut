@@ -236,8 +236,33 @@ def direct_alert(store, room, entry):
     return {'title': title, 'body': body_text(message['text'])}
 
 
+NOTICE_LABELS = {'announcement': 'Announcement', 'status': 'Status', 'rule': 'Rule', 'deadline': 'Deadline'}
+
+
+def notice_alert(store, room, entry):
+    """The alert of a new notice: the author in the title, the kind and the team in the subtitle, for example
+    "Deadline · Example Team", and the text in the body. A deadline adds its end. Without a name for the author, the
+    title is that subtitle and the alert has no subtitle."""
+    notice = store.notice(room, entry)
+    team = store.room(room)['name']
+    label = notification_text(f'{NOTICE_LABELS.get(notice["type"], "Notice")} · {team}', limit=140, byte_limit=512)
+    text = notice['text']
+    if notice.get('ends_at'):
+        try:
+            from datetime import datetime
+            ends = datetime.fromisoformat(notice['ends_at'].replace('Z', '+00:00')).astimezone()
+            text += '\nUntil ' + ends.strftime('%a %b %-d, %-I:%M %p')
+        except ValueError:
+            pass
+    body = body_text(text)
+    writer = notification_text(notice.get('member_name') or '', limit=80, byte_limit=256)
+    if not writer:
+        return {'title': label, 'body': body}
+    return {'title': writer, 'subtitle': label, 'body': body}
+
+
 GROUP_NOUNS = (('decision', 'decision', 'decisions'), ('message', 'message', 'messages'), ('team', 'team message', 'team messages'),
-               ('direct', 'direct message', 'direct messages'), ('failed', 'failed task', 'failed tasks'),
+               ('direct', 'direct message', 'direct messages'), ('notice', 'notice', 'notices'), ('failed', 'failed task', 'failed tasks'),
                ('completed', 'finished task', 'finished tasks'))
 
 

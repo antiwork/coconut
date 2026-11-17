@@ -12,8 +12,8 @@ final class DecisionFollowupFlowTests: XCTestCase {
         let app = XCUIApplication()
         app.launchEnvironment = ["COCONUT_SERVER_URL": url, "COCONUT_PAIR_CODE": code]
         app.launch()
-        XCTAssertTrue(app.tabBars.buttons["Inbox"].waitForExistence(timeout: 15))
-        app.tabBars.buttons["Inbox"].tap()
+        XCTAssertTrue(app.tabBars.buttons["Home"].waitForExistence(timeout: 15))
+        app.openCards()
         let previous = app.buttons["previous-decision-\(id)"]
         XCTAssertTrue(previous.waitForExistence(timeout: 10))
         XCTAssertTrue(previous.label.contains("Check past decisions"))
