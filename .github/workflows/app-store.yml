@@ -4,7 +4,8 @@ name: App Store
 # build, the age rating, the price, the availability, the review details and the submissions. `screenshots` puts the
 # images of app-store/screenshots into the listing. `submit` gives the version its build, keeps the app out of China
 # mainland, and sends the version to App Review. A person starts each run. Apple releases the app after approval. The
-# rest of the listing (text, review notes, age rating) lives in App Store Connect.
+# rest of the listing (text, review notes, age rating) lives in App Store Connect. `submit-when-ready` ends a run that
+# only waits for the App Privacy answers without a failure, so a routine can start it until a person publishes them.
 #
 # The build must come from a TestFlight run with `public`: App Review does not take an internal-only build.
 # The logs of this repository are public, so scripts/appstore.py prints no personal data.
@@ -15,9 +16,9 @@ on:
   workflow_dispatch:
     inputs:
       action:
-        description: status reads App Store Connect, screenshots replaces the images, submit sends the version to App Review.
+        description: status reads App Store Connect, screenshots replaces the images, submit sends the version to App Review, submit-when-ready also waits quietly for App Privacy.
         type: choice
-        options: [status, screenshots, submit]
+        options: [status, screenshots, submit, submit-when-ready]
         default: status
       build:
         description: The build number. Empty picks the newest valid build that App Review takes.

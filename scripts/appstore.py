@@ -1,15 +1,17 @@
 #!/usr/bin/env python3
 """The App Store version of the iPhone app, and its submission to App Review.
 
-  appstore.py status      --key AuthKey.p8 --key-id KEY --issuer ISSUER
-  appstore.py screenshots --key AuthKey.p8 --key-id KEY --issuer ISSUER
-  appstore.py submit      --key AuthKey.p8 --key-id KEY --issuer ISSUER [--build 315]
+  appstore.py status            --key AuthKey.p8 --key-id KEY --issuer ISSUER
+  appstore.py screenshots       --key AuthKey.p8 --key-id KEY --issuer ISSUER
+  appstore.py submit            --key AuthKey.p8 --key-id KEY --issuer ISSUER [--build 315]
+  appstore.py submit-when-ready --key AuthKey.p8 --key-id KEY --issuer ISSUER [--build 315]
 
 status only reads App Store Connect: the listing, the build, the age rating, the price, the availability, the review
 details and the submissions. screenshots puts the images of app-store/screenshots into the listing, in place of the
 ones it has. submit gives the iOS version its build (the newest one that App Review takes, unless --build names one),
 keeps the app out of China mainland, and sends the version to App Review. Apple releases it after approval. The rest
-of the listing (text, review notes, age rating) lives in App Store Connect.
+of the listing (text, review notes, age rating) lives in App Store Connect. submit-when-ready does the same, but ends
+without an error while the App Privacy answers are unpublished, so a routine can run it until they are.
 
 The logs of this repository are public, so the script never prints personal data such as the review contact.
 The script uses only the standard library and the openssl command, like testflight.py.
@@ -90,6 +92,24 @@ def problems(document: dict) -> str:
             for item in associated:
                 parts.append('    ' + f"{item.get('code', '')} {item.get('detail', '')}".strip())
     return '\n    '.join(parts)
+
+
+# App Review refuses a version until a signed-in person publishes the App Privacy answers on the App Store Connect
+# website. The API cannot read or write them.
+PRIVACY_REQUIRED = 'STATE_ERROR.APP_DATA_USAGES_REQUIRED'
+
+
+def associated_codes(document: dict) -> set[str]:
+    """The codes behind a refused request: the associated errors of each error, else the error itself."""
+    codes = set()
+    for error in document.get('errors') or []:
+        associated = [item for items in ((error.get('meta') or {}).get('associatedErrors') or {}).values()
+                      for item in items]
+        if associated:
+            codes.update(item.get('code', '') for item in associated)
+        else:
+            codes.add(error.get('code', ''))
+    return codes
 
 
 def redact(text: str) -> str:
@@ -288,8 +308,9 @@ def editable_version(api: Api) -> dict:
     return version
 
 
-def submit(api: Api, number: int | None) -> None:
-    """Send the iOS version to App Review with the build, and let Apple release it after approval."""
+def submit(api: Api, number: int | None, wait: bool = False) -> None:
+    """Send the iOS version to App Review with the build, and let Apple release it after approval. With `wait`, a version
+    that only lacks published App Privacy answers ends the run without an error, so a routine can try again later."""
     versions = api.all(f'/apps/{APP_ID}/appStoreVersions' + query(**{'filter[platform]': 'IOS'}))
     waiting = [version for version in versions if version_state(version) in IN_REVIEW]
     if waiting:
@@ -323,10 +344,13 @@ def submit(api: Api, number: int | None) -> None:
         submission = document['data']
     items = api.all(f"/reviewSubmissions/{submission['id']}/items" + query(include='appStoreVersion'))
     if not any(related(item, 'appStoreVersion') == version['id'] for item in items):
-        code, _ = api.call('POST', '/reviewSubmissionItems', {'data': {
+        code, document = api.call('POST', '/reviewSubmissionItems', {'data': {
             'type': 'reviewSubmissionItems', 'relationships': {
                 'reviewSubmission': {'data': {'type': 'reviewSubmissions', 'id': submission['id']}},
                 'appStoreVersion': {'data': {'type': 'appStoreVersions', 'id': version['id']}}}}})
+        if code == 409 and wait and associated_codes(document) == {PRIVACY_REQUIRED}:
+            print('Waiting: the App Privacy answers are not published yet. The next run tries again.')
+            return
         if code != 201:
             raise SystemExit('App Store Connect did not add the version to the submission. Read the errors above.')
     code, document = api.call('PATCH', f"/reviewSubmissions/{submission['id']}", {'data': {
@@ -421,7 +445,7 @@ def screenshots(api: Api) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument('action', choices=['status', 'screenshots', 'submit'])
+    parser.add_argument('action', choices=['status', 'screenshots', 'submit', 'submit-when-ready'])
     parser.add_argument('--key', type=Path, required=True)
     parser.add_argument('--key-id', required=True)
     parser.add_argument('--issuer', required=True)
@@ -432,8 +456,8 @@ def main() -> None:
         status(api)
     elif args.action == 'screenshots':
         screenshots(api)
-    elif args.action == 'submit':
-        submit(api, args.build)
+    elif args.action in ('submit', 'submit-when-ready'):
+        submit(api, args.build, wait=args.action == 'submit-when-ready')
 
 
 if __name__ == '__main__':
