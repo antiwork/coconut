@@ -171,10 +171,11 @@ def sign(archive: Path, build: int) -> None:
     print(f'Signed Coconut {info["CFBundleShortVersionString"]} ({build}) ad hoc with its entitlements.')
 
 
-def export_options() -> bytes:
+def export_options(public: bool = False) -> bytes:
+    """`public` lets the build go to the public TestFlight link and to App Review, not only to internal testers."""
     return plistlib.dumps({
         'method': 'app-store-connect', 'destination': 'upload', 'teamID': TEAM, 'signingStyle': 'automatic',
-        'manageAppVersionAndBuildNumber': False, 'testFlightInternalTestingOnly': True, 'uploadSymbols': True,
+        'manageAppVersionAndBuildNumber': False, 'testFlightInternalTestingOnly': not public, 'uploadSymbols': True,
     })
 
 
@@ -380,6 +381,7 @@ def main() -> None:
     signing.add_argument('--build', type=int, required=True)
     options = commands.add_parser('export-options')
     options.add_argument('--output', type=Path, required=True)
+    options.add_argument('--public', action='store_true', help='Allow public TestFlight testing and App Review.')
     notes_command = commands.add_parser('notes', help='Preview the release notes and what to test, or write them to a build.')
     notes_command.add_argument('--key', type=Path, required=True)
     notes_command.add_argument('--key-id', required=True)
@@ -397,7 +399,7 @@ def main() -> None:
     elif args.command == 'notes':
         notes(token(args.key, args.key_id, args.issuer), args.build, args.since, args.apply)
     else:
-        args.output.write_bytes(export_options())
+        args.output.write_bytes(export_options(args.public))
 
 
 if __name__ == '__main__':
