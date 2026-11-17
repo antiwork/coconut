@@ -487,7 +487,7 @@ What the guard does not cover:
 
 - An agent's conversation runs one turn at a time, because each turn writes the same Hermes session. A person's turn (a message, a reaction or a card answer, `work_capacity.person_turn`) does not wait for agent traffic in that queue.
 - In dispatch, a person's turn goes before agent exchanges, returns of delegated work, background results and audits (`Service._dispatch_order`).
-- In capacity, a person's turn counts only the person's running turns. Agent traffic cannot fill its slots (`native_outcomes._dispatch_chat`).
+- A person's turn waits for no limit of parallel work, only for its own conversation. So a message to each of many chats starts in all of them at once, also while a board pass runs. The limits bound agent traffic and board work (`native_outcomes._dispatch_chat`).
 - When the agent's conversation runs an agent-originated turn in the gateway, the person's message stops that turn, as a stop of the person does (`gateway_chat.preempt_for_person`). The stopped turn goes back to the queue with the same input, and the reply that it sent so far goes. It runs again after the person's turn, with a note that tells the agent to continue it and not to repeat finished steps.
 - A turn that ended before the stop reached it keeps its result. Work sessions and audits run in chats of their own, so they never block the person's chat. A card check that runs in the conversation still finishes first.
 
