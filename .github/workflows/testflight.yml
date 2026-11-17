@@ -1,7 +1,13 @@
 name: TestFlight
 
-# Archives the iPhone app and uploads it to TestFlight, for internal testers only unless the run sets `public`. Pushes coalesce into at most one
-# update per hour. Hourly and manual runs use the same gate, and skip when no app input changed.
+# Archives the iPhone app and uploads it to TestFlight. Pushes coalesce into at most one update per hour. Hourly and
+# manual runs use the same gate, and skip when no app input changed.
+#
+# Each run is public unless it turns `public` off. Internal testers get the build as soon as Apple has processed it.
+# The job `public` then puts it into the external group Public, whose link anyone can join, and sends it to TestFlight
+# App Review (scripts/appstore.py public-testflight). Testers of the link get it after approval: the first build of a
+# version waits about a day, and later builds of the version often pass at once. While another build waits for that
+# review, Apple takes no submission, so the job ends without one and the next release sends its own build.
 #
 # Signing needs no certificate secret. The job archives without a signature, and scripts/testflight.py signs the
 # archive ad hoc with the entitlements of the project. Then xcodebuild exports it with automatic signing: through the
@@ -12,17 +18,18 @@ name: TestFlight
 # The version is the UTC date, such as 2026.10.27. The build number is the highest build number in App Store Connect,
 # plus one. The job waits until App Store Connect lists the new build, so the next run gets a higher number.
 #
-# The job uses the environment `mac-release` (main branch only) for these secrets:
+# The jobs use the environment `mac-release` (main branch only) for these secrets:
 #   ASC_KEY_ID, ASC_ISSUER_ID, ASC_KEY_P8   the App Store Connect API key
-# The upload does not change TestFlight groups. A group with automatic distribution gets the build from Apple.
+# The upload does not change the internal groups. An internal group with automatic distribution gets the build from
+# Apple.
 # The release agent of Coconut starts this workflow twice a day. It does not run on push or on a schedule.
 on:
   workflow_dispatch:
     inputs:
       public:
-        description: Allow the build in the public TestFlight group and in App Review, not only internal testing.
+        description: Send the build to the public TestFlight link and its review, and allow it in App Review. Off keeps it for internal testers only.
         type: boolean
-        default: false
+        default: true
 
 permissions:
   contents: read
@@ -62,6 +69,8 @@ jobs:
     runs-on: macos-latest
     timeout-minutes: 90
     environment: mac-release
+    outputs:
+      build: ${{ steps.number.outputs.build }}
     env:
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
@@ -88,11 +97,13 @@ jobs:
           # The cleanup step deletes the key, also when a later step fails.
           { echo "ASC_KEY=$key"; echo "ASC_KEY_ID=$ASC_KEY_ID"; echo "ASC_ISSUER_ID=$ASC_ISSUER_ID"; } >> "$GITHUB_ENV"
       - name: Choose the version and the build number
+        id: number
         run: |
           set -euo pipefail
           build="$(python3 scripts/testflight.py next-build --key "$ASC_KEY" --key-id "$ASC_KEY_ID" --issuer "$ASC_ISSUER_ID")"
           version="$(date -u '+%Y.%-m.%-d')"
           { echo "BUILD=$build"; echo "VERSION=$version"; } >> "$GITHUB_ENV"
+          echo "build=$build" >> "$GITHUB_OUTPUT"
           echo "Coconut $version ($build) from $GITHUB_SHA." >> "$GITHUB_STEP_SUMMARY"
       # scripts/iphone.py also generates the project before each build, so a change of ios/project.yml reaches the app.
       - name: Generate the Xcode project
@@ -137,7 +148,7 @@ jobs:
         run: |
           set -euo pipefail
           python3 scripts/testflight.py wait --key "$ASC_KEY" --key-id "$ASC_KEY_ID" --issuer "$ASC_ISSUER_ID" --build "$BUILD"
-          echo "Uploaded Coconut $VERSION ($BUILD) for internal TestFlight testing." >> "$GITHUB_STEP_SUMMARY"
+          echo "Uploaded Coconut $VERSION ($BUILD) for ${{ inputs.public && 'TestFlight and the public link' || 'internal TestFlight testing' }}." >> "$GITHUB_STEP_SUMMARY"
       # TestFlight shows this text to the tester as "What to Test": the newest changes first, then the full list.
       - name: Write the release notes and what to test
         env:
@@ -157,3 +168,41 @@ jobs:
       - name: Finish the publication record
         if: always() && steps.publication.outputs.id != ''
         run: python3 scripts/release_gate.py finish --id '${{ steps.publication.outputs.id }}' --state '${{ job.status }}'
+
+  # Waits on a Linux runner while Apple processes the build, so the Mac runner is free once the upload is done.
+  public:
+    needs: [plan, upload]
+    if: inputs.public
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    environment: mac-release
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+          ref: ${{ needs.plan.outputs.sha }}
+      - name: Write the App Store Connect API key
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
+        run: |
+          set -euo pipefail
+          if [ -z "$ASC_KEY_ID" ] || [ -z "$ASC_ISSUER_ID" ] || [ -z "$ASC_KEY_P8" ]; then
+            echo "::error::The environment mac-release needs ASC_KEY_ID, ASC_ISSUER_ID and ASC_KEY_P8."
+            exit 1
+          fi
+          key="$RUNNER_TEMP/AuthKey.p8"
+          (umask 077; printf '%s\n' "$ASC_KEY_P8" > "$key")
+          # The cleanup step deletes the key, also when a later step fails.
+          { echo "ASC_KEY=$key"; echo "ASC_KEY_ID=$ASC_KEY_ID"; echo "ASC_ISSUER_ID=$ASC_ISSUER_ID"; } >> "$GITHUB_ENV"
+      - name: Send the build to the public group and TestFlight App Review
+        env:
+          BUILD: ${{ needs.upload.outputs.build }}
+        run: |
+          set -euo pipefail
+          python3 scripts/appstore.py public-testflight --key "$ASC_KEY" --key-id "$ASC_KEY_ID" --issuer "$ASC_ISSUER_ID" \
+            --build "$BUILD"
+      - name: Remove the API key
+        if: always()
+        run: rm -f "$RUNNER_TEMP/AuthKey.p8"

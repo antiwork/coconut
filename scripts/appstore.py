@@ -5,6 +5,7 @@
   appstore.py screenshots       --key AuthKey.p8 --key-id KEY --issuer ISSUER
   appstore.py submit            --key AuthKey.p8 --key-id KEY --issuer ISSUER [--build 315]
   appstore.py submit-when-ready --key AuthKey.p8 --key-id KEY --issuer ISSUER [--build 315]
+  appstore.py public-testflight --key AuthKey.p8 --key-id KEY --issuer ISSUER [--build 315]
 
 status only reads App Store Connect: the listing, the build, the age rating, the price, the availability, the review
 details, the TestFlight groups with their public link and beta review, and the submissions. screenshots puts the
@@ -13,6 +14,8 @@ images of app-store/screenshots into the listing, in place of the ones it has. s
 keeps the app out of China mainland, and sends the version to App Review. Apple releases it after approval. The rest
 of the listing (text, review notes, age rating) lives in App Store Connect. submit-when-ready does the same, but ends
 without an error while the App Privacy answers are unpublished, so a routine can run it until they are.
+public-testflight waits until Apple has processed the build, puts it into the public TestFlight group, and sends it
+to TestFlight App Review. The TestFlight workflow runs it after each public upload.
 
 The logs of this repository are public, so the script never prints personal data such as the review contact.
 The script uses only the standard library and the openssl command, like testflight.py.
@@ -386,6 +389,106 @@ def submit(api: Api, number: int | None, wait: bool = False) -> None:
           f"{attributes.get('submittedDate')}. Apple releases it after approval.")
 
 
+# The external TestFlight group "Public". Anyone can join it through https://testflight.apple.com/join/BftxmcBQ, and
+# its testers get each build of the group that TestFlight App Review approved.
+PUBLIC_GROUP = '5415faea-f406-477b-be44-5b3d068355a8'
+# Apple processes an upload for 5 to 20 minutes before a group or a review takes it.
+PROCESSING_MINUTES = 60
+# Apple takes no new submission while another build waits for TestFlight App Review, and says so in this text.
+ANOTHER_IN_REVIEW = 'another build is in review'
+
+
+def patient(api: Api, method: str, path: str, body: dict | None = None, quiet: bool = False) -> tuple[int, dict]:
+    """A call that tries again, with a new token, when App Store Connect refuses it with a 401 NOT_AUTHORIZED or a
+    server error. Both come and go during an outage at Apple, and a later try often passes."""
+    import time
+    code, document = api.call(method, path, body, quiet=quiet)
+    for pause in (30, 60, 90):
+        if code != 401 and code < 500:
+            break
+        time.sleep(pause)
+        api.made = 0.0
+        code, document = api.call(method, path, body, quiet=quiet)
+    return code, document
+
+
+def beta_review(api: Api, build: str) -> dict | None:
+    """The TestFlight App Review submission of a build, or None when the build has none."""
+    code, document = patient(api, 'GET', f'/builds/{build}/betaAppReviewSubmission', quiet=True)
+    if code == 200:
+        return document.get('data') or None
+    if code == 404:
+        return None
+    raise SystemExit(f'App Store Connect did not say whether build {build} is in TestFlight App Review ({code}).')
+
+
+def processed_build(api: Api, number: int) -> dict:
+    """The build once Apple has processed it. An upload is listed before its processing ends."""
+    import time
+    deadline = time.time() + PROCESSING_MINUTES * 60
+    while True:
+        code, document = patient(api, 'GET', '/builds' + query(**{
+            'filter[app]': APP_ID, 'filter[version]': str(number), 'limit': 1,
+            'fields[builds]': 'version,processingState,expired,buildAudienceType'}))
+        build = next(iter(document.get('data') or []), None) if code == 200 else None
+        state = build['attributes'].get('processingState') if build else None
+        if build is not None and state == 'VALID':
+            return build
+        if state in ('FAILED', 'INVALID'):
+            raise SystemExit(f'App Store Connect could not process build {number}: {state}.')
+        if time.time() > deadline:
+            raise SystemExit(f'Build {number} is {state or "not listed"} after {PROCESSING_MINUTES} minutes, so it '
+                             'stays out of the public group.')
+        time.sleep(30)
+
+
+def public_testflight(api: Api, number: int | None) -> None:
+    """Put the build into the public TestFlight group and send it to TestFlight App Review. Its testers get the build
+    after approval: the first build of a version (the UTC date) waits about a day, and later builds of the version
+    often pass at once. While another build waits for that review, Apple takes no submission, so the run ends without
+    one and the next release sends its own build."""
+    if number is None:
+        number = int(review_build(api, None)[0]['attributes']['version'])
+    build = processed_build(api, number)
+    attributes = build['attributes']
+    if attributes.get('expired'):
+        raise SystemExit(f'Build {number} has expired.')
+    if attributes.get('buildAudienceType') != 'APP_STORE_ELIGIBLE':
+        raise SystemExit(f'Build {number} is for internal testers only. A TestFlight run with public uploads a build '
+                         'for the public group.')
+
+    code, _ = patient(api, 'POST', f'/betaGroups/{PUBLIC_GROUP}/relationships/builds',
+                      {'data': [{'type': 'builds', 'id': build['id']}]})
+    if code != 204:
+        # A refused call can still have changed the group, so the group decides.
+        members = api.all(f'/betaGroups/{PUBLIC_GROUP}/relationships/builds' + query(limit=200))
+        if not any(item.get('id') == build['id'] for item in members):
+            raise SystemExit(f'App Store Connect did not put build {number} into the public group. Read the error '
+                             'above.')
+    print(f'Build {number} is in the public TestFlight group.')
+
+    review = beta_review(api, build['id'])
+    if review is None:
+        code, document = patient(api, 'POST', '/betaAppReviewSubmissions', {'data': {
+            'type': 'betaAppReviewSubmissions',
+            'relationships': {'build': {'data': {'type': 'builds', 'id': build['id']}}}}})
+        if code == 201:
+            review = document.get('data')
+        elif ANOTHER_IN_REVIEW in problems(document).lower():
+            print(f'::notice::Build {number} waits in the public group without a review: another build is in '
+                  'TestFlight App Review, so Apple took no submission. The next release sends its own build.')
+            return
+        else:
+            # A refused call can still have made the submission, so the build decides.
+            review = beta_review(api, build['id'])
+            if review is None:
+                raise SystemExit(f'App Store Connect did not send build {number} to TestFlight App Review. Read the '
+                                 'error above.')
+    values = (review or {}).get('attributes') or {}
+    print(f"Build {number} is in TestFlight App Review: {values.get('betaReviewState')}, submitted "
+          f"{values.get('submittedDate')}. Testers of the public link get it after approval.")
+
+
 # The screenshots of the listing, by folder of app-store/screenshots, in the order of their file names. App Store
 # Connect makes the smaller sizes from these two.
 SCREENSHOTS = {'iphone': 'APP_IPHONE_67', 'ipad': 'APP_IPAD_PRO_3GEN_129'}
@@ -469,7 +572,7 @@ def screenshots(api: Api) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument('action', choices=['status', 'screenshots', 'submit', 'submit-when-ready'])
+    parser.add_argument('action', choices=['status', 'screenshots', 'submit', 'submit-when-ready', 'public-testflight'])
     parser.add_argument('--key', type=Path, required=True)
     parser.add_argument('--key-id', required=True)
     parser.add_argument('--issuer', required=True)
@@ -482,6 +585,8 @@ def main() -> None:
         screenshots(api)
     elif args.action in ('submit', 'submit-when-ready'):
         submit(api, args.build, wait=args.action == 'submit-when-ready')
+    elif args.action == 'public-testflight':
+        public_testflight(api, args.build)
 
 
 if __name__ == '__main__':

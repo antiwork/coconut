@@ -7,6 +7,8 @@ name: App Store
 # mainland, and sends the version to App Review. A person starts each run. Apple releases the app after approval. The
 # rest of the listing (text, review notes, age rating) lives in App Store Connect. `submit-when-ready` ends a run that
 # only waits for the App Privacy answers without a failure, so a routine can start it until a person publishes them.
+# `public-testflight` puts a build into the public TestFlight group and sends it to TestFlight App Review, as each
+# public TestFlight run does, for a build that a run left without a review.
 #
 # The build must come from a TestFlight run with `public`: App Review does not take an internal-only build.
 # The logs of this repository are public, so scripts/appstore.py prints no personal data.
@@ -17,9 +19,9 @@ on:
   workflow_dispatch:
     inputs:
       action:
-        description: status reads App Store Connect, screenshots replaces the images, submit sends the version to App Review, submit-when-ready also waits quietly for App Privacy.
+        description: status reads App Store Connect, screenshots replaces the images, submit sends the version to App Review, submit-when-ready also waits quietly for App Privacy, public-testflight sends a build to the public TestFlight link and its review.
         type: choice
-        options: [status, screenshots, submit, submit-when-ready]
+        options: [status, screenshots, submit, submit-when-ready, public-testflight]
         default: status
       build:
         description: The build number. Empty picks the newest valid build that App Review takes.
