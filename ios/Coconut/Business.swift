@@ -28,7 +28,7 @@ struct BusinessFunction: Decodable, Identifiable, Equatable, Sendable {
 
     static let builtIns = [
         BusinessFunction(key: "accounting", name: "Accounting", description: "Ledger, close, taxes and financial operations.", symbol: "books.vertical", reserved: true),
-        BusinessFunction(key: "marketing", name: "Marketing", description: "Campaigns, content, launches and growth.", symbol: "megaphone", reserved: true),
+        BusinessFunction(key: "marketing", name: "Marketing", description: "Campaigns, content, launches and growth.", symbol: "paperplane", reserved: true),
         BusinessFunction(key: "support", name: "Support", description: "Customer queues, service levels and resolutions.", symbol: "lifepreserver", reserved: true)
     ]
 

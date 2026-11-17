@@ -8,14 +8,14 @@ struct BusinessWorkspaceView: View {
 
     var body: some View {
         VStack(spacing: 0) {
+            // Two views only: the report of the function, and its work. The tiles of every report are on Business
+            // home, so a third Library segment showed the same tiles a second time.
             Picker("View", selection: $tab) {
                 if hasReport { Text("Overview").tag("overview") }
                 Text("Work").tag("work")
-                Text("Library").tag("library")
             }.pickerStyle(.segmented).labelsHidden().frame(maxWidth: 360)
-                .padding(.horizontal, BentoPage.padding).padding(.vertical, BoardStyle.Space.m)
-            if tab == "library" { BusinessReportLibrary(function: function) }
-            else if tab == "work" || !hasReport { BusinessWorkListView(function: function) }
+                .padding(.horizontal, BoardStyle.Space.l).padding(.vertical, BoardStyle.Space.m)
+            if tab == "work" || !hasReport { BusinessWorkListView(function: function) }
             else { BusinessReportView(key: function) }
         }
         .background(BoardStyle.paper)
@@ -41,7 +41,7 @@ struct BusinessReportTiles: View {
             BentoBoard {
                 ForEach(keys, id: \.self) { key in
                     BentoLink(route: .report(key)) {
-                        BentoPlace(title: BusinessReport.titles[key] ?? key, detail: Self.details[key], symbol: BusinessReport.symbols[key] ?? "chart.bar")
+                        BentoPlace(title: BusinessReport.titles[key] ?? key, detail: Self.details[key], symbol: BusinessReport.symbols[key] ?? "doc.text")
                     }.accessibilityIdentifier("business-report-" + key).bento(3, 1, compact: (1, 1))
                 }
                 if function == nil || function == "accounting" {
@@ -51,13 +51,6 @@ struct BusinessReportTiles: View {
                 }
             }
         }
-    }
-}
-
-struct BusinessReportLibrary: View {
-    var function: String? = nil
-    var body: some View {
-        BoardPage(width: .wide) { BusinessReportTiles(function: function) }
     }
 }
 
@@ -172,7 +165,7 @@ private struct MoneyDashboard: View {
         BentoBoard {
             if accounting {
                 ledgerStat("Revenue", "revenue", symbol: "arrow.down.left.circle", note: revenueNote, tall: true).bento(4, 2, compact: (2, 2))
-                ledgerStat("EBITDA", "ebitda", symbol: "chart.bar", tall: true).bento(4, 2, compact: (1, 2))
+                ledgerStat("EBITDA", "ebitda", symbol: "chart.line.uptrend.xyaxis", tall: true).bento(4, 2, compact: (1, 2))
                 ledgerStat("Net income", "net_income", symbol: "equal.circle", tall: true).bento(4, 2, compact: (1, 2))
                 profit.bento(8, 3, compact: (2, 3))
                 BentoStat(title: "EBITDA margin", symbol: "percent", value: percent(money["ebitda_margin_pct"]), size: .medium).bento(2, 1, compact: (1, 1))

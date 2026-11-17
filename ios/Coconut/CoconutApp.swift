@@ -498,6 +498,9 @@ extension CoconutHome {
         case "all-pages": show(.agents, [AllPagesRoute()])
         case "usage": show(.agents, [UsageRoute()])
         case "business": show(.business, [])
+        case "projects": show(.business, [BusinessRoute.projects])
+        case "accounting": show(.business, [BusinessRoute.function("accounting")])
+        case "support-work": show(.business, [BusinessRoute.function("support")])
         case "reports": show(.business, [BusinessRoute.reports])
         case "history": show(.business, [BusinessRoute.reports])
         case "page":

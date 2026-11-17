@@ -34,7 +34,7 @@ struct BusinessHomeView: View {
                     }
                     NavigationLink(value: BusinessRoute.reports) { Label("Reports", systemImage: "chart.bar.doc.horizontal") }
                         .accessibilityIdentifier("business-reports-link")
-                    NavigationLink(value: BusinessRoute.projects) { Label("Projects", systemImage: "square.stack.3d.up") }
+                    NavigationLink(value: BusinessRoute.projects) { Label("Projects", systemImage: "shippingbox") }
                 } label: { Label("Functions", systemImage: "square.grid.2x2") }
                 .accessibilityIdentifier("business-home-functions")
             }
