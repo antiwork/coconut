@@ -10,26 +10,20 @@ struct BusinessHomeView: View {
     init(initial: BusinessReport? = nil) { _report = State(initialValue: initial) }
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: BoardStyle.Space.l) {
-                if let report = shownReport {
-                    TimelineView(.periodic(from: .now, by: 60)) { context in
-                        BusinessHomeContent(model: BusinessHomePresentation(report: report, now: context.date, refreshFailed: error != nil))
-                    }
-                } else if error == nil {
-                    ProgressView("Loading business").frame(maxWidth: .infinity, minHeight: 320)
+        BoardPage(width: .wide, spacing: BoardStyle.Space.l) {
+            if let report = shownReport {
+                TimelineView(.periodic(from: .now, by: 60)) { context in
+                    BusinessHomeContent(model: BusinessHomePresentation(report: report, now: context.date, refreshFailed: error != nil))
                 }
-                if let error {
-                    VStack(alignment: .leading, spacing: 8) {
-                        Label("Refresh unavailable", systemImage: "exclamationmark.arrow.trianglehead.2.clockwise.rotate.90")
-                        Text(error).font(.caption)
-                        Button("Try again") { Task { await load() } }
-                    }.accessibilityIdentifier("business-home-refresh-error")
-                }
+            } else if error == nil {
+                BoardLoading(title: "Loading business")
             }
-            .padding(BentoPage.padding).frame(maxWidth: BentoPage.width, alignment: .leading).frame(maxWidth: .infinity)
+            if let error {
+                BoardLoadNotice(message: error) { Task { await load() } }
+                    .accessibilityIdentifier("business-home-refresh-error")
+            }
         }
-        .navigationTitle("Business").background(BoardStyle.paper)
+        .navigationTitle("Business")
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
                 Menu {

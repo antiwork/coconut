@@ -3,6 +3,11 @@ import SwiftUI
 /// A page of sections: Home, the agents, an agent, People and Profile. The content keeps a readable width in a wide
 /// Mac window and the side space of the app on an iPhone.
 struct BoardPage<Content: View>: View {
+    /// How wide a page reads: the sections of the app, or the tile grids of the business.
+    enum Width { case readable, wide }
+
+    var width: Width = .readable
+    var spacing: CGFloat = BoardStyle.Space.xl
     @ViewBuilder let content: () -> Content
 
     /// A screenshot of the lower part of a page starts the app with `--bottom`. Only a debug build on a simulator
@@ -17,9 +22,9 @@ struct BoardPage<Content: View>: View {
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: BoardStyle.Space.xl) { content() }
+            VStack(alignment: .leading, spacing: spacing) { content() }
                 .padding(BoardStyle.Space.l)
-                .frame(maxWidth: 760, alignment: .leading)
+                .frame(maxWidth: width == .readable ? 760 : 1160, alignment: .leading)
                 .frame(maxWidth: .infinity)
         }
         .defaultScrollAnchor(Self.startsAtBottom ? .bottom : .top)
@@ -88,6 +93,32 @@ struct BoardSection<Rows: View, Action: View>: View {
 extension BoardSection where Action == EmptyView {
     init(_ title: String, count: Int = 0, @ViewBuilder rows: @escaping () -> Rows) {
         self.init(title, count: count, action: { EmptyView() }, rows: rows)
+    }
+}
+
+/// A whole page that is loading: one spinner, one height, wherever it is.
+struct BoardLoading: View {
+    let title: String
+    var height: CGFloat = 320
+
+    var body: some View {
+        ProgressView(title).frame(maxWidth: .infinity, minHeight: height)
+    }
+}
+
+/// A whole page that failed to load: what failed, why, and the one way to try again.
+struct BoardLoadNotice: View {
+    var title = "Refresh unavailable"
+    let message: String
+    let retry: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: BoardStyle.Space.s) {
+            Label(title, systemImage: "exclamationmark.arrow.trianglehead.2.clockwise.rotate.90")
+            Text(message).font(.caption).foregroundStyle(.secondary)
+            Button("Try again", action: retry)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 

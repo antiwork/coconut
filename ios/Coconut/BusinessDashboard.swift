@@ -57,10 +57,7 @@ struct BusinessReportTiles: View {
 struct BusinessReportLibrary: View {
     var function: String? = nil
     var body: some View {
-        ScrollView {
-            BusinessReportTiles(function: function)
-                .padding(BentoPage.padding).frame(maxWidth: BentoPage.width, alignment: .leading).frame(maxWidth: .infinity)
-        }.background(BoardStyle.paper)
+        BoardPage(width: .wide) { BusinessReportTiles(function: function) }
     }
 }
 
@@ -75,22 +72,18 @@ struct BusinessReportView: View {
     init(key: String, initial: BusinessReport? = nil) { self.key = key; _report = State(initialValue: initial) }
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: BoardStyle.Space.l) {
-                if let report = shownReport {
-                    BusinessReportContent(key: key, report: report, sample: store.isDemo) { details = true }
-                } else if error == nil { ProgressView("Loading report").frame(maxWidth: .infinity, minHeight: 360) }
-                if let error {
-                    ContentUnavailableView {
-                        Label("Report unavailable", systemImage: "chart.bar.xaxis")
-                    } description: { Text(error) } actions: {
-                        Button("Try again") { Task { await load() } }
-                        NavigationLink("GitHub connection") { GitHubSettingsView() }
-                    }
-                }
-            }.padding(BentoPage.padding).frame(maxWidth: BentoPage.width, alignment: .leading).frame(maxWidth: .infinity)
+        BoardPage(width: .wide, spacing: BoardStyle.Space.l) {
+            if let report = shownReport {
+                BusinessReportContent(key: key, report: report, sample: store.isDemo) { details = true }
+            } else if error == nil {
+                BoardLoading(title: "Loading report", height: 360)
+            }
+            if let error {
+                BoardLoadNotice(title: "Report unavailable", message: error) { Task { await load() } }
+                NavigationLink("GitHub connection") { GitHubSettingsView() }.font(.callout)
+            }
         }
-        .background(BoardStyle.paper).navigationTitle(BusinessReport.titles[key] ?? key).inlineNavigationTitle()
+        .navigationTitle(BusinessReport.titles[key] ?? key).inlineNavigationTitle()
         .task(id: "\(key)/\(store.connection)/\(store.businessChanges)") { await load() }
         .onChange(of: store.businessGeneration) { _, _ in report = nil }
         .refreshable { await load() }

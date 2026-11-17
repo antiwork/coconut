@@ -103,41 +103,31 @@ struct BusinessReportsView: View {
     private var shownReport: BusinessReport? { store.businessReports["periods"] ?? report }
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: BoardStyle.Space.l) {
-                Picker("Period", selection: $period) {
-                    ForEach(BusinessReportPeriod.allCases) { value in
-                        Text(value.title).tag(value)
-                    }
-                }
-                .pickerStyle(.segmented)
-                .accessibilityIdentifier("business-reports-period")
-
-                if let shownReport {
-                    let periods = BusinessPeriods(report: shownReport)
-                    switch period {
-                    case .daily: daily(periods)
-                    case .monthly: monthly(periods)
-                    case .yearly: yearly(periods)
-                    }
-                } else if error == nil {
-                    ProgressView("Loading reports").frame(maxWidth: .infinity, minHeight: 280)
-                }
-
-                if let error {
-                    VStack(alignment: .leading, spacing: 8) {
-                        Label("Refresh unavailable", systemImage: "exclamationmark.arrow.trianglehead.2.clockwise.rotate.90")
-                        Text(error).font(.caption)
-                        Button("Try again") { Task { await load() } }
-                    }
+        BoardPage(width: .wide, spacing: BoardStyle.Space.l) {
+            Picker("Period", selection: $period) {
+                ForEach(BusinessReportPeriod.allCases) { value in
+                    Text(value.title).tag(value)
                 }
             }
-            .padding(BentoPage.padding)
-            .frame(maxWidth: BentoPage.width, alignment: .leading)
-            .frame(maxWidth: .infinity)
+            .pickerStyle(.segmented)
+            .accessibilityIdentifier("business-reports-period")
+
+            if let shownReport {
+                let periods = BusinessPeriods(report: shownReport)
+                switch period {
+                case .daily: daily(periods)
+                case .monthly: monthly(periods)
+                case .yearly: yearly(periods)
+                }
+            } else if error == nil {
+                BoardLoading(title: "Loading reports", height: 280)
+            }
+
+            if let error {
+                BoardLoadNotice(message: error) { Task { await load() } }
+            }
         }
         .navigationTitle("History")
-        .background(BoardStyle.paper)
         .task(id: "\(store.connection)/\(store.businessChanges)") { await load() }
         .refreshable { await load() }
         .onChange(of: store.businessGeneration) { _, _ in report = nil; error = nil }
