@@ -30,6 +30,7 @@ enum BusinessValue: Decodable, Sendable, Equatable {
 struct SupportResolution {
     let minutes: [Double]
     static let labels = ["<15m", "15–30m", "30–60m", "1–2h", "2–4h", "4–8h", "8–24h", ">24h"]
+    static let shortLabels = ["<15m", "15m", "30m", "1h", "2h", "4h", "8h", ">24h"]
     var buckets: [Int] {
         var result = Array(repeating: 0, count: 8)
         for value in minutes { result[[15.0, 30, 60, 120, 240, 480, 1440].firstIndex(where: { value < $0 }) ?? 7] += 1 }
@@ -136,8 +137,10 @@ extension BusinessReport {
         }
         let day = previewDay(now, back: 1)
         let closed: String = months.last ?? ""
-        let gmv: [String: Any] = ["last_day_gmv": 238000, "last_day": day, "trailing_avg_gmv": 230000, "annualized_gmv": 83950000,
-                                  "gmv_30d": 6900000, "gmv_prev_30d": 6100000, "series": series(0, base: 180000), "series_prev": series(30, base: 158000),
+        let current = series(0, base: 180000)
+        // The last day of the series is the published last day, so each screen reads the same number.
+        let gmv: [String: Any] = ["last_day_gmv": current.last?[1] ?? 0, "last_day": day, "trailing_avg_gmv": 230000, "annualized_gmv": 83950000,
+                                  "gmv_30d": 6900000, "gmv_prev_30d": 6100000, "series": current, "series_prev": series(30, base: 158000),
                                   "change_pct": 13.1, "change_label": "vs prior 30 days", "last_day_vs_avg_pct": 3.5,
                                   "same_weekday_avg": 226000, "same_weekday_pct": 5.3]
         let ledger: [String: Any] = ["ltm_revenue": 3600000, "ltm_ebitda": 870000, "ltm_net_income": 610000, "closed_through": closed, "months": months, "per_month": monthly]

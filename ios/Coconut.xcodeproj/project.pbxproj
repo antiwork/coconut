@@ -122,6 +122,7 @@
 		38367AB3AD663E17234E46E8 /* BotSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BCBA7E17655BED561202EC41 /* BotSettingsView.swift */; };
 		3877DBDF422615A073301637 /* BotAvatar.swift in Sources */ = {isa = PBXBuildFile; fileRef = B7F9AF04038A01979A05935C /* BotAvatar.swift */; };
 		38B4B0E1990EC4B15DD7C879 /* mermaid.min.js in Resources */ = {isa = PBXBuildFile; fileRef = A1E9016F6861BCC1AAFCD8EB /* mermaid.min.js */; };
+		3944FE0EFFCDC228352F9B0B /* Bento.swift in Sources */ = {isa = PBXBuildFile; fileRef = 23128A0920B9862B6A642790 /* Bento.swift */; };
 		39B3A0FE631ECEBD97FB4E54 /* BotExchangeFlowTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB2417619FA30AF5EAF2B0BC /* BotExchangeFlowTests.swift */; };
 		39DA24AEFC6B5A75612CEC71 /* IncrementalSyncTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 547FF45685223422176EDA75 /* IncrementalSyncTests.swift */; };
 		3C13322762D51480F45505F7 /* TeamLog.swift in Sources */ = {isa = PBXBuildFile; fileRef = B74D821023B1194DE11549AC /* TeamLog.swift */; };
@@ -290,6 +291,7 @@
 		A7CFCB73B2FE06224655F73F /* APIClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = F85BED295D4BCB7E12AA75B6 /* APIClient.swift */; };
 		A7E12C189671C57F76A8FF84 /* SendFromHistoryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC4FFE607ED2AB2368E679FC /* SendFromHistoryTests.swift */; };
 		A87874AD856F5436ECA03E54 /* DecisionSelectionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C85304C388785794EE366959 /* DecisionSelectionTests.swift */; };
+		A8CCFA2E4AD2991F06220316 /* Bento.swift in Sources */ = {isa = PBXBuildFile; fileRef = 23128A0920B9862B6A642790 /* Bento.swift */; };
 		A8D30D6B1D92042980DFB286 /* NotificationSentenceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E64B8D243B3B47A49BFE4878 /* NotificationSentenceTests.swift */; };
 		A8D88A0A316D41AA4F4C8E37 /* TranscriptPresentationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9841C0E34ADB4C5B376B9844 /* TranscriptPresentationTests.swift */; };
 		A8E1E20FB19C388ACD17CA87 /* CoconutApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC13C2194F02562B923FE8C8 /* CoconutApp.swift */; };
@@ -524,6 +526,7 @@
 		1FC0BEB0FC3EE4D46A65CC58 /* MacRelayNotification.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = MacRelayNotification.json; sourceTree = "<group>"; };
 		1FDCDA78EA43B1633445EFB2 /* HomeFeedTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeFeedTests.swift; sourceTree = "<group>"; };
 		22ECF8C307532AF3869C15F7 /* SettingsStyle.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsStyle.swift; sourceTree = "<group>"; };
+		23128A0920B9862B6A642790 /* Bento.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Bento.swift; sourceTree = "<group>"; };
 		2336F49F73947060895D6AAD /* TeamNotices.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TeamNotices.swift; sourceTree = "<group>"; };
 		2580B8702C72C82BDCCF6F55 /* ApprovalSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ApprovalSettingsView.swift; sourceTree = "<group>"; };
 		26119085DA97B96779F9E35B /* ConversationLayoutMessages.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = ConversationLayoutMessages.json; sourceTree = "<group>"; };
@@ -944,6 +947,7 @@
 				EC0BF5B02794FB407103AA4C /* AppStore.swift */,
 				68629CEC6C869677D8EA1CE0 /* Assets.xcassets */,
 				A9F05D49F1285AB0CBCC817E /* Attention.swift */,
+				23128A0920B9862B6A642790 /* Bento.swift */,
 				B78CA35A955E85981763BFDA /* BoardSection.swift */,
 				B7F9AF04038A01979A05935C /* BotAvatar.swift */,
 				84292AC71716E6E3438006BC /* BotExchangeView.swift */,
@@ -1509,6 +1513,7 @@
 				791509763056114A84032BFA /* AppStore.swift in Sources */,
 				1721E42D97A82A43A5EF12C0 /* ApprovalSettingsView.swift in Sources */,
 				06C7FB6F19273988E245DC6B /* Attention.swift in Sources */,
+				3944FE0EFFCDC228352F9B0B /* Bento.swift in Sources */,
 				372F3B5EDC00ED506260F76D /* BoardSection.swift in Sources */,
 				3877DBDF422615A073301637 /* BotAvatar.swift in Sources */,
 				205566C0BD971F68A1CCE616 /* BotExchangeView.swift in Sources */,
@@ -1619,6 +1624,7 @@
 				FA3273EAC8CD61785B0DA57F /* AppStore.swift in Sources */,
 				62A94C16202D5232CFFE7B67 /* ApprovalSettingsView.swift in Sources */,
 				E693798C301EC5B7E2FD34A4 /* Attention.swift in Sources */,
+				A8CCFA2E4AD2991F06220316 /* Bento.swift in Sources */,
 				AFC46A370B6DF8FCEB914A83 /* BoardSection.swift in Sources */,
 				24518A2D914959FC5878BBEB /* BotAvatar.swift in Sources */,
 				2203E9B6441CCE3DE1D82FA9 /* BotExchangeView.swift in Sources */,

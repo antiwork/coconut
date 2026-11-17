@@ -21,7 +21,7 @@ struct BusinessHomePresentation {
         let section = data["sections"][key]
         if section["ok"] == .bool(false) { return "Unavailable" }
         if let date = section["as_of"].text.apiDate, now.timeIntervalSince(date) > 3600 {
-            return "Stale source"
+            return "Stale source · current status unknown"
         }
         return nil
     }
@@ -33,6 +33,8 @@ struct BusinessHomePresentation {
         let symbol: String
         let route: BusinessRoute
         let unavailable: Bool
+        /// The published count of an informational row, when its source is current.
+        var value: String? = nil
     }
     var attention: [AttentionRow] {
         [attentionRow("support", source: "support", title: "Support", count: data["support"]["gumroad_past_sla"].number,
@@ -40,7 +42,7 @@ struct BusinessHomePresentation {
          attentionRow("issues", source: "issues", title: "Product issues", count: data["issues"]["past_sla"].number,
                       suffix: "past SLA", detail: nil, symbol: "wrench.and.screwdriver", route: .report("support")),
          attentionRow("high-priority", source: "issues", title: "High priority", count: data["high_priority"]["count"].number,
-                      suffix: "open", detail: nonempty(data["high_priority"]["top"][0]["title"].text),
+                      suffix: "open", detail: highPriorityDetail,
                       symbol: "exclamationmark.circle", route: .report("support"))].compactMap { $0 }
     }
     private var supportDetail: String? {
@@ -48,13 +50,26 @@ struct BusinessHomePresentation {
         return nonempty([nonempty(first["subject"].text), first["hours"].number.map { Self.decimal($0) + "h" }]
             .compactMap { $0 }.joined(separator: " · "))
     }
+    /// The snapshot publishes the titles by issue number. An older snapshot published a list.
+    private var highPriorityDetail: String? {
+        let high = data["high_priority"]
+        if let title = nonempty(high["top"][0]["title"].text) { return title }
+        guard let number = high["numbers"][0].number else { return nil }
+        return nonempty(high["titles"][String(Int(number))].text)
+    }
+    /// The open pull requests. The snapshot publishes one count per repository; an older snapshot published a total.
+    var pullRequests: Double? {
+        if let total = data["prs"]["total"].number { return total }
+        let counts = data["prs"]["data"].object.values.compactMap { $0["pullRequests"]["totalCount"].number }
+        return counts.isEmpty ? nil : counts.reduce(0, +)
+    }
     private func attentionRow(_ id: String, source: String, title: String, count: Double?, suffix: String,
                               detail: String?, symbol: String, route: BusinessRoute) -> AttentionRow? {
         if let notice = sourceNotice(source) {
             return AttentionRow(id: id, title: title + " · " + notice, detail: nil, symbol: symbol, route: route, unavailable: true)
         }
         if currentStatusUnknown || count == nil {
-            return AttentionRow(id: id, title: title + " · Unknown", detail: currentStatusUnknown ? nil : "Not published",
+            return AttentionRow(id: id, title: title + " · Unknown", detail: currentStatusUnknown ? "Current status unknown" : "Not published",
                                 symbol: symbol, route: route, unavailable: true)
         }
         guard let count, count > 0 else { return nil }
@@ -64,10 +79,11 @@ struct BusinessHomePresentation {
     var informational: [AttentionRow] {
         [("risk", "Risk review", "shield.lefthalf.filled", BusinessRoute.report("risk")),
          ("prs", "Pull requests", "arrow.triangle.pull", BusinessRoute.report("engineering"))].map { key, title, symbol, route in
-            let notice = sourceNotice(key) ?? (currentStatusUnknown ? "Unknown" : nil)
-            let count = data[key]["total"].number
+            let notice = sourceNotice(key) ?? (currentStatusUnknown ? "Current status unknown" : nil)
+            let count = key == "prs" ? pullRequests : data[key]["total"].number
             return AttentionRow(id: key, title: title, detail: notice ?? count.map { Self.decimal($0) + " open" } ?? "Not published",
-                                symbol: symbol, route: route, unavailable: notice != nil || count == nil)
+                                symbol: symbol, route: route, unavailable: notice != nil || count == nil,
+                                value: notice == nil ? count.map { Self.decimal($0) } : nil)
         }
     }
 
@@ -89,13 +105,26 @@ struct BusinessHomePresentation {
     var gmvNotice: String? { sourceNotice("gmv") ?? (volume.isEmpty ? "Not published" : nil) }
     var change: Double? { sourceNotice("gmv") == nil ? data["gmv"]["change_pct"].number : nil }
     var changeLabel: String? { nonempty(data["gmv"]["change_label"].text) }
+    /// Published totals of the GMV section. A failed or stale source shows none of them.
+    private func gmvNumber(_ field: String) -> Double? { sourceNotice("gmv") == nil ? data["gmv"][field].number : nil }
+    var total: Double? { gmvNumber("gmv_30d") }
+    var runRate: Double? { gmvNumber("annualized_gmv") }
+    var dailyAverage: Double? { gmvNumber("trailing_avg_gmv") }
+    /// The day of a source, when the snapshot publishes one: "as of Nov 15".
+    func asOf(_ key: String) -> String? {
+        let text = data["sections"][key]["as_of"].text
+        guard text.count == 10, ReportPoint(date: text, value: 0, series: "").day != .distantPast else { return nil }
+        return "as of " + Self.day(text)
+    }
     var latest: String? {
         guard sourceNotice("gmv") == nil, let value = data["gmv"]["last_day_gmv"].number,
               let day = nonempty(data["gmv"]["last_day"].text) else { return nil }
         return Self.day(day) + " · " + reportNumber(value, money: true)
     }
-    var weekdayChange: Double? { sourceNotice("gmv") == nil ? data["gmv"]["same_weekday_pct"].number : nil }
-    static let weekdayLabel = "vs same weekday"
+    var weekdayComparison: String? {
+        guard sourceNotice("gmv") == nil else { return nil }
+        return data["gmv"]["same_weekday_pct"].number.map { Self.percent($0, signed: true) + " vs the same weekday" }
+    }
     func selectedPoint(at position: Double?) -> Point? {
         guard let position else { return nil }
         return volume.min { abs(Double($0.id) - position) < abs(Double($1.id) - position) }
@@ -117,7 +146,7 @@ struct BusinessHomePresentation {
             if key == "ebitda" {
                 subtitle = money["ebitda_margin_pct"].number.map { Self.percent($0) + " margin" }
             } else if key == "net_income", let impairment = money["impairment_total"].number, impairment != 0 {
-                subtitle = Self.writeOff(impairment) + " non-cash write-off"
+                subtitle = "includes " + Self.writeOff(impairment) + " non-cash write-off"
             } else { subtitle = nil }
             let months = money["months"].array.enumerated().compactMap { index, month -> Point? in
                 guard let value = month[key].number, !month["month"].text.isEmpty else { return nil }
@@ -137,6 +166,11 @@ struct BusinessHomePresentation {
         let point = ReportPoint(date: date, value: 0, series: "")
         return point.day == .distantPast ? date : point.day.formatted(.dateTime.month(.abbreviated).day())
     }
+    /// "2026-10" as "Oct 2026". Calendar formatting only.
+    static func month(_ month: String) -> String {
+        let point = ReportPoint(date: month + "-01", value: 0, series: "")
+        return point.day == .distantPast ? month : point.day.formatted(.dateTime.month(.abbreviated).year())
+    }
     static func writeOff(_ value: Double) -> String {
         // Display units, not financial math. Keep the publisher's two-decimal-million precision.
         if abs(value) >= 1_000_000 {
@@ -151,118 +185,199 @@ struct BusinessHomeContent: View {
     @State private var selected: Double?
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 24) {
-            VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: BoardStyle.Space.l) {
+            VStack(alignment: .leading, spacing: BoardStyle.Space.xs) {
                 Label(model.freshness, systemImage: "clock")
-                    .foregroundStyle(model.freshnessWarning ? BoardStyle.attention : BoardStyle.ink.opacity(0.65))
+                    .foregroundStyle(model.freshnessWarning ? AnyShapeStyle(BoardStyle.attention) : AnyShapeStyle(.secondary))
                     .accessibilityIdentifier("business-home-freshness")
                 if model.currentStatusUnknown {
-                    Text("Current status unknown")
-                        .accessibilityIdentifier("business-home-stale")
+                    Text("Current status unknown. Historical values below are the last published snapshot.")
+                        .foregroundStyle(.secondary).accessibilityIdentifier("business-home-stale")
                 }
             }.font(.caption)
-            attention
-            gmv
-            money
+            BentoBoard {
+                gmv.bento(8, 3, compact: (2, 3))
+                attention.bento(4, 3, compact: (2, nil))
+                if let notice = model.sourceNotice("ledger") {
+                    BentoStat(title: "Money", symbol: "banknote", value: notice, size: .small)
+                        .accessibilityIdentifier("business-home-money-unavailable").bento(12, 1, compact: (2, 1))
+                } else {
+                    ForEach(model.moneyRows) { row in
+                        moneyTile(row).bento(4, 2, compact: (row.id == "revenue" ? 2 : 1, 2))
+                    }
+                }
+                ForEach(model.informational) { row in infoTile(row).bento(3, 1, compact: (1, 1)) }
+                BentoStat(title: "Run rate", symbol: "calendar", value: reportNumber(model.runRate, money: true), note: "GMV, annualized", size: .medium)
+                    .accessibilityIdentifier("business-home-run-rate").bento(3, 1, compact: (1, 1))
+                BentoStat(title: "Daily average", symbol: "sum", value: reportNumber(model.dailyAverage, money: true), note: "GMV, trailing", size: .medium)
+                    .accessibilityIdentifier("business-home-daily-average").bento(3, 1, compact: (1, 1))
+                ForEach(BusinessFunction.builtIns) { function in
+                    BentoLink(route: .function(function.key)) {
+                        BentoPlace(title: function.name, detail: Self.functionDetail[function.key], symbol: function.symbol)
+                    }.accessibilityIdentifier("business-home-function-" + function.key).bento(3, 1, compact: (1, 1))
+                }
+                BentoLink(route: .projects) {
+                    BentoPlace(title: "Projects", detail: "Repositories", symbol: "square.stack.3d.up")
+                }.accessibilityIdentifier("business-home-projects").bento(3, 1, compact: (1, 1))
+            }
+            if let closed = model.closedThrough {
+                Text("Books closed through " + BusinessHomePresentation.month(closed) + " · USD").font(.caption).foregroundStyle(.secondary)
+            }
         }.foregroundStyle(BoardStyle.ink)
     }
 
+    private static let functionDetail = ["accounting": "Ledger and close", "marketing": "Campaigns", "support": "Queues and SLAs"]
+
+    private var urgent: Bool { model.attention.contains { !$0.unavailable } }
     private var attention: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            Text("Attention").font(.title2.bold())
-            if model.attention.isEmpty {
-                Text("Nothing past SLA").font(.subheadline).foregroundStyle(.secondary)
-                    .accessibilityIdentifier("business-home-all-clear")
-            }
-            ForEach(model.attention) { row in attentionLink(row, urgent: true) }
-            Divider()
-            ViewThatFits(in: .horizontal) {
-                HStack(spacing: 32) { ForEach(model.informational) { row in attentionLink(row, urgent: false) } }
-                VStack(alignment: .leading, spacing: 16) { ForEach(model.informational) { row in attentionLink(row, urgent: false) } }
-            }
-        }.homeCard().accessibilityIdentifier("business-home-attention")
-    }
-    private func attentionLink(_ row: BusinessHomePresentation.AttentionRow, urgent: Bool) -> some View {
-        NavigationLink(value: row.route) {
-            HStack(alignment: .top, spacing: 12) {
-                Image(systemName: row.symbol).foregroundStyle(urgent ? BoardStyle.attention : BoardStyle.accent).frame(width: 20)
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(row.title).font(.subheadline.weight(.semibold))
-                    if let detail = row.detail { Text(detail).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true) }
+        BentoTile(wash: model.attention.isEmpty ? BoardStyle.positive : urgent ? BoardStyle.attention : nil) {
+            VStack(alignment: .leading, spacing: BoardStyle.Space.m) {
+                HStack {
+                    BentoLabel("Attention", symbol: "bell", tint: urgent ? BoardStyle.attention : .secondary)
+                    Spacer(minLength: 0)
+                    if urgent { CountPill(count: model.attention.filter { !$0.unavailable }.count) }
                 }
-                Spacer(minLength: 8)
-                Image(systemName: "chevron.right").font(.caption).foregroundStyle(.secondary)
+                if model.attention.isEmpty {
+                    VStack(alignment: .leading, spacing: BoardStyle.Space.xs) {
+                        Image(systemName: "checkmark.circle.fill").font(.system(size: 30)).foregroundStyle(BoardStyle.positive)
+                            .accessibilityHidden(true)
+                        Text("All clear").font(.system(.title2, design: .rounded, weight: .semibold))
+                        Text("No breaches, nothing high priority.").font(.caption).foregroundStyle(.secondary)
+                    }
+                    .padding(.vertical, BoardStyle.Space.s)
+                    .accessibilityElement(children: .combine).accessibilityIdentifier("business-home-all-clear")
+                }
+                ForEach(model.attention) { row in
+                    attentionLink(row)
+                    if row.id != model.attention.last?.id { Divider() }
+                }
+                Spacer(minLength: 0)
+            }
+        }.accessibilityIdentifier("business-home-attention")
+    }
+    private func attentionLink(_ row: BusinessHomePresentation.AttentionRow) -> some View {
+        NavigationLink(value: row.route) {
+            HStack(alignment: .top, spacing: BoardStyle.Space.m) {
+                BentoSymbol(name: row.symbol, tint: row.unavailable ? .secondary : BoardStyle.attention)
+                VStack(alignment: .leading, spacing: BoardStyle.Space.line) {
+                    Text(row.title).font(.subheadline.weight(.semibold)).fixedSize(horizontal: false, vertical: true)
+                    if let detail = row.detail {
+                        Text(detail).font(.caption).foregroundStyle(.secondary).lineLimit(2).fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                Spacer(minLength: BoardStyle.Space.xs)
+                BentoChevron().padding(.top, BoardStyle.Space.xs)
             }.frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
         }.buttonStyle(.plain).accessibilityElement(children: .combine)
-            .accessibilityIdentifier("business-home-" + (urgent ? "attention-" : "info-") + row.id)
+            .accessibilityIdentifier("business-home-attention-" + row.id)
     }
-    private var gmv: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            HStack {
-                Text("GMV").font(.title2.bold())
-                Spacer()
-                NavigationLink(value: BusinessRoute.report("overview")) { Image(systemName: "arrow.up.right") }
-                    .accessibilityLabel("Open GMV report")
-            }
-            if let notice = model.gmvNotice {
-                Text(notice).accessibilityIdentifier("business-home-gmv-unavailable")
+    private func infoTile(_ row: BusinessHomePresentation.AttentionRow) -> some View {
+        BentoLink(route: row.route) {
+            if let value = row.value {
+                BentoStat(title: row.title, symbol: row.symbol, value: value, unit: "open", size: .medium, chevron: true)
             } else {
-                if let change = model.change { deltaChip(change, label: model.changeLabel, id: "business-home-gmv-delta") }
-                volumeChart
-                HStack(spacing: 16) {
-                    Label("Current period", systemImage: "line.diagonal")
-                    if !model.previousVolume.isEmpty { Text("┄ Prior period").foregroundStyle(.secondary) }
-                }.font(.caption2)
-                ViewThatFits(in: .horizontal) {
-                    HStack(spacing: 12) { gmvValue; gmvWeekday }
-                    VStack(alignment: .leading, spacing: 8) { gmvValue; gmvWeekday }
+                BentoStat(title: row.title, symbol: row.symbol, value: "—", note: row.detail, size: .medium, chevron: true)
+            }
+        }.accessibilityIdentifier("business-home-info-" + row.id)
+    }
+
+    private var gmv: some View {
+        BentoTile(wash: model.gmvNotice == nil ? BentoColor.money : nil) {
+            VStack(alignment: .leading, spacing: BoardStyle.Space.s) {
+                HStack(spacing: BoardStyle.Space.s) {
+                    BentoLabel("GMV · 30 days", symbol: "chart.line.uptrend.xyaxis", tint: BentoColor.money)
+                    Spacer(minLength: 0)
+                    if let day = model.asOf("gmv") { Text(day).font(.caption).foregroundStyle(.tertiary).lineLimit(1) }
+                    NavigationLink(value: BusinessRoute.report("overview")) { BentoChevron().padding(BoardStyle.Space.xs).contentShape(Rectangle()) }
+                        .buttonStyle(.plain).accessibilityLabel("Open GMV report")
+                }
+                if let notice = model.gmvNotice {
+                    Text(notice).font(.system(.title2, design: .rounded, weight: .semibold)).foregroundStyle(.secondary)
+                        .accessibilityIdentifier("business-home-gmv-unavailable")
+                    Spacer(minLength: 0)
+                } else {
+                    ViewThatFits(in: .horizontal) {
+                        HStack(alignment: .firstTextBaseline, spacing: BoardStyle.Space.m) { total; delta }
+                        VStack(alignment: .leading, spacing: BoardStyle.Space.xs) { total; delta }
+                    }
+                    volumeChart
+                    ViewThatFits(in: .horizontal) {
+                        HStack(spacing: BoardStyle.Space.l) { legend; Spacer(minLength: 0); reading }
+                        VStack(alignment: .leading, spacing: BoardStyle.Space.xs) { reading; legend }
+                    }
                 }
             }
-        }.homeCard().accessibilityIdentifier("business-home-gmv")
+        }.accessibilityIdentifier("business-home-gmv")
     }
-    @ViewBuilder private var gmvValue: some View {
-        if let point = model.selectedPoint(at: selected) {
-            Text(point.label).font(.headline).monospacedDigit().accessibilityIdentifier("business-home-gmv-selection")
-        } else if let latest = model.latest {
-            Text(latest).font(.headline).monospacedDigit().accessibilityIdentifier("business-home-gmv-latest")
+    @ViewBuilder private var total: some View {
+        if let total = model.total { BentoNumber(reportNumber(total, money: true), size: .hero).accessibilityIdentifier("business-home-gmv-total") }
+    }
+    @ViewBuilder private var delta: some View {
+        if let change = model.change {
+            BentoDelta(percent: change, label: model.changeLabel).accessibilityIdentifier("business-home-gmv-delta")
         }
     }
-    /// The weekday comparison is about the latest day, so it hides while another day is selected.
-    @ViewBuilder private var gmvWeekday: some View {
-        if selected == nil, let change = model.weekdayChange {
-            deltaChip(change, label: BusinessHomePresentation.weekdayLabel, id: "business-home-gmv-weekday")
-        }
+    private var legend: some View {
+        HStack(spacing: BoardStyle.Space.m) {
+            HStack(spacing: BoardStyle.Space.xs) {
+                Capsule().fill(BentoColor.money).frame(width: 14, height: 3)
+                Text("Current period")
+            }
+            if !model.previousVolume.isEmpty {
+                HStack(spacing: BoardStyle.Space.xs) {
+                    HStack(spacing: 2) { ForEach(0..<3, id: \.self) { _ in Capsule().fill(Color.secondary.opacity(0.6)).frame(width: 4, height: 2) } }
+                    Text("Prior period")
+                }
+            }
+        }.font(.caption2).foregroundStyle(.secondary).lineLimit(1).accessibilityHidden(true)
     }
-    /// The one form of a comparison on Home: arrow, signed percent, what it is against.
-    private func deltaChip(_ change: Double, label: String?, id: String) -> some View {
-        HStack(spacing: 6) {
-            Image(systemName: change > 0 ? "arrow.up.right" : change < 0 ? "arrow.down.right" : "arrow.right")
-                .foregroundStyle(change >= 0 ? BoardStyle.green : BoardStyle.attention)
-            Text(BusinessHomePresentation.percent(change, signed: true)).monospacedDigit()
-            if let label { Text(label) }
-        }.font(.caption).padding(8).background(BoardStyle.paper, in: Capsule())
-            .accessibilityElement(children: .combine).accessibilityIdentifier(id)
+    /// The day under the pointer, or the last published day with its published comparison.
+    @ViewBuilder private var reading: some View {
+        HStack(alignment: .firstTextBaseline, spacing: BoardStyle.Space.s) {
+            if let point = model.selectedPoint(at: selected) {
+                Text(point.label).font(.subheadline.weight(.semibold)).monospacedDigit().accessibilityIdentifier("business-home-gmv-selection")
+            } else {
+                if let latest = model.latest {
+                    Text(latest).font(.subheadline.weight(.semibold)).monospacedDigit().accessibilityIdentifier("business-home-gmv-latest")
+                }
+                if let comparison = model.weekdayComparison {
+                    Text(comparison).font(.caption).foregroundStyle(.secondary).accessibilityIdentifier("business-home-gmv-weekday")
+                }
+            }
+        }.lineLimit(1)
     }
     private var volumeChart: some View {
-        Chart {
+        let floor = (model.volume + model.previousVolume).map(\.value).min() ?? 0
+        let ceiling = (model.volume + model.previousVolume).map(\.value).max() ?? 1
+        // The fill starts under the lowest day, so a small change of a large volume still shows as a shape.
+        let base = max(0, floor - (ceiling - floor) * 0.35)
+        return Chart {
             // Align each period by its published ordinal day; both lines share one y-scale.
+            ForEach(model.volume) { point in
+                AreaMark(x: .value("Day in period", point.id), yStart: .value("Base", base), yEnd: .value("GMV", point.value))
+                    .foregroundStyle(LinearGradient(colors: [BentoColor.money.opacity(0.26), BentoColor.money.opacity(0)], startPoint: .top, endPoint: .bottom))
+                    .interpolationMethod(.monotone).accessibilityHidden(true)
+            }
             ForEach(model.previousVolume) { point in
                 LineMark(x: .value("Day in period", point.id), y: .value("GMV", point.value), series: .value("Period", "Previous"))
-                    .foregroundStyle(BoardStyle.ink.opacity(0.3)).lineStyle(StrokeStyle(lineWidth: 1.5, dash: [5, 4]))
+                    .foregroundStyle(Color.secondary.opacity(0.6)).lineStyle(StrokeStyle(lineWidth: 1.5, lineCap: .round, dash: [3, 4]))
+                    .interpolationMethod(.monotone)
                     .accessibilityLabel("Prior period, " + BusinessHomePresentation.day(point.date))
                     .accessibilityValue(reportNumber(point.value, money: true))
             }
             ForEach(model.volume) { point in
                 LineMark(x: .value("Day in period", point.id), y: .value("GMV", point.value), series: .value("Period", "Current"))
-                    .foregroundStyle(BoardStyle.ink).lineStyle(StrokeStyle(lineWidth: 2.5))
+                    .foregroundStyle(BentoColor.money).lineStyle(StrokeStyle(lineWidth: 2.5, lineCap: .round, lineJoin: .round))
+                    .interpolationMethod(.monotone)
                     .accessibilityLabel(BusinessHomePresentation.day(point.date)).accessibilityValue(reportNumber(point.value, money: true))
             }
             if let point = model.selectedPoint(at: selected) {
-                RuleMark(x: .value("Selected day", point.id)).foregroundStyle(BoardStyle.ink.opacity(0.25))
-                PointMark(x: .value("Day", point.id), y: .value("GMV", point.value)).foregroundStyle(BoardStyle.ink)
+                RuleMark(x: .value("Selected day", point.id)).foregroundStyle(BoardStyle.ink.opacity(0.2)).lineStyle(StrokeStyle(lineWidth: 1))
+                PointMark(x: .value("Day", point.id), y: .value("GMV", point.value)).foregroundStyle(BentoColor.money).symbolSize(70)
             }
         }
         .chartXSelection(value: $selected)
+        .chartYScale(domain: base...(ceiling + (ceiling - floor) * 0.1 + 1))
         .chartXAxis {
             AxisMarks(values: .automatic(desiredCount: 4)) { value in
                 AxisValueLabel {
@@ -273,70 +388,42 @@ struct BusinessHomeContent: View {
             }
         }
         .chartYAxis {
-            AxisMarks(position: .leading, values: .automatic(desiredCount: 4)) { value in
-                AxisGridLine()
+            AxisMarks(position: .trailing, values: .automatic(desiredCount: 3)) { value in
+                AxisGridLine(stroke: StrokeStyle(lineWidth: 0.5)).foregroundStyle(BoardStyle.line)
                 AxisValueLabel { if let n = value.as(Double.self) { Text(reportNumber(n, money: true)) } }
             }
         }
-        .frame(height: 220).accessibilityIdentifier("business-home-gmv-chart")
+        .frame(minHeight: 96, maxHeight: .infinity).accessibilityIdentifier("business-home-gmv-chart")
     }
-    private var money: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            HStack(alignment: .firstTextBaseline) {
-                Text("Money").font(.title2.bold())
-                Spacer()
-                Text("LTM · USD").font(.caption).foregroundStyle(.secondary)
-            }
-            if let notice = model.sourceNotice("ledger") {
-                Text(notice).accessibilityIdentifier("business-home-money-unavailable")
-            } else {
-                ForEach(model.moneyRows) { row in
-                    NavigationLink(value: BusinessRoute.report("accounting")) {
-                        ViewThatFits(in: .horizontal) {
-                            HStack(spacing: 24) {
-                                moneyLabel(row).frame(minWidth: 180, maxWidth: .infinity, alignment: .leading)
-                                miniBars(row).frame(width: 220)
-                                moneyValue(row).frame(minWidth: 130, alignment: .trailing)
-                            }
-                            VStack(alignment: .leading, spacing: 12) {
-                                HStack(alignment: .top) { moneyLabel(row); Spacer(); moneyValue(row) }
-                                miniBars(row)
-                            }
-                        }.padding(.vertical, 10).contentShape(Rectangle())
-                    }.buttonStyle(.plain).accessibilityIdentifier("business-home-money-" + row.id.replacingOccurrences(of: "_", with: "-"))
-                    if row.id != "net_income" { Divider() }
-                }
-                if let closed = model.closedThrough { Text("Books closed through " + closed).font(.caption).foregroundStyle(.secondary) }
-            }
-        }.homeCard().accessibilityIdentifier("business-home-money")
-    }
-    private func moneyLabel(_ row: BusinessHomePresentation.MoneyRow) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(row.title).font(.headline)
-            if let subtitle = row.subtitle {
-                Text(subtitle).font(.caption).fixedSize(horizontal: false, vertical: true)
-                    .accessibilityIdentifier("business-home-money-" + row.id + "-subtitle")
-            }
-        }
-    }
-    private func moneyValue(_ row: BusinessHomePresentation.MoneyRow) -> some View {
-        Text(row.formattedValue).font(.title3.weight(.semibold)).monospacedDigit().fixedSize()
-    }
-    @ViewBuilder private func miniBars(_ row: BusinessHomePresentation.MoneyRow) -> some View {
-        if !row.months.isEmpty {
-            Chart(row.months) { month in
-                BarMark(x: .value("Month", month.date), y: .value(row.title, month.value))
-                    .foregroundStyle(BoardStyle.ink.opacity(0.65)).cornerRadius(2)
-                    .accessibilityLabel(month.date + ", " + row.title).accessibilityValue(reportNumber(month.value, money: true))
-            }.chartXAxis(.hidden).chartYAxis(.hidden).frame(height: 44)
-                .accessibilityIdentifier("business-home-money-" + row.id + "-chart")
-        }
-    }
-}
 
-private extension View {
-    func homeCard() -> some View {
-        padding(20).frame(maxWidth: .infinity, alignment: .leading)
-            .background(BoardStyle.surface, in: RoundedRectangle(cornerRadius: BoardStyle.Radius.large))
+    private func moneyTile(_ row: BusinessHomePresentation.MoneyRow) -> some View {
+        BentoLink(route: .report("accounting")) {
+            BentoTile {
+                VStack(alignment: .leading, spacing: 0) {
+                    HStack(spacing: BoardStyle.Space.xs) {
+                        BentoLabel(row.title, symbol: Self.moneySymbol[row.id], tint: BentoColor.money)
+                        Text("LTM").font(.caption).foregroundStyle(.tertiary)
+                        Spacer(minLength: 0)
+                        BentoChevron()
+                    }
+                    BentoNumber(row.formattedValue, size: row.value == nil ? .small : .large).padding(.top, BoardStyle.Space.s)
+                    if let subtitle = row.subtitle {
+                        Text(subtitle).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                            .accessibilityIdentifier("business-home-money-" + row.id + "-subtitle")
+                    }
+                    if row.months.isEmpty { Spacer(minLength: 0) } else {
+                        Chart(row.months) { month in
+                            BarMark(x: .value("Month", month.date), y: .value(row.title, month.value), width: .ratio(0.72))
+                                .foregroundStyle(month.value < 0 ? BoardStyle.attention : BentoColor.money.opacity(month.id == row.months.last?.id ? 1 : 0.55))
+                                .cornerRadius(3)
+                                .accessibilityLabel(BusinessHomePresentation.month(month.date) + ", " + row.title)
+                                .accessibilityValue(reportNumber(month.value, money: true))
+                        }.chartXAxis(.hidden).chartYAxis(.hidden).frame(minHeight: 40, maxHeight: .infinity).padding(.top, BoardStyle.Space.m)
+                            .accessibilityIdentifier("business-home-money-" + row.id + "-chart")
+                    }
+                }
+            }
+        }.accessibilityIdentifier("business-home-money-" + row.id.replacingOccurrences(of: "_", with: "-"))
     }
+    private static let moneySymbol = ["revenue": "arrow.down.left.circle", "ebitda": "chart.bar", "net_income": "equal.circle"]
 }

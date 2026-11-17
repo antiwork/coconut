@@ -136,7 +136,7 @@ struct LibraryView: View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 0) {
                 if botId == nil {
-                    BusinessReportLibrary().padding(.bottom, 12)
+                    BusinessReportTiles().padding(.horizontal, BoardStyle.Space.l).padding(.top, BoardStyle.Space.l).padding(.bottom, BoardStyle.Space.m)
                 }
                 if store.documents?.isEmpty == true && botId != nil {
                     emptyLibrary

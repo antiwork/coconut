@@ -11,7 +11,7 @@ struct BusinessHomeView: View {
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 24) {
+            VStack(alignment: .leading, spacing: BoardStyle.Space.l) {
                 if let report = shownReport {
                     TimelineView(.periodic(from: .now, by: 60)) { context in
                         BusinessHomeContent(model: BusinessHomePresentation(report: report, now: context.date, refreshFailed: error != nil))
@@ -27,7 +27,7 @@ struct BusinessHomeView: View {
                     }.accessibilityIdentifier("business-home-refresh-error")
                 }
             }
-            .padding(24).frame(maxWidth: 1040, alignment: .leading).frame(maxWidth: .infinity)
+            .padding(BentoPage.padding).frame(maxWidth: BentoPage.width, alignment: .leading).frame(maxWidth: .infinity)
         }
         .navigationTitle("Business").background(BoardStyle.paper)
         .toolbar {

@@ -15,12 +15,11 @@ final class BusinessDashboardSnapshotTests: XCTestCase {
     func testFullHomeRendersPublishedValuesAtPhoneAndDesktopMeasures() throws {
         for width in [390.0, 1040.0] {
             let text = try renderHome(try homeFixture(), width: width, name: "home-full")
-            for expected in ["Attention", "GMV", "Money", "7.3%", "vs prior 30 days", "$268.4K", "6.5%", "same weekday",
-                             "Revenue", "$12.0M", "EBITDA", "$3.2M", "26.7%", "$870.0K", "$1.93M", "non-cash write-off"] {
+            for expected in ["Attention", "GMV", "$7.2M", "7.3%", "vs prior 30 days", "$268.4K", "6.5%", "same weekday",
+                             "Revenue", "$12.0M", "EBITDA", "$3.2M", "26.7%", "$870.0K", "$1.93M", "non-cash write-off",
+                             "Risk review", "Pull requests", "Run rate", "$84.6M", "Daily average", "$231.7K",
+                             "Accounting", "Marketing", "Support", "Projects", "Oct 2026"] {
                 XCTAssertTrue(text.contains(expected), "Missing rendered text: \(expected), width \(width)\n\(text)")
-            }
-            for absent in ["includes", "vs the same weekday", "All clear", "Nothing past SLA"] {
-                XCTAssertFalse(text.contains(absent), "Unexpected rendered text: \(absent), width \(width)\n\(text)")
             }
         }
     }
@@ -28,45 +27,65 @@ final class BusinessDashboardSnapshotTests: XCTestCase {
     func testLegacyHomeRendersWithoutDeltaOrMoneySubtitles() throws {
         let text = try renderHome(try homeFixture("BusinessOverviewLegacy"), width: 390, name: "home-legacy")
         XCTAssertTrue(text.contains("GMV"))
-        XCTAssertTrue(text.contains("Money"))
+        XCTAssertTrue(text.contains("Revenue"))
         XCTAssertTrue(text.contains("Not published"))
-        for absent in ["vs prior 30 days", "margin", "write-off", "same weekday"] {
+        for absent in ["vs prior 30 days", "margin", "write-off", "same weekday", "$0"] {
             XCTAssertFalse(text.contains(absent), "Unexpected rendered text: \(absent)\n\(text)")
         }
-        // A real $0 GMV axis tick is not a fabricated missing money value.
-        XCTAssertFalse((text.components(separatedBy: "Money").last ?? "").contains("$0"))
     }
 
     func testFailedGMVHomeRendersUnavailableInsteadOfChart() throws {
         let model = try homeFixture { $0["sections"] = ["gmv": ["ok": false]] }
         let text = try renderHome(model, width: 390, name: "home-gmv-failed")
         XCTAssertTrue(text.contains("Unavailable"))
-        XCTAssertTrue(text.contains("Money"))
-        for absent in ["Current period", "Prior period", "$268.4K", "7.3%", "same weekday"] {
+        XCTAssertTrue(text.contains("Revenue"))
+        for absent in ["Current period", "Prior period", "$268.4K", "7.3%", "same weekday", "$7.2M", "$84.6M"] {
             XCTAssertFalse(text.contains(absent), "Unexpected chart content: \(absent)\n\(text)")
         }
         XCTAssertTrue(model.volume.isEmpty)
         XCTAssertTrue(model.previousVolume.isEmpty)
     }
 
-    func testHomeWithNothingPastSLAAndLightModeRemainReadable() throws {
+    func testAllClearHomeAndLightModeRemainReadable() throws {
         let model = try homeFixture { data in
             data["support"] = ["gumroad_past_sla": 0]
             data["issues"] = ["past_sla": 0]
             data["high_priority"] = ["count": 0]
         }
         let text = try renderHome(model, width: 390, name: "home-clear-light", scheme: .light)
-        XCTAssertTrue(text.contains("Nothing past SLA"))
-        XCTAssertFalse(text.contains("All clear"))
-        XCTAssertFalse(text.replacingOccurrences(of: "Nothing past SLA", with: "").contains("past SLA"))
+        XCTAssertTrue(text.contains("All clear"))
+        XCTAssertFalse(text.contains("past SLA"))
         XCTAssertTrue(text.contains("Risk review"))
     }
 
-    /// Render the actual shared SwiftUI content and read its pixels, not a second copy of its labels.
-    /// Attachments are evidence, not machine-local golden images.
+    /// Each report draws its published numbers on this platform, at the width of an iPhone.
+    func testEachReportRendersItsNumbers() throws {
+        let expected = ["overview": ["GMV", "$6.9M", "13.1%", "Revenue", "$3.6M", "Support", "past SLA", "Run rate", "$84.0M"],
+                        "accounting": ["Revenue", "$3.6M", "EBITDA", "$870.0K", "Net income", "$610.0K", "24.2%", "16.9%", "Write-offs"],
+                        "support": ["Open", "14", "Unassigned", "Closed", "184", "Median", "Sam", "100", "Payout timing question"],
+                        "risk": ["Review queue", "24", "Disputes", "512", "$41.2K", "Won", "142", "Lost", "318", "Connect", "Mira Chen"],
+                        "engineering": ["Open pull requests", "gumroad", "flexile", "Upgrade the Stripe SDK", "+96", "grace", "Changes requested"]]
+        for key in BusinessReport.keys {
+            let content = BusinessReportContent(key: key, report: try BusinessReport.preview(key), sample: true)
+            let text = try render(content, width: 390, name: "report-" + key, scheme: .light)
+            for word in expected[key] ?? [] {
+                XCTAssertTrue(text.contains(word), "Missing rendered text: \(word) in \(key)\n\(text)")
+            }
+            for slogan in ["at a glance", "Every number has a ledger", "Keep the queue moving", "OPERATIONS"] {
+                XCTAssertFalse(text.contains(slogan), "A headline of a web page is back: \(slogan)")
+            }
+        }
+    }
+
     private func renderHome(_ model: BusinessHomePresentation, width: Double, name: String, scheme: ColorScheme = .dark) throws -> String {
-        let view = BusinessHomeContent(model: model)
-            .padding(24).frame(width: width).fixedSize(horizontal: false, vertical: true)
+        try render(BusinessHomeContent(model: model), width: width, name: name, scheme: scheme)
+    }
+
+    /// Render the actual shared SwiftUI content and read its pixels, not a second copy of its labels.
+    /// Attachments are evidence, not machine-local golden images. A text that wraps reads as one line.
+    private func render(_ content: some View, width: Double, name: String, scheme: ColorScheme) throws -> String {
+        let view = content
+            .padding(16).frame(width: width).fixedSize(horizontal: false, vertical: true)
             .background(BoardStyle.paper)
             .environment(\.colorScheme, scheme).environment(\.locale, Locale(identifier: "en_US"))
         let renderer = ImageRenderer(content: view)
@@ -80,72 +99,97 @@ final class BusinessDashboardSnapshotTests: XCTestCase {
         attachment.name = "\(name)-\(Int(width))"
         attachment.lifetime = .keepAlways
         add(attachment)
-        if let path = ProcessInfo.processInfo.environment["COCONUT_BUSINESS_SHOTS"] {
-            let folder = URL(fileURLWithPath: path)
-            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-            try (png as Data).write(to: folder.appendingPathComponent(attachment.name! + ".png"))
-        }
-        // Vision can read a block of a tall image as upside down (the Mac phone-width render lost "GMV" that way),
-        // so read the whole image and then overlapping bands of it. A text can therefore appear more than once.
-        var lines = try recognizedText(image)
-        for top in stride(from: 0, to: image.height, by: 900) {
-            let band = CGRect(x: 0, y: top, width: image.width, height: min(1200, image.height - top))
-            lines += try recognizedText(try XCTUnwrap(image.cropping(to: band)))
-        }
-        // Vision occasionally reads the monospaced zero before a unit as O (e.g. $12.OM).
-        // Exact numeric formatting is also asserted in BusinessTests; normalize only that glyph ambiguity.
-        return lines.joined(separator: "\n")
-            .replacingOccurrences(of: #"(?<=\.)O(?=[KMB]\b)"#, with: "0", options: .regularExpression)
-    }
-
-    private func recognizedText(_ image: CGImage) throws -> [String] {
+        try save(png as Data, name: attachment.name! + Self.platform)
         let request = VNRecognizeTextRequest()
         request.recognitionLevel = .accurate
         request.recognitionLanguages = ["en-US"]
         request.usesLanguageCorrection = false
         try VNImageRequestHandler(cgImage: image).perform([request])
-        return (request.results ?? []).compactMap { $0.topCandidates(1).first?.string }
+        // Vision occasionally reads the monospaced zero before a unit as O (e.g. $12.OM).
+        // Exact numeric formatting is also asserted in BusinessTests; normalize only that glyph ambiguity.
+        return (request.results ?? []).compactMap { $0.topCandidates(1).first?.string }.joined(separator: " ")
+            .replacingOccurrences(of: #"(?<=\.)O(?=[KMB]\b)"#, with: "0", options: .regularExpression)
     }
 
     #if os(macOS)
-    /// Every business screen with the preview data, at a Mac width and at an iPhone width, in a window off the screen.
+    private static let platform = ""
+    #else
+    private static let platform = "-iphone"
+    #endif
+
+    private func save(_ data: Data, name: String) throws {
+        guard let path = ProcessInfo.processInfo.environment["COCONUT_BUSINESS_SHOTS"] else { return }
+        let folder = URL(fileURLWithPath: path)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        try data.write(to: folder.appendingPathComponent(name + ".png"))
+    }
+
+    #if os(macOS)
+    /// Every business screen with the preview data, whole, at a Mac width and at an iPhone width. A window off the
+    /// screen draws the controls that ImageRenderer leaves out.
     func testEveryDashboardRendersAtDesktopAndPhoneWidths() throws {
         let store = AppStore(demo: true)
         store.businessCatalog = .preview
-        var screens: [(String, AnyView)] = [("home", AnyView(BusinessHomeView(initial: try BusinessReport.preview("overview"))))]
+        let home = BusinessHomePresentation(report: try BusinessReport.preview("overview"))
+        var screens: [(String, AnyView)] = [("home", AnyView(BusinessHomeContent(model: home)))]
         for key in BusinessReport.keys {
-            screens.append((key, AnyView(BusinessReportView(key: key, initial: try BusinessReport.preview(key)))))
+            screens.append((key, AnyView(BusinessReportContent(key: key, report: try BusinessReport.preview(key), sample: true))))
         }
-        screens.append(("library", AnyView(BusinessReportLibrary())))
-        screens.append(("workspace", AnyView(BusinessWorkspaceView(function: "support"))))
+        screens.append(("library", AnyView(BusinessReportTiles())))
         for (name, screen) in screens {
             for (width, scheme) in [(1100.0, ColorScheme.light), (1100.0, .dark), (390.0, .light)] {
-                let height = name == "library" || name == "workspace" ? 900.0 : 2000.0
+                let padding = width < 600 ? 16.0 : 24.0
+                let content = screen.padding(padding).frame(width: width).environment(store)
+                    .environment(\.locale, Locale(identifier: "en_US"))
+                // The page is as tall as its content, so the image shows the whole dashboard.
+                let height = NSHostingView(rootView: content).fittingSize.height
+                XCTAssertGreaterThan(height, 200, name)
                 let view = NavigationStack {
-                    screen.navigationDestination(for: BusinessRoute.self) { BusinessDestinationView(route: $0) }
-                }.environment(store).environment(\.colorScheme, scheme).environment(\.locale, Locale(identifier: "en_US"))
-                    .frame(width: width, height: height)
-                let host = NSHostingView(rootView: view)
-                host.frame = NSRect(x: 0, y: 0, width: width, height: height)
-                let window = NSWindow(contentRect: host.frame, styleMask: [.borderless], backing: .buffered, defer: false)
-                window.appearance = NSAppearance(named: scheme == .dark ? .darkAqua : .aqua)
-                window.contentView = host
-                window.setFrameOrigin(NSPoint(x: -10_000, y: -10_000))
-                window.orderBack(nil)
-                for _ in 0..<8 { RunLoop.main.run(until: Date().addingTimeInterval(0.1)) }
-                host.layoutSubtreeIfNeeded()
-                let rep = try XCTUnwrap(host.bitmapImageRepForCachingDisplay(in: host.bounds))
-                host.cacheDisplay(in: host.bounds, to: rep)
-                window.orderOut(nil)
-                let image = try XCTUnwrap(rep.representation(using: .png, properties: [:]))
+                    content.frame(maxHeight: .infinity, alignment: .top).background(BoardStyle.paper)
+                        .navigationDestination(for: BusinessRoute.self) { BusinessDestinationView(route: $0) }
+                }.environment(store).environment(\.colorScheme, scheme).frame(width: width, height: height)
+                let image = try window(view, size: NSSize(width: width, height: height), scheme: scheme)
                 XCTAssertGreaterThan(image.count, 20_000, name)
-                if let path = ProcessInfo.processInfo.environment["COCONUT_BUSINESS_SHOTS"] {
-                    let folder = URL(fileURLWithPath: path)
-                    try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-                    try image.write(to: folder.appendingPathComponent("\(name)-\(Int(width))-\(scheme).png"))
-                }
+                try save(image, name: "\(name)-\(Int(width))-\(scheme)")
             }
         }
+    }
+
+    /// The screens as the app shows them, with their scroll view and their bar, in a window of a Mac.
+    func testScreensRenderInAWindow() throws {
+        let store = AppStore(demo: true)
+        store.businessCatalog = .preview
+        let screens: [(String, AnyView)] = [
+            ("screen-home", AnyView(BusinessHomeView(initial: try BusinessReport.preview("overview")))),
+            ("screen-support", AnyView(BusinessWorkspaceView(function: "support"))),
+            ("screen-risk", AnyView(BusinessReportView(key: "risk", initial: try BusinessReport.preview("risk")))),
+            ("screen-library", AnyView(BusinessReportLibrary(function: "accounting"))),
+        ]
+        for (name, screen) in screens {
+            let view = NavigationStack {
+                screen.navigationDestination(for: BusinessRoute.self) { BusinessDestinationView(route: $0) }
+            }.environment(store).environment(\.colorScheme, .light).environment(\.locale, Locale(identifier: "en_US"))
+                .frame(width: 920, height: 760)
+            let image = try window(view, size: NSSize(width: 920, height: 760), scheme: .light)
+            XCTAssertGreaterThan(image.count, 20_000, name)
+            try save(image, name: name)
+        }
+    }
+
+    private func window(_ view: some View, size: NSSize, scheme: ColorScheme) throws -> Data {
+        let host = NSHostingView(rootView: view)
+        host.frame = NSRect(origin: .zero, size: size)
+        let window = NSWindow(contentRect: host.frame, styleMask: [.borderless], backing: .buffered, defer: false)
+        window.appearance = NSAppearance(named: scheme == .dark ? .darkAqua : .aqua)
+        window.contentView = host
+        window.setFrameOrigin(NSPoint(x: -10_000, y: -10_000))
+        window.orderBack(nil)
+        for _ in 0..<8 { RunLoop.main.run(until: Date().addingTimeInterval(0.1)) }
+        host.layoutSubtreeIfNeeded()
+        let rep = try XCTUnwrap(host.bitmapImageRepForCachingDisplay(in: host.bounds))
+        host.cacheDisplay(in: host.bounds, to: rep)
+        window.orderOut(nil)
+        return try XCTUnwrap(rep.representation(using: .png, properties: [:]))
     }
     #endif
 }

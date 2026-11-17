@@ -107,3 +107,14 @@ Rules that stay: the client does not compute a total, a change or a margin (`Bus
 value shows as "—" or "Not published", never as zero. A failed or stale source never reads as "All clear".
 
 Fixes that ship with the redesign: problems 1 to 11 and 13 above.
+
+## Result
+
+The redesign is in `Bento.swift` (the grid, the tile and the numbers), `BusinessHome.swift` and
+`BusinessDashboard.swift`. `BusinessDashboardSnapshotTests` renders each screen whole at a Mac width and at an iPhone
+width, in light and in dark; set `TEST_RUNNER_COCONUT_BUSINESS_SHOTS` to a folder to keep the images.
+`MacWindowSnapshotTests` adds four windows of Business next to the sidebar. `BusinessBentoTests` covers the placement
+of the grid and the fixes of the data.
+
+Not changed: the work list, a work item, the projects, the ledger and the data explorer. They are native lists and
+forms already.
