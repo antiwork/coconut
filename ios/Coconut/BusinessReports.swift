@@ -58,9 +58,9 @@ struct BusinessReport: Decodable, Sendable {
     let ledgerUrl: String
     var stale: Bool { generatedAt?.apiDate.map { Date().timeIntervalSince($0) > 3600 } ?? true }
 
-    static let titles = ["overview": "Business", "accounting": "Accounting", "support": "Support", "risk": "Risk", "engineering": "Engineering"]
-    static let symbols = ["overview": "chart.xyaxis.line", "accounting": "books.vertical", "support": "lifepreserver", "risk": "shield.lefthalf.filled", "engineering": "chevron.left.forwardslash.chevron.right"]
-    static let keys = ["overview", "accounting", "support", "risk", "engineering"]
+    static let titles = ["overview": "Business", "accounting": "Accounting", "support": "Support", "risk": "Risk", "engineering": "Engineering", "periods": "Reports"]
+    static let symbols = ["overview": "chart.xyaxis.line", "accounting": "books.vertical", "support": "lifepreserver", "risk": "shield.lefthalf.filled", "engineering": "chevron.left.forwardslash.chevron.right", "periods": "chart.bar.doc.horizontal"]
+    static let keys = ["overview", "accounting", "support", "risk", "engineering", "periods"]
 }
 
 struct LedgerIndex: Decodable, Sendable {
@@ -93,6 +93,7 @@ extension BusinessReport {
         case "support": previewSupport(now)
         case "risk": previewRisk(now)
         case "engineering": previewEngineering(now)
+        case "periods": previewPeriods(now)
         default: previewHome(now)
         }
         // The pull request snapshot has no timestamp of its own. The demo gives it one, so it reads as fresh.
@@ -114,6 +115,33 @@ extension BusinessReport {
         let date = previewCalendar.date(byAdding: .month, value: -back, to: now) ?? now
         let parts = previewCalendar.dateComponents([.year, .month], from: date)
         return String(format: "%04d-%02d", parts.year ?? 0, parts.month ?? 0)
+    }
+
+    /// The demo reads the same shape the generator publishes: days, months and years, already divided.
+    private static func previewPeriods(_ now: Date) -> [String: Any] {
+        let days = (0..<30).reversed().map { previewDay(now, back: $0 + 1) }
+        let daily: [String: Any] = ["as_of": days.last ?? "", "weekday": "Sunday",
+            "days": days.enumerated().map { i, day -> [String: Any] in
+                ["date": day, "gmv": 205000 + Double(i) * 2400] },
+            "last_day_gmv": 274000, "avg_gmv": 238000, "vs_avg_pct": 15.1, "vs_weekday_pct": 3.4]
+        let months = (1...12).reversed().map { previewMonth(now, back: $0) }
+        let rows: [[String: Any]] = months.enumerated().map { i, month -> [String: Any] in
+            let revenue = [2140000.0, 2210000, 2280000, 2350000, 1900000, 2480000, 2540000, 2610000, 2680000, 2750000, 2820000, 2890000][i]
+            let net = [310000.0, 340000, 355000, 372000, 210000, 405000, 418000, 430000, 447000, 458000, 471000, 483000][i]
+            return ["month": month, "revenue": revenue, "ebitda": revenue * 0.5, "net_income": net,
+                    "impairment": 0, "margin_pct": [14.5, 15.4, 15.6, 15.8, 11.1, 16.3, 16.5, 16.5, 16.7, 16.7, 16.7, 16.7][i]]
+        }
+        let monthly: [String: Any] = ["months": rows, "revenue_3m": 8460000, "revenue_prev_3m": 8110000,
+                                      "revenue_3m_pct": 4.3, "closed_through": months.last ?? ""]
+        let years: [[String: Any]] = [
+            ["year": "2021", "months": 12, "revenue": 14200000, "ebitda": 5100000, "net_income": 1800000, "margin_pct": 12.7, "partial": false],
+            ["year": "2022", "months": 12, "revenue": 16900000, "ebitda": 6200000, "net_income": 2400000, "margin_pct": 14.2, "partial": false],
+            ["year": "2023", "months": 12, "revenue": 19500000, "ebitda": 8100000, "net_income": 3100000, "margin_pct": 15.9, "partial": false],
+            ["year": "2024", "months": 12, "revenue": 21100000, "ebitda": 9900000, "net_income": 3900000, "margin_pct": 18.5, "partial": false],
+            ["year": "2025", "months": 12, "revenue": 22400000, "ebitda": 11200000, "net_income": 4400000, "margin_pct": 19.6, "partial": false],
+            ["year": "2026", "months": 10, "revenue": 19700000, "ebitda": 10100000, "net_income": 4100000, "margin_pct": 20.8, "partial": true]
+        ]
+        return ["daily": daily, "monthly": monthly, "yearly": ["years": years, "closed_through": months.last ?? ""]]
     }
 
     private static func previewHome(_ now: Date) -> [String: Any] {

@@ -13,7 +13,8 @@ from urllib.parse import quote
 from .business import key
 from .service_base import ServiceError
 
-REPORTS = {'overview': 'home', 'accounting': 'home', 'support': 'support', 'risk': 'risk', 'engineering': 'prs'}
+REPORTS = {'overview': 'home', 'accounting': 'home', 'support': 'support', 'risk': 'risk', 'engineering': 'prs',
+           'periods': 'periods'}
 
 
 def contents(business, repository, path):

@@ -38,6 +38,8 @@ struct BusinessHomeView: View {
                             Label(function.name, systemImage: function.symbol)
                         }.accessibilityIdentifier("business-function-" + function.key)
                     }
+                    NavigationLink(value: BusinessRoute.reports) { Label("Reports", systemImage: "chart.bar.doc.horizontal") }
+                        .accessibilityIdentifier("business-reports-link")
                     NavigationLink(value: BusinessRoute.projects) { Label("Projects", systemImage: "square.stack.3d.up") }
                 } label: { Label("Functions", systemImage: "square.grid.2x2") }
                 .accessibilityIdentifier("business-home-functions")
@@ -67,6 +69,7 @@ struct BusinessDestinationView: View {
         switch route {
         case .home: BusinessHomeView()
         case .projects: BusinessProjectsView()
+        case .reports: BusinessReportsView()
         case .function(let key): BusinessWorkspaceView(function: key)
         case .project(let key): BusinessWorkListView(project: key)
         case .report(let key): BusinessReportView(key: key)
