@@ -802,6 +802,9 @@ struct MessageBubble: View {
             #endif
                 if !isUser && !message.streaming {
                     LinkPreviewList(text: message.text)
+                } else if isUser, !store.githubEmbeds.links(in: message.text).isEmpty {
+                    // A message of the person shows the GitHub pages that it names, and no other page.
+                    LinkPreviewList(text: message.text, githubOnly: true)
                 }
                 MessageReactionList(message: message, enabled: onReply != nil)
             }

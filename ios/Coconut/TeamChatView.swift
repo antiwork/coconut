@@ -689,6 +689,7 @@ struct TeamMessageActions {
 /// One message of the Team chat: the name of the writer above the first message of a run, then the bubble. A direct
 /// chat has one other writer, so it shows no name.
 struct TeamMessageRow: View {
+    @Environment(AppStore.self) private var store
     @Environment(\.showTeamChat) private var showTeamChat
     @Environment(\.openDocument) private var openDocument
     @Environment(\.pushRoute) private var pushRoute
@@ -949,13 +950,18 @@ struct TeamMessageRow: View {
                     .accessibilityIdentifier("team-message-quote-\(row.id)")
             case nil: EmptyView()
             }
-            if let preview = row.linkPreview {
+            // A GitHub page shows as its GitHub card under the text. The card of the writer stays for each other page,
+            // and for a GitHub page that this Mac cannot read.
+            if let preview = row.linkPreview, preview.address.flatMap(store.githubEmbeds.preview) == nil {
                 TeamLinkCard(preview: preview).layoutValue(key: BubbleStack.CardWidth.self, value: TeamLinkCard.maxWidth)
             }
             MessageText(text: shownText, linkColor: own ? BoardStyle.userBubbleLink : .blue, allowsTextSelection: false)
                 .accessibilityLabel(Text(spokenLabel))
                 .accessibilityActions { accessibilityMenu }
                 .accessibilityIdentifier("team-message-\(row.id)")
+                .loadsGitHubEmbeds(in: shownText)
+            GitHubEmbedStack(text: shownText, inBubble: true)
+                .layoutValue(key: BubbleStack.CardWidth.self, value: GitHubEmbedCard.maxWidth)
             if let pending, pending.failed {
                 NotSentControls(id: pending.id, retry: { actions.retry(pending.id) },
                                 delete: { actions.removeUnsent(pending.id) })

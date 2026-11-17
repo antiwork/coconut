@@ -168,6 +168,8 @@ final class AppStore {
     @ObservationIgnored private var registeringPush = false
     @ObservationIgnored private var pushSyncRequested = false
     let isDemo: Bool
+    /// The GitHub cards of the chats (GitHubPreview.swift).
+    @ObservationIgnored let githubEmbeds = GitHubEmbeds()
 
     private var pairing: PairingConfiguration?
     /// True while pairing.json exists but the device cannot read it now. The file has complete protection, so a Mac
@@ -320,6 +322,7 @@ final class AppStore {
         isDemo = demo
         PhotoLoader.shared.macFile = { [weak self] id in await self?.macFileData(id: id) }
         PhotoLoader.shared.teamFile = { [weak self] address in await self?.teamFileData(address) }
+        githubEmbeds.fetch = { [weak self] url in await self?.githubPreview(url) }
         if demo {
             setBadge = { _ in }
             apply(Self.previewSnapshot(), persist: false)
