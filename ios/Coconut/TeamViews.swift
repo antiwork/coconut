@@ -1,7 +1,7 @@
 import SwiftUI
 
-/// The Team screen: make or join a team, and see its members (backend/coconut/team.py). Settings and the title of the
-/// Team chat open it on an iPhone, and the Settings window opens it on a Mac. A team is people who share pages and talk
+/// The Team screen: make or join a team, and see its members (backend/coconut/team.py). Profile and the title of the
+/// Team chat open it on an iPhone and on a Mac. A team is people who share pages and talk
 /// in one chat. A person shares a page on the page itself, so the screen has no share action. The chat is in the Chats
 /// list, so the screen shows none.
 struct TeamView: View {

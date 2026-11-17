@@ -20,8 +20,10 @@ final class AppModel: ObservableObject {
     @Published private(set) var updateError: String?
     /// The mode of the install (InstallMode). Only `--set-up` changes it, before the first view shows.
     @Published private(set) var mode: InstallMode
-    /// A chat that the Settings window asked the main window to show. The main window shows it and sets it to nil.
+    /// A chat that a banner or a share asked the main window to show. The main window shows it and sets it to nil.
     @Published var shownChat: TeamChatKey?
+    /// Coconut > Settings asked the main window to show Profile. The main window shows it and sets it to false.
+    @Published var shownProfile = false
     /// The agent whose chat got a share from the share menu. The main window shows the chat and sets it to nil.
     @Published var shownBot: String?
 

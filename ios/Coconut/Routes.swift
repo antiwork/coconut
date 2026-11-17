@@ -36,6 +36,9 @@ extension EnvironmentValues {
     /// Shows a chat of a team: the Chats tab on the iPhone, the main window on the Mac. The Team screen and the name
     /// above a message open a direct chat with it.
     @Entry var showTeamChat: ((TeamChatKey) -> Void)? = nil
+    /// Shows the Team screen of a team by its room ID. Only the Mac window sets it: the title of a Team chat opens
+    /// the screen with it. An iPhone pushes the screen onto the stack of the chat.
+    @Entry var showTeamScreen: ((String) -> Void)? = nil
 }
 
 enum HomeDestination: Hashable {

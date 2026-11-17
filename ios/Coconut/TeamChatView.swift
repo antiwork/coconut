@@ -60,7 +60,7 @@ struct TeamChatView: View {
     @FocusState private var composerFocused: Bool
     @ScaledMetric(relativeTo: .body) private var nameWidth = 150
     #if os(macOS)
-    @Environment(\.openSettings) private var openSettings
+    @Environment(\.showTeamScreen) private var showTeamScreen
     @State private var sentScroll = SentMessageScroll()
     /// The title of the team floats over the top of the chat. It has two lines (the name and who is in the chat), so it
     /// is 10 points taller than the title of a bot (34).
@@ -403,8 +403,8 @@ struct TeamChatView: View {
                     .padding(.top, Self.titleHeight - BoardStyle.Space.xs)
             }
         }
-        // The title floats over the top of the chat, as the title of a bot does. It opens the Team screen in the
-        // Settings window.
+        // The title floats over the top of the chat, as the title of a bot does. It opens the Team screen of the
+        // team in the main window.
         .overlay(alignment: .top) {
             if let peer = peer(room) {
                 DirectTitle(peer: peer, team: room.name, faceSize: 24)
@@ -415,7 +415,7 @@ struct TeamChatView: View {
                     .accessibilityElement(children: .combine)
                     .accessibilityIdentifier("direct-chat-title")
             } else {
-                Button { openSettings() } label: {
+                Button { showTeamScreen?(room.room) } label: {
                     TeamTitle(room: room, faceSize: 24)
                     .padding(.leading, BoardStyle.Space.xs).padding(.trailing, 12)
                     .frame(height: Self.titlePillHeight)

@@ -80,7 +80,7 @@ final class MacBanners: NSObject, UNUserNotificationCenterDelegate {
     }
 
     /// A click on a banner: the app comes to the front, the main window opens, and it shows the chat while the app has
-    /// it. The Team screen of the Settings window opens a direct chat on the same path (AppModel.shownChat).
+    /// it. A share to a chat of a team opens it on the same path (AppModel.shownChat).
     private func open(_ chat: TeamChatKey?) {
         if let shown = MessageBanners.shownChat(chat, rooms: store.team) { model.shownChat = shown }
         openWindow?(id: "main")

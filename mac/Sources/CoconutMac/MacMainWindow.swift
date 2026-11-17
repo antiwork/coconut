@@ -96,11 +96,19 @@ struct MacMainWindow: View {
         // was cut off.
         .environment(\.openChat) { id in selection = .bot(id) }
         .environment(\.showTeamChat) { chat in selection = .team(chat) }
-        // The Team screen of the Settings window asks for a direct chat. The window shows it.
+        // The title of a Team chat opens the Team screen of its team over Profile, where the teams are.
+        .environment(\.showTeamScreen) { room in go(.profile, pushing: [TeamScreenRoute(roomId: room)]) }
+        // A banner or a share asks for a chat. The window shows it.
         .onChange(of: model.shownChat, initial: true) { _, chat in
             guard let chat else { return }
             selection = .team(chat)
             model.shownChat = nil
+        }
+        // Coconut > Settings asks for Profile. The window shows its root.
+        .onChange(of: model.shownProfile, initial: true) { _, shown in
+            guard shown else { return }
+            go(.profile)
+            model.shownProfile = false
         }
         // A share from the share menu went to an agent. The window shows its chat.
         .onChange(of: model.shownBot, initial: true) { _, bot in

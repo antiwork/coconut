@@ -54,19 +54,10 @@ struct CoconutApp: App {
         // Nobody sits at a team-only Mac, so its app is a menu bar item only: the window does not open at launch.
         // .automatic is the behavior of a scene without this modifier, so a full install opens it as before.
         .defaultLaunchBehavior(model.mode == .team ? .suppressed : .automatic)
-
-        // Coconut > Settings: the settings of the chat client. The Team screen is its one page today.
-        Settings {
-            Group {
-                if model.mode == .team {
-                    TeamOnlyNote()
-                } else {
-                    TeamSettings(model: model)
-                }
-            }
-            .environment(store)
-            .tint(.primary)
-            .frame(width: 480, height: 560)
+        // Coconut has no settings window. Coconut > Settings shows Profile in the main window: the things of this
+        // device and the defaults of the agents. The Coconut chat changes the rest.
+        .commands {
+            CommandGroup(replacing: .appSettings) { ProfileCommand(model: model) }
         }
 
         MenuBarExtra {
@@ -87,18 +78,19 @@ struct CoconutApp: App {
     }
 }
 
-/// The Team screen in the Settings window. A person on it opens a direct chat: the main window shows the chat in front.
-struct TeamSettings: View {
+/// Coconut > Settings, with Command-comma. It brings the main window to the front on Profile. A Mac that runs Coconut
+/// for a team only has no Profile: its window shows the note of that mode.
+struct ProfileCommand: View {
     @ObservedObject var model: AppModel
     @Environment(\.openWindow) private var openWindow
 
     var body: some View {
-        NavigationStack { TeamView() }
-            .environment(\.showTeamChat) { chat in
-                model.shownChat = chat
-                openWindow(id: "main")
-                NSApp.activate(ignoringOtherApps: true)
-            }
+        Button("Settings…") {
+            model.shownProfile = true
+            openWindow(id: "main")
+            NSApp.activate(ignoringOtherApps: true)
+        }
+        .keyboardShortcut(",", modifiers: .command)
     }
 }
 
