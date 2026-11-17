@@ -23,7 +23,6 @@ struct BusinessHomeView: View {
                     VStack(alignment: .leading, spacing: 8) {
                         Label("Refresh unavailable", systemImage: "exclamationmark.arrow.trianglehead.2.clockwise.rotate.90")
                         Text(error).font(.caption)
-                        if shownReport != nil { Text("Showing the last published snapshot; current status is unknown.").font(.caption) }
                         Button("Try again") { Task { await load() } }
                     }.accessibilityIdentifier("business-home-refresh-error")
                 }

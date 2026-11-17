@@ -19,6 +19,9 @@ final class BusinessDashboardSnapshotTests: XCTestCase {
                              "Revenue", "$12.0M", "EBITDA", "$3.2M", "26.7%", "$870.0K", "$1.93M", "non-cash write-off"] {
                 XCTAssertTrue(text.contains(expected), "Missing rendered text: \(expected), width \(width)\n\(text)")
             }
+            for absent in ["includes", "vs the same weekday", "All clear", "Nothing past SLA"] {
+                XCTAssertFalse(text.contains(absent), "Unexpected rendered text: \(absent), width \(width)\n\(text)")
+            }
         }
     }
 
@@ -46,15 +49,16 @@ final class BusinessDashboardSnapshotTests: XCTestCase {
         XCTAssertTrue(model.previousVolume.isEmpty)
     }
 
-    func testAllClearHomeAndLightModeRemainReadable() throws {
+    func testHomeWithNothingPastSLAAndLightModeRemainReadable() throws {
         let model = try homeFixture { data in
             data["support"] = ["gumroad_past_sla": 0]
             data["issues"] = ["past_sla": 0]
             data["high_priority"] = ["count": 0]
         }
         let text = try renderHome(model, width: 390, name: "home-clear-light", scheme: .light)
-        XCTAssertTrue(text.contains("All clear"))
-        XCTAssertFalse(text.contains("past SLA"))
+        XCTAssertTrue(text.contains("Nothing past SLA"))
+        XCTAssertFalse(text.contains("All clear"))
+        XCTAssertEqual(text.components(separatedBy: "past SLA").count, 2)
         XCTAssertTrue(text.contains("Risk review"))
     }
 

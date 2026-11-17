@@ -16,12 +16,12 @@ final class BusinessTests: XCTestCase {
         XCTAssertEqual(model.change, 7.3)
         XCTAssertEqual(model.changeLabel, "vs prior 30 days")
         XCTAssertEqual(model.latest, "Nov 15 · $268.4K")
-        XCTAssertEqual(model.weekdayComparison, "+6.5% vs the same weekday")
+        XCTAssertEqual(model.weekdayChange, 6.5)
         XCTAssertEqual(model.moneyRows.map(\.value), [12000000, 3200000, 870000])
         XCTAssertEqual(model.moneyRows.map(\.formattedValue), ["$12.0M", "$3.2M", "$870.0K"])
         XCTAssertEqual(model.moneyRows.map(\.months.count), [12, 12, 12])
         XCTAssertEqual(model.moneyRows[1].subtitle, "26.7% margin")
-        XCTAssertEqual(model.moneyRows[2].subtitle, "includes $1.93M non-cash write-off")
+        XCTAssertEqual(model.moneyRows[2].subtitle, "$1.93M non-cash write-off")
         XCTAssertEqual(model.moneyRows[2].months[7].value, -1700000)
         XCTAssertEqual(model.closedThrough, "2026-10")
     }
@@ -30,7 +30,7 @@ final class BusinessTests: XCTestCase {
         let model = try homeFixture("BusinessOverviewLegacy")
         XCTAssertNil(model.change)
         XCTAssertNil(model.changeLabel)
-        XCTAssertNil(model.weekdayComparison)
+        XCTAssertNil(model.weekdayChange)
         XCTAssertFalse(model.volume.isEmpty)
         XCTAssertNil(model.gmvNotice)
         XCTAssertEqual(model.moneyRows.count, 3)
@@ -45,7 +45,7 @@ final class BusinessTests: XCTestCase {
         XCTAssertTrue(model.previousVolume.isEmpty)
         XCTAssertNil(model.latest)
         XCTAssertNil(model.change)
-        XCTAssertNil(model.weekdayComparison)
+        XCTAssertNil(model.weekdayChange)
         XCTAssertEqual(model.moneyRows.count, 3)
     }
 
@@ -89,7 +89,8 @@ final class BusinessTests: XCTestCase {
         XCTAssertEqual(model.freshness, "Updated 61m ago · Stale snapshot")
         XCTAssertTrue(model.currentStatusUnknown)
         XCTAssertTrue(model.attention.allSatisfy(\.unavailable))
-        XCTAssertEqual(model.sourceNotice("gmv"), "Stale source · current status unknown")
+        XCTAssertEqual(model.sourceNotice("gmv"), "Stale source")
+        XCTAssertEqual(model.attention.first?.title, "Support · Stale source")
         // With no per-source timestamps, keep the old snapshot labelled, not silently discarded.
         var legacy = try homeFixture("BusinessOverviewLegacy")
         legacy.now = model.now
@@ -109,6 +110,10 @@ final class BusinessTests: XCTestCase {
         XCTAssertTrue(failed.currentStatusUnknown)
         XCTAssertFalse(failed.attention.isEmpty)
         XCTAssertTrue(failed.attention.allSatisfy(\.unavailable))
+        // The row says Unknown once; the line under the freshness says why.
+        XCTAssertEqual(failed.attention.map(\.title), ["Support · Unknown", "Product issues · Unknown", "High priority · Unknown"])
+        XCTAssertTrue(failed.attention.allSatisfy { $0.detail == nil })
+        XCTAssertEqual(failed.informational.map(\.detail), ["Unknown", "Unknown"])
     }
 
     func testHomeNullOptionalFieldsAndZeroImpairmentAreHidden() throws {
@@ -123,7 +128,7 @@ final class BusinessTests: XCTestCase {
             data["money"] = money
         }
         XCTAssertNil(model.change)
-        XCTAssertNil(model.weekdayComparison)
+        XCTAssertNil(model.weekdayChange)
         XCTAssertNil(model.moneyRows[1].subtitle)
         XCTAssertNil(model.moneyRows[2].subtitle)
     }
