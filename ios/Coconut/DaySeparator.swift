@@ -71,7 +71,8 @@ struct DaySeparatorRow: View {
 
     var body: some View {
         DayPill(date: date, now: now)
-            .opacity(pinned.standsIn(for: row) ? 0 : 1)
+            // Above the line the title of the chat covers the pill, so it shows no part of itself there.
+            .opacity(pinned.standsIn(for: row) || pinned.covers(row) ? 0 : 1)
             // The two pills change places with a fade when a scroll starts or stops, and at once during a scroll.
             .animation(BoardStyle.fade(reduceMotion: reduceMotion), value: pinned.isVisible)
             .accessibilityAddTraits(.isHeader)
@@ -164,8 +165,21 @@ final class PinnedDay {
     private(set) var source: String?
     /// How far the pill of the next day has pushed the pinned pill up: zero or less.
     private(set) var push: CGFloat = 0
+    /// The rows that start a day and have their own pill above the line, where the title of the chat floats over the
+    /// messages. That pill hides: half of a pill behind the title reads as a fault.
+    private(set) var covered: Set<String> = []
     /// True during a scroll, and for one second after it.
-    private(set) var isVisible = false
+    private(set) var isVisible = PinnedDay.staysVisible
+
+    /// A screenshot of the pinned pill starts the app with `--scrolling`: the chat then reads as during a scroll. Only
+    /// a debug build on a simulator reads it.
+    private static var staysVisible: Bool {
+        #if DEBUG && targetEnvironment(simulator)
+        return ProcessInfo.processInfo.arguments.contains("--scrolling")
+        #else
+        return false
+        #endif
+    }
 
     /// The top of the pinned pill with its space, and its height. The pinned pill measures them.
     @ObservationIgnored var line: CGFloat = 0 { didSet { if line != oldValue { update() } } }
@@ -184,6 +198,8 @@ final class PinnedDay {
     var strength: Double { height > 0 ? max(0, 1 + push / height) : 1 }
 
     func standsIn(for row: String) -> Bool { isVisible && source == row }
+
+    func covers(_ row: String) -> Bool { covered.contains(row) }
 
     /// A row of the chat moved. `frame` is in the global space, as the line is.
     func place(_ row: String, frame: CGRect, date: Date, startsDay: Bool) {
@@ -204,6 +220,7 @@ final class PinnedDay {
 
     /// The scroll of the chat starts or stops. The pill stays for one second after a stop.
     func scrolls(_ active: Bool) {
+        if Self.staysVisible { return }
         hide?.cancel()
         if active {
             if !isVisible { isVisible = true }
@@ -221,7 +238,10 @@ final class PinnedDay {
         var top: Row?
         var start: (id: String, top: CGFloat)?
         var next: CGFloat?
+        var covered: Set<String> = []
         for (id, row) in rows {
+            // The pill of a row starts under the space above it. Past the line, it is under the title.
+            if row.startsDay, row.top + DayPill.spaceAbove < line { covered.insert(id) }
             if row.top <= line {
                 if top.map({ row.top > $0.top }) ?? true { top = row }
                 if row.startsDay, start.map({ row.top > $0.top }) ?? true { start = (id, row.top) }
@@ -238,5 +258,6 @@ final class PinnedDay {
         if source != self.source { self.source = source }
         let push = top == nil ? 0 : next.map { min(0, $0 - line - height) } ?? 0
         if push != self.push { self.push = push }
+        if covered != self.covered { self.covered = covered }
     }
 }
