@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Steps of the TestFlight release of the iPhone app (.github/workflows/testflight.yml).
+"""Steps of the TestFlight release of the iPhone app.
 
 The workflow archives Coconut without a signature. This script signs the archive ad hoc with the entitlements of
 the project. Then xcodebuild exports the archive with automatic signing: Xcode makes the App Store profiles and signs

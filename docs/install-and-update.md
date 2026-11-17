@@ -332,19 +332,10 @@ Coconut.app updates itself, as on every Mac. The Mac stays in team-only mode. To
 
 The app reads `--set-up`, `--team-only` and `--remove` only when it starts, so a command for an app that runs does nothing. The app keeps the mode in its preference `InstallMode` (`team`) and registers two login items: the app and the service. In this mode the app has no Dock icon and opens no window. The service runs with `COCONUT_MODE=team` (see [team-only mode](team-log.md#team-only-mode)). An update of this mode runs no Hermes check, no skill or plugin step, no notification build and no relay sidecar step, and checks health on the main listener. The data folder decides too: when its store has the mark of a team-only service, the app and the tool take team-only mode, and `deploy.py`, `scripts/hermes_skills.py` and `scripts/setup_coconut.py` stop before they touch Hermes (`service_base.team_folder`). `coconut pair`, `coconut migrate` and `coconut install-source --set-up` refuse on this Mac with one line.
 
-## Automatic releases
+## Releases
 
-GitHub Actions makes every release. No Mac deploys or uploads builds by itself.
-
-- `.github/workflows/mac-release.yml` builds the latest `main` and normally publishes Coconut.app at most once per hour. The feed has one channel, so every Mac gets each build. A failed build publishes nothing.
-- Sparkle in Coconut.app installs the new build on each Mac.
-- `.github/workflows/testflight.yml` builds and uploads the iPhone app at most once per hour when app inputs change. See [the iPhone setup](iphone-install.md#automatic-testflight-releases).
-
-Pushes during the cooldown coalesce into the next hourly run. Manual runs use the same cooldown by default.
-For an urgent Mac fix, enable `urgent` when you run `Mac release` manually. This skips only the cooldown.
-Signing, notarization, and the check for a newer build still apply. Deployment records
-keep the last publication time and source commit, including attempts that fail after upload. Regression tests run
-locally through the commit hook and the agent's targeted checks.
+No GitHub workflow builds or publishes Coconut. A person publishes each release by hand. Sparkle in Coconut.app installs
+a published Mac build on each Mac. See [the iPhone setup](iphone-install.md#testflight-releases) for TestFlight.
 
 ## Update the backend
 

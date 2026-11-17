@@ -31,9 +31,7 @@ A small client is easy to keep up to date with Hermes releases. This matters mor
 
 ## Tests
 
-The repository has no tests, no commit hook and no regression CI. Push without running checks.
-GitHub runs only the Mac, TestFlight and site release jobs. The app jobs publish at most once per hour per app; run
-`Mac release` manually with `urgent` enabled to skip the cooldown.
+The repository has no tests, no commit hook and no GitHub workflows. Push without running checks. Releases are manual.
 
 ## Hermes versions
 

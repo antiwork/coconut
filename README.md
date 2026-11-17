@@ -48,7 +48,7 @@ xcodegen generate --spec ios/project.yml
 open ios/Coconut.xcodeproj
 ```
 
-Work directly on `main` and push. The repository has no tests and no regression CI. GitHub runs only hourly-throttled app releases.
+Work directly on `main` and push. The repository has no tests and no GitHub workflows. Releases are manual.
 See [architecture](docs/architecture.md) for implementation details, [relay transport](docs/relay-transport.md) for the relay, and [relay](relay/README.md) to deploy it.
 
 ## Parallel work

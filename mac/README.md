@@ -82,12 +82,9 @@ The Worker `coconut-updates` (`updates/`) serves the feed. See `updates/README.m
 
 ## Release
 
-The **Mac release** workflow runs in the GitHub environment `mac-release`, which accepts only `main`.
+No GitHub workflow publishes the Mac app. A person runs these steps by hand.
 
-It runs on each push to `main` and publishes one build that every Mac gets. A person can start it to publish the head of `main` again, for example after a failed run.
-A run publishes nothing when the feed already has its build or a newer one.
-
-The version is in `mac/VERSION`. The build number is the commit count of `main`. The release job does these steps:
+The version is in `mac/VERSION`. The build number is the commit count of `main`. A release does these steps:
 
 1. It checks that `SPARKLE_ED_PRIVATE_KEY` belongs to `SUPublicEDKey`.
 2. It imports the Developer ID Application identity into a temporary keychain.
@@ -97,7 +94,7 @@ The version is in `mac/VERSION`. The build number is the commit count of `main`.
 6. `scripts/mac_feed.py publish` builds the feed: the new archive, plus the newest five archives from the live feed. The archives that the earlier feed named stay for one more release, for clients with a cached appcast.
 7. It deploys the Worker `coconut-updates` with Wrangler and checks that the live feed has the new build.
 
-A missing secret stops the workflow. The secrets are `MAC_DEVELOPER_ID_P12`, `MAC_DEVELOPER_ID_P12_PASSWORD`,
+A release needs `MAC_DEVELOPER_ID_P12`, `MAC_DEVELOPER_ID_P12_PASSWORD`,
 `ASC_KEY_ID`, `ASC_ISSUER_ID`, `ASC_KEY_P8`, `SPARKLE_ED_PRIVATE_KEY` and `CLOUDFLARE_API_TOKEN`.
 
 A local build has an ad-hoc signature without the hardened runtime: library validation refuses an ad-hoc Sparkle.framework.

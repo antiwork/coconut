@@ -14,6 +14,4 @@ write tests or run test suites before a push.
 Preserve other changes and never force-push `main`. Promptly revert a change that causes a confirmed fault, then fix
 forward. In your report, say what you checked by hand and what you did not.
 
-GitHub runs only release automation. A successful app build can publish from `main` at most once per hour per app.
-Pushes within that hour coalesce into the next hourly release. No change to app inputs means no new upload.
-An explicit urgent manual Mac release can skip the hourly cooldown.
+GitHub runs no workflows. Releases are manual: `python3 scripts/iphone.py testflight` uploads the iPhone app.
