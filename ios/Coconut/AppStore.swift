@@ -1195,7 +1195,7 @@ final class AppStore {
             if choice == "approve" && decision.draft == nil {
                 let task = tasks.first { $0.id == decision.taskId }
                 let conversationBotId = task?.conversationBotId ?? decision.botId
-                let artifact = Artifact(id: UUID().uuidString, botId: decision.botId, taskId: decision.taskId, title: option?.action?.filename ?? "retry-fix.patch", kind: "file",
+                let artifact = Artifact(id: UUID().uuidString, botId: decision.botId, taskId: decision.taskId, title: option?.action?.filename ?? "payout-retry-fix.patch", kind: "file",
                                         status: "ready", preview: decisions[index].proposalPreview ?? "Preview result.", url: nil, createdAt: Self.now)
                 artifacts.append(artifact)
                 messages.append(Message(id: UUID().uuidString, botId: conversationBotId, taskId: decision.taskId, role: "assistant", kind: "artifact", text: "",
@@ -1420,7 +1420,7 @@ final class AppStore {
             messages.append(Message(id: UUID().uuidString, botId: conversationBotId, taskId: decision.taskId, role: "user", kind: "text", text: question,
                                     decisionId: decision.id, artifactId: nil, createdAt: Self.now, streaming: false, threadId: task?.threadId))
             messages.append(Message(id: UUID().uuidString, botId: conversationBotId, taskId: decision.taskId, role: "assistant", kind: "text",
-                                    text: "The patch changes two files. All six focused checks pass. Approval creates a local result; it does not publish or merge anything.",
+                                    text: "The fix changes the payout job and its spec. All 212 payout specs pass. Approval saves the patch locally; it does not deploy anything.",
                                     decisionId: decision.id, artifactId: nil, createdAt: Self.now, streaming: false,
                                     threadId: task?.threadId, senderBotId: decision.botId))
             return

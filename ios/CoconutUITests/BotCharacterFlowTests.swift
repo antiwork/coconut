@@ -9,9 +9,9 @@ final class BotCharacterFlowTests: XCTestCase {
         app.launch()
         XCTAssertTrue(app.tabBars.buttons["Chats"].waitForExistence(timeout: 15))
         app.tabBars.buttons["Chats"].tap()
-        let forge = app.buttons["bot-conversation-00000000-0000-4000-8000-000000000001"]
-        XCTAssertTrue(forge.waitForExistence(timeout: 10))
-        forge.tap()
+        let releases = app.buttons["bot-conversation-00000000-0000-4000-8000-000000000001"]
+        XCTAssertTrue(releases.waitForExistence(timeout: 10))
+        releases.tap()
         app.buttons["bot-settings"].tap()
         app.buttons["Change character"].tap()
         let fruit = app.buttons["bot-avatar-fruit.apple"]

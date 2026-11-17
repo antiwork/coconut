@@ -154,7 +154,7 @@ final class TranscriptPresentationTests: XCTestCase {
 
     func testSpecificProgressAndTaskContextRemainVisible() {
         let messages = [
-            message("progress", kind: "activity", text: "Read 3 files · Compared the retry paths"),
+            message("progress", kind: "activity", text: "Read 4 files · Compared the payout retry paths"),
             message("permission", role: "system", kind: "activity",
                     text: "New actions use this permission mode. An action already executing may finish."),
             message("followup", role: "system", kind: "activity", text: "Your follow-up applies at the next safe turn.")

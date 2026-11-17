@@ -10,9 +10,9 @@ final class NativeDecisionFlowTests: XCTestCase {
         XCTAssertTrue(app.tabBars.buttons["Chats"].waitForExistence(timeout: 15))
         app.tabBars.buttons["Chats"].tap()
 
-        let forge = app.buttons["bot-conversation-00000000-0000-4000-8000-000000000001"]
-        XCTAssertTrue(forge.waitForExistence(timeout: 10))
-        forge.tap()
+        let releases = app.buttons["bot-conversation-00000000-0000-4000-8000-000000000001"]
+        XCTAssertTrue(releases.waitForExistence(timeout: 10))
+        releases.tap()
         let settings = app.buttons["bot-settings"]
         XCTAssertTrue(settings.waitForExistence(timeout: 5))
         settings.tap()
@@ -63,13 +63,13 @@ final class NativeDecisionFlowTests: XCTestCase {
         XCTAssertTrue(app.tabBars.buttons["Chats"].waitForExistence(timeout: 15))
         app.tabBars.buttons["Chats"].tap()
 
-        let forge = app.buttons["bot-conversation-00000000-0000-4000-8000-000000000001"]
+        let releases = app.buttons["bot-conversation-00000000-0000-4000-8000-000000000001"]
         let scout = app.buttons["bot-conversation-00000000-0000-4000-8000-000000000002"]
         XCTAssertTrue(scout.waitForExistence(timeout: 10))
         // A working bot shows what it does now in place of its last message, like a typing notice.
         XCTAssertTrue(scout.label.contains("Thinking it through"),
                       "Chats must show the phase of a working bot instead of a generic status.")
-        XCTAssertTrue(forge.exists)
+        XCTAssertTrue(releases.exists)
 
         app.buttons["app-settings"].tap()
         XCTAssertTrue(app.navigationBars["Settings"].waitForExistence(timeout: 5))
@@ -81,7 +81,7 @@ final class NativeDecisionFlowTests: XCTestCase {
         XCTAssertTrue(app.navigationBars["Settings"].waitForExistence(timeout: 5))
         app.buttons["close-settings"].tap()
         XCTAssertTrue(app.navigationBars["Settings"].waitForNonExistence(timeout: 5))
-        XCTAssertTrue(forge.isHittable)
+        XCTAssertTrue(releases.isHittable)
         XCTAssertTrue(scout.isHittable)
         capture("Home after search and settings")
     }
@@ -135,19 +135,19 @@ final class NativeDecisionFlowTests: XCTestCase {
         XCTAssertTrue(chats.waitForExistence(timeout: 10))
         chats.tap()
         XCTAssertTrue(app.buttons["create-bot"].isHittable)
-        let forge = app.buttons["bot-conversation-00000000-0000-4000-8000-000000000001"]
-        XCTAssertTrue(forge.waitForExistence(timeout: 5))
-        forge.press(forDuration: 1.1)
+        let releases = app.buttons["bot-conversation-00000000-0000-4000-8000-000000000001"]
+        XCTAssertTrue(releases.waitForExistence(timeout: 5))
+        releases.press(forDuration: 1.1)
         let pinAction = app.buttons["Pin agent"]
         XCTAssertTrue(pinAction.waitForExistence(timeout: 5), "A long press must show bot actions before navigation.")
         pinAction.tap()
-        let pinnedForge = app.buttons["pinned-bot-00000000-0000-4000-8000-000000000001"]
-        XCTAssertTrue(pinnedForge.waitForExistence(timeout: 5), "Pinning must create a bot tile in Chats.")
+        let pinnedReleases = app.buttons["pinned-bot-00000000-0000-4000-8000-000000000001"]
+        XCTAssertTrue(pinnedReleases.waitForExistence(timeout: 5), "Pinning must create a bot tile in Chats.")
         capture("Pinned bot in Chats")
-        pinnedForge.tap()
+        pinnedReleases.tap()
         XCTAssertTrue(app.descendants(matching: .any).matching(identifier: "message-input").firstMatch.waitForExistence(timeout: 5))
         app.navigationBars.buttons.element(boundBy: 0).tap()
-        XCTAssertTrue(pinnedForge.waitForExistence(timeout: 5))
+        XCTAssertTrue(pinnedReleases.waitForExistence(timeout: 5))
 
         app.openCards()
         XCTAssertFalse(app.buttons["inbox-filter-all"].exists)
@@ -161,7 +161,7 @@ final class NativeDecisionFlowTests: XCTestCase {
         openChat.tap()
         XCTAssertTrue(app.buttons["bot-settings"].waitForExistence(timeout: 5))
         XCTAssertFalse(app.navigationBars["Task"].exists)
-        XCTAssertFalse(app.staticTexts["The comparison is ready. Local networking fits the first milestone."].exists,
+        XCTAssertFalse(app.staticTexts["The summary is ready. Most refunds follow a duplicate card charge."].exists,
                        "The conversation must exclude another bot's messages.")
 
         let option = app.buttons["decision-option-00000000-0000-4000-8000-000000000062"]
@@ -180,7 +180,7 @@ final class NativeDecisionFlowTests: XCTestCase {
         XCTAssertTrue(app.images["Choice recorded"].waitForExistence(timeout: 5))
         XCTAssertFalse(option.exists, "One tap must replace the pending choices with a receipt.")
         capture("Recorded decision outcome")
-        let savedFile = app.staticTexts["retry-fix-notes.md"]
+        let savedFile = app.staticTexts["payout-retry-fix-notes.md"]
         reveal(savedFile, in: app)
         XCTAssertTrue(savedFile.exists, "The selected option must create its own file, not the recommended option's file.")
 
@@ -189,8 +189,8 @@ final class NativeDecisionFlowTests: XCTestCase {
                       "Resolving the last decision must empty Inbox.")
         XCTAssertFalse(openChat.exists, "Resolving the last decision must remove its card.")
         chats.tap()
-        XCTAssertTrue(pinnedForge.waitForExistence(timeout: 5))
-        pinnedForge.tap()
+        XCTAssertTrue(pinnedReleases.waitForExistence(timeout: 5))
+        pinnedReleases.tap()
         let history = app.staticTexts["decision-selection-00000000-0000-4000-8000-000000000031"]
         reveal(history, in: app)
         XCTAssertTrue(history.exists, "The resolved decision must remain in the originating bot conversation.")

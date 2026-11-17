@@ -19,12 +19,21 @@ final class MacWindowSnapshotTests: XCTestCase {
         store.bots[store.bots.count - 1].name = "Coconut"
         let coconutId = store.bots[store.bots.count - 1].id
         let botId = try XCTUnwrap(store.bots.first?.id)
-        store.team = try APIJSON.decoder().decode(TeamRooms.self, from: Data(TeamNoticeTests.rooms.utf8))
+        // The team of the shots is Gumroad, with notices of its real work. Other tests keep TeamNoticeTests.rooms as it is.
+        var rooms = TeamNoticeTests.rooms
+        for (sample, real) in [("Example Team", "Gumroad"),
+                               ("Deploys are frozen while we fix the relay. Don't merge to main.",
+                                "Deploys are frozen until the payout fix ships. Don't merge to main."),
+                               ("Q4 plan is due. One page per team in the Library.",
+                                "Creator payout report is due Friday. One page per team in the Library.")] {
+            rooms = rooms.replacingOccurrences(of: sample, with: real)
+        }
+        store.team = try APIJSON.decoder().decode(TeamRooms.self, from: Data(rooms.utf8))
         // People: the members of the team, a direct chat with an unread message, and the invite.
         let formatter = ISO8601DateFormatter()
         func ago(_ minutes: Double) -> String { formatter.string(from: Date().addingTimeInterval(-minutes * 60)) }
         store.team?.rooms[0].canInvite = true
-        store.team?.rooms[0].lastMessage = TeamLastMessage(member: "m3", memberName: "Lin", text: "Relay fix is in review.", createdAt: ago(42))
+        store.team?.rooms[0].lastMessage = TeamLastMessage(member: "m3", memberName: "Lin", text: "The payout fix is in review.", createdAt: ago(42))
         store.team?.rooms[0].members = [
             TeamMember(member: "m1", name: "Ada", admin: true, thisMac: true),
             TeamMember(member: "m2", name: "Grace", direct: true),
@@ -32,18 +41,18 @@ final class MacWindowSnapshotTests: XCTestCase {
         ]
         store.team?.rooms[0].directs = [
             TeamDirect(member: "m2", memberName: "Grace", unread: 1,
-                       lastMessage: TeamLastMessage(text: "Can you look at the relay fix today?", createdAt: ago(9))),
+                       lastMessage: TeamLastMessage(text: "Can you check the refund for the Friday double payouts?", createdAt: ago(9))),
         ]
         // Home: a card that waits past 4 hours and a blocked To-do breach next to the unseen notice. The agent page
         // gets a To-do that runs and a routine.
         if let index = store.decisions.firstIndex(where: \.isPending) { store.decisions[index].createdAt = ago(5 * 60) }
         store.artifacts += [
-            Artifact(id: "shot-work-1", botId: botId, taskId: nil, title: "Add retry to the webhook sender", kind: "work",
+            Artifact(id: "shot-work-1", botId: botId, taskId: nil, title: "Retry failed Ping webhooks", kind: "work",
                      status: "working", preview: "Tests pass. Opening the pull request.", url: nil, createdAt: ago(25)),
-            Artifact(id: "shot-work-2", botId: botId, taskId: nil, title: "Upgrade the payments SDK", kind: "work",
+            Artifact(id: "shot-work-2", botId: botId, taskId: nil, title: "Upgrade the Stripe SDK", kind: "work",
                      status: "blocked", preview: "Waits for the new API key.", url: nil, createdAt: ago(90)),
         ]
-        store.routines.append(Routine(id: "shot-routine", botId: botId, name: "Morning pull request review", prompt: "",
+        store.routines.append(Routine(id: "shot-routine", botId: botId, name: "Morning deploy check", prompt: "",
                                       cron: "Weekdays at 9:00", timezone: "UTC", enabled: true, nextRunAt: nil,
                                       lastRunAt: nil, lastTaskId: nil, createdAt: ago(9000), updatedAt: ago(9000)))
         let windows: [(String, AnyView)] = [

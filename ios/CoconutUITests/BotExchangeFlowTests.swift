@@ -30,9 +30,9 @@ final class BotExchangeFlowTests: XCTestCase {
         XCTAssertTrue(row.waitForExistence(timeout: 5) && row.isHittable)
         XCTAssertTrue(app.staticTexts["My own work stays here."].isHittable)
         app.navigationBars.buttons.element(boundBy: 0).tap()
-        let forge = app.buttons["bot-conversation-00000000-0000-4000-8000-000000000001"]
-        XCTAssertTrue(forge.waitForExistence(timeout: 5))
-        forge.tap()
+        let releases = app.buttons["bot-conversation-00000000-0000-4000-8000-000000000001"]
+        XCTAssertTrue(releases.waitForExistence(timeout: 5))
+        releases.tap()
         XCTAssertTrue(row.waitForExistence(timeout: 5))
         XCTAssertFalse(app.staticTexts["My own work stays here."].exists)
         XCTAssertFalse(app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "The check passed")).firstMatch.exists)
@@ -42,7 +42,7 @@ final class BotExchangeFlowTests: XCTestCase {
         _ = try await URLSession.shared.data(for: request)
         let updated = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@ AND label CONTAINS %@", "bot-exchange-", "3 messages with")).firstMatch
         XCTAssertTrue(updated.waitForExistence(timeout: 10))
-        XCTAssertTrue(app.buttons["bot-settings"].label.contains("Forge"))
+        XCTAssertTrue(app.buttons["bot-settings"].label.contains("Releases"))
         XCTAssertFalse(app.navigationBars["Task"].exists)
         XCTAssertFalse(app.staticTexts["A new peer reply."].exists)
         updated.tap()

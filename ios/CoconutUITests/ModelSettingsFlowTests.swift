@@ -1,7 +1,7 @@
 import XCTest
 
 final class ModelSettingsFlowTests: XCTestCase {
-    private let forgeId = "00000000-0000-4000-8000-000000000001"
+    private let releasesId = "00000000-0000-4000-8000-000000000001"
 
     @MainActor
     func testBotModelOverridePersistsAndCanReturnToHostDefault() {
@@ -53,7 +53,7 @@ final class ModelSettingsFlowTests: XCTestCase {
         app.buttons["close-settings"].tap()
         // Settings is a sheet. The Chats list must be back before the next step opens Settings again.
         XCTAssertTrue(app.navigationBars["Settings"].waitForNonExistence(timeout: 5))
-        XCTAssertTrue(app.buttons["bot-conversation-" + forgeId].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["bot-conversation-" + releasesId].waitForExistence(timeout: 5))
         openBotModelSettings(in: app)
         assertInheritedModel("Preview Focused", effort: "High", in: app)
         capture("Bot inherits the changed host model and effort")
@@ -66,14 +66,14 @@ final class ModelSettingsFlowTests: XCTestCase {
         app.launch()
         XCTAssertTrue(app.tabBars.buttons["Chats"].waitForExistence(timeout: 10))
         app.tabBars.buttons["Chats"].tap()
-        XCTAssertTrue(app.buttons["bot-conversation-" + forgeId].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.buttons["bot-conversation-" + releasesId].waitForExistence(timeout: 10))
         return app
     }
 
     @MainActor
     private func openBotModelSettings(in app: XCUIApplication) {
         app.buttons["app-settings"].tap()
-        let bot = app.buttons["settings-bot-" + forgeId]
+        let bot = app.buttons["settings-bot-" + releasesId]
         for _ in 0..<5 where !bot.isHittable { app.swipeUp() }
         XCTAssertTrue(bot.waitForExistence(timeout: 5))
         bot.tap()
