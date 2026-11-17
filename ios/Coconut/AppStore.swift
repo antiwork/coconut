@@ -912,15 +912,25 @@ final class AppStore {
         }, save: { let _: Acknowledgement? = await self.write("bots/\(bot.id)", method: "DELETE", payload: EmptyRequest(), as: Acknowledgement.self) })
     }
 
+    /// The chats whose read the Mac has not confirmed yet (markRead).
+    @ObservationIgnored private var readsInFlight: Set<String> = []
+
     func markRead(_ bot: Bot) async {
         guard bot.unreadCount > 0 else { return }
-        if isDemo {
-            if let index = bots.firstIndex(where: { $0.id == bot.id }) { bots[index].unreadCount = 0 }
-            return
-        }
         // The badge goes at once. The Mac confirms the read with its next update.
         if let index = bots.firstIndex(where: { $0.id == bot.id }) { bots[index].unreadCount = 0 }
-        let _: Acknowledgement? = await write("bots/\(bot.id)/read", payload: EmptyRequest(), as: Acknowledgement.self, quiet: true)
+        guard !isDemo, readsInFlight.insert(bot.id).inserted else { return }
+        // Not a child of the task of the view. A person who opens a chat and leaves at once has still read it. Before,
+        // the closing view cancelled the request, the Mac kept its count, and the badge came back with the next
+        // update. A busy Mac or a slow tunnel also gets more than one try.
+        Task {
+            defer { readsInFlight.remove(bot.id) }
+            for wait in [0, 2, 6, 20] {
+                if wait > 0 { try? await Task.sleep(for: .seconds(wait)) }
+                let answer: Acknowledgement? = await write("bots/\(bot.id)/read", payload: EmptyRequest(), as: Acknowledgement.self, quiet: true)
+                if answer != nil { return }
+            }
+        }
     }
 
     @discardableResult
