@@ -169,7 +169,9 @@ final class BusinessTests: XCTestCase {
     func testBeancountPreviewHasTwelveClosedMonthsAndValidChartDates() throws {
         let report = try BusinessReport.preview("accounting")
         XCTAssertEqual(report.data["ledger"]["months"].array.count, 12)
-        XCTAssertNotNil(report.data["ledger"]["per_month"]["2026-01"]["ebitda"].number)
+        let first = report.data["ledger"]["months"][0].text
+        XCTAssertNotNil(report.data["ledger"]["per_month"][first]["ebitda"].number)
+        XCTAssertEqual(report.data["ledger"]["closed_through"].text, report.data["ledger"]["months"][11].text)
         let point = ReportPoint(date: "2026-11-01", value: 123, series: "Revenue")
         XCTAssertNotEqual(point.day, .distantPast)
         XCTAssertFalse(report.stale)

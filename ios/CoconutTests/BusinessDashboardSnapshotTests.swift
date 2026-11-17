@@ -93,32 +93,42 @@ final class BusinessDashboardSnapshotTests: XCTestCase {
     }
 
     #if os(macOS)
-    func testReportsRenderAtDesktopAndPhoneWidths() throws {
+    /// Every business screen with the preview data, at a Mac width and at an iPhone width, in a window off the screen.
+    func testEveryDashboardRendersAtDesktopAndPhoneWidths() throws {
         let store = AppStore(demo: true)
-        for (key, width, scheme) in [("overview", 1100.0, ColorScheme.light), ("accounting", 1100.0, .dark), ("support", 390.0, .light)] {
-            let initial = try BusinessReport.preview(key)
-            let view = NavigationStack {
-                BusinessReportView(key: key, initial: initial)
-                    .navigationDestination(for: BusinessRoute.self) { BusinessDestinationView(route: $0) }
-            }.environment(store).environment(\.colorScheme, scheme).frame(width: width, height: 1000)
-            let host = NSHostingView(rootView: view)
-            host.frame = NSRect(x: 0, y: 0, width: width, height: 1000)
-            let window = NSWindow(contentRect: host.frame, styleMask: [.borderless], backing: .buffered, defer: false)
-            window.appearance = NSAppearance(named: scheme == .dark ? .darkAqua : .aqua)
-            window.contentView = host
-            window.setFrameOrigin(NSPoint(x: -10_000, y: -10_000))
-            window.orderBack(nil)
-            for _ in 0..<5 { RunLoop.main.run(until: Date().addingTimeInterval(0.1)) }
-            host.layoutSubtreeIfNeeded()
-            let rep = try XCTUnwrap(host.bitmapImageRepForCachingDisplay(in: host.bounds))
-            host.cacheDisplay(in: host.bounds, to: rep)
-            window.orderOut(nil)
-            let image = try XCTUnwrap(rep.representation(using: .png, properties: [:]))
-            XCTAssertGreaterThan(image.count, 20_000)
-            if let path = ProcessInfo.processInfo.environment["COCONUT_BUSINESS_SHOTS"] {
-                let folder = URL(fileURLWithPath: path)
-                try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-                try image.write(to: folder.appendingPathComponent("\(key)-\(Int(width))-\(scheme).png"))
+        store.businessCatalog = .preview
+        var screens: [(String, AnyView)] = [("home", AnyView(BusinessHomeView(initial: try BusinessReport.preview("overview"))))]
+        for key in BusinessReport.keys {
+            screens.append((key, AnyView(BusinessReportView(key: key, initial: try BusinessReport.preview(key)))))
+        }
+        screens.append(("library", AnyView(BusinessReportLibrary())))
+        screens.append(("workspace", AnyView(BusinessWorkspaceView(function: "support"))))
+        for (name, screen) in screens {
+            for (width, scheme) in [(1100.0, ColorScheme.light), (1100.0, .dark), (390.0, .light)] {
+                let height = name == "library" || name == "workspace" ? 900.0 : 2000.0
+                let view = NavigationStack {
+                    screen.navigationDestination(for: BusinessRoute.self) { BusinessDestinationView(route: $0) }
+                }.environment(store).environment(\.colorScheme, scheme).environment(\.locale, Locale(identifier: "en_US"))
+                    .frame(width: width, height: height)
+                let host = NSHostingView(rootView: view)
+                host.frame = NSRect(x: 0, y: 0, width: width, height: height)
+                let window = NSWindow(contentRect: host.frame, styleMask: [.borderless], backing: .buffered, defer: false)
+                window.appearance = NSAppearance(named: scheme == .dark ? .darkAqua : .aqua)
+                window.contentView = host
+                window.setFrameOrigin(NSPoint(x: -10_000, y: -10_000))
+                window.orderBack(nil)
+                for _ in 0..<8 { RunLoop.main.run(until: Date().addingTimeInterval(0.1)) }
+                host.layoutSubtreeIfNeeded()
+                let rep = try XCTUnwrap(host.bitmapImageRepForCachingDisplay(in: host.bounds))
+                host.cacheDisplay(in: host.bounds, to: rep)
+                window.orderOut(nil)
+                let image = try XCTUnwrap(rep.representation(using: .png, properties: [:]))
+                XCTAssertGreaterThan(image.count, 20_000, name)
+                if let path = ProcessInfo.processInfo.environment["COCONUT_BUSINESS_SHOTS"] {
+                    let folder = URL(fileURLWithPath: path)
+                    try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+                    try image.write(to: folder.appendingPathComponent("\(name)-\(Int(width))-\(scheme).png"))
+                }
             }
         }
     }
