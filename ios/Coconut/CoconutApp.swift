@@ -114,7 +114,7 @@ struct CoconutHome: View {
                 root(tab: .todos, path: $todosPath)
             } label: {
                 Label { Text("To-dos") } icon: { Image(systemName: "checklist") }
-            }.badge(store.pendingCardCount)
+            }.badge(store.todosCount())
                 .accessibilityIdentifier("home-todos")
             Tab(value: HomeTab.home) {
                 root(tab: .home, path: $homePath)

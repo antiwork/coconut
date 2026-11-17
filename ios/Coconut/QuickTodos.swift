@@ -364,3 +364,27 @@ private struct QuickTodoRowInset: ViewModifier {
         if inList { content.homeRow() } else { content }
     }
 }
+
+/// The number on the To-dos tab: each thing that the To-dos page lists, once. The cards that wait, the rows of Needs
+/// attention, the quick to-dos with the ones on their way, and the To-dos of the agents. A late card is a card that
+/// counts already, and stale data is a state of the connection, so neither adds to it. A blocked To-do of an agent is
+/// also a row of "Blocked or failed", so it counts one time.
+enum TodosCount {
+    static func count(cards: Int, attention: [AttentionItem], stuck: [ConversationRoute], quick: Int,
+                      agentTodos: [Artifact]) -> Int {
+        let rows = attention.filter { $0.kind != .waiting && $0.kind != .stale }.reduce(0) { $0 + $1.count }
+        let flagged = Set(stuck.compactMap { $0.workContext?.id })
+        return cards + rows + quick + agentTodos.filter { !flagged.contains($0.id) }.count
+    }
+}
+
+extension AppStore {
+    /// The badge of the To-dos tab (TodosCount).
+    func todosCount(now: Date = Date()) -> Int {
+        let input = attentionInput
+        return TodosCount.count(cards: pendingCardCount, attention: AttentionRules.items(input, now: now),
+                                stuck: AttentionRules.stuckWork(input, now: now),
+                                quick: QuickTodos.list(self).count + PendingTodos.shared.items.count,
+                                agentTodos: AgentTodos.make(artifacts: artifacts, bots: bots))
+    }
+}

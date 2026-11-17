@@ -220,12 +220,16 @@ enum AttentionRules {
 }
 
 extension AppStore {
+    /// What the rules of "Needs attention" read, from the state of the store.
+    var attentionInput: AttentionRules.Input {
+        AttentionRules.Input(
+            decisions: decisions, answering: answeringDecisionIds, bots: bots, artifacts: artifacts, tasks: tasks,
+            connection: connection, lastSync: lastSync, rooms: shownTeamRooms, business: businessReports["overview"])
+    }
+
     /// The rows of "Needs attention" from the state of the store.
     func attentionItems(now: Date = Date()) -> [AttentionItem] {
-        AttentionRules.items(AttentionRules.Input(
-            decisions: decisions, answering: answeringDecisionIds, bots: bots, artifacts: artifacts, tasks: tasks,
-            connection: connection, lastSync: lastSync, rooms: shownTeamRooms, business: businessReports["overview"]),
-            now: now)
+        AttentionRules.items(attentionInput, now: now)
     }
 
     /// Loads the overview of Finance, so its breaches show in Needs attention before the person opens Finance. A Mac
