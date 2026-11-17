@@ -63,12 +63,26 @@ final class MacWindowSnapshotTests: XCTestCase {
         store.usage = UsageReport.preview(bots: store.bots)
         var reports: [String: BusinessReport] = [:]
         for key in BusinessReport.keys { reports[key] = try BusinessReport.preview(key) }
+        // The queue: the Support agent works, and three messages of the person wait for its next turn.
+        let queueBotId = try XCTUnwrap(store.tasks.first(where: \.isRunning)?.chatBotId)
+        if let index = store.tasks.firstIndex(where: \.isRunning) {
+            store.tasks[index].phase = "command"
+            store.tasks[index].phaseDetail = "bin/rails runner script/affected_sellers.rb --since 2026-11-13"
+            store.tasks[index].turnStartedAt = ago(4.1)
+            store.tasks[index].queuedMessages = [
+                QueuedMessage(id: "shot-queue-1", text: "Also include sellers whose payout was retried on Saturday.", createdAt: ago(3)),
+                QueuedMessage(id: "shot-queue-2", text: "Attach the export and compare it with these two Stripe reports.", createdAt: ago(2),
+                              attachmentIds: ["shot-file-1", "shot-file-2"]),
+                QueuedMessage(id: "shot-queue-3", text: "Then draft the apology email, but do not send it yet.", createdAt: ago(1)),
+            ]
+        }
         let windows: [(String, AnyView)] = [
             ("home", AnyView(NavigationStack { HomeView { _ in } })),
             ("people", AnyView(NavigationStack { PeopleView() })),
             ("profile", AnyView(NavigationStack { ProfileView() })),
             ("coconut", AnyView(NavigationStack { ConversationView(botId: coconutId) })),
             ("chat", AnyView(NavigationStack { ConversationView(botId: botId) })),
+            ("queue", AnyView(NavigationStack { ConversationView(botId: queueBotId) })),
             ("inbox", AnyView(MacInboxView(selection: .constant(.inbox)))),
             ("agents", AnyView(NavigationStack { AgentsView(create: {}) })),
             ("agent", AnyView(NavigationStack { AgentProjectView(botId: botId) })),
@@ -89,6 +103,7 @@ final class MacWindowSnapshotTests: XCTestCase {
             case "people": .people
             case "profile", "business", "business-support", "business-risk", "business-accounting": .profile
             case "coconut": .bot(coconutId)
+            case "queue": .bot(queueBotId)
             default: .agents
             }
             let content = HStack(spacing: 0) {

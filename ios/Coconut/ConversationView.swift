@@ -979,12 +979,18 @@ struct ConversationComposer: View {
     /// The person sends the draft. It comes before the draft clears.
     var onSend: () -> Void = {}
 
+    @Environment(\.openChat) private var openChat
+    @Environment(\.pushRoute) private var pushRoute
     private var connected: Bool { store.hasPairing || store.isDemo }
+    /// A chat of an agent can send its draft to a new chat with the same agent. The Coconut chat has one chat.
+    private var canSendInNewChat: Bool { canSend && !scheduling && !bot.coconut && !bot.archived }
     private var recipients: [SelectedBotMention] { BotMentions.recipients(in: text, selected: mentions, bots: store.bots.withoutChats) }
     private var executorName: String { store.bots.first { $0.id == task?.botId }?.name ?? bot.name }
 
     var body: some View {
         VStack(spacing: 0) {
+            // The messages that wait for the next turn of the agent.
+            MessageQueueStack(botId: bot.id)
             if let work = workContext {
                 HStack(spacing: 8) {
                     Label(work.title, systemImage: "checklist")
@@ -1030,11 +1036,12 @@ struct ConversationComposer: View {
                 HStack(alignment: .bottom, spacing: 4) {
                 TextField("Message \(bot.name)", text: $text, selection: $selection, axis: .vertical)
                     .focused($focused)
-                    .modifier(ComposerFieldStyle(send: send))
+                    .modifier(ComposerFieldStyle(send: { send() }, sendInNewChat: canSendInNewChat ? { send(inNewChat: true) } : nil))
                     .accessibilityIdentifier("message-input")
                 if hasContent {
                     ComposerSendButton(symbol: scheduling ? "clock.fill" : "arrow.up", enabled: canSend,
-                                       label: scheduling ? "Schedule task" : "Send message", action: send)
+                                       label: scheduling ? "Schedule task" : "Send message", action: { send() },
+                                       newChat: canSendInNewChat ? { send(inNewChat: true) } : nil)
                 } else if let task, task.isRunning, connected {
                     Button { onStop(task) } label: {
                         Image(systemName: "stop.fill").font(.footnote)
@@ -1110,7 +1117,8 @@ struct ConversationComposer: View {
         draft.hasPrefix(sent) ? String(draft.dropFirst(sent.count)) : ""
     }
 
-    private func send() {
+    /// Sends the draft. In a new chat, the draft starts a fresh chat with the same agent, which then opens.
+    private func send(inNewChat: Bool = false) {
         guard canSend, draftSend.begin(draftKey) else { return }
         let submittedText = text
         let submittedWork = workContext
@@ -1132,7 +1140,17 @@ struct ConversationComposer: View {
             // Keys that the person typed after Return stay.
             clearDraft(after: submittedText)
             #endif
-            let success = await store.send(bot: bot, text: submittedText,
+            var target = bot
+            if inNewChat {
+                guard let chat = await store.newChat(with: bot) else {
+                    draftSend.failed()
+                    if text.isEmpty { text = submittedText; attachments = submittedArtifacts }
+                    return
+                }
+                target = chat
+                if let openChat { openChat(chat.id) } else { pushRoute?(ConversationRoute(botId: chat.id)) }
+            }
+            let success = await store.send(bot: target, text: submittedText,
                                            attachments: submittedAttachments,
                                            scheduledAt: submittedScheduling ? ISO8601DateFormatter().string(from: submittedDate) : nil,
                                            mentionedBotIds: submittedRecipients, replyTo: submittedReply, workContext: submittedWork)
@@ -1287,6 +1305,8 @@ struct ComposerQuoteBar: View {
 /// Messages.
 struct ComposerFieldStyle: ViewModifier {
     let send: () -> Void
+    /// Option-Return on a Mac: send the draft in a new chat with the same agent.
+    var sendInNewChat: (() -> Void)? = nil
 
     func body(content: Content) -> some View {
         content
@@ -1303,6 +1323,11 @@ struct ComposerFieldStyle: ViewModifier {
             #if os(macOS)
             .onKeyPress(.return, phases: .down) { press in
                 guard !press.modifiers.contains(.shift) else { return .ignored }
+                if press.modifiers.contains(.option) {
+                    guard let sendInNewChat else { return .ignored }
+                    sendInNewChat()
+                    return .handled
+                }
                 send()
                 return .handled
             }
@@ -1337,6 +1362,8 @@ struct ComposerSendButton: View {
     let enabled: Bool
     let label: String
     let action: () -> Void
+    /// Send in New Chat, from the menu of the button: a long press on an iPhone, a secondary click on a Mac.
+    var newChat: (() -> Void)? = nil
     @ScaledMetric(relativeTo: .body) private var size = 34
 
     var body: some View {
@@ -1350,7 +1377,14 @@ struct ComposerSendButton: View {
         }
         .buttonStyle(.plain)
         .disabled(!enabled)
+        .contextMenu {
+            if let newChat {
+                Button("Send in New Chat", systemImage: "square.and.pencil", action: newChat)
+                    .accessibilityIdentifier("send-in-new-chat")
+            }
+        }
         .accessibilityLabel(label)
+        .accessibilityAction(named: "Send in New Chat") { newChat?() }
         .accessibilityIdentifier("send-message")
     }
 }

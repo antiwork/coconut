@@ -134,7 +134,7 @@ struct NewChatHeaderButton: View {
     @Environment(\.pushRoute) private var pushRoute
 
     var body: some View {
-        if !bot.archived {
+        if !bot.archived && !bot.coconut {
             Button {
                 Task {
                     guard let chat = await store.newChat(with: bot) else { return }

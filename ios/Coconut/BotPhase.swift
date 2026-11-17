@@ -42,6 +42,8 @@ struct ConversationActivity: Equatable {
     var detail: String? = nil
     /// The name of the model that runs the turn.
     var model: String? = nil
+    /// How many messages of the person wait for the next turn.
+    var queued = 0
 
     /// The time of a turn to the second: 9s, 4m 05s, 1h 02m 05s.
     static func elapsed(_ seconds: TimeInterval) -> String {
