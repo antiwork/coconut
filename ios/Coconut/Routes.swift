@@ -26,9 +26,6 @@ extension EnvironmentValues {
     /// Shows or hides the details of the bot next to its chat. Only the Mac window sets it. Without it, the bot's
     /// title opens its settings.
     @Entry var toggleBotDetails: (() -> Void)? = nil
-    /// Shows the live view of the turn of the chat in the details next to it. Only the Mac window sets it. Without
-    /// it, the chat shows the live view in a sheet.
-    @Entry var showLiveActivity: (() -> Void)? = nil
     /// Pushes a route onto the navigation stack around a chat. A row of the chat list opens a page with it: in a list, a
     /// row with a navigation link gets a chevron of its own and did not open on a tap.
     @Entry var pushRoute: ((any Hashable) -> Void)? = nil

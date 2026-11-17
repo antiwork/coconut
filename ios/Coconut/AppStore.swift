@@ -1852,10 +1852,6 @@ final class AppStore {
     func activityImage(taskId: String, image: ActivityImage) async -> PlatformImage? {
         let key = (taskId + "/" + image.id) as NSString
         if let kept = activityImages.object(forKey: key) { return kept }
-        if isDemo, let drawn = LiveActivityPreviewImage.image(image.id) {
-            activityImages.setObject(drawn, forKey: key)
-            return drawn
-        }
         guard let client, let data = try? await client.activityImage(taskId: taskId, imageId: image.id),
               let decoded = downsampledImage(data, largestSide: 1280) else { return nil }
         let result = PlatformImage(decoded)

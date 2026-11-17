@@ -37,10 +37,8 @@
 		16F97F74E4DAE95666538255 /* ConversationRowHold.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7C93C22E1E2019B2F523CCF8 /* ConversationRowHold.swift */; };
 		1721E42D97A82A43A5EF12C0 /* ApprovalSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2580B8702C72C82BDCCF6F55 /* ApprovalSettingsView.swift */; };
 		175E95A8BD59EF536489A5E4 /* ShareItemLoader.swift in Sources */ = {isa = PBXBuildFile; fileRef = 59A0A969FABDB4B7707B081B /* ShareItemLoader.swift */; };
-		1801254237294DB8C823BA11 /* LiveActivityPanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = B3BB68DB38D61CA25D73614D /* LiveActivityPanel.swift */; };
 		187856AB98335639528B1073 /* PreviewState.json in Resources */ = {isa = PBXBuildFile; fileRef = DC18213B09F82C2500E4D504 /* PreviewState.json */; };
 		19A96D695D5D2C1EBD30410F /* StateUpdates.swift in Sources */ = {isa = PBXBuildFile; fileRef = E047A026D090ABDE156F4AAF /* StateUpdates.swift */; };
-		1AB2CD601F2D71F2F7B90005 /* LiveActivityPanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = B3BB68DB38D61CA25D73614D /* LiveActivityPanel.swift */; };
 		1B623542EB3814EE0F7277AA /* InboxPresentation.swift in Sources */ = {isa = PBXBuildFile; fileRef = 84A0F7AB9F72DD714064B409 /* InboxPresentation.swift */; };
 		1CB9478644EB1289FFDA7E99 /* MessageBanners.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4861BA2D14FED12544D4E695 /* MessageBanners.swift */; };
 		1CC8601168EE3474AFC9DD33 /* MessageQueue.swift in Sources */ = {isa = PBXBuildFile; fileRef = BC1919B082B12DA810621154 /* MessageQueue.swift */; };
@@ -447,7 +445,6 @@
 		AE9F30F52666D7F17955402F /* OptimisticUpdates.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OptimisticUpdates.swift; sourceTree = "<group>"; };
 		AF78ECA5AAF444C7B0B3A210 /* ProfileView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProfileView.swift; sourceTree = "<group>"; };
 		B08638DC7DBFF79E2F881694 /* Theme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Theme.swift; sourceTree = "<group>"; };
-		B3BB68DB38D61CA25D73614D /* LiveActivityPanel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveActivityPanel.swift; sourceTree = "<group>"; };
 		B5C532B556E6AC4611DC4B3F /* SettingsViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsViews.swift; sourceTree = "<group>"; };
 		B74D821023B1194DE11549AC /* TeamLog.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TeamLog.swift; sourceTree = "<group>"; };
 		B78CA35A955E85981763BFDA /* BoardSection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BoardSection.swift; sourceTree = "<group>"; };
@@ -648,7 +645,6 @@
 				314F7F34480A83406A676837 /* Library.swift */,
 				903AD4E2708B4A32290D084C /* LinkPreviews.swift */,
 				149AD9F63EA164185C173F81 /* LiveActivity.swift */,
-				B3BB68DB38D61CA25D73614D /* LiveActivityPanel.swift */,
 				9BF9EE12E54B4787D2E6B806 /* MCPSettingsView.swift */,
 				4861BA2D14FED12544D4E695 /* MessageBanners.swift */,
 				78004F47AACBEB462A36AA3B /* MessageDraftView.swift */,
@@ -1068,7 +1064,6 @@
 				856A34243B6ABBB67DB5E059 /* Library.swift in Sources */,
 				EE829F49D569A8789B2FADD2 /* LinkPreviews.swift in Sources */,
 				709F18F7023B3757DCEDF815 /* LiveActivity.swift in Sources */,
-				1AB2CD601F2D71F2F7B90005 /* LiveActivityPanel.swift in Sources */,
 				DA496416177EB94DACB486F9 /* MCPSettingsView.swift in Sources */,
 				35C202B9C51B20B38223633D /* MacBanners.swift in Sources */,
 				DA6C2A3B59A9DCAAC30A9771 /* MacInboxView.swift in Sources */,
@@ -1192,7 +1187,6 @@
 				3D8AB0675BB12848A2DE7285 /* Library.swift in Sources */,
 				41F696721D6BE315A11789F5 /* LinkPreviews.swift in Sources */,
 				FDBE2EB9061A8FEB23ACA14C /* LiveActivity.swift in Sources */,
-				1801254237294DB8C823BA11 /* LiveActivityPanel.swift in Sources */,
 				061C88CB564F58F1D8B8D47F /* MCPSettingsView.swift in Sources */,
 				1CB9478644EB1289FFDA7E99 /* MessageBanners.swift in Sources */,
 				F81B2F287511865444AD03F8 /* MessageDraftView.swift in Sources */,
