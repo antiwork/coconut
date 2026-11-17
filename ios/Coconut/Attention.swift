@@ -231,7 +231,8 @@ extension AppStore {
     /// Loads the overview of Finance, so its breaches show in Needs attention before the person opens Finance. A Mac
     /// without Finance fails here, and then the rows stay empty.
     func loadBusinessAttention() async {
-        _ = try? await businessReport("overview")
+        // The demo returns its report without keeping it, so this keeps it for both.
+        if let report = try? await businessReport("overview") { businessReports["overview"] = report }
     }
 }
 
