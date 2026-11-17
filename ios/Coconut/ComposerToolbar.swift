@@ -128,14 +128,15 @@ struct ComposerEffortMenu: View {
     }
 }
 
-/// The access mode of the chat (how much the agent may do without asking) as a chip under the text.
+/// The access mode of the chat (how much the agent may do without asking) as a chip under the text. Full access has no
+/// chip: the agent then never asks, so the chip says nothing that the person must know. The agent's settings change it.
 struct ComposerAccessMenu: View {
     let botId: String
     @Environment(AppStore.self) private var store
 
     var body: some View {
         let bot = store.bots.first { $0.id == botId }
-        if let settings = store.approvals, !settings.modes.isEmpty {
+        if let settings = store.approvals, !settings.modes.isEmpty, (bot?.approvalOverride ?? settings.defaults) != "off" {
             let current = bot?.approvalOverride ?? settings.defaults
             Menu {
                 Toggle(isOn: Binding(get: { bot?.approvalOverride == nil },
