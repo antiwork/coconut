@@ -31,7 +31,7 @@ SETTINGS_SCHEMA = {
         'Read or change the settings of this Coconut. Only a turn of Coconut has it: the Coconut chat, and the change '
         'that another agent hands to it with coconut_message_bot. Coconut has no settings screens, '
         'so the person changes everything here, in plain words: "use Opus", "let chats run commands '
-        'without asking", "mute Desk", "let each agent run 4 work sessions". When the person sends "/help", call "read" '
+        'without asking", "mute Desk", "let each agent run 4 work sessions", "fall back to Sonnet". When the person sends "/help", call "read" '
         'and list in short lines what they can ask you to change, with the current values. Every chat shares one model and one access mode. First call with action "read" to see the current values and the choices. '
         'Then call action "change" with one setting. Say in one line what changed, from what to what, and that '
         'the person can ask to undo it. A change that deletes something or costs money needs a card first '
@@ -41,15 +41,17 @@ SETTINGS_SCHEMA = {
         'properties': {
             'action': {'type': 'string', 'enum': ['read', 'change']},
             'setting': {'type': 'string', 'enum': [
-                'default_model', 'default_access', 'agent_notifications', 'agent_name', 'work_sessions_per_agent',
+                'default_model', 'fallback_models', 'default_access', 'agent_notifications', 'agent_name', 'work_sessions_per_agent',
                 'helpers_per_task', 'mode']},
             'agent': {'type': 'string', 'description': 'The name or ID of the project, for an agent_* setting.'},
             'model': {'type': 'string', 'description': 'A model ID from the catalog that "read" lists.'},
             'provider': {'type': 'string', 'description': 'The provider of that model, from the catalog.'},
             'reasoning_effort': {'type': 'string'},
             'value': {'description': 'The new value: an access mode (off, smart, manual), true or false for '
-                                     'notifications, a name, local or cloud for mode, or a number from 1 to 64 (null for '
-                                     'Automatic) for work_sessions_per_agent and helpers_per_task.'},
+                                     'notifications, a name, local or cloud for mode, a number from 1 to 64 (null for '
+                                     'Automatic) for work_sessions_per_agent and helpers_per_task, or for '
+                                     'fallback_models the whole list in order, each item with a model and a provider '
+                                     'from the catalog (an empty list for no fallback).'},
         },
         'required': ['action'],
     },
@@ -121,11 +123,19 @@ def read(service) -> dict:
                        'archived': bool(bot.get('archived')), 'notifications': bot.get('notifications', True)})
     return {'mode': 'local', 'modes': {'local': 'available', 'cloud': 'coming soon'},
             'default_model': {key: default.get(key) for key in ('model', 'provider', 'reasoning_effort')},
-            'models': models, 'default_access': approvals.get('defaults'),
+            'fallback_models': _fallback(service), 'models': models, 'default_access': approvals.get('defaults'),
             'access_modes': {mode: ACCESS_TEXT[mode] for mode in ACCESS}, 'agents': agents,
             'parallel_work': {**_limits(service), 'total': 'No limit: every agent works at once.'},
             'not_here': ('Pairing a device, phone notifications and their work hours, and signing in to GitHub or '
                          'Google need the device itself: the header of this chat has them.')}
+
+
+def _fallback(service):
+    """The models that Hermes tries, in order, when the default model fails. None when Hermes does not say."""
+    try:
+        return service.provider.native_settings()['fallback']['models']
+    except Exception:
+        return None
 
 
 def _limits(service) -> dict:
@@ -160,6 +170,10 @@ def change(service, arguments: dict) -> dict:
                      if arguments.get(name) is not None}
         service.mutate('PUT', '/v1/settings/model', selection, key, device)
         return {'setting': setting, 'before': before, 'after': selection, 'changed': True}
+    if setting == 'fallback_models':
+        before = _fallback(service)
+        after = service.mutate('PUT', '/v1/settings/fallback', {'models': arguments.get('value')}, key, device)
+        return {'setting': setting, 'before': before, 'after': after['models'], 'changed': after['models'] != before}
     if setting == 'default_access':
         if arguments.get('value') not in ACCESS:
             raise ServiceError(400, 'Choose off, smart or manual.')

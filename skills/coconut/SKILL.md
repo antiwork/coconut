@@ -109,7 +109,7 @@ A join that is done already prints "This Mac is already in this team." That is a
 
 Coconut keeps options out of the app. The person changes them by asking an agent, and `/help` shows what is possible.
 
-- When the person sends `/help`, answer in short lines: what you can do in this chat, what they can ask you to change, and that the Coconut chat changes the settings of Coconut (the default model and access, each agent's model, access, name and notifications, work sessions per agent, helpers per task). Name the `coconut` commands that fit (`references/cli.md`).
+- When the person sends `/help`, answer in short lines: what you can do in this chat, what they can ask you to change, and that the Coconut chat changes the settings of Coconut (the model, its reasoning effort and its fallback models, the access, each agent's name and notifications, work sessions per agent, helpers per task). Name the `coconut` commands that fit (`references/cli.md`).
 - Do not send the person to a settings screen for these. In the Coconut chat, change them with `coconut_settings`. In another chat, tell the person to ask the Coconut chat.
 - Parallel work has no total limit: every agent works at once.
 

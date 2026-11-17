@@ -42,7 +42,7 @@ lives in the config of Coconut's board home. Automatic per agent is 2. Hermes ca
 board has the assignee `default` and the agent as its tenant, so the board adapter applies the Hermes cap to each tenant.
 Helpers per task (`PUT /v1/settings/parallel-work`) is `delegation.max_concurrent_children`; Automatic is the Hermes default.
 The phone reads each agent's queue (running, waiting, needs you, done today) from the board.
-The Model page shows the fallback chain of the default profile (`fallback_providers`, then the legacy `fallback_model`). Only the model and the provider of each entry leave the Mac. The page sets the first fallback model from the same list as the default model. `PUT /v1/settings/fallback` replaces the whole chain: an entry that the chain has keeps its other keys, and a new entry gets only its provider and model.
+The fallback chain of the default profile is `fallback_providers`, then the legacy `fallback_model`. Only the model and the provider of each entry leave the Mac. The Coconut chat changes the chain (`coconut_settings` `fallback_models`), from the same list as the default model. `PUT /v1/settings/fallback` replaces the whole chain: an entry that the chain has keeps its other keys, and a new entry gets only its provider and model.
 
 ## Business
 
@@ -165,7 +165,7 @@ Native profile data is not copied into peer messages automatically.
 
 ### The model of an agent
 
-Every chat uses the model of the default profile, `<Hermes home>/config.yaml`. The Model page of Profile changes it for every chat (`PUT /v1/settings/model`). An agent has no model of its own.
+Every chat uses the model of the default profile, `<Hermes home>/config.yaml`. The Coconut chat changes it for every chat (`coconut_settings` `default_model`, `PUT /v1/settings/model`), and so does `/model` in the message box. An agent has no model of its own.
 
 ## The Hermes gateway
 
