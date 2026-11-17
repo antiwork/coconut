@@ -123,9 +123,9 @@ Routines are native jobs of each profile. The gateway runs them, and each job be
 
 ## Isolation and routing
 
-Coconut has two projects, Coconut and Gumroad, and each runs on its own Hermes profile: `coconut` and `gumroad` in `<Hermes home>/profiles`. Each chat has its own Hermes session, kanban tenant, workspace, and browser directory.
+Coconut has three projects, Coconut, Gumroad and Personal, and each runs on its own Hermes profile: `coconut` and `gumroad` in `<Hermes home>/profiles`, and Personal on `personal`, else `home` (its profile in earlier releases), else the Hermes home itself, so every Coconut has Personal for free. Each chat has its own Hermes session, kanban tenant, workspace, and browser directory.
 
-### Two projects, each on its own Hermes profile
+### Three projects, each on its own Hermes profile
 
 A project is a name and its chats (`backend/coconut/bot_profiles.py`, `PROJECTS`). The `profiles` table in `coconut.sqlite3` maps each bot UUID to the Hermes profile that runs it, so IDs never change.
 
@@ -135,7 +135,7 @@ A project is a name and its chats (`backend/coconut/bot_profiles.py`, `PROJECTS`
 - The Coconut project is the Coconut chat: it carries the mark `coconut_chat`, and its chats have `coconut_settings`.
 - `PATCH /v1/bots/<id>` refuses `model_override`, `instructions`, `approval_override` and `worker_limit` with 409, and ignores `avatar` and `color`. The API still sends both, empty, so older apps decode a bot.
 - Coconut keeps its own files of an agent in `<data-dir>/bots/<uuid>`: workspace, browser, temporary files, and terminal scripts.
-- New chat: the person picks Coconut or Gumroad. `POST /v1/bots/<id>/chats` makes a bot with `chat_of` (the project's ID), a new session, and a `profiles` row with the folder of the project's profile. Its first message is its title (`chat_title`). A chat can be archived or removed by itself.
+- New chat: the person picks Coconut, Gumroad or Personal. `POST /v1/bots/<id>/chats` makes a bot with `chat_of` (the project's ID), a new session, and a `profiles` row with the folder of the project's profile. Its first message is its title (`chat_title`). A chat can be archived or removed by itself.
 - Deleting an agent means "Remove from Coconut": its Hermes sessions stay.
 `HOME` remains the Mac account home so macOS Keychain works.
 `USER` identifies the Mac account so Claude Code selects its saved Keychain login.

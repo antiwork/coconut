@@ -26,7 +26,7 @@ struct Bot: Codable, Identifiable, Equatable, Sendable {
     /// True for the Coconut chat, where the person changes Coconut. It stays
     /// at the top of the lists and is never archived.
     var coconut: Bool = false
-    /// True for Coconut and Gumroad, the projects: the only places where a chat starts. False for an agent of an
+    /// True for Coconut, Gumroad and Personal, the projects: the only places where a chat starts. False for an agent of an
     /// earlier release, whose chats stay readable. An older Mac sends nothing (isProject).
     var project: Bool? = nil
     /// The ID of the project, for a further chat of that project: a fresh conversation. Every chat runs on the one Hermes

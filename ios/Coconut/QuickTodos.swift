@@ -10,7 +10,7 @@ enum QuickTodos {
     /// A chat with no agent output and no step of a turn for this long takes a comment at once (commentMode).
     static let quietSeconds: TimeInterval = 180
 
-    /// The projects that can take a to-do, Coconut and Gumroad, newest activity first. The Coconut chat of an older Mac
+    /// The projects that can take a to-do, Coconut, Gumroad and Personal, newest activity first. The Coconut chat of an older Mac
     /// is no project and has one chat, so it takes no to-do.
     static func choices(in bots: [Bot], latest: [String: Date]) -> [Bot] {
         ChatProject.choices(in: bots, latest: latest).filter(\.isProject)

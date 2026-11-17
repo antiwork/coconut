@@ -59,7 +59,7 @@
       "id": "00000000-0000-4000-8000-000000000003",
       "instructions": "Watch the daily payout run. Report each failure with the seller and the reason. Never change bank details.",
       "last_message": "I will post the list here at 3 pm.",
-      "name": "Payouts",
+      "name": "Personal",
       "pinned": false,
       "role": "Watches the daily payout run",
       "session_id": "00000000-0000-4000-8000-000000000013",
@@ -71,7 +71,7 @@
         "provider": "preview",
         "reasoning_effort": "medium"
       },
-      "project": false
+      "project": true
     },
     {
       "archived": false,

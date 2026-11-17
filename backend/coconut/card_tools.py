@@ -377,7 +377,7 @@ PR_MERGE_INSTRUCTIONS = (
 # Delete a Coconut bot from a chat, for a direct human request (service._delete_bot_from_chat).
 BOT_DELETION_SCHEMA = {
     'name': 'coconut_delete_bot',
-    'description': 'Delete another Coconut agent when a listed direct human message requests deletion. Use its listed ID and current name. Ask which agent when the name is ambiguous. Coconut and Gumroad, the projects, cannot be deleted. This removes the agent from Coconut and stops its work and routines. Its Hermes sessions stay on the Mac. Wait for a confirmed receipt before claiming success.',
+    'description': 'Delete another Coconut agent when a listed direct human message requests deletion. Use its listed ID and current name. Ask which agent when the name is ambiguous. Coconut, Gumroad and Personal, the projects, cannot be deleted. This removes the agent from Coconut and stops its work and routines. Its Hermes sessions stay on the Mac. Wait for a confirmed receipt before claiming success.',
     'parameters': {
         'type': 'object', 'additionalProperties': False,
         'properties': {

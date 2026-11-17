@@ -11,7 +11,7 @@ Coconut keeps the Hermes source unchanged.
 
 ### Look
 
-- **Two projects, Coconut and Gumroad.** Each runs on its own Hermes profile. A new chat starts in one of them, and its first message names it. Nobody creates projects, and nothing has a face. People and teams keep their round faces.
+- **Three projects: Coconut, Gumroad and Personal.** Each runs on its own Hermes profile; everyone gets Personal. A new chat starts in one of them, and its first message names it. Nobody creates projects, and nothing has a face. People and teams keep their round faces.
 - **Typing is a coconut.** While an agent writes, three dots pulse in a triangle, like the three holes of a coconut, and the triangle rolls. With Reduce Motion it stays upright.
 
 Your Mac runs Hermes and Coconut and stores the work. Your iPhone reaches the Mac through a shared Cloudflare relay, end-to-end encrypted, so the Mac needs no VPN and no open port. The same relay delivers notifications, so you need no Apple push keys.

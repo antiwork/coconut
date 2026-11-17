@@ -88,7 +88,7 @@ extension Array where Element == Bot {
     /// The bots that the person can mention or choose: each agent one time.
     var withoutChats: [Bot] { filter { !$0.isChat } }
 
-    /// The projects, Coconut and Gumroad: the only places where a chat starts.
+    /// The projects, Coconut, Gumroad and Personal: the only places where a chat starts.
     var projects: [Bot] { filter(\.isProject) }
 }
 
@@ -116,7 +116,7 @@ extension AppStore {
                 return false
             }
             guard agent.isProject else {
-                error = "Start a new chat in Coconut or Gumroad."
+                error = "Start a new chat in Coconut, Gumroad or Personal."
                 return false
             }
             project = agent.id

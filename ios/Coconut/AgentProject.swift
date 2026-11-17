@@ -131,7 +131,7 @@ struct AgentProject: Identifiable, Equatable {
         else { status = .idle }
     }
 
-    /// The projects, Coconut and Gumroad, newest activity first. A project without a message sorts by the time when the
+    /// The projects, Coconut, Gumroad and Personal, newest activity first. A project without a message sorts by the time when the
     /// Mac made it.
     static func list(_ input: Input, now: Date = Date()) -> [AgentProject] {
         let latest = AgentChats.activity(bots: input.bots, latest: input.latest)
@@ -192,7 +192,7 @@ struct AgentsView: View {
             #endif
             if projects.isEmpty {
                 QuietEmptyState(symbol: "folder", title: "No projects yet",
-                                message: "Coconut and Gumroad show here when this Mac finds their Hermes profiles.")
+                                message: "Coconut, Gumroad and Personal show here when this Mac finds their Hermes profiles.")
             } else {
                 BoardSection("Projects", count: projects.count) {
                     ForEach(projects) { project in

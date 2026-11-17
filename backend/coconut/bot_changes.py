@@ -2,7 +2,7 @@
 
 The service gives a turn the person's direct messages that may ask for a change, the bots that the turn may delete, and
 the deletions that the service already recorded (Service._bot_deletion_input). The tool and its rules are in
-card_tools. The service checks each request (_delete_bot_from_chat). Nobody creates a bot: Coconut has two projects.
+card_tools. The service checks each request (_delete_bot_from_chat). Nobody creates a bot: Coconut has three projects.
 """
 from __future__ import annotations
 

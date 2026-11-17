@@ -1455,7 +1455,7 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
             self._event('bots.restarted', result | {'requested_by': device})
             return result
         if parts == ['v1', 'bots'] and method == 'POST':
-            # Nobody creates a project: Coconut has two (bot_profiles.PROJECTS). An older app still asks.
+            # Nobody creates a project: Coconut has three (bot_profiles.PROJECTS). An older app still asks.
             raise ServiceError(410, ONLY_PROJECTS)
         if len(parts) >= 3 and parts[1] == 'bots':
             bot = self._get('bots', parts[2])
