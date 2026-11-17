@@ -5,12 +5,22 @@ func characterSeed(_ value: String) -> UInt64 {
     value.utf8.reduce(UInt64(14_695_981_039_346_656_037)) { ($0 ^ UInt64($1)) &* 1_099_511_628_211 }
 }
 
+/// How an agent feels: a finished turn makes it happy, a new card surprises it, a provider problem makes it sad, and two
+/// quiet days make it sleepy. The letter shows it with its posture.
+enum CoconutMood: Sendable {
+    case neutral, happy, surprised, sad, sleepy
+}
+
+/// The face of an agent: its letter on a rounded square in the color of the letter. People and teams have round faces
+/// (LetterFaceView), so an agent reads as an agent. The letter bobs while the agent works and shows its mood.
 struct BotAvatar: View {
     static let scale: CGFloat = 1.1
     let symbol: String
     let color: String
     var size: CGFloat = 52
     var identity = ""
+    /// The name, for a face without its own letter.
+    var name: String? = nil
     // A phase means the bot works. Nil keeps the idle pose.
     var phase: BotPhase? = nil
     /// The lasting mood. A finished turn and a new card show a short mood over it.
@@ -21,18 +31,10 @@ struct BotAvatar: View {
     /// A phase also ends when the connection drops. Only an online end is a finished turn.
     var online = true
     var animated = true
-    /// The icon that the image backend made for the agent (`coconut-file://<id>`). It covers the fruit once it loads.
-    var image: URL? = nil
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.scenePhase) private var scenePhase
-    @State private var blinking = false
     @State private var thinkingAmount = 0.0
-    @State private var previousGesture: CoconutGesture?
-    @State private var gestureChangedAt = -Double.infinity
     @State private var flash: Flash?
-    @State private var shownMood: CoconutMood?
-    // The mood blink has its own closed state, so a regular blink cannot open the eyes during it.
-    @State private var changingMood = false
 
     // Each event has its own identity, so a repeated mood starts its time again.
     private struct Flash: Equatable {
@@ -40,44 +42,35 @@ struct BotAvatar: View {
         let id = UUID()
     }
 
-    init(symbol: String, color: String, size: CGFloat = 52, identity: String = "", phase: BotPhase? = nil,
-         mood: CoconutMood = .neutral, newestCardAt: Date? = nil, online: Bool = true, animated: Bool = true) {
+    init(symbol: String, color: String, size: CGFloat = 52, identity: String = "", name: String? = nil,
+         phase: BotPhase? = nil, mood: CoconutMood = .neutral, newestCardAt: Date? = nil, online: Bool = true,
+         animated: Bool = true) {
         self.symbol = symbol; self.color = color; self.size = size * Self.scale
-        self.identity = identity; self.phase = phase; self.mood = mood; self.newestCardAt = newestCardAt; self.online = online
-        self.animated = animated
+        self.identity = identity; self.name = name; self.phase = phase; self.mood = mood
+        self.newestCardAt = newestCardAt; self.online = online; self.animated = animated
     }
 
     init(bot: Bot, size: CGFloat = 52, phase: BotPhase? = nil, mood: CoconutMood = .neutral, newestCardAt: Date? = nil,
          online: Bool = true, animated: Bool = true) {
-        self.init(symbol: bot.avatar, color: bot.color, size: size, identity: bot.chatOf ?? bot.id, phase: phase, mood: mood,
-                  newestCardAt: newestCardAt, online: online, animated: animated)
-        self.image = bot.avatarImage.flatMap { URL(string: "coconut-file://" + $0) }
+        self.init(symbol: bot.avatar, color: bot.color, size: size, identity: bot.chatOf ?? bot.id, name: bot.name,
+                  phase: phase, mood: mood, newestCardAt: newestCardAt, online: online, animated: animated)
     }
 
+    var letter: String { AgentLetter.letter(symbol: symbol, name: name, identity: identity) }
     private var isThinking: Bool { phase != nil }
-
-    private var gesture: CoconutGesture { (phase ?? .thinking).gesture }
-
     private var motionEnabled: Bool { animated && !reduceMotion && scenePhase == .active }
-    private var seed: UInt64 { characterSeed(identity.isEmpty ? symbol + color : identity) }
-    private var targetMood: CoconutMood { flash?.mood ?? mood }
+    private var shownMood: CoconutMood { flash?.mood ?? mood }
 
     var body: some View {
-        TimelineView(.animation(minimumInterval: 1.0 / 60, paused: !motionEnabled || !isThinking)) { timeline in
-            FruitFigure(index: FruitArtwork.index(symbol: symbol, identity: identity),
-                        size: size, seed: seed, time: timeline.date.timeIntervalSinceReferenceDate,
-                        thinking: thinkingAmount, eyelid: blinking || changingMood ? 0.08 : 1,
-                        gesture: gesture, previousGesture: previousGesture, gestureChangedAt: gestureChangedAt,
-                        mood: shownMood ?? targetMood)
+        TimelineView(.animation(minimumInterval: 1.0 / 30, paused: !motionEnabled || !isThinking)) { timeline in
+            LetterTile(letter: letter, size: size, mood: shownMood, thinking: thinkingAmount,
+                       time: timeline.date.timeIntervalSinceReferenceDate,
+                       phaseOffset: Double(characterSeed(identity.isEmpty ? symbol : identity) % 1000) / 1000)
         }
         .frame(width: size, height: size)
-        .overlay { if let image { AvatarIcon(url: image, size: size / Self.scale) } }
+        .animation(motionEnabled ? .spring(response: 0.32, dampingFraction: 0.55) : nil, value: shownMood)
         .accessibilityHidden(true)
         .onChange(of: isThinking, initial: true) { _, _ in updateThinking() }
-        .onChange(of: gesture) { old, _ in
-            previousGesture = old
-            gestureChangedAt = Date().timeIntervalSinceReferenceDate
-        }
         .onChange(of: motionEnabled) { _, _ in updateThinking() }
         .onChange(of: phase) { old, new in if old != nil && new == nil && online { flash = Flash(mood: .happy) } }
         .onChange(of: newestCardAt) { old, new in
@@ -90,47 +83,43 @@ struct BotAvatar: View {
                 flash = nil
             } catch {}
         }
-        .task(id: targetMood) { await showMood(targetMood) }
-        .task(id: motionEnabled) {
-            blinking = false
-            guard motionEnabled else { return }
-            var cycle: UInt64 = 0
-            do {
-                while !Task.isCancelled {
-                    let delay = 5 + Double(characterSeed("\(seed)-\(cycle)") % 6000) / 1000
-                    try await Task.sleep(for: .seconds(delay))
-                    withAnimation(.easeIn(duration: 0.055)) { blinking = true }
-                    try await Task.sleep(for: .milliseconds(95))
-                    withAnimation(.easeOut(duration: 0.11)) { blinking = false }
-                    cycle &+= 1
-                }
-            } catch { blinking = false }
-        }
-    }
-
-    /// A new mood comes in a blink: the eyes close, the face changes, and the eyes open with a small overshoot.
-    private func showMood(_ next: CoconutMood) async {
-        guard let current = shownMood, current != next, motionEnabled else {
-            shownMood = next
-            // An earlier change can stop with the eyes closed, when the mood goes back before it finished.
-            if changingMood { withAnimation(.spring(response: 0.28, dampingFraction: 0.55)) { changingMood = false } }
-            return
-        }
-        withAnimation(.easeIn(duration: 0.09)) { changingMood = true }
-        do {
-            try await Task.sleep(for: .milliseconds(110))
-        } catch {
-            // A newer mood took over. It closes and opens the eyes itself.
-            return
-        }
-        shownMood = next
-        withAnimation(.spring(response: 0.28, dampingFraction: 0.55)) { changingMood = false }
     }
 
     private func updateThinking() {
         withAnimation(motionEnabled ? .easeOut(duration: 0.25) : nil) {
             thinkingAmount = isThinking && motionEnabled ? 1 : 0
         }
+    }
+}
+
+/// The drawn letter. A mood changes the posture: happy hops up, surprised grows, sad droops and pales, and sleepy
+/// leans and fades. Working bobs the letter inside its tile.
+struct LetterTile: View {
+    let letter: String
+    let size: CGFloat
+    var mood: CoconutMood = .neutral
+    var thinking = 0.0
+    var time = 0.0
+    var phaseOffset = 0.0
+
+    var body: some View {
+        let colors = AgentLetter.colors(letter)
+        let bob = sin((time / 0.9 + phaseOffset) * 2 * .pi) * thinking
+        RoundedRectangle(cornerRadius: size * 0.3, style: .continuous)
+            .fill(Color(hex: colors.fill))
+            .overlay {
+                Text(letter)
+                    .font(.system(size: size * 0.56, weight: .bold, design: .rounded))
+                    .foregroundStyle(Color(hex: colors.ink))
+                    .offset(y: -bob * size * 0.05 + (mood == .sad ? size * 0.04 : 0))
+                    .scaleEffect(1 + abs(bob) * 0.04)
+                    .rotationEffect(.degrees(mood == .sleepy ? -14 : mood == .sad ? 6 : 0))
+            }
+            .saturation(mood == .sad ? 0.45 : 1)
+            .opacity(mood == .sleepy ? 0.7 : 1)
+            .scaleEffect(mood == .surprised ? 1.1 : 1)
+            .offset(y: mood == .happy ? -size * 0.06 : 0)
+            .frame(width: size, height: size)
     }
 }
 
@@ -157,33 +146,5 @@ struct LiveBotAvatar: View {
                 // The moving face shows the work. Reduce Motion keeps the face still, so the dot shows it.
                 if reduceMotion { BotActivityDot(bot: bot).padding(size * BotAvatar.scale * 0.12) }
             }
-    }
-}
-
-
-/// The generated icon of an agent, in a rounded square like an app icon. Nothing shows until it loads, so the fruit
-/// face stays visible while the bytes come from the Mac.
-struct AvatarIcon: View {
-    let url: URL
-    let size: CGFloat
-    @State private var image: PlatformImage?
-
-    init(url: URL, size: CGFloat) {
-        self.url = url
-        self.size = size
-        _image = State(initialValue: PhotoLoader.shared.cached(url, size: .tile))
-    }
-
-    var body: some View {
-        Group {
-            if let image {
-                Image(platformImage: image).resizable().scaledToFill()
-                    .frame(width: size, height: size)
-                    .clipShape(RoundedRectangle(cornerRadius: size * 0.24, style: .continuous))
-            }
-        }
-        .task(id: url) {
-            if image == nil { image = await PhotoLoader.shared.image(url, size: .tile) }
-        }
     }
 }

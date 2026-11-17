@@ -66,7 +66,7 @@ enum ShareFaces {
         case .agent:
             guard let bot = bots.first(where: { $0.id == destination.bot }) else { return nil }
             return png("bot \(bot.id) \(bot.avatar) \(bot.color)") {
-                BotAvatar(symbol: bot.avatar, color: bot.color, size: size, identity: bot.id, animated: false)
+                BotAvatar(bot: bot, size: size, animated: false)
             }
         case .team:
             guard let room else { return nil }
@@ -76,7 +76,8 @@ enum ShareFaces {
             if destination.peerIsBot == true {
                 let bot = room.botList.first { $0.id == peer }
                 return png("team bot \(peer) \(bot?.avatar ?? "") \(bot?.color ?? "")") {
-                    BotAvatar(symbol: bot?.avatar ?? "", color: bot?.color ?? "", size: size, identity: peer, animated: false)
+                    BotAvatar(symbol: bot?.avatar ?? "", color: bot?.color ?? "", size: size, identity: peer, name: bot?.name,
+                              animated: false)
                 }
             }
             let member = room.memberList.first { $0.member == peer }

@@ -103,6 +103,8 @@ struct BotIdentityFields: View {
     @Binding var avatar: String
     @Binding var color: String
     let identity: String
+    /// The prompt of the name field. A new agent shows its letter: an empty name takes it.
+    var namePrompt = "Name"
     // Called when a text field loses focus or the person submits it.
     var commit: () -> Void = {}
     @State private var appearanceOpen = false
@@ -118,7 +120,7 @@ struct BotIdentityFields: View {
                     .frame(maxWidth: .infinity).padding(.vertical, BoardStyle.Space.l)
             }
             .buttonStyle(.plain).listRowBackground(Color.clear)
-            .accessibilityLabel("Change character")
+            .accessibilityLabel("Change letter")
             .sheet(isPresented: $appearanceOpen) {
                 NavigationStack {
                     Form { BotAppearancePicker(avatar: $avatar, color: $color, identity: identity) }
@@ -127,15 +129,15 @@ struct BotIdentityFields: View {
                         // its top, and the page behind it shows none. It stays in view at each scroll position.
                         .pageErrorBanner()
                         #if os(macOS)
-                        // A Mac sheet takes the height of its content. The fruits made it 835 points high, and the
+                        // A Mac sheet takes the height of its content. The letters made it too high, and the
                         // notice of an error made it higher than a small window, so Done went off the screen. With a
-                        // fixed height the fruits scroll, and the notice takes its place inside the sheet. A plain Mac
+                        // fixed height the letters scroll, and the notice takes its place inside the sheet. A plain Mac
                         // form did not scroll inside the height, and it pushed the notice above the sheet. A grouped
                         // form scrolls, as in the New agent sheet.
                         .formStyle(.grouped)
                         .frame(width: 470, height: 600)
                         #endif
-                        .navigationTitle("Character").inlineNavigationTitle()
+                        .navigationTitle("Letter").inlineNavigationTitle()
                         .toolbar { Button("Done") { appearanceOpen = false } }
                 }
                 .sheetShowsError()
@@ -143,7 +145,7 @@ struct BotIdentityFields: View {
             }
         }
         Section("Name") {
-            TextField("Name", text: $name).textContentType(.name)
+            TextField("Name", text: $name, prompt: Text(namePrompt)).textContentType(.name)
                 .fieldUnderHeader()
                 .focused($focused, equals: .name)
                 .submitLabel(.done)
@@ -164,35 +166,44 @@ struct BotIdentityFields: View {
     }
 }
 
+/// The 26 letters. A letter of another agent shows that agent's name and cannot be chosen.
 struct BotAppearancePicker: View {
+    @Environment(AppStore.self) private var store
     @Binding var avatar: String
     @Binding var color: String
     var identity = ""
-    private var selectedFruit: FruitArtwork { FruitArtwork.all[FruitArtwork.index(symbol: avatar, identity: identity)] }
+    private var held: [String: String] { AgentLetter.taken(by: store.bots, besides: identity) }
+    private var selected: String? { AgentLetter.exact(avatar) }
 
     var body: some View {
         Section {
             BotAvatar(symbol: avatar, color: color, size: 120, identity: identity)
                 .frame(maxWidth: .infinity).padding(.vertical, 12)
         }.listRowBackground(Color.clear)
-        Section("Fruit") {
-            LazyVGrid(columns: [GridItem(.adaptive(minimum: 76))], spacing: BoardStyle.Space.l) {
-                ForEach(FruitArtwork.all, id: \.id) { fruit in
-                    Button { avatar = "fruit." + fruit.id; color = fruit.color } label: {
+        Section {
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 60))], spacing: BoardStyle.Space.s) {
+                ForEach(AgentLetter.all, id: \.self) { letter in
+                    let owner = held[letter]
+                    Button { avatar = AgentLetter.symbol(letter); color = AgentLetter.colors(letter).fill } label: {
                         VStack(spacing: BoardStyle.Space.xs) {
-                            BotAvatar(symbol: "fruit." + fruit.id, color: fruit.color, size: 56, animated: false)
-                            Text(fruit.name).font(.footnote).foregroundStyle(.secondary)
+                            LetterTile(letter: letter, size: 44).opacity(owner == nil ? 1 : 0.28)
+                            Text(owner ?? " ").font(.caption2).foregroundStyle(.secondary).lineLimit(1)
                         }
                         .frame(maxWidth: .infinity).padding(.vertical, BoardStyle.Space.s)
-                        .background(selectedFruit.id == fruit.id ? BoardStyle.ink.opacity(0.07) : .clear,
-                                    in: RoundedRectangle(cornerRadius: 16))
+                        .background(selected == letter ? BoardStyle.ink.opacity(0.07) : .clear,
+                                    in: RoundedRectangle(cornerRadius: BoardStyle.Radius.small))
                     }
                     .buttonStyle(HomePressStyle())
-                    .accessibilityLabel(fruit.name)
-                    .accessibilityIdentifier("bot-avatar-fruit." + fruit.id)
-                    .accessibilityAddTraits(selectedFruit.id == fruit.id ? .isSelected : [])
+                    .disabled(owner != nil)
+                    .accessibilityLabel(owner.map { "\(letter), used by \($0)" } ?? letter)
+                    .accessibilityIdentifier("bot-avatar-letter.\(letter)")
+                    .accessibilityAddTraits(selected == letter ? .isSelected : [])
                 }
             }
+        } header: {
+            Text("Letter")
+        } footer: {
+            Text("Each agent has its own letter from A to Z.")
         }
     }
 }

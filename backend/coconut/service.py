@@ -129,6 +129,7 @@ from .work_sources import WorkSources, card_answer_steps
 from .work_status import PROPOSAL_EXECUTION, WorkStatus
 from .background_processes import BackgroundProcesses, PENDING_COMPLETIONS
 from .native_execution import NativeExecution
+from . import agent_letters
 from .decision_inbox import DecisionInbox, migrate_notification_importance
 from .pull_request_reviews import PENDING_CARDS, PR_ARTIFACTS, PR_URL_INDEX, PullRequestReviews
 from .work_progress import WorkProgress, work_enabled
@@ -358,6 +359,7 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
                 self._migrate_silent_responses()
                 self._migrate_pr_review_sources()
                 self._migrate_native_routine_prompts()
+                self._migrate_agent_letters()
                 migrate_notification_importance(self.db)
                 self._move_artifact_content()
                 if not getattr(self, '_workspace_recovery_hold', False):
@@ -1331,6 +1333,7 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
             for field in ('name', 'avatar', 'color'):
                 if field in data:
                     require_text(data, field, 160)
+            self._check_letter(bot, data)
             if 'role' in data and (not isinstance(data['role'], str) or len(data['role']) > 160):
                 raise ServiceError(400, 'The label must contain at most 160 characters.')
             if 'worker_limit' in data:
@@ -1417,10 +1420,19 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
         for field in ('instructions', 'memory'):
             if not isinstance(data.get(field, ''), str) or len(data.get(field, '')) > 20000:
                 raise ServiceError(400, f'{field} must contain at most 20000 characters.')
-        avatar = secrets.choice(('round', 'oval', 'wide', 'square', 'pointed', 'bean'))
-        color = secrets.choice(('A85F32', 'C76552', 'B5913F', '64866A', '448A89', '6087B0', '9272B3', 'BF759B', 'D6C6A2', '858680'))
-        bot = dict(id=uid(), session_id=uid(), name=require_text(data, 'name', 80), role=str(data.get('role', ''))[:160], avatar=str(data.get('avatar', f'coconut.{avatar}'))[:80], color=str(data.get('color', color))[:20], instructions=data.get('instructions', ''), notifications=True, status='idle', last_message='', unread_count=0, archived=False, pinned=data.get('pinned', False), created_at=now())
+        name = require_text(data, 'name', 80)
+        held = agent_letters.taken(self._all('bots'))
+        from . import coconut_chat, profile_registry
+        # The default profile shows as the Coconut chat (coconut_chat.view), so it looks for its letter under that name.
+        shown = coconut_chat.NAME if profile and profile['name'] == profile_registry.DEFAULT and name in coconut_chat.OLD_NAMES else name
+        letter = agent_letters.choose(held, agent_letters.letter_of(data.get('avatar')), shown)
+        if letter is None and profile is None:
+            raise ServiceError(409, agent_letters.FULL)
+        bot = dict(id=uid(), session_id=uid(), name=name, role=str(data.get('role', ''))[:160], avatar='', color=agent_letters.COLORS[0], instructions=data.get('instructions', ''), notifications=True, status='idle', last_message='', unread_count=0, archived=False, pinned=data.get('pinned', False), created_at=now())
         bot['last_read_message_id'] = None
+        if letter:
+            # A Hermes profile that a scan finds still becomes an agent when all 26 letters are taken. It has no letter.
+            agent_letters.assign(bot, letter)
         bot['profile_id'] = profile_id(bot)
         bot['model_override'] = None
         if profile is None:
@@ -1434,12 +1446,34 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
         self._attach_profile(bot, profile)
         self._put('bots', bot)
         self._event('bot.created', bot | (audit or {}), bot['id'], (audit or {}).get('source_task_id'))
-        if profile is None and 'avatar' not in data:
-            # A new agent gets an icon of its own from the image backend of Hermes. The thread waits for this
-            # transaction (the service lock), and the fruit face shows until the icon is there (agent_icons.py).
-            from .agent_icons import start
-            start(self, bot['id'])
         return bot
+
+    def _check_letter(self, bot: dict, data: dict) -> str | None:
+        """The letter that a change of `avatar` asks for, or None without one. Each agent has its own letter."""
+        if 'avatar' not in data:
+            return None
+        letter = agent_letters.letter_of(data['avatar'])
+        if letter is None:
+            raise ServiceError(400, 'Choose a letter from A to Z.')
+        holder = agent_letters.taken(self._all('bots'), besides=bot['id']).get(letter)
+        if holder is not None:
+            from .coconut_chat import view
+            raise ServiceError(409, f'{letter} is the letter of {view(self, holder, dict(holder))["name"]}. Choose a free letter.')
+        return letter
+
+    def _migrate_agent_letters(self):
+        """Give each agent without a letter its own (agent_letters.py), and its chats the same face. The icons that an
+        image backend once made for agents go: the letter is the face."""
+        bots = self._all('bots')
+        from .coconut_chat import view
+        changed = {bot['id']: bot for bot in agent_letters.migrate(bots, lambda bot: view(self, bot, dict(bot)).get('name'))}
+        changed.update({bot['id']: bot for bot in bots if 'avatar_image' in bot and bot['id'] not in changed})
+        for bot in changed.values():
+            bot.pop('avatar_image', None)
+            self._put('bots', bot)
+            self._event('bot.updated', self._public(bot), bot['id'])
+            self._note_published(bot['id'], encoded(self._public(bot)))
+            self._follow_agent(bot)
 
     def _bot_deletion_scope(self, bot_id: str) -> set[str]:
         tasks = self._all('tasks')
@@ -1615,6 +1649,7 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
                         bot.pop('model_follow_error', None)
                 if 'profile_id' in data and data['profile_id'] != bot['profile_id']:
                     raise ServiceError(409, 'An agent keeps its original Hermes profile ID.')
+                letter = self._check_letter(bot, data)
                 for field in ('name', 'role', 'avatar', 'color', 'instructions'):
                     if field in data:
                         if field in ('instructions', 'role'):
@@ -1623,6 +1658,9 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
                             bot[field] = data[field]
                         else:
                             bot[field] = require_text(data, field, 160)
+                if letter:
+                    # The color belongs to the letter, whatever color the request names.
+                    agent_letters.assign(bot, letter)
                 for field in ('archived', 'pinned', 'notifications'):
                     if field in data:
                         if not isinstance(data[field], bool):

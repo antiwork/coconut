@@ -74,28 +74,26 @@ extension Array where Element == Bot {
     var withoutChats: [Bot] { filter { !$0.isChat } }
 }
 
-/// The plus makes an agent at once: a random capital letter for its name and a random fruit. The name in the header of
-/// its chat opens the settings, where the person changes both.
+/// The plus makes an agent at once: a random letter that no agent holds, as its face and its name. The name in the header
+/// of its chat opens the settings, where the person changes both.
 enum NewAgent {
-    static let letters = (65...90).map { String(UnicodeScalar(UInt8($0))) }
-    static let color = "A86640"
-
-    /// A random letter that no agent uses yet, also an archived one. Any letter when all 26 are taken.
-    static func name(avoiding names: [String]) -> String {
-        let used = Set(names.map { $0.trimmingCharacters(in: .whitespacesAndNewlines).uppercased() })
-        return (letters.filter { !used.contains($0) }.randomElement() ?? letters.randomElement())!
+    /// A random free letter, or nil when all 26 letters have an agent.
+    static func letter(bots: [Bot]) -> String? {
+        let held = AgentLetter.taken(by: bots)
+        return AgentLetter.all.filter { held[$0] == nil }.randomElement()
     }
-
-    static func avatar() -> String { "fruit." + FruitArtwork.all.randomElement()!.id }
 }
 
 extension AppStore {
-    /// Makes an agent with a random letter and fruit, and opens its chat with the cursor in its message field. Returns
+    /// Makes an agent with a random free letter, and opens its chat with the cursor in its message field. Returns
     /// the agent, or nil when the Mac did not make it.
     func newAgent() async -> Bot? {
-        let name = NewAgent.name(avoiding: bots.agents.map(\.name))
-        guard let bot = await createBot(name: name, role: "", avatar: NewAgent.avatar(), color: NewAgent.color,
-                                        instructions: "") else { return nil }
+        guard let letter = NewAgent.letter(bots: bots) else {
+            error = "All 26 letters have an agent. Delete an agent to free its letter."
+            return nil
+        }
+        guard let bot = await createBot(name: letter, role: "", avatar: AgentLetter.symbol(letter),
+                                        color: AgentLetter.colors(letter).fill, instructions: "") else { return nil }
         // The update of the Mac brings the agent too. The app shows it at once.
         if !bots.contains(where: { $0.id == bot.id }) { bots.append(bot) }
         composerFocusRequest = bot.id

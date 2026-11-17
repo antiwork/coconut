@@ -159,8 +159,8 @@ struct BotMentionPicker<B: MentionableBot>: View {
         guard bot.mentionedPerson == nil else { return bot.name }
         let matching = bots.filter { $0.mentionedPerson == nil && $0.name.lowercased() == bot.name.lowercased() }
         guard matching.count > 1, let index = matching.firstIndex(where: { $0.id == bot.id }) else { return bot.name }
-        let fruit = FruitArtwork.all[FruitArtwork.index(symbol: bot.faceSymbol, identity: bot.id)].name
-        return "\(bot.name), \(fruit), agent \(index + 1) of \(matching.count)"
+        let letter = AgentLetter.letter(symbol: bot.faceSymbol, name: bot.name, identity: bot.id)
+        return "\(bot.name), letter \(letter), agent \(index + 1) of \(matching.count)"
     }
 
     var body: some View {
@@ -173,7 +173,7 @@ struct BotMentionPicker<B: MentionableBot>: View {
                                 if let person = bot.mentionedPerson {
                                     PersonFace(member: person, memberId: person.member, name: person.name, size: 30)
                                 } else {
-                                    BotAvatar(symbol: bot.faceSymbol, color: bot.faceColor, size: 30, identity: bot.id)
+                                    BotAvatar(symbol: bot.faceSymbol, color: bot.faceColor, size: 30, identity: bot.id, name: bot.name)
                                 }
                                 VStack(alignment: .leading, spacing: 2) {
                                     Text(bot.name).font(.body).lineLimit(1)

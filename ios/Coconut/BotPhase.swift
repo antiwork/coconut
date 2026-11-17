@@ -20,18 +20,6 @@ enum BotPhase: String, CaseIterable, Sendable {
         case .writing: "Writing…"
         }
     }
-
-    var gesture: CoconutGesture {
-        switch self {
-        case .thinking, .working: .ponder
-        case .reading: .scan
-        case .editing, .command, .testing: .focus
-        case .searching, .browsing: .dart
-        case .memory: .recall
-        case .github, .helpers: .spin
-        case .writing: .write
-        }
-    }
 }
 
 struct ConversationActivity: Equatable {

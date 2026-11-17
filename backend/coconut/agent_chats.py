@@ -12,7 +12,7 @@ newest first. A chat can be archived or removed by itself. The settings belong t
 from __future__ import annotations
 
 # What a chat takes from its agent when the person starts it, and again when the agent changes.
-SHARED = ('name', 'role', 'avatar', 'avatar_image', 'color', 'instructions', 'model_override', 'model_follows_default',
+SHARED = ('name', 'role', 'avatar', 'color', 'instructions', 'model_override', 'model_follows_default',
           'approval_override', 'worker_limit')
 # The fields that the person changes on one chat.
 OWN = frozenset({'archived', 'pinned', 'notifications', 'chat_title'})

@@ -63,8 +63,6 @@ def source_files() -> dict[str, bytes]:
     candidates = [ROOT / name for name in TOP_FILES]
     candidates += list((ROOT / "backend/coconut").rglob("*.py"))
     candidates.append(ROOT / "backend/coconut/hermes_versions.json")
-    # The fruit faces as one sprite sheet: the style reference of a new agent's icon (agent_icon_worker.py).
-    candidates.append(ROOT / "backend/coconut/assets/agent-sprites.png")
     candidates += list((ROOT / "scripts").glob("*.py"))
     candidates += list((ROOT / "scripts").glob("*.swift"))
     # The tunnel sidecar compiles the shared Noise and frame code with scripts/tunnel-sidecar.swift.

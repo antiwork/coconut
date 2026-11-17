@@ -87,7 +87,7 @@ One grid system and one tile style for every dashboard, in a new `ios/Coconut/Be
   small one. The label is one quiet line over the number, with its symbol.
 - **Charts.** Swift Charts only. Sparklines and small bars without axes inside tiles. A full chart has three quiet
   grid lines and four dates. Colors are the colors of Coconut: green, the ink, the accent for a loss or a breach,
-  and the blue and the purple of the fruit faces for a second and a third series.
+  and the blue and the purple of the letter faces for a second and a third series.
 - **Copy.** No eyebrow and no headline. One status line: the dot, the snapshot time, the currency, "Sample data".
 - **Chevron or nothing.** A tile that opens a screen has no "↗". Only a link to GitHub has it.
 

@@ -14,8 +14,8 @@
   "bots": [
     {
       "archived": false,
-      "avatar": "hammer.fill",
-      "color": "DA7756",
+      "avatar": "letter.R",
+      "color": "AA79C2",
       "created_at": "2026-09-07T12:00:00Z",
       "id": "00000000-0000-4000-8000-000000000001",
       "instructions": "Ship gumroad/web to production. Run the specs first. Ask before every deploy.",
@@ -35,8 +35,8 @@
     },
     {
       "archived": false,
-      "avatar": "binoculars.fill",
-      "color": "6B8F71",
+      "avatar": "letter.S",
+      "color": "AA79C2",
       "created_at": "2026-09-07T12:00:00Z",
       "id": "00000000-0000-4000-8000-000000000002",
       "instructions": "Answer seller and buyer email from Helper. Keep a short report with links. Ask before refunds over $100.",

@@ -27,8 +27,8 @@ enum BoardStyle {
     static let attention = accent
     static let destructive = Color(platformColor: .systemRed)
 
-    /// The fills of a face with letters, for a team or a person, with the ink of the letters. They are fills and inks
-    /// of the fruit faces of the bots, so they read the same in light and in dark mode.
+    /// The fills of a face with letters, for an agent, a team or a person, with the ink of the letters. They read the
+    /// same in light and in dark mode. An agent's letter picks its fill (AgentLetter.colors).
     static let faceColors: [(fill: String, ink: String)] = [
         ("7E99D3", "1F334E"), ("70A779", "FCEDCE"), ("AA79C2", "FCF0DD"),
         ("F2A088", "263329"), ("EAA052", "263329"), ("D76C91", "FFEBD6"), ("B6C493", "263329"),

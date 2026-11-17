@@ -106,7 +106,7 @@ struct BentoBoard<Content: View>: View {
     var body: some View { BentoGrid(row: row) { content() } }
 }
 
-/// The colors of the dashboards. They are colors of Coconut: the green, the accent, and two fills of the fruit faces
+/// The colors of the dashboards. They are colors of Coconut: the green, the accent, and two fills of the letter faces
 /// for a second and a third series.
 enum BentoColor {
     static let money = BoardStyle.green

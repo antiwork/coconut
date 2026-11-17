@@ -914,7 +914,7 @@ struct TeamMessageRow: View {
             if message?.bot != nil {
                 // The face and the color of the team bot, or a neutral face for a bot that the team no longer has.
                 BotAvatar(symbol: teamBot?.avatar ?? "", color: teamBot?.color ?? "", size: 18,
-                          identity: teamBot?.id ?? "", animated: false)
+                          identity: teamBot?.id ?? "", name: teamBot?.name, animated: false)
             } else {
                 let memberId = message?.member ?? ""
                 PersonFace(member: room.memberList.first { $0.member == memberId }, memberId: memberId,
@@ -1425,9 +1425,10 @@ struct TeamFace: View {
     }
 }
 
-/// The face of a person in the chat: the face that the member chose, else the first letter of the name of the message
-/// on the fill of its member ID (`LetterFace.person`). A member that left keeps that face, because both come from the
-/// message. Only a writer whose name the Mac never learned ("Former member") has the neutral face.
+/// The face of a person in the chat: the first letter of the name of the message on the fill of its member ID
+/// (`LetterFace.person`), in a circle. An agent has a rounded square, so a person never looks like an agent. A member
+/// that left keeps that face, because both come from the message. Only a writer whose name the Mac never learned
+/// ("Former member") has the neutral face.
 struct PersonFace: View {
     let member: TeamMember?
     let memberId: String
@@ -1435,12 +1436,8 @@ struct PersonFace: View {
     let size: CGFloat
 
     var body: some View {
-        if let member, let avatar = member.avatar, !avatar.isEmpty {
-            BotAvatar(symbol: avatar, color: member.color ?? "", size: size, identity: memberId, animated: false)
-        } else {
-            LetterFaceView(letters: LetterFace.person(memberId: memberId, name: name).letters, id: memberId,
-                           symbol: "person.fill", size: size)
-        }
+        LetterFaceView(letters: LetterFace.person(memberId: memberId, name: name ?? member?.name).letters, id: memberId,
+                       symbol: "person.fill", size: size)
     }
 }
 
@@ -1544,7 +1541,8 @@ struct TeamTypingRow: View {
     @ViewBuilder private func face(_ subject: TeamTyping) -> some View {
         if let id = subject.bot {
             let bot = room.botList.first { $0.id == id }
-            BotAvatar(symbol: bot?.avatar ?? "", color: bot?.color ?? "", size: 18, identity: id, animated: false)
+            BotAvatar(symbol: bot?.avatar ?? "", color: bot?.color ?? "", size: 18, identity: id, name: bot?.name,
+                      animated: false)
         } else {
             PersonFace(member: room.memberList.first { $0.member == subject.member }, memberId: subject.member,
                        name: subject.name, size: 18)
@@ -1642,7 +1640,7 @@ struct DirectPeerFace: View {
         if peer.isBot {
             // A bot that left has the neutral face, as above its message in the Team chat.
             BotAvatar(symbol: peer.botEntry?.avatar ?? "", color: peer.botEntry?.color ?? "", size: size,
-                      identity: peer.member, animated: false)
+                      identity: peer.member, name: peer.name, animated: false)
         } else {
             PersonFace(member: peer.entry, memberId: peer.member, name: peer.name, size: size)
         }

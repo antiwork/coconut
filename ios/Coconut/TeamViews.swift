@@ -414,7 +414,7 @@ struct TeamRoomView: View {
         let label = HStack(spacing: 12) {
             if let bot = row.bot {
                 BotAvatar(symbol: bot.avatar ?? "", color: bot.color ?? "", size: avatarSize, identity: bot.id,
-                          animated: false)
+                          name: bot.name, animated: false)
             } else {
                 Image(systemName: "desktopcomputer")
                     .font(.system(size: avatarSize * 0.6))
