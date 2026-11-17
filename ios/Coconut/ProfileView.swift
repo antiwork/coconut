@@ -76,10 +76,8 @@ struct ProfileView: View {
                 }
                 BoardRow(symbol: "person.2", title: "Team", value: teamSummary)
                     .boardButton("profile-team") { pushRoute?(ProfileRoute.team) }
-                BoardRow(symbol: "server.rack", title: "Runs on", detail: "\(CoconutMode.local.label). \(CoconutMode.cloud.label) comes later.",
-                         value: "Your Mac", chevron: false)
-                    .accessibilityIdentifier("profile-mode")
-                BoardRow(symbol: "info.circle", title: "Version", detail: "Execution stays on your Mac",
+                // One row has the version and where Coconut runs.
+                BoardRow(symbol: "info.circle", title: "Version", detail: "Runs on your Mac",
                          value: Self.appVersion, chevron: false)
                     .accessibilityIdentifier("profile-version")
             }
@@ -106,7 +104,8 @@ struct ProfileView: View {
             VStack(alignment: .leading, spacing: BoardStyle.Space.line) {
                 #if os(iOS)
                 // The bar and the tab say "You", so a person without a name has the name of the device here.
-                Text(summary.name ?? Device.name).font(.title2.weight(.bold)).lineLimit(1)
+                // The person is the heading of this tab, large and bold.
+                Text(summary.name ?? Device.name).font(.largeTitle.weight(.bold)).lineLimit(1).minimumScaleFactor(0.6)
                 if summary.name != nil {
                     Text(Device.name).font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
                 }
