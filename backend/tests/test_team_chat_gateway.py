@@ -1006,6 +1006,8 @@ class StandaloneSenderTests(DirectTurnMacs, unittest.TestCase):
         self.assertEqual(self.first.team_file_content(self.room, message['id'], attachment['id']).content, file.read_bytes())
 
     def test_a_lost_file_receipt_retries_with_one_id_and_adds_no_second_copy(self):
+        named, elsewhere = self.named('Notices'), self.named('Elsewhere')
+        chat = chat_id(self.room, self.bot['id'], named) + ':alert:deploy:info'
         file = Path(self.temp.name) / 'report.pdf'
         file.write_bytes(b'%PDF-1.4\nThe report.')
         calls, real = [], team.Bridge.request
@@ -1018,18 +1020,25 @@ class StandaloneSenderTests(DirectTurnMacs, unittest.TestCase):
                     raise TimeoutError('The file arrived, but its receipt did not.')
             return answer
         with mock.patch.object(team.Bridge, 'request', autospec=True, side_effect=request):
-            self.sent(self.deliver(chat_id(self.room, self.bot['id']), text='', media_files=[(str(file), False)]))
+            self.sent(self.deliver(chat, text='', media_files=[(str(file), False)]))
         self.assertEqual(len(calls), 2)
         self.assertEqual(calls[0][0]['message_id'], calls[1][0]['message_id'])
         self.assertGreater(calls[0][1], 15)
         self.assertLessEqual(calls[0][1], team.FILE_SECONDS)
         self.sync()
-        self.assertEqual(self.of_chat(), [('Reporter', 'report.pdf')])
-        with self.assertRaises(HTTPError) as refused:
-            real(team.Bridge(self.only.gateway_bridge.address_file), '/v1/gateway/files',
-                 dict(calls[0][0], filename='another.pdf'), team.FILE_SECONDS)
-        self.assertEqual(refused.exception.code, 409)
-        refused.exception.close()
+        self.assertEqual(self.of_chat(named), [('Reporter', 'report.pdf')])
+        for change in ({'filename': 'another.pdf'},
+                       {'chat_id': chat_id(self.room, self.bot['id'], elsewhere) + ':alert:deploy:info'},
+                       {'alert': {'type': 'risk', 'level': 'info'}},
+                       {'alert': {'type': 'deploy', 'level': 'critical'}}):
+            with self.subTest(change=change), self.assertRaises(HTTPError) as refused:
+                real(team.Bridge(self.only.gateway_bridge.address_file), '/v1/gateway/files',
+                     dict(calls[0][0], **change), team.FILE_SECONDS)
+            self.assertEqual(refused.exception.code, 409)
+            refused.exception.close()
+        self.sync()
+        self.assertEqual(self.of_chat(elsewhere), [])
+        self.assertEqual(self.of_chat(named), [('Reporter', 'report.pdf')])
 
     def test_a_failed_file_is_a_failed_delivery_even_when_its_text_arrives(self):
         result = self.deliver(chat_id(self.room, self.bot['id']), media_files=[('/no-such-report.pdf', False)])
