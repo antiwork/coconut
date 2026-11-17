@@ -456,15 +456,17 @@ struct AgentProjectView: View {
         }
     }
 
+    /// An agent has many chats, so the button starts a fresh one and opens it. The old chats are in the list below.
     private func chatButton(_ bot: Bot) -> some View {
-        Button { chat(ConversationRoute(botId: bot.id)) } label: {
-            Label("Open chat", systemImage: "bubble.left.and.bubble.right")
+        Button { newChat(bot) } label: {
+            Label("New chat", systemImage: "square.and.pencil")
                 #if os(iOS)
                 .frame(maxWidth: .infinity)
                 #endif
         }
         .buttonStyle(CoconutButtonStyle())
-        .accessibilityIdentifier("agent-chat-button")
+        .disabled(bot.archived)
+        .accessibilityIdentifier("agent-new-chat-button")
     }
 
     private func newChat(_ bot: Bot) {
