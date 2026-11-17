@@ -21,15 +21,28 @@ struct BoardPage<Content: View>: View {
     }
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: spacing) { content() }
-                .padding(BoardStyle.Space.l)
-                .frame(maxWidth: width == .readable ? 760 : 1160, alignment: .leading)
-                .frame(maxWidth: .infinity)
+        ScrollViewReader { proxy in
+            ScrollView {
+                VStack(alignment: .leading, spacing: spacing) { content() }
+                    .padding(BoardStyle.Space.l)
+                    .frame(maxWidth: width == .readable ? 760 : 1160, alignment: .leading)
+                    .frame(maxWidth: .infinity)
+                    .id(Self.contentID)
+            }
+            .defaultScrollAnchor(Self.startsAtBottom ? .bottom : .top)
+            .background(BoardStyle.paper)
+            // A page that loads after it shows grows under the first anchor, so `--bottom` scrolls to the end again.
+            .task {
+                guard Self.startsAtBottom else { return }
+                for wait in [1.0, 2, 3] {
+                    try? await Task.sleep(for: .seconds(wait))
+                    proxy.scrollTo(Self.contentID, anchor: .bottom)
+                }
+            }
         }
-        .defaultScrollAnchor(Self.startsAtBottom ? .bottom : .top)
-        .background(BoardStyle.paper)
     }
+
+    private static var contentID: String { "board-page-content" }
 }
 
 /// The title of a page of sections with one quiet line under it.

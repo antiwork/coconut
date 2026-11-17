@@ -470,6 +470,7 @@ extension CoconutHome {
         case "agent-settings": show(.home, [AgentRoute(botId: agent), BotSettingsRoute(botId: agent)])
         case "all-pages": show(.home, [AllPagesRoute()])
         case "usage": show(.home, [UsageRoute()])
+        case "agent-usage": show(.home, [AgentRoute(botId: agent), UsageRoute(botId: agent)])
         case "live": show(.home, [LiveRoute()])
         case "spend": show(.home, [SpendRoute()])
         case "business": show(.business, [])
@@ -478,6 +479,8 @@ extension CoconutHome {
         case "support-work": show(.business, [BusinessRoute.function("support")])
         case "reports": show(.business, [BusinessRoute.reports])
         case "history": show(.business, [BusinessRoute.reports])
+        case "marketing": show(.business, [BusinessRoute.function("marketing")])
+        case "ledger": show(.business, [BusinessRoute.ledger])
         case "page":
             // The list of the pages loads first. The page then opens over the page of its agent.
             Task {
@@ -496,7 +499,10 @@ extension CoconutHome {
         case "profile-notifications": show(.profile, [ProfileRoute.notifications])
         case "profile-connections": show(.profile, [ProfileRoute.connections])
         case "profile-team": show(.profile, [ProfileRoute.team])
-        default: break
+        default:
+            // "report-risk" opens a report by its key, and "project-gumroad" the work of a project.
+            if place.hasPrefix("report-") { show(.business, [BusinessRoute.report(String(place.dropFirst(7)))]) }
+            if place.hasPrefix("project-") { show(.business, [BusinessRoute.projects, BusinessRoute.project(String(place.dropFirst(8)))]) }
         }
         #endif
     }
