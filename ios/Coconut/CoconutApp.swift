@@ -187,7 +187,7 @@ struct CoconutHome: View {
                 case .home: HomeLaunchView { open($0, on: path) }
                 case .todos: HomeLaunchView(part: .todos) { open($0, on: path) }
                 case .business: BusinessHomeView()
-                case .support: BusinessReportView(key: "support")
+                case .support: BusinessWorkspaceView(function: "support")
                 case .profile: ProfileView()
                 }
             }
@@ -197,7 +197,9 @@ struct CoconutHome: View {
                     if tab == .home { NewChatBar() }
                 }
                 .navigationTitle("")
-                .navigationBarTitleDisplayMode(.inline)
+                // A tab root has its name as a large title, so a root and a pushed page look different. You has the
+                // person as its heading.
+                .navigationBarTitleDisplayMode(tab == .profile ? .inline : .large)
                 .topBanners { area in
                     RootBanners(area: area) {
                         onboardingFirstRun = false
@@ -217,26 +219,27 @@ struct CoconutHome: View {
                 }
                 .navigationDestination(for: ConversationRoute.self) { route in
                     ConversationView(botId: route.botId, focusDecisionId: route.decisionId, focusMessageId: route.messageId, attachedWork: route.workContext)
+                        .inlineNavigationTitle()
                 }
                 .navigationDestination(for: BotExchangeRoute.self) { route in
-                    BotExchangeView(route: route)
+                    BotExchangeView(route: route).inlineNavigationTitle()
                 }
-                .navigationDestination(for: ArchivedAgentsRoute.self) { _ in ArchivedAgentsView() }
+                .navigationDestination(for: ArchivedAgentsRoute.self) { _ in ArchivedAgentsView().inlineNavigationTitle() }
                 .navigationDestination(for: AgentListRoute.self) { _ in AgentsView() }
-                .navigationDestination(for: BusinessRoute.self) { BusinessDestinationView(route: $0) }
+                .navigationDestination(for: BusinessRoute.self) { BusinessDestinationView(route: $0).inlineNavigationTitle() }
                 .navigationDestination(for: BotSettingsRoute.self) { route in
                     BotSettingsView(botId: route.botId)
                 }
                 .navigationDestination(for: DocumentRoute.self) { route in
-                    DocumentView(documentId: route.id)
+                    DocumentView(documentId: route.id).inlineNavigationTitle()
                 }
                 .navigationDestination(for: TeamChatRoute.self) { route in
-                    TeamChatDestination(route: route)
+                    TeamChatDestination(route: route).inlineNavigationTitle()
                 }
                 .navigationDestination(for: TeamScreenRoute.self) { route in
-                    TeamRoomView(roomId: route.roomId, pushed: true)
+                    TeamRoomView(roomId: route.roomId, pushed: true).inlineNavigationTitle()
                 }
-                .navigationDestination(for: NoticeBoardRoute.self) { NoticeBoardView(roomId: $0.roomId) }
+                .navigationDestination(for: NoticeBoardRoute.self) { NoticeBoardView(roomId: $0.roomId).inlineNavigationTitle() }
                 .modifier(AgentDestinations())
                 .modifier(ProfileDestinations())
                 .background(BoardStyle.paper)

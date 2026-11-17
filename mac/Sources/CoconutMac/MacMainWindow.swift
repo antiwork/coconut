@@ -272,7 +272,7 @@ struct MacMainWindow: View {
         case .business:
             placeStack { BusinessHomeView().navigationTitle("Finance") }
         case .support:
-            placeStack { BusinessReportView(key: "support") }
+            placeStack { BusinessWorkspaceView(function: "support") }
         case .profile:
             placeStack { ProfileView().navigationTitle("Profile") }
         case .document(let documentId):

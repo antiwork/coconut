@@ -24,22 +24,6 @@ struct BusinessHomeView: View {
             }
         }
         .navigationTitle("Finance")
-        .toolbar {
-            ToolbarItem(placement: .primaryAction) {
-                Menu {
-                    ForEach(BusinessFunction.builtIns) { function in
-                        NavigationLink(value: BusinessRoute.function(function.key)) {
-                            Label(function.name, systemImage: function.symbol)
-                        }.accessibilityIdentifier("business-function-" + function.key)
-                    }
-                    // The page and its tile say History, so the menu says History too.
-                    NavigationLink(value: BusinessRoute.reports) { Label("History", systemImage: "chart.bar.doc.horizontal") }
-                        .accessibilityIdentifier("business-reports-link")
-                    NavigationLink(value: BusinessRoute.projects) { Label("Projects", systemImage: "shippingbox") }
-                } label: { Label("Functions", systemImage: "square.grid.2x2") }
-                .accessibilityIdentifier("business-home-functions")
-            }
-        }
         .task(id: "\(store.connection)/\(store.businessChanges)") { await load() }
         .onChange(of: store.businessGeneration) { _, _ in report = nil; error = nil }
         .refreshable { await load() }

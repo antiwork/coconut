@@ -1,29 +1,32 @@
 import SwiftUI
 import Charts
 
+/// The place of one function: its report and its work. Support is a place of its own. Finance opens the others.
 struct BusinessWorkspaceView: View {
     let function: String
     @State private var tab = "overview"
     private var hasReport: Bool { function == "accounting" || function == "support" }
 
     var body: some View {
-        VStack(spacing: 0) {
-            // Two views only: the report of the function, and its work. The tiles of every report are on Business
-            // home, so a third Library segment showed the same tiles a second time.
-            // A function without a report has its work only, and a control with one segment is no choice.
+        Group {
+            if tab == "work" || !hasReport { BusinessWorkListView(function: function) }
+            else { BusinessReportView(key: function) }
+        }
+        // Two views only: the report of the function, and its work. The control stays under the title while the page
+        // scrolls. A function without a report has its work only, and a control with one segment is no choice.
+        .safeAreaInset(edge: .top, spacing: 0) {
             if hasReport {
                 Picker("View", selection: $tab) {
                     Text("Overview").tag("overview")
                     Text("Work").tag("work")
                 }.pickerStyle(.segmented).labelsHidden().frame(maxWidth: 360)
-                    .padding(.horizontal, BoardStyle.Space.l).padding(.vertical, BoardStyle.Space.m)
+                    .padding(.horizontal, BoardStyle.Space.l).padding(.vertical, BoardStyle.Space.s)
+                    // The paper ends at the control, so the large title of the Support tab shows over it.
+                    .frame(maxWidth: .infinity).background(BoardStyle.paper, ignoresSafeAreaEdges: [])
             }
-            if tab == "work" || !hasReport { BusinessWorkListView(function: function) }
-            else { BusinessReportView(key: function) }
         }
         .background(BoardStyle.paper)
         .navigationTitle(BusinessFunction.name(function))
-        .onAppear { if !hasReport && tab == "overview" { tab = "work" } }
     }
 }
 
@@ -79,7 +82,7 @@ struct BusinessReportView: View {
                 NavigationLink("GitHub connection") { GitHubSettingsView() }.font(.callout)
             }
         }
-        .navigationTitle(BusinessReport.titles[key] ?? key).inlineNavigationTitle()
+        .navigationTitle(BusinessReport.titles[key] ?? key)
         .task(id: "\(key)/\(store.connection)/\(store.businessChanges)") { await load() }
         .onChange(of: store.businessGeneration) { _, _ in report = nil }
         .refreshable { await load() }

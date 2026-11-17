@@ -201,7 +201,8 @@ struct BusinessHomeContent: View {
                     .accessibilityIdentifier("business-home-run-rate").bento(3, 1, compact: (1, 1))
                 BentoStat(title: "Daily average", symbol: "sum", value: reportNumber(model.dailyAverage, money: true), size: .medium)
                     .accessibilityIdentifier("business-home-daily-average").bento(3, 1, compact: (1, 1))
-                ForEach(BusinessFunction.builtIns) { function in
+                // Support is a place of its own, so Finance opens the other functions.
+                ForEach(BusinessFunction.builtIns.filter { $0.key != "support" }) { function in
                     BentoLink(route: .function(function.key)) {
                         BentoPlace(title: function.name, detail: Self.functionDetail[function.key], symbol: function.symbol)
                     }.accessibilityIdentifier("business-home-function-" + function.key).bento(3, 1, compact: (1, 1))
@@ -219,7 +220,7 @@ struct BusinessHomeContent: View {
         }.foregroundStyle(BoardStyle.ink)
     }
 
-    private static let functionDetail = ["accounting": "Ledger and close", "marketing": "Campaigns", "support": "Queues and SLAs"]
+    private static let functionDetail = ["accounting": "Ledger and close", "marketing": "Campaigns"]
 
     private var urgent: Bool { model.attention.contains { !$0.unavailable } }
     private var attention: some View {
