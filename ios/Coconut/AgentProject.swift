@@ -151,10 +151,11 @@ struct AgentProject: Identifiable, Equatable {
         return parts.isEmpty ? nil : parts.joined(separator: " · ")
     }
 
-    /// The count after the title of a section. Chat counts the unread messages. Settings has none.
+    /// The count after the title of a section: the number of its rows, so Chats counts the chats. A row has the unread
+    /// messages of its chat. One chat needs no count, and Settings has none.
     func count(_ section: AgentSection) -> Int {
         switch section {
-        case .chat: bot.unreadCount + chats.reduce(0) { $0 + $1.unreadCount }
+        case .chat: chats.isEmpty ? 0 : chats.count + 1
         case .todos: todos.count
         case .pages: pages.count
         case .routines: routines.count + checks.count
