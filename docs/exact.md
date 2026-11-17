@@ -43,15 +43,14 @@ effort, a new project takes its letter). The check is a scratch script, not in t
 Checked by reading. The contract files against the tables of Exact (`kernel/tables/schema.json`: attributes, roles,
 fonts, colours, button styles, symbols) and against idioms taken from its patterns and apps.
 
+Built. Exact Build compiled the app on 2026-11-17 (build `166a3e29`): a 19.4 MB IPA, published with AppDrop from the
+Mac that holds the update key (`npx appdrop links` there prints it). The first upload failed in the bake with 19
+errors, because Exact Build compiles with the newest snapshot of its catalog, not the commit sent as `exact`. See Gaps.
+
 Not done:
 
-- No build. `~/.exact-build-token` did not exist, so Exact Build has compiled nothing and no compiler has read the
-  contract files. Expect diagnostics on the first build. The likeliest: a Forma token in `border-color` (attention card,
-  activity dot), `if` and `for` placed under `DecisionCard(...)` as its slot, `image item.symbol` (a symbol chosen from
-  data), the hidden file inputs with `showPicker`, and TypeScript strictness once `app.contract.d.ts` exists.
-- No IPA, no AppDrop link, no screenshots.
-- No measurements. See Numbers.
-- The local web host was not run: the disk had 3.6 to 4.4 GB free (the rule is 10 GB) and the load average was 300 to 1000.
+- No screenshots, and no run on a phone by an agent.
+- The local web host was not run: the disk had 3.6 to 7.7 GB free (the rule is 10 GB).
 
 ## Build
 
@@ -95,11 +94,24 @@ The target of Exact is 100 ms from saving an edit to seeing it, on the web host 
 
 ## Numbers
 
-None measured. To record once the token exists: the time of each build (the `steps` of the status), the size of the
-IPA, the time from save to screen on the web host, and the time of a `push --watch`.
+Measured on 2026-11-17 with snapshot `exact-2026-11-14T0909Z`:
+
+| Build | Worker time | Wall time | Steps |
+|---|---|---|---|
+| First successful build | 33.7 s | 86 s with polling and the IPA | cache restore 4.3, cargo 12.8, swift 6.5, package 7.1 |
+| Rebuild with `base=<id>`, same code | 6.6 s | 11 s with upload and IPA | |
+| A build that fails in the bake | about 7.5 s | 10 to 20 s | free for the first 30 minutes a week |
+
+Not yet measured: the time from save to screen on the web host, and a `push --watch` update.
 
 ## Gaps found
 
+- Exact Build compiles with the newest snapshot of its catalog, and the catalog lags main: on 2026-11-17 it listed main
+  of 2026-11-14, and the build status said so in `sdk.note`. That snapshot refuses a Forma token name as a colour
+  (`background-color="surface.card"`), and has no `"section"` style for `formatDay` and no `"month-day"` style for
+  `formatDate` (`"medium"`, `"month-year"` and `"iso"` only). So the rows write the values of `app.forma` out, and a
+  date older than a week, in a message and in the list of chats, reads like "Nov 10, 2026". Name the tokens again
+  once `sdk.note` shows a newer snapshot.
 - Exact Build builds iOS only. The Mac app needs a Mac with Xcode and Rust (`bun exact.mjs mac`).
 - Its manual lists `widgets`, `activities`, `intents` and `alarms` as `extensions`. The notification service and the
   share extension are not named there, so whether the cloud build includes them is unverified.
