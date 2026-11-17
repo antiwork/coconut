@@ -49,6 +49,8 @@ struct ConversationView: View {
     @FocusState private var composerFocused: Bool
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.toggleBotDetails) private var toggleBotDetails
+    @Environment(\.showLiveActivity) private var showLiveActivity
+    @State private var liveOpen = false
     #if os(macOS)
     /// The height of the notice of the window above the composer (ChatWindowNotice).
     @State private var noticeHeight: CGFloat = 0
@@ -225,7 +227,10 @@ struct ConversationView: View {
                                     .id(message.kind == "decision" ? (message.decisionId ?? entry.id) : entry.id)
                             }
                             if let activity {
-                                BotStatusRow(bot: bot, activity: activity)
+                                BotStatusRow(bot: bot, activity: activity) {
+                                    // Next to the details of a Mac window, the live view takes their place.
+                                    if let showLiveActivity { showLiveActivity() } else { liveOpen = true }
+                                }
                                     .transition(.opacity.animation(BoardStyle.fade(reduceMotion: reduceMotion)))
                             }
                             // The row inset and this padding keep 12 points below the last row, and the space of
@@ -483,6 +488,7 @@ struct ConversationView: View {
                 #endif
                 // The Coconut chat has its bar: where Coconut runs, and the things that need this device.
                 .modifier(CoconutChatArea(bot: bot, top: Self.titleHeight + 4))
+                .sheet(isPresented: $liveOpen) { LiveActivitySheet(botId: botId) }
                 .confirmationDialog(StopCopy.title(executor: stop.item.map { executorName($0) } ?? bot.name),
                                     isPresented: $stop.isPresented, titleVisibility: .visible, presenting: stop.item) { task in
                     Button("Stop task", role: .destructive) { Task { await store.cancel(task) } }

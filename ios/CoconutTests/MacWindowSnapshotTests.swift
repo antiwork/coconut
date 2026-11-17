@@ -92,12 +92,66 @@ final class MacWindowSnapshotTests: XCTestCase {
         }
     }
 
+    /// The live view of a running turn next to its chat: the timeline, the files, a file of the turn, and the sheet
+    /// of a chat without a details column. The images of the film strip are the drawn pages of the preview data.
+    func testTheLiveActivityRenders() async throws {
+        let store = AppStore(demo: true)
+        let bot = try XCTUnwrap(store.bots.first { store.conversationActivity($0.id) != nil })
+        let task = try XCTUnwrap(store.liveTask(bot.id))
+        store.watchActivity(task.id)
+        await store.loadActivity(task.id)
+        let feed = try XCTUnwrap(store.turnActivity[task.id])
+        for image in feed.images { _ = await store.activityImage(taskId: task.id, image: image) }
+        func window(_ tab: LiveActivityPanel.Tab, dark: Bool = false) -> some View {
+            HStack(spacing: 0) {
+                MacSidebar(selection: .constant(.bot(bot.id))).frame(width: 260)
+                Divider()
+                NavigationStack { ConversationView(botId: bot.id).environment(\.showLiveActivity) {} }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                Divider()
+                VStack(spacing: 0) {
+                    HStack(spacing: BoardStyle.Space.xs) {
+                        ChipButton(title: "Details", selected: false) {}
+                        ChipButton(title: "Pages", selected: false) {}
+                        ChipButton(title: "Live", selected: true) {}
+                    }
+                    .frame(height: 34).padding(.horizontal, 12).padding(.top, 8)
+                    LiveActivityPanel(botId: bot.id, tab: tab)
+                }
+                .frame(width: 320)
+                .background(BoardStyle.paper)
+            }
+            .environment(store)
+            .frame(width: 1180, height: 760)
+            .background(.background)
+            .environment(\.colorScheme, dark ? .dark : .light)
+        }
+        let file = try XCTUnwrap(feed.recentFiles.first)
+        let shots: [(String, AnyView, NSSize, Bool)] = [
+            ("live", AnyView(window(.activity)), NSSize(width: 1180, height: 760), false),
+            ("live-files", AnyView(window(.files)), NSSize(width: 1180, height: 760), false),
+            ("live-dark", AnyView(window(.activity, dark: true)), NSSize(width: 1180, height: 760), true),
+            ("live-file", AnyView(ActivityFileView(route: ActivityFileRoute(taskId: task.id, path: file.path))
+                .environment(store).frame(width: 760, height: 560).background(.background)
+                .environment(\.colorScheme, .light)), NSSize(width: 760, height: 560), false),
+            ("live-sheet", AnyView(LiveActivitySheet(botId: bot.id).environment(store).background(.background)
+                .environment(\.colorScheme, .light)), NSSize(width: 420, height: 620), false),
+        ]
+        for (name, view, size, dark) in shots {
+            let data = try render(view, size: size, dark: dark)
+            XCTAssertGreaterThan(data.count, 20_000, name)
+            if let folder = ProcessInfo.processInfo.environment["COCONUT_WINDOW_SHOTS"] {
+                try data.write(to: URL(fileURLWithPath: folder).appendingPathComponent("window-\(name).png"))
+            }
+        }
+    }
+
     // A list is an AppKit table, which ImageRenderer does not draw. A window off the screen draws it.
-    private func render(_ view: some View, size: NSSize) throws -> Data {
+    private func render(_ view: some View, size: NSSize, dark: Bool = false) throws -> Data {
         let host = NSHostingView(rootView: view)
         host.frame = NSRect(origin: .zero, size: size)
         let window = NSWindow(contentRect: host.frame, styleMask: [.borderless], backing: .buffered, defer: false)
-        window.appearance = NSAppearance(named: .aqua)
+        window.appearance = NSAppearance(named: dark ? .darkAqua : .aqua)
         window.contentView = host
         window.setFrameOrigin(NSPoint(x: -10_000, y: -10_000))
         window.orderBack(nil)

@@ -19,6 +19,11 @@ once for each change of that revision (instructions_note_due).
 Cron runs. A cron run of the gateway in a bot's profile reports to a Coconut turn through the session hooks
 (cron.py).
 
+Live activity. `report_tool` (pre_tool_call) and `report_tool_result` (post_tool_call) report each tool call of a Coconut
+turn, so the chat shows what the agent does now, the files it touches and the images it sees
+(backend/coconut/turn_activity.py). Only short arguments without their secrets and small copies of images leave the
+gateway.
+
 Work. `save_todos` (post_tool_call) reports each todo list of a Coconut turn, and Coconut keeps it as the work of the
 task. An unfinished list continues in a later turn, as with the worker.
 
@@ -67,6 +72,7 @@ def register(ctx):
     ctx.register_hook('pre_tool_call', guard_tool)
     ctx.register_hook('pre_tool_call', report_tool)
     ctx.register_hook('post_tool_call', save_todos)
+    ctx.register_hook('post_tool_call', report_tool_result)
     ctx.register_hook('post_api_request', note_prompt_size)
     ctx.register_hook('on_session_reset', follow_new_session)
     if callable(getattr(ctx, 'register_middleware', None)):
@@ -142,40 +148,106 @@ def save_todos(tool_name='', result=None, **_):
     return None
 
 
-# The arguments that name what a tool call does: a command, a file, a query or a page. Only these reach the service, each
-# cut short, so a file that the model writes never travels with its phase.
-TOOL_DETAIL_KEYS = ('command', 'code', 'path', 'pattern', 'query', 'url', 'urls')
+# The arguments that name what a tool call does: a command, a file, a query, a page or an image. Only these reach the
+# service, each cut short and without its secrets, so a file that the model writes never travels with its phase.
+TOOL_DETAIL_KEYS = ('command', 'code', 'path', 'file_path', 'pattern', 'query', 'url', 'urls', 'image_url')
 TOOL_DETAIL_CHARS = 300
 
 
+def redacted(text) -> str:
+    """A text without the secrets that it names: the rules of Coconut (backend/coconut/turn_activity.py, redact),
+    then the rules of this Hermes."""
+    try:
+        from .tools import backend
+        text = backend('turn_activity').redact(text)
+    except Exception:
+        # Without the rules of Coconut, nothing of the text leaves the gateway.
+        return ''
+    try:
+        from agent.redact import redact_sensitive_text
+        text = redact_sensitive_text(text, force=True)
+    except Exception:
+        pass
+    return text if isinstance(text, str) else ''
+
+
 def tool_detail(args) -> dict:
-    """The short arguments of a tool call that say what it does."""
+    """The short arguments of a tool call that say what it does, without the secrets that they name."""
     detail = {}
     for key in TOOL_DETAIL_KEYS:
         value = (args or {}).get(key) if isinstance(args, dict) else None
         if isinstance(value, str):
-            detail[key] = value[:TOOL_DETAIL_CHARS]
+            detail[key] = redacted(value[:TOOL_DETAIL_CHARS])
         elif key == 'urls' and isinstance(value, list):
-            detail[key] = [url[:TOOL_DETAIL_CHARS] for url in value[:1] if isinstance(url, str)]
+            detail[key] = [redacted(url[:TOOL_DETAIL_CHARS]) for url in value[:1] if isinstance(url, str)]
     return detail
 
 
-def report_tool(tool_name='', args=None, **_):
-    """pre_tool_call: tell Coconut which tool the turn runs now, so the chat shows the command, file or query with its
-    own timer, as Codex and Claude Code do. It never blocks the call: the report goes on its own thread."""
-    holder, turn = _turn()
-    if turn is None or not tool_name or getattr(holder, '_bridge', None) is None:
-        return None
-    payload = {'turn_id': turn, 'kind': 'tool', 'tool': str(tool_name)[:80], 'args': tool_detail(args)}
-
+def _report(holder, payload, name):
+    """Send an event of a turn to the service on its own thread, so a tool call never waits for it."""
     def send():
         try:
-            holder._bridge.request('/v1/gateway/events', payload, 5)
+            if callable(payload):
+                holder._bridge.request('/v1/gateway/events', payload(), 10)
+            else:
+                holder._bridge.request('/v1/gateway/events', payload, 5)
         except Exception as error:
             LOG.debug('Coconut: the service did not take the tool of a turn (%s).', type(error).__name__)
 
     import threading
-    threading.Thread(target=send, name='coconut-tool-phase', daemon=True).start()
+    threading.Thread(target=send, name=name, daemon=True).start()
+
+
+def report_tool(tool_name='', args=None, tool_call_id='', **_):
+    """pre_tool_call: tell Coconut which tool the turn runs now, so the chat shows the command, file or query with its
+    own timer, as Codex and Claude Code do, and the live panel lists the call. It never blocks the call: the report
+    goes on its own thread. A call that guard_tool blocks does not run, so it gets no report."""
+    holder, turn = _turn()
+    if turn is None or not tool_name or getattr(holder, '_bridge', None) is None:
+        return None
+    try:
+        if guard_tool(tool_name=str(tool_name)) is not None:
+            return None
+    except Exception:
+        pass
+    _report(holder, {'turn_id': turn, 'kind': 'tool', 'tool': str(tool_name)[:80], 'args': tool_detail(args),
+                     'call_id': str(tool_call_id or '')[:120]}, 'coconut-tool-phase')
+    return None
+
+
+def report_tool_result(tool_name='', args=None, result=None, tool_call_id='', duration_ms=0, status=None,
+                       error_message=None, **_):
+    """post_tool_call: tell Coconut that a tool call ended, with its time and its state, and give it small copies of
+    the images that the call showed or made: a browser screenshot, an image of the vision tool, a generated image
+    (backend/coconut/turn_activity.py). The result of the call itself never leaves the gateway. The copies are made on
+    the thread of the report, after the call returned its result to the model."""
+    holder, turn = _turn()
+    if turn is None or not tool_name or getattr(holder, '_bridge', None) is None:
+        return None
+    payload = {'turn_id': turn, 'kind': 'tool_result', 'tool': str(tool_name)[:80], 'args': tool_detail(args),
+               'call_id': str(tool_call_id or '')[:120], 'status': 'error' if status == 'error' else 'ok',
+               'duration_ms': duration_ms if isinstance(duration_ms, (int, float)) else 0}
+    if status == 'error' and isinstance(error_message, str):
+        payload['error'] = redacted(error_message[:TOOL_DETAIL_CHARS])
+
+    def build():
+        try:
+            import base64
+            import os
+            from .tools import backend
+            activity = backend('turn_activity')
+            images = []
+            for path in activity.image_sources(tool_name, args, result):
+                copy = activity.thumbnail(path)
+                if copy:
+                    images.append({'name': os.path.basename(path), 'jpeg': base64.b64encode(copy).decode()})
+            if images:
+                payload['images'] = images
+        except Exception as error:
+            LOG.debug('Coconut: the images of a tool call were not read (%s).', type(error).__name__)
+        return payload
+
+    _report(holder, build, 'coconut-tool-result')
     return None
 
 

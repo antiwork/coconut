@@ -67,7 +67,7 @@ final class NativeDecisionFlowTests: XCTestCase {
         let scout = app.buttons["bot-conversation-00000000-0000-4000-8000-000000000002"]
         XCTAssertTrue(scout.waitForExistence(timeout: 10))
         // A working bot shows what it does now in place of its last message, like a typing notice.
-        XCTAssertTrue(scout.label.contains("Thinking it through"),
+        XCTAssertTrue(scout.label.contains("Running a command"),
                       "Chats must show the phase of a working bot instead of a generic status.")
         XCTAssertTrue(releases.exists)
 

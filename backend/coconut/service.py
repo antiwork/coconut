@@ -162,6 +162,7 @@ from .agent_chats import AgentChats
 from .gateway_chat import GatewayChat
 from .documents import SCHEMA as DOCUMENTS_SCHEMA, Documents
 from .team import SCHEMA as TEAM_SCHEMA, Team
+from .turn_activity import TurnActivity
 
 
 # The statements of Service._refresh_bot. Each needs an index and no sort. A test reads the plan of each one.
@@ -191,7 +192,7 @@ def marked(field):
     return f"json_type(data,'$.{field}') IN ('object','true')"
 
 
-class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness, WithdrawalCorrections, WorkRecovery, WorkSources, SilentResponses, TrackedWork, WorkStatus, WorkProgress, PullRequestReviews, DecisionInbox, BackgroundProcesses, NativeExecution, NativeRoutines, ApprovalUpdates, ParallelWorkUpdates, ServiceRestart, WorkspaceRecovery, WorktreeRetirement, SessionMaintenance, DatabaseMaintenance, TechnicalLane, HermesSetup, BotProfiles, AgentChats, GatewayChat, Documents, Team, Usage):
+class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness, WithdrawalCorrections, WorkRecovery, WorkSources, SilentResponses, TrackedWork, WorkStatus, WorkProgress, PullRequestReviews, DecisionInbox, BackgroundProcesses, NativeExecution, NativeRoutines, ApprovalUpdates, ParallelWorkUpdates, ServiceRestart, WorkspaceRecovery, WorktreeRetirement, SessionMaintenance, DatabaseMaintenance, TechnicalLane, HermesSetup, BotProfiles, AgentChats, GatewayChat, Documents, Team, Usage, TurnActivity):
     ACTIVE = {'queued', 'working', 'scheduled', 'needs_you', 'paused', 'waiting'}
     TABLES = ('bots', 'tasks', 'messages', 'decisions', 'artifacts', 'routines')
     BOT_CHANGE_LIMIT = 8
@@ -302,6 +303,8 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
         self._message_interaction = None
         self.stopping = threading.Event()
         self._init_gateway_chat()
+        self._init_turn_activity()
+        self.gateway_bridge.activity = self.record_activity
         self._init_team()
         self.generation = uid()
         self.restart_enabled = False
@@ -600,6 +603,8 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
             obj.pop('phase_detail', None)
             obj.pop('phase_started_at', None)
             obj.pop('turn_started_at', None)
+            # The live activity of the turn stays for some hours (turn_activity.py).
+            self.end_activity(obj['id'])
         if table == 'decisions' and obj.get('status') == 'pending':
             # The time of the newest revision of a card (decision_sources.source_change). Each write that raises the
             # revision sets it: a revision by the bot, a check or the person, an Undo, a restored card.

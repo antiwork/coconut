@@ -200,6 +200,12 @@ final class AppStore {
     @ObservationIgnored private var nativeSettingsPending = false
     @ObservationIgnored private var nativeSettingsRequiredCursor = 0
     var historyLoading: Set<String> = []
+    /// The live activity of the turns whose live panel is open, by task (LiveActivity.swift).
+    var turnActivity: [String: TurnActivity] = [:]
+    /// The open live panels of each task, and the tasks whose feed loads now: true when the feed changed meanwhile.
+    @ObservationIgnored private var activityWatchers: [String: Int] = [:]
+    @ObservationIgnored private var activityLoads: [String: Bool] = [:]
+    @ObservationIgnored let activityImages = NSCache<NSString, PlatformImage>()
     @ObservationIgnored private var snapshotEpoch = UUID()
     @ObservationIgnored private var snapshotRequest: (id: UUID, generation: UUID, epoch: UUID, client: APIClient, task: Task<StateSnapshot, Error>)?
 
@@ -1637,6 +1643,75 @@ final class AppStore {
         return try? await client.artifactContent(id: id)
     }
 
+    // MARK: Live activity
+
+    /// A live panel of a task opened. The store keeps the feed of the task fresh until each panel of it closed.
+    func watchActivity(_ taskId: String) {
+        activityWatchers[taskId, default: 0] += 1
+        Task { await loadActivity(taskId) }
+    }
+
+    func unwatchActivity(_ taskId: String) {
+        let count = (activityWatchers[taskId] ?? 1) - 1
+        activityWatchers[taskId] = count > 0 ? count : nil
+        if count <= 0 { turnActivity[taskId] = nil }
+    }
+
+    /// Reads the feed of a task from the Mac. One read runs for a task at a time: a change during a read starts
+    /// one more read after it, so a burst of tool calls costs two reads, not one for each call.
+    func loadActivity(_ taskId: String) async {
+        if isDemo {
+            if turnActivity[taskId] == nil {
+                let running = tasks.first { $0.id == taskId }?.isRunning == true
+                turnActivity[taskId] = running ? .preview(taskId: taskId) : .empty(taskId)
+            }
+            return
+        }
+        guard let client else { return }
+        if activityLoads[taskId] != nil {
+            activityLoads[taskId] = true
+            return
+        }
+        repeat {
+            activityLoads[taskId] = false
+            let feed: TurnActivity? = try? await client.request("tasks/\(taskId)/activity")
+            guard self.client === client, activityWatchers[taskId] != nil else { break }
+            if let feed, turnActivity[taskId]?.isReplaced(by: feed) ?? true { turnActivity[taskId] = feed }
+        } while activityLoads[taskId] == true
+        activityLoads[taskId] = nil
+    }
+
+    /// The updates carry no feed. They name the tasks whose feed changed, and an open live panel reads its feed
+    /// again. A reset skips the events between the cursors, so each open panel reads again.
+    private func reloadChangedActivity(_ page: StateUpdates) {
+        guard !activityWatchers.isEmpty else { return }
+        let changed = page.reset != nil ? Set(activityWatchers.keys)
+            : Set(page.activityChanged ?? []).intersection(activityWatchers.keys)
+        for taskId in changed { Task { await loadActivity(taskId) } }
+    }
+
+    /// An image of a feed. The bytes of an image never change, so the store keeps the decoded image.
+    func activityImage(taskId: String, image: ActivityImage) async -> PlatformImage? {
+        let key = (taskId + "/" + image.id) as NSString
+        if let kept = activityImages.object(forKey: key) { return kept }
+        if isDemo, let drawn = LiveActivityPreviewImage.image(image.id) {
+            activityImages.setObject(drawn, forKey: key)
+            return drawn
+        }
+        guard let client, let data = try? await client.activityImage(taskId: taskId, imageId: image.id),
+              let decoded = downsampledImage(data, largestSide: 1280) else { return nil }
+        let result = PlatformImage(decoded)
+        activityImages.setObject(result, forKey: key)
+        return result
+    }
+
+    /// The start of a text file that a turn touched, as it is on the Mac now.
+    func activityFilePreview(_ route: ActivityFileRoute) async throws -> ActivityFilePreview {
+        if isDemo { return .preview(path: route.path) }
+        guard let client else { throw ServiceError.configuration("Connect to your Mac to open this file.") }
+        return try await client.request(APIClient.activityFilePath(taskId: route.taskId, file: route.path))
+    }
+
     /// The bytes of a file of a message of a team chat, or nil without a paired Mac or for a file that is not there.
     func teamFileData(_ address: TeamFileAddress) async -> Data? {
         guard let client else { return nil }
@@ -3005,6 +3080,7 @@ final class AppStore {
                             self.refreshNativeSettings(using: client, force: page.settingsChanged == true || page.reset != nil)
                             self.reloadChangedDocuments(page)
                             self.reloadChangedTeam(page)
+                            self.reloadChangedActivity(page)
                             Task { await self.syncPushRegistration() }
                         }
                         self.scheduleDelivery()
@@ -3060,6 +3136,7 @@ final class AppStore {
                     refreshNativeSettings(using: client, force: page.settingsChanged == true || page.reset != nil)
                     reloadChangedDocuments(page)
                     reloadChangedTeam(page)
+                    reloadChangedActivity(page)
                     Task { await self.syncPushRegistration() }
                     return
                 }

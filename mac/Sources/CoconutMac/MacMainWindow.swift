@@ -22,9 +22,9 @@ enum MacSelection: Hashable {
     case team(TeamChatKey)
 }
 
-/// The tabs of the details next to a chat: the settings of the agent, and its pages.
+/// The tabs of the details next to a chat: the settings of the agent, its pages, and the live view of its turn.
 enum InspectorTab: Hashable {
-    case details, pages
+    case details, pages, live
 }
 
 /// The main window of the Mac client: the bots in a sidebar, the chat or the Inbox in the middle, and the details of the
@@ -249,6 +249,13 @@ struct MacMainWindow: View {
                         .id(botId)
                         // The bot's title over the chat shows and hides the details next to it.
                         .environment(\.toggleBotDetails) { withAnimation(.snappy) { inspectorShown.toggle() } }
+                        // The working line of the chat opens the live view of its turn in the details.
+                        .environment(\.showLiveActivity) {
+                            withAnimation(.snappy) {
+                                inspectorTab = .live
+                                inspectorShown = true
+                            }
+                        }
                         .navigationDestination(for: ConversationRoute.self) { route in
                             ConversationView(botId: route.botId, focusDecisionId: route.decisionId,
                                              focusMessageId: route.messageId, attachedWork: route.workContext)
@@ -597,8 +604,8 @@ private struct MacConnectionFooter: View {
     }
 }
 
-/// The details of an agent next to its chat: its settings, or its pages.
-private struct MacBotDetails: View {
+/// The details of an agent next to its chat: its settings, its pages, or the live view of its turn.
+struct MacBotDetails: View {
     let botId: String
     @Binding var tab: InspectorTab
 
@@ -609,6 +616,7 @@ private struct MacBotDetails: View {
             HStack(spacing: BoardStyle.Space.xs) {
                 tabButton("Details", .details)
                 tabButton("Pages", .pages)
+                tabButton("Live", .live)
             }
             .frame(height: 34)
             .padding(.horizontal, 12).padding(.top, 8)
@@ -618,6 +626,7 @@ private struct MacBotDetails: View {
                 // Each bot gets its own settings view. Leaving it saves its edits to that bot, so an unsaved edit
                 // never moves to the next bot.
                 switch tab {
+                case .live: LiveActivityPanel(botId: botId).id(botId)
                 case .details: BotSettingsView(botId: botId).id(botId)
                 case .pages:
                     LibraryView(botId: botId)
