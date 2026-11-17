@@ -1,9 +1,9 @@
 name: App Store
 
-# Prepares the App Store version of the iPhone app in App Store Connect, and sends it to App Review.
-# `status` only reads, and prints what a submission still needs. `prepare` writes the listing of app-store/ (the text and
-# the screenshots), the age rating, the price, the availability and the review details, and picks the build. `submit`
-# prepares, then sends the version to App Review. A person starts each run. Apple releases the app after approval.
+# Sends the App Store version of the iPhone app to App Review. `status` only reads App Store Connect: the listing, the
+# build, the age rating, the price, the availability, the review details and the submissions. `submit` gives the version
+# its build, keeps the app out of China mainland, and sends the version to App Review. A person starts each run. Apple
+# releases the app after approval. The listing itself (text, screenshots, review notes) lives in App Store Connect.
 #
 # The build must come from a TestFlight run with `public`: App Review does not take an internal-only build.
 # The logs of this repository are public, so scripts/appstore.py prints no personal data.
@@ -14,9 +14,9 @@ on:
   workflow_dispatch:
     inputs:
       action:
-        description: status reads, prepare writes the listing, submit also sends the version to App Review.
+        description: status reads App Store Connect, submit sends the version to App Review.
         type: choice
-        options: [status, prepare, submit]
+        options: [status, submit]
         default: status
       build:
         description: The build number. Empty picks the newest valid build that App Review takes.
