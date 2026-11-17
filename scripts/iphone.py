@@ -282,8 +282,9 @@ def testflight_notes(config: dict, build: int, previous: str | None, apply: bool
     return text
 
 
-def testflight(config: dict, skip_build: bool = False) -> None:
-    """Upload a build restricted to internal TestFlight testing."""
+def testflight(config: dict, skip_build: bool = False, public: bool = False) -> None:
+    """Upload a build for TestFlight. Without `public` it stays internal. With it, the build can also go to the public
+    TestFlight link and to App Review."""
     if config["team"] != "66LJACJ2U7" or config["bundle_id"] != BUNDLE_ID:
         raise SystemExit("TestFlight requires Coconut's Gumroad team and bundle ID.")
     app = ARCHIVE / "Products/Applications/Coconut.app"
@@ -299,13 +300,14 @@ def testflight(config: dict, skip_build: bool = False) -> None:
     TESTFLIGHT_OPTIONS.write_bytes(plistlib.dumps({
         "method": "app-store-connect", "destination": "upload", "teamID": config["team"],
         "signingStyle": "automatic", "manageAppVersionAndBuildNumber": False,
-        "testFlightInternalTestingOnly": True, "uploadSymbols": True,
+        "testFlightInternalTestingOnly": not public, "uploadSymbols": True,
     }))
     previous = config.get("testflight_uploaded_at")
     build_number = int(info["CFBundleVersion"])
     # Show the notes before the upload so a person can stop it, then write them once Apple lists the build.
     testflight_notes(config, build_number, previous, apply=False)
-    print("Uploading to internal TestFlight. Apple still controls processing and tester access.", flush=True)
+    audience = "TestFlight and the App Store" if public else "internal TestFlight"
+    print(f"Uploading to {audience}. Apple still controls processing and tester access.", flush=True)
     xcode(["-exportArchive", "-archivePath", str(ARCHIVE), "-exportOptionsPlist", str(TESTFLIGHT_OPTIONS),
            "-exportPath", str(BUILD / "testflight"), "-allowProvisioningUpdates"], "testflight.log")
     config["testflight_uploaded_build"] = str(info["CFBundleVersion"])
@@ -329,8 +331,10 @@ def main() -> None:
         command.add_argument("--skip-build", action="store_true", help="Retry installation of the current signed build.")
     commands.add_parser("archive")
     commands.add_parser("export")
-    beta = commands.add_parser("testflight", help="Upload a Release build for internal TestFlight testing only.")
+    beta = commands.add_parser("testflight", help="Upload a Release build for TestFlight.")
     beta.add_argument("--skip-build", action="store_true", help="Upload the existing Release archive.")
+    beta.add_argument("--public", action="store_true",
+                      help="Allow the build in the public TestFlight group and in App Review, not only internal testing.")
     args = parser.parse_args()
     try:
         if args.command == "doctor":
@@ -344,7 +348,7 @@ def main() -> None:
             elif args.command == "archive":
                 archive(load_config())
             elif args.command == "testflight":
-                testflight(load_config(), args.skip_build)
+                testflight(load_config(), args.skip_build, args.public)
             elif args.command == "export":
                 if not ARCHIVE.exists() or not EXPORT_OPTIONS.exists():
                     raise SystemExit("Create the local archive first: python3 scripts/iphone.py archive")

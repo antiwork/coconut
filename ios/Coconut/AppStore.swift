@@ -341,7 +341,14 @@ final class AppStore {
         }
     }
 
-    init(demo: Bool = ProcessInfo.processInfo.arguments.contains("--demo")) {
+    /// The demo that a person chose on the pairing screen: preview data on this device, with no Mac. It stays on until
+    /// the person leaves it. App Review uses it, because a reviewer has no Mac with Hermes.
+    static let demoKey = "coconut.demo"
+    static var launchesDemo: Bool {
+        ProcessInfo.processInfo.arguments.contains("--demo") || UserDefaults.standard.bool(forKey: demoKey)
+    }
+
+    init(demo: Bool = AppStore.launchesDemo) {
         isDemo = demo
         PhotoLoader.shared.macFile = { [weak self] id in await self?.macFileData(id: id) }
         PhotoLoader.shared.teamFile = { [weak self] address in await self?.teamFileData(address) }

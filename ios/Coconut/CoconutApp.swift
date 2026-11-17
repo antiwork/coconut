@@ -13,6 +13,13 @@ struct CoconutApp: App {
                 // The share extension lists the chats that the app wrote for it.
                 .modifier(ShareDirectoryPublisher())
                 .environment(store)
+                // A new store holds the demo or the paired Mac, and the home starts again on it.
+                .id(ObjectIdentifier(store))
+                .environment(\.setDemo) { on in
+                    UserDefaults.standard.set(on, forKey: AppStore.demoKey)
+                    store = AppStore(demo: on)
+                    store.start()
+                }
                 .tint(.primary)
                 .task { store.start() }
                 .onOpenURL { url in

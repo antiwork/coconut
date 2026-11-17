@@ -22,6 +22,7 @@ struct OnboardingView: View {
     @Environment(AppStore.self) private var store
     @Environment(\.dismiss) private var dismiss
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.setDemo) private var setDemo
     // The first run has no Close button, because Coconut shows nothing until it has a pairing.
     let firstRun: Bool
     @State private var phase = Phase.preparing
@@ -104,11 +105,21 @@ struct OnboardingView: View {
                 #endif
             }
             .scrollBounceBehavior(.basedOnSize)
-            Button("Need help?") { helpOpen = true }
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
-                .frame(minHeight: 44)
-                .accessibilityIdentifier("onboarding-help")
+            HStack(spacing: BoardStyle.Space.xl) {
+                Button("Need help?") { helpOpen = true }
+                    .accessibilityIdentifier("onboarding-help")
+                // No Mac yet: try Coconut with sample agents, chats and cards on this iPhone.
+                if let setDemo, !store.hasPairing {
+                    Button("Try the demo") {
+                        dismiss()
+                        setDemo(true)
+                    }
+                    .accessibilityIdentifier("onboarding-demo")
+                }
+            }
+            .font(.subheadline)
+            .foregroundStyle(.secondary)
+            .frame(minHeight: 44)
         }
         .padding(.horizontal, BoardStyle.Space.l)
         .padding(.bottom, BoardStyle.Space.s)
