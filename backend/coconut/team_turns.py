@@ -504,6 +504,8 @@ class TeamTurns:
                     written = self.team_store.entry(room, entry) is not None
                     gone = chat is not None and self.team_store.chat(room, chat) is None
                     person = self.team_store.member(room, direct) if direct else None
+                    # "@Name" of another member's agent in the reply names it, so that agent answers on its Mac.
+                    named = self._team_named_agents(room_row, text) if room_row and direct is None else []
                 if written:
                     if file is not None:
                         from .service_base import ServiceError
@@ -541,6 +543,8 @@ class TeamTurns:
                                             text, None, share, tries=3)
                     return SAID
                 fields = {'kind': 'message', 'text': text, 'bot': share}
+                if named:
+                    fields['mentions'] = named
                 if reply_to:
                     fields['reply_to'] = reply_to
                 if chat is not None:

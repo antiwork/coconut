@@ -1006,6 +1006,9 @@ class GatewayChat:
                 # The PR delivers this outcome, as with the worker's tool (work_status._link_pr_outcome).
                 artifact['work_id'] = arguments['work_id'].strip()
             return self.emit(task_id, 'artifact', artifact)
+        if tool == 'team_message':
+            # Another Mac's agent in a shared team chat (TeamMessages.team_agent_message).
+            return self.team_agent_message(task_id, arguments)
         if data.get('tool') == 'message_bot':
             target = require_text(arguments, 'bot', 200).strip()
             with self.lock:

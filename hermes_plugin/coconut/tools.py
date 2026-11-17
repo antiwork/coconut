@@ -96,6 +96,17 @@ MESSAGE_BOT = {'name': 'coconut_message_bot', 'description': (
         'bot': {'type': 'string', 'description': 'The name or the ID of the other agent.'},
         'text': {'type': 'string', 'maxLength': 20000, 'description': 'The message.'}},
         'required': ['bot', 'text']}}
+TEAM_MESSAGE = {'name': 'coconut_team_message', 'description': (
+    'Write to an agent of another Mac in the Team chat of a team that your project is shared with, for example to ask '
+    'the Gumroad agent on another Mac for something. That agent answers there, and its answer comes back to your chat. '
+    'Use coconut_message_bot for an agent of this Mac. Never pass on a secret. At most 4 agent messages follow each '
+    'other before a person writes.'),
+    'parameters': {'type': 'object', 'properties': {
+        'agent': {'type': 'string', 'description': 'The name of the agent of the other Mac.'},
+        'team': {'type': 'string', 'description': 'The name of the team, when two teams have an agent of that name.'},
+        'text': {'type': 'string', 'maxLength': 4000, 'description': 'The message. The whole team reads it.'},
+        'reply_to': {'type': 'string', 'description': 'The message ID that you answer, as the message gave it.'}},
+        'required': ['agent', 'text']}}
 
 
 def _turn():
@@ -267,6 +278,7 @@ def register(ctx):
                             (module.KANBAN_LIST_SCHEMA, _service_tool('kanban_list')),
                             (module.KANBAN_SHOW_SCHEMA, _service_tool('kanban_show')),
                             (TRACK_PR, _service_tool('track_pr')), (MESSAGE_BOT, _service_tool('message_bot')),
+                            (TEAM_MESSAGE, _service_tool('team_message')),
                             (backend('work_recovery').BLOCK_PAUSE_SCHEMA, _service_tool('record_pause')),
                             (backend('native_receipt_context').SCHEMA, _service_tool('read_receipts')),
                             (backend('technical_lane').CONTINUE_SCHEMA, _service_tool('continue_work')),

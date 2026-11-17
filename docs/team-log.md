@@ -749,6 +749,16 @@ A person names another person of the team with `@` in the chat, as the person na
 - The Mac app makes a banner for a quiet team or a muted chat when `mention_first` grows: a new mention arrived since the last list, also when a plain message came after it. A plain message makes a banner only when the switch of the team is on and its chat is not muted.
 - The `@` list of the app has the agents that a teammate can ask, then each other person of the team, without the Macs for a team only. The app lists the people only for a room with `mentioned`, because an older service does not notify a named person in a quiet team. A typed `@` name that an agent and a person share gives the agent. A tap gives the row that the person taps.
 
+#### Agents of different Macs
+
+Two agents of different Macs talk in the Team chat of a team that both are shared with, for example the Coconut agent of a person's Mac and the Gumroad agent of a Mac for a team only.
+
+- An agent of a person's Mac writes with the tool `coconut_team_message` (agent, optional team, text, optional `reply_to`). The message carries the agent's `bot` entry and names the other agent in `mentions` (`TeamMessages.team_agent_message`). Its entry ID comes from the turn and the text, so a repeat writes nothing twice.
+- An agent of a Mac for a team only names another member's agent with "@Name" in its reply, and the reply then has that agent in `mentions` (`_team_named_agents`).
+- On a Mac for a team only, such a message starts a turn by the rules of a trigger below.
+- On a person's Mac, a message of another member's agent that names an agent of this Mac, or answers its message, goes to `team_agent_mail` (`TeamStore._queue_agent_mail`). The sync then hands it to the agent's own chat as a new turn, quoted, with the team, the sender and the message ID to answer (`_team_deliver_mail`). The person wrote none of it, so it grants no approval.
+- At most 4 messages of agents in a row start a turn, on each Mac, and the tool refuses a fifth (`MAX_AGENT_CHAIN`, `agent_chain`). A message of a person ends the run, so two agents never answer each other forever.
+
 #### An agent answers
 
 An agent of a team-only Mac answers in the team chat when a person names it, and in a direct chat when a person writes to it there (see [The Mac for a team only](#the-mac-for-a-team-only)). An agent of a full Mac never does: it is the agent of its person, and only that person can ask it. `backend/coconut/team_turns.py` holds these rules. Only the team-only service sets `TeamStore.answers`, so a full Mac queues no trigger and starts no turn.
@@ -756,7 +766,7 @@ An agent of a team-only Mac answers in the team chat when a person names it, and
 Rules of a trigger. A `message` entry starts a turn of an agent of this Mac when each of these holds:
 
 1. This Mac sees the entry for the first time, and its `rev` is 1. An edit starts no turn, and neither does a read again of the same entry, also after a restart.
-2. The entry has no `bot`, its member is another member than this Mac, and that member is in the member list. The signature proves the member. No other field of the payload decides.
+2. Its member is another member than this Mac, and that member is in the member list. The signature proves the member. No other field of the payload decides. An entry with `bot`, a message of another Mac's agent, counts only while at most 4 messages of agents in a row end its chat (see [Agents of different Macs](#agents-of-different-macs)).
 3. The `at` of the relay is under one hour old. The history that a Mac reads after a join starts nothing.
 4. `mentions` has the entry ID of the `bot` entry of the agent, or `reply_to` names a message of that agent on this Mac. A Mac for a team only is no person, so a mention of it can only mean its agent: when `mentions` has the entry ID of the `member` entry of this Mac, the mention names the agent that answers in the room and has the name of the member. The Mac compares the names after Unicode normalization to NFC and without case. When no such agent exists, it names the only agent that answers in the room. With two or more answering agents and none with the name, it names no agent. With two or more answering agents that have the name, it names no agent too. A message that names the member and the agent starts one turn. A member row that a service of an older version kept, or an unsent message from before a correction, can still name the member.
 5. The agent is shared with the room, is not archived, and its chat is connected: `chat` is true in its record (`coconut team connect-chat`).

@@ -544,6 +544,10 @@ class TeamSync:
             # Only a team-only Mac queues triggers (TeamStore.answers). Its turn thread reads them after the commit.
             self.team_store.triggered.discard(room_id)
             self._team_turns_due()
+        if room_id in self.team_store.mailed:
+            # Only a person's Mac keeps messages of other Macs' agents (TeamStore._queue_agent_mail).
+            self.team_store.mailed.discard(room_id)
+            self._team_mail_due()
         # A direct chat has its own event: with the other member for a chat of two people, and with the team bot ID for
         # a chat with a bot.
         for member in sorted(member for room, member in self.team_store.directed if room == room_id):

@@ -130,6 +130,8 @@ CREATE INDEX IF NOT EXISTS team_names_member ON team_names (room, member, kind);
 CREATE TABLE IF NOT EXISTS team_reads (room TEXT PRIMARY KEY, first INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS team_triggers (number INTEGER PRIMARY KEY AUTOINCREMENT, room TEXT NOT NULL,
     bot TEXT NOT NULL, entry TEXT NOT NULL, started INTEGER NOT NULL DEFAULT 0, UNIQUE (room, bot, entry));
+CREATE TABLE IF NOT EXISTS team_agent_mail (number INTEGER PRIMARY KEY AUTOINCREMENT, room TEXT NOT NULL,
+    bot TEXT NOT NULL, entry TEXT NOT NULL, UNIQUE (room, bot, entry));
 CREATE TABLE IF NOT EXISTS team_directs (room TEXT NOT NULL, entry TEXT NOT NULL, first INTEGER NOT NULL,
     writer TEXT NOT NULL, member TEXT NOT NULL, text TEXT NOT NULL, reply_to TEXT, created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL, edited INTEGER NOT NULL, bot TEXT, page TEXT, PRIMARY KEY (room, entry));
@@ -172,7 +174,7 @@ INSERT OR IGNORE INTO team_names (room, entry, member, kind, name)
 TABLES = ('team_rooms', 'team_entries', 'team_members', 'team_pending', 'team_shares', 'team_page_shares',
           'team_page_entries', 'team_bots', 'team_pages', 'team_messages', 'team_names', 'team_reads', 'team_triggers',
           'team_directs', 'team_direct_reads', 'team_bot_direct_reads', 'team_direct_waits', 'team_removed',
-          'team_invites',
+          'team_invites', 'team_agent_mail',
           'team_erased', 'team_chats', 'team_chat_reads', 'team_chat_mutes', 'team_chat_pins', 'team_reactions', 'team_file_pieces', 'team_message_files',
           'team_file_drafts')
 # The table of the reactions and its index for the views. The store makes both in `migrate`, so a store of an older
@@ -322,6 +324,9 @@ MENTION_SQL = f'''SELECT MAX(m.first) FROM (SELECT room, first, member, bot, men
 TRIGGER_SECONDS = 3600
 # At most this many triggers wait for one bot in one room. A member can mention the bot again later.
 MAX_WAITING = 8
+# Agents of different Macs talk in a team chat. At most this many messages of agents in a row start a turn: after them,
+# a person must write before an agent answers an agent again, so two agents never answer each other forever.
+MAX_AGENT_CHAIN = 4
 TRIGGER_FIELDS = ('number', 'room', 'bot', 'entry', 'started')
 CHAT_FIELDS = ('entry', 'first', 'name', 'created_at')
 # The end date of a page as documents.end_time writes it.
@@ -918,6 +923,9 @@ class TeamStore:
         # rooms with a new trigger, and TeamSync wakes the turns. The clock is the wall clock, as the `at` of the relay.
         self.answers = False
         self.triggered: set[str] = set()
+        # On a person's Mac: the rooms with a new message of another Mac's agent for an agent of this Mac
+        # (_queue_agent_mail). TeamSync hands each to the agent's own chat.
+        self.mailed: set[str] = set()
         # The fresh messages of the other members, by room (_note_fresh). TeamSync gives them to the push code of a
         # person's Mac and empties the list. A team-only Mac has no push, and the list goes nowhere.
         self.fresh: dict[str, list[str]] = {}
@@ -1374,6 +1382,10 @@ class TeamStore:
         # A trigger is the first write of a message of another member that this Mac sees. A later write is an edit.
         if self.answers and existing is None and other and fields['kind'] == 'message' and fields['rev'] == 1 and shown:
             self._queue_triggers(room, entry, shown)
+        # On a person's Mac, a message of another Mac's agent for an agent of this Mac goes to that agent's own chat.
+        if (not self.answers and existing is None and other and fields['kind'] == 'message' and fields['rev'] == 1
+                and shown and shown['bot'] is not None):
+            self._queue_agent_mail(room, entry, shown)
         # The same holds for a direct message to a bot of this Mac. A message that waited for its key is history.
         if (self.answers and existing is None and other and fields['kind'] == 'direct' and fields['rev'] == 1
                 and opened.get('direct')):
@@ -2285,7 +2297,8 @@ class TeamStore:
     def _queue_triggers(self, room: dict, entry: dict, message: dict) -> None:
         """Queue a turn for each bot of this Mac that the message names or answers (docs/team-log.md, "An agent answers").
 
-        The message has no `bot`, is under TRIGGER_SECONDS old, and its member is in the member list. It names the
+        The message is under TRIGGER_SECONDS old, and its member is in the member list. A message of another Mac's
+        agent counts only while at most MAX_AGENT_CHAIN messages of agents in a row end its chat (agent_chain). It names the
         `bot` entry of a bot in `mentions`, or its `reply_to` is a message of that bot. A team-only Mac is no person, so
         a mention of its own `member` entry names a bot too: the one that `_meant_bot` finds. The bot is shared with the
         room, is not archived, and has its chat connected (`chat` of its record). The signature of the entry proves its
@@ -2293,7 +2306,9 @@ class TeamStore:
         message, with a log line and no text of the message.
         """
         room_id = room['room']
-        if message['bot'] is not None or self.clock() * 1000 - entry['at'] >= TRIGGER_SECONDS * 1000:
+        if self.clock() * 1000 - entry['at'] >= TRIGGER_SECONDS * 1000:
+            return
+        if message['bot'] is not None and self.agent_chain(room_id, message['chat']) > MAX_AGENT_CHAIN:
             return
         if self.member(room_id, entry['member']) is None:
             return
@@ -2309,6 +2324,44 @@ class TeamStore:
         for bot, share in answering:
             if share in message['mentions'] or share == answered or bot == meant:
                 self._queue(room_id, bot, entry['id'])
+
+    def agent_chain(self, room: str, chat: str | None) -> int:
+        """How many messages of agents in a row end the chat (None for the Team chat) since the last message of a
+        person, the newest message included."""
+        count = 0
+        for (bot,) in self.db.execute('SELECT bot FROM team_messages WHERE room=? AND chat IS ? ORDER BY first DESC '
+                                      'LIMIT ?', (room, chat, MAX_AGENT_CHAIN + 2)):
+            if bot is None:
+                break
+            count += 1
+        return count
+
+    def _queue_agent_mail(self, room: dict, entry: dict, message: dict) -> None:
+        """On a person's Mac: keep a message of another Mac's agent that names an agent of this Mac in `mentions`, or
+        that answers a message of it, for that agent's own chat. The agent must be shared with the room. The rules of
+        age, of the member list and of MAX_AGENT_CHAIN are those of a trigger (_queue_triggers)."""
+        room_id = room['room']
+        if self.clock() * 1000 - entry['at'] >= TRIGGER_SECONDS * 1000:
+            return
+        if self.agent_chain(room_id, message['chat']) > MAX_AGENT_CHAIN or self.member(room_id, entry['member']) is None:
+            return
+        answered = None
+        if message['reply_to']:
+            row = self.db.execute('SELECT bot FROM team_messages WHERE room=? AND entry=? AND member=? AND chat IS ?',
+                                  (room_id, message['reply_to'], room['member'], message['chat'])).fetchone()
+            answered = row[0] if row else None
+        for bot, share in self.shares(room_id).items():
+            if share in message['mentions'] or share == answered:
+                if self.db.execute('INSERT OR IGNORE INTO team_agent_mail (room, bot, entry) VALUES (?, ?, ?)',
+                                   (room_id, bot, entry['id'])).rowcount:
+                    self.mailed.add(room_id)
+
+    def agent_mail(self) -> list[dict]:
+        return [dict(zip(('number', 'room', 'bot', 'entry'), row)) for row in self.db.execute(
+            'SELECT number, room, bot, entry FROM team_agent_mail ORDER BY number')]
+
+    def drop_agent_mail(self, number: int) -> None:
+        self.db.execute('DELETE FROM team_agent_mail WHERE number=?', (number,))
 
     def _queue_direct_trigger(self, room: dict, entry: dict, direct: dict) -> None:
         """Queue a turn for the bot of this Mac that a direct message names (docs/team-log.md, "The Mac for a team
