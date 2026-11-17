@@ -453,6 +453,14 @@ struct ConversationView: View {
                     nearBottom = true
                     focusAfterPush = UUID()
                 }
+                // A forwarded message opens the chat with the message quoted in the composer (MessageForward).
+                .onChange(of: store.forwardedDrafts[botId], initial: true) { _, forwarded in
+                    guard let forwarded else { return }
+                    store.forwardedDrafts[botId] = nil
+                    messageDraft = messageDraft.isEmpty ? forwarded : messageDraft + "\n\n" + forwarded
+                    nearBottom = true
+                    focusAfterPush = UUID()
+                }
                 // A new chat opens with the cursor in its message field (AppStore.newChat).
                 .onChange(of: store.composerFocusRequest == botId, initial: true) { _, wanted in
                     guard wanted else { return }
@@ -742,6 +750,7 @@ struct MessageBubble: View {
     @Environment(AppStore.self) private var store
     @State private var editingOutgoing: OutgoingMessage?
     @State private var held = false
+    @State private var forwarding = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let message: Message
     var scrollToDecision: (String) -> Void = { _ in }
@@ -825,7 +834,7 @@ struct MessageBubble: View {
             .fullScreenCover(isPresented: $held) {
                 HeldMessageView(message: message, onReply: onReply.map { reply in { _ in reply() } }, copyTitle: "Copy",
                                 copy: { Pasteboard.copy(message.text) }, share: .text(message.text),
-                                trailing: isUser) { maxHeight in
+                                trailing: isUser, onForward: canForward ? { forwarding = true } : nil) { maxHeight in
                     HeldTextPreview(text: displayText, own: isUser, maxHeight: maxHeight)
                 }
             }
@@ -843,6 +852,7 @@ struct MessageBubble: View {
                     Button("Reply", systemImage: "arrowshape.turn.up.left") { onReply() }
                 }
                 Button("Copy", systemImage: "doc.on.doc") { Pasteboard.copy(message.text) }
+                if canForward { Button("Forward", systemImage: "arrowshape.turn.up.right") { forwarding = true } }
             }
             #endif
                 if !isUser && !message.streaming {
@@ -858,6 +868,7 @@ struct MessageBubble: View {
         .modifier(SwipeToReply(enabled: onReply != nil && store.messageReference(for: message) != nil) { onReply?() })
         .accessibilityElement(children: .contain)
         .accessibilityAction(named: "Copy") { Pasteboard.copy(message.text) }
+        .accessibilityAction(named: "Forward") { if canForward { forwarding = true } }
         .accessibilityActions {
             // VoiceOver gets the same Reply and reactions as the long-press menu, and only where that menu has them.
             if onReply != nil, store.messageReference(for: message) != nil {
@@ -870,9 +881,19 @@ struct MessageBubble: View {
                 }
             }
         }
-        .accessibilityLabel("\(isUser ? "You" : store.bots.first { $0.id == (message.senderBotId ?? message.botId) }?.name ?? "Deleted agent")")
+        .accessibilityLabel(speaker)
         .sheet(item: $editingOutgoing) { RejectedMessageEditor(outgoing: $0) }
+        .sheet(isPresented: $forwarding) { ForwardMessageSheet(message: message, fromBotId: message.chatBotId) }
     }
+
+    private var speaker: String {
+        if isUser { return "You" }
+        let id = message.senderBotId ?? message.botId
+        return store.bots.first { $0.id == id }?.name ?? "Deleted agent"
+    }
+
+    /// A message with text can be forwarded once it is complete.
+    private var canForward: Bool { !message.streaming && !displayText.isEmpty }
 }
 
 /// The reactions on a message. A tap removes one.

@@ -205,7 +205,7 @@ struct HeldTeamFile<Header: View>: View {
     }
 }
 
-/// A held message of a bot chat: its reactions above, the message, then Reply, Copy and Share. Text messages and photos
+/// A held message of a bot chat: its reactions above, the message, then Reply, Forward, Copy and Share. Text messages and photos
 /// share it.
 struct HeldMessageView<Preview: View>: View {
     typealias Share = HeldShare
@@ -219,6 +219,8 @@ struct HeldMessageView<Preview: View>: View {
     let share: Share?
     /// The person's own messages stay on the right, as in the chat.
     var trailing = false
+    /// Forward to another chat. Nil leaves it out, for example for a photo.
+    var onForward: (() -> Void)? = nil
     /// The message, at most the given height.
     @ViewBuilder let preview: (CGFloat) -> Preview
 
@@ -227,6 +229,7 @@ struct HeldMessageView<Preview: View>: View {
         let reactions = store.reactions(for: message)
         var actions: [HeldAction] = []
         if canReply { actions.append(HeldAction(title: "Reply", systemImage: "arrowshape.turn.up.left") { onReply?(message) }) }
+        if let onForward { actions.append(HeldAction(title: "Forward", systemImage: "arrowshape.turn.up.right", perform: onForward)) }
         actions.append(HeldAction(title: copyTitle, systemImage: copyTitle == "Copy link" ? "link" : "doc.on.doc", perform: copy))
         return HeldBubbleView(trailing: trailing, actions: actions, share: share) { close in
             if canReply {

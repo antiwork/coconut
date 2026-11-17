@@ -134,6 +134,8 @@ final class AppStore {
     @ObservationIgnored private var teamListVersion = 0
     /// A Library page that a chat quotes in its composer when it opens: "Ask the bot about this page". By bot ID.
     var pageQuotes: [String: MessageReference] = [:]
+    /// Forwarded messages that a chat puts into its composer when it opens (MessageForward). By bot ID.
+    var forwardedDrafts: [String: String] = [:]
     /// The new chat that puts the cursor in its message field when it opens (newChat). The chat takes it one time.
     var composerFocusRequest: String?
     /// A Library page that a direct chat with a team bot quotes in its composer when it opens: "Chat about this page".
