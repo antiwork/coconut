@@ -22,6 +22,8 @@ def seal(service, task):
     message.update(streaming=False, _interim=True)
     service._put('messages', message)
     service._event('message.updated', service._public(message), message['bot_id'], task['id'])
+    # An interim message is no unread reply (unread.py).
+    service._refresh_bot(message['bot_id'])
 
 
 def confirm(service, task, text):

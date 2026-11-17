@@ -27,6 +27,7 @@ from .native_conversation import reaction_only_turn
 from .profiles import HermesProfiles, ProfileError, profile_id
 from .state_sync import CONFIRMED_REQUESTS, READ_INDEXES, StateSync, index_exchange_audience
 from .commit_signal import CommitSignal
+from . import unread
 # service_base holds what the team-only service shares with this one. The names stay importable from here.
 from .service_base import (FULL_MODE, ServiceError, check_data_folder, encoded, now, open_store, release_data_folder,
                            require_text, take_data_folder, uid)
@@ -677,12 +678,17 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
             message['_hidden'] = True
             self._put('messages', message)
             return message
-        self._put('messages', message)
+        # A chat from before read marks gets its mark before the new message lands (unread.ensure_mark).
         bot = self._get('bots', display_bot_id)
+        unread.ensure_mark(self.db, bot)
+        self._put('messages', message)
         if not message.get('reaction_event'):
             bot['last_message'] = text[:160]
-        if role == 'assistant':
-            bot['unread_count'] += 1
+        if human_authored and role == 'user' and not decision_id and not message.get('reaction_event'):
+            # A person who writes in the chat has read it, as in Slack. An answer from the Inbox does not read it.
+            unread.mark_read(self.db, bot, message['id'])
+        elif role == 'assistant':
+            unread.recount(self.db, bot)
         self._put('bots', bot)
         self._event('message.created', self._public(message), display_bot_id, task_id)
         return message
@@ -876,7 +882,8 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
             states.add('failed')
         answering = self.db.execute(BOT_WORKING_CONTEXT, (bot_id,)).fetchone()
         status = 'working' if answering else next((s for s in ('needs_you', 'working', 'scheduled', 'failed') if s in states), 'idle')
-        if bot.get('status') != status:
+        # The count follows each change of the messages: an interim message, a final reply, a withdrawn one.
+        if unread.recount(self.db, bot) | (bot.get('status') != status):
             bot['status'] = status
             self._put('bots', bot)
         public = self._public(bot)
@@ -1413,6 +1420,7 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
         avatar = secrets.choice(('round', 'oval', 'wide', 'square', 'pointed', 'bean'))
         color = secrets.choice(('A85F32', 'C76552', 'B5913F', '64866A', '448A89', '6087B0', '9272B3', 'BF759B', 'D6C6A2', '858680'))
         bot = dict(id=uid(), session_id=uid(), name=require_text(data, 'name', 80), role=str(data.get('role', ''))[:160], avatar=str(data.get('avatar', f'coconut.{avatar}'))[:80], color=str(data.get('color', color))[:20], instructions=data.get('instructions', ''), notifications=True, status='idle', last_message='', unread_count=0, archived=False, pinned=data.get('pinned', False), created_at=now())
+        bot['last_read_message_id'] = None
         bot['profile_id'] = profile_id(bot)
         bot['model_override'] = None
         if profile is None:
@@ -1641,7 +1649,7 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
             if parts[3:] == ['profile', 'delete'] and method == 'POST':
                 return self._delete_profile_request(bot, data, callbacks, device)
             if parts[3:] == ['read'] and method == 'POST':
-                bot['unread_count'] = 0
+                unread.mark_read(self.db, bot)
                 self._put('bots', bot)
                 self._event('bot.read', {'id': bot['id']}, bot['id'])
                 return {'ok': True}
@@ -3508,13 +3516,11 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
                 "SELECT data FROM messages WHERE json_extract(data, '$.bot_id')=? "
                 "AND COALESCE(json_extract(data, '$._hidden'),0)=0 "
                 "AND COALESCE(json_extract(data, '$._deleted'),0)=0 ORDER BY rowid DESC", (bot['id'],))]
-            unread = [m['id'] for m in visible if m['role'] == 'assistant'][:bot['unread_count']]
-            if message['id'] in unread:
-                bot['unread_count'] -= 1
             bot['last_message'] = next((m['text'][:160] for m in visible
                 if m['id'] != message['id'] and not m.get('reaction_event')), '')
             message.update(_hidden=True, streaming=False)
             self._put('messages', message)
+            unread.recount(self.db, bot)
             self._put('bots', bot)
             self._event('message.updated', message, bot['id'], task_id)
 

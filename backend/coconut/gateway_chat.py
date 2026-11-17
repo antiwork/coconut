@@ -1340,8 +1340,8 @@ class GatewayChat:
         """Edit or delete a message outside a turn, and keep the bot's preview and unread count true. The caller holds
         the transaction.
 
-        The newest visible message that is not a reaction gives the preview (Service._message). The newest
-        `unread_count` visible replies of the bot are its unread replies, as in Service._withdraw_stream.
+        The newest visible message that is not a reaction gives the preview (Service._message). The refresh of the bot
+        counts its unread replies again (unread.py).
         """
         if message.get('_hidden'):
             return {'recorded': False, 'reason': 'The chat no longer shows this message.'}
@@ -1352,11 +1352,6 @@ class GatewayChat:
             "ORDER BY rowid DESC LIMIT 2", (bot['id'],))]
         newest = bool(previews) and previews[0]['id'] == message['id']
         if kind == 'delete' or not text.strip():
-            unread = {row[0] for row in self.db.execute(
-                f"SELECT id FROM messages WHERE {visible} AND json_extract(data,'$.role')='assistant' "
-                "ORDER BY rowid DESC LIMIT ?", (bot['id'], max(0, bot['unread_count'])))}
-            if message['id'] in unread:
-                bot['unread_count'] -= 1
             message['_hidden'] = True
             if newest:
                 bot['last_message'] = previews[1]['text'][:160] if len(previews) > 1 else ''

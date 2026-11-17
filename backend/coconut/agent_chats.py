@@ -55,7 +55,7 @@ class AgentChats:
         if row is None or row['state'] != 'active':
             raise ServiceError(409, 'This agent has no Hermes profile to chat with.')
         chat = dict(id=uid(), session_id=uid(), chat_of=agent['id'], chat_title='', notifications=agent.get('notifications', True),
-                    status='idle', last_message='', unread_count=0, archived=False, pinned=False, created_at=now())
+                    status='idle', last_message='', unread_count=0, last_read_message_id=None, archived=False, pinned=False, created_at=now())
         chat.update({field: agent[field] for field in SHARED if field in agent})
         chat['profile_id'] = chat['id']
         # The chat runs in the agent's profile. Hermes creates nothing, and no file is copied.

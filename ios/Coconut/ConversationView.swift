@@ -41,6 +41,9 @@ struct ConversationView: View {
     /// its rows and writes its labels again at once.
     @State private var dayReference = Date()
     @State private var pinnedDay = PinnedDay()
+    /// Slack's "New" line: the newest message that the person had read when this chat opened with unread replies. It
+    /// stays while the chat is open, so a reply that comes while the person reads does not move it.
+    @State private var unreadMark: UnreadMark?
     #if os(macOS)
     @State private var sentScroll = SentMessageScroll()
     /// The chat runs up under the toolbar of the window, where the title of the bot floats. The first message and the
@@ -172,6 +175,7 @@ struct ConversationView: View {
         let startsAtFirstRow = shown.lowerBound == 0
         // A new first row of the window makes a new list, so the list measures every row (see TranscriptWindow).
         let listId = window.isUsed && !shown.isEmpty ? entries[shown.lowerBound].id : nil
+        let newLineRow = unreadMark.flatMap { $0.botId == botId ? UnreadMark.firstNewRow(after: $0.messageId, in: entries) : nil }
         Group {
             if let bot {
                 ScrollViewReader { proxy in
@@ -214,6 +218,9 @@ struct ConversationView: View {
                                 VStack(spacing: 0) {
                                 if entry.startsDay, let date {
                                     DaySeparatorRow(date: date, now: dayReference, row: entry.id, pinned: pinnedDay)
+                                }
+                                if entry.id == newLineRow {
+                                    NewMessagesLine()
                                 }
                                 if entry.isExchange {
                                     BotExchangeRow(messages: entry.messages, botId: botId)
@@ -380,6 +387,10 @@ struct ConversationView: View {
                     }
                     .pinnedDayPill(pinnedDay, now: dayReference, below: Self.titleHeight)
                     .background(BoardStyle.paper)
+                    // The "New" line comes from the read mark before this read clears the count: onAppear runs before
+                    // the task below starts.
+                    .onAppear { if unreadMark?.botId != botId, let mark = UnreadMark(bot: bot) { unreadMark = mark } }
+                    .onChange(of: botId) { unreadMark = self.bot.flatMap(UnreadMark.init(bot:)) }
                     // The chat reads each reply that comes while it is open, not only the replies before it opened. Before,
                     // a chat that stayed open on a Mac counted each new reply as unread until the person left and came back.
                     .task(id: bot.unreadCount) { if bot.unreadCount > 0 { await store.markRead(bot) } }
@@ -633,6 +644,41 @@ private final class TranscriptCache {
             value = (messages, TranscriptEntry.grouped(messages, botId: botId, calendar: calendar))
         }
         return value
+    }
+}
+
+/// The read mark that a chat opened with: the newest message that the person had read. A chat without unread replies,
+/// or without a mark, has none.
+struct UnreadMark: Equatable {
+    let botId: String
+    let messageId: String
+
+    init?(bot: Bot) {
+        guard bot.unreadCount > 0, let read = bot.lastReadMessageId, !read.isEmpty else { return nil }
+        botId = bot.id
+        messageId = read
+    }
+
+    /// The row that the "New" line goes above: the first row after the row that holds the read message. A mark that
+    /// the loaded rows do not hold, or a mark in the last row, draws no line.
+    static func firstNewRow(after messageId: String, in entries: [TranscriptEntry]) -> String? {
+        guard let index = entries.firstIndex(where: { $0.messages.contains { $0.id == messageId } }),
+              entries.indices.contains(index + 1) else { return nil }
+        return entries[index + 1].id
+    }
+}
+
+/// Slack's line above the first message that came since the person last read the chat: a thin red rule and "New".
+struct NewMessagesLine: View {
+    var body: some View {
+        HStack(spacing: BoardStyle.Space.s) {
+            Rectangle().fill(Color.red).frame(height: 1)
+            Text("New").font(.caption.weight(.semibold)).foregroundStyle(Color.red)
+        }
+        .padding(.vertical, BoardStyle.Space.s)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("New messages")
+        .accessibilityIdentifier("new-messages-line")
     }
 }
 

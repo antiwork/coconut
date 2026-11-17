@@ -34,6 +34,8 @@ struct Bot: Codable, Identifiable, Equatable, Sendable {
     var chatOf: String? = nil
     /// The title of a further chat: the first message of the person. Empty before it.
     var chatTitle: String? = nil
+    /// The newest message that the person read in this chat. The chat draws its "New" line below it.
+    var lastReadMessageId: String? = nil
 }
 
 /// A bot that cannot run: its provider limit or error, and the source items that wait for it.
@@ -99,7 +101,7 @@ struct BotPatch: Encodable {
 extension Bot {
     enum CodingKeys: String, CodingKey {
         case id, sessionId, name, role, avatar, color, instructions, status
-        case lastMessage, unreadCount, archived, createdAt, memory, pinned, preferences, modelOverride, effectiveModel, modelError, notifications, approvalOverride, effectiveApproval, workerLimit, health, coconut, avatarImage, chatOf, chatTitle
+        case lastMessage, unreadCount, archived, createdAt, memory, pinned, preferences, modelOverride, effectiveModel, modelError, notifications, approvalOverride, effectiveApproval, workerLimit, health, coconut, avatarImage, chatOf, chatTitle, lastReadMessageId
     }
 
     init(from decoder: Decoder) throws {
@@ -131,6 +133,7 @@ extension Bot {
         avatarImage = try values.decodeIfPresent(String.self, forKey: .avatarImage)
         chatOf = try values.decodeIfPresent(String.self, forKey: .chatOf)
         chatTitle = try values.decodeIfPresent(String.self, forKey: .chatTitle)
+        lastReadMessageId = try values.decodeIfPresent(String.self, forKey: .lastReadMessageId)
     }
 }
 
