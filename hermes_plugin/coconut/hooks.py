@@ -73,6 +73,8 @@ def register(ctx):
     ctx.register_hook('pre_tool_call', report_tool)
     ctx.register_hook('post_tool_call', save_todos)
     ctx.register_hook('post_tool_call', report_tool_result)
+    ctx.register_hook('subagent_start', report_subagent_start)
+    ctx.register_hook('subagent_stop', report_subagent_stop)
     ctx.register_hook('post_api_request', note_prompt_size)
     ctx.register_hook('on_session_reset', follow_new_session)
     if callable(getattr(ctx, 'register_middleware', None)):
@@ -198,11 +200,56 @@ def _report(holder, payload, name):
     threading.Thread(target=send, name=name, daemon=True).start()
 
 
-def report_tool(tool_name='', args=None, tool_call_id='', **_):
+# The helpers (subagents) that run now, by the session of the helper: the holder, the turn and the ID of the helper.
+# A tool call of a helper runs on a thread that has no session context, so its session finds the turn.
+HELPERS: dict = {}
+
+
+def _owner(session_id=''):
+    """The holder, the turn and the helper ID of a tool call: a helper's call names its helper."""
+    child = HELPERS.get(str(session_id or ''))
+    if child is not None:
+        return child
+    holder, turn = _turn()
+    return holder, turn, ''
+
+
+def report_subagent_start(parent_session_id='', child_session_id=None, child_subagent_id=None, child_role=None,
+                          child_goal='', **_):
+    """subagent_start: tell Coconut that a helper of the turn started, with its goal, so the chat and the live view
+    list the running helpers."""
+    holder, turn = _turn()
+    helper = str(child_subagent_id or child_session_id or '')[:80]
+    if turn is None or not helper or getattr(holder, '_bridge', None) is None:
+        return None
+    if child_session_id:
+        HELPERS[str(child_session_id)] = (holder, turn, helper)
+    _report(holder, {'turn_id': turn, 'kind': 'subagent', 'state': 'start', 'subagent': helper,
+                     'goal': redacted(str(child_goal or ''))[:TOOL_DETAIL_CHARS], 'role': str(child_role or '')[:40]},
+            'coconut-subagent')
+    return None
+
+
+def report_subagent_stop(child_session_id=None, child_status=None, duration_ms=0, **_):
+    """subagent_stop: tell Coconut that a helper ended and how. Its summary stays in the gateway."""
+    child = HELPERS.pop(str(child_session_id or ''), None)
+    if child is None:
+        return None
+    holder, turn, helper = child
+    if getattr(holder, '_bridge', None) is None:
+        return None
+    _report(holder, {'turn_id': turn, 'kind': 'subagent', 'state': 'stop', 'subagent': helper,
+                     'status': str(child_status or 'ok')[:20],
+                     'duration_ms': duration_ms if isinstance(duration_ms, (int, float)) else 0}, 'coconut-subagent')
+    return None
+
+
+def report_tool(tool_name='', args=None, tool_call_id='', session_id='', **_):
     """pre_tool_call: tell Coconut which tool the turn runs now, so the chat shows the command, file or query with its
     own timer, as Codex and Claude Code do, and the live panel lists the call. It never blocks the call: the report
-    goes on its own thread. A call that guard_tool blocks does not run, so it gets no report."""
-    holder, turn = _turn()
+    goes on its own thread. A call that guard_tool blocks does not run, so it gets no report. The call of a helper
+    names the helper."""
+    holder, turn, helper = _owner(session_id)
     if turn is None or not tool_name or getattr(holder, '_bridge', None) is None:
         return None
     try:
@@ -210,18 +257,21 @@ def report_tool(tool_name='', args=None, tool_call_id='', **_):
             return None
     except Exception:
         pass
-    _report(holder, {'turn_id': turn, 'kind': 'tool', 'tool': str(tool_name)[:80], 'args': tool_detail(args),
-                     'call_id': str(tool_call_id or '')[:120]}, 'coconut-tool-phase')
+    payload = {'turn_id': turn, 'kind': 'tool', 'tool': str(tool_name)[:80], 'args': tool_detail(args),
+               'call_id': str(tool_call_id or '')[:120]}
+    if helper:
+        payload['subagent'] = helper
+    _report(holder, payload, 'coconut-tool-phase')
     return None
 
 
 def report_tool_result(tool_name='', args=None, result=None, tool_call_id='', duration_ms=0, status=None,
-                       error_message=None, **_):
+                       error_message=None, session_id='', **_):
     """post_tool_call: tell Coconut that a tool call ended, with its time and its state, and give it small copies of
     the images that the call showed or made: a browser screenshot, an image of the vision tool, a generated image
     (backend/coconut/turn_activity.py). The result of the call itself never leaves the gateway. The copies are made on
     the thread of the report, after the call returned its result to the model."""
-    holder, turn = _turn()
+    holder, turn, helper = _owner(session_id)
     if turn is None or not tool_name or getattr(holder, '_bridge', None) is None:
         return None
     payload = {'turn_id': turn, 'kind': 'tool_result', 'tool': str(tool_name)[:80], 'args': tool_detail(args),
@@ -229,6 +279,11 @@ def report_tool_result(tool_name='', args=None, result=None, tool_call_id='', du
                'duration_ms': duration_ms if isinstance(duration_ms, (int, float)) else 0}
     if status == 'error' and isinstance(error_message, str):
         payload['error'] = redacted(error_message[:TOOL_DETAIL_CHARS])
+    if helper:
+        # A helper shows its newest call only. It makes no image copies.
+        payload['subagent'] = helper
+        _report(holder, payload, 'coconut-tool-result')
+        return None
 
     def build():
         try:

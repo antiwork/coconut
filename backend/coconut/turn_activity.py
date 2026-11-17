@@ -7,6 +7,8 @@ which keeps one bounded feed for each task:
 - `entries`: the newest tool calls, each with its phase, one short line (the command, the file, the query or the page),
   its state and its time.
 - `files`: the files that the turn read or edited, newest last.
+- `subagents`: the helpers that `delegate_task` started in the turn: their goal, their state, their time, the tool call
+  that each runs now and how many calls each made. The tool calls of a helper never join `entries` of its parent.
 - `images`: small JPEG copies of the newest browser screenshots, vision images and generated images. The plugin makes
   each copy (`thumbnail`), so the service never opens an image of a tool.
 
@@ -36,6 +38,7 @@ import uuid
 ENTRIES = 80
 FILES = 40
 IMAGES = 12
+SUBAGENTS = 24
 # The longest line of an entry, and the longest path or address.
 LINE_CHARS = 240
 PATH_CHARS = 400
@@ -267,7 +270,8 @@ class ActivityFeeds:
                     'ended_at': stamp(feed['ended']) if feed.get('ended') else None,
                     'entries': [dict(entry) for entry in feed['entries']],
                     'files': [dict(row) for row in feed['files']],
-                    'images': [dict(image) for image in feed['images']]}
+                    'images': [dict(image) for image in feed['images']],
+                    'subagents': [dict(helper) for helper in feed.get('subagents', [])]}
 
     def image(self, task_id, image_id) -> bytes | None:
         """The JPEG of an image of a feed, or None."""
@@ -347,6 +351,69 @@ class ActivityFeeds:
             self._save(task_id, feed)
             return True
 
+    def helper_start(self, task_id, helper_id, goal='', role='') -> bool:
+        """A helper (subagent) of the turn starts."""
+        helper_id = str(helper_id or '')[:80]
+        if not TASK_ID.fullmatch(str(task_id or '')) or not helper_id:
+            return False
+        now = self.clock()
+        with self.lock:
+            feed = self._feed(task_id, create=True, now=now)
+            helpers = feed.setdefault('subagents', [])
+            if any(helper['id'] == helper_id for helper in helpers):
+                return False
+            helpers.append({'id': helper_id, 'goal': one_line(goal, 200), 'role': one_line(role, 40),
+                            'status': 'running', 'started_at': stamp(now), 'calls': 0})
+            del helpers[:-SUBAGENTS]
+            self._touch(task_id, feed, now)
+            return True
+
+    def helper_stop(self, task_id, helper_id, status='ok', duration_ms=None) -> bool:
+        """A helper of the turn ended."""
+        with self.lock:
+            feed = self._feed(task_id)
+            helper = self._helper(feed, helper_id)
+            if helper is None or helper['status'] != 'running':
+                return False
+            now = self.clock()
+            failed = str(status or '').lower() in ('failed', 'error', 'timeout', 'interrupted')
+            helper.update(status='error' if failed else 'ok', ended_at=stamp(now))
+            helper.pop('tool', None)
+            helper.pop('detail', None)
+            if isinstance(duration_ms, (int, float)) and not isinstance(duration_ms, bool) and duration_ms > 0:
+                helper['seconds'] = round(min(duration_ms, 86_400_000) / 1000, 1)
+            self._touch(task_id, feed, now)
+            return True
+
+    def helper_tool(self, task_id, helper_id, tool, args=None, running=True) -> bool:
+        """A tool call of a helper starts (`running`) or ends. The helper shows the newest call."""
+        with self.lock:
+            feed = self._feed(task_id)
+            helper = self._helper(feed, helper_id)
+            if helper is None or helper['status'] != 'running':
+                return False
+            now = self.clock()
+            if running:
+                info = describe(tool, args)
+                helper.update(tool=info['tool'], phase=info['phase'], detail=info.get('detail') or '',
+                              calls=helper.get('calls', 0) + 1)
+                if info.get('path'):
+                    helper['path'] = info['path']
+                else:
+                    helper.pop('path', None)
+            self._touch(task_id, feed, now)
+            return True
+
+    def _helper(self, feed, helper_id):
+        if feed is None or feed.get('ended'):
+            return None
+        return next((helper for helper in feed.get('subagents', []) if helper['id'] == str(helper_id or '')[:80]), None)
+
+    def _touch(self, task_id, feed, now):
+        feed['revision'] += 1
+        feed['changed'] = now
+        self._save(task_id, feed)
+
     def end(self, task_id) -> bool:
         """The turn of a task ended. Its feed stays for KEPT_SECONDS."""
         with self.lock:
@@ -358,6 +425,11 @@ class ActivityFeeds:
                 if entry['status'] == 'running':
                     # A call without a result, for example a call that the turn's end cut off.
                     entry['status'] = 'ok'
+            for helper in feed.get('subagents', []):
+                if helper['status'] == 'running':
+                    helper.update(status='ok', ended_at=stamp(now))
+                    helper.pop('tool', None)
+                    helper.pop('detail', None)
             feed.update(ended=now, changed=now, revision=feed['revision'] + 1)
             self._save(task_id, feed)
             return True
@@ -502,9 +574,18 @@ class TurnActivity:
     def record_activity(self, task_id, event) -> None:
         """Take a `tool` or a `tool_result` event of a running turn from the bridge."""
         import base64
+        if isinstance(event, dict) and event.get('kind') == 'subagent':
+            self._record_helper(task_id, event)
+            return
         if not isinstance(event, dict) or not isinstance(event.get('tool'), str) or not event['tool']:
             return
         call = event.get('call_id') if isinstance(event.get('call_id'), str) else ''
+        helper = event.get('subagent') if isinstance(event.get('subagent'), str) else ''
+        if helper:
+            # The tool call of a helper shows on the helper, not in the feed of its parent.
+            if self.activity.helper_tool(task_id, helper, event['tool'], event.get('args'), event.get('kind') == 'tool'):
+                self._activity_changed(task_id)
+            return
         if event.get('kind') == 'tool':
             changed = self.activity.start(task_id, call, event['tool'], event.get('args'))
         else:
@@ -520,6 +601,16 @@ class TurnActivity:
         if changed:
             self._activity_changed(task_id)
         self.activity.sweep()
+
+    def _record_helper(self, task_id, event) -> None:
+        """Take a `subagent` event: a helper of the turn started or ended."""
+        helper = event.get('subagent') if isinstance(event.get('subagent'), str) else ''
+        if event.get('state') == 'start':
+            changed = self.activity.helper_start(task_id, helper, str(event.get('goal') or ''), str(event.get('role') or ''))
+        else:
+            changed = self.activity.helper_stop(task_id, helper, event.get('status'), event.get('duration_ms'))
+        if changed:
+            self._activity_changed(task_id)
 
     def end_activity(self, task_id) -> None:
         """The turn of a task ended. `_put` calls this in its transaction, so the event joins it."""
@@ -545,7 +636,7 @@ class TurnActivity:
         """GET /v1/tasks/<task>/activity: the feed of the newest turn of a task. A task without a feed has an empty one."""
         self._activity_task(task_id)
         return self.activity.view(task_id) or {'task_id': task_id, 'revision': 0, 'started_at': None, 'ended_at': None,
-                                               'entries': [], 'files': [], 'images': []}
+                                               'entries': [], 'files': [], 'images': [], 'subagents': []}
 
     def activity_image(self, task_id: str, image_id: str) -> bytes:
         """GET /v1/tasks/<task>/activity/images/<image>: the JPEG copy of an image of the feed."""

@@ -64,7 +64,7 @@ MAX_TEXT = 200_000
 # The bridge drops it (event), so the turn goes on with its complete sends. Remove `delta` when no install has that plugin.
 # `tool` and `tool_result` are the start and the end of a tool call. Both go to the live activity of the turn
 # (turn_activity.py), and `tool` also sets the phase of the turn.
-KINDS = ('typing', 'send', 'edit', 'delete', 'question', 'done', 'delta', 'tool', 'tool_result')
+KINDS = ('typing', 'send', 'edit', 'delete', 'question', 'done', 'delta', 'tool', 'tool_result', 'subagent')
 QUESTION_KINDS = ('clarify', 'approval')
 
 # The chat of a turn (gateway_chat.run_gateway_chat). A turn of the bot's conversation runs in the bot's chat
@@ -290,7 +290,7 @@ class GatewayBridge:
             turn.seen, turn.shown = time.monotonic(), True
             if kind == 'delta':
                 return {'ok': True}
-            observed = turn.task_id if kind in ('tool', 'tool_result') and self.activity is not None else None
+            observed = turn.task_id if kind in ('tool', 'tool_result', 'subagent') and self.activity is not None else None
         if observed is not None:
             # Outside the lock of the bridge: the service writes the feed of the turn under its own locks.
             try:
@@ -298,7 +298,9 @@ class GatewayBridge:
             except Exception:
                 import logging
                 logging.getLogger(__name__).exception('The live activity of a turn did not take a tool call.')
-        if kind == 'tool_result':
+        if kind in ('tool_result', 'subagent') or data.get('subagent'):
+            # A helper and the tool calls of a helper show in the live activity only. They do not change the phase of
+            # the turn.
             return {'ok': True}
         with self.lock:
             if turn.state != 'active':
