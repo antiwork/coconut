@@ -63,6 +63,12 @@ struct MacMainWindow: View {
         }
     }
 
+    /// The chat that the window shows, for the deck of all chats: its card is the one in the middle.
+    private var currentChat: String? {
+        if case .bot(let id) = selection { return id }
+        return nil
+    }
+
     private var clientWindow: some View {
         Group {
             if store.hasPairing || store.isDemo {
@@ -98,6 +104,8 @@ struct MacMainWindow: View {
         .environment(\.showTeamChat) { chat in selection = .team(chat) }
         // The title of a Team chat opens the Team screen of its team over Profile, where the teams are.
         .environment(\.showTeamScreen) { room in go(.profile, pushing: [TeamScreenRoute(roomId: room)]) }
+        // The deck of all chats: a pinch on a chat, the menu of a chat and Command-Shift-\ show it.
+        .modifier(ChatDeckPresenter(current: currentChat) { selection = .bot($0) })
         // A banner or a share asks for a chat. The window shows it.
         .onChange(of: model.shownChat, initial: true) { _, chat in
             guard let chat else { return }
@@ -405,6 +413,7 @@ struct DetailColumnBottomInset: NSViewRepresentable {
 /// last message.
 struct MacSidebar: View {
     @Environment(AppStore.self) private var store
+    @Environment(\.showChatDeck) private var showChatDeck
     @Binding var selection: MacSelection?
     @State private var deleting: Bot?
     @AppStorage("sidebar-unreads-open") private var unreadsOpen = true
@@ -430,7 +439,10 @@ struct MacSidebar: View {
             // The Coconut chat: where the person changes Coconut. Coconut has no settings window for it.
             if let coconut = store.bots.coconutChat {
                 CoconutChatRow(bot: coconut).tag(MacSelection.bot(coconut.id))
-                    .contextMenu { NewChatButton(bot: coconut) { selection = .bot($0.id) } }
+                    .contextMenu {
+                        NewChatButton(bot: coconut) { selection = .bot($0.id) }
+                        Button("Show All Chats") { showDeck(from: coconut) }
+                    }
                 chatRows(of: coconut)
             }
             MacSidebarLabel(title: "Home", symbol: "house")
@@ -524,6 +536,11 @@ struct MacSidebar: View {
         if !bot.archived && !bot.isChat { chatRows(of: bot) }
     }
 
+    /// Shows the deck of all chats with the chat of a row in the middle. A card that the person opens shows in the window.
+    private func showDeck(from bot: Bot) {
+        showChatDeck?(ChatDeckRequest(start: bot.id, opened: nil) { selection = .bot($0) })
+    }
+
     /// The further chats of an agent, newest first: the title of each chat, set in under the name of the agent.
     private func chatRows(of agent: Bot) -> some View {
         ForEach(AgentChats.chats(of: agent.id, in: store.bots, latest: store.chatSummaries.newestActivity)) { chat in
@@ -545,6 +562,7 @@ struct MacSidebar: View {
             .contextMenu {
                 if !bot.archived {
                     NewChatButton(bot: bot) { selection = .bot($0.id) }
+                    Button("Show All Chats") { showDeck(from: bot) }
                     Divider()
                     if !bot.isChat {
                         Button(bot.pinned ? "Unstar" : "Star") { Task { await store.pinBot(bot, pinned: !bot.pinned) } }
