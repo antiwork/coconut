@@ -1446,6 +1446,18 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
         except (GoogleError, ValueError) as error:
             raise ServiceError(409, str(error)) from None
 
+    def _read_all(self) -> dict:
+        """Mark all as read (POST /v1/read), as Shift-Esc in Slack: each agent chat, also a muted or archived one, and
+        each chat of each team is read through its newest message. A card stays: it waits for an answer, not a read."""
+        for bot in self._all('bots'):
+            if bot.get('_deleted') or not bot.get('unread_count'):
+                continue
+            unread.mark_read(self.db, bot)
+            self._put('bots', bot)
+            self._event('bot.read', {'id': bot['id']}, bot['id'])
+        self.team_read_all()
+        return {'ok': True}
+
     def _write(self, method: str, parts: list[str], data: dict, device: str, callbacks: list) -> dict:
         if not isinstance(data, dict) or not parts or parts[0] != 'v1':
             raise ServiceError(400, 'Send a JSON object to a v1 route.')
@@ -1466,6 +1478,8 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
         if parts == ['v1', 'bots'] and method == 'POST':
             # Nobody creates a project: Coconut has three (bot_profiles.PROJECTS). An older app still asks.
             raise ServiceError(410, ONLY_PROJECTS)
+        if parts == ['v1', 'read'] and method == 'POST':
+            return self._read_all()
         if len(parts) >= 3 and parts[1] == 'bots':
             bot = self._get('bots', parts[2])
             if bot.get('_deleted'):

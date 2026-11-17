@@ -31,8 +31,8 @@ from . import team_keys
 from .team_alerts import alert_view, filter_fields
 from .team_pages import team_id, team_ids
 from .team_relay import MAX_NUMBER, number
-from .team_store import (ACTIVE, MAX_AGENT_CHAIN, MAX_MENTIONS, MAX_TEXT, MESSAGES_EVENT, entry_id, files_fields, preview_fields,
-                         preview_view, reaction_views, shown_text, unicode_text)
+from .team_store import (ACTIVE, BOT_DIRECTS_EVENT, DIRECTS_EVENT, MAX_AGENT_CHAIN, MAX_MENTIONS, MAX_TEXT, MESSAGES_EVENT,
+                         entry_id, files_fields, preview_fields, preview_view, reaction_views, shown_text, unicode_text)
 
 log = logging.getLogger(__name__)
 
@@ -255,6 +255,22 @@ class TeamMessages:
                 self._event(MESSAGES_EVENT, {'team': room_id})
             return {'room': room_id, 'read': self.team_store.read_position(room_id, chat),
                     'unread': self.team_store.unread(room_id, room['member'], chat)}
+
+    def team_read_all(self) -> None:
+        """Read each chat of each team through its newest message: the Team chat, each named chat, and each direct chat
+        with a person or a bot (Service._read_all). A position past every message stops at the newest message of the
+        chat. Each move tells the apps, as the read route of one chat does. The caller holds the service transaction."""
+        store = self.team_store
+        for room in store.rooms():
+            name = room['room']
+            moved = [store.mark_read(name, MAX_NUMBER, chat)
+                     for chat in [None] + [named['entry'] for named in store.chats(name)]]
+            if any(position is not None for position in moved):
+                self._event(MESSAGES_EVENT, {'team': name})
+            for row in store.direct_chats(name) + store.bot_direct_chats(name):
+                if store.mark_direct_read(name, row['member'], MAX_NUMBER, row['bot']) is not None:
+                    self._event(DIRECTS_EVENT if row['bot'] is None else BOT_DIRECTS_EVENT,
+                                {'team': name, **self._team_direct_key(name, row['member'], row['bot'])})
 
     # Steps
 

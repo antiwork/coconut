@@ -462,6 +462,7 @@ struct MacSidebar: View {
             MacSidebarLabel(title: "Home", symbol: "house")
                 .badge(HomeFeed.badge(store.homeUnread))
                 .tag(MacSelection.home)
+                .contextMenu { MarkAllReadButton() }
                 .accessibilityIdentifier("sidebar-home")
             MacSidebarLabel(title: "Live", symbol: "dot.radiowaves.left.and.right")
                 .badge(LiveFeed.agents(bots: store.bots, tasks: store.tasks).count)
@@ -493,8 +494,11 @@ struct MacSidebar: View {
                 }
             }
             if !sections.unread.isEmpty {
-                Section("Unread", isExpanded: $unreadsOpen) {
+                Section(isExpanded: $unreadsOpen) {
                     ForEach(sections.unread) { item in itemRow(item) }
+                } header: {
+                    // A right click on the header reads every chat, as Shift-Esc does.
+                    Text("Unread").contextMenu { MarkAllReadButton() }
                 }
             }
             if !sections.people.isEmpty {

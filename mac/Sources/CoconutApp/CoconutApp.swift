@@ -62,6 +62,8 @@ struct CoconutApp: App {
             CommandGroup(replacing: .newItem) { NewChatCommands(model: model) }
             // Show all chats, with Command-Shift-\ in the View menu.
             ChatDeckCommands()
+            // View > Mark all as read, with Shift-Esc as in Slack.
+            CommandGroup(after: .sidebar) { MarkAllReadCommand(model: model, store: store) }
         }
 
         MenuBarExtra {
@@ -101,6 +103,20 @@ struct NewChatCommands: View {
     private func show() {
         openWindow(id: "main")
         NSApp.activate(ignoringOtherApps: true)
+    }
+}
+
+/// View > Mark all as read, with the shortcut of Slack (Shift-Esc): every chat is read through its newest message
+/// (AppStore.markAllRead). A Mac for a team only has no chats of its own.
+struct MarkAllReadCommand: View {
+    @ObservedObject var model: AppModel
+    let store: AppStore
+
+    var body: some View {
+        if model.mode == .full {
+            Button("Mark all as read") { Task { await store.markAllRead() } }
+                .keyboardShortcut(.escape, modifiers: .shift)
+        }
     }
 }
 

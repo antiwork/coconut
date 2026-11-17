@@ -126,6 +126,14 @@ struct HomeLaunchView: View {
         .contentMargins(.bottom, BoardStyle.Space.xl, for: .scrollContent)
         .background(BoardStyle.paper)
         .navigationTitle("Chats")
+        .toolbar {
+            // One tap reads every chat, as Read All in Telegram. It shows while a chat has an unread count.
+            if rows.contains(where: { $0.unreadCount > 0 }) {
+                ToolbarItem(placement: .primaryAction) {
+                    MarkAllReadButton().accessibilityIdentifier("chats-mark-all-read")
+                }
+            }
+        }
         .refreshable { await store.reconnect() }
         // The message box under the list gives the keyboard back when the list moves.
         .scrollDismissesKeyboard(.interactively)

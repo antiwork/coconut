@@ -114,6 +114,32 @@ struct TeamRoom: Decodable, Identifiable, Equatable, Sendable {
     var unseenNotices: Int { noticeList.filter { $0.active && !$0.seen }.count }
     /// The notice that a chat of the team shows above its messages: the newest active Status or Deadline.
     var bannerNotice: WorkspaceNotice? { noticeList.first { $0.active && $0.kind.isBanner } }
+
+    /// The room with each of its chats read: what Mark all as read shows until the Mac sends the list again
+    /// (AppStore.markAllRead). A count that the Mac did not send stays nil, because nil means an older service
+    /// (hasChat, knowsPersonMentions). `mentionFirst` stays, so a list from before the read makes no banner of a mention.
+    var read: TeamRoom {
+        var room = self
+        room.unread = unread.map { _ in 0 }
+        room.mentioned = mentioned.map { _ in false }
+        room.chats = chats?.map { chat in
+            var chat = chat
+            chat.unread = chat.unread.map { _ in 0 }
+            chat.mentioned = chat.mentioned.map { _ in false }
+            return chat
+        }
+        room.directs = directs?.map { direct in
+            var direct = direct
+            direct.unread = direct.unread.map { _ in 0 }
+            return direct
+        }
+        room.botDirects = botDirects?.map { direct in
+            var direct = direct
+            direct.unread = direct.unread.map { _ in 0 }
+            return direct
+        }
+        return room
+    }
 }
 
 /// One notice of a team: what the whole team must know for a while. It stays on the board until it ends or its author

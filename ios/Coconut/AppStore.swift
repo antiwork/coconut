@@ -916,6 +916,24 @@ final class AppStore {
         }
     }
 
+    /// Mark all as read (POST /v1/read), as Shift-Esc in Slack: every agent chat and every chat of each team, through
+    /// its newest message. The counts go at once, and the Mac confirms them with its next update. A card stays: it waits
+    /// for an answer, not for a read.
+    func markAllRead() async {
+        let readBots = bots.map { bot in
+            var bot = bot
+            bot.unreadCount = 0
+            return bot
+        }
+        if readBots != bots { bots = readBots }
+        if let rooms = team?.rooms {
+            let readRooms = rooms.map(\.read)
+            if readRooms != rooms { team?.rooms = readRooms }
+        }
+        guard !isDemo else { return }
+        let _: Acknowledgement? = await write("read", payload: EmptyRequest(), as: Acknowledgement.self)
+    }
+
     @discardableResult
     func send(bot: Bot, text: String, mode: String = "auto", taskId: String? = nil, attachments: [String] = [], scheduledAt: String? = nil, mentionedBotIds: [String] = [], replyTo: MessageReference? = nil, workContext: WorkReference? = nil, workStatusOnly: Bool = false) async -> Bool {
         var text = text.trimmingCharacters(in: .whitespacesAndNewlines)

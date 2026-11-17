@@ -94,6 +94,15 @@ enum HomeFeed {
     }
 }
 
+/// Mark all as read (AppStore.markAllRead): one action and one label for Home, the Mac sidebar and the Chats list.
+struct MarkAllReadButton: View {
+    @Environment(AppStore.self) private var store
+
+    var body: some View {
+        Button("Mark all as read") { Task { await store.markAllRead() } }
+    }
+}
+
 extension AppStore {
     /// The rows of "Unread" on Home.
     var homeUnread: [HomeUnread] {
@@ -132,6 +141,12 @@ struct HomeView: View {
             liveSpend
             let cards = unread.filter { if case .card = $0 { true } else { false } }.count
             BoardSection("Unread", count: HomeFeed.badge(unread)) {
+                // Every chat at once, as Shift-Esc does. The cards stay.
+                if unread.count > cards {
+                    MarkAllReadButton()
+                        .help("Mark all as read (⇧⎋)")
+                        .accessibilityIdentifier("home-mark-all-read")
+                }
                 // The cards one after the other in their recommended order, as the Inbox showed them.
                 if cards > 0 {
                     Button(cards == 1 ? "Review 1 card" : "Review \(cards) cards") { open(.cards(nil)) }
