@@ -57,7 +57,8 @@ struct CoconutApp: App {
 
 /// The places of the tab bar of the iPhone. Home has the chats under what needs attention, and the page of an agent opens
 /// from the project menu of Home. The Mac sidebar has its own list.
-enum HomeTab: Hashable { case home, business, profile }
+/// The five tabs in their order: Finance, Support, To-dos, Chats and You.
+enum HomeTab: Hashable { case business, support, todos, home, profile }
 
 struct CoconutHome: View {
     @Environment(AppStore.self) private var store
@@ -74,69 +75,63 @@ struct CoconutHome: View {
     @State private var homePath = NavigationPath()
     @State private var cardsShown = false
     @State private var businessPath = NavigationPath()
+    @State private var supportPath = NavigationPath()
+    @State private var todosPath = NavigationPath()
     @State private var profilePath = NavigationPath()
-    @State private var keyboardVisible = false
-    @State private var conversationFooters: [HomeTab: Bool] = [:]
     @State private var teamJoin: TeamJoinRequest?
     @State private var shownTeamJoin: UUID?
 
-    /// What the conversation on top of the open stack says: nil when the page on top is not a conversation. A root has
-    /// no conversation, so a value that a closed conversation left behind never counts there.
-    private var conversationCanMinimize: Bool? { atRoot ? nil : conversationFooters[selectedTab] }
-
-    /// The cards that wait show alone on the stack of Home. They keep the tab bar, as a tab root does.
-    private var cardsOnTop: Bool { selectedTab == .home && cardsShown && homePath.count == 1 }
+    /// The cards that wait show alone on the stack of To-dos. They keep the tab bar, as a tab root does.
+    private var cardsOnTop: Bool { selectedTab == .todos && cardsShown && todosPath.count == 1 }
 
     private var activePath: NavigationPath {
         switch selectedTab {
         case .home: homePath
         case .business: businessPath
+        case .support: supportPath
+        case .todos: todosPath
         case .profile: profilePath
         }
     }
 
-    /// A tab root, with nothing pushed on its stack.
-    private var atRoot: Bool { activePath.isEmpty }
-
-    /// The tab bar always shows on a tab root and under the cards. A page pushed on a stack hides it, unless that page
-    /// is a conversation, which keeps it. The keyboard hides it on a pushed page only: a keyboard state that was left
-    /// behind must never take the bar from a root.
-    private var tabBarVisibility: Visibility {
-        if atRoot || cardsOnTop { return .automatic }
-        return keyboardVisible || conversationCanMinimize == nil ? .hidden : .automatic
-    }
-
-    /// The bar collapses to the icon of the open tab only while the person scrolls a conversation that is pushed. A
-    /// root never keeps a collapsed bar.
-    private var barMayCollapse: Bool { conversationCanMinimize == true && !keyboardVisible }
+    /// The tab bar shows on a tab root and under the cards only. A pushed page hides it, so an open chat has its
+    /// message box, with the model in it, at the bottom of the screen and no tab bar under it.
+    private var tabBarVisibility: Visibility { activePath.isEmpty || cardsOnTop ? .automatic : .hidden }
 
     var body: some View {
         // The tab bar shows filled symbols, as the system tab bars do.
         TabView(selection: $selectedTab) {
-            Tab(value: HomeTab.home) {
-                root(tab: .home, path: $homePath)
-            } label: {
-                Label { Text("Home") } icon: {
-                    Image(systemName: "house.fill")
-                }
-            }.badge(HomeFeed.badge(store.homeUnread) + store.shownTeamRooms.reduce(0) { $0 + $1.unseenNotices })
-                .accessibilityIdentifier("home-home")
             Tab(value: HomeTab.business) {
                 root(tab: .business, path: $businessPath)
             } label: {
-                Label { Text("Finance") } icon: {
-                    Image(systemName: "chart.xyaxis.line")
-                }
+                Label { Text("Finance") } icon: { Image(systemName: "chart.xyaxis.line") }
             }.accessibilityIdentifier("home-business")
+            Tab(value: HomeTab.support) {
+                root(tab: .support, path: $supportPath)
+            } label: {
+                Label { Text("Support") } icon: { Image(systemName: "lifepreserver.fill") }
+            }.accessibilityIdentifier("home-support")
+            Tab(value: HomeTab.todos) {
+                root(tab: .todos, path: $todosPath)
+            } label: {
+                Label { Text("To-dos") } icon: { Image(systemName: "checklist") }
+            }.badge(store.pendingCardCount)
+                .accessibilityIdentifier("home-todos")
+            Tab(value: HomeTab.home) {
+                root(tab: .home, path: $homePath)
+            } label: {
+                Label { Text("Chats") } icon: { Image(systemName: "bubble.left.and.bubble.right.fill") }
+            // The cards that wait count on To-dos, so this badge has the unread chats and notices only.
+            }.badge(HomeFeed.badge(HomeFeed.unread(bots: store.bots, latest: store.chatSummaries.newestActivity, rooms: store.shownTeamRooms,
+                                                   local: store.newestLocalMessages, decisions: [], answering: []))
+                    + store.shownTeamRooms.reduce(0) { $0 + $1.unseenNotices })
+                .accessibilityIdentifier("home-home")
             Tab(value: HomeTab.profile) {
                 root(tab: .profile, path: $profilePath)
             } label: {
-                Label { Text("Profile") } icon: {
-                    Image(systemName: "person.crop.circle.fill")
-                }
+                Label { Text("You") } icon: { Image(systemName: "person.crop.circle.fill") }
             }.accessibilityIdentifier("home-profile")
         }
-        .modifier(NativeTabCollapse(enabled: barMayCollapse))
         // A document card in a chat opens the page on the stack of Home over the page of its agent, so Back leads to the
         // agent that keeps it.
         .environment(\.openDocument) { id in
@@ -145,10 +140,8 @@ struct CoconutHome: View {
         }
         // A long press on a chat shows the deck of all chats (ChatDeck).
         .modifier(ChatDeckPresenter())
-        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { _ in keyboardVisible = true }
-        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in keyboardVisible = false }
         .onChange(of: selectedTab) { _, tab in
-            if previewedNotification?.decisionId != nil && tab != .home {
+            if previewedNotification?.decisionId != nil && tab != .home && tab != .todos {
                 PushNotifications.shared.target = nil
                 previewedNotification = nil
             }
@@ -187,8 +180,10 @@ struct CoconutHome: View {
         NavigationStack(path: path) {
             Group {
                 switch tab {
-                case .home: HomeLaunchView { open($0) }
+                case .home: HomeLaunchView { open($0, on: path) }
+                case .todos: HomeLaunchView(part: .todos) { open($0, on: path) }
                 case .business: BusinessHomeView()
+                case .support: BusinessReportView(key: "support")
                 case .profile: ProfileView()
                 }
             }
@@ -245,13 +240,6 @@ struct CoconutHome: View {
         }
         // On the stack itself, so that the pushed pages get it too.
         .environment(\.pushRoute) { route in path.wrappedValue.append(route) }
-        .onPreferenceChange(ConversationFooterPreference.self) { allowed in
-            conversationFooters[tab] = allowed
-        }
-        // A conversation that closed can leave its value behind. A stack with nothing pushed forgets it.
-        .onChange(of: path.wrappedValue.isEmpty) { _, empty in
-            if empty { conversationFooters[tab] = nil }
-        }
     }
 
     @ToolbarContentBuilder
@@ -345,7 +333,7 @@ struct CoconutHome: View {
         homePath.append(TeamChatRoute(chat: chat))
     }
 
-    /// Shows the cards that wait on the Home tab, with Home under them. The card with this ID comes first.
+    /// Shows the cards that wait on the To-dos tab, with the To-dos under them. The card with this ID comes first.
     private func showCards(_ decisionId: String?) {
         // A card opens in the chat of its agent, where its work is. Only "Review cards", or a card that the app does
         // not have yet, opens the list of cards.
@@ -357,22 +345,22 @@ struct CoconutHome: View {
             return
         }
         notificationDecisionId = decisionId
-        selectedTab = .home
-        homePath = NavigationPath([HomeDestination.inbox])
+        selectedTab = .todos
+        todosPath = NavigationPath([HomeDestination.inbox])
     }
 
-    /// Opens the place of a row of Home on the stack of Home, so Back leads to Home.
-    private func open(_ target: HomeTarget) {
+    /// Opens the place of a row of Chats or To-dos on the stack of its tab, so Back leads to that tab.
+    private func open(_ target: HomeTarget, on path: Binding<NavigationPath>) {
         switch target {
-        case .conversation(let route): homePath.append(route)
-        case .teamChat(let chat): homePath.append(TeamChatRoute(chat: chat))
+        case .conversation(let route): path.wrappedValue.append(route)
+        case .teamChat(let chat): path.wrappedValue.append(TeamChatRoute(chat: chat))
         case .cards(let decisionId): showCards(decisionId)
-        case .agent(let botId): homePath.append(AgentRoute(botId: botId))
-        case .agents: homePath.append(AgentListRoute())
+        case .agent(let botId): path.wrappedValue.append(AgentRoute(botId: botId))
+        case .agents: path.wrappedValue.append(AgentListRoute())
         case .connection:
             profilePath = NavigationPath([ProfileRoute.mac])
             selectedTab = .profile
-        case .notices(let room): homePath.append(NoticeBoardRoute(roomId: room))
+        case .notices(let room): path.wrappedValue.append(NoticeBoardRoute(roomId: room))
         }
     }
 
@@ -428,18 +416,6 @@ private struct RootBanners: View {
     }
 }
 
-private struct NativeTabCollapse: ViewModifier {
-    let enabled: Bool
-
-    func body(content: Content) -> some View {
-        if #available(iOS 26.0, *) {
-            content.tabBarMinimizeBehavior(enabled ? .onScrollUp : .never)
-        } else {
-            content
-        }
-    }
-}
-
 #if DEBUG && targetEnvironment(simulator)
 // The names of the tabs, so `--open profile` finds a tab by its name and stays right when the tabs change.
 extension HomeTab: CaseIterable {}
@@ -466,15 +442,17 @@ extension CoconutHome {
             switch tab {
             case .home: homePath = path
             case .business: businessPath = path
+            case .support: supportPath = path
+            case .todos: todosPath = path
             case .profile: profilePath = path
             }
             selectedTab = tab
         }
         switch place {
-        // Chats and agents are not tabs now: the chat list is Home, and an agent opens from its project menu.
+        // The chat list is the Chats tab, and an agent opens from its project menu.
         case "chats": show(.home)
         case "agents": show(.home, [AgentListRoute()])
-        case "cards": show(.home, [HomeDestination.inbox])
+        case "cards": show(.todos, [HomeDestination.inbox])
         case "chat": show(.home, [ConversationRoute(botId: agent)])
         case "coconut": show(.home, [ConversationRoute(botId: store.bots.coconutChat?.id ?? agent)])
         case "archived": show(.home, [ArchivedAgentsRoute()])

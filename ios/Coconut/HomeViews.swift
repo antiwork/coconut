@@ -1,8 +1,11 @@
 import SwiftUI
 
-/// Home on the iPhone, as the Codex app is one screen: what needs attention first, then every chat with its newest
-/// activity first, and the message box under the list (NewChatBar). The project menu of the box filters the chats.
+/// Two tabs of the iPhone. Chats has every chat with its newest activity first, and the message box under the list
+/// (NewChatBar), whose project menu filters the chats. To-dos has what asks for the person: the rules that breach,
+/// the cards that wait, and the tasks of the agents.
 struct HomeLaunchView: View {
+    enum Part { case chats, todos }
+    var part = Part.chats
     @Environment(AppStore.self) private var store
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @Environment(\.pushRoute) private var pushRoute
@@ -15,6 +18,34 @@ struct HomeLaunchView: View {
     @AppStorage(ChatProject.projectKey) private var chosenProject = ""
 
     var body: some View {
+        if part == .todos { todoList } else { chatList }
+    }
+
+    private var todoList: some View {
+        let todos = AgentTodos.make(artifacts: store.artifacts, bots: store.bots)
+        let cards = store.pendingCardCount
+        return List {
+            attention(cards: cards)
+            ForEach(todos) { item in todoRow(item).homeRow() }
+            if todos.isEmpty && cards == 0 {
+                Text("No to-dos.")
+                    .font(.subheadline).foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity).padding(.vertical, BoardStyle.Space.xxl)
+                    .accessibilityIdentifier("todos-empty")
+                    .homeRow()
+            }
+        }
+        .listStyle(.plain)
+        .scrollContentBackground(.hidden)
+        .environment(\.defaultMinListRowHeight, 0)
+        .contentMargins(.top, BoardStyle.Space.l, for: .scrollContent)
+        .contentMargins(.bottom, BoardStyle.Space.xl, for: .scrollContent)
+        .background(BoardStyle.paper)
+        .navigationTitle("To-dos")
+        .refreshable { await store.reconnect() }
+    }
+
+    private var chatList: some View {
         let project = ChatProject.effective(chosenProject, in: store.bots)
         // The store keeps the newest activity of each bot (ChatSummaries). The list sorts by it one time.
         // An agent keeps its place by the newest of its chats, which show under it.
@@ -41,16 +72,9 @@ struct HomeLaunchView: View {
         let conversations = ChatList.rows(filter, bots: rowBots, latest: filter == .unread ? ownLatest : latest,
                                           rooms: rooms, local: store.newestLocalMessages)
         let pinned = filter.showsPinned ? pinnedBots.filter { filter != .unread || $0.unreadCount > 0 } : []
-        let todos = filter.showsTodos
-            ? AgentTodos.make(artifacts: store.artifacts, bots: store.bots).filter { item in
-                project.isEmpty || store.bots.first { $0.id == item.botId }?.agentId == project
-            } : []
         let coconut = store.bots.coconutChat.flatMap { project.isEmpty || project == $0.id ? $0 : nil }
         // A list, not a stack, so that a row of an agent has the swipe of the system: swipe left to archive.
-        // The cards that wait for an answer, also the ones that do not wait long enough for Needs attention.
-        let cards = store.pendingCardCount
         return List {
-            attention(cards: cards)
             // The Coconut chat comes first: it is where the person changes Coconut.
             if let coconut, filter != .unread || coconut.unreadCount > 0 {
                 CoconutChatRow(bot: coconut)
@@ -61,13 +85,6 @@ struct HomeLaunchView: View {
                 if filter != .unread { chatRows(of: coconut, latest: ownLatest) }
             }
             chips(filter, rooms: rooms).homeRow(top: BoardStyle.Space.l)
-            if !todos.isEmpty {
-                Section {
-                    ForEach(todos) { item in todoRow(item).homeRow() }
-                } header: {
-                    Text("Tasks").font(.subheadline.weight(.semibold)).textCase(nil)
-                }
-            }
             if conversations.isEmpty && pinned.isEmpty && filter == .unread && (coconut?.unreadCount ?? 0) == 0 {
                 Text("No unread messages.")
                     .font(.subheadline).foregroundStyle(.secondary)
@@ -147,7 +164,7 @@ struct HomeLaunchView: View {
         .scrollDismissesKeyboard(.interactively)
     }
 
-    /// What asks for the person comes before the chats: the rules that breach now, then the cards that wait. Each row
+    /// What asks for the person comes first on To-dos: the rules that breach now, then the cards that wait. Each row
     /// draws nothing when there is nothing to show.
     @ViewBuilder
     private func attention(cards: Int) -> some View {

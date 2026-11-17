@@ -1673,8 +1673,6 @@ enum ChatFilter: String, CaseIterable, Identifiable, Sendable {
     /// The pinned chats of the teams show in "All" and "People", so "Agents" has none.
     var showsPinnedChats: Bool { self != .bots }
 
-    var showsTodos: Bool { self == .all || self == .bots }
-
     /// The rows of the list for this filter, in the order of the list.
     func items(_ items: [ChatListItem]) -> [ChatListItem] {
         switch self {

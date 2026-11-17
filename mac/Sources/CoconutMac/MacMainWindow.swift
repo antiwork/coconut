@@ -15,6 +15,8 @@ enum MacSelection: Hashable {
     case agents
     /// The overview of the business: the figures, the queues, the functions and their reports.
     case business
+    /// Support: the queues, the service levels and the resolutions.
+    case support
     /// The teams, their people and their notice boards. No row of the sidebar leads here: a notice notification does,
     /// and the boards also sit under Profile > Team.
     case people
@@ -260,6 +262,8 @@ struct MacMainWindow: View {
             placeStack { PeopleView(openTeamChat: { selection = .team($0) }).navigationTitle("People") }
         case .business:
             placeStack { BusinessHomeView().navigationTitle("Finance") }
+        case .support:
+            placeStack { BusinessReportView(key: "support") }
         case .profile:
             placeStack { ProfileView().navigationTitle("Profile") }
         case .document(let documentId):
@@ -459,6 +463,9 @@ struct MacSidebar: View {
             MacSidebarLabel(title: "Finance", symbol: "chart.xyaxis.line")
                 .tag(MacSelection.business)
                 .accessibilityIdentifier("sidebar-business")
+            MacSidebarLabel(title: "Support", symbol: "lifepreserver")
+                .tag(MacSelection.support)
+                .accessibilityIdentifier("sidebar-support")
             MacSidebarLabel(title: "Agents", symbol: "square.stack.3d.up")
                 .tag(MacSelection.agents)
                 .accessibilityIdentifier("sidebar-agents")

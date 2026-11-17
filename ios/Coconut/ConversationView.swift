@@ -27,8 +27,6 @@ struct ConversationView: View {
     @State private var userScrolling = false
     @State private var latestHidden = false
     @State private var rowHold = ConversationRowHold()
-    @State private var footerScroll = ConversationFooterScroll()
-    @State private var isVisible = false
     @State private var transcript = TranscriptCache()
     /// The rows that the list builds (see TranscriptWindow).
     @State private var window = TranscriptWindow()
@@ -283,13 +281,6 @@ struct ConversationView: View {
                     .onScrollGeometryChange(for: Bool.self) { ConversationFooterScroll.hiddenBelow(in: $0) > 32 } action: { _, hidden in
                         withAnimation(BoardStyle.fade(reduceMotion: reduceMotion)) { latestHidden = hidden }
                     }
-                    .onScrollGeometryChange(for: CGFloat.self) { ConversationFooterScroll.offset(in: $0) } action: { _, offset in
-                        // This runs on every frame of a scroll. A write of an unchanged value would still redraw the
-                        // whole chat on each frame, so only a change is written.
-                        var next = footerScroll
-                        next.scroll(to: offset)
-                        if next != footerScroll { footerScroll = next }
-                    }
                     .onScrollGeometryChange(for: [CGFloat].self) { [$0.contentOffset.y, $0.contentSize.height, $0.containerSize.height, $0.contentInsets.top + $0.contentInsets.bottom] } action: { old, new in
                         #if os(macOS)
                         // A mouse wheel, and some trackpad scrolls, report no scroll phase on the Mac, so userScrolling
@@ -310,7 +301,6 @@ struct ConversationView: View {
                         }
                     }
                     .onScrollPhaseChange { previous, phase, context in
-                        footerScroll.phaseChanged(phase, offset: ConversationFooterScroll.offset(in: context.geometry))
                         // A Mac reports no phase for a mouse wheel, a scroll bar or the keyboard. There the pinned day
                         // pill follows the scroll position.
                         #if !os(macOS)
@@ -344,7 +334,6 @@ struct ConversationView: View {
                     #if os(macOS)
                     // A sent message moves the chat one time, after the layout of its row.
                     .modifier(SentMessageMove(scroll: $sentScroll, follows: { nearBottom }) {
-                        footerScroll.reset()
                         proxy.scrollTo("conversation-bottom", anchor: .bottom)
                     })
                     #endif
@@ -353,10 +342,10 @@ struct ConversationView: View {
                     }
                     .onChange(of: activity != nil) { _, working in
                         if !working { Task { await store.loadChatUsage(botId) } }
-                        if nearBottom && !userScrolling && !sentWaits { footerScroll.reset(); proxy.scrollTo("conversation-bottom", anchor: .bottom) }
+                        if nearBottom && !userScrolling && !sentWaits { proxy.scrollTo("conversation-bottom", anchor: .bottom) }
                     }
                     .onChange(of: messages.last?.id) { _, _ in
-                        if nearBottom && !sentWaits { footerScroll.reset(); proxy.scrollTo("conversation-bottom", anchor: .bottom) }
+                        if nearBottom && !sentWaits { proxy.scrollTo("conversation-bottom", anchor: .bottom) }
                     }
                     .onChange(of: messages.last(where: { $0.role == "user" })?.id) { _, messageId in
                         guard let messageId, messages.last?.id == messageId else { return }
@@ -364,14 +353,13 @@ struct ConversationView: View {
                         if !sentWaits { proxy.scrollTo("conversation-bottom", anchor: .bottom) }
                     }
                     .onChange(of: messages.last?.text) { _, _ in
-                        if nearBottom && !userScrolling && !sentWaits { footerScroll.reset(); proxy.scrollTo("conversation-bottom", anchor: .bottom) }
+                        if nearBottom && !userScrolling && !sentWaits { proxy.scrollTo("conversation-bottom", anchor: .bottom) }
                     }
                     .overlay(alignment: .bottomTrailing) {
                         // Newer messages can be below the screen, for example when a focused card opens the chat.
                         if latestHidden {
                             Button {
                                 nearBottom = true
-                                footerScroll.reset()
                                 withAnimation(BoardStyle.fade(reduceMotion: reduceMotion)) {
                                     proxy.scrollTo("conversation-bottom", anchor: .bottom)
                                 }
@@ -434,7 +422,6 @@ struct ConversationView: View {
                             .fixedSize(horizontal: false, vertical: true)
                     }
                 }
-                .onAppear { isVisible = true; footerScroll.reset() }
                 #if os(macOS)
                 // A click on a chat in the sidebar puts the cursor in the message field, so the person can type at once.
                 // An iPhone keeps the keyboard closed: it would cover the latest messages.
@@ -446,7 +433,7 @@ struct ConversationView: View {
                 #endif
                 .onReceive(DaySeparator.changes) { _ in dayReference = Date() }
                 .task(id: botId) { await store.loadChatUsage(botId) }
-                .onDisappear { isVisible = false; composerFocused = false; footerScroll.reset() }
+                .onDisappear { composerFocused = false }
                 // "Ask the bot about this page" opens the chat with the page quoted in the composer.
                 .onChange(of: store.pageQuotes[botId], initial: true) { _, quote in
                     guard let quote else { return }
@@ -479,7 +466,6 @@ struct ConversationView: View {
                     focusAfterPush = nil
                     composerFocused = true
                 }
-                .onChange(of: composerFocused) { _, _ in footerScroll.reset() }
                 // The unsent text of each chat stays when the person leaves it.
                 .task(id: botId) { messageDraft = ComposerDrafts.read(botId) }
                 .onChange(of: messageDraft) { _, draft in ComposerDrafts.write(draft, chat: botId) }
@@ -558,8 +544,6 @@ struct ConversationView: View {
             }
         }
         .inlineNavigationTitle()
-        .preference(key: ConversationFooterPreference.self,
-                    value: isVisible ? (!composerFocused && footerScroll.allowsMinimization) : nil)
         #if os(macOS)
         // A pinch in on the chat shows the deck of all chats, as a pinch on a page of a browser shows its tabs.
         .modifier(ChatDeckPinch(chat: botId) { id in openChat?(id) })
