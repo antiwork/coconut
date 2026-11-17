@@ -494,9 +494,6 @@ extension CoconutHome {
         case "profile-mac": show(.profile, [ProfileRoute.mac])
         case "profile-notifications": show(.profile, [ProfileRoute.notifications])
         case "profile-connections": show(.profile, [ProfileRoute.connections])
-        case "profile-model": show(.profile, [ProfileRoute.model])
-        case "profile-access": show(.profile, [ProfileRoute.access])
-        case "profile-parallel": show(.profile, [ProfileRoute.parallelWork])
         case "profile-team": show(.profile, [ProfileRoute.team])
         default: break
         }

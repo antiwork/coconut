@@ -9,10 +9,10 @@ Coconut's queue for each agent is the Hermes kanban board. Build on it; do not i
 | Queue | Coconut's own Hermes kanban board at `~/Coconut/.runtime/host/kanban/kanban.db`, not `~/.hermes/kanban.db`. Read it with `HERMES_HOME=~/Coconut/.runtime/host/kanban hermes kanban show <task_id>` (also `list`, `stats`, `set-model`, `reclaim`, `comment`); without that `HERMES_HOME`, `hermes kanban` reads an empty default board and reports "no such task" |
 | Dispatch | Coconut's service dispatches kanban tasks (`kanban_runtime.py`, `service._dispatch_pending_locked`). The person's turn always goes first and never waits for a slot (`work_capacity.person_turn`) |
 | One turn per chat | An agent's chat runs one turn at a time; work sessions run in their own chats |
-| Total limit | Coconut setting "Parallel work" (`work_capacity`, `PUT /v1/settings/work-capacity`). Automatic = `max(1, min(10, cpus//2, (GB-4)//2))`; 4 on an 8-core 16 GB Mac |
+| Total limit | None. Every agent works at once; Hermes holds new work only under critical memory pressure |
 | Helpers per task | Hermes `delegation.max_concurrent_children` per profile (`parallel_work.py`). The Coconut global value does not reach profiles that inherit it |
-| Per-agent cap | Hermes has `kanban.max_in_progress_per_profile` and board-wide `kanban.max_in_progress`; Coconut does not expose them yet |
-| iPhone UI | `ios/Coconut/ProfileView.swift` (Parallel work row), `ParallelWorkSettingsView` |
+| Per-agent cap | Hermes `kanban.max_in_progress_per_profile` of the board home (`PUT /v1/settings/agent-limit`). Automatic is 2 |
+| Where to change | No screen. The Coconut chat changes both limits with `coconut_settings` (`work_sessions_per_agent`, `helpers_per_task`) |
 
 Hermes kanban docs: https://hermes-agent.nousresearch.com/docs/user-guide/features/kanban (concurrency config, workspaces, dispatcher). `hermes kanban diagnostics` shows the dispatch allowlist.
 
@@ -41,4 +41,4 @@ Do not run broad `find ~` searches for it; they time out.
 
 ## Realistic limits
 
-Size from the Mac, not from wishes: total = Coconut automatic limit; per agent = 2 (chat plus one work session) so several agents always progress; helpers per task = 2 keeps the process count near total × (1 + helpers). Model rate limits, not the Mac, are the next ceiling. Cloud runners would not count against the Mac total.
+There is no total limit. Per agent = 2 (chat plus one work session) so several agents always progress; helpers per task = 2 keeps the process count near total × (1 + helpers). Model rate limits, not the Mac, are the next ceiling. Cloud runners would not count against the Mac total.

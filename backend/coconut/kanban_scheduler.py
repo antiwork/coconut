@@ -350,7 +350,7 @@ class NativeKanban(NativeOutcomes):
                     created_at=source.get('created_at', task.get('created_at', '')))
 
     def _dispatch_kanban(self):
-        from .work_capacity import chat_turn, execution_key
+        from .work_capacity import execution_key
         self._kanban_pass_started = time.monotonic()
         if self.restart_pending or self.stopping.is_set():
             # Finish committed turns, but neither adopt work nor claim/start any
@@ -364,7 +364,6 @@ class NativeKanban(NativeOutcomes):
         self._drain_returns()
         # Read committed claims first. A lost adapter response cannot create another turn.
         self.kanban.call({'op': 'snapshot'})
-        self._migrate_work_capacity()
         with self.transaction():
             self._migrate_native_work()
         self._adopt_native_outcomes()
@@ -377,17 +376,13 @@ class NativeKanban(NativeOutcomes):
             self.running = {k: v for k, v in self.running.items() if v.is_alive()}
             self.context_threads = {k: v for k, v in self.context_threads.items() if v.is_alive()}
             self._dispatch_status_request()
-            capacity = self._work_limits()['total']['effective_limit']
-            self._dispatch_chat(capacity)
+            self._dispatch_chat()
             rows = self._kanban_rows()
             by_id = {r['id']: r for r in rows}
             # Only a ready row can spawn. Read the contexts of those rows by ID, not the whole table.
             contexts = {row[0]: json.loads(row[1]) for row in self.db.execute(
                 'SELECT id, data FROM contexts WHERE id IN (SELECT value FROM json_each(?))',
                 (json.dumps([row['id'] for row in rows if row['state'] == 'ready']),))}
-            foreground = sum(bool(chat_turn(self._get('tasks', i)) or
-                self._get('tasks', i).get('_work_status_only')) for i in self.running)
-            capacity = max(0, capacity - max(0, foreground - 1))
             # READY continuation must not change input between row capture and
             # native claim/spawn. Never wait for the adapter under the service lock.
             self._kanban_claiming += 1
@@ -418,7 +413,7 @@ class NativeKanban(NativeOutcomes):
                 self._put(table, item)
             return pid
         try:
-            self.kanban.call({'op': 'tick', 'rows': rows, 'capacity': capacity}, spawn)
+            self.kanban.call({'op': 'tick', 'rows': rows}, spawn)
             self._reconcile_kanban()
             self._note_respawn_guards()
             with self.lock:

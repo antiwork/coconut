@@ -1182,8 +1182,8 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
             return self.google_connection(path.rsplit('/', 1)[1], data, device_id, key)
         if method == 'PUT' and path == '/v1/settings/fallback' and hasattr(self.provider, 'native_settings'):
             return self.mutate_native_fallback(data, key, fingerprint)
-        if method == 'PUT' and path in ('/v1/settings/work-capacity', '/v1/settings/agent-limit') and self.kanban is not None:
-            return self.mutate_board_limit('total' if path.endswith('capacity') else 'per_agent', data, key, fingerprint)
+        if method == 'PUT' and path == '/v1/settings/agent-limit' and self.kanban is not None:
+            return self.mutate_board_limit('per_agent', data, key, fingerprint)
         if method == 'PUT' and path == '/v1/settings/parallel-work' and hasattr(self.provider, 'native_settings'):
             return self.mutate_parallel_work(data, key, fingerprint)
         if method == 'PUT' and path == '/v1/settings/approvals' and hasattr(self.provider, 'native_settings'):
@@ -1509,20 +1509,6 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
     def _write(self, method: str, parts: list[str], data: dict, device: str, callbacks: list) -> dict:
         if not isinstance(data, dict) or not parts or parts[0] != 'v1':
             raise ServiceError(400, 'Send a JSON object to a v1 route.')
-        if parts == ['v1', 'settings', 'work-capacity'] and method == 'PUT':
-            # Fixture mode has no Hermes board (mutate_board_limit), so Coconut keeps this total.
-            from .work_limits import board_limits, validate_limit
-            if set(data) != {'limit'}:
-                raise ServiceError(400, 'Specify a work limit, or null for Automatic.')
-            try:
-                validate_limit(data['limit'])
-            except ValueError as error:
-                raise ServiceError(400, str(error)) from None
-            self.db.execute('INSERT INTO settings VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value',
-                            ('work_capacity', encoded(data['limit'])))
-            result = board_limits({'kanban': {'max_in_progress': data['limit']}})['total']
-            self._event('settings.updated', {'work_capacity': result})
-            return result
         if parts == ['v1', 'device', 'push', 'previews'] and method == 'PUT':
             return self.push.previews(device, data)
         if parts == ['v1', 'device', 'push']:
@@ -3275,7 +3261,7 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
         self.running = {k: v for k, v in self.running.items() if v.is_alive()}
         self.context_threads = {k: v for k, v in self.context_threads.items() if v.is_alive()}
         self._dispatch_status_request()
-        self._dispatch_chat(self._work_limits()['total']['effective_limit'])
+        self._dispatch_chat()
 
     def _dispatch_conversations(self):
         while not self.stopping.is_set():
@@ -3322,12 +3308,10 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
             self._cancel_stale_decision_refreshes()
             self.running = {k: v for k, v in self.running.items() if v.is_alive()}
             self.context_threads = {k: v for k, v in self.context_threads.items() if v.is_alive()}
-            capacity = self._work_limits()['total']['effective_limit']
             active = {execution_key(self._get('tasks', identity)) for identity in self.running}
             active.update(execution_key(self._get('tasks', self._get('contexts', identity)['task_id']))
                           for identity in self.context_threads)
             status_running = sum(bool(self._get('tasks', identity).get('_work_status_only')) for identity in self.running)
-            slots = len(self.running) - status_running + len(self.context_threads)
             refresh_active = any(self._get('contexts', identity).get('_decision_refresh') for identity in self.context_threads)
             for context in self._all('contexts'):
                 task = self._get('tasks', context['task_id'])
@@ -3338,12 +3322,11 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
                     continue
                 self._ensure_execution_session(task)
                 key = execution_key(task)
-                if slots >= capacity or key in active:
+                if key in active:
                     continue
                 self._start_context(context['id'])
                 refresh_active = refresh_active or bool(context.get('_decision_refresh'))
                 active.add(key)
-                slots += 1
             for task in self._dispatch_order(self._all('tasks')):
                 bot = self._get('bots', task['bot_id'])
                 if bot['archived'] or bot.get('_deleted') or task['id'] in self.running:
@@ -3353,15 +3336,13 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
                 self._ensure_execution_session(task)
                 key = execution_key(task)
                 status_only = task.get('_work_status_only')
-                if key in active or (status_running >= 1 if status_only else slots >= capacity):
+                if key in active or status_only and status_running >= 1:
                     continue
                 worker = threading.Thread(target=self._run_task, args=(task['id'],), daemon=True, name=f'task-{task["id"][:8]}')
                 self.running[task['id']] = worker
                 active.add(key)
                 if status_only:
                     status_running += 1
-                else:
-                    slots += 1
                 worker.start()
             self.changed.wait(.2)
 

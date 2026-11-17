@@ -19,6 +19,8 @@ OLD_NAMES = ('Hermes', '')
 MODES = ('local', 'cloud')
 CLOUD_SOON = ('Cloud, the hosted upstream Coconut, is coming soon. This Coconut runs locally on this Mac, and its '
               'agents, pages and history stay here.')
+# The limits of parallel work have no screen. The chat changes them through the routes of the service.
+LIMIT_ROUTES = {'work_sessions_per_agent': '/v1/settings/agent-limit', 'helpers_per_task': '/v1/settings/parallel-work'}
 ACCESS = ('off', 'smart', 'manual')
 ACCESS_TEXT = {'off': 'runs commands without asking', 'smart': 'asks for risky commands',
                'manual': 'asks before each command'}
@@ -29,7 +31,8 @@ SETTINGS_SCHEMA = {
         'Read or change the settings of this Coconut. Only a turn of Coconut has it: the Coconut chat, and the change '
         'that another agent hands to it with coconut_message_bot. Coconut has no settings screens, '
         'so the person changes everything here, in plain words: "use Opus", "let chats run commands '
-        'without asking", "mute Desk". Every chat shares one model and one access mode. First call with action "read" to see the current values and the choices. '
+        'without asking", "mute Desk", "let each agent run 4 work sessions". When the person sends "/help", call "read" '
+        'and list in short lines what they can ask you to change, with the current values. Every chat shares one model and one access mode. First call with action "read" to see the current values and the choices. '
         'Then call action "change" with one setting. Say in one line what changed, from what to what, and that '
         'the person can ask to undo it. A change that deletes something or costs money needs a card first '
         '(coconut_ask). Mode "cloud" is not available yet: say that Cloud is coming soon.'),
@@ -38,13 +41,15 @@ SETTINGS_SCHEMA = {
         'properties': {
             'action': {'type': 'string', 'enum': ['read', 'change']},
             'setting': {'type': 'string', 'enum': [
-                'default_model', 'default_access', 'agent_notifications', 'agent_name', 'mode']},
+                'default_model', 'default_access', 'agent_notifications', 'agent_name', 'work_sessions_per_agent',
+                'helpers_per_task', 'mode']},
             'agent': {'type': 'string', 'description': 'The name or ID of the project, for an agent_* setting.'},
             'model': {'type': 'string', 'description': 'A model ID from the catalog that "read" lists.'},
             'provider': {'type': 'string', 'description': 'The provider of that model, from the catalog.'},
             'reasoning_effort': {'type': 'string'},
             'value': {'description': 'The new value: an access mode (off, smart, manual), true or false for '
-                                     'notifications, a name, or local or cloud for mode.'},
+                                     'notifications, a name, local or cloud for mode, or a number from 1 to 64 (null for '
+                                     'Automatic) for work_sessions_per_agent and helpers_per_task.'},
         },
         'required': ['action'],
     },
@@ -118,8 +123,23 @@ def read(service) -> dict:
             'default_model': {key: default.get(key) for key in ('model', 'provider', 'reasoning_effort')},
             'models': models, 'default_access': approvals.get('defaults'),
             'access_modes': {mode: ACCESS_TEXT[mode] for mode in ACCESS}, 'agents': agents,
+            'parallel_work': {**_limits(service), 'total': 'No limit: every agent works at once.'},
             'not_here': ('Pairing a device, phone notifications and their work hours, and signing in to GitHub or '
                          'Google need the device itself: the header of this chat has them.')}
+
+
+def _limits(service) -> dict:
+    """The limits of parallel work: the work sessions of each agent, and the helpers of each task."""
+    result = {}
+    try:
+        result['work_sessions_per_agent'] = service._work_limits()['per_agent']
+    except Exception:
+        pass
+    try:
+        result['helpers_per_task'] = service.provider.native_settings()['parallel_work']
+    except Exception:
+        pass
+    return result
 
 
 def change(service, arguments: dict) -> dict:
@@ -146,6 +166,11 @@ def change(service, arguments: dict) -> dict:
         before = read(service)['default_access']
         service.mutate('PUT', '/v1/settings/approvals', {'mode': arguments['value']}, key, device)
         return {'setting': setting, 'before': before, 'after': arguments['value'], 'changed': True}
+    if setting in LIMIT_ROUTES:
+        value = arguments.get('value')
+        before = _limits(service).get(setting)
+        service.mutate('PUT', LIMIT_ROUTES[setting], {'limit': value}, key, device)
+        return {'setting': setting, 'before': before, 'after': _limits(service).get(setting), 'changed': True}
     if setting in ('agent_model', 'agent_access'):
         from .bot_profiles import SHARED_SETTINGS
         raise ServiceError(409, SHARED_SETTINGS)

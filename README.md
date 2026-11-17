@@ -58,7 +58,7 @@ See [architecture](docs/architecture.md) for implementation details, [relay tran
 
 ## Parallel work
 
-Settings → Parallel work sets how many agents work at once. Automatic lets the Mac choose from its processors and memory. Lowering the limit lets running work finish before Coconut starts more.
+All agents work at once: there is no total limit. Two limits remain, and they have no screen: ask the Coconut chat to set how many work sessions each agent runs at once, or how many helpers a task uses. A lower limit lets running work finish before Coconut starts more. Send `/help` in a chat to see what you can ask for.
 
 ## Removal
 

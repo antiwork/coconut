@@ -5,39 +5,20 @@ import json
 from .work_limits import board_limits, validate_limit
 
 # The state key of each limit of Coconut's board.
-LIMIT_KEYS = {'total': 'work_capacity', 'per_agent': 'agent_limit'}
+LIMIT_KEYS = {'per_agent': 'agent_limit'}
 
 
 class ParallelWorkUpdates:
     def _work_limits(self):
-        """The total and per-agent limits. The Hermes config of Coconut's board holds them, and each pass of the
-        board reads them (kanban_runtime.Board.limits). Fixture mode has no board, so Coconut keeps its total."""
-        if self.kanban is None:
-            return board_limits({'kanban': {'max_in_progress': self._setting('work_capacity')}})
+        """The per-agent limit. The Hermes config of Coconut's board holds it, and each pass of the board reads it
+        (kanban_runtime.Board.limits). Parallel work has no total limit."""
         return getattr(self.kanban, 'limits', None) or board_limits({})
 
     def _work_limit_state(self):
-        limits = self._work_limits()
-        return {'work_capacity': limits['total'], 'agent_limit': limits['per_agent'],
-                'queues': getattr(self.kanban, 'queues', None) or {}}
-
-    def _migrate_work_capacity(self):
-        """Earlier versions kept the total in Coconut's settings. Move it once into the Hermes config of the board."""
-        if getattr(self, '_work_capacity_moved', False):
-            return
-        saved = self._setting('work_capacity')
-        limits = getattr(self.kanban, 'limits', None)
-        if saved is not None and limits is None:
-            return  # The board has not reported its limits yet. The next pass moves the total.
-        if saved is not None and limits['total']['limit'] is None:
-            self.kanban.limits = self.kanban.call({'op': 'set_limit', 'name': 'total', 'limit': saved})['limits']
-        if saved is not None:
-            with self.transaction():
-                self.db.execute("DELETE FROM settings WHERE key='work_capacity'")
-        self._work_capacity_moved = True
+        return {'agent_limit': self._work_limits()['per_agent'], 'queues': getattr(self.kanban, 'queues', None) or {}}
 
     def mutate_board_limit(self, name, data, key, fingerprint):
-        """Save the total or the per-agent limit in the Hermes config of Coconut's board."""
+        """Save the per-agent limit in the Hermes config of Coconut's board."""
         from .service import ServiceError, encoded
         if not isinstance(data, dict) or set(data) != {'limit'}:
             raise ServiceError(400, 'Specify a limit, or null for Automatic.')

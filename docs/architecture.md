@@ -18,7 +18,7 @@ A future execution provider can move work to another host without changing agent
 | Access of every chat | Native `approvals.mode` of the default profile |
 | Schedules and cron state | Native `cron/jobs.json` |
 | Each agent's queue of work | Coconut's Hermes Kanban board, one tenant per agent |
-| Limits of parallel work | Native `kanban.max_in_progress` and `kanban.max_in_progress_per_profile` of the board home (Coconut applies it to each agent's tenant), and `delegation.max_concurrent_children` of the default profile |
+| Limits of parallel work | Native `kanban.max_in_progress_per_profile` of the board home; there is no total limit (Coconut applies it to each agent's tenant), and `delegation.max_concurrent_children` of the default profile |
 | Name, pinning, notification preference | Coconut presentation data |
 | Pairing, transcript replay, Inbox, routing | Coconut SQLite database |
 | Tool and dispatch receipts | Coconut coordination data |
@@ -36,9 +36,9 @@ Inbox threads group decisions. They do not restrict an agent's recall of its own
 The gateway resumes native history and compression continuations. The phone never displays those internal boundaries.
 Model and access defaults resolve from the active native default profile.
 Each agent stores its MCP servers, approval settings and fallback models in its own native configuration, as in Hermes. An agent without its own model uses the default model.
-Parallel work has three limits, all in Hermes config. The total (`PUT /v1/settings/work-capacity`) and the limit per agent
-(`PUT /v1/settings/agent-limit`) live in the config of Coconut's board home. Hermes derives no total on macOS, so Automatic
-is the limit of the Mac's processors and memory. Automatic per agent is 2. Hermes caps each assignee, but every task of the
+Parallel work has two limits, both in Hermes config, and no total limit: every agent works at once. Hermes still starts
+no new work while the memory of the Mac is under critical pressure. The limit per agent (`PUT /v1/settings/agent-limit`)
+lives in the config of Coconut's board home. Automatic per agent is 2. Hermes caps each assignee, but every task of the
 board has the assignee `default` and the agent as its tenant, so the board adapter applies the Hermes cap to each tenant.
 Helpers per task (`PUT /v1/settings/parallel-work`) is `delegation.max_concurrent_children`; Automatic is the Hermes default.
 The phone reads each agent's queue (running, waiting, needs you, done today) from the board.
@@ -477,7 +477,7 @@ What the guard does not cover:
 
 - An agent's conversation runs one turn at a time, because each turn writes the same Hermes session. A person's turn (a message, a reaction or a card answer, `work_capacity.person_turn`) does not wait for agent traffic in that queue.
 - In dispatch, a person's turn goes before agent exchanges, returns of delegated work, background results and audits (`Service._dispatch_order`).
-- A person's turn waits for no limit of parallel work, only for its own conversation. So a message to each of many chats starts in all of them at once, also while a board pass runs. The limits bound agent traffic and board work (`native_outcomes._dispatch_chat`).
+- A turn waits only for its own conversation: parallel work has no total limit. So a message to each of many chats starts in all of them at once, also while a board pass runs (`native_outcomes._dispatch_chat`).
 - When the agent's conversation runs an agent-originated turn in the gateway, the person's message stops that turn, as a stop of the person does (`gateway_chat.preempt_for_person`). The stopped turn goes back to the queue with the same input, and the reply that it sent so far goes. It runs again after the person's turn, with a note that tells the agent to continue it and not to repeat finished steps.
 - A turn that ended before the stop reached it keeps its result. Work sessions and audits run in chats of their own, so they never block the person's chat. A card check that runs in the conversation still finishes first.
 

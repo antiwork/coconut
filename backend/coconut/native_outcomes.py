@@ -1343,11 +1343,11 @@ class NativeOutcomes:
             self._event('task.updated', self._public(owner), owner['bot_id'], owner['id'])
             self._event('artifact.updated', self._public(item), item['bot_id'], owner['id'])
 
-    def _dispatch_chat(self, capacity):
+    def _dispatch_chat(self):
         """Start the queued turns of the bots' conversations. One conversation runs one turn at a time.
 
-        A person's turn goes first (_dispatch_order) and waits for nothing but its own conversation: no limit of
-        parallel work holds it, so a message to each of many chats starts in all of them at once. A bot-originated turn
+        A turn waits for nothing but its own conversation: parallel work has no total limit, so a message to each of
+        many chats starts in all of them at once. A person's turn goes first (_dispatch_order). A bot-originated turn
         that the gateway runs in the same conversation stops for it and runs again after it
         (gateway_chat.preempt_for_person).
         """
@@ -1359,26 +1359,11 @@ class NativeOutcomes:
             # A native pass may be claiming a ready row of the bot's own execution, such as a conversation turn that owns
             # an outcome. Its turn starts only after the claim, so no chat turn of that execution starts meanwhile.
             active.update(self._kanban_claim_outcomes)
-        # Share host capacity, retaining one reserved slot for direct replies. An audit of a work source that the
-        # gateway runs has its own capacity: the Kanban pass bounds it, and it does not delay the person's chats.
-        audits = 0
-        if self.gateway_enabled():
-            from .gateway_bridge import gateway_work_turn
-            audits = sum(1 for i in self.running if self._get('tasks', i).get('_source_audit_prompt')
-                         and gateway_work_turn(self._get('tasks', i)))
-        slots = max(0, capacity + 1 - (len(self.running) - audits) - len(self.context_threads))
-        if self._kanban_dispatching:
-            foreground = sum(bool(chat_turn(task) or task.get('_work_status_only')) for task in running.values())
-            slots = min(slots, max(0, 1 - foreground))
-        # The limits of parallel work bound bot traffic and board work, not the person. A person's turn is a model
-        # call in the gateway, so the host carries many of them, and a native pass does not hold one back.
         candidates = [json.loads(row[0]) for row in self.db.execute(
             "SELECT data FROM tasks WHERE json_extract(data,'$._chat_session') "
             "AND json_extract(data,'$.status') IN ('queued','scheduled') ORDER BY rowid")]
         for task in self._dispatch_order(candidates):
             person = person_turn(task)
-            if not person and not slots:
-                continue
             # A conversation turn that owns a native outcome starts from the outcome's claim (chat_turn).
             if not chat_turn(task):
                 continue
@@ -1400,8 +1385,6 @@ class NativeOutcomes:
             self.running[task['id']] = worker
             active.add(key)
             worker.start()
-            # Each start uses host capacity, so bot traffic waits while the person's turns fill it.
-            slots = max(0, slots - 1)
 
     def _adopt_native_outcomes(self):
         from .service import now

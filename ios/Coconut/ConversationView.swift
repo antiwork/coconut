@@ -1211,6 +1211,10 @@ struct ConversationComposer: View {
         case .stop:
             text = ""
             if let task { onStop(task) }
+        case .help:
+            // The agent answers with what the person can ask for. Settings have no screens, so the answer lists them.
+            text = ""
+            Task { _ = await store.send(bot: bot, text: "/help") }
         case .model(let key):
             text = ""
             if let model = choice.catalog?.models.first(where: { $0.selectionKey == key }) { choice.choose(model) }

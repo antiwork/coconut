@@ -66,7 +66,7 @@ class Board:
             self.conn.execute("ALTER TABLE coconut_outcomes ADD COLUMN input_id TEXT NOT NULL DEFAULT ''")
 
     def limits(self):
-        """The total and per-agent limits in the Hermes config of this board home (work_limits)."""
+        """The per-agent limit in the Hermes config of this board home (work_limits)."""
         path = self.home / 'config.yaml'
         try:
             stamp = path.stat().st_mtime_ns
@@ -515,12 +515,12 @@ class Board:
             task['parent_ids'] = [parent['id'] for parent in graph[task['id']]['parents']]
         return result
 
-    def tick(self, rows, capacity, spawn):
+    def tick(self, rows, spawn):
         self.sync(rows)
-        result = self._dispatch_ready(rows, capacity, spawn)
+        result = self._dispatch_ready(rows, spawn)
         return {'tasks': self.snapshot(), 'dispatch': asdict(result), 'limits': self.limits(), 'queues': self.queues()}
 
-    def _dispatch_ready(self, rows, capacity, spawn):
+    def _dispatch_ready(self, rows, spawn):
         from hermes_cli.kanban_db_connect import _dispatch_tick_lock
         result = self.dispatch.DispatchResult()
         candidates = {row['id']: row for row in rows if row['state'] == 'ready'}
@@ -541,7 +541,7 @@ class Board:
                 if external in waiting:
                     self.kb.schedule_task(self.conn, identity, reason='Waiting for Coconut input readiness.')
             allowed, budget = self.dispatch._tick_spawn_budget(self.conn, result,
-                max_spawn=capacity, max_in_progress=capacity, board=None)
+                max_spawn=None, max_in_progress=None, board=None)
             if not allowed:
                 return result
             # Hermes caps each assignee (kanban.max_in_progress_per_profile). Every task of this board has the assignee
@@ -706,7 +706,7 @@ def main():
             request = json.loads(line)
             with contextlib.redirect_stdout(sys.stderr):
                 if request['op'] == 'tick':
-                    result = board.tick(request['rows'], request['capacity'], spawn)
+                    result = board.tick(request['rows'], spawn)
                 elif request['op'] == 'finish':
                     result = {'ok': board.finish(request['id'], request['run_id'], request['state'], request['summary'],
                                                  request.get('error_code'))}

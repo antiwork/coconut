@@ -587,7 +587,6 @@ struct StateSnapshot: Codable, Sendable {
     var approvals: ApprovalSettings? = nil
     var parallelWork: ParallelWorkSettings? = nil
     var fallback: FallbackSettings? = nil
-    var workCapacity: ParallelWorkSettings? = nil
     var agentLimit: ParallelWorkSettings? = nil
     /// Each agent's queue on the Hermes board, by agent ID.
     var queues: [String: AgentQueue]? = nil

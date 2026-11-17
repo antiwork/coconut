@@ -45,7 +45,6 @@ final class AppStore {
     var approvals: ApprovalSettings?
     var parallelWork: ParallelWorkSettings?
     var fallback: FallbackSettings?
-    var workCapacity: ParallelWorkSettings?
     var agentLimit: ParallelWorkSettings?
     /// Each agent's queue on the Hermes board: running, waiting, needs you, done today.
     var queues: [String: AgentQueue] = [:]
@@ -737,7 +736,7 @@ final class AppStore {
         teamChatsOnScreen = []; teamOlderRequests = [:]; teamMessageChanges = [:]; teamTypingPace = [:]
         teamReactionWriters = [:]
         teamAlertFilters = [:]; teamAlertChats = [:]; teamAlertRequests = [:]
-        approvals = nil; parallelWork = nil; fallback = nil; workCapacity = nil; agentLimit = nil; queues = [:]; mcpServers = []
+        approvals = nil; parallelWork = nil; fallback = nil; agentLimit = nil; queues = [:]; mcpServers = []
         optimisticUpdates.reset()
         documentContents = [:]; resetBusiness()
         reactionOverrides = [:]; decisionReplyDrafts = [:]; answeringDecisionIds = []
@@ -1676,29 +1675,6 @@ final class AppStore {
         return result
     }
 
-    func setWorkCapacity(_ value: Int?) async {
-        if isDemo {
-            let automatic = workCapacity?.automaticLimit ?? 4
-            workCapacity = ParallelWorkSettings(limit: value, effectiveLimit: value ?? automatic, automaticLimit: automatic)
-            return
-        }
-        let automatic = workCapacity?.automaticLimit ?? 4
-        optimistically("settings/work-capacity", change: { optimisticValue(\.workCapacity, Optional(ParallelWorkSettings(limit: value, effectiveLimit: value ?? automatic, automaticLimit: automatic)), in: $0) },
-                       save: { let _: ParallelWorkSettings? = await self.write("settings/work-capacity", method: "PUT", payload: WorkerLimitRequest(limit: value, bot: false), as: ParallelWorkSettings.self) })
-    }
-
-    /// How many work sessions each agent runs at once (Hermes `kanban.max_in_progress_per_profile`).
-    func setAgentLimit(_ value: Int?) async {
-        let automatic = agentLimit?.automaticLimit ?? 2
-        let shown = ParallelWorkSettings(limit: value, effectiveLimit: value ?? automatic, automaticLimit: automatic)
-        if isDemo {
-            agentLimit = shown
-            return
-        }
-        optimistically("settings/agent-limit", change: { optimisticValue(\.agentLimit, Optional(shown), in: $0) },
-                       save: { let _: ParallelWorkSettings? = await self.write("settings/agent-limit", method: "PUT", payload: WorkerLimitRequest(limit: value, bot: false), as: ParallelWorkSettings.self) })
-    }
-
     /// Replace the whole fallback chain of Hermes with `models`, in order.
     func setFallback(_ models: [FallbackModel]) async {
         if isDemo {
@@ -1707,18 +1683,6 @@ final class AppStore {
         }
         optimistically("settings/fallback", change: { optimisticValue(\.fallback, Optional(FallbackSettings(models: models)), in: $0) },
                        save: { let _: FallbackSettings? = await self.write("settings/fallback", method: "PUT", payload: FallbackRequest(models: models), as: FallbackSettings.self) })
-    }
-
-    func setWorkerLimit(_ value: Int?) async {
-        if isDemo {
-            if let settings = parallelWork {
-                parallelWork = ParallelWorkSettings(limit: value, effectiveLimit: value ?? settings.automaticLimit, automaticLimit: settings.automaticLimit)
-            }
-            return
-        }
-        let automatic = parallelWork?.automaticLimit ?? 4
-        optimistically("settings/parallel-work", change: { optimisticValue(\.parallelWork, Optional(ParallelWorkSettings(limit: value, effectiveLimit: value ?? automatic, automaticLimit: automatic)), in: $0) },
-                       save: { let _: ParallelWorkSettings? = await self.write("settings/parallel-work", method: "PUT", payload: WorkerLimitRequest(limit: value, bot: false), as: ParallelWorkSettings.self) })
     }
 
     /// The access of every chat: one Hermes profile runs them all.
@@ -3093,8 +3057,8 @@ final class AppStore {
             let explicitKey = idempotencyKey ?? OptimisticRequest.id
             let key = explicitKey ?? uncertainWriteKeys[requestSignature] ?? UUID().uuidString
             if explicitKey == nil { uncertainWriteKeys[requestSignature] = key }
-            let (receiptModel, receiptBaseURL, receiptCatalog, receiptApproval, receiptMCP, receiptCapacityLimit, receiptParallelLimit, receiptFallback, receiptMessages, receiptDecisions, receiptBots, receiptRoutines, receiptNativeReadAt, receiptCursor, receiptEpoch) = optimisticUpdates.receive {
-                (model, modelBaseURL, modelCatalog, approvals?.defaults, mcpServers, workCapacity?.limit, parallelWork?.limit, fallback, messages, decisions, bots, routines, nativeSettingsReadAt, cachedState?.cursor, snapshotEpoch)
+            let (receiptModel, receiptBaseURL, receiptCatalog, receiptApproval, receiptMCP, receiptParallelLimit, receiptFallback, receiptMessages, receiptDecisions, receiptBots, receiptRoutines, receiptNativeReadAt, receiptCursor, receiptEpoch) = optimisticUpdates.receive {
+                (model, modelBaseURL, modelCatalog, approvals?.defaults, mcpServers, parallelWork?.limit, fallback, messages, decisions, bots, routines, nativeSettingsReadAt, cachedState?.cursor, snapshotEpoch)
             }
             let result: Response = try await client.request(path, method: method, body: body, idempotencyKey: key)
             guard belongsToPairing() else { return nil }
@@ -3135,9 +3099,7 @@ final class AppStore {
                 else if let settings = result as? FallbackSettings, fallback == receiptFallback { fallback = settings }
                 else if let settings = result as? MCPResponse, mcpServers == receiptMCP { mcpServers = settings.servers }
                 else if let settings = result as? ParallelWorkSettings {
-                    if path == "settings/work-capacity", workCapacity?.limit == receiptCapacityLimit {
-                        workCapacity = settings; cachedState?.workCapacity = settings
-                    } else if path == "settings/agent-limit" {
+                    if path == "settings/agent-limit" {
                         agentLimit = settings; cachedState?.agentLimit = settings
                     } else if path == "settings/parallel-work", parallelWork?.limit == receiptParallelLimit { parallelWork = settings }
                 }
@@ -3387,7 +3349,6 @@ final class AppStore {
             assign(\.artifacts, snapshot.artifacts)
             assign(\.approvals, snapshot.approvals)
             let previewLimit = ParallelWorkSettings(limit: nil, effectiveLimit: 4, automaticLimit: 4)
-            assign(\.workCapacity, snapshot.workCapacity ?? (isDemo ? previewLimit : nil))
             assign(\.agentLimit, snapshot.agentLimit ?? (isDemo ? ParallelWorkSettings(limit: nil, effectiveLimit: 2, automaticLimit: 2) : nil))
             assign(\.queues, snapshot.queues ?? [:])
             assign(\.parallelWork, snapshot.parallelWork ?? (isDemo ? previewLimit : nil))

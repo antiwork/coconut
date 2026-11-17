@@ -2,7 +2,7 @@ import SwiftUI
 
 /// A page that Profile opens: a thing of this device, or a setting that every chat shares.
 enum ProfileRoute: Hashable {
-    case mac, notifications, connections, model, access, parallelWork, team
+    case mac, notifications, connections, team
 }
 
 /// What Profile shows of the person, from the state of the store.
@@ -57,22 +57,10 @@ struct ProfileView: View {
                 BoardRow(symbol: "link", title: "Sign-ins and connections", detail: "Google, GitHub and other tools")
                     .boardButton("mcp-settings") { pushRoute?(ProfileRoute.connections) }
             }
-            BoardSection("All chats") {
-                // The row is a menu of the models. Its last line opens the page with the effort and the fallback.
-                ModelMenu(settings: { pushRoute?(ProfileRoute.model) }) { _ in
-                    BoardRow(symbol: "cpu", title: "Model", value: modelSummary, chevron: false, menu: true)
-                }
-                .accessibilityIdentifier("profile-model")
-                BoardRow(symbol: "lock.shield", title: "Access",
-                         value: store.approvals?.label(for: store.approvals?.defaults) ?? "Hermes default")
-                    .boardButton("profile-access") { pushRoute?(ProfileRoute.access) }
-                BoardRow(symbol: "arrow.triangle.branch", title: "Parallel work", value: parallelWorkSummary)
-                    .boardButton("parallel-work-settings") { pushRoute?(ProfileRoute.parallelWork) }
-            }
             BoardSection("Coconut") {
                 if let coconut = store.bots.coconutChat {
                     BoardRow(symbol: "bubble.left.and.bubble.right", title: "Ask Coconut",
-                             detail: "Change anything else in the Coconut chat")
+                             detail: "Ask it to change the model, the access or a limit. Send /help to see all.")
                         .boardButton("profile-coconut-chat") {
                             if let openChat { openChat(coconut.id) } else { pushRoute?(ConversationRoute(botId: coconut.id)) }
                         }
@@ -82,7 +70,7 @@ struct ProfileView: View {
                     .accessibilityIdentifier("profile-mode")
                 BoardRow(symbol: "person.2", title: "Team", value: teamSummary)
                     .boardButton("profile-team") { pushRoute?(ProfileRoute.team) }
-                BoardRow(symbol: "chart.bar", title: "Usage", detail: "Turns, tokens, cost and time of the agents")
+                BoardRow(symbol: "chart.bar", title: "Usage", detail: "Turns, tokens, cost and time")
                     .boardButton("profile-usage") { pushRoute?(UsageRoute()) }
                 BoardRow(symbol: "dollarsign.circle", title: "Spend", value: store.spendTodayTotal)
                     .boardButton("profile-spend") { pushRoute?(SpendRoute()) }
@@ -120,18 +108,6 @@ struct ProfileView: View {
         return rooms.count == 1 ? rooms[0].name : "\(rooms.count) teams"
     }
 
-    private var parallelWorkSummary: String {
-        guard let capacity = store.workCapacity else { return "Automatic" }
-        let total = capacity.limit == nil ? "Automatic · up to \(capacity.effectiveLimit)" : "Up to \(capacity.effectiveLimit)"
-        guard let agent = store.agentLimit else { return total }
-        return total + " · \(agent.effectiveLimit) per agent"
-    }
-
-    private var modelSummary: String {
-        guard let catalog = store.modelCatalog else { return store.model.isEmpty ? "Set on your Mac" : store.model }
-        return catalog.name(for: catalog.defaults.selection)
-    }
-
     static var appVersion: String {
         let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "Unknown"
         let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "Unknown"
@@ -147,9 +123,6 @@ struct ProfileDestinations: ViewModifier {
             case .mac: MacConnectionSettingsView()
             case .notifications: NotificationSettingsView()
             case .connections: MCPSettingsView()
-            case .model: ModelSettingsView()
-            case .access: ApprovalSettingsView()
-            case .parallelWork: ParallelWorkSettingsView()
             case .team: TeamView()
             }
         }

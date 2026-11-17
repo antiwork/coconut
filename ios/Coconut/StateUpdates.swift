@@ -14,7 +14,6 @@ struct StateUpdates: Decodable, Sendable {
     var collectionDeltas: Bool?
     var removedDecisions: [String]?
     var removedArtifacts: [String]?
-    var workCapacity: ParallelWorkSettings?
     var agentLimit: ParallelWorkSettings?
     var queues: [String: AgentQueue]?
     var settingsChanged: Bool?
@@ -65,7 +64,6 @@ struct StateUpdates: Decodable, Sendable {
             if let decisions { result.decisions = decisions }
             if let artifacts { result.artifacts = artifacts }
         }
-        if let workCapacity { result.workCapacity = workCapacity }
         if let agentLimit { result.agentLimit = agentLimit }
         if let queues { result.queues = queues }
         if let confirmedRequestIds { result.confirmedRequestIds = confirmedRequestIds }

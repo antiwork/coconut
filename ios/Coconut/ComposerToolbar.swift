@@ -25,7 +25,7 @@ enum ComposerExpansion {
 /// The commands that the person types after a slash, and what the menu above the field suggests for the text.
 enum ComposerSlash {
     enum Action: Equatable {
-        case newChat, compact, stop
+        case newChat, compact, stop, help
         /// Fills the field with this text and keeps the menu open for the next step.
         case complete(String)
         /// The key of the model (ModelCatalogEntry.selectionKey).
@@ -47,6 +47,7 @@ enum ComposerSlash {
         ("effort", "Change the reasoning effort", "brain"),
         ("compact", "Summarize the chat to free up context", "arrow.down.right.and.arrow.up.left"),
         ("stop", "Stop the running task", "stop.fill"),
+        ("help", "See what you can ask for and change here", "questionmark.circle"),
     ]
 
     /// The suggestions for the text of the field. Empty when the text is not a command in the making.
@@ -65,6 +66,7 @@ enum ComposerSlash {
                 case "new": action = .newChat
                 case "compact": action = .compact
                 case "stop": action = .stop
+                case "help": action = .help
                 default: action = .complete("/" + command.name + " ")
                 }
                 return Suggestion(id: command.name, title: "/" + command.name, detail: command.detail,
