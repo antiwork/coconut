@@ -3762,6 +3762,8 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
                     self._ack_reaction_feedback(task['bot_id'], task_id, reaction_feedback)
                 self._release_followups_after_card(task_id)
             except Exception as error:
+                if not self.stopping.is_set() and self._retry_stopped_turn(task_id, error):
+                    return
                 if not self.stopping.is_set():
                     summary = f'Work stopped: {str(error)[:240]}'
                     with self.transaction():
@@ -3786,6 +3788,26 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
                                 self._event('message.updated', message, message['bot_id'], task_id)
                                 self.push.record('message.completed', message, message['bot_id'], task_id)
                         self._refresh_bot(task['bot_id'])
+
+    def _retry_stopped_turn(self, task_id, error) -> bool:
+        """Queue a turn again when the gateway went silent during it, at most twice. A failed turn is broken work.
+
+        A tool that started without a receipt keeps the turn failed, so no action runs twice.
+        """
+        from .gateway_bridge import GatewayStopped
+        if not isinstance(error, GatewayStopped):
+            return False
+        with self.transaction():
+            current = self._get('tasks', task_id)
+            if (current['status'] != 'working' or current.get('_gateway_retries', 0) >= 2
+                    or self._has_uncertain_receipt(task_id, current.get('_native_turn_id'))):
+                return False
+            self._withdraw_stream(task_id)
+            current.update(status='queued', summary='Resuming after the Hermes gateway restarted.', updated_at=now(),
+                           _gateway_retries=current.get('_gateway_retries', 0) + 1)
+            self._put('tasks', current)
+            self._event('task.updated', self._public(current), current['bot_id'], task_id)
+        return True
 
     def _record_source_seen(self, task_id, seen, activity=None):
         """Record delivered revisions and item signatures only after the provider receives a turn.

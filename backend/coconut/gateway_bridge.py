@@ -138,6 +138,10 @@ class GatewayUnavailable(RuntimeError):
     """No adapter took the turn. Nothing ran, so the turn can wait for another adapter."""
 
 
+class GatewayStopped(RuntimeError):
+    """The gateway went silent during a turn, usually because Hermes or Coconut restarted. The service retries it."""
+
+
 class GatewayBusy(RuntimeError):
     """The gateway did not run the turn, because it already ran another turn in the session of the chat, for example
     its own turn for a finished background delegation (hooks.join_conversation). Nothing of the turn ran, so it can
@@ -429,7 +433,7 @@ class GatewayBridge:
                                                         or turn.team and self.lacking.get(turn.home)):
                             raise GatewayUnavailable('No Hermes gateway took this turn.')
                         if turn.state == 'active' and current - turn.seen > turn.silent_seconds:
-                            raise RuntimeError('The Hermes gateway stopped answering during this turn.')
+                            raise GatewayStopped('The Hermes gateway stopped answering during this turn.')
                         if turn.team and turn.state == 'active' and not turn.shown and current - turn.taken > TAKE_SECONDS:
                             # A living adapter shows a turn at once. One that never does dropped it, so nothing ran.
                             raise GatewayUnavailable('No Hermes gateway kept this turn.')
