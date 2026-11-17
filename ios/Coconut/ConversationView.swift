@@ -840,20 +840,7 @@ struct MessageBubble: View {
             }
             #else
             // A Mac shows the actions of a held message in the menu of a secondary click.
-            .contextMenu {
-                // As the swipe and VoiceOver do, Reply and the reactions show only for a saved message, which a reply
-                // can quote.
-                if let onReply, store.messageReference(for: message) != nil {
-                    let reactions = store.reactions(for: message)
-                    ReactionMenuRow(emoji: MessageReactions.selectable, marked: reactions.contains,
-                                    label: { "\(reactions.contains($0) ? "Remove" : "React with") \(MessageReactions.name($0))" }) { emoji in
-                        Task { await store.react(to: message, emoji: emoji) }
-                    }
-                    Button("Reply", systemImage: "arrowshape.turn.up.left") { onReply() }
-                }
-                Button("Copy", systemImage: "doc.on.doc") { Pasteboard.copy(message.text) }
-                if canForward { Button("Forward", systemImage: "arrowshape.turn.up.right") { forwarding = true } }
-            }
+            .contextMenu { macMenu }
             #endif
                 if !isUser && !message.streaming {
                     LinkPreviewList(text: message.text)
@@ -883,8 +870,25 @@ struct MessageBubble: View {
         }
         .accessibilityLabel(speaker)
         .sheet(item: $editingOutgoing) { RejectedMessageEditor(outgoing: $0) }
-        .sheet(isPresented: $forwarding) { ForwardMessageSheet(message: message, fromBotId: message.chatBotId) }
+        .sheet(isPresented: $forwarding) { ForwardMessageSheet(message: message, fromBotId: message.botId) }
     }
+
+    #if os(macOS)
+    @ViewBuilder private var macMenu: some View {
+        // As the swipe and VoiceOver do, Reply and the reactions show only for a saved message, which a reply
+        // can quote.
+        if let onReply, store.messageReference(for: message) != nil {
+            let reactions = store.reactions(for: message)
+            ReactionMenuRow(emoji: MessageReactions.selectable, marked: reactions.contains,
+                            label: { "\(reactions.contains($0) ? "Remove" : "React with") \(MessageReactions.name($0))" }) { emoji in
+                Task { await store.react(to: message, emoji: emoji) }
+            }
+            Button("Reply", systemImage: "arrowshape.turn.up.left") { onReply() }
+        }
+        Button("Copy", systemImage: "doc.on.doc") { Pasteboard.copy(message.text) }
+        if canForward { Button("Forward", systemImage: "arrowshape.turn.up.right") { forwarding = true } }
+    }
+    #endif
 
     private var speaker: String {
         if isUser { return "You" }
