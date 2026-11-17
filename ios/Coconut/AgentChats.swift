@@ -74,7 +74,34 @@ extension Array where Element == Bot {
     var withoutChats: [Bot] { filter { !$0.isChat } }
 }
 
+/// The plus makes an agent at once: a random capital letter for its name and a random fruit. The name in the header of
+/// its chat opens the settings, where the person changes both.
+enum NewAgent {
+    static let letters = (65...90).map { String(UnicodeScalar(UInt8($0))) }
+    static let color = "A86640"
+
+    /// A random letter that no agent uses yet, also an archived one. Any letter when all 26 are taken.
+    static func name(avoiding names: [String]) -> String {
+        let used = Set(names.map { $0.trimmingCharacters(in: .whitespacesAndNewlines).uppercased() })
+        return (letters.filter { !used.contains($0) }.randomElement() ?? letters.randomElement())!
+    }
+
+    static func avatar() -> String { "fruit." + FruitArtwork.all.randomElement()!.id }
+}
+
 extension AppStore {
+    /// Makes an agent with a random letter and fruit, and opens its chat with the cursor in its message field. Returns
+    /// the agent, or nil when the Mac did not make it.
+    func newAgent() async -> Bot? {
+        let name = NewAgent.name(avoiding: bots.agents.map(\.name))
+        guard let bot = await createBot(name: name, role: "", avatar: NewAgent.avatar(), color: NewAgent.color,
+                                        instructions: "") else { return nil }
+        // The update of the Mac brings the agent too. The app shows it at once.
+        if !bots.contains(where: { $0.id == bot.id }) { bots.append(bot) }
+        composerFocusRequest = bot.id
+        return bot
+    }
+
     /// Starts a new chat with the agent of `bot`: a fresh conversation with the same Hermes profile. Returns the chat,
     /// or nil when the Mac did not make it. The chat that opens next puts the cursor in its message field.
     func newChat(with bot: Bot) async -> Bot? {

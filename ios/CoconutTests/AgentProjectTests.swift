@@ -118,6 +118,14 @@ final class AgentProjectTests: XCTestCase {
         XCTAssertEqual(AgentChats.title(from: String(repeating: "x", count: 100)), String(repeating: "x", count: 71) + "…")
     }
 
+    func testANewAgentTakesALetterThatNoAgentUses() {
+        let taken = NewAgent.letters.filter { $0 != "K" }.map { $0.lowercased() }
+        XCTAssertEqual(NewAgent.name(avoiding: taken), "K")
+        for _ in 0..<50 { XCTAssertFalse(["C", "Q"].contains(NewAgent.name(avoiding: ["C", " q "]))) }
+        XCTAssertTrue(NewAgent.letters.contains(NewAgent.name(avoiding: NewAgent.letters)))
+        XCTAssertTrue(NewAgent.avatar().hasPrefix("fruit."))
+    }
+
     func testTheChatsOfAnAgentShowUnderItNewestFirst() {
         var input = input
         input.bots += [chat("c-old", of: "planner", title: "Old", created: "2026-11-10T00:00:00Z"),

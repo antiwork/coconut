@@ -38,7 +38,7 @@ struct MacMainWindow: View {
     @State private var inboxCard: String?
     @State private var inspectorShown = true
     @State private var inspectorTab = InspectorTab.details
-    @State private var createOpen = false
+    @State private var creatingAgent = false
     @State private var pairingOpen = false
     // The pages that a chat opened. A row of the chat list pushes onto it (pushRoute); another bot starts at its chat.
     @State private var chatPath = NavigationPath()
@@ -68,7 +68,8 @@ struct MacMainWindow: View {
                         .navigationSplitViewColumnWidth(min: 220, ideal: 260, max: 300)
                         .toolbar {
                             ToolbarItem {
-                                Button { createOpen = true } label: { Label("New agent", systemImage: "plus") }
+                                Button(action: createAgent) { Label("New agent", systemImage: "plus") }
+                                    .disabled(creatingAgent)
                                     .keyboardShortcut("n", modifiers: .command)
                                     .help("Create an agent")
                             }
@@ -113,7 +114,6 @@ struct MacMainWindow: View {
         .background(BoardStyle.paper)
         .announcesErrors(store.error)
         // A sheet of the window shows the error itself. While it is open, the notice of the window shows none.
-        .sheet(isPresented: $createOpen) { BotEditorView().sheetShowsError() }
         .sheet(isPresented: $pairingOpen) { MacPairingView(model: model).frame(width: 520, height: 600).sheetShowsError() }
         .onChange(of: store.setupLink) { _, link in if link != nil { pairingOpen = true } }
         // The sheet waits for each pairing page: the sheet of a link, and the page of a window without a pairing.
@@ -211,6 +211,15 @@ struct MacMainWindow: View {
         }
     }
 
+    /// Makes an agent with a random letter and selects its chat (AppStore.newAgent).
+    private func createAgent() {
+        creatingAgent = true
+        Task {
+            defer { creatingAgent = false }
+            if let bot = await store.newAgent() { selection = .bot(bot.id) }
+        }
+    }
+
     // A new case, with or without a stack of its own, needs no code for the notice of the window (MacNoticeArea).
     @ViewBuilder private var detail: some View {
         switch selection {
@@ -219,7 +228,7 @@ struct MacMainWindow: View {
         case .inbox:
             MacInboxView(selection: $selection, first: inboxCard)
         case .agents:
-            placeStack { AgentsView(create: { createOpen = true }).navigationTitle("Agents") }
+            placeStack { AgentsView(create: createAgent).navigationTitle("Agents") }
         case .people:
             placeStack { PeopleView(openTeamChat: { selection = .team($0) }).navigationTitle("People") }
         case .profile:

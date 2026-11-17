@@ -755,15 +755,17 @@ final class AppStore {
         return true
     }
 
-    func createBot(name: String, role: String, avatar: String, color: String, instructions: String, memory: String = "", pinned: Bool = false) async {
+    /// Makes an agent on the Mac. Returns the agent, or nil when the Mac did not make it.
+    @discardableResult
+    func createBot(name: String, role: String, avatar: String, color: String, instructions: String, memory: String = "", pinned: Bool = false) async -> Bot? {
         if isDemo {
             let bot = Bot(id: UUID().uuidString, sessionId: UUID().uuidString, name: name, role: role, avatar: avatar,
                           color: color, instructions: instructions, status: "idle", lastMessage: "Ready when you are.",
                           unreadCount: 0, archived: false, createdAt: Self.now, memory: memory, pinned: pinned)
             bots.append(bot)
-            return
+            return bot
         }
-        let _: Bot? = await write("bots", payload: BotRequest(name: name, role: role, avatar: avatar, color: color, instructions: instructions, memory: memory, pinned: pinned), as: Bot.self)
+        return await write("bots", payload: BotRequest(name: name, role: role, avatar: avatar, color: color, instructions: instructions, memory: memory, pinned: pinned), as: Bot.self)
     }
 
     /// Asks the Mac for a new chat of an agent (newChat).

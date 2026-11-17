@@ -56,7 +56,7 @@ struct CoconutHome: View {
     @State private var onboardingOpen = false
     // The first run hides Close, because Coconut needs a pairing before it can show anything.
     @State private var onboardingFirstRun = false
-    @State private var createOpen = false
+    @State private var creatingAgent = false
     @State private var selectedTab: HomeTab = .home
     @State private var notificationDecisionId: String?
     @State private var openingNotification = false
@@ -153,15 +153,8 @@ struct CoconutHome: View {
             // A tapped pairing link opens the pairing screen. A pairing screen that shows, also one from Settings, takes the link itself.
             guard link != nil, !onboardingOpen, !OnboardingView.isOpen else { return }
             onboardingFirstRun = false
-            let sheetOpen = createOpen
-            createOpen = false
-            Task {
-                // UIKit presents the full-screen page only after the open sheet has gone.
-                if sheetOpen { try? await Task.sleep(for: .milliseconds(450)) }
-                onboardingOpen = true
-            }
+            onboardingOpen = true
         }
-        .sheet(isPresented: $createOpen) { BotEditorView().sheetShowsError() }
         .sheet(item: $teamJoin, onDismiss: {
             // A newer link can wait for this sheet to close. Only the link of this sheet goes.
             if store.teamJoin?.id == shownTeamJoin { store.teamJoin = nil }
@@ -197,7 +190,7 @@ struct CoconutHome: View {
                 .toolbar(tabBarVisibility, for: .tabBar)
                 .navigationTitle("")
                 .navigationBarTitleDisplayMode(.inline)
-                .toolbar { rootToolbar(create: tab == .chats || tab == .agents) }
+                .toolbar { rootToolbar(create: tab == .chats || tab == .agents, path: path) }
                 .topBanners { area in
                     RootBanners(area: area) {
                         onboardingFirstRun = false
@@ -248,14 +241,26 @@ struct CoconutHome: View {
     }
 
     @ToolbarContentBuilder
-    private func rootToolbar(create: Bool) -> some ToolbarContent {
+    private func rootToolbar(create: Bool, path: Binding<NavigationPath>) -> some ToolbarContent {
         // Coconut has no settings screen: Profile has the things of this device, and the Coconut chat changes the rest.
         if create {
             ToolbarItem(placement: .topBarTrailing) {
-                Button { createOpen = true } label: {
+                Button { createAgent(path) } label: {
                     Image(systemName: "plus")
-                }.accessibilityLabel("Create agent").accessibilityIdentifier("create-bot")
+                }
+                .disabled(creatingAgent)
+                .accessibilityLabel("Create agent").accessibilityIdentifier("create-bot")
             }
+        }
+    }
+
+    /// Makes an agent with a random letter and opens its chat (AppStore.newAgent).
+    private func createAgent(_ path: Binding<NavigationPath>) {
+        creatingAgent = true
+        Task {
+            defer { creatingAgent = false }
+            guard let bot = await store.newAgent() else { return }
+            path.wrappedValue.append(ConversationRoute(botId: bot.id))
         }
     }
 
@@ -265,8 +270,7 @@ struct CoconutHome: View {
         guard TeamJoinGate.canShow(store.teamJoin, showing: teamJoin?.id,
                                    pairingOpen: onboardingOpen || PairingPages.shared.isOpen),
               let request = store.teamJoin else { return }
-        let sheetOpen = createOpen || teamJoin != nil
-        createOpen = false
+        let sheetOpen = teamJoin != nil
         teamJoin = nil
         Task {
             if sheetOpen { try? await Task.sleep(for: .milliseconds(450)) }
@@ -321,7 +325,6 @@ struct CoconutHome: View {
 
     /// Shows a Team chat or a direct chat on the Chats tab, with the Chats list under it. The sheets close.
     private func showTeamChat(_ chat: TeamChatKey) {
-        createOpen = false
         notificationDecisionId = nil
         selectedTab = .chats
         chatsPath = NavigationPath()
@@ -360,7 +363,6 @@ struct CoconutHome: View {
     }
 
     private func showNotification(_ destination: NotificationDestination) {
-        createOpen = false
         UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
         switch destination {
         case .inbox(let decisionId):

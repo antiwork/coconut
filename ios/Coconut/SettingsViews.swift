@@ -164,56 +164,6 @@ struct BotIdentityFields: View {
     }
 }
 
-// Creates a bot. Bot settings edit an existing bot and save each change.
-struct BotEditorView: View {
-    @Environment(AppStore.self) private var store
-    @ShownError private var shownError
-    @Environment(\.dismiss) private var dismiss
-    @State private var name = ""
-    @State private var instructions = ""
-    @State private var avatar = "fruit." + FruitArtwork.all.randomElement()!.id
-    @State private var color = "A86640"
-    @State private var saving = false
-
-    var body: some View {
-        NavigationStack {
-            Form {
-                BotIdentityFields(name: $name, instructions: $instructions, avatar: $avatar, color: $color, identity: "")
-                if let error = shownError {
-                    Section { InlineError(error) }
-                }
-            }
-            .disabled(saving)
-            .settingsBackground()
-            #if os(macOS)
-            // A Mac sheet sizes itself to a plain form, which then runs its fields to the edges. Grouped sections give
-            // the fields their boxes and margins, as in the bot details.
-            .formStyle(.grouped)
-            .frame(width: 460, height: 460)
-            #endif
-            .navigationTitle("New agent").inlineNavigationTitle()
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
-                ToolbarItem(placement: .confirmationAction) {
-                    Button(saving ? "Adding…" : "Add", action: create)
-                        .disabled(saving || name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                        .accessibilityIdentifier("save-bot")
-                }
-            }
-        }
-    }
-
-    private func create() {
-        saving = true
-        store.error = nil
-        Task {
-            await store.createBot(name: name, role: "", avatar: avatar, color: color, instructions: instructions, memory: "")
-            saving = false
-            if store.error == nil { dismiss() }
-        }
-    }
-}
-
 struct BotAppearancePicker: View {
     @Binding var avatar: String
     @Binding var color: String
