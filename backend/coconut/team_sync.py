@@ -627,7 +627,7 @@ class TeamSync:
 
     def _team_write(self, room: dict, entry_id: str, kept: bool, fields: dict, tries: int = 1,
                     direct: dict | None = None, epoch: int | None = None, reaction: dict | None = None,
-                    deadline: float | None = None) -> None:
+                    deadline: float | None = None, check=None) -> None:
         """Seal an entry of this Mac, write it to the relay, and put it into the store.
 
         A write with an entry ID that the store has replaces that entry, with the next `rev`. The caller holds the
@@ -646,6 +646,8 @@ class TeamSync:
             existing = self.team_store.entry(room['room'], entry_id)
         payload = encode_payload(fields, (existing['rev'] if existing else 0) + 1, utc_now())
         body = self.team_helper.seal(room['room'], entry_id, epoch, key, secrets['member_key'], payload)
+        if check is not None:
+            check(refresh=fields['kind'] == 'message')
         if deadline is not None and time.monotonic() + TIMEOUT_SECONDS > deadline:
             from .service_base import ServiceError
             raise ServiceError(503, 'The file delivery needs more time. Try again.')

@@ -106,7 +106,8 @@ async def send_tries(request, home: str, chat_id: str, fields: dict):
         await asyncio.sleep(wait)
 
 
-async def send_file(request, home, chat_id, file_path, caption=None, file_name=None, deadline=None) -> SendResult:
+async def send_file(request, home, chat_id, file_path, caption=None, file_name=None, deadline=None,
+                    turn_id=None) -> SendResult:
     """Send bytes through the team file transport. A text notice never counts as a delivered file."""
     limit = time.monotonic() + FILE_SECONDS
     deadline = min(deadline, limit) if deadline is not None else limit
@@ -121,6 +122,8 @@ async def send_file(request, home, chat_id, file_path, caption=None, file_name=N
         payload = dict(home=home, chat_id=str(chat_id),
             filename=os.path.basename(file_name or path), content_base64=base64.b64encode(content).decode(),
             caption=caption, message_id=OUTSIDE + str(uuid.uuid4()))
+        if turn_id is not None:
+            payload['turn_id'] = turn_id
         for _ in range(2):
             remaining = deadline - time.monotonic()
             if remaining <= 5:
@@ -154,7 +157,7 @@ async def send_standalone(pconfig, chat_id, message, *, thread_id=None, media_fi
     message ID, so a try that repeats a send that arrived adds no second message. A refusal gets no second try: an
     HTTP 4xx, `recorded: false` without `retry`, or a send with no text or file. A refusal and a last failed try become an
     `error` with the reason, so the record of the job shows a failed delivery. A fault never reaches Hermes. The team
-    chat takes files through its file transport. A file that does not arrive adds a warning to the delivery record.
+    chat takes files through its file transport. A file that does not arrive makes the delivery fail.
 
     Only the mode `team` registers this sender. On a person's Mac, the service drops a cron delivery whose run shows
     already as a routine task in the chat, by the job ID of the delivery (gateway_chat.py). This call has no job ID,
@@ -184,16 +187,18 @@ async def send_standalone(pconfig, chat_id, message, *, thread_id=None, media_fi
             reason = answer.get('reason') if isinstance(answer, dict) else None
             return {'error': 'Coconut did not show this message: ' + str(reason or 'no reason')}
         warnings = []
-        delivered = 0
+        delivered = []
         for path, _ in media_files or []:
             result = await send_file(request, home, chat_id, path, deadline=file_deadline)
             if result.success:
-                delivered += 1
+                delivered.append(result.message_id)
             else:
                 warnings.append(result.error)
-        if warnings and not text.strip() and not delivered:
-            return {'error': '; '.join(warnings)}
-        return {'success': True, 'message_id': message_id, **({'warnings': warnings} if warnings else {})}
+        receipt = message_id if text.strip() else (delivered[0] if delivered else None)
+        if warnings:
+            return {'error': '; '.join(warnings), **(
+                {'partial_success': True, 'message_id': receipt} if receipt else {})}
+        return {'success': True, 'message_id': receipt}
     except Exception as error:
         LOG.warning('Coconut: a cron delivery into a team chat failed (%s).', type(error).__name__)
         return {'error': f'Coconut did not take this message ({type(error).__name__}).'}
@@ -440,7 +445,12 @@ class TeamAdapter(CoconutAdapter):
     @guarded(failed)
     async def send_document(self, chat_id: str, file_path: str, caption=None, file_name=None, reply_to=None,
                             metadata=None, **kwargs) -> SendResult:
-        return await send_file(self._request, self._home, chat_id, file_path, caption, file_name)
+        anchor = str(reply_to or '')
+        if anchor in self._stopped or anchor.removesuffix(':stop') in self._stopped:
+            return SendResult(success=False, error='The turn has stopped.')
+        turn = None if (metadata or {}).get('job_id') else (
+            anchor if anchor in self._active else self._turns.get(str(chat_id)))
+        return await send_file(self._request, self._home, chat_id, file_path, caption, file_name, turn_id=turn)
 
     @guarded(failed)
     async def send_clarify(self, chat_id: str, question: str, choices, clarify_id: str, session_key: str,

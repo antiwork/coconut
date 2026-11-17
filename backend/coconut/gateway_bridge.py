@@ -168,6 +168,8 @@ class _Turn:
         # A turn of the team chat (team_turns.py), the time of its last hand-out to a poll, and whether the adapter
         # showed that it has it (HANDOFF_SECONDS).
         self.team, self.taken, self.shown = False, 0.0, False
+        # A delivered team file counts as an answer when the turn ends without text.
+        self.file_sent = False
 
 
 class GatewayBridge:

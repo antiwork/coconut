@@ -367,6 +367,35 @@ class TeamOnlyService(TeamTurns, Documents, Team):
             raise ServiceError(404, 'This chat is not a team chat of an agent of this Hermes home.')
         if direct is not None:
             raise ServiceError(409, 'Coconut sends files in team chats only.')
+        turn_id = data.get('turn_id')
+        trigger_request = None
+        check = None
+        if turn_id is not None:
+            with self.gateway_bridge.lock:
+                turn = self.gateway_bridge.turns.get(turn_id) if isinstance(turn_id, str) else None
+                if (turn is None or not turn.team or turn.state != 'active'
+                        or (turn.home, turn.chat_id, turn.task_id) !=
+                        (bot['home'], target, f'team:{room}:{bot_id}')):
+                    raise ServiceError(409, 'This file no longer belongs to an active turn of this chat.')
+                current = self._turns_current.get((room, bot_id))
+            if current is None or current[1] is not None:
+                raise ServiceError(409, 'This file has no active request in this chat.')
+            trigger_request = current[0]
+
+            def check(refresh=False):
+                if refresh:
+                    # The upload holds the room lock, so the sync thread cannot read a remote delete or leave.
+                    from .team_relay import TIMEOUT_SECONDS
+                    while True:
+                        if time.monotonic() + TIMEOUT_SECONDS > deadline:
+                            raise ServiceError(503, 'The file delivery needs more time. Try again.')
+                        if not self._team_read(room):
+                            break
+                with self.gateway_bridge.lock:
+                    active = turn.state == 'active' and self.gateway_bridge.turns.get(turn_id) is turn
+                if (not active or self._turns_current.get((room, bot_id)) != current
+                        or not self._team_still_asked(room, bot_id, trigger_request)):
+                    raise ServiceError(409, 'The request for this file has stopped.')
         budget = data.get('budget_seconds', 40)
         if type(budget) not in (int, float) or not 0 < budget <= 40:
             raise ServiceError(400, 'Give the file delivery a time budget of at most 40 seconds.')
@@ -380,10 +409,13 @@ class TeamOnlyService(TeamTurns, Documents, Team):
             raise ServiceError(400, f'Use valid text of at most {MAX_TEXT:,} characters for a file caption.')
         file = dict(name=name, content=data.get('content_base64'),
                     type=mimetypes.guess_type(name)[0] if isinstance(name, str) else None)
-        result = self._team_say(room, bot_id, trigger, 0, text, request=False, chat=named, alert=alert,
-                                file=file, deadline=deadline)
+        result = self._team_say(room, bot_id, trigger, 0, text, request=turn_id is not None, chat=named, alert=alert,
+                                file=file, deadline=deadline, request_trigger=trigger_request, check=check)
         if result != SAID:
             raise ServiceError(503 if result == SAY_FAILED else 409, 'Coconut could not send the file to this team chat.')
+        if turn_id is not None:
+            with self.gateway_bridge.lock:
+                turn.file_sent = True
         return {'id': reply_entry(room, trigger, bot_id, 'file'), 'message_id': reply_entry(room, trigger, bot_id, 0)}
 
     def gateway_message(self, data: dict) -> dict:

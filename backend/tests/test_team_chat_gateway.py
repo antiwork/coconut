@@ -733,6 +733,124 @@ class TeamAdapterTests(TeamTurnMacs, unittest.TestCase):
         self.assertEqual(len(self.call('GET', f'/v1/team/rooms/{self.room}/messages', {'chat': named},
                                       service=self.first)['messages']), 1)
 
+    def test_a_file_only_answer_finishes_its_live_turn_without_a_failure_notice(self):
+        file = Path(self.temp.name) / 'answer.pdf'
+        file.write_bytes(b'%PDF-1.4\nThe answer.')
+        results = []
+
+        async def runner(event):
+            results.append(await self.adapter.send_document(event.source.chat_id, str(file)))
+        self.connect(runner)
+        self.send('@Reporter send the answer', mentions=[self.mention])
+        self.sync()
+        self.run_turns()
+        self.assertEqual(len(results), 1)
+        self.assertTrue(results[0].success, results[0].error)
+        self.assertEqual([text for writer, text, _ in self.chat() if writer == 'Reporter'], ['answer.pdf'])
+        message = self.call('GET', f'/v1/team/rooms/{self.room}/messages', service=self.first)['messages'][0]
+        self.assertEqual(results[0].message_id, message['id'])
+        self.assertEqual(self.first.team_file_content(self.room, message['id'], message['files'][0]['id']).content,
+                         file.read_bytes())
+
+    def test_a_file_of_a_deleted_request_does_not_reach_the_chat(self):
+        file = Path(self.temp.name) / 'answer.pdf'
+        file.write_bytes(b'%PDF-1.4\nThe answer.')
+        results = []
+
+        async def runner(event):
+            await asyncio.to_thread(self.call, 'DELETE',
+                                    f'/v1/team/rooms/{self.room}/messages/{trigger["id"]}', service=self.first)
+            await asyncio.to_thread(self.sync)
+            results.append(await self.adapter.send_document(event.source.chat_id, str(file)))
+        self.connect(runner)
+        trigger = self.send('@Reporter send the answer', mentions=[self.mention])
+        self.sync()
+        self.run_turns()
+        self.assertEqual(len(results), 1)
+        self.assertFalse(results[0].success)
+        self.assertEqual(self.chat(), [])
+
+    def test_a_stop_during_upload_prevents_the_next_piece_and_the_file_message(self):
+        from coconut.team_files import CHUNK
+        file = Path(self.temp.name) / 'answer.pdf'
+        file.write_bytes(b'x' * (CHUNK + 1))
+        results, sealed = [], []
+        real = self.only.team_helper.seal
+
+        def seal(*arguments, **options):
+            payload = json.loads(arguments[5])
+            if payload.get('kind') == 'file':
+                sealed.append(payload['index'])
+                if payload['index'] == 1:
+                    self.only.gateway_bridge.cancel(f'team:{self.room}:{self.bot["id"]}')
+            return real(*arguments, **options)
+
+        async def runner(event):
+            results.append(await self.adapter.send_document(event.source.chat_id, str(file)))
+        self.connect(runner)
+        self.send('@Reporter send the answer', mentions=[self.mention])
+        self.sync()
+        with mock.patch.object(self.only.team_helper, 'seal', side_effect=seal):
+            self.run_turns()
+            deadline = time.monotonic() + 5
+            while not results and time.monotonic() < deadline:
+                time.sleep(.02)
+        self.sync()
+        self.assertEqual(sealed, [0, 1])
+        self.assertEqual(len(results), 1)
+        self.assertFalse(results[0].success)
+        pieces = self.only.team_store._rows(('entry',), 'SELECT entry FROM team_file_pieces WHERE room=?', (self.room,))
+        self.assertEqual(len(pieces), 1)
+        self.assertFalse(any(writer == 'Reporter' for writer, _, _ in self.chat()))
+
+    def test_a_delete_or_leave_during_upload_prevents_the_file_message(self):
+        self.join(self.second, self.invite({'room': self.room})['link'], 'Grace')
+        self.second.team_sync_pass()
+        self.sync()
+        file = Path(self.temp.name) / 'answer.pdf'
+        file.write_bytes(b'%PDF-1.4\nThe answer.')
+        results, changed = [], []
+        real = self.only.team_helper.seal
+
+        async def runner(event):
+            results.append(await self.adapter.send_document(event.source.chat_id, str(file)))
+        self.connect(runner)
+        for case in ('delete', 'leave'):
+            with self.subTest(case=case):
+                trigger = self.send('@Reporter send the answer', service=self.second, mentions=[self.mention])
+                self.sync()
+
+                def seal(*arguments, **options):
+                    payload = json.loads(arguments[5])
+                    if payload.get('kind') == 'message' and payload.get('files'):
+                        changed.append(case)
+                        if case == 'delete':
+                            self.call('DELETE', f'/v1/team/rooms/{self.room}/messages/{trigger["id"]}',
+                                      service=self.second)
+                        else:
+                            self.leave(self.second, {'room': self.room})
+                    return real(*arguments, **options)
+                with mock.patch.object(self.only.team_helper, 'seal', side_effect=seal):
+                    self.run_turns()
+                self.assertFalse(results[-1].success)
+                self.assertFalse(any(writer == 'Reporter' for writer, _, _ in self.chat()))
+        self.assertEqual(changed, ['delete', 'leave'])
+        self.assertEqual(len(results), 2)
+
+    def test_a_cron_file_does_not_belong_to_the_live_turn_in_its_chat(self):
+        release, chat, turn = self.start_slow_turn()
+        file = Path(self.temp.name) / 'scheduled.pdf'
+        file.write_bytes(b'%PDF-1.4\nThe scheduled report.')
+        self.only.gateway_bridge.cancel(f'team:{self.room}:{self.bot["id"]}')
+        result = self.complete(self.adapter.send_document(chat, str(file), metadata={'job_id': 'scheduled-report'}))
+        self.assertTrue(result.success, result.error)
+        self.sync()
+        self.assertIn(('Reporter', 'scheduled.pdf', None), self.chat())
+        release.set()
+        deadline = time.monotonic() + 5
+        while self.adapter._turns and time.monotonic() < deadline:
+            time.sleep(.02)
+
     def test_a_cron_send_that_the_chat_does_not_show_fails_and_another_send_does_not(self):
         async def runner(event):
             return None
@@ -1020,13 +1138,17 @@ class StandaloneSenderTests(DirectTurnMacs, unittest.TestCase):
                     raise TimeoutError('The file arrived, but its receipt did not.')
             return answer
         with mock.patch.object(team.Bridge, 'request', autospec=True, side_effect=request):
-            self.sent(self.deliver(chat, text='', media_files=[(str(file), False)]))
+            receipt = self.deliver(chat, text='', media_files=[(str(file), False)])
+        self.assertTrue(receipt.get('success'), receipt)
         self.assertEqual(len(calls), 2)
         self.assertEqual(calls[0][0]['message_id'], calls[1][0]['message_id'])
         self.assertGreater(calls[0][1], 15)
         self.assertLessEqual(calls[0][1], team.FILE_SECONDS)
         self.sync()
         self.assertEqual(self.of_chat(named), [('Reporter', 'report.pdf')])
+        message = self.call('GET', f'/v1/team/rooms/{self.room}/messages', {'chat': named},
+                            service=self.first)['messages'][0]
+        self.assertEqual(receipt['message_id'], message['id'])
         for change in ({'filename': 'another.pdf'},
                        {'chat_id': chat_id(self.room, self.bot['id'], elsewhere) + ':alert:deploy:info'},
                        {'alert': {'type': 'risk', 'level': 'info'}},
@@ -1042,10 +1164,26 @@ class StandaloneSenderTests(DirectTurnMacs, unittest.TestCase):
 
     def test_a_failed_file_is_a_failed_delivery_even_when_its_text_arrives(self):
         result = self.deliver(chat_id(self.room, self.bot['id']), media_files=[('/no-such-report.pdf', False)])
-        self.assertTrue(result['success'])
-        self.assertEqual(result['warnings'], ['The file is not available for delivery.'])
+        self.assertFalse(result.get('success'))
+        self.assertEqual(result['error'], 'The file is not available for delivery.')
+        self.assertTrue(result['partial_success'])
+        self.assertTrue(result['message_id'].startswith('outside:'))
+        self.sync()
+        self.assertEqual(self.of_chat(), [('Reporter', 'The weekly report is ready.')])
         self.assertIn('error', self.deliver(chat_id(self.room, self.bot['id']), text='',
                                           media_files=[('/no-such-report.pdf', False)]))
+
+    def test_a_failed_second_file_reports_the_delivered_file_as_a_partial_send(self):
+        file = Path(self.temp.name) / 'report.pdf'
+        file.write_bytes(b'%PDF-1.4\nThe report.')
+        result = self.deliver(chat_id(self.room, self.bot['id']), text='',
+                              media_files=[(str(file), False), ('/no-such-report.pdf', False)])
+        self.assertFalse(result.get('success'))
+        self.assertTrue(result['partial_success'])
+        self.assertEqual(result['error'], 'The file is not available for delivery.')
+        self.sync()
+        message = self.call('GET', f'/v1/team/rooms/{self.room}/messages', service=self.first)['messages'][0]
+        self.assertEqual(result['message_id'], message['id'])
 
     def test_a_service_that_does_not_answer_gets_three_tries_with_one_message_id(self):
         # A restart of the service, then a bridge file that is missing for a moment.

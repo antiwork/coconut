@@ -384,6 +384,7 @@ class TeamTurns:
                     turn_id = self.gateway_bridge.submit_turn(
                         f'team:{room}:{bot}', home, chat_id(room, bot, turn['chat'], turn['direct']), turn['text'],
                         chat_name=turn['chat_name'], team=turn['team'], deadline=time.monotonic() + TURN_SECONDS)
+                    reply.gateway_turn = turn_id
                 typing = self._turns_typing[(room, bot)] = BotTyping(
                     self, room, bot, lambda: self._team_turn_shown(turn_id), turn['chat'], turn['direct']).start()
                 try:
@@ -414,6 +415,11 @@ class TeamTurns:
         with self.gateway_bridge.lock:
             turn = self.gateway_bridge.turns.get(turn_id)
             return turn is not None and turn.shown
+
+    def _team_file_sent(self, turn_id: str | None) -> bool:
+        with self.gateway_bridge.lock:
+            turn = self.gateway_bridge.turns.get(turn_id)
+            return turn is not None and turn.file_sent
 
     def _team_notice(self, turn: dict, part: str) -> None:
         """Post UNFINISHED as an answer to the trigger. A second fault here leaves a log line, so the thread goes
@@ -467,7 +473,8 @@ class TeamTurns:
 
     def _team_say(self, room: str, bot: str, trigger: str, part, text: str, reply_to: str | None = None,
                   request: bool = True, chat: str | None = None, direct: str | None = None,
-                  alert: dict | None = None, file: dict | None = None, deadline: float | None = None) -> str:
+                  alert: dict | None = None, file: dict | None = None, deadline: float | None = None,
+                  request_trigger: str | None = None, check=None) -> str:
         """Write one message of the bot into `chat` (None for the Team chat), or into its direct chat with the person
         `direct` (a member ID). Nothing when the bot no longer answers there, for example after a removal, a leave or
         the removal of the chat, and nothing when the request is gone: `trigger` names the message that the bot
@@ -475,6 +482,8 @@ class TeamTurns:
         member in the list, and has no `reply_to`. A failure of the relay or of the helper leaves a log line, and the
         chat shows nothing. `alert` is the checked alert of a send outside a turn (team_alerts.alert_request): the
         message carries it in a team chat, and a direct message carries none.
+        `request_trigger` separates a live request from the ID of its file delivery. `check` validates the active turn
+        before writes and reads new room entries before the file message.
 
         The result: SAID when the log has the entry of this message after the call (this call or an earlier one wrote
         it), NOT_SAID when the bot no longer answers there or the request is gone, and SAY_FAILED when the relay or
@@ -487,9 +496,11 @@ class TeamTurns:
         try:
             with self._team_room_lock(room):
                 self._team_settle(room)
+                if check is not None:
+                    check(refresh=True)
                 with self.lock:
                     room_row = self.team_store.room(room)
-                    share = self._team_share(room, bot, trigger if request else None, direct)
+                    share = self._team_share(room, bot, (request_trigger or trigger) if request else None, direct)
                     written = self.team_store.entry(room, entry) is not None
                     gone = chat is not None and self.team_store.chat(room, chat) is None
                     person = self.team_store.member(room, direct) if direct else None
@@ -537,8 +548,10 @@ class TeamTurns:
                     fields['alert'] = alert
                 with self._team_file_space(bool(drafts)):
                     if drafts:
-                        fields['files'] = self._team_write_pieces(room_row, drafts, deadline=deadline)
+                        fields['files'] = self._team_write_pieces(room_row, drafts, deadline=deadline, check=check)
                     options = dict(tries=1, deadline=deadline) if deadline is not None else dict(tries=3)
+                    if check is not None:
+                        options['check'] = check
                     self._team_write(room_row, entry, False, fields, **options)
                 if drafts:
                     self._team_drop_drafts(room, drafts)
@@ -614,6 +627,7 @@ class Reply:
         self.service, self.turn = service, turn
         self.segment = ''
         self.count = 0
+        self.gateway_turn = None
 
     def say(self, text: str) -> None:
         """Write a message of the bot. The first part of a turn in the team chat answers the trigger."""
@@ -638,7 +652,7 @@ class Reply:
             self.say(payload['text'])
         elif kind == 'completed':
             self.flush()
-            if self.count == 0:
+            if self.count == 0 and not self.service._team_file_sent(self.gateway_turn):
                 # Hermes ended the turn without a word. The person asked, so the chat says so.
                 self.say(UNFINISHED)
         elif kind == 'failed':

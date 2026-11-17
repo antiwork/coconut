@@ -1050,6 +1050,9 @@ The same size and space limits apply. Direct chats do not take files.
 A standalone delivery shares a 50-second budget across its text, files, and retries.
 The service reserves time for each relay call. A retry keeps its message ID and file ID.
 A retry adds no second file card.
+A live file stays bound to its turn and request. A stopped or removed request cannot publish the file message.
+Before the file message, the service reads new room entries to check for a delete or a member who left.
+A file-only answer ends the turn without a failure notice.
 
 A person adds up to 4 files to a message of the Team chat or of a named chat, for example a photo or a PDF. The bytes go into the log as entries of the kind `file`, so the relay and the helper need no change. `backend/coconut/team_files.py` serves the routes, and `TeamStore` keeps the files.
 
@@ -1410,7 +1413,7 @@ What the service does:
 - It keeps the team rooms of this Mac in step with the relay: the store, the sync thread, the socket watcher and the helper, as on a full Mac.
 - It serves the team routes on the main listener with the token of the bridge file, so `coconut team` and `scripts/team.py` work as on a full Mac. Only the routes of this section, the team routes, `POST /v1/gateway/document` and `DELETE /v1/gateway/document` need the token. Each other route, and a pair request, answers 503 with `{"error": ..., "code": "team_only"}`. `GET /health` works.
 - It keeps the agents that this Mac declares, and it saves their pages.
-- It gives the messages that name an agent with its chat connected to the Hermes gateway of that agent, and writes the replies into the chat. See [An agent answers](#an-agent-answers). It does the same for a direct message of a person to such an agent, and writes the replies as direct messages for that person. See [The Mac for a team only](#the-mac-for-a-team-only). For that, the main listener also serves `POST /v1/gateway/poll`, `/v1/gateway/events` and `/v1/gateway/messages` with the token of the bridge file. No other route of the gateway answers.
+- It gives the messages that name an agent with its chat connected to the Hermes gateway of that agent, and writes the replies into the chat. See [An agent answers](#an-agent-answers). It does the same for a direct message of a person to such an agent, and writes the replies as direct messages for that person. See [The Mac for a team only](#the-mac-for-a-team-only). For that, the main listener also serves `POST /v1/gateway/poll`, `/v1/gateway/events`, `/v1/gateway/messages` and `/v1/gateway/files` with the token of the bridge file. No other route of the gateway answers.
 
 What the service never does: it imports no Hermes module and no module of the full service (`service.py` and what it loads), and it runs no contract check of Hermes. It reads and changes no file under a Hermes home. Only the command of the operator `coconut team connect-chat --confirm` adds the plugin to the Hermes home of an agent, in a process of its own (`scripts/team_chat.py`), and `coconut team disconnect-chat` takes it away. It starts and stops no gateway, loads and installs no plugin and no skill, and copies no key. It runs no scheduler, no kanban adapter and no worker. It opens no tunnel listener, also with `--tunnel-port`, pairs no phone and sends no push notification. It keeps no event, because no phone reads one. Its only child process is the team helper.
 
@@ -1463,7 +1466,9 @@ Each try waits 15 seconds for the service, as long as one relay try of the servi
 
 A later try waits for the lock of the room and finds the entries of the earlier try, so it gets `recorded: true` when the earlier try ends in time. When all parts together take longer than 48 seconds (30 seconds in the thread case), Hermes records a failed delivery, and the chat still shows the text later.
 
-The team chat takes no file from this path: the text goes, and the plugin writes a log line. The result of the plugin has no `warnings`. But Hermes adds its own warning to the result of a send with files (`tools/send_message_tool.py`), so the record of a run with files shows a failed delivery, although the text arrived. See [Messages outside a Coconut turn](architecture.md#messages-outside-a-coconut-turn).
+The team chat takes files from this path through `POST /v1/gateway/files`. See [Files](#files).
+If any file fails, the sender returns an error. It sets `partial_success` when text or another file arrived.
+For a file-only send, the receipt names the delivered file message.
 
 Before the scheduler runs a job with an agent, its preflight checks each platform of `deliver` and `failure_deliver`. A platform that it does not know stops the whole job, with its other targets, for example a Telegram target. The plugin registers `cron_deliver_env_var: COCONUT_HOME_CHANNEL` in the mode `team`, so `coconut` is a known target. The block of `connect-chat` (`enabled: true`) makes `coconut` a connected platform, so the second check of the preflight also passes. A target with a chat ID needs no value in the variable.
 

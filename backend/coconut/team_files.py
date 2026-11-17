@@ -189,7 +189,8 @@ class TeamFiles:
             raise ServiceError(413, SPACE_FULL)
         return [drafts[draft] for draft in ids]
 
-    def _team_write_pieces(self, room: dict, drafts: list[dict], deadline: float | None = None) -> list[dict]:
+    def _team_write_pieces(self, room: dict, drafts: list[dict], deadline: float | None = None,
+                           check=None) -> list[dict]:
         """Write each piece of each draft as a `file` entry, in order, and return the items of the message. A piece
         whose bytes this Mac has with the size of the draft, from a send without an answer, is not written again. The
         `file` entry alone is not enough: the sweep or the delete of a message can have removed its bytes. Then the
@@ -206,6 +207,8 @@ class TeamFiles:
                     stored = self.team_store.piece_size(room['room'], entry)
                 if existing is None or existing['kind'] != 'file' or stored != len(piece):
                     options = dict(tries=1, deadline=deadline) if deadline is not None else dict(tries=2)
+                    if check is not None:
+                        options['check'] = check
                     self._team_write(room, entry, False, {'kind': 'file', 'file': draft['id'], 'index': index,
                                                           'data': base64.b64encode(piece).decode()}, **options)
             items.append({name: draft[name] for name in ('id', 'name', 'type', 'size', 'hash', 'width', 'height')
