@@ -114,13 +114,13 @@ def bot_creation_receipt(value, payload, current_bot=None):
     current_bot = current_bot or {}
     if (value['profile_id'] != value['bot_id'] or value['session_id'] == value['bot_id']
             or value['bot_id'] == current_bot.get('id') or value['session_id'] == current_bot.get('session_id')):
-        raise ValueError('The service did not confirm a separate agent profile and session.')
-    # The profile ID is the key of the profiles table: the new bot must have its own Hermes profile there.
+        raise ValueError('The service did not confirm a separate agent identity and session.')
+    # The profile ID is the key of the profiles table: the new bot must have its row there.
     if os.environ.get('COCONUT_DATA_DIR') and (Path(os.environ['COCONUT_DATA_DIR']) / 'coconut.sqlite3').is_file():
         from . import profile_registry
         row = profile_registry.lookup(os.environ['COCONUT_DATA_DIR'], value['profile_id'])
         if row is None or row['state'] != 'active':
-            raise ValueError('The service did not confirm a Hermes profile for the new agent.')
+            raise ValueError('The service did not confirm the Hermes profile of the new agent.')
     return {key: value[key] for key in ('status', 'bot_id', 'profile_id', 'session_id', 'name', 'role', 'source_message_id')}
 
 

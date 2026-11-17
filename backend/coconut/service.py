@@ -129,7 +129,6 @@ from .work_sources import WorkSources, card_answer_steps
 from .work_status import PROPOSAL_EXECUTION, WorkStatus
 from .background_processes import BackgroundProcesses, PENDING_COMPLETIONS
 from .native_execution import NativeExecution
-from . import agent_letters
 from .decision_inbox import DecisionInbox, migrate_notification_importance
 from .pull_request_reviews import PENDING_CARDS, PR_ARTIFACTS, PR_URL_INDEX, PullRequestReviews
 from .work_progress import WorkProgress, work_enabled
@@ -159,7 +158,7 @@ from .withdrawal_corrections import WithdrawalCorrections
 from .silent_responses import SilentResponses, is_silent_message, is_silent_response
 from .technical_lane import TechnicalLane
 from .hermes_setup import HermesSetup
-from .bot_profiles import BotProfiles
+from .bot_profiles import NEW_CHAT_NAME, SHARED_SETTINGS, BotProfiles
 from .agent_chats import AgentChats
 from .gateway_chat import GatewayChat
 from .message_queue import MessageQueue
@@ -203,7 +202,7 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
 
     def __init__(self, data_dir: str | Path, provider: Any, *, start_workers: bool = True, pr_tracker: Any = None,
                  hermes_home: str | Path | None = None):
-        """hermes_home is the person's Hermes home. Each of its profiles is a bot (bot_profiles)."""
+        """hermes_home is the person's Hermes home. Its default profile runs every chat (bot_profiles)."""
         self.root, self.process_lock = take_data_folder(data_dir)
         check_data_folder(self.root, self.process_lock, FULL_MODE)
         self.files = self.root / 'artifacts'
@@ -362,7 +361,7 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
                 self._migrate_silent_responses()
                 self._migrate_pr_review_sources()
                 self._migrate_native_routine_prompts()
-                self._migrate_agent_letters()
+                self._mark_coconut_chat()
                 migrate_notification_importance(self.db)
                 self._move_artifact_content()
                 if not getattr(self, '_workspace_recovery_hold', False):
@@ -381,10 +380,6 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
                 self._put('bots', bot)
             self.db.execute('DROP TABLE IF EXISTS policies')
             self.db.execute('DROP TABLE IF EXISTS preference_receipts')
-        try:
-            self.rescan_profiles()
-        except Exception:
-            logging.getLogger(__name__).exception('The Hermes profile scan failed at start. The watcher tries again.')
         if start_workers:
             self.start()
         if hasattr(self.provider, 'subscribe_model_catalog'):
@@ -1045,7 +1040,7 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
                                    "(type IN ('settings.updated','bot.created','bot.deleted') OR type LIKE 'routine.%') LIMIT 1", (settings_cursor,)).fetchone():
                     continue
                 data_started = time.perf_counter()
-                bots = [self._bot_view(dict(b, **{key: value for key, value in observed.get(b['id'], {}).items() if key in ('name', 'role', 'instructions', 'approval_override', 'effective_approval', 'worker_limit', 'model_override', '_native_effective_model', '_model_error')}), catalog) for b in self._all('bots') if not b.get('_deleted')]
+                bots = [self._bot_view(dict(b, **{key: value for key, value in observed.get(b['id'], {}).items() if key in ('approval_override', 'effective_approval', 'worker_limit', 'model_override', '_native_effective_model', '_model_error')}), catalog) for b in self._all('bots') if not b.get('_deleted')]
                 visible = {b['id'] for b in bots}
                 state = {'bots': bots, **self._work_limit_state()}
                 for table in self.TABLES[1:]:
@@ -1199,9 +1194,9 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
             return self._mutate_model_default(data, key, fingerprint)
         parts = path.strip('/').split('/')
         if method == 'PATCH' and len(parts) == 3 and parts[:2] == ['v1', 'bots'] and isinstance(data, dict):
-            return self._mutate_native_bot(parts[2], data, key, fingerprint, device_id)
-        if method in ('DELETE', 'POST') and len(parts) >= 3 and parts[:2] == ['v1', 'bots'] and (
-                method == 'DELETE' and len(parts) == 3 or parts[3:] == ['profile', 'delete']):
+            from .coconut_chat import refuse_removal
+            refuse_removal(self, parts[2], data)
+        if method == 'DELETE' and len(parts) == 3 and parts[:2] == ['v1', 'bots']:
             from .coconut_chat import refuse_removal
             refuse_removal(self, parts[2])
         catalog = self._model_catalog() if path == '/v1/settings/model' or (isinstance(data, dict) and ('model_override' in data or path == '/v1/bots')) else None
@@ -1219,11 +1214,6 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
                     self._sync_profile(bot)
                 if method == 'DELETE' and len(parts) == 3 and parts[:2] == ['v1', 'bots']:
                     callbacks.append(lambda: self._finish_bot_deletion(parts[2]))
-                if method == 'POST' and len(parts) == 5 and parts[:2] == ['v1', 'bots'] and parts[3:] == ['profile', 'delete']:
-                    callbacks.append(lambda: self._finish_bot_deletion(parts[2]))
-                    row = self.profiles.rows.get(parts[2])
-                    if row is not None:
-                        callbacks.append(lambda: self._finish_profile_deletion(parts[2], row['name']))
             else:
                 self._request_device_id = device_id
                 self._request_key = key
@@ -1272,9 +1262,6 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
             elif not intent or not intent.get('bot_id'):
                 default = catalog['default']
                 self._event('settings.updated', {field: default.get(field) for field in ('model', 'provider', 'reasoning_effort')})
-        if not error:
-            # A new default, a bot's choice or its restore: the reconcile brings the profiles in line after the commit.
-            self.wake_model_follow()
         return response
 
     def _reconcile_model_updates(self, catalog: dict | None) -> None:
@@ -1324,68 +1311,6 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
             raise ServiceError(409, response['_model_error'])
         return response
 
-    def _mutate_native_bot(self, bot_id: str, data: dict, key: str, fingerprint: str, device: str) -> dict:
-        with self.model_settings_lock:
-            catalog = self._validation_model_catalog() if data.get('model_override') is not None else self._model_catalog()
-            self._reconcile_model_updates(catalog)
-            previous = self._previous_model_response(key, fingerprint)
-            if previous is not None:
-                return previous
-            with self.lock:
-                bot = self._get('bots', bot_id)
-            if bot.get('_deleted'):
-                raise ServiceError(404, 'This agent was deleted.')
-            from .coconut_chat import refuse_removal
-            refuse_removal(self, bot_id, data)
-            self._check_chat_change(bot, data)
-            if 'profile_id' in data and data['profile_id'] != bot['profile_id']:
-                raise ServiceError(409, 'An agent keeps its original Hermes profile ID.')
-            for field in ('instructions', 'memory'):
-                if field in data and (not isinstance(data[field], str) or len(data[field]) > 20000):
-                    raise ServiceError(400, f'{field} must contain at most 20000 characters.')
-            for field in ('name', 'avatar', 'color'):
-                if field in data:
-                    require_text(data, field, 160)
-            self._check_letter(bot, data)
-            if 'role' in data and (not isinstance(data['role'], str) or len(data['role']) > 160):
-                raise ServiceError(400, 'The label must contain at most 160 characters.')
-            if 'worker_limit' in data:
-                from .work_limits import validate_limit
-                try:
-                    validate_limit(data['worker_limit'])
-                except ValueError as error:
-                    raise ServiceError(400, str(error)) from None
-            if 'approval_override' in data and data['approval_override'] not in (None, 'off', 'smart', 'manual'):
-                raise ServiceError(400, 'Choose an approval mode from Hermes settings.')
-            for field in ('archived', 'pinned', 'notifications'):
-                if field in data and not isinstance(data[field], bool):
-                    raise ServiceError(400, f'{field} must be true or false.')
-            expected = {}
-            if 'model_override' in data:
-                expected['model_override'] = self._model_override(data['model_override'], catalog)
-            if 'instructions' in data:
-                expected['instructions'] = data['instructions']
-            expected.update({field: data[field] for field in ('name', 'role', 'approval_override', 'worker_limit') if field in data})
-            intent = dict(bot_id=bot_id, expected=expected, data=data, device_id=device)
-            with self.transaction():
-                self.db.execute('INSERT INTO requests VALUES (?,?,?)', (key, fingerprint, encoded({'_model_pending': intent})))
-                self._event('bot.settings_pending', {'request_id': key, 'fields': sorted(data)}, bot_id)
-            try:
-                # Only the bot's own model is a write here. null only records the choice: the reconcile writes the default.
-                if expected.get('model_override') is not None:
-                    if hasattr(self.provider, 'set_bot_model'):
-                        self.provider.set_bot_model(bot, expected['model_override'])
-                if hasattr(self.provider, 'set_bot_settings'):
-                    self.provider.set_bot_settings(bot, {field: expected[field] for field in ('name', 'role', 'approval_override', 'worker_limit') if field in expected})
-                if 'instructions' in expected:
-                    self.profiles.write_instructions(bot, expected['instructions'])
-            except ProfileError as error:
-                # For example a missing profile folder. Coconut never creates one here.
-                raise ServiceError(409, str(error)) from None
-            except Exception:
-                raise ServiceError(503, 'The Mac could not confirm the profile change. Retry with the same request key.') from None
-            return self._finish_model_update(key, catalog, intent=intent)
-
     def mutate_mcp(self, data: dict, key: str, fingerprint: str) -> dict:
         if not hasattr(self.provider, 'native_settings'):
             raise ServiceError(503, 'Hermes is not available.')
@@ -1424,72 +1349,34 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
                 raise ServiceError(503, 'The Mac could not confirm the model change. Retry with the same request key.') from None
             return self._finish_model_update(key, catalog)
 
-    def _create_bot(self, data: dict, *, audit: dict | None = None, profile: dict | None = None) -> dict:
-        """Create a bot. `profile` is {name, home} of a profile that a scan found. Without it, Hermes creates one."""
+    def _create_bot(self, data: dict, *, audit: dict | None = None) -> dict:
+        """Create a project: a named chat on the one Hermes profile (bot_profiles.py).
+
+        Without a name, the first message of the person names it (agent_chats._title_chat). The apps send no face: an
+        `avatar` or a `color` from an older app is ignored. The API still sends both fields, empty, for older apps.
+        """
         if data.get('model_override') is not None:
-            raise ServiceError(400, 'Create the agent, then choose its model in agent settings.')
+            raise ServiceError(409, SHARED_SETTINGS)
         if not isinstance(data.get('pinned', False), bool):
             raise ServiceError(400, 'pinned must be true or false.')
         for field in ('instructions', 'memory'):
             if not isinstance(data.get(field, ''), str) or len(data.get(field, '')) > 20000:
                 raise ServiceError(400, f'{field} must contain at most 20000 characters.')
-        name = require_text(data, 'name', 80)
-        held = agent_letters.taken(self._all('bots'))
-        from . import coconut_chat, profile_registry
-        # The default profile shows as the Coconut chat (coconut_chat.view), so it looks for its letter under that name.
-        shown = coconut_chat.NAME if profile and profile['name'] == profile_registry.DEFAULT and name in coconut_chat.OLD_NAMES else name
-        letter = agent_letters.choose(held, agent_letters.letter_of(data.get('avatar')), shown)
-        if letter is None and profile is None:
-            raise ServiceError(409, agent_letters.FULL)
-        bot = dict(id=uid(), session_id=uid(), name=name, role=str(data.get('role', ''))[:160], avatar='', color=agent_letters.COLORS[0], instructions=data.get('instructions', ''), notifications=True, status='idle', last_message='', unread_count=0, archived=False, pinned=data.get('pinned', False), created_at=now())
+        name = str(data.get('name') or '').strip()
+        if len(name) > 80:
+            raise ServiceError(400, 'name must contain at most 80 characters.')
+        bot = dict(id=uid(), session_id=uid(), name=name or NEW_CHAT_NAME, role=str(data.get('role', ''))[:160], avatar='',
+                   color='', instructions='', notifications=True, status='idle', last_message='', unread_count=0,
+                   archived=False, pinned=data.get('pinned', False), created_at=now())
         bot['last_read_message_id'] = None
-        if letter:
-            # A Hermes profile that a scan finds still becomes an agent when all 26 letters are taken. It has no letter.
-            agent_letters.assign(bot, letter)
-            # An agent named only by its letter takes its name from the first message of the person (agent_chats).
-            if profile is None and name == letter:
-                bot['auto_name'] = True
+        if not name:
+            bot['auto_name'] = True
         bot['profile_id'] = profile_id(bot)
         bot['model_override'] = None
-        if profile is None:
-            try:
-                profile = self._new_profile(bot)
-            except (ProfileError, OSError) as error:
-                raise ServiceError(503, f'Hermes did not create the profile of this agent: {error}') from None
-            # A bot that Coconut creates follows the default model. A found profile gets its choice in the reconcile.
-            bot['model_follows_default'] = True
-            self.wake_model_follow()
-        self._attach_profile(bot, profile)
+        self._attach_profile(bot)
         self._put('bots', bot)
         self._event('bot.created', bot | (audit or {}), bot['id'], (audit or {}).get('source_task_id'))
         return bot
-
-    def _check_letter(self, bot: dict, data: dict) -> str | None:
-        """The letter that a change of `avatar` asks for, or None without one. Each agent has its own letter."""
-        if 'avatar' not in data:
-            return None
-        letter = agent_letters.letter_of(data['avatar'])
-        if letter is None:
-            raise ServiceError(400, 'Choose a letter from A to Z.')
-        holder = agent_letters.taken(self._all('bots'), besides=bot['id']).get(letter)
-        if holder is not None:
-            from .coconut_chat import view
-            raise ServiceError(409, f'{letter} is the letter of {view(self, holder, dict(holder))["name"]}. Choose a free letter.')
-        return letter
-
-    def _migrate_agent_letters(self):
-        """Give each agent without a letter its own (agent_letters.py), and its chats the same face. The icons that an
-        image backend once made for agents go: the letter is the face."""
-        bots = self._all('bots')
-        from .coconut_chat import view
-        changed = {bot['id']: bot for bot in agent_letters.migrate(bots, lambda bot: view(self, bot, dict(bot)).get('name'))}
-        changed.update({bot['id']: bot for bot in bots if 'avatar_image' in bot and bot['id'] not in changed})
-        for bot in changed.values():
-            bot.pop('avatar_image', None)
-            self._put('bots', bot)
-            self._event('bot.updated', self._public(bot), bot['id'])
-            self._note_published(bot['id'], encoded(self._public(bot)))
-            self._follow_agent(bot)
 
     def _bot_deletion_scope(self, bot_id: str) -> set[str]:
         tasks = self._all('tasks')
@@ -1522,7 +1409,7 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
                 # The team sync replaces the entries of the bot with `delete` entries (team_pages.py).
                 self.team_wake()
             self._remove_bot_documents(bot['id'])
-            # Remove from Coconut keeps the Hermes profile folder.
+            # Remove from Coconut keeps the Hermes profile and its sessions.
             self._remove_profile_row(bot['id'])
             self._event('bot.deleted', {'id': bot['id']} | (audit or {}), bot['id'], (audit or {}).get('source_task_id'))
             # A deleted bot publishes no more rows, so its record has no use. Forget it when the transaction commits.
@@ -1660,26 +1547,17 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
                 self._check_chat_change(bot, data)
                 if 'chat_title' in data:
                     bot['chat_title'] = data['chat_title'].strip()
-                if 'model_override' in data:
-                    bot['model_override'] = self._model_override(data['model_override'], self._request_model_catalog)
-                    # null makes the bot follow the default model again. A model makes it the bot's own.
-                    bot['model_follows_default'] = bot['model_override'] is None
-                    if not bot['model_follows_default']:
-                        bot.pop('model_follow_error', None)
+                self._check_shared_settings(data)
                 if 'profile_id' in data and data['profile_id'] != bot['profile_id']:
                     raise ServiceError(409, 'An agent keeps its original Hermes profile ID.')
-                letter = self._check_letter(bot, data)
-                for field in ('name', 'role', 'avatar', 'color', 'instructions'):
-                    if field in data:
-                        if field in ('instructions', 'role'):
-                            if not isinstance(data[field], str) or len(data[field]) > 20000:
-                                raise ServiceError(400, f'{field} must contain at most 20000 characters.')
-                            bot[field] = data[field]
-                        else:
-                            bot[field] = require_text(data, field, 160)
-                if letter:
-                    # The color belongs to the letter, whatever color the request names.
-                    agent_letters.assign(bot, letter)
+                # `avatar` and `color` from an older app are ignored: a project has no face.
+                if 'name' in data:
+                    bot['name'] = require_text(data, 'name', 160)
+                    bot.pop('auto_name', None)
+                if 'role' in data:
+                    if not isinstance(data['role'], str) or len(data['role']) > 160:
+                        raise ServiceError(400, 'The label must contain at most 160 characters.')
+                    bot['role'] = data['role']
                 for field in ('archived', 'pinned', 'notifications'):
                     if field in data:
                         if not isinstance(data[field], bool):
@@ -1703,8 +1581,6 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
             if parts[3:] == ['chats'] and method == 'POST':
                 # A new chat: a fresh conversation with the same agent (agent_chats.py).
                 return self._bot_view(self._new_chat(bot), self._request_model_catalog)
-            if parts[3:] == ['profile', 'delete'] and method == 'POST':
-                return self._delete_profile_request(bot, data, callbacks, device)
             if parts[3:] == ['read'] and method == 'POST':
                 unread.mark_read(self.db, bot)
                 self._put('bots', bot)
@@ -3093,7 +2969,6 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
         self.process_poller.start()
         self.source_poller = threading.Thread(target=self._poll_work_sources, name='coconut-source-poll', daemon=True)
         self.source_poller.start()
-        self._start_profile_watcher()
         self._start_hermes_entries()
         self._start_gateway_supervisor()
         self._start_team()
@@ -4661,8 +4536,6 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
         retirement = getattr(self, '_retirement_thread', None)
         if retirement is not None:
             retirement.join(timeout=RETIREMENT_CLOSE_SECONDS)
-        if getattr(self, 'profile_watcher', None):
-            self.profile_watcher.join(timeout=10)
         self._close_team()
         self.push.close()
         self._close_gateway_chat()

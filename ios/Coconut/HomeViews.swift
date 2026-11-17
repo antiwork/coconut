@@ -329,8 +329,6 @@ struct BotContactRow: View {
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let bot: Bot
-    /// The face of the bot. The iPhone list shows a large face; a Mac sidebar shows a smaller one.
-    var avatarSize: CGFloat = BoardStyle.rowFace
     /// The name of the row. A further chat of a project shows its title next to the name of the project.
     var title: String? = nil
     /// The star mark of a starred project at the top of the Chats list.
@@ -355,8 +353,9 @@ struct BotContactRow: View {
 
     var body: some View {
         let subtitle = BotRowSubtitle(needsYou: store.botNeedsYou(bot), phase: phase, health: bot.health)
+        // A project has no face: its name and its state are the row.
         ChatRowLayout(name: title ?? bot.name, unread: bot.unreadCount, date: lastMessageDate, pinned: pinned) {
-            LiveBotAvatar(bot: bot, size: avatarSize)
+            EmptyView()
         } subtitle: {
             Group {
                 // A pending card or a working phase takes the place of the last message, like a typing notice.

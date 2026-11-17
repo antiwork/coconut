@@ -84,7 +84,7 @@ struct NewChatBar: View {
         let shape = RoundedRectangle(cornerRadius: BoardStyle.Radius.large, style: .continuous)
         let canSend = target != nil && !sending && !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         return VStack(alignment: .leading, spacing: 0) {
-            TextField(target.map { "Message \($0.name)" } ?? "Create a project to start a chat", text: $text, axis: .vertical)
+            TextField(target.map { "New chat with \($0.name)" } ?? "Create a project to start a chat", text: $text, axis: .vertical)
                 .focused($focused)
                 .modifier(ComposerFieldStyle(send: { if let target { send(to: target) } }, stacked: true))
                 .padding(.horizontal, BoardStyle.Space.m)
@@ -121,7 +121,6 @@ struct NewChatBar: View {
                 newProjectButton
             } label: {
                 HStack(spacing: BoardStyle.Space.xs) {
-                    LiveBotAvatar(bot: target, size: 20)
                     Text(target.name).lineLimit(1)
                     Image(systemName: "chevron.down").font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
                 }

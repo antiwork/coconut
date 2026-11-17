@@ -66,12 +66,8 @@ class NativeFallbackUpdates:
             try:
                 result = self.provider.native_settings('set_fallback', models=models)
             except Exception:
-                # The write can have landed before the reply was lost. The bots that follow the default then need it.
-                self.wake_model_follow()
                 raise ServiceError(503, 'The Mac could not confirm the fallback model. Retry with the same request key.') from None
             with self.transaction():
                 self.db.execute('UPDATE requests SET response=? WHERE key=?', (encoded(result), key))
                 self._event('settings.updated', {'fallback': result})
-        # The bots that follow the default model copy its fallback models. The reconcile runs after the commit.
-        self.wake_model_follow()
         return result

@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// A page that Profile opens: a thing of this device, or a default for the agents.
+/// A page that Profile opens: a thing of this device, or a setting that every chat shares.
 enum ProfileRoute: Hashable {
     case mac, notifications, connections, model, access, parallelWork, team
 }
@@ -27,7 +27,7 @@ struct ProfileSummary: Equatable {
     }
 }
 
-/// The Profile tab: the person, this device, the defaults of the agents, and Coconut itself. Coconut has no Settings
+/// The Profile tab: the person, this device, the settings of every chat, and Coconut itself. Coconut has no Settings
 /// screen: the few things that need this device are here, and the Coconut chat changes the rest.
 struct ProfileView: View {
     @Environment(AppStore.self) private var store
@@ -57,7 +57,7 @@ struct ProfileView: View {
                 BoardRow(symbol: "link", title: "Sign-ins and connections", detail: "Google, GitHub and other tools")
                     .boardButton("mcp-settings") { pushRoute?(ProfileRoute.connections) }
             }
-            BoardSection("Defaults for agents") {
+            BoardSection("All chats") {
                 // The row is a menu of the models. Its last line opens the page with the effort and the fallback.
                 ModelMenu(settings: { pushRoute?(ProfileRoute.model) }) { _ in
                     BoardRow(symbol: "cpu", title: "Model", value: modelSummary, chevron: false, menu: true)

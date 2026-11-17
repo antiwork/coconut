@@ -569,11 +569,11 @@ struct MacSidebar: View {
 
     private func botRow(_ bot: Bot) -> some View {
         MacSidebarRow(name: bot.archived ? bot.listName : bot.isChat ? bot.chatLabel : bot.name, unread: bot.unreadCount) {
-            // A further chat has no face of its own: the face of its agent is in the row above it.
+            // A project has no face. A further chat shows a bubble under its project, and a dot marks work.
             if bot.isChat && !bot.archived {
                 Image(systemName: "bubble.left").font(.caption).foregroundStyle(.tertiary)
             } else {
-                LiveBotAvatar(bot: bot, size: 20)
+                ZStack { BotActivityDot(bot: bot) }.frame(width: 12)
             }
         }
             .padding(.leading, bot.isChat && !bot.archived ? BoardStyle.Space.m : 0)

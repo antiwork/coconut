@@ -87,14 +87,11 @@ extension Array where Element == Bot {
     var withoutChats: [Bot] { filter { !$0.isChat } }
 }
 
-/// New project makes a project at once: a random letter that no project holds, as its face and its name. The first
-/// message of the person names it.
+/// The plus makes a project at once, without a name. The first message of the person names it, and the person can
+/// rename it on its page.
 enum NewAgent {
-    /// A random free letter, or nil when all 26 letters have an agent.
-    static func letter(bots: [Bot]) -> String? {
-        let held = AgentLetter.taken(by: bots)
-        return AgentLetter.all.filter { held[$0] == nil }.randomElement()
-    }
+    /// The name of a project until its first message names it. The Mac uses the same name (bot_profiles.NEW_CHAT_NAME).
+    static let name = "New chat"
 }
 
 /// What a way to start a chat asks of the message box: the project that it sends to, and the text that waits in it.
@@ -128,16 +125,11 @@ extension AppStore {
         return true
     }
 
-    /// New project: makes a project with a random free letter, and starts a chat in it. Returns the project, or nil
-    /// when the Mac did not make it; the error notice says why.
+    /// New project: makes a project without a name, and starts a chat in it. Its first message names it. Returns the
+    /// project, or nil when the Mac did not make it; the error notice says why.
     @discardableResult
     func newProject() async -> Bot? {
-        guard let letter = NewAgent.letter(bots: bots) else {
-            error = "All 26 letters have a project. Delete a project to free its letter."
-            return nil
-        }
-        guard let bot = await createBot(name: letter, role: "", avatar: AgentLetter.symbol(letter),
-                                        color: AgentLetter.colors(letter).fill, instructions: "") else { return nil }
+        guard let bot = await createBot() else { return nil }
         // The update of the Mac brings the project too. The app shows it at once.
         if !bots.contains(where: { $0.id == bot.id }) { bots.append(bot) }
         startChat(in: bot)

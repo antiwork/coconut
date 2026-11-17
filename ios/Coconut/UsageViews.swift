@@ -279,7 +279,6 @@ struct UsageView: View {
             if rows.isEmpty { BoardEmptyRow(text: "No agent worked in this range.") }
             ForEach(rows, id: \.0.id) { bot, summary in
                 HStack(spacing: BoardStyle.Space.m) {
-                    LiveBotAvatar(bot: bot, size: 28)
                     VStack(alignment: .leading, spacing: BoardStyle.Space.line) {
                         Text(bot.name).lineLimit(1)
                         Text("\(UsageMath.count(summary.total.turns)) turns · \(UsageMath.count(summary.total.tokens)) tokens · \(UsageMath.duration(summary.total.workingSeconds))")

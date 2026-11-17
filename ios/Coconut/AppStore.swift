@@ -772,17 +772,18 @@ final class AppStore {
         return true
     }
 
-    /// Makes an agent on the Mac. Returns the agent, or nil when the Mac did not make it.
+    /// Makes a project on the Mac. Without a name, its first message names it. Returns the project, or nil when the Mac
+    /// did not make it.
     @discardableResult
-    func createBot(name: String, role: String, avatar: String, color: String, instructions: String, memory: String = "", pinned: Bool = false) async -> Bot? {
+    func createBot(name: String = "", pinned: Bool = false) async -> Bot? {
         if isDemo {
-            let bot = Bot(id: UUID().uuidString, sessionId: UUID().uuidString, name: name, role: role, avatar: avatar,
-                          color: color, instructions: instructions, status: "idle", lastMessage: "",
-                          unreadCount: 0, archived: false, createdAt: Self.now, memory: memory, pinned: pinned)
+            let bot = Bot(id: UUID().uuidString, sessionId: UUID().uuidString, name: name.isEmpty ? NewAgent.name : name,
+                          role: "", instructions: "", status: "idle", lastMessage: "", unreadCount: 0, archived: false,
+                          createdAt: Self.now, pinned: pinned)
             bots.append(bot)
             return bot
         }
-        return await write("bots", payload: BotRequest(name: name, role: role, avatar: avatar, color: color, instructions: instructions, memory: memory, pinned: pinned), as: Bot.self)
+        return await write("bots", payload: BotRequest(name: name, pinned: pinned), as: Bot.self)
     }
 
     /// Asks the Mac for a new chat of an agent (makeChat).
@@ -802,26 +803,9 @@ final class AppStore {
         }
         optimistically("bot/\(bot.id)", change: { transaction in
             if let value = patch.name { optimisticBot(bot.id, \.name, value, in: transaction) }
-            if let value = patch.role { optimisticBot(bot.id, \.role, value, in: transaction) }
-            if let value = patch.avatar { optimisticBot(bot.id, \.avatar, value, in: transaction) }
-            if let value = patch.color { optimisticBot(bot.id, \.color, value, in: transaction) }
-            if let value = patch.instructions { optimisticBot(bot.id, \.instructions, value, in: transaction) }
             if let value = patch.notifications { optimisticBot(bot.id, \.notifications, value, in: transaction) }
         }, save: { let _: Bot? = await self.write("bots/\(bot.id)", method: "PATCH", payload: patch, as: Bot.self) })
     }
-
-    func updateBotInstructions(bot: Bot, text: String) async {
-        if isDemo {
-            if let index = bots.firstIndex(where: { $0.id == bot.id }) { bots[index].instructions = text }
-            return
-        }
-        optimistically("bot/\(bot.id)", change: { optimisticBot(bot.id, \.instructions, text, in: $0) },
-                       save: { let _: Bot? = await self.write("bots/\(bot.id)", method: "PATCH", payload: InstructionsRequest(instructions: text), as: Bot.self) })
-    }
-
-
-
-
 
     func createRoutine(bot: Bot, name: String, prompt: String, cron: String, timezone: String, enabled: Bool = true) async {
         if isDemo {
@@ -1725,62 +1709,28 @@ final class AppStore {
                        save: { let _: FallbackSettings? = await self.write("settings/fallback", method: "PUT", payload: FallbackRequest(models: models), as: FallbackSettings.self) })
     }
 
-    func setWorkerLimit(_ value: Int?, botId: String? = nil) async {
+    func setWorkerLimit(_ value: Int?) async {
         if isDemo {
-            if let botId, let index = bots.firstIndex(where: { $0.id == botId }) {
-                bots[index].workerLimit = value
-            } else if let settings = parallelWork {
+            if let settings = parallelWork {
                 parallelWork = ParallelWorkSettings(limit: value, effectiveLimit: value ?? settings.automaticLimit, automaticLimit: settings.automaticLimit)
             }
             return
         }
-        if let botId {
-            optimistically("bot/\(botId)", change: { optimisticBot(botId, \.workerLimit, value, in: $0) },
-                           save: { let _: Bot? = await self.write("bots/\(botId)", method: "PATCH", payload: WorkerLimitRequest(limit: value, bot: true), as: Bot.self) })
-        } else {
-            let automatic = parallelWork?.automaticLimit ?? 4
-            optimistically("settings/parallel-work", change: { optimisticValue(\.parallelWork, Optional(ParallelWorkSettings(limit: value, effectiveLimit: value ?? automatic, automaticLimit: automatic)), in: $0) },
-                           save: { let _: ParallelWorkSettings? = await self.write("settings/parallel-work", method: "PUT", payload: WorkerLimitRequest(limit: value, bot: false), as: ParallelWorkSettings.self) })
-        }
+        let automatic = parallelWork?.automaticLimit ?? 4
+        optimistically("settings/parallel-work", change: { optimisticValue(\.parallelWork, Optional(ParallelWorkSettings(limit: value, effectiveLimit: value ?? automatic, automaticLimit: automatic)), in: $0) },
+                       save: { let _: ParallelWorkSettings? = await self.write("settings/parallel-work", method: "PUT", payload: WorkerLimitRequest(limit: value, bot: false), as: ParallelWorkSettings.self) })
     }
 
-    func setApproval(_ value: String?, botId: String? = nil) async {
+    /// The access of every chat: one Hermes profile runs them all.
+    func setApproval(_ value: String) async {
         if isDemo {
-            if let botId, let index = bots.firstIndex(where: { $0.id == botId }) {
-                bots[index].approvalOverride = value
-            } else if let value {
-                if let settings = approvals { approvals = ApprovalSettings(defaults: value, modes: settings.modes) }
-            }
+            if let settings = approvals { approvals = ApprovalSettings(defaults: value, modes: settings.modes) }
             return
         }
-        if let botId {
-            optimistically("bot/\(botId)", change: { transaction in
-                optimisticBot(botId, \.approvalOverride, value, in: transaction)
-                optimisticBot(botId, \.effectiveApproval, value ?? approvals?.defaults, in: transaction)
-            }, save: { let _: Bot? = await self.write("bots/\(botId)", method: "PATCH", payload: BotApprovalRequest(value: value), as: Bot.self) })
-        } else if let value {
-            optimistically("settings/approvals", change: { transaction in
-                if let settings = approvals { optimisticValue(\.approvals, Optional(ApprovalSettings(defaults: value, modes: settings.modes)), in: transaction) }
-                for bot in bots where bot.approvalOverride == nil { optimisticBot(bot.id, \.effectiveApproval, Optional(value), in: transaction) }
-            }, save: { let _: ApprovalSettings? = await self.write("settings/approvals", method: "PUT", payload: ApprovalRequest(mode: value), as: ApprovalSettings.self) })
-        }
-    }
-
-    func updateBotModel(botId: String, selection: ModelOverride?) async -> Bool {
-        if let selection, modelCatalog?.contains(selection) != true {
-            error = "Choose a model and effort from the Mac's catalog."
-            return false
-        }
-        if isDemo {
-            guard let index = bots.firstIndex(where: { $0.id == botId }) else { return false }
-            bots[index].modelOverride = selection
-            bots[index].effectiveModel = selection.map { modelCatalog?.resolved($0) ?? $0 } ?? modelCatalog?.defaults.selection
-            return true
-        }
-        return optimistically("bot/\(botId)", change: { transaction in
-            optimisticBot(botId, \.modelOverride, selection, in: transaction)
-            optimisticBot(botId, \.effectiveModel, selection.map { modelCatalog?.resolved($0) ?? $0 } ?? modelCatalog?.defaults.selection, in: transaction)
-        }, save: { let _: Bot? = await self.write("bots/\(botId)", method: "PATCH", payload: BotModelRequest(modelOverride: selection), as: Bot.self) })
+        optimistically("settings/approvals", change: { transaction in
+            if let settings = approvals { optimisticValue(\.approvals, Optional(ApprovalSettings(defaults: value, modes: settings.modes)), in: transaction) }
+            for bot in bots { optimisticBot(bot.id, \.effectiveApproval, Optional(value), in: transaction) }
+        }, save: { let _: ApprovalSettings? = await self.write("settings/approvals", method: "PUT", payload: ApprovalRequest(mode: value), as: ApprovalSettings.self) })
     }
 
     func uploadAttachment(bot: Bot, url: URL) async -> Artifact? {
@@ -3893,7 +3843,7 @@ private struct PairRequest: Encodable { let code: String; let deviceName: String
 private struct PairResponse: Decodable, Sendable { let token: String; let deviceId: String }
 private struct EmptyRequest: Encodable {}
 private struct Acknowledgement: Decodable, Sendable { let ok: Bool }
-private struct BotRequest: Encodable { let name: String; let role: String; let avatar: String; let color: String; let instructions: String; let memory: String; let pinned: Bool? }
+private struct BotRequest: Encodable { let name: String; let pinned: Bool? }
 private struct PinRequest: Encodable { let pinned: Bool }
 private struct ArchiveRequest: Encodable { let archived: Bool }
 private struct TeamCreateRequest: Encodable { let name: String; let memberName: String }
@@ -3932,7 +3882,6 @@ private struct TeamNoticeChange: Encodable { let closed: Bool }
 private struct TeamNoticesSeen: Encodable { let notices: [String] }
 /// The answer of a change of the named chats: the room, and the ID of the chat.
 private struct TeamChatAnswer: Decodable, Sendable { let room: TeamRoom; let chat: String }
-private struct InstructionsRequest: Encodable { let instructions: String }
 private struct PreferenceRequest: Encodable { let text: String }
 private struct RoutineRequest: Encodable { let name: String; let prompt: String; let cron: String; let timezone: String; let enabled: Bool }
 struct MessageRequest: Codable, Equatable { let text: String; let mode: String; let taskId: String?; let scheduledAt: String?; let attachmentIds: [String]; let recipientBotIds: [String]; var replyToMessageId: String? = nil; var mentionedBotIds: [String]? = nil; var workArtifactId: String? = nil; var workStatusOnly: Bool? = nil; var aboutDocumentId: String? = nil }
@@ -4085,14 +4034,5 @@ private extension AppStore {
 }
 
 private struct ApprovalRequest: Encodable { let mode: String }
-private struct BotApprovalRequest: Encodable {
-    let value: String?
-    enum CodingKeys: String, CodingKey { case approvalOverride }
-    func encode(to encoder: Encoder) throws {
-        var container = encoder.container(keyedBy: CodingKeys.self)
-        if let value { try container.encode(value, forKey: .approvalOverride) }
-        else { try container.encodeNil(forKey: .approvalOverride) }
-    }
-}
 
 

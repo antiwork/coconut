@@ -1810,20 +1810,6 @@ enum TeamMentionTarget: MentionableBot, Equatable, Sendable {
         }
     }
 
-    var faceSymbol: String {
-        switch self {
-        case .bot(let bot): bot.faceSymbol
-        case .person(let member): member.avatar ?? ""
-        }
-    }
-
-    var faceColor: String {
-        switch self {
-        case .bot(let bot): bot.faceColor
-        case .person(let member): member.color ?? ""
-        }
-    }
-
     var isMentionable: Bool { true }
 
     var mentionedPerson: TeamMember? { if case .person(let member) = self { member } else { nil } }

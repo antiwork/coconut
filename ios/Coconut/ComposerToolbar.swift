@@ -103,13 +103,12 @@ enum ComposerDrafts {
     }
 }
 
-/// The reasoning effort of the chat as a chip under the text. A model without efforts has no chip.
+/// The reasoning effort as a chip under the text. A model without efforts has no chip. Every chat shares it.
 struct ComposerEffortMenu: View {
-    let botId: String
     @Environment(AppStore.self) private var store
 
     var body: some View {
-        let choice = ModelChoice(store: store, botId: botId)
+        let choice = ModelChoice(store: store)
         if let model = choice.entry, !model.reasoningEfforts.isEmpty {
             Menu {
                 ForEach(model.reasoningEfforts, id: \.self) { value in
@@ -128,27 +127,19 @@ struct ComposerEffortMenu: View {
     }
 }
 
-/// The access mode of the chat (how much the agent may do without asking) as a chip under the text. Full access has no
-/// chip: the agent then never asks, so the chip says nothing that the person must know. The agent's settings change it.
+/// The access mode (how much Hermes may do without asking) as a chip under the text. Every chat shares it. Full access
+/// has no chip: Hermes then never asks, so the chip says nothing that the person must know. Profile changes it back.
 struct ComposerAccessMenu: View {
-    let botId: String
     @Environment(AppStore.self) private var store
 
     var body: some View {
-        let bot = store.bots.first { $0.id == botId }
-        if let settings = store.approvals, !settings.modes.isEmpty, (bot?.approvalOverride ?? settings.defaults) != "off" {
-            let current = bot?.approvalOverride ?? settings.defaults
+        if let settings = store.approvals, !settings.modes.isEmpty, settings.defaults != "off" {
+            let current = settings.defaults
             Menu {
-                Toggle(isOn: Binding(get: { bot?.approvalOverride == nil },
-                                     set: { _ in Task { await store.setApproval(nil, botId: botId) } })) {
-                    Text("Default · " + settings.label(for: settings.defaults))
-                }
-                Section {
-                    ForEach(settings.modes) { mode in
-                        Toggle(isOn: Binding(get: { bot?.approvalOverride == mode.id },
-                                             set: { _ in Task { await store.setApproval(mode.id, botId: botId) } })) {
-                            Text(mode.label)
-                        }
+                ForEach(settings.modes) { mode in
+                    Toggle(isOn: Binding(get: { current == mode.id },
+                                         set: { _ in Task { await store.setApproval(mode.id) } })) {
+                        Text(mode.label)
                     }
                 }
             } label: {

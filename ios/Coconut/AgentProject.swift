@@ -263,14 +263,13 @@ struct AgentsView: View {
     }
 }
 
-/// One agent in the list: its icon, its name and role, its state, its open work, and its last activity.
+/// One agent in the list: its name and role, its state, its open work, and its last activity.
 struct AgentProjectRow: View {
     @Environment(AppStore.self) private var store
     let project: AgentProject
 
     var body: some View {
         HStack(spacing: BoardStyle.Space.m) {
-            LiveBotAvatar(bot: project.bot, size: 36)
             VStack(alignment: .leading, spacing: BoardStyle.Space.line) {
                 HStack(spacing: BoardStyle.Space.s) {
                     Text(project.bot.name).font(.body.weight(.semibold)).lineLimit(1)
@@ -355,7 +354,7 @@ struct AgentProjectView: View {
             BoardSection(project.chats.isEmpty ? AgentSection.chat.title : "Chats", count: project.count(.chat)) {
                 // The newest chats come first. The first chat of the agent, with its name, is the last row.
                 ForEach(project.chats) { extra in
-                    BotContactRow(bot: extra, avatarSize: 32, title: extra.chatLabel)
+                    BotContactRow(bot: extra, title: extra.chatLabel)
                         .padding(.horizontal, BoardStyle.Space.m).padding(.vertical, BoardStyle.Space.xs)
                         .contentShape(Rectangle())
                         // A long press on the iPhone shows the deck of all chats. Its menu has what this menu had.
@@ -367,7 +366,7 @@ struct AgentProjectView: View {
                         }
                         #endif
                 }
-                BotContactRow(bot: bot, avatarSize: 32)
+                BotContactRow(bot: bot)
                     .padding(.horizontal, BoardStyle.Space.m).padding(.vertical, BoardStyle.Space.xs)
                     .contentShape(Rectangle())
                     .chatRowButton("agent-open-chat", botId: bot.id) { chat(ConversationRoute(botId: bot.id)) }
@@ -425,15 +424,10 @@ struct AgentProjectView: View {
             }
             AgentUsageCard(botId: bot.id)
             BoardSection(AgentSection.settings.title) {
-                BoardRow(symbol: "cpu", title: "Model", value: store.modelName(bot.id) ?? "Default")
-                    .boardButton("agent-model") { pushRoute?(AgentSettingRoute.model(bot.id)) }
-                BoardRow(symbol: "lock.shield", title: "Access",
-                         value: bot.approvalOverride.map { store.approvals?.label(for: $0) ?? $0 } ?? "Default")
-                    .boardButton("agent-access") { pushRoute?(AgentSettingRoute.access(bot.id)) }
                 BoardRow(symbol: bot.notifications ? "bell" : "bell.slash", title: "Notifications",
                          value: bot.notifications ? "On" : "Off")
                     .boardButton("agent-notifications") { pushRoute?(BotSettingsRoute(botId: bot.id)) }
-                BoardRow(symbol: "slider.horizontal.3", title: "Name, icon and instructions")
+                BoardRow(symbol: "pencil", title: "Rename")
                     .boardButton("agent-settings") { pushRoute?(BotSettingsRoute(botId: bot.id)) }
                 BoardRow(symbol: bot.archived ? "tray.and.arrow.up" : "archivebox",
                          title: bot.archived ? "Unarchive" : "Archive", chevron: false)
@@ -461,29 +455,12 @@ struct AgentProjectView: View {
 
     private func header(_ project: AgentProject) -> some View {
         let role = project.bot.role.trimmingCharacters(in: .whitespacesAndNewlines)
-        // The model is a menu: a tap, then a model.
-        let model = ModelMenu(botId: project.bot.id, settings: { pushRoute?(AgentSettingRoute.model(project.bot.id)) }) {
-            ModelMenuLabel(name: $0).font(.subheadline).foregroundStyle(.secondary)
-        }
-        .fixedSize()
-        .accessibilityIdentifier("agent-model-menu")
-        // The state has the identifier, not the line: the menu of the model keeps its own.
-        let status = AgentStatusLabel(status: project.status).accessibilityElement(children: .combine)
-            .accessibilityIdentifier("agent-status")
         return HStack(alignment: .center, spacing: BoardStyle.Space.l) {
-            LiveBotAvatar(bot: project.bot, size: 56)
             VStack(alignment: .leading, spacing: BoardStyle.Space.xs) {
                 Text(project.bot.name).font(.title2.weight(.bold)).lineLimit(1)
                 if !role.isEmpty { Text(role).font(.subheadline).foregroundStyle(.secondary).lineLimit(2) }
-                // The state and the model share a line where it fits, as in a Mac window. A narrow iPhone shows the
-                // model under the state, so neither is cut.
-                ViewThatFits(in: .horizontal) {
-                    HStack(spacing: BoardStyle.Space.m) { status; model }
-                    VStack(alignment: .leading, spacing: BoardStyle.Space.line) {
-                        status
-                        model
-                    }
-                }
+                AgentStatusLabel(status: project.status).accessibilityElement(children: .combine)
+                    .accessibilityIdentifier("agent-status")
             }
             Spacer(minLength: 0)
             // A Mac window has room for the button next to the name. An iPhone shows it under the header.
@@ -513,12 +490,6 @@ struct AgentProjectView: View {
     }
 }
 
-/// A page of the settings of one agent that the agent page opens directly.
-enum AgentSettingRoute: Hashable {
-    case model(String)
-    case access(String)
-}
-
 /// The Library as one list: every page of every agent and of the team agents, grouped by agent.
 struct AllPagesView: View {
     var body: some View {
@@ -527,7 +498,7 @@ struct AllPagesView: View {
 }
 
 /// The pages that the agents open, for a navigation stack of the iPhone tabs and of the Mac window: the page of an
-/// agent, its model and its access, and the pages of all agents.
+/// agent and the pages of all agents.
 struct AgentDestinations: ViewModifier {
     func body(content: Content) -> some View {
         content
@@ -536,12 +507,6 @@ struct AgentDestinations: ViewModifier {
             .navigationDestination(for: UsageRoute.self) { UsageView(botId: $0.botId).id($0.botId) }
             .navigationDestination(for: SpendRoute.self) { _ in SpendView() }
             .navigationDestination(for: LiveRoute.self) { _ in LiveView() }
-            .navigationDestination(for: AgentSettingRoute.self) { route in
-                switch route {
-                case .model(let id): ModelSettingsView(botId: id)
-                case .access(let id): ApprovalSettingsView(botId: id)
-                }
-            }
     }
 }
 

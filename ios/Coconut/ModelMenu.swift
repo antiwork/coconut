@@ -55,25 +55,17 @@ enum RecentModels {
     }
 }
 
-/// What a model menu shows and changes: the model of one agent, or the default model of the agents.
+/// What a model menu shows and changes: the model of every chat. One Hermes profile runs them all.
 @MainActor
 struct ModelChoice {
     let store: AppStore
-    let botId: String?
 
-    var bot: Bot? { store.bots.first { $0.id == botId } }
     var catalog: ModelCatalog? { store.modelCatalog }
     var canEdit: Bool { store.connection == .connected || store.isDemo }
-    /// An agent without a model of its own uses the default.
-    var usesDefault: Bool { botId != nil && bot?.modelOverride == nil }
-    var selection: ModelOverride? {
-        if botId != nil { return bot?.modelOverride ?? bot?.effectiveModel ?? catalog?.defaults.selection }
-        return catalog?.defaults.selection
-    }
+    var selection: ModelOverride? { catalog?.defaults.selection }
     var entry: ModelCatalogEntry? { selection.flatMap { catalog?.entry(for: $0) } }
     /// The name of the model in use. Nil when the Mac gave no model.
     var name: String? {
-        if let botId { return store.modelName(botId) }
         guard let catalog else { return store.model.isEmpty ? nil : store.model }
         return catalog.defaults.model.isEmpty ? nil : catalog.name(for: catalog.defaults.selection)
     }
@@ -82,26 +74,19 @@ struct ModelChoice {
     func shortlist(recent: [String]) -> [ModelCatalogEntry] {
         guard let catalog else { return [] }
         return ModelShortlist.make(catalog: catalog, current: selection, recent: recent,
-                                   inUse: store.bots.filter { !$0.archived }.compactMap(\.modelOverride))
+                                   inUse: [])
     }
 
     func isCurrent(_ model: ModelCatalogEntry) -> Bool {
-        !usesDefault && model.selectionKey == selection?.selectionKey
+        model.selectionKey == selection?.selectionKey
     }
 
-    /// Nil sets an agent back to the default model.
-    func choose(_ model: ModelCatalogEntry?, effort: String? = nil) {
+    func choose(_ model: ModelCatalogEntry, effort: String? = nil) {
         guard canEdit else { return }
-        let selection = model.map { ModelOverride(model: $0.id, provider: $0.provider, reasoningEffort: effort) }
-        if let model { RecentModels.record(model.selectionKey) }
+        let selection = ModelOverride(model: model.id, provider: model.provider, reasoningEffort: effort)
+        RecentModels.record(model.selectionKey)
         store.error = nil
-        Task {
-            if let botId {
-                _ = await store.updateBotModel(botId: botId, selection: selection)
-            } else if let selection {
-                _ = await store.setModel(selection)
-            }
-        }
+        Task { _ = await store.setModel(selection) }
     }
 }
 
@@ -109,8 +94,6 @@ struct ModelChoice {
 /// the models that the person chose lately. "All models" opens the whole catalog with a search.
 struct ModelMenu<MenuLabel: View>: View {
     @Environment(AppStore.self) private var store
-    /// Nil changes the default model of the agents.
-    var botId: String? = nil
     /// Opens the page with the effort and the fallback model. Nil where no page can open.
     var settings: (() -> Void)? = nil
     /// The closed menu. It gets the name of the model in use.
@@ -119,14 +102,9 @@ struct ModelMenu<MenuLabel: View>: View {
     @State private var recent = RecentModels.read()
 
     var body: some View {
-        let choice = ModelChoice(store: store, botId: botId)
+        let choice = ModelChoice(store: store)
         Menu {
             if let catalog = choice.catalog, !catalog.models.isEmpty {
-                if botId != nil {
-                    Toggle(isOn: Binding(get: { choice.usesDefault }, set: { _ in choice.choose(nil) })) {
-                        Text("Default · " + catalog.name(for: catalog.defaults.selection))
-                    }
-                }
                 Section(catalog.models.count > ModelShortlist.limit ? "Recent and suggested" : "Models") {
                     ForEach(choice.shortlist(recent: recent), id: \.selectionKey) { model in
                         Toggle(isOn: Binding(get: { choice.isCurrent(model) }, set: { _ in choose(model, choice) })) {
@@ -151,7 +129,7 @@ struct ModelMenu<MenuLabel: View>: View {
                 Text(choice.canEdit ? "The Mac gave no model choices" : "Connect to your Mac to change the model")
             }
             if let settings {
-                Button(action: settings) { Label(botId == nil ? "Effort and fallback…" : "Model settings…", systemImage: "slider.horizontal.3") }
+                Button(action: settings) { Label("Effort and fallback…", systemImage: "slider.horizontal.3") }
             }
         } label: {
             label(choice.name ?? "Model")
@@ -160,7 +138,7 @@ struct ModelMenu<MenuLabel: View>: View {
         .disabled(!choice.canEdit && settings == nil)
         .accessibilityLabel("Model, " + (choice.name ?? "not set"))
         .sheet(isPresented: $allOpen) {
-            ModelPickerSheet(botId: botId) { model in choose(model, ModelChoice(store: store, botId: botId)) }
+            ModelPickerSheet { model in choose(model, ModelChoice(store: store)) }
                 .environment(store)
         }
     }
@@ -171,17 +149,16 @@ struct ModelMenu<MenuLabel: View>: View {
     }
 }
 
-/// The model and the reasoning effort of a chat, as a pill in the composer under the text, as in Codex. A tap opens the
-/// models and the reasoning efforts of the model.
+/// The model and its reasoning effort as a pill in the composer under the text, as in Codex. A tap opens the models and
+/// the reasoning efforts. Every chat shares the model: one Hermes profile runs them all.
 struct ComposerModelMenu: View {
-    let botId: String
     /// The effort shows in its own chip (ComposerEffortMenu) where the toolbar has one.
     var showsEffort = true
     @Environment(AppStore.self) private var store
 
     var body: some View {
-        let choice = ModelChoice(store: store, botId: botId)
-        ModelMenu(botId: botId) { name in
+        let choice = ModelChoice(store: store)
+        ModelMenu { name in
             HStack(spacing: BoardStyle.Space.xs) {
                 Text(name).lineLimit(1).truncationMode(.middle)
                 if showsEffort, let effort = choice.effort {
@@ -219,19 +196,18 @@ struct ModelMenuLabel: View {
 struct ModelPickerSheet: View {
     @Environment(AppStore.self) private var store
     @Environment(\.dismiss) private var dismiss
-    var botId: String? = nil
     let choose: (ModelCatalogEntry) -> Void
     @State private var query = ""
     @FocusState private var searching: Bool
 
     var body: some View {
-        let choice = ModelChoice(store: store, botId: botId)
+        let choice = ModelChoice(store: store)
         let models = ModelShortlist.search(store.modelCatalog?.models ?? [], query: query)
         VStack(spacing: 0) {
             HStack(spacing: BoardStyle.Space.m) {
                 VStack(alignment: .leading, spacing: BoardStyle.Space.line) {
-                    Text(botId == nil ? "Default model" : "Model").font(.headline)
-                    Text(choice.bot.map { "For " + $0.name } ?? "For agents without a model of their own")
+                    Text("Model").font(.headline)
+                    Text("For every chat")
                         .font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
                 }
                 Spacer(minLength: 0)
@@ -291,8 +267,8 @@ struct ModelPickerSheet: View {
             }
             Spacer(minLength: BoardStyle.Space.s)
             if model.selectionKey == choice.selection?.selectionKey {
-                Text(choice.usesDefault ? "Default" : "In use").font(.subheadline).foregroundStyle(.secondary)
-                if !choice.usesDefault { Image(systemName: "checkmark").font(.footnote.weight(.semibold)) }
+                Text("In use").font(.subheadline).foregroundStyle(.secondary)
+                Image(systemName: "checkmark").font(.footnote.weight(.semibold))
             }
         }
         .padding(.horizontal, BoardStyle.Space.m).padding(.vertical, BoardStyle.Space.s)

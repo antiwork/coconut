@@ -57,12 +57,19 @@ def worker(operation, request, homes):
     from cron import jobs
     if operation == 'routines_read':
         result = []
+        # Every chat runs on one profile, so one cron list holds the routines of many chats. A job belongs to the chat
+        # of its origin, and a job without a known chat to the first bot of that profile.
+        by_home = {}
         for bot_id, home in homes.items():
+            by_home.setdefault(str(Path(home).resolve()), []).append(bot_id)
+        for home, bot_ids in by_home.items():
             if not Path(home).is_dir():
                 # A missing profile folder has no routines. Hermes would create its cron folder on a read.
                 continue
             with profile(home):
-                result.extend(view(bot_id, job) for job in jobs.list_jobs(include_disabled=True))
+                for job in jobs.list_jobs(include_disabled=True):
+                    chat = str((job.get('origin') or {}).get('chat_id') or '')
+                    result.append(view(chat if chat in bot_ids else bot_ids[0], job))
         return {'routines': result}
     bot_id = request['bot_id']
     with profile(homes[bot_id]):

@@ -389,7 +389,7 @@ class GatewayChat:
 
     def gateway_enabled(self) -> bool:
         """Whether this service runs on the person's Hermes and so has a gateway. Fixture mode and tests have none."""
-        return bool(getattr(self, 'scan_profiles', False) and getattr(self.provider, 'python', None)
+        return bool(getattr(self, 'uses_hermes', False) and getattr(self.provider, 'python', None)
                     and getattr(self.provider, 'hermes_root', None))
 
     def join_conversation(self, task: dict) -> None:
@@ -407,11 +407,11 @@ class GatewayChat:
 
     def gateway_status(self) -> dict:
         homes = set(self.gateway_bridge.connected_homes())
-        profiles = sorted(row['name'] for row in self.profiles.rows.values()
-                          if row.get('state') == 'active' and os.path.realpath(row['home']) in homes)
+        profiles = sorted({row['name'] for row in self.profiles.rows.values()
+                           if row.get('state') == 'active' and os.path.realpath(row['home']) in homes})
         # A profile that no gateway serves has no chats, and its routines are paused (gateway_served_bots).
-        unserved = sorted(row['name'] for row in self.profiles.rows.values()
-                          if row.get('state') == 'active' and os.path.realpath(row['home']) not in homes)
+        unserved = sorted({row['name'] for row in self.profiles.rows.values()
+                           if row.get('state') == 'active' and os.path.realpath(row['home']) not in homes})
         return dict(self.gateway_state, connected_profiles=profiles, unserved_profiles=unserved)
 
     def gateway_served_bots(self) -> set[str]:
@@ -1331,10 +1331,32 @@ class GatewayChat:
         row = (self.profiles.rows or {}).get(bot_id)
         return bool(row) and row.get('state') == 'active' and os.path.realpath(row['home']) == home
 
-    def _gateway_profile(self, home: str) -> dict | None:
-        """The active profile row of a Hermes home (a real path), or None for a home that is not a bot's profile."""
-        return next((row for row in list((self.profiles.rows or {}).values())
-                     if row.get('state') == 'active' and os.path.realpath(row['home']) == home), None)
+    def _gateway_profile(self, home: str, chat_id: str | None = None) -> dict | None:
+        """The active profile row of a Hermes home (a real path), or None for a home that is not a bot's profile.
+
+        Every chat runs on one profile, so a home has the rows of many bots. `chat_id` picks the row of that chat, for
+        example the origin of a cron job. Without a match, the oldest bot answers for the home, as for its routines
+        (native_routines.worker).
+        """
+        rows = [row for row in list((self.profiles.rows or {}).values())
+                if row.get('state') == 'active' and os.path.realpath(row['home']) == home]
+        if not rows:
+            return None
+        return next((row for row in rows if chat_id and row['bot_id'] == chat_id), rows[0])
+
+    @staticmethod
+    def _cron_job_chat(home: str, job_id: str) -> str | None:
+        """The chat of the origin of a cron job of this Hermes home, or None."""
+        try:
+            data = json.loads((Path(home) / 'cron' / 'jobs.json').read_text())
+        except (OSError, ValueError):
+            return None
+        jobs = data.get('jobs') if isinstance(data, dict) else data
+        for job in jobs if isinstance(jobs, list) else []:
+            if isinstance(job, dict) and job.get('id') == job_id:
+                chat = (job.get('origin') or {}).get('chat_id')
+                return str(chat) if chat else None
+        return None
 
     def _change_gateway_message(self, bot: dict, message: dict, kind: str, text: str) -> dict:
         """Edit or delete a message outside a turn, and keep the bot's preview and unread count true. The caller holds
@@ -1508,7 +1530,7 @@ class GatewayChat:
         home = os.path.realpath(require_text(data, 'home', 4096))
         job_id, execution_id = require_text(data, 'job_id', 200), require_text(data, 'execution_id', 200)
         name = str(data.get('job_name') or 'Routine').strip()[:200] or 'Routine'
-        row = self._gateway_profile(home)
+        row = self._gateway_profile(home, self._cron_job_chat(home, job_id))
         if row is None:
             return {'skip': True}
         with self.transaction():
@@ -1572,7 +1594,7 @@ class GatewayChat:
         from .service import ServiceError, now, require_text, uid
         home = os.path.realpath(require_text(data, 'home', 4096))
         chat_id, message_id = require_text(data, 'chat_id', 200), require_text(data, 'message_id', 200)
-        row = self._gateway_profile(home)
+        row = self._gateway_profile(home, chat_id)
         if row is None or not self._gateway_serves(home, chat_id):
             return {'skip': True}
         with self.transaction():

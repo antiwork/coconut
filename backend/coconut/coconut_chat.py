@@ -1,6 +1,7 @@
 """The Coconut chat: the one place where a person changes their Coconut (docs: "Customize Coconut from its own chat").
 
-Coconut has no settings screens. The agent of the default Hermes profile is the Coconut chat. It shows as "Coconut",
+Coconut has no settings screens. Every chat runs on the default Hermes profile, and one of them, marked
+`coconut_chat` (bot_profiles._mark_coconut_chat), is the Coconut chat. It shows as "Coconut",
 it stays at the top of the sidebar and of the Chats list, and nobody archives or deletes it. It has one tool,
 `coconut_settings`, that reads every setting and changes one, through the same routes that the app used before
 (Service.mutate), so each rule and each check of a change stays the same.
@@ -27,8 +28,8 @@ SETTINGS_SCHEMA = {
     'description': (
         'Read or change the settings of this Coconut. Only a turn of Coconut has it: the Coconut chat, and the change '
         'that another agent hands to it with coconut_message_bot. Coconut has no settings screens, '
-        'so the person changes everything here, in plain words: "use Opus for Scout", "let agents run commands '
-        'without asking", "mute Desk". First call with action "read" to see the current values and the choices. '
+        'so the person changes everything here, in plain words: "use Opus", "let chats run commands '
+        'without asking", "mute Desk". Every chat shares one model and one access mode. First call with action "read" to see the current values and the choices. '
         'Then call action "change" with one setting. Say in one line what changed, from what to what, and that '
         'the person can ask to undo it. A change that deletes something or costs money needs a card first '
         '(coconut_ask). Mode "cloud" is not available yet: say that Cloud is coming soon.'),
@@ -37,14 +38,13 @@ SETTINGS_SCHEMA = {
         'properties': {
             'action': {'type': 'string', 'enum': ['read', 'change']},
             'setting': {'type': 'string', 'enum': [
-                'default_model', 'agent_model', 'default_access', 'agent_access', 'agent_notifications',
-                'agent_name', 'mode']},
-            'agent': {'type': 'string', 'description': 'The name or ID of the agent, for an agent_* setting.'},
+                'default_model', 'default_access', 'agent_notifications', 'agent_name', 'mode']},
+            'agent': {'type': 'string', 'description': 'The name or ID of the project, for an agent_* setting.'},
             'model': {'type': 'string', 'description': 'A model ID from the catalog that "read" lists.'},
             'provider': {'type': 'string', 'description': 'The provider of that model, from the catalog.'},
             'reasoning_effort': {'type': 'string'},
-            'value': {'description': 'The new value: an access mode (off, smart, manual, or null for the default), '
-                                     'true or false for notifications, a name, or local or cloud for mode.'},
+            'value': {'description': 'The new value: an access mode (off, smart, manual), true or false for '
+                                     'notifications, a name, or local or cloud for mode.'},
         },
         'required': ['action'],
     },
@@ -52,10 +52,12 @@ SETTINGS_SCHEMA = {
 
 
 def is_coconut(service, bot_id) -> bool:
-    """True for the agent of the default Hermes profile: the Coconut chat."""
-    from . import profile_registry
-    row = (service.profiles.rows or {}).get(bot_id) if getattr(service, 'profiles', None) else None
-    return bool(row) and row.get('name') == profile_registry.DEFAULT
+    """True for the Coconut chat, the bot with the mark `coconut_chat`, and for a further chat of it."""
+    try:
+        bot = service._get('bots', bot_id)
+        return bool(bot.get('coconut_chat') or (bot.get('chat_of') and service._get('bots', bot['chat_of']).get('coconut_chat')))
+    except Exception:
+        return False
 
 
 def view(service, bot: dict, result: dict) -> dict:
@@ -111,9 +113,7 @@ def read(service) -> dict:
     for bot in bots:
         shown = view(service, bot, dict(bot))
         agents.append({'id': bot['id'], 'name': shown['name'], 'coconut': bool(shown.get('coconut')),
-                       'archived': bool(bot.get('archived')), 'model': bot.get('model_override') or 'default',
-                       'access': bot.get('approval_override') or 'default',
-                       'notifications': bot.get('notifications', True)})
+                       'archived': bool(bot.get('archived')), 'notifications': bot.get('notifications', True)})
     return {'mode': 'local', 'modes': {'local': 'available', 'cloud': 'coming soon'},
             'default_model': {key: default.get(key) for key in ('model', 'provider', 'reasoning_effort')},
             'models': models, 'default_access': approvals.get('defaults'),
@@ -146,21 +146,13 @@ def change(service, arguments: dict) -> dict:
         before = read(service)['default_access']
         service.mutate('PUT', '/v1/settings/approvals', {'mode': arguments['value']}, key, device)
         return {'setting': setting, 'before': before, 'after': arguments['value'], 'changed': True}
-    if setting in ('agent_model', 'agent_access', 'agent_notifications', 'agent_name'):
+    if setting in ('agent_model', 'agent_access'):
+        from .bot_profiles import SHARED_SETTINGS
+        raise ServiceError(409, SHARED_SETTINGS)
+    if setting in ('agent_notifications', 'agent_name'):
         with service.lock:
             bot = _agent(service, arguments.get('agent'))
-        if setting == 'agent_model':
-            value = None if arguments.get('model') in (None, '', 'default') else {
-                name: arguments.get(name) for name in ('model', 'provider', 'reasoning_effort')
-                if arguments.get(name) is not None}
-            data, before = {'model_override': value}, bot.get('model_override') or 'default'
-        elif setting == 'agent_access':
-            value = arguments.get('value')
-            if value not in (*ACCESS, None, 'default'):
-                raise ServiceError(400, 'Choose off, smart, manual or default.')
-            value = None if value == 'default' else value
-            data, before = {'approval_override': value}, bot.get('approval_override') or 'default'
-        elif setting == 'agent_notifications':
+        if setting == 'agent_notifications':
             if not isinstance(arguments.get('value'), bool):
                 raise ServiceError(400, 'Choose true or false.')
             data, before = {'notifications': arguments['value']}, bot.get('notifications', True)

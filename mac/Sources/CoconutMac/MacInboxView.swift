@@ -188,7 +188,6 @@ private struct MacInboxRow: View {
 
     var body: some View {
         HStack(alignment: .top, spacing: BoardStyle.Space.m) {
-            if let bot { LiveBotAvatar(bot: bot, size: 22) }
             VStack(alignment: .leading, spacing: BoardStyle.Space.line) {
                 Text(decision.title).font(.body).lineLimit(2)
                 HStack(spacing: BoardStyle.Space.xs) {

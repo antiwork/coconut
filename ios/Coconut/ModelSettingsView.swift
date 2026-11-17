@@ -1,10 +1,9 @@
 import SwiftUI
 
+/// The model of every chat. One Hermes profile runs all chats, so they share it.
 struct ModelSettingsView: View {
     @Environment(AppStore.self) private var store
     @ShownError private var shownError
-    var botId: String? = nil
-    @State private var useDefault = true
     @State private var selectionKey = ""
     @State private var effort: String?
     @State private var saves = ModelSettingsSaves()
@@ -13,61 +12,26 @@ struct ModelSettingsView: View {
     @State private var edited = false
     private var saving: Bool { saves.inFlight != nil }
 
-    private var bot: Bot? { store.bots.first { $0.id == botId } }
     private var catalog: ModelCatalog? { store.modelCatalog }
-    private var current: ModelOverride? {
-        if isBot, bot?.modelError != nil { return bot?.modelOverride }
-        return bot?.modelOverride ?? catalog?.defaults.selection
-    }
-    private var currentIssue: String? {
-        if let error = bot?.modelError { return error }
-        if !isBot || bot?.modelOverride == nil {
-            return catalog?.defaults.unavailableReason
-        }
-        return nil
-    }
+    private var current: ModelOverride? { catalog?.defaults.selection }
     private var selectedModel: ModelCatalogEntry? { catalog?.models.first { $0.selectionKey == selectionKey } }
     private var selection: ModelOverride? {
         selectedModel.map { ModelOverride(model: $0.id, provider: $0.provider, reasoningEffort: effort) }
     }
     private var canEdit: Bool { store.connection == .connected || store.isDemo }
-    private var isBot: Bool { botId != nil }
-    private var valid: Bool {
-        if isBot, useDefault { return catalog?.defaults.supported != false }
-        return selection.map { catalog?.contains($0) == true } ?? false
-    }
+    private var valid: Bool { selection.map { catalog?.contains($0) == true } ?? false }
 
     var body: some View {
         Form {
             if let catalog {
-                if isBot {
-                    Section {
-                        Toggle("Use default model", isOn: Binding(get: { useDefault }, set: { chooseDefault($0) }))
-                            .tint(BoardStyle.green)
-                            .accessibilityIdentifier("use-default-model")
-                        if useDefault {
-                            LabeledContent("Model", value: catalog.name(for: catalog.defaults.selection))
-                                .accessibilityIdentifier("inherited-model")
-                            if catalog.entry(for: catalog.defaults.selection) == nil {
-                                LabeledContent("Provider", value: catalog.defaults.provider)
-                            }
-                            LabeledContent("Effort", value: ModelPresentation.effortName(catalog.defaults.reasoningEffort))
-                                .accessibilityIdentifier("inherited-effort")
-                        }
-                    }
-                    .disabled(!canEdit)
-                }
-                if (!isBot || !useDefault) && (catalog.models.isEmpty || current.map { catalog.entry(for: $0) == nil } == true) {
+                if catalog.models.isEmpty || current.map({ catalog.entry(for: $0) == nil }) == true {
                     Section {
                         if let current {
                             LabeledContent("Model", value: current.model.isEmpty ? "Not configured" : catalog.name(for: current))
                                 .accessibilityIdentifier("current-model")
                             LabeledContent("Provider", value: current.provider)
                                 .accessibilityIdentifier("current-model-provider")
-                            if bot?.modelError == nil {
-                                let effective = bot?.effectiveModel ?? catalog.resolved(current)
-                                LabeledContent("Effort", value: ModelPresentation.effortName(effective.reasoningEffort))
-                            }
+                            LabeledContent("Effort", value: ModelPresentation.effortName(catalog.resolved(current).reasoningEffort))
                         }
                         if catalog.loading == true {
                             ProgressView("Loading models")
@@ -75,10 +39,10 @@ struct ModelSettingsView: View {
                             Text("No model choices are available from Hermes.").foregroundStyle(.secondary)
                         }
                     } header: {
-                        Text(isBot ? "Current model" : "Hermes default")
+                        Text("Hermes default")
                     }
                 }
-                if (!isBot || !useDefault) && !catalog.models.isEmpty {
+                if !catalog.models.isEmpty {
                     Section {
                         Picker("Model", selection: Binding(get: { selectionKey }, set: { chooseModel($0) })) {
                             if selectedModel == nil { Text("Choose a model").tag("") }
@@ -100,9 +64,9 @@ struct ModelSettingsView: View {
                             LabeledContent("Effort", value: ModelPresentation.effortName(selectedModel?.defaultReasoningEffort))
                         }
                     } header: {
-                        Text(isBot ? "Custom model" : "Default model")
+                        Text("Model")
                     } footer: {
-                        if !isBot { Text("Hermes default. Shared by agents using the default model. Changes save when you make them.") }
+                        Text("Every chat uses this model. Changes save when you make them.")
                     }
                     // The picker stays usable while a choice saves, so it does not grey out and back at each change.
                     .disabled(!canEdit)
@@ -117,12 +81,12 @@ struct ModelSettingsView: View {
                     }
                 }
             }
-            if !isBot { FallbackSection() }
+            FallbackSection()
             if !canEdit {
                 Section {} footer: { Text("Connect to your Mac first.") }
             }
-            if let currentIssue {
-                Section { InlineError(currentIssue) }
+            if let issue = catalog?.defaults.unavailableReason {
+                Section { InlineError(issue) }
                     .accessibilityIdentifier("current-model-error")
             }
             if let error = shownError {
@@ -146,9 +110,6 @@ struct ModelSettingsView: View {
         .onChange(of: store.modelCatalog) { _, _ in
             if !loaded || (!edited && !saving) { load() }
         }
-        .onChange(of: bot?.modelOverride) { _, _ in
-            if !loaded || (!edited && !saving) { load() }
-        }
     }
 
     private func chooseModel(_ key: String) {
@@ -159,22 +120,9 @@ struct ModelSettingsView: View {
         save()
     }
 
-    // A custom model starts from the default, so the bot keeps the same model until the person picks another one.
-    private func chooseDefault(_ value: Bool) {
-        useDefault = value
-        edited = true
-        if !value, selectedModel == nil, let catalog, let entry = catalog.entry(for: catalog.defaults.selection) {
-            selectionKey = entry.selectionKey
-            effort = catalog.defaults.selection.reasoningEffort
-        }
-        save()
-    }
-
     private func load() {
         guard let catalog else { return }
-        useDefault = isBot && bot?.modelOverride == nil && bot?.modelError == nil
-        saves = ModelSettingsSaves(saved: ModelSettingsChoice(selection: isBot ? bot?.modelOverride : current,
-                                                              useDefault: useDefault))
+        saves = ModelSettingsSaves(saved: ModelSettingsChoice(selection: current))
         selectionKey = current.flatMap { catalog.entry(for: $0)?.selectionKey } ?? ""
         effort = current?.reasoningEffort
         loaded = true
@@ -184,23 +132,16 @@ struct ModelSettingsView: View {
     // Each change saves when it is valid. A model without a choice waits until the person picks one. A change during a
     // save waits for it, so the last choice wins.
     private func save() {
-        guard loaded, canEdit, valid, !(isBot && bot == nil) else { return }
-        let choice = ModelSettingsChoice(selection: isBot && useDefault ? nil : selection, useDefault: useDefault)
-        guard let submitted = saves.begin(choice) else {
+        guard loaded, canEdit, valid else { return }
+        guard let submitted = saves.begin(ModelSettingsChoice(selection: selection)) else {
             if !saving { edited = false }
             return
         }
         edited = true
         store.error = nil
         Task {
-            let accepted: Bool
-            if let botId {
-                accepted = await store.updateBotModel(botId: botId, selection: submitted.selection)
-            } else if let selection = submitted.selection {
-                accepted = await store.setModel(selection)
-            } else {
-                accepted = false
-            }
+            var accepted = false
+            if let selection = submitted.selection { accepted = await store.setModel(selection) }
             if saves.finish(accepted: accepted) {
                 save()
             } else if accepted {
@@ -211,12 +152,10 @@ struct ModelSettingsView: View {
             }
         }
     }
-
 }
 
 struct ModelSettingsChoice: Equatable {
     let selection: ModelOverride?
-    let useDefault: Bool
 }
 
 /// Serializes saves while the picker stays usable. A return to the saved choice during a write still queues a save:

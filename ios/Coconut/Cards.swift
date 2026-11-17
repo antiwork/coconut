@@ -212,7 +212,6 @@ struct DecisionCard: View {
         NavigationLink(value: store.decisionChatRoute(for: decision)) {
             HStack(spacing: 8) {
                 if let bot = store.bots.first(where: { $0.id == decision.botId }) {
-                    BotAvatar(bot: bot, size: 24)
                     Text(bot.name).font(.subheadline.weight(.semibold)).lineLimit(1)
                 }
                 Spacer(minLength: 12)

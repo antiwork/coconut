@@ -102,7 +102,6 @@ struct BotExchangeRow: View {
 
     private var chip: some View {
         HStack(spacing: BoardStyle.Space.xs) {
-            if let peer { BotAvatar(bot: peer, size: 17) }
             Text(peer?.name ?? "Deleted agent").lineLimit(1)
         }
     }
@@ -162,7 +161,6 @@ struct BotExchangeView: View {
                         VStack(alignment: .leading, spacing: BoardStyle.Space.xs) {
                             HStack(spacing: BoardStyle.Space.s) {
                                 if let bot = store.bots.first(where: { $0.id == message.senderBotId }) {
-                                    BotAvatar(bot: bot, size: 20)
                                     Text(bot.name)
                                 } else { Text("Deleted agent") }
                                 Spacer()
@@ -208,13 +206,8 @@ struct BotExchangeView: View {
         .pageErrorBanner()
         .toolbar {
             ToolbarItem(placement: .principal) {
-                HStack(spacing: 8) {
-                    ForEach(route.botIds, id: \.self) { id in
-                        if let bot = store.bots.first(where: { $0.id == id }) {
-                            BotAvatar(bot: bot, size: 30)
-                        }
-                    }
-                }.accessibilityLabel(route.botIds.map { id in store.bots.first { $0.id == id }?.name ?? "Deleted agent" }.joined(separator: " and "))
+                Text(route.botIds.map { id in store.bots.first { $0.id == id }?.name ?? "Deleted agent" }.joined(separator: " and "))
+                    .font(.headline).lineLimit(1)
             }
         }
         .inlineNavigationTitle()

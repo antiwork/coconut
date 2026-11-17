@@ -81,12 +81,15 @@ def _usage_row(model, provider, values):
 
 
 def chat_sessions(db, chat_id):
-    """The sessions of one chat of Coconut: those that the gateway started for the chat, and the sessions that they
-    started in turn (subagents and compressions name their parent)."""
+    """The sessions of one chat of Coconut, or of several chats for a list: those that the gateway started for the
+    chat, and the sessions that they started in turn (subagents and compressions name their parent)."""
     columns = _columns(db, 'sessions')
     if not {'chat_id', 'source'} <= columns:
         return set()
-    found = {row[0] for row in db.execute("SELECT id FROM sessions WHERE source='coconut' AND chat_id=?", (chat_id,))}
+    chat_ids = (chat_id,) if isinstance(chat_id, str) else tuple(chat_id)
+    marks = ','.join('?' * len(chat_ids))
+    found = {row[0] for row in db.execute(f"SELECT id FROM sessions WHERE source='coconut' AND chat_id IN ({marks})",
+                                          chat_ids)} if chat_ids else set()
     if 'parent_session_id' in columns:
         frontier = set(found)
         while frontier:
@@ -143,7 +146,7 @@ def read_usage(path, days=DEFAULT_DAYS, now=None, chat_id=None):
         if chat is not None:
             usage = {key: rows for key, rows in usage.items() if key in chat}
         # The share of each day in the model calls of a session, and the counts of each day.
-        owners = session_chats(db) if chat is None else {}
+        owners = session_chats(db)
         calls, session, previous = {}, None, None
         # The turns of a chat: each message of the person starts one. Its model calls are counted per turn.
         spans, begun = {}, {}
@@ -192,11 +195,10 @@ def read_usage(path, days=DEFAULT_DAYS, now=None, chat_id=None):
                 for field in TOKEN_FIELDS:
                     entry[field] += row[field] * share
                 entry['cost_usd'] += row['cost_usd'] * share
-                if chat is None:
-                    spent = rows_by.setdefault((owners.get(session_id, ''), row['model'], day.isoformat()),
-                                               dict(cost_usd=0.0, tokens=0.0))
-                    spent['cost_usd'] += row['cost_usd'] * share
-                    spent['tokens'] += sum(row[field] for field in TOKEN_FIELDS if field != 'reasoning_tokens') * share
+                spent = rows_by.setdefault((owners.get(session_id, ''), row['model'], day.isoformat()),
+                                           dict(cost_usd=0.0, tokens=0.0))
+                spent['cost_usd'] += row['cost_usd'] * share
+                spent['tokens'] += sum(row[field] for field in TOKEN_FIELDS if field != 'reasoning_tokens') * share
                 cost_known = cost_known or row['cost_known']
                 cost_exact = cost_exact and row['cost_exact']
                 model = models.setdefault((row['model'], row['provider']), dict(
@@ -208,10 +210,9 @@ def read_usage(path, days=DEFAULT_DAYS, now=None, chat_id=None):
     if chat is not None:
         report['total'] = _total(usage)
         report['turns'] = _chat_turns(spans, usage, begun)
-    else:
-        report['rows'] = [dict(chat=key[0], model=key[1], day=key[2], cost_usd=round(value['cost_usd'], 4),
-                               tokens=round(value['tokens']))
-                          for key, value in sorted(rows_by.items()) if value['cost_usd'] > 0 or value['tokens'] >= 1]
+    report['rows'] = [dict(chat=key[0], model=key[1], day=key[2], cost_usd=round(value['cost_usd'], 4),
+                           tokens=round(value['tokens']))
+                      for key, value in sorted(rows_by.items()) if value['cost_usd'] > 0 or value['tokens'] >= 1]
     return report
 
 
@@ -302,15 +303,32 @@ class Usage:
                 return cached[2]
             # The list of the agents comes from a read view, so the read of the stores holds no service lock.
             with self._read_view() as view, view._read_transaction():
-                # The chats of an agent use its profile, so the agent has their usage.
-                bots = [dict(id=bot['id']) for bot in view._all('bots') if not bot.get('chat_of')]
-            agents = {}
+                # A project has the usage of its chats.
+                every = [bot for bot in view._all('bots') if not bot.get('_deleted')]
+                bots = [dict(id=bot['id'], chats=[bot['id']] + [chat['id'] for chat in every if chat.get('chat_of') == bot['id']])
+                        for bot in every if not bot.get('chat_of')]
+            homes = {}
             for bot in bots:
                 try:
-                    agents[bot['id']] = read_usage(self.profiles.home(bot) / 'state.db', days, current)
-                except (OSError, sqlite3.Error, ValueError, ProfileError):
-                    # An agent without a profile, or a store that Hermes rewrites now, shows no usage.
+                    bot['home'] = self.profiles.home(bot)
+                except ProfileError:
                     continue
+                homes.setdefault(bot['home'], []).append(bot['id'])
+            agents = {}
+            for bot in bots:
+                if 'home' not in bot:
+                    continue
+                # Projects on one profile share its store, so each counts only the sessions of its own chats. A project
+                # alone on a profile of an earlier release also counts the sessions of its routines.
+                shared = len(homes[bot['home']]) > 1
+                try:
+                    report = read_usage(bot['home'] / 'state.db', days, current, chat_id=bot['chats'] if shared else None)
+                except (OSError, sqlite3.Error, ValueError):
+                    # A store that Hermes rewrites now shows no usage.
+                    continue
+                report.pop('turns', None)
+                report.pop('total', None)
+                agents[bot['id']] = report
             report = dict(days=days, today=date.fromtimestamp(current).isoformat(), agents=agents)
             if now is None:
                 self._usage_cache = (days, current, report)

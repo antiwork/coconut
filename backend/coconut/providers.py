@@ -211,9 +211,6 @@ class HermesProvider(FixtureProvider):
                                 cwd=cwd, env=env, timeout=1800, check=True)
         return json.loads(result.stdout)
 
-    def set_bot_settings(self, bot, changes):
-        return self.native_settings('update_profile', [bot], bot_id=bot['id'], changes=changes)
-
     def observe_bot(self, bot):
         return self.observe_bots([bot])[bot['id']]
 
@@ -238,14 +235,13 @@ class HermesProvider(FixtureProvider):
             observed = dict(bot)
             values = native.get(bot['id'], {})
             observed['model_override'] = values.get('model_override')
-            if bot.get('model_follows_default'):
-                # The profile holds a copy of the default model. The app shows the bot on the default model.
-                observed['model_override'] = None
-            elif values.get('effective_model'):
+            if values.get('effective_model'):
                 observed['_native_effective_model'] = values['effective_model']
             if values.get('error'):
                 observed['_model_error'] = values['error']
-            observed.update(settings.get(bot['id'], {}))
+            # The name and the label of a project are Coconut's. Every chat shares the profile's access.
+            observed.update({key: value for key, value in settings.get(bot['id'], {}).items()
+                             if key in ('approval_override', 'effective_approval', 'worker_limit')})
             result[bot['id']] = observed
         return result
 
@@ -299,6 +295,9 @@ class HermesProvider(FixtureProvider):
                      if identity in self._routines and self._routines[identity][0] == current}
         missing = [bot for bot in bots if bot['id'] not in saved]
         if missing:
+            # Chats on one profile share its cron list, and a job goes to the chat of its origin. Read every bot, so a
+            # new chat does not take the jobs of the others.
+            missing = bots
             snapshot = self.native_settings('routines_read', missing)
             with self._routines_lock:
                 for bot in missing:
@@ -307,12 +306,6 @@ class HermesProvider(FixtureProvider):
                     saved[bot['id']] = value
         # The read returns the routines of each bot in the order of the bots.
         return {'routines': [routine for bot in bots for routine in saved[bot['id']]['routines']]}
-
-    def set_bot_model(self, bot, selection):
-        return self.catalog.set_profile(bot['id'], selection)
-
-    def follow_default_model(self, bot_ids, classify=()):
-        return self.catalog.follow_default(bot_ids, classify)
 
     def set_model_default(self, selection):
         return self.catalog.set_default(selection)

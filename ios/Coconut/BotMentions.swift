@@ -8,13 +8,10 @@ struct SelectedBotMention: Identifiable, Equatable {
 }
 
 /// A bot that a person can name with `@` in a composer: a bot of this Mac in its chat, or a bot of a team in the
-/// team chat. The picker shows its face and its name.
+/// team chat. The picker shows its name. A person in the team chat also shows a face.
 protocol MentionableBot: Identifiable where ID == String {
     var id: String { get }
     var name: String { get }
-    /// The symbol and the color of the face.
-    var faceSymbol: String { get }
-    var faceColor: String { get }
     /// False for a bot that the list does not offer, for example an archived bot.
     var isMentionable: Bool { get }
     /// The member of a row for a person in the team chat. The row then shows the face of the person. Nil for a bot.
@@ -26,14 +23,10 @@ extension MentionableBot {
 }
 
 extension Bot: MentionableBot {
-    var faceSymbol: String { avatar }
-    var faceColor: String { color }
     var isMentionable: Bool { !archived }
 }
 
 extension TeamRoomBot: MentionableBot {
-    var faceSymbol: String { avatar ?? "" }
-    var faceColor: String { color ?? "" }
     var isMentionable: Bool { true }
 }
 
@@ -159,8 +152,7 @@ struct BotMentionPicker<B: MentionableBot>: View {
         guard bot.mentionedPerson == nil else { return bot.name }
         let matching = bots.filter { $0.mentionedPerson == nil && $0.name.lowercased() == bot.name.lowercased() }
         guard matching.count > 1, let index = matching.firstIndex(where: { $0.id == bot.id }) else { return bot.name }
-        let letter = AgentLetter.letter(symbol: bot.faceSymbol, name: bot.name, identity: bot.id)
-        return "\(bot.name), letter \(letter), agent \(index + 1) of \(matching.count)"
+        return "\(bot.name), agent \(index + 1) of \(matching.count)"
     }
 
     var body: some View {
@@ -172,8 +164,6 @@ struct BotMentionPicker<B: MentionableBot>: View {
                             HStack(spacing: 12) {
                                 if let person = bot.mentionedPerson {
                                     PersonFace(member: person, memberId: person.member, name: person.name, size: 30)
-                                } else {
-                                    BotAvatar(symbol: bot.faceSymbol, color: bot.faceColor, size: 30, identity: bot.id, name: bot.name)
                                 }
                                 VStack(alignment: .leading, spacing: 2) {
                                     Text(bot.name).font(.body).lineLimit(1)
@@ -186,9 +176,8 @@ struct BotMentionPicker<B: MentionableBot>: View {
                         .buttonStyle(.plain)
                         .accessibilityIdentifier(bot.mentionedPerson == nil ? "mention-bot-\(bot.id)" : "mention-person-\(bot.id)")
                         .accessibilityLabel(accessibleName(for: bot))
-                        // The line starts under the name: the inset, the face and the gap.
                         if bot.id != bots.last?.id {
-                            Divider().padding(.leading, BoardStyle.Space.m + 30 * BotAvatar.scale + BoardStyle.Space.m)
+                            Divider().padding(.leading, BoardStyle.Space.m)
                         }
                     }
                 }

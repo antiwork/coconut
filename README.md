@@ -11,7 +11,7 @@ Coconut keeps the Hermes source unchanged.
 
 ### Look
 
-- **Agents are letters.** Each agent has its own letter from A to Z, on a rounded square in that letter's color. A new agent takes the first letter of its name when it is free, else a free one, so a person has up to 26 agents. People and teams are circles, so an agent never looks like a person.
+- **Agents are project chats.** An agent is a name and its chats, without a face. The plus starts a new chat, and its first message names it. People and teams keep their round faces.
 - **Typing is a coconut.** While an agent writes, three dots pulse in a triangle, like the three holes of a coconut, and the triangle rolls. With Reduce Motion it stays upright.
 
 Your Mac runs Hermes and Coconut and stores the work. Your iPhone reaches the Mac through a shared Cloudflare relay, end-to-end encrypted, so the Mac needs no VPN and no open port. The same relay delivers notifications, so you need no Apple push keys.

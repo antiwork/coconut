@@ -15,11 +15,11 @@ A future execution provider can move work to another host without changing agent
 | Chat preferences and memory | Native `memories/USER.md` and `memories/MEMORY.md` |
 | Working conversation, compression, and searchable history | Native profile `state.db` |
 | Model, effort, tool settings | Native `config.yaml` |
-| Global and per-agent access | Native `approvals.mode` |
+| Access of every chat | Native `approvals.mode` of the default profile |
 | Schedules and cron state | Native `cron/jobs.json` |
 | Each agent's queue of work | Coconut's Hermes Kanban board, one tenant per agent |
-| Limits of parallel work | Native `kanban.max_in_progress` and `kanban.max_in_progress_per_profile` of the board home, and `delegation.max_concurrent_children` of each profile |
-| Avatar, pinning, notification preference | Coconut presentation data |
+| Limits of parallel work | Native `kanban.max_in_progress` and `kanban.max_in_progress_per_profile` of the board home (Coconut applies it to each agent's tenant), and `delegation.max_concurrent_children` of the default profile |
+| Name, pinning, notification preference | Coconut presentation data |
 | Pairing, transcript replay, Inbox, routing | Coconut SQLite database |
 | Tool and dispatch receipts | Coconut coordination data |
 | Team rooms, their members and the copy of each team log | Coconut SQLite database (`team_*` tables), copied from the relay. See [team log](team-log.md#mac). |
@@ -119,26 +119,24 @@ It does not promise exactly-once execution for arbitrary shell commands or exter
 Agent deliveries commit their task and receipt together.
 The explicit Coconut file executor reconciles output identity and content before retrying.
 
-Routines are native jobs. The gateway of the agent's profile runs them (see "Phase 4: routines in the gateway").
+Routines are native jobs of the default profile. The gateway runs them, and each job belongs to the chat of its `origin.chat_id` (see "Phase 4: routines in the gateway").
 
 ## Isolation and routing
 
-Each agent has a separate Hermes profile, session, workspace, and browser directory.
+Every chat runs on one Hermes profile, `default`. Each chat has its own Hermes session, kanban tenant, workspace, and browser directory.
 
-### Agents are Hermes profiles
+### Agents are project chats on one Hermes profile
 
-Each agent is one Hermes profile of the person, keyed by the profile name. `default` is the Hermes home (`$HERMES_HOME`, else `~/.hermes`). Each other profile is `<Hermes home>/profiles/<name>`. The `profiles` table in `coconut.sqlite3` maps the agent UUID to the profile, so agent IDs never change.
+An agent is a project: a name and its chats. Every chat runs on the default Hermes profile, the Hermes home (`$HERMES_HOME`, else `~/.hermes`). The `profiles` table in `coconut.sqlite3` still maps each agent UUID to the Hermes home that runs it, so agent IDs never change (`backend/coconut/bot_profiles.py`).
 
-- The service scans the profiles at its start and when `<Hermes home>/profiles` changes. A new profile folder becomes a new agent.
-- A folder that disappears makes its agent `missing`. The agent keeps its history and returns with a folder of the same name. Coconut does not follow renames: a renamed folder is a missing agent and a new agent.
-- Coconut chats, `hermes -p <name>`, and the gateway share the same skills, memories, config, and cron jobs of the profile.
-- Settings are native. The default settings are those of `<Hermes home>/config.yaml`. Each other profile uses its own config.
-- Coconut creates a profile only through the Hermes profile API, once. A failure fails the request. A folder that Hermes left behind becomes an agent at the next scan.
-- A settings write to a missing profile fails. Coconut never creates a profile folder itself.
+- A new agent maps to the default profile. Coconut creates no profile, scans no profile folder, and deletes no profile.
+- Each chat is its own Hermes session, keyed by the chat ID. The model, memory, `SOUL.md`, skills, cron jobs and access are those of the one profile, so every chat shares them. `PATCH /v1/bots/<id>` refuses `model_override`, `instructions`, `approval_override` and `worker_limit` with 409. It ignores `avatar` and `color`.
+- A new agent needs no name. Without one it is "New chat", and the first message of the person names it (`auto_name`, `agent_chats._title_chat`). The person can rename it. The API still sends `avatar` and `color`, empty for a new agent, so older apps decode an agent.
+- The Coconut chat is the agent with the mark `coconut_chat`. At the first start of this release, the mark goes to the agent that the default profile ran before.
 - Coconut keeps its own files of an agent in `<data-dir>/bots/<uuid>`: workspace, browser, temporary files, and terminal scripts.
-- An agent can have more chats. `POST /v1/bots/<id>/chats` makes a bot with `chat_of` (the agent's ID), a new session, and a `profiles` row with the name and folder of the agent's profile. Hermes creates nothing and no file is copied, so the chat has the agent's instructions, model, access, skills, memory and Library. Its first message is its title (`chat_title`). A chat can be archived or removed by itself; removing the agent removes its chats.
-- Each agent has its own letter from A to Z (`backend/coconut/agent_letters.py`): its avatar is `letter.<A-Z>`, and its color comes from the letter. A new agent takes the letter that the app asks for, else the initial of its name, else the first free letter. With all 26 letters taken, Coconut refuses a new agent until one is deleted. A chat of an agent shows the letter of its agent. At start, Coconut gives a letter to each agent that has none, for example an agent from the release with fruit faces.
-- Deleting an agent means "Remove from Coconut": the folder stays, and a scan does not add it again. To delete the Hermes profile itself, the person sends `POST /v1/bots/<id>/profile/delete` with `{"confirm": "<profile name>"}`. Coconut uses Hermes's `delete_profile` and never deletes `default`. An agent cannot request this deletion.
+- An agent can have more chats. `POST /v1/bots/<id>/chats` makes a bot with `chat_of` (the agent's ID), a new session, and a `profiles` row with the folder of the agent's profile. Its first message is its title (`chat_title`). A chat can be archived or removed by itself; removing the agent removes its chats.
+- An agent of an earlier release can still map to a named profile in `<Hermes home>/profiles` and keeps running there. `python3 -m coconut.profile_merge` merges those profiles into default while the service is stopped: it backs up every profile folder, copies cron jobs (and pauses the old ones), memory entries (tagged with the agent), `SOUL.md` sections for each chat, and missing skills, and maps the chats to default. It copies no `.env`, `auth.json` or token: it lists them so the person can connect them again. It deletes no profile folder. Without `--apply` it prints the plan.
+- Deleting an agent means "Remove from Coconut": its Hermes sessions stay.
 `HOME` remains the Mac account home so macOS Keychain works.
 `USER` identifies the Mac account so Claude Code selects its saved Keychain login.
 Coconut scopes Codex, GitHub CLI, and XDG settings through their native environment variables.
@@ -167,15 +165,7 @@ Native profile data is not copied into peer messages automatically.
 
 ### The model of an agent
 
-A Hermes profile does not inherit settings from the default profile. Hermes merges a profile's config only over its built-in defaults. Coconut keeps the choice of each agent in `coconut.sqlite3`, in the `model_follows_default` field of the agent: the agent follows the default model, or it has its own model.
-
-- An agent that follows the default gets the model keys of `<Hermes home>/config.yaml` in its own `config.yaml`: `model.default`, `model.provider`, `model.base_url`, the reasoning effort (`agent.reasoning_effort`) and the fallback models (`fallback_providers` and `fallback_model`). An agent with its own model keeps its own fallback. The other settings do not follow.
-- A request only records state. The default lives in `<Hermes home>/config.yaml`, and each agent has only `model_follows_default`. `PATCH /v1/bots/<id>` with a model in `model_override` gives the agent its own model and writes it into its profile at once. `model_override: null` makes the agent follow the default again. The agent view shows `model_override: null` for an agent that follows the default.
-- One reconcile step (`BotProfiles.reconcile_model_follow`) writes the keys into the profile of each active agent that follows the default. It is idempotent and keeps no state of a request. It runs at each service start after Coconut's Hermes entries, and in a background worker after a request commits, after a scan, and after a restore. A change outside the app, such as `hermes config set` on the default profile, reaches the agents at the next start or the next reconcile.
-- The settings process writes each profile with the config writer of Hermes. A failed write stays on the agent as `model_follow_error` and goes into the log. The worker tries again after five minutes, and each reconcile also tries again. A success clears the error.
-- Active means: the agent is not deleted or archived, and its profile row is `active`, not `removed` or `missing`. Coconut keeps the folder of a removed agent, and that folder belongs to the person. A restored agent gets the current default at the next reconcile.
-- An agent that Coconut creates follows the default. An agent without a choice, from an earlier install or a profile made outside Coconut, gets one in the reconcile. It follows the default when its profile has no model or the model and provider of the default, else it keeps its own model. The first write after this choice keeps a copy of the earlier file in `<data-dir>/backups/model-follow`.
-- The `default` profile is the default model, so Coconut never writes into it for this. A model for its agent changes the default and reaches the agents that follow it.
+Every chat uses the model of the default profile, `<Hermes home>/config.yaml`. The Model page of Profile changes it for every chat (`PUT /v1/settings/model`). An agent has no model of its own.
 
 ## The Hermes gateway
 

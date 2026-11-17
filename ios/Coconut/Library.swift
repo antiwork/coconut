@@ -107,14 +107,12 @@ struct TeamBot: Codable, Identifiable, Equatable, Sendable {
 struct LibraryOwner: Equatable {
     let id: String
     let name: String
-    let avatar: String
-    let color: String
     var teamName: String? = nil
 
-    init(_ bot: Bot) { id = bot.id; name = bot.name; avatar = bot.avatar; color = bot.color }
+    init(_ bot: Bot) { id = bot.id; name = bot.name }
 
     init(_ bot: TeamBot) {
-        id = bot.id; name = bot.name; avatar = bot.avatar; color = bot.color; teamName = bot.team.name
+        id = bot.id; name = bot.name; teamName = bot.team.name
     }
 }
 
@@ -143,18 +141,13 @@ struct LibraryView: View {
                 }
                 if !sections.pinned.isEmpty {
                     header("Starred") {
-                        // The frame of a bot's avatar, so the title sits in one line with the names of the bots.
                         Image(systemName: "star.fill").font(.footnote).foregroundStyle(.secondary)
-                            .frame(width: 24 * BotAvatar.scale, height: 24 * BotAvatar.scale)
                             .accessibilityHidden(true)
                     }
                     ForEach(sections.pinned) { row($0) }
                 }
                 ForEach(sections.groups, id: \.owner.id) { group in
-                    header(group.owner.name, detail: group.owner.teamName) {
-                        BotAvatar(symbol: group.owner.avatar, color: group.owner.color, size: 24,
-                                  identity: group.owner.id, name: group.owner.name, animated: false)
-                    }
+                    header(group.owner.name, detail: group.owner.teamName) { EmptyView() }
                     ForEach(group.documents) { row($0, pinMark: !sections.showsPinned) }
                 }
             }

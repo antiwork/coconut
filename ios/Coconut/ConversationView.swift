@@ -470,10 +470,10 @@ struct ConversationView: View {
                     }
                     ToolbarItem(placement: .leadingBar) {
                         HStack(spacing: 8) {
-                            LiveBotAvatar(bot: bot, size: 28)
                             Text(bot.isChat ? bot.chatLabel : bot.name).font(.body.weight(.semibold))
                                 .lineLimit(1).truncationMode(.tail)
                                 .frame(maxWidth: nameWidth, alignment: .leading)
+                            BotActivityDot(bot: bot)
                         }
                         .fixedSize(horizontal: true, vertical: false)
                         .padding(.leading, 4).padding(.trailing, BoardStyle.Space.m)
@@ -554,7 +554,6 @@ struct ConversationView: View {
     #if os(macOS)
     private func botPill(_ bot: Bot) -> some View {
         HStack(spacing: 8) {
-            LiveBotAvatar(bot: bot, size: 24)
             Text(bot.name).font(.body.weight(.semibold)).lineLimit(1).truncationMode(.tail)
             // A further chat of the agent shows its title after the name.
             if bot.isChat {
@@ -574,9 +573,8 @@ struct ConversationView: View {
         VStack(spacing: BoardStyle.Space.s) {
             if messages.isEmpty {
                 VStack(spacing: BoardStyle.Space.m) {
-                    BotAvatar(bot: bot, size: 68)
-                    Text("Meet \(bot.name)").font(.title3.weight(.semibold))
-                    Text("Give \(bot.name) a task. You can leave while the work continues.")
+                    Text(bot.name).font(.title3.weight(.semibold))
+                    Text("Send a message to start. You can leave while the work continues.")
                         .font(.subheadline).foregroundStyle(.secondary).multilineTextAlignment(.center)
                 }.frame(maxWidth: .infinity).padding(.vertical, 45)
             }
@@ -691,10 +689,7 @@ struct TranscriptMessageRow: View {
            senderId != message.botId || !(message.recipientBotIds ?? []).isEmpty {
             HStack(spacing: BoardStyle.Space.s) {
                 NavigationLink(value: ConversationRoute(botId: sender.id)) {
-                    HStack(spacing: BoardStyle.Space.xs) {
-                        BotAvatar(bot: sender, size: 18)
-                        Text(sender.name)
-                    }.frame(minHeight: 44)
+                    Text(sender.name).frame(minHeight: 44)
                 }.buttonStyle(.plain).accessibilityIdentifier("message-sender-\(sender.id)")
                 if let names = recipientNames, !names.isEmpty {
                     Image(systemName: "arrow.right").imageScale(.small)
@@ -1081,7 +1076,8 @@ struct ConversationComposer: View {
             }
             ComposerSlashMenu(suggestions: slashSuggestions, highlighted: slashIndex) { run($0) }
             // One box, as in Codex. A short draft is one line with the plus and Send beside it. When the box opens, the
-            // text is on top, and under it are the plus, the model, its reasoning, the access mode, and Send or Stop.
+            // text is on top, and under it are the plus, the model, its reasoning, the access mode, and Send or Stop. The
+            // model, the reasoning and the access are those of every chat.
             VStack(alignment: .leading, spacing: 0) {
                 HStack(alignment: .bottom, spacing: 0) {
                     if !expanded { plusMenu }
@@ -1099,9 +1095,9 @@ struct ConversationComposer: View {
                         // The chips scroll when the box is narrow, so Send keeps its place at the end.
                         ScrollView(.horizontal, showsIndicators: false) {
                             HStack(spacing: 0) {
-                                ComposerModelMenu(botId: bot.id, showsEffort: false)
-                                ComposerEffortMenu(botId: bot.id)
-                                ComposerAccessMenu(botId: bot.id)
+                                ComposerModelMenu(showsEffort: false)
+                                ComposerEffortMenu()
+                                ComposerAccessMenu()
                             }
                         }
                         .scrollBounceBehavior(.basedOnSize)
@@ -1173,7 +1169,7 @@ struct ConversationComposer: View {
     private var canEditLast: Bool { store.messageQueue(bot.id).contains(where: \.canChange) }
 
     private var slashSuggestions: [ComposerSlash.Suggestion] {
-        let choice = ModelChoice(store: store, botId: bot.id)
+        let choice = ModelChoice(store: store)
         return ComposerSlash.suggestions(for: text, models: choice.catalog?.models ?? [], efforts: choice.entry?.reasoningEfforts ?? [],
                                          running: task?.isRunning == true && connected,
                                          canStartChat: !bot.coconut && !bot.archived && connected)
@@ -1200,7 +1196,7 @@ struct ConversationComposer: View {
 
     /// Runs a command of the slash menu.
     private func run(_ suggestion: ComposerSlash.Suggestion) {
-        let choice = ModelChoice(store: store, botId: bot.id)
+        let choice = ModelChoice(store: store)
         switch suggestion.action {
         case .complete(let next):
             text = next

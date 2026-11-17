@@ -64,22 +64,15 @@ enum ShareFaces {
         let room = rooms.first { $0.room == destination.room }
         switch destination.kind {
         case .agent:
-            guard let bot = bots.first(where: { $0.id == destination.bot }) else { return nil }
-            return png("bot \(bot.id) \(bot.avatar) \(bot.color)") {
-                BotAvatar(bot: bot, size: size, animated: false)
-            }
+            // A project has no face.
+            return nil
         case .team:
             guard let room else { return nil }
             return png("team \(room.room) \(room.name)") { TeamFace(room: room, size: size) }
         case .direct:
             guard let room, let peer = destination.peer else { return nil }
-            if destination.peerIsBot == true {
-                let bot = room.botList.first { $0.id == peer }
-                return png("team bot \(peer) \(bot?.avatar ?? "") \(bot?.color ?? "")") {
-                    BotAvatar(symbol: bot?.avatar ?? "", color: bot?.color ?? "", size: size, identity: peer, name: bot?.name,
-                              animated: false)
-                }
-            }
+            // A bot has no face.
+            if destination.peerIsBot == true { return nil }
             let member = room.memberList.first { $0.member == peer }
             return png("person \(peer) \(member?.name ?? "") \(member?.avatar ?? "") \(member?.color ?? "")") {
                 PersonFace(member: member, memberId: peer, name: member?.name, size: size)
@@ -132,7 +125,7 @@ struct ShareDirectoryPublisher: ViewModifier {
 
     private var outline: Outline {
         Outline(destinations: ShareDirectoryBuilder.destinations(bots: store.bots, rooms: store.team?.rooms ?? []),
-                faces: store.bots.map { $0.avatar + $0.color },
+                faces: [],
                 paired: store.hasPairing, endpoint: store.shareEndpoint?.route)
     }
 

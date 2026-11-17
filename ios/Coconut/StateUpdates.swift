@@ -82,8 +82,6 @@ struct StateUpdates: Decodable, Sendable {
         }
         update(\.name)
         update(\.role)
-        update(\.avatar)
-        update(\.color)
         update(\.instructions)
         update(\.archived)
         update(\.memory)

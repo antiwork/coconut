@@ -911,11 +911,8 @@ struct TeamMessageRow: View {
 
     private var writerContent: some View {
         HStack(spacing: BoardStyle.Space.xs) {
-            if message?.bot != nil {
-                // The face and the color of the team bot, or a neutral face for a bot that the team no longer has.
-                BotAvatar(symbol: teamBot?.avatar ?? "", color: teamBot?.color ?? "", size: 18,
-                          identity: teamBot?.id ?? "", name: teamBot?.name, animated: false)
-            } else {
+            // A bot has no face: its name stands alone. A person keeps a face.
+            if message?.bot == nil {
                 let memberId = message?.member ?? ""
                 PersonFace(member: room.memberList.first { $0.member == memberId }, memberId: memberId,
                            name: message?.memberName, size: 18)
@@ -1410,7 +1407,7 @@ struct LetterFaceView: View {
                     }
             }
         }
-        .frame(width: size * BotAvatar.scale, height: size * BotAvatar.scale)
+        .frame(width: size * BoardStyle.faceScale, height: size * BoardStyle.faceScale)
         .accessibilityHidden(true)
     }
 }
@@ -1537,13 +1534,9 @@ struct TeamTypingRow: View {
         .accessibilityIdentifier("team-typing")
     }
 
-    /// The face of a bot of the team, or of a person, as above a message of the chat.
+    /// The face of a person, as above a message of the chat. A bot has no face.
     @ViewBuilder private func face(_ subject: TeamTyping) -> some View {
-        if let id = subject.bot {
-            let bot = room.botList.first { $0.id == id }
-            BotAvatar(symbol: bot?.avatar ?? "", color: bot?.color ?? "", size: 18, identity: id, name: bot?.name,
-                      animated: false)
-        } else {
+        if subject.bot == nil {
             PersonFace(member: room.memberList.first { $0.member == subject.member }, memberId: subject.member,
                        name: subject.name, size: 18)
         }
@@ -1631,17 +1624,13 @@ struct DirectContactRow: View {
     }
 }
 
-/// The face of the other side of a direct chat: the face of the bot, or the face of the person (PersonFace).
+/// The face of the other side of a direct chat: the face of the person (PersonFace). A bot has no face.
 struct DirectPeerFace: View {
     let peer: TeamDirectPeer
     let size: CGFloat
 
     var body: some View {
-        if peer.isBot {
-            // A bot that left has the neutral face, as above its message in the Team chat.
-            BotAvatar(symbol: peer.botEntry?.avatar ?? "", color: peer.botEntry?.color ?? "", size: size,
-                      identity: peer.member, name: peer.name, animated: false)
-        } else {
+        if !peer.isBot {
             PersonFace(member: peer.entry, memberId: peer.member, name: peer.name, size: size)
         }
     }

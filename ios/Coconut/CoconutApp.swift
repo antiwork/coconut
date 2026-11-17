@@ -467,8 +467,6 @@ extension CoconutHome {
         case "team-chat": show(.home, [TeamChatRoute(chat: TeamChatKey(room: room))])
         case "agent": show(.home, [AgentRoute(botId: agent)])
         case "agent-settings": show(.home, [AgentRoute(botId: agent), BotSettingsRoute(botId: agent)])
-        case "agent-model": show(.home, [AgentRoute(botId: agent), AgentSettingRoute.model(agent)])
-        case "agent-access": show(.home, [AgentRoute(botId: agent), AgentSettingRoute.access(agent)])
         case "all-pages": show(.home, [AllPagesRoute()])
         case "usage": show(.home, [UsageRoute()])
         case "live": show(.home, [LiveRoute()])

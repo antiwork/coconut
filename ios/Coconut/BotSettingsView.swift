@@ -13,24 +13,13 @@ struct BotSettingsView: View {
 
     var body: some View {
         Form {
-            if let draft {
-                BotIdentityFields(name: field(\.name), instructions: field(\.instructions),
-                                  avatar: field(\.avatar), color: field(\.color), identity: botId, commit: save)
-                Section {
-                    NavigationLink { ModelSettingsView(botId: botId) } label: {
-                        SettingsNavigationLabel(title: "Model", subtitle: modelSummary(draft))
-                    }
-                    .accessibilityIdentifier("bot-model-settings")
-                    NavigationLink { ApprovalSettingsView(botId: botId) } label: {
-                        SettingsNavigationLabel(title: "Access", subtitle: accessSummary(draft))
-                    }
-                    .accessibilityIdentifier("bot-access-settings")
-                }
+            if draft != nil {
+                BotNameField(name: field(\.name), commit: save)
                 Section {
                     Toggle("Notifications", isOn: Binding(get: { edits?.bot.notifications ?? true }, set: { edits?.bot.notifications = $0 }))
                         .tint(BoardStyle.green)
                         .accessibilityIdentifier("bot-notifications")
-                } footer: { Text("Get notified when this agent needs a decision, finishes work, or fails.") }
+                } footer: { Text("Get notified when this chat needs a decision, finishes work, or fails.") }
                 let groups = RoutineGroups(store.routines.filter { $0.botId == botId })
                 Section("Routines") {
                     ForEach(groups.recurring) { routine in
@@ -57,8 +46,6 @@ struct BotSettingsView: View {
             if let current { edits?.receive(current) }
         }
         .onChange(of: draft?.notifications) { _, _ in save() }
-        .onChange(of: draft?.avatar) { _, _ in save() }
-        .onChange(of: draft?.color) { _, _ in save() }
         .onDisappear(perform: save)
         // A sheet has no notice over it, so it shows the error itself.
         .sheet(isPresented: $routineOpen) {
@@ -86,16 +73,6 @@ struct BotSettingsView: View {
         guard let date = (routine.nextRunAt ?? routine.runAt)?.apiDate else { return routine.scheduleLabel }
         let time = date.formatted(date: .abbreviated, time: .shortened)
         return routine.enabled && routine.state != "paused" ? "Next run " + time : "Paused · " + time
-    }
-
-    private func modelSummary(_ bot: Bot) -> String {
-        guard let selection = bot.modelOverride else { return "Default model" }
-        return store.modelCatalog?.name(for: selection) ?? selection.model
-    }
-
-    private func accessSummary(_ bot: Bot) -> String {
-        guard let value = bot.approvalOverride else { return "Default access" }
-        return store.approvals?.label(for: value) ?? value
     }
 
     // One save at a time. A change during a save starts one more save after it.
@@ -167,35 +144,10 @@ enum BotAutosave {
     // The bot from the Mac, with each draft field that differs from the baseline kept as the person left it.
     static func merge(draft: Bot, baseline: Bot, into current: Bot) -> Bot {
         var updated = current
-        let fields: [WritableKeyPath<Bot, String>] = [\.name, \.instructions, \.avatar, \.color]
-        for field in fields where draft[keyPath: field] != baseline[keyPath: field] {
-            updated[keyPath: field] = draft[keyPath: field]
-        }
+        if draft.name != baseline.name { updated.name = draft.name }
         if draft.notifications != baseline.notifications { updated.notifications = draft.notifications }
         return updated
     }
-}
-
-struct BotTextDraft {
-    var text = ""
-    private(set) var baseline = ""
-    private(set) var isLoaded = false
-
-    mutating func loadCached(_ value: String) {
-        guard !isLoaded else { return }
-        text = value
-        baseline = value
-        isLoaded = true
-    }
-
-    mutating func applyFresh(_ value: String, requestedBaseline: String) {
-        guard text == baseline, baseline == requestedBaseline else { return }
-        text = value
-        baseline = value
-        isLoaded = true
-    }
-
-    mutating func markSaved(_ submitted: String) { baseline = submitted }
 }
 
 struct RoutineEditorView: View {

@@ -3,7 +3,7 @@
 - Total: `kanban.max_in_progress` of Coconut's board home. Hermes derives no default when it cannot read the memory of
   the host, as on macOS, so Automatic is the limit of this Mac (automatic_limit).
 - Per agent: `kanban.max_in_progress_per_profile` of the board home. Automatic is 2: a chat and a work session.
-- Helpers per task: `delegation.max_concurrent_children` of each Hermes profile (parallel_work).
+- Helpers per task: `delegation.max_concurrent_children` of the default Hermes profile, which every chat shares (parallel_work).
 """
 from functools import lru_cache
 import os

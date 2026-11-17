@@ -206,7 +206,7 @@ struct HomeView: View {
     private func unreadContent(_ row: HomeUnread) -> some View {
         Group {
             switch row {
-            case .chat(.bot(let bot), _): BotContactRow(bot: bot, avatarSize: face)
+            case .chat(.bot(let bot), _): BotContactRow(bot: bot)
             case .chat(let item, _): PeopleRow(item: item, avatarSize: face)
             case .card(let decision): cardRow(decision)
             }
@@ -219,7 +219,7 @@ struct HomeView: View {
     private func cardRow(_ decision: Decision) -> some View {
         let bot = store.bots.first { $0.id == store.conversationBotId(for: decision) }
         return ChatRowLayout(name: decision.title, unread: 0, date: decision.createdAt.apiDate) {
-            if let bot { LiveBotAvatar(bot: bot, size: face) }
+            EmptyView()
         } subtitle: {
             HStack(spacing: BoardStyle.Space.xs) {
                 StatusLabel(status: "needs_you", compact: true)

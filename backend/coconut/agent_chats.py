@@ -1,9 +1,9 @@
-"""An agent can have more than one chat. Each chat is a fresh conversation with the same Hermes profile.
+"""A project can have more than one chat. Each chat is a fresh conversation on the same Hermes profile.
 
-A chat is a bot of its own with `chat_of`, the ID of its agent. It has a new ID and a new session, so Hermes starts a new
-conversation, and it has a row in the `profiles` table with the name and the folder of the agent's profile
-(profile_registry). Coconut creates no profile for it and copies no file: the instructions, the model, the access, the
-skills, the memory and the keys are those of the one profile. The Library is that of the agent too (`_agent_id`).
+A chat is a bot of its own with `chat_of`, the ID of its project. It has a new ID and a new session, so Hermes starts a
+new conversation, and it has a row in the `profiles` table with the name and the folder of the project's profile
+(profile_registry). Coconut creates no profile for it and copies no file. The Library is that of the project too
+(`_agent_id`).
 
 The first message of the person gives the chat its title (`chat_title`). The apps list the chats under their agent,
 newest first. A chat can be archived or removed by itself. The settings belong to the agent: a chat takes only
@@ -12,8 +12,7 @@ newest first. A chat can be archived or removed by itself. The settings belong t
 from __future__ import annotations
 
 # What a chat takes from its agent when the person starts it, and again when the agent changes.
-SHARED = ('name', 'role', 'avatar', 'color', 'instructions', 'model_override', 'model_follows_default',
-          'approval_override', 'worker_limit')
+SHARED = ('name', 'role')
 # The fields that the person changes on one chat.
 OWN = frozenset({'archived', 'pinned', 'notifications', 'chat_title'})
 TITLE_LENGTH = 72
@@ -54,7 +53,8 @@ class AgentChats:
         row = self.profiles.rows.get(agent['id'])
         if row is None or row['state'] != 'active':
             raise ServiceError(409, 'This agent has no Hermes profile to chat with.')
-        chat = dict(id=uid(), session_id=uid(), chat_of=agent['id'], chat_title='', notifications=agent.get('notifications', True),
+        # Older apps read `avatar` and `color`. A chat has no face, so both stay empty.
+        chat = dict(id=uid(), session_id=uid(), chat_of=agent['id'], chat_title='', avatar='', color='', notifications=agent.get('notifications', True),
                     status='idle', last_message='', unread_count=0, last_read_message_id=None, archived=False, pinned=False, created_at=now())
         chat.update({field: agent[field] for field in SHARED if field in agent})
         chat['profile_id'] = chat['id']
@@ -65,7 +65,7 @@ class AgentChats:
         return chat
 
     def _title_chat(self, bot: dict, text: str) -> None:
-        """The first message of the person names the chat, and names a new agent that has only its letter."""
+        """The first message of the person names the chat, and names a new project that has no name yet."""
         if bot.get('chat_of') and not bot.get('chat_title'):
             bot['chat_title'] = chat_title(text)
             self._put('bots', bot)
@@ -80,7 +80,7 @@ class AgentChats:
             self._follow_agent(bot)
 
     def _follow_agent(self, agent: dict) -> None:
-        """Give the chats of an agent its changed name, look and settings."""
+        """Give the chats of a project its changed name."""
         from .service_base import encoded
         if agent.get('chat_of'):
             return

@@ -99,7 +99,6 @@ struct CoconutChatRow: View {
 
     var body: some View {
         HStack(spacing: BoardStyle.Space.s) {
-            BotAvatar(bot: bot, size: 20)
             Text("Coconut").fontWeight(bot.unreadCount > 0 ? .semibold : .regular)
             Spacer(minLength: 0)
             if bot.unreadCount > 0 {

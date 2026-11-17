@@ -6,8 +6,6 @@ struct Bot: Codable, Identifiable, Equatable, Sendable {
     var sessionId: String
     var name: String
     var role: String
-    var avatar: String
-    var color: String
     var instructions: String
     var status: String
     var lastMessage: String
@@ -25,10 +23,11 @@ struct Bot: Codable, Identifiable, Equatable, Sendable {
     var workerLimit: Int? = nil
     var modelError: String? = nil
     var health: BotHealth? = nil
-    /// True for the Coconut chat: the agent of the default Hermes profile, where the person changes Coconut. It stays
+    /// True for the Coconut chat, where the person changes Coconut. It stays
     /// at the top of the lists and is never archived.
     var coconut: Bool = false
-    /// The ID of the agent, for a further chat of that agent: a fresh conversation with the same Hermes profile.
+    /// The ID of the project, for a further chat of that project: a fresh conversation. Every chat runs on the one Hermes
+    /// profile of the Mac.
     var chatOf: String? = nil
     /// The title of a further chat: the first message of the person. Empty before it.
     var chatTitle: String? = nil
@@ -65,40 +64,28 @@ struct BotPreference: Codable, Identifiable, Equatable, Sendable {
     var updatedAt: String
 }
 
+/// What the person changes on a project: its name and its notifications. Every chat shares one Hermes profile, so a
+/// project has no model, instructions or access of its own.
 struct BotPatch: Encodable {
     var name: String?
-    var role: String?
-    var avatar: String?
-    var color: String?
-    var instructions: String?
     var notifications: Bool?
 
     init(updated: Bot, original: Bot) {
         name = updated.name != original.name ? updated.name : nil
-        role = updated.role != original.role ? updated.role : nil
-        avatar = updated.avatar != original.avatar ? updated.avatar : nil
-        color = updated.color != original.color ? updated.color : nil
-        instructions = updated.instructions != original.instructions ? updated.instructions : nil
         notifications = updated.notifications != original.notifications ? updated.notifications : nil
     }
 
-    var isEmpty: Bool {
-        name == nil && role == nil && avatar == nil && color == nil && instructions == nil && notifications == nil
-    }
+    var isEmpty: Bool { name == nil && notifications == nil }
 
     func apply(to bot: inout Bot) {
         if let name { bot.name = name }
-        if let role { bot.role = role }
-        if let avatar { bot.avatar = avatar }
-        if let color { bot.color = color }
-        if let instructions { bot.instructions = instructions }
         if let notifications { bot.notifications = notifications }
     }
 }
 
 extension Bot {
     enum CodingKeys: String, CodingKey {
-        case id, sessionId, name, role, avatar, color, instructions, status
+        case id, sessionId, name, role, instructions, status
         case lastMessage, unreadCount, archived, createdAt, memory, pinned, preferences, modelOverride, effectiveModel, modelError, notifications, approvalOverride, effectiveApproval, workerLimit, health, coconut, chatOf, chatTitle, lastReadMessageId
     }
 
@@ -108,9 +95,8 @@ extension Bot {
         sessionId = try values.decode(String.self, forKey: .sessionId)
         name = try values.decode(String.self, forKey: .name)
         role = try values.decode(String.self, forKey: .role)
-        avatar = try values.decode(String.self, forKey: .avatar)
-        color = try values.decode(String.self, forKey: .color)
-        instructions = try values.decode(String.self, forKey: .instructions)
+        // A Mac of an earlier release also sends `avatar` and `color`. A project has no face, so the app ignores them.
+        instructions = try values.decodeIfPresent(String.self, forKey: .instructions) ?? ""
         status = try values.decode(String.self, forKey: .status)
         lastMessage = try values.decode(String.self, forKey: .lastMessage)
         unreadCount = try values.decode(Int.self, forKey: .unreadCount)
@@ -202,17 +188,6 @@ struct ModelCatalog: Codable, Equatable, Sendable {
         var result = selection
         result.reasoningEffort = selection.reasoningEffort ?? entry(for: selection)?.defaultReasoningEffort
         return result
-    }
-}
-
-struct BotModelRequest: Encodable {
-    let modelOverride: ModelOverride?
-
-    enum CodingKeys: String, CodingKey { case modelOverride }
-
-    func encode(to encoder: Encoder) throws {
-        var values = encoder.container(keyedBy: CodingKeys.self)
-        try values.encode(modelOverride, forKey: .modelOverride)
     }
 }
 

@@ -44,7 +44,7 @@ struct ParallelWorkSettingsView: View {
                 }
                 if let helpers = store.parallelWork {
                     limitSection("Helpers per task", helpers, identifier: "helper-limit",
-                                 footer: "A task can hand parts to this many helpers at once. Each helper uses model tokens. An agent can set its own number.") { value in
+                                 footer: "A task can hand parts to this many helpers at once. Each helper uses model tokens. Every chat shares this number.") { value in
                         await store.setWorkerLimit(value)
                     }
                 }

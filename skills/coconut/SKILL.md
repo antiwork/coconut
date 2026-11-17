@@ -12,7 +12,7 @@ metadata:
 
 # Coconut Skill
 
-Coconut is an iPhone app and a Mac service. The service runs on this Mac and runs agents, each with its own Hermes profile. The iPhone reaches the service through an end-to-end encrypted relay. This skill tells you how to update Coconut, pair an iPhone, find the cause of a problem, make a routine that spends model tokens only when there is work, and write a good page for the Library. It does not change Hermes itself.
+Coconut is an iPhone app and a Mac service. The service runs on this Mac and runs agents: project chats that all run on the default Hermes profile. The iPhone reaches the service through an end-to-end encrypted relay. This skill tells you how to update Coconut, pair an iPhone, find the cause of a problem, make a routine that spends model tokens only when there is work, and write a good page for the Library. It does not change Hermes itself.
 
 **This skill is a hub.** Before you answer a detail question, load the matching reference with `skill_view`.
 
@@ -109,7 +109,7 @@ A join that is done already prints "This Mac is already in this team." That is a
 
 The person prefers native Hermes functionality over custom Coconut or agent-built versions: reuse Hermes (kanban board, cron, delegation settings) and propose deleting Coconut's duplicate code where Hermes covers it.
 
-1. Pin down the unit first. "Project" or "queue" usually means a Coconut agent (a Hermes profile), not a GitHub repo. When the word is ambiguous, ask with `coconut_ask` before building; a wrong guess wastes a whole build-and-remove cycle.
+1. Pin down the unit first. "Project" or "queue" usually means a Coconut agent (a project chat on the default profile), not a GitHub repo. When the word is ambiguous, ask with `coconut_ask` before building; a wrong guess wastes a whole build-and-remove cycle.
 2. Check what exists before designing: `hermes kanban --help`, then Coconut's board with `HERMES_HOME=~/Coconut/.runtime/host/kanban hermes kanban stats` (plain `hermes kanban` reads an empty default board), and the Coconut service code in `~/Coconut/backend/coconut` (`work_capacity.py`, `parallel_work.py`). Coconut already queues each agent's work on the Hermes kanban board. Depth: `references/work-queues.md`.
 3. A change to how Coconut queues, shows, or limits work is a Coconut app change in `antiwork/coconut` (committed to `main` per its CONTRIBUTING, `references/app-changes.md`), not a cron job, GitHub labels, or a routine on a business repo. From an agent's chat, hand the build to a work session with `coconut_kanban_create`, and confirm the session runs on the model the person named (`references/work-queues.md`).
 4. Write the design as a Library page, then ask with `coconut_ask` naming the page. Touch GitHub topics, labels, routines, or settings only after approval.
@@ -117,16 +117,15 @@ The person prefers native Hermes functionality over custom Coconut or agent-buil
 
 A project for business functions is still a GitHub repo with the `coconut-project` topic (`gh search repos --owner <owner> --topic coconut-project`); org repos such as `antiwork/*` do not show under the user's own login, so search the org or by name.
 
-## Configure an agent's own model and standing rules
+## Model and standing rules
 
-When the person sets an agent's behavior from its own chat ("use Fable 5.2", "if I don't answer in 5 min, best-guess and continue"):
+Every chat runs on the default Hermes profile, so the model, `SOUL.md`, memory and access are shared by all chats. An agent of an earlier release can still run on a named profile until the person merges it (`python3 -m coconut.profile_merge`, see `docs/architecture.md`).
 
-1. Map the spoken model name to a real ID by grepping other profiles' `config.yaml` (e.g. "fable 5.2" → `claude-fable-5-2`, provider `anthropic`); say the mapping in one line.
-2. Model: `hermes -p <name> config set model.default <id>`, then `grep -A2 '^model:'` the profile config to verify. It applies from the next session. (From the main Coconut chat, `coconut_settings` `agent_model` does the same.)
-3. Standing rules: write them to the profile's `SOUL.md` with `read_file` then `write_file` (the guard refuses an unread overwrite, even of an empty file). Keep the hard limits: no outbound messages, spending, deletion, merge, or deploy on a best guess, and no overriding an explicit hold.
-4. Do each change as its own small tool call, not one long terminal command with backups and heredocs: a long command raises a native approval prompt, and an unanswered prompt blocks the whole step.
-5. Tell the person that native Hermes approval prompts are not Coconut cards. A "continue if I don't respond" rule cannot answer them. Real autonomy needs the agent's access set to run commands without asking, which only the main Coconut chat can change (`coconut_settings` `agent_access`).
-6. When the person asks an agent's own chat to remove approval prompts, `coconut_settings` refuses there. Do not switch them off through `hermes config set` instead: that is an agent disabling its own safety check by a side route after the proper one refused. Reply in a few lines with the exact sentence to send in the Coconut chat ("let agents run commands without asking", or "let <agent> run commands without asking" for one agent) and one line on what turning prompts off means.
+1. Map the spoken model name to a real ID from the catalog (e.g. "fable 5.2" → `claude-fable-5-2`, provider `anthropic`); say the mapping in one line. The model changes for every chat: from the Coconut chat with `coconut_settings` `default_model`, or `hermes config set model.default <id>`.
+2. A standing rule for one project goes into the default `SOUL.md` as a section that names the chat it applies to ("Only in the \"Gumroad\" chat"). Use `read_file` then `write_file` (the guard refuses an unread overwrite). Keep the hard limits: no outbound messages, spending, deletion, merge, or deploy on a best guess, and no overriding an explicit hold.
+3. Do each change as its own small tool call, not one long terminal command with backups and heredocs: a long command raises a native approval prompt, and an unanswered prompt blocks the whole step.
+4. Native Hermes approval prompts are not Coconut cards. A "continue if I don't respond" rule cannot answer them. Access is one setting for every chat, which only the main Coconut chat changes (`coconut_settings` `default_access`).
+5. When a chat asks to remove approval prompts, `coconut_settings` refuses there. Do not switch them off through `hermes config set` instead: that is an agent disabling its own safety check by a side route after the proper one refused. Reply with the exact sentence to send in the Coconut chat ("let chats run commands without asking") and one line on what turning prompts off means.
 
 The person values autonomy and short replies. Treat a terse "Go" as approval of the plan just described, and act at once without restating it.
 
@@ -135,7 +134,7 @@ The person values autonomy and short replies. Treat a terse "Go" as approval of 
 - Do not run `scripts/host.py restart` while agents work. It stops their running turns at once. `coconut update` waits for running turns.
 - Do not use `coconut update --wait` inside your own turn. The update waits for running turns, also yours.
 - Do not edit files in the install folder (default `~/Coconut`). An update refuses to replace a changed file.
-- Do not copy model keys, OAuth tokens, or `.env` files between Hermes profiles or into Coconut. Each profile keeps its own credentials.
+- Do not copy model keys, OAuth tokens, or `.env` files between Hermes profiles or into Coconut. The merge of old profiles lists the credentials to connect again in default; it never copies them.
 - Set a profile's Hermes config with `hermes -p <name> config set <key> <value>` (or `HERMES_HOME=~/.hermes/profiles/<name> hermes config set ...`). Without the profile, the write goes to the default profile's `~/.hermes/config.yaml`. The `patch`/`write_file` tools refuse `config.yaml` as security-sensitive, and a hand-rolled script edit in the terminal triggers an approval prompt, so `hermes config set` is the one path that lands without a prompt.
 - Never tell the person the app already behaves some way without checking `origin/main`. A message that describes app behavior is often a feature request; answering "that's how it works" makes them ask twice.
 - A bug report ("counts too high") usually reflects the installed build, not `main`: compare the installed service code and test the fix on a backup copy of the live database before changing code (`references/app-changes.md`, "A bug report about the person's own data").

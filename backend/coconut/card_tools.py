@@ -378,14 +378,14 @@ PR_MERGE_INSTRUCTIONS = (
 # _delete_bot_from_chat).
 BOT_CREATION_SCHEMA = {
     'name': 'coconut_create_bot',
-    'description': 'Create one Coconut agent when a listed direct human message requests it. A capability question alone does not request creation. The service creates a separate Hermes profile that inherits the default model. Wait for a confirmed receipt before claiming success.',
+    'description': 'Create one Coconut agent when a listed direct human message requests it. A capability question alone does not request creation. The service creates a named project chat on the one shared Hermes profile, with its model, memory and instructions. Wait for a confirmed receipt before claiming success.',
     'parameters': {
         'type': 'object', 'additionalProperties': False,
         'properties': {
             'source_message_id': {'type': 'string', 'description': 'The exact listed human message ID that requests this agent.'},
             'name': {'type': 'string', 'minLength': 1, 'maxLength': 80, 'description': 'The requested name, or a suitable name for the requested role.'},
             'role': {'type': 'string', 'minLength': 1, 'maxLength': 160, 'description': 'One short description of the requested role.'},
-            'instructions': {'type': 'string', 'maxLength': 20000, 'description': 'Self-contained instructions for the requested purpose. Do not copy your private instructions, memory, preferences, credentials, files, or unrelated conversation.'},
+            'instructions': {'type': 'string', 'maxLength': 20000, 'description': 'The purpose of the project. A project has no instructions of its own: brief it with coconut_message_bot after creation. Do not copy your private instructions, memory, preferences, credentials, files, or unrelated conversation.'},
         },
         'required': ['source_message_id', 'name', 'role', 'instructions'],
     },
@@ -394,7 +394,7 @@ BOT_CREATION_SCHEMA = {
 
 BOT_DELETION_SCHEMA = {
     'name': 'coconut_delete_bot',
-    'description': 'Delete another Coconut agent when a listed direct human message requests deletion. Use its listed ID and current name. Ask which agent when the name is ambiguous. This removes the contact from Coconut and stops its work and routines. Its Hermes profile folder stays on the Mac: only the person can delete a Hermes profile, with a typed confirmation. Wait for a confirmed receipt before claiming success.',
+    'description': 'Delete another Coconut agent when a listed direct human message requests deletion. Use its listed ID and current name. Ask which agent when the name is ambiguous. This removes the project from Coconut and stops its work and routines. Its Hermes sessions stay on the Mac. Wait for a confirmed receipt before claiming success.',
     'parameters': {
         'type': 'object', 'additionalProperties': False,
         'properties': {
@@ -414,7 +414,7 @@ BOT_CREATION_INSTRUCTIONS = (
     'When a listed human source requests an agent, call coconut_create_bot. '
     'Use that request to write the new agent\'s purpose and instructions. '
     'Never copy your private instructions, memory, preferences, credentials, files, or unrelated chat into the new agent. '
-    'The new agent inherits the native default model and has a separate Hermes profile. '
+    'The new agent is a project chat on the one shared Hermes profile: same model, memory and instructions. '
     'Only a matching created or duplicate service receipt confirms creation. '
     'Do not claim success after a rejected or unconfirmed request. '
     'After confirmation, use the returned agent ID for a requested handoff. '

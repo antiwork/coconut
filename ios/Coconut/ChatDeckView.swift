@@ -352,7 +352,6 @@ struct ChatDeckCard: View {
 
     private var header: some View {
         HStack(spacing: BoardStyle.Space.m) {
-            LiveBotAvatar(bot: bot, size: 40)
             VStack(alignment: .leading, spacing: BoardStyle.Space.line) {
                 Text(bot.name).font(.headline).lineLimit(1)
                 Text(subtitle).font(.subheadline).foregroundStyle(.secondary).lineLimit(1)

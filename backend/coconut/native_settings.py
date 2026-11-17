@@ -57,7 +57,6 @@ def validate_mode(value, nullable=False):
 
 
 def worker(request, default_home):
-    from hermes_cli.profiles import write_profile_meta
     from model_catalog import profile_contained
     op = request['native_operation']
     homes = {identity: profile_contained(home, request) for identity, home in request.get('homes', {}).items()}
@@ -104,25 +103,5 @@ def worker(request, default_home):
         config.setdefault('approvals', {})['mode'] = value
         save_config(default_home, config)
         return approval_state(default_home)
-    if op == 'update_profile':
-        home = homes[request['bot_id']]
-        changes = request['changes']
-        if 'name' in changes or 'role' in changes:
-            write_profile_meta(home, **{native: changes[app] for app, native in
-                                       (('name', 'display_name'), ('role', 'description')) if app in changes})
-        if 'worker_limit' in changes:
-            from parallel_work import save
-            save(home, changes['worker_limit'], inherit=True)
-        if 'approval_override' in changes:
-            value = changes['approval_override']
-            validate_mode(value, nullable=True)
-            config = raw_config(home)
-            approvals = config.setdefault('approvals', {})
-            if value is None:
-                approvals.pop('mode', None)
-            else:
-                approvals['mode'] = value
-            save_config(home, config)
-        return profile_state(home)
     raise ValueError('Unknown native settings operation.')
 

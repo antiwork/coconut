@@ -412,14 +412,12 @@ struct TeamRoomView: View {
             showTeamChat.map { show in { show(TeamChatKey(room: room.room, bot: bot.id)) } }
         }
         let label = HStack(spacing: 12) {
-            if let bot = row.bot {
-                BotAvatar(symbol: bot.avatar ?? "", color: bot.color ?? "", size: avatarSize, identity: bot.id,
-                          name: bot.name, animated: false)
-            } else {
+            // A bot has no face. A Mac without a bot has a quiet symbol of a Mac.
+            if row.bot == nil {
                 Image(systemName: "desktopcomputer")
                     .font(.system(size: avatarSize * 0.6))
                     .foregroundStyle(.secondary)
-                    .frame(width: avatarSize * BotAvatar.scale, height: avatarSize * BotAvatar.scale)
+                    .frame(width: avatarSize * BoardStyle.faceScale, height: avatarSize * BoardStyle.faceScale)
                     .accessibilityHidden(true)
             }
             TeamRowText(name: row.name, note: row.note)

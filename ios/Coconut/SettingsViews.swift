@@ -1,7 +1,7 @@
 import SwiftUI
 
-// Coconut has no Settings screen. Profile (ProfileView) has the things of this device and the defaults of the agents,
-// and the Coconut chat changes the rest.
+// Coconut has no Settings screen. Profile (ProfileView) has the things of this device and the settings that every chat
+// shares, and the Coconut chat changes the rest.
 
 struct SettingsNavigationLabel: View {
     let title: String
@@ -97,114 +97,22 @@ struct MacConnectionSettingsView: View {
     }
 }
 
-// The character, name, and description of a bot. New bots and bot settings use the same fields.
-struct BotIdentityFields: View {
+/// The name of a project. The first message names a new project, and the person can rename it here.
+struct BotNameField: View {
     @Binding var name: String
-    @Binding var instructions: String
-    @Binding var avatar: String
-    @Binding var color: String
-    let identity: String
-    /// The prompt of the name field. A new agent shows its letter: an empty name takes it.
-    var namePrompt = "Name"
-    // Called when a text field loses focus or the person submits it.
+    // Called when the field loses focus or the person submits it.
     var commit: () -> Void = {}
-    @State private var appearanceOpen = false
-    @FocusState private var focused: Field?
-    @ScaledMetric(relativeTo: .largeTitle) private var avatarSize = 86.0
-
-    private enum Field { case name, instructions }
+    @FocusState private var focused: Bool
 
     var body: some View {
-        Section {
-            Button { appearanceOpen = true } label: {
-                BotAvatar(symbol: avatar, color: color, size: avatarSize, identity: identity)
-                    .frame(maxWidth: .infinity).padding(.vertical, BoardStyle.Space.l)
-            }
-            .buttonStyle(.plain).listRowBackground(Color.clear)
-            .accessibilityLabel("Change letter")
-            .sheet(isPresented: $appearanceOpen) {
-                NavigationStack {
-                    Form { BotAppearancePicker(avatar: $avatar, color: $color, identity: identity) }
-                        .settingsBackground()
-                        // In the bot settings a pick saves at once, and the save can fail. The sheet shows the error at
-                        // its top, and the page behind it shows none. It stays in view at each scroll position.
-                        .pageErrorBanner()
-                        #if os(macOS)
-                        // A Mac sheet takes the height of its content. The letters made it too high, and the
-                        // notice of an error made it higher than a small window, so Done went off the screen. With a
-                        // fixed height the letters scroll, and the notice takes its place inside the sheet. A plain Mac
-                        // form did not scroll inside the height, and it pushed the notice above the sheet. A grouped
-                        // form scrolls, as in the New agent sheet.
-                        .formStyle(.grouped)
-                        .frame(width: 470, height: 600)
-                        #endif
-                        .navigationTitle("Letter").inlineNavigationTitle()
-                        .toolbar { Button("Done") { appearanceOpen = false } }
-                }
-                .sheetShowsError()
-                .presentationDetents([.large])
-            }
-        }
         Section("Name") {
-            TextField("Name", text: $name, prompt: Text(namePrompt)).textContentType(.name)
+            TextField("Name", text: $name).textContentType(.name)
                 .fieldUnderHeader()
-                .focused($focused, equals: .name)
+                .focused($focused)
                 .submitLabel(.done)
                 .onSubmit(commit)
+                .onChange(of: focused) { previous, current in if previous && !current { commit() } }
                 .accessibilityIdentifier("bot-name")
-        }
-        Section("Description") {
-            TextField("What should this agent do?", text: $instructions, axis: .vertical)
-                .lineLimit(5...18)
-                .fieldUnderHeader()
-                .focused($focused, equals: .instructions)
-                .onSubmit(commit)
-                .accessibilityIdentifier("bot-instructions")
-                .onChange(of: focused) { previous, current in
-                    if previous != nil && previous != current { commit() }
-                }
-        }
-    }
-}
-
-/// The 26 letters. A letter of another agent shows that agent's name and cannot be chosen.
-struct BotAppearancePicker: View {
-    @Environment(AppStore.self) private var store
-    @Binding var avatar: String
-    @Binding var color: String
-    var identity = ""
-    private var held: [String: String] { AgentLetter.taken(by: store.bots, besides: identity) }
-    private var selected: String? { AgentLetter.exact(avatar) }
-
-    var body: some View {
-        Section {
-            BotAvatar(symbol: avatar, color: color, size: 120, identity: identity)
-                .frame(maxWidth: .infinity).padding(.vertical, 12)
-        }.listRowBackground(Color.clear)
-        Section {
-            LazyVGrid(columns: [GridItem(.adaptive(minimum: 60))], spacing: BoardStyle.Space.s) {
-                ForEach(AgentLetter.all, id: \.self) { letter in
-                    let owner = held[letter]
-                    Button { avatar = AgentLetter.symbol(letter); color = AgentLetter.colors(letter).fill } label: {
-                        VStack(spacing: BoardStyle.Space.xs) {
-                            LetterTile(letter: letter, size: 44).opacity(owner == nil ? 1 : 0.28)
-                            Text(owner ?? " ").font(.caption2).foregroundStyle(.secondary).lineLimit(1)
-                        }
-                        .frame(maxWidth: .infinity).padding(.vertical, BoardStyle.Space.s)
-                        .background(selected == letter ? BoardStyle.ink.opacity(0.07) : .clear,
-                                    in: RoundedRectangle(cornerRadius: BoardStyle.Radius.small))
-                    }
-                    .buttonStyle(HomePressStyle())
-                    .disabled(owner != nil)
-                    .accessibilityLabel(owner.map { "\(letter), used by \($0)" } ?? letter)
-                    .accessibilityIdentifier("bot-avatar-letter.\(letter)")
-                    .accessibilityAddTraits(selected == letter ? .isSelected : [])
-                }
-            }
-        } header: {
-            Text("Letter")
-        } footer: {
-            Text("Each agent has its own letter from A to Z.")
         }
     }
 }

@@ -175,8 +175,8 @@ struct DecisionInboxView: View {
                     VStack(spacing: 16) {
                         Spacer()
                         VStack(spacing: 8) {
-                            BotAvatar(symbol: AgentLetter.symbol("C"), color: "", size: 64,
-                                      identity: "inbox-caught-up")
+                            Image(systemName: "checkmark.circle").font(.system(size: 44, weight: .regular))
+                                .foregroundStyle(.secondary).accessibilityHidden(true)
                             Text("All caught up.")
                                 .font(.title3.weight(.semibold)).accessibilityIdentifier("inbox-empty")
                         }

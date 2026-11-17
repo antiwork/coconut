@@ -405,44 +405,6 @@ class HermesModelCatalog:
                     result[bot_id] = deepcopy(value)
             return result
 
-    def set_profile(self, bot_id, selection):
-        value = _selection(selection) if selection is not None else None
-        catalog = self.get_for_validation() if value is not None else self.get()
-        self.resolve(value, catalog)
-        result = self._call('set_profile', profile_home=str(self._profile_home(bot_id, write=True)),
-                            selection=value, catalog=catalog)
-        with self._lock:
-            self._profile_cache.pop(bot_id, None)
-        return result
-
-    def follow_default(self, bot_ids, classify=()):
-        """Write the model of the default profile into the profiles of these bots, in one settings process.
-
-        A bot in `classify` has no choice yet. The settings process decides whether it follows the default
-        (_follow_default). Return {bot_id: {'follows': bool, 'changed': bool} or {'error': text}}.
-        """
-        result, homes = {}, {}
-        rows = getattr(self, 'profile_rows', None)
-        for bot_id in bot_ids:
-            if rows is not None and (rows.get(bot_id) or {}).get('state') != 'active':
-                # A removed or missing profile belongs to the person. Coconut does not write into it.
-                result[bot_id] = {'skipped': 'The Hermes profile of this agent is not active in Coconut.'}
-                continue
-            try:
-                homes[bot_id] = str(self._profile_home(bot_id, write=True))
-            except ModelCatalogError as error:
-                result[bot_id] = {'error': str(error)}
-        if homes:
-            try:
-                result.update(self._call('follow_default', homes=homes,
-                                         classify=[bot_id for bot_id in classify if bot_id in homes]))
-            except ModelCatalogError as error:
-                result.update({bot_id: {'error': str(error)} for bot_id in homes})
-            with self._lock:
-                for bot_id in homes:
-                    self._profile_cache.pop(bot_id, None)
-        return result
-
     def migrate_legacy_default(self, model, base_url=None):
         """Import one existing Coconut selection only when Hermes has no config file."""
         with self._lock:
@@ -825,127 +787,8 @@ def _read_profile(home, inherited):
     return {'model_override': selection, 'effective_model': dict(selection, base_url=base_url)}
 
 
-def _write_profile(home, selection, catalog):
-    from hermes_cli.config import require_readable_config_before_write
-    from hermes_constants import set_hermes_home_override, reset_hermes_home_override
-    path = Path(home) / 'config.yaml'
-    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    token = set_hermes_home_override(home)
-    try:
-        if selection is not None:
-            previous = _read_profile(home, catalog['default'])['effective_model'] or catalog['default']
-            profile_catalog = dict(catalog, default=previous)
-            _write_default(selection, profile_catalog)
-        else:
-            before = path.read_bytes() if path.exists() else None
-            raw = require_readable_config_before_write(path)
-            model = raw.get('model')
-            if isinstance(model, dict):
-                for key in ('default', 'model', 'name', 'provider', 'base_url', 'api_base'):
-                    model.pop(key, None)
-                if not model:
-                    raw.pop('model', None)
-            else:
-                raw.pop('model', None)
-            for key in ('provider', 'base_url', 'api_base'):
-                raw.pop(key, None)
-            agent = raw.get('agent')
-            if isinstance(agent, dict):
-                agent.pop('reasoning_effort', None)
-                agent.pop('reasoning_overrides', None)
-                if not agent:
-                    raw.pop('agent', None)
-            if (path.read_bytes() if path.exists() else None) != before:
-                raise ModelCatalogError('Hermes settings changed. Refresh before saving again.')
-            save_yaml(path, raw)
-        return _read_profile(home, catalog['default'])
-    finally:
-        reset_hermes_home_override(token)
-
-
-# The fallback keys of Hermes. A bot that follows the default takes them as the default profile has them.
+# The fallback keys of Hermes.
 FALLBACK_KEYS = ('fallback_providers', 'fallback_model')
-
-
-def _fallback(config):
-    return {key: deepcopy(config[key]) for key in FALLBACK_KEYS if config.get(key)}
-
-
-def _route(config, model=None):
-    """The model keys of a config that a bot which follows the default takes from the default profile."""
-    from hermes_cli.config import _normalize_root_model_keys
-    from hermes_constants import resolve_reasoning_config
-    normalized = _normalize_root_model_keys(deepcopy(config))
-    section = normalized.get('model') or {}
-    if isinstance(section, str):
-        section = {'default': section}
-    return {'model': section.get('default') or None, 'provider': section.get('provider') or None,
-            'base_url': str(section.get('base_url') or '').rstrip('/') or None,
-            'reasoning_effort': _effort(resolve_reasoning_config(normalized, section.get('default') or model)),
-            'fallback': _fallback(normalized)}
-
-
-def _follow(home, default, backup=None):
-    """Write the model keys of the default profile into the config.yaml of one profile. Return whether it changed.
-
-    The keys are the model, its provider, its base URL, the reasoning effort and the fallback models. The write uses the round-trip writer of Hermes, which replaces the file atomically. With `backup`, a
-    change first copies the file there, once.
-    """
-    from hermes_cli.config import require_readable_config_before_write
-    from hermes_constants import set_hermes_home_override, reset_hermes_home_override
-    if not default['model'] or not default['provider']:
-        raise ModelCatalogError('The default profile has no model.')
-    if not Path(home).is_dir():
-        raise ModelCatalogError('The Hermes profile folder is missing.')
-    path = Path(home) / 'config.yaml'
-    token = set_hermes_home_override(home)
-    try:
-        current = _route(require_readable_config_before_write(path), default['model'])
-        if current == default:
-            return False
-        if backup is not None and path.exists() and not backup.exists():
-            backup.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-            backup.write_bytes(path.read_bytes())
-            backup.chmod(0o600)
-        _write_model(path, default, default['reasoning_effort'], current)
-        return True
-    finally:
-        reset_hermes_home_override(token)
-
-
-def _follow_default(request, default_home, config, model, provider, base_url):
-    """Make the profiles of the bots that follow the default model match the default profile.
-
-    Each bot in `classify` has no choice yet. It follows the default when its profile has no model of its own, or has
-    the model and provider of the default. Else it keeps its own model, and its profile does not change. Each profile
-    succeeds or fails alone. Return {bot_id: {'follows': bool, 'changed': bool} or {'error': text}}.
-    """
-    from hermes_constants import resolve_reasoning_config
-    default = {'model': model or None, 'provider': provider or None, 'base_url': base_url,
-               'reasoning_effort': _effort(resolve_reasoning_config(config, model)), 'fallback': _fallback(config)}
-    classify = set(request.get('classify') or ())
-    result = {}
-    for bot_id, home in request['homes'].items():
-        try:
-            home = profile_contained(home, request)
-            profile_contained(home / 'config.yaml', request)
-            # The default profile is the default itself.
-            is_default = home.resolve() == Path(default_home).resolve()
-            entry = {}
-            if bot_id in classify:
-                own = None if is_default else _read_profile(home, default)['model_override']
-                entry['follows'] = own is None or (own['model'], own['provider']) == (model, provider)
-            if entry.get('follows', True):
-                # The first write after a bot gets its choice keeps a copy of the earlier file in Coconut storage.
-                backup = (_contained(Path(request['data_root']) / 'backups' / 'model-follow' / f'{bot_id}.config.yaml',
-                                     request['data_root']) if bot_id in classify else None)
-                entry['changed'] = not is_default and _follow(home, default, backup)
-            result[bot_id] = entry
-        except Exception as error:
-            # Native errors can contain private values. Send only the kind of error.
-            result[bot_id] = {'error': 'Hermes could not set the default model in this profile '
-                                       '(' + type(error).__name__ + ').'}
-    return result
 
 
 def _worker(request):
@@ -966,25 +809,18 @@ def _worker(request):
         from native_settings import worker
         return worker(dict(request, settings_root=str(root)), selected_home)
     config, model, provider, base_url = _native_state()
-    if request['operation'] == 'follow_default':
-        return _follow_default(request, selected_home, config, model, provider, base_url)
-    if request['operation'] in ('read_profiles', 'set_profile', 'native'):
+    if request['operation'] == 'read_profiles':
         inherited = _catalog(config, model, provider, base_url, [])['default']
-        if request['operation'] == 'read_profiles':
-            result = {}
-            for bot_id, home in request['homes'].items():
-                home = profile_contained(home, request)
-                profile_contained(home / 'config.yaml', request)
-                try:
-                    result[bot_id] = _read_profile(home, inherited)
-                except Exception:
-                    result[bot_id] = {'model_override': None, 'effective_model': None,
-                                      'error': 'The Hermes profile config is invalid. Fix it in Terminal.'}
-            return result
-        home = profile_contained(request['profile_home'], request)
-        profile_contained(home / 'config.yaml', request)
-        catalog = dict(request['catalog'], default=inherited)
-        return _write_profile(home, request['selection'], catalog)
+        result = {}
+        for bot_id, home in request['homes'].items():
+            home = profile_contained(home, request)
+            profile_contained(home / 'config.yaml', request)
+            try:
+                result[bot_id] = _read_profile(home, inherited)
+            except Exception:
+                result[bot_id] = {'model_override': None, 'effective_model': None,
+                                  'error': 'The Hermes profile config is invalid. Fix it in Terminal.'}
+        return result
     if request['operation'] in ('set_default', 'migrate'):
         supplied = request.get('catalog')
         if not supplied:
@@ -1012,7 +848,7 @@ def main():
             raise ValueError('Request too large')
         request = json.loads(serialized)
         if request.get('operation') not in ('get', 'defaults', 'set_default', 'migrate', 'read_profiles',
-                                            'set_profile', 'native', 'follow_default'):
+                                            'native'):
             raise ValueError('Invalid operation')
         with open(os.devnull, 'w') as quiet, redirect_stdout(quiet), redirect_stderr(quiet):
             result = _worker(request)

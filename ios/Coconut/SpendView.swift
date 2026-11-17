@@ -170,10 +170,8 @@ struct SpendView: View {
     }
 
     private func row(_ slice: SpendSlice, top: Double, summary: SpendSummary) -> some View {
-        let bot = slice.botId.flatMap { id in store.bots.first { $0.id == id } }
         let share = top > 0 ? slice.cost / top : 0
         let content = HStack(spacing: BoardStyle.Space.m) {
-            if let bot { LiveBotAvatar(bot: bot, size: 28) }
             VStack(alignment: .leading, spacing: BoardStyle.Space.xs) {
                 HStack(alignment: .firstTextBaseline) {
                     Text(slice.title).font(.subheadline.weight(.medium)).lineLimit(1)

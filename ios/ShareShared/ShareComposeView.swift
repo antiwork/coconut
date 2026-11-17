@@ -3,12 +3,21 @@ import SwiftUI
 // The share sheet of Coconut: what the share holds, an optional note, and the chat that it goes to. The extensions of
 // the iPhone and the Mac show this one view. The apps compile it too, so the tests draw it.
 
-/// The face of a chat as the app drew it, or the first letter of its title on a fill of the faces.
+/// The face of a team or a person as the app drew it, or the first letter of its title on a fill of the faces. A chat
+/// with an agent has no face.
 struct ShareFace: View {
     let destination: ShareDestination
     let size: CGFloat
 
     var body: some View {
+        if destination.kind == .agent || destination.peerIsBot == true {
+            EmptyView()
+        } else {
+            face
+        }
+    }
+
+    private var face: some View {
         Group {
             if let face = destination.face, let image = PlatformImage(data: face) {
                 Image(platformImage: image).resizable().interpolation(.high).scaledToFit()

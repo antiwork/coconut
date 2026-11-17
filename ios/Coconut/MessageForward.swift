@@ -73,7 +73,6 @@ struct ForwardMessageSheet: View {
     private func row(_ bot: Bot, title: String, detail: String?, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             HStack(spacing: BoardStyle.Space.m) {
-                BotAvatar(bot: bot, size: 30, animated: false)
                 VStack(alignment: .leading, spacing: BoardStyle.Space.line) {
                     Text(title).lineLimit(1)
                     if let detail { Text(detail).font(.footnote).foregroundStyle(.secondary).lineLimit(1) }

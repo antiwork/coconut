@@ -1,5 +1,10 @@
 import SwiftUI
 
+// Swift's Hasher changes between launches. The fill of a face must not.
+func characterSeed(_ value: String) -> UInt64 {
+    value.utf8.reduce(UInt64(14_695_981_039_346_656_037)) { ($0 ^ UInt64($1)) &* 1_099_511_628_211 }
+}
+
 enum BoardStyle {
     static let paper = Color.adaptive { dark, _ in dark ? PlatformColor(white: 0.065, alpha: 1) : .pageBackground }
     static let surface = Color.adaptive { dark, _ in PlatformColor(white: dark ? 0.13 : 0.955, alpha: 1) }
@@ -27,8 +32,9 @@ enum BoardStyle {
     static let attention = accent
     static let destructive = Color(platformColor: .systemRed)
 
-    /// The fills of a face with letters, for an agent, a team or a person, with the ink of the letters. They read the
-    /// same in light and in dark mode. An agent's letter picks its fill (AgentLetter.colors).
+    /// The fills of a face with letters, for a team or a person, with the ink of the letters. They read the same in light
+    /// and in dark mode. An agent has no face.
+    static let faceScale: CGFloat = 1.1
     static let faceColors: [(fill: String, ink: String)] = [
         ("7E99D3", "1F334E"), ("70A779", "FCEDCE"), ("AA79C2", "FCF0DD"),
         ("F2A088", "263329"), ("EAA052", "263329"), ("D76C91", "FFEBD6"), ("B6C493", "263329"),

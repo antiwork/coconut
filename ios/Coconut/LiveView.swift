@@ -171,7 +171,6 @@ struct LiveAgentTile: View {
 
     private var header: some View {
         HStack(alignment: .center, spacing: BoardStyle.Space.m) {
-            LiveBotAvatar(bot: agent.bot, size: 34)
             VStack(alignment: .leading, spacing: BoardStyle.Space.line) {
                 Text(name).font(.headline).lineLimit(1)
                 if let working {

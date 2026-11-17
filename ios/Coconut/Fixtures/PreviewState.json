@@ -14,8 +14,6 @@
   "bots": [
     {
       "archived": false,
-      "avatar": "letter.R",
-      "color": "AA79C2",
       "created_at": "2026-09-07T12:00:00Z",
       "id": "00000000-0000-4000-8000-000000000001",
       "instructions": "Ship gumroad/web to production. Run the specs first. Ask before every deploy.",
@@ -35,8 +33,6 @@
     },
     {
       "archived": false,
-      "avatar": "letter.S",
-      "color": "AA79C2",
       "created_at": "2026-09-07T12:00:00Z",
       "id": "00000000-0000-4000-8000-000000000002",
       "instructions": "Answer seller and buyer email from Helper. Keep a short report with links. Ask before refunds over $100.",
@@ -56,8 +52,6 @@
     },
     {
       "archived": false,
-      "avatar": "letter.P",
-      "color": "AA79C2",
       "created_at": "2026-09-07T12:30:00Z",
       "id": "00000000-0000-4000-8000-000000000003",
       "instructions": "Watch the daily payout run. Report each failure with the seller and the reason. Never change bank details.",
@@ -77,10 +71,8 @@
     },
     {
       "archived": false,
-      "avatar": "letter.R",
       "chat_of": "00000000-0000-4000-8000-000000000001",
       "chat_title": "Check the Sidekiq queues after the deploy",
-      "color": "AA79C2",
       "created_at": "2026-09-08T08:56:00Z",
       "id": "00000000-0000-4000-8000-000000000004",
       "instructions": "Ship gumroad/web to production. Run the specs first. Ask before every deploy.",
@@ -100,10 +92,8 @@
     },
     {
       "archived": false,
-      "avatar": "letter.S",
       "chat_of": "00000000-0000-4000-8000-000000000002",
       "chat_title": "Refund policy for annual memberships",
-      "color": "AA79C2",
       "created_at": "2026-09-08T09:38:00Z",
       "id": "00000000-0000-4000-8000-000000000005",
       "instructions": "Answer seller and buyer email from Helper. Keep a short report with links. Ask before refunds over $100.",
@@ -197,7 +187,7 @@
       "role": "assistant",
       "streaming": false,
       "task_id": "00000000-0000-4000-8000-000000000021",
-      "text": "Read 4 files \u00b7 Compared the payout retry paths",
+      "text": "Read 4 files · Compared the payout retry paths",
       "thread_id": "00000000-0000-4000-8000-000000000021"
     },
     {
@@ -208,7 +198,7 @@
       "role": "assistant",
       "streaming": false,
       "task_id": "00000000-0000-4000-8000-000000000021",
-      "text": "Ran 212 payout specs \u00b7 All passed",
+      "text": "Ran 212 payout specs · All passed",
       "thread_id": "00000000-0000-4000-8000-000000000021"
     },
     {

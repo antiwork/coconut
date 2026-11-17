@@ -92,7 +92,7 @@ def verify_contract():
     from hermes_cli.plugins import PluginContext
     require_keywords(PluginContext.register_middleware, {'kind', 'callback'})
     require_keywords(PluginContext.register_hook, {'hook_name', 'callback'})
-    from .model_catalog import _read_profile, _write_profile
+    from .model_catalog import _read_profile
 
     # Session maintenance (native_sessions), the conversation of a chat (hooks.join_conversation) and the records that
     # a session holds (hooks.add_records).
@@ -128,36 +128,22 @@ def verify_contract():
         if not callable(function):
             raise ValueError('Hermes removed a required native settings interface.')
 
-    # These names are test values. The check never contacts a model provider.
+    # A profile of an earlier release without a model of its own still reads as the default model.
     inherited = {'model': 'coconut-contract-default', 'provider': 'openai', 'base_url': None,
                  'reasoning_effort': 'low'}
-    selection = {'model': 'coconut-contract-override', 'provider': 'openai', 'reasoning_effort': 'low'}
-    catalog = {'default': inherited, 'models': [
-        {'id': selection['model'], 'provider': 'openai', 'reasoning_efforts': ['low'], 'configured': True},
-    ]}
     with tempfile.TemporaryDirectory(prefix='coconut-contract-') as temporary:
         home = Path(temporary)
-        path = home / 'config.yaml'
-        path.write_text('display:\n  theme: coconut-contract\n')
+        (home / 'config.yaml').write_text('display:\n  theme: coconut-contract\n')
         if _read_profile(home, inherited)['model_override'] is not None:
             raise ValueError('An empty Hermes profile no longer inherits the default model.')
-        saved = _write_profile(home, selection, catalog)
-        if saved['model_override'] != selection:
-            raise ValueError('Hermes did not retain the model and effort override.')
-        cleared = _write_profile(home, None, catalog)
-        if cleared['model_override'] is not None:
-            raise ValueError('Hermes did not restore default model inheritance.')
-        if config.require_readable_config_before_write(path)['display']['theme'] != 'coconut-contract':
-            raise ValueError('The profile update changed unrelated Hermes settings.')
 
     verify_session_lifecycle_contract()
     verify_gateway_contract()
     verify_parallel_work_contract()
     verify_terminal_contract()
-    verify_profile_api_contract()
 
     return {'native_terminal_path': True, 'provider_contract': 'compatible',
-            'native_model_effort_roundtrip': True, 'native_profile_api': True, 'model_request_sent': False}
+            'native_model_effort_roundtrip': True, 'model_request_sent': False}
 
 
 def verify_gateway_contract():
@@ -245,34 +231,6 @@ def verify_gateway_contract():
     if not callable(getattr(BasePlatformAdapter, '_send_retry_is_final', None)) or (
             'raw_response' not in SendResult.__dataclass_fields__):
         raise ValueError('Hermes changed the retry of a failed send. Review the coconut adapter.')
-
-
-def verify_profile_api_contract():
-    """Create and delete a profile with the Hermes profile API, as bot_profiles does, in a temporary Hermes home."""
-    import os
-    import sys
-    import hermes_cli
-    from .bot_profiles import run_profile_command
-    source = Path(hermes_cli.__file__).resolve().parents[1]
-    with tempfile.TemporaryDirectory(prefix='coconut-profile-contract-') as temporary:
-        root = Path(temporary)
-        hermes_home = root / '.hermes'
-        hermes_home.mkdir()
-        (hermes_home / 'config.yaml').write_text('{}\n')
-        # HOME is the temporary folder too, so the `<name>` command goes into its .local/bin.
-        environment = dict(PATH=os.environ.get('PATH', '/usr/bin:/bin'), HOME=str(root), TMPDIR=str(root))
-        created = run_profile_command(sys.executable, source, hermes_home, 'create', environment=environment,
-                                      name='coconut-check', display_name='Coconut check', description='A check.',
-                                      soul='Contract soul.\n', skills=str(root / 'skills'),
-                                      coconut=str(Path(__file__).resolve().parent))
-        home = hermes_home / 'profiles' / 'coconut-check'
-        if Path(created['home']).resolve() != home.resolve() or (home / 'SOUL.md').read_text() != 'Contract soul.\n':
-            raise ValueError('Hermes did not create the profile with its SOUL.')
-        if created.get('skills') != 'added' or str(root / 'skills') not in (home / 'config.yaml').read_text():
-            raise ValueError('Coconut could not add its skills folder to a new profile: ' + str(created.get('skills_error')))
-        run_profile_command(sys.executable, source, hermes_home, 'delete', environment=environment, name='coconut-check')
-        if home.exists():
-            raise ValueError('Hermes did not delete the profile.')
 
 
 def verify_terminal_contract():

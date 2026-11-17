@@ -156,7 +156,7 @@ def allowed_path(name):
 # Paths that earlier packages shipped and current packages no longer do. A new package may not contain them, but the
 # marker of an earlier install still lists them, so an update reads that marker and removes the files.
 RETIRED_PATHS = frozenset({
-    # The sprite sheet of the fruit faces, until the agents got letters (backend/coconut/agent_letters.py).
+    # The sprite sheet of the fruit faces of agents, which later had letters and now have no face.
     'backend/coconut/assets/agent-sprites.png',
 })
 
