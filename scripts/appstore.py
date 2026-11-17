@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
 """The App Store version of the iPhone app, and its submission to App Review.
 
-  appstore.py status --key AuthKey.p8 --key-id KEY --issuer ISSUER
-  appstore.py submit --key AuthKey.p8 --key-id KEY --issuer ISSUER [--build 315]
+  appstore.py status      --key AuthKey.p8 --key-id KEY --issuer ISSUER
+  appstore.py screenshots --key AuthKey.p8 --key-id KEY --issuer ISSUER
+  appstore.py submit      --key AuthKey.p8 --key-id KEY --issuer ISSUER [--build 315]
 
 status only reads App Store Connect: the listing, the build, the age rating, the price, the availability, the review
-details and the submissions. submit gives the iOS version its build (the newest one that App Review takes, unless
---build names one), keeps the app out of China mainland, and sends the version to App Review. Apple releases it after
-approval. The listing itself (text, screenshots, review notes) lives in App Store Connect.
+details and the submissions. screenshots puts the images of app-store/screenshots into the listing, in place of the
+ones it has. submit gives the iOS version its build (the newest one that App Review takes, unless --build names one),
+keeps the app out of China mainland, and sends the version to App Review. Apple releases it after approval. The rest
+of the listing (text, review notes, age rating) lives in App Store Connect.
 
 The logs of this repository are public, so the script never prints personal data such as the review contact.
 The script uses only the standard library and the openssl command, like testflight.py.
@@ -227,8 +229,7 @@ def status(api: Api) -> None:
 # The states of a version that can still change and go to App Review.
 EDITABLE = ('PREPARE_FOR_SUBMISSION', 'DEVELOPER_REJECTED', 'REJECTED', 'METADATA_REJECTED', 'INVALID_BINARY')
 # The states of a version that App Review has or that waits for it.
-SENT = ('WAITING_FOR_REVIEW', 'IN_REVIEW', 'PENDING_DEVELOPER_RELEASE', 'PENDING_APPLE_RELEASE',
-        'PROCESSING_FOR_DISTRIBUTION', 'READY_FOR_DISTRIBUTION', 'ACCEPTED')
+IN_REVIEW = ('WAITING_FOR_REVIEW', 'IN_REVIEW')
 # China mainland needs an ICP filing number and a licence for generative AI. Coconut has neither, so App Review would
 # refuse the whole version.
 LEFT_OUT = ('CHN',)
@@ -273,17 +274,28 @@ def leave_out_territories(api: Api) -> None:
         print(f'The app is not available in {territory} now.')
 
 
+def version_state(version: dict) -> str:
+    return version['attributes'].get('appVersionState') or version['attributes'].get('appStoreState') or ''
+
+
+def editable_version(api: Api) -> dict:
+    """The iOS version that can still change and go to App Review."""
+    versions = api.all(f'/apps/{APP_ID}/appStoreVersions' + query(**{'filter[platform]': 'IOS', 'include': 'build'}))
+    version = next((version for version in versions if version_state(version) in EDITABLE), None)
+    if not version:
+        states = ', '.join(f"{item['attributes'].get('versionString')} {version_state(item)}" for item in versions)
+        raise SystemExit(f'No iOS version can change now ({states}). Make one in App Store Connect first.')
+    return version
+
+
 def submit(api: Api, number: int | None) -> None:
     """Send the iOS version to App Review with the build, and let Apple release it after approval."""
-    versions = api.all(f'/apps/{APP_ID}/appStoreVersions' + query(**{'filter[platform]': 'IOS', 'include': 'build'}))
-    state = lambda version: version['attributes'].get('appVersionState') or version['attributes'].get('appStoreState')
-    waiting = [version for version in versions if state(version) in SENT[:2]]
+    versions = api.all(f'/apps/{APP_ID}/appStoreVersions' + query(**{'filter[platform]': 'IOS'}))
+    waiting = [version for version in versions if version_state(version) in IN_REVIEW]
     if waiting:
-        print(f"Version {waiting[0]['attributes']['versionString']} is {state(waiting[0])} already.")
+        print(f"Version {waiting[0]['attributes']['versionString']} is {version_state(waiting[0])} already.")
         return
-    version = next((version for version in versions if state(version) in EDITABLE), None)
-    if not version:
-        raise SystemExit('No iOS version can go to App Review. Make one in App Store Connect first.')
+    version = editable_version(api)
     build, train = review_build(api, number)
     if train and version['attributes'].get('versionString') != train:
         # A version takes only a build of the same version: the UTC date of its TestFlight run.
@@ -326,9 +338,90 @@ def submit(api: Api, number: int | None) -> None:
           f"{attributes.get('submittedDate')}. Apple releases it after approval.")
 
 
+# The screenshots of the listing, by folder of app-store/screenshots, in the order of their file names. App Store
+# Connect makes the smaller sizes from these two.
+SCREENSHOTS = {'iphone': 'APP_IPHONE_67', 'ipad': 'APP_IPAD_PRO_3GEN_129'}
+# The most screenshots that one size takes.
+MOST_SCREENSHOTS = 10
+
+
+def upload_screenshot(api: Api, screenshot_set: str, path: Path) -> str:
+    """Upload one image into a set, and wait until App Store Connect has read it. Returns the ID of the screenshot."""
+    import hashlib
+    import time
+    data = path.read_bytes()
+    code, document = api.call('POST', '/appScreenshots', {'data': {
+        'type': 'appScreenshots', 'attributes': {'fileName': path.name, 'fileSize': len(data)},
+        'relationships': {'appScreenshotSet': {'data': {'type': 'appScreenshotSets', 'id': screenshot_set}}}}})
+    if code != 201:
+        raise SystemExit(f'App Store Connect did not take {path.name}. Read the error above.')
+    identifier = document['data']['id']
+    for operation in document['data']['attributes'].get('uploadOperations') or []:
+        part = data[operation['offset']:operation['offset'] + operation['length']]
+        headers = {header['name']: header['value'] for header in operation.get('requestHeaders') or []}
+        request = urllib.request.Request(operation['url'], data=part, headers=headers, method=operation['method'])
+        with urllib.request.urlopen(request, timeout=120):
+            pass
+    code, _ = api.call('PATCH', f'/appScreenshots/{identifier}', {'data': {
+        'type': 'appScreenshots', 'id': identifier,
+        'attributes': {'uploaded': True, 'sourceFileChecksum': hashlib.md5(data).hexdigest()}}})
+    if code != 200:
+        raise SystemExit(f'App Store Connect did not finish {path.name}. Read the error above.')
+    for _ in range(60):
+        attributes = api.get(f'/appScreenshots/{identifier}').get('data', {}).get('attributes', {})
+        delivery = attributes.get('assetDeliveryState') or {}
+        if delivery.get('state') == 'COMPLETE':
+            return identifier
+        if delivery.get('state') == 'FAILED':
+            raise SystemExit(f"App Store Connect refused {path.name}: {delivery.get('errors')}")
+        time.sleep(5)
+    raise SystemExit(f'App Store Connect did not read {path.name} in five minutes.')
+
+
+def screenshots(api: Api) -> None:
+    """Put the images of app-store/screenshots into the listing of the version, in place of the ones it has."""
+    version = editable_version(api)
+    localization = next((item for item in api.all(f"/appStoreVersions/{version['id']}/appStoreVersionLocalizations")
+                         if item['attributes'].get('locale') == 'en-US'), None)
+    if not localization:
+        raise SystemExit('The version has no en-US listing.')
+    sets = {item['attributes'].get('screenshotDisplayType'): item['id'] for item in
+            api.all(f"/appStoreVersionLocalizations/{localization['id']}/appScreenshotSets")}
+    for folder, display in SCREENSHOTS.items():
+        images = sorted(path for path in (ROOT / 'app-store/screenshots' / folder).glob('*')
+                        if path.suffix.lower() in ('.png', '.jpg', '.jpeg'))
+        if not images:
+            continue
+        if len(images) > MOST_SCREENSHOTS:
+            raise SystemExit(f'{folder} has {len(images)} screenshots. App Store Connect takes {MOST_SCREENSHOTS}.')
+        screenshot_set = sets.get(display)
+        if not screenshot_set:
+            code, document = api.call('POST', '/appScreenshotSets', {'data': {
+                'type': 'appScreenshotSets', 'attributes': {'screenshotDisplayType': display},
+                'relationships': {'appStoreVersionLocalization': {'data': {
+                    'type': 'appStoreVersionLocalizations', 'id': localization['id']}}}}})
+            if code != 201:
+                raise SystemExit(f'App Store Connect did not make the {display} set. Read the error above.')
+            screenshot_set = document['data']['id']
+        old = [item['id'] for item in api.all(f'/appScreenshotSets/{screenshot_set}/appScreenshots')]
+        # The listing keeps its old images until the new ones are in, when the set has room for both.
+        first = old if len(old) + len(images) > MOST_SCREENSHOTS else []
+        for identifier in first:
+            api.call('DELETE', f'/appScreenshots/{identifier}')
+        new = [upload_screenshot(api, screenshot_set, path) for path in images]
+        for identifier in old:
+            if identifier not in first:
+                api.call('DELETE', f'/appScreenshots/{identifier}')
+        code, _ = api.call('PATCH', f'/appScreenshotSets/{screenshot_set}/relationships/appScreenshots',
+                           {'data': [{'type': 'appScreenshots', 'id': identifier} for identifier in new]})
+        if code != 204:
+            raise SystemExit(f'App Store Connect did not order the {display} screenshots. Read the error above.')
+        print(f'{display}: {len(new)} screenshots from app-store/screenshots/{folder}, in place of {len(old)}.')
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument('action', choices=['status', 'submit'])
+    parser.add_argument('action', choices=['status', 'screenshots', 'submit'])
     parser.add_argument('--key', type=Path, required=True)
     parser.add_argument('--key-id', required=True)
     parser.add_argument('--issuer', required=True)
@@ -337,6 +430,8 @@ def main() -> None:
     api = Api(args.key, args.key_id, args.issuer)
     if args.action == 'status':
         status(api)
+    elif args.action == 'screenshots':
+        screenshots(api)
     elif args.action == 'submit':
         submit(api, args.build)
 
