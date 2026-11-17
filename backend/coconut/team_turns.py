@@ -517,6 +517,7 @@ class TeamTurns:
                         same_file = len(attachments) == 1 and all(attachments[0].get(key) == value for key, value in (
                             ('name', file.get('name')), ('type', file.get('type')), ('hash', digest)))
                         same_context = message is not None and message['text'] == text and message['chat'] == chat \
+                            and message['reply_to'] == reply_to \
                             and (message['alert_type'], message['alert_level']) == (
                                 (alert or {}).get('type'), (alert or {}).get('level'))
                         if not same_file or not same_context:

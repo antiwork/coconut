@@ -90,7 +90,7 @@ def unregistered(known) -> str | None:
     return ', '.join(name for name in REGISTRATION_FIELDS if name not in known) or None
 
 
-async def send_tries(request, home: str, chat_id: str, fields: dict):
+async def send_tries(request, home: str, chat_id: str, fields: dict, deadline=None):
     """Send a message outside a turn (`fields`, with its message ID) with `request`, in up to three tries with the
     waits of STANDALONE_WAITS. A try follows a service that did not answer, and an answer `recorded: false` with
     `retry: true`. Each try has the same message ID, so a repeat adds no second message. The last answer of the
@@ -98,12 +98,16 @@ async def send_tries(request, home: str, chat_id: str, fields: dict):
     (`shown`). A later try that gets no answer does not hide the parts that an earlier try showed."""
     shown = 0
     for wait in (*STANDALONE_WAITS, None):
+        if deadline is not None and time.monotonic() + 5 >= deadline:
+            return SendResult(success=False, error='The file delivery ran out of time.'), shown
         answer = await report_outside(request, home, chat_id, fields)
         if isinstance(answer, dict) and isinstance(answer.get('shown'), int):
             shown = max(shown, answer['shown'])
         retry = answer.retryable if isinstance(answer, SendResult) else (
             isinstance(answer, dict) and not answer.get('recorded') and answer.get('retry') is True)
         if wait is None or not retry:
+            return answer, shown
+        if deadline is not None and time.monotonic() + wait + 5 >= deadline:
             return answer, shown
         await asyncio.sleep(wait)
 
@@ -176,8 +180,15 @@ async def send_standalone(pconfig, chat_id, message, *, thread_id=None, media_fi
         message_id = OUTSIDE + str(uuid.uuid4())
 
         async def request(route, payload, timeout=STANDALONE_SECONDS):
+            if media_files:
+                remaining = file_deadline - time.monotonic()
+                if remaining <= 5:
+                    raise TimeoutError('The file delivery ran out of time.')
+                payload = dict(payload, budget_seconds=min(40, remaining - 5))
+                timeout = remaining
             return await asyncio.to_thread(bridge.request, route, payload, timeout)
-        answer, _ = (await send_tries(request, home, str(chat_id), dict(kind='send', message_id=message_id, text=text))
+        answer, _ = (await send_tries(request, home, str(chat_id), dict(kind='send', message_id=message_id, text=text),
+                                      deadline=file_deadline if media_files else None)
                      if text.strip() else ({'recorded': True}, 0))
         if isinstance(answer, SendResult):
             status = answer.raw_response.get('status') if isinstance(answer.raw_response, dict) else None

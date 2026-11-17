@@ -447,6 +447,14 @@ class TeamOnlyService(TeamTurns, Documents, Team):
         if bot is None or bot['home'] != os.path.realpath(home):
             raise ServiceError(404, 'This chat is not a team chat of an agent of this Hermes home.')
         text = data.get('text')
+        deadline = None
+        if data.get('budget_seconds') is not None:
+            budget = data['budget_seconds']
+            if type(budget) not in (int, float) or not 0 < budget <= 40:
+                raise ServiceError(400, 'Give the delivery a time budget of at most 40 seconds.')
+            if direct is not None:
+                return {'recorded': False, 'reason': 'Coconut sends files in team chats only.'}
+            deadline = time.monotonic() + budget
         if data.get('kind') != 'send' or not isinstance(text, str) or not text.strip():
             return {'recorded': False, 'reason': 'A message of the team chat is complete. It takes no edit.'}
         with self.lock:
@@ -464,7 +472,7 @@ class TeamOnlyService(TeamTurns, Documents, Team):
             # A send outside a turn answers no message, so no request must still stand: only the bot must answer.
             # A part that the log did not take stops the send, so the chat shows no later part before it.
             result = self._team_say(room, bot_id, message_id, number, piece, request=False, chat=named, direct=direct,
-                                    alert=alert)
+                                    alert=alert, deadline=deadline)
             if result != SAID:
                 break
             shown += 1

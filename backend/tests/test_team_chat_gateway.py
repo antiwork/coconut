@@ -771,6 +771,30 @@ class TeamAdapterTests(TeamTurnMacs, unittest.TestCase):
         self.assertFalse(results[0].success)
         self.assertEqual(self.chat(), [])
 
+    def test_a_delivery_id_cannot_acknowledge_a_file_from_another_request(self):
+        from coconut.team_turns import UNFINISHED
+        file = Path(self.temp.name) / 'answer.pdf'
+        file.write_bytes(b'%PDF-1.4\nThe answer.')
+        results, triggers = [], []
+
+        async def runner(event):
+            results.append(await self.adapter.send_document(event.source.chat_id, str(file)))
+        self.connect(runner)
+        real = self.adapter._request
+
+        async def request(route, payload, timeout=15):
+            if route == '/v1/gateway/files':
+                payload = dict(payload, message_id='outside:reused-file')
+            return await real(route, payload, timeout)
+        with mock.patch.object(self.adapter, '_request', side_effect=request):
+            for number in range(2):
+                triggers.append(self.send(f'@Reporter send answer {number}', mentions=[self.mention]))
+                self.sync()
+                self.run_turns()
+        self.assertEqual([result.success for result in results], [True, False])
+        self.assertEqual([(text, reply) for writer, text, reply in self.chat() if writer == 'Reporter'],
+                         [('answer.pdf', triggers[0]['id']), (UNFINISHED, triggers[1]['id'])])
+
     def test_a_stop_during_upload_prevents_the_next_piece_and_the_file_message(self):
         from coconut.team_files import CHUNK
         file = Path(self.temp.name) / 'answer.pdf'
@@ -1187,6 +1211,34 @@ class StandaloneSenderTests(DirectTurnMacs, unittest.TestCase):
         self.sync()
         message = self.call('GET', f'/v1/team/rooms/{self.room}/messages', service=self.first)['messages'][0]
         self.assertEqual(result['message_id'], message['id'])
+
+    def test_a_short_file_budget_stops_its_text_before_any_write(self):
+        file = Path(self.temp.name) / 'report.pdf'
+        file.write_bytes(b'%PDF-1.4\nThe report.')
+        with mock.patch.object(team, 'STANDALONE_FILE_SECONDS', 6):
+            result = self.deliver(chat_id(self.room, self.bot['id']), media_files=[(str(file), False)])
+        self.assertIn('error', result)
+        self.sync()
+        self.assertEqual(self.of_chat(), [])
+
+    def test_a_text_timeout_does_not_restart_a_send_after_its_file_deadline(self):
+        file = Path(self.temp.name) / 'report.pdf'
+        file.write_bytes(b'%PDF-1.4\nThe report.')
+        calls, clock, elapsed = [], time.monotonic, [0]
+
+        def request(bridge, route, payload, timeout):
+            calls.append((route, payload, timeout))
+            elapsed[0] = 26
+            raise TimeoutError('The text used the shared delivery budget.')
+        with mock.patch.object(team.Bridge, 'request', autospec=True, side_effect=request), \
+                mock.patch.object(team.time, 'monotonic', side_effect=lambda: clock() + elapsed[0]), \
+                self.assertLogs('hermes_plugins.coconut', logging.WARNING):
+            result = self.deliver(chat_id(self.room, self.bot['id']), media_files=[(str(file), False)])
+        self.assertIn('error', result)
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0][0], '/v1/gateway/messages')
+        self.assertLessEqual(calls[0][2], team.STANDALONE_FILE_SECONDS)
+        self.assertLessEqual(calls[0][1]['budget_seconds'], team.STANDALONE_FILE_SECONDS - 5)
 
     def test_a_service_that_does_not_answer_gets_three_tries_with_one_message_id(self):
         # A restart of the service, then a bridge file that is missing for a moment.
