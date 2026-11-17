@@ -1690,9 +1690,11 @@ struct ChatSections: Equatable {
         make(bots: bots, latest: ChatList.lastMessageDates(messages), rooms: rooms, local: local)
     }
 
-    /// `latest` is the date of the newest message of each bot (ChatList.lastMessageDates).
+    /// `latest` is the date of the newest message of each bot (ChatList.lastMessageDates). The chat `keeping` (a
+    /// ChatListItem ID) stays in "Unread" without unread messages: the chat that the person opened from there keeps
+    /// its row while it is open, as in Slack, so the read does not move the row away from under the pointer.
     static func make(bots: [Bot], latest: [String: Date], rooms: [TeamRoom],
-                     local: [TeamChatKey: TeamLastMessage] = [:]) -> ChatSections {
+                     local: [TeamChatKey: TeamLastMessage] = [:], keeping: String? = nil) -> ChatSections {
         func activity(_ bot: Bot) -> Date { latest[bot.id] ?? bot.createdAt.apiDate ?? .distantPast }
         let active = bots.filter { !$0.archived }.sorted { activity($0) > activity($1) }
         let people = ChatList.people(rooms, local: local)
@@ -1702,11 +1704,12 @@ struct ChatSections: Equatable {
             if case .bot(let bot) = item { return activity(bot) }
             return item.teamActivity
         }
+        func isUnread(_ item: ChatListItem) -> Bool { item.unreadCount > 0 || item.id == keeping }
         // A stable sort keeps the order of each section for chats of the same time.
-        let unread = (people + others).enumerated().filter { $0.element.unreadCount > 0 }
+        let unread = (people + others).enumerated().filter { isUnread($0.element) }
             .sorted { (itemActivity($0.element), -$0.offset) > (itemActivity($1.element), -$1.offset) }.map(\.element)
         return ChatSections(unread: unread, pinned: active.filter(\.pinned), pinnedChats: ChatList.pinnedChats(rooms),
-                            people: people.filter { $0.unreadCount == 0 }, bots: others.filter { $0.unreadCount == 0 })
+                            people: people.filter { !isUnread($0) }, bots: others.filter { !isUnread($0) })
     }
 }
 

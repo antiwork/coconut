@@ -434,6 +434,9 @@ struct MacSidebar: View {
     @AppStorage("sidebar-people-open") private var peopleOpen = true
     @AppStorage("sidebar-agents-open") private var agentsOpen = true
     @State private var archivedOpen = false
+    /// The row of "Unread" that the person opened (ChatSections.make, `keeping`). It keeps its place while it is open,
+    /// so the read does not move the row away from under the pointer.
+    @State private var keptUnread: String?
 
     /// The bots that are not archived, newest activity first, split into the pinned bots and the other bots.
     /// It reads only its arguments, so it needs no main actor, and a test can call it from any context.
@@ -446,7 +449,8 @@ struct MacSidebar: View {
         // whose project is gone has a row of its own (AgentChats.orphans).
         let rows = store.bots.agents + AgentChats.orphans(in: store.bots)
         let sections = ChatSections.make(bots: rows.filter { AgentChats.isListed($0, latest: latest) },
-                                         latest: latest, rooms: store.shownTeamRooms, local: store.newestLocalMessages)
+                                         latest: latest, rooms: store.shownTeamRooms, local: store.newestLocalMessages,
+                                         keeping: keptUnread)
         let pins = SidebarPins(pinnedBots: sections.pinned, documents: store.documents ?? [], bots: store.bots,
                                teamBots: store.teamBots)
         // The cards are a page of Home, so Home stays marked while they show.
@@ -526,6 +530,10 @@ struct MacSidebar: View {
         .environment(\.defaultMinListRowHeight, 26)
         .listStyle(.sidebar)
         .modifier(DeleteBotDialog(bot: $deleting))
+        // A chat that the person opens from "Unread" stays there until the person opens something else.
+        .onChange(of: selection) { _, selected in
+            keptUnread = sections.unread.first { Self.item($0, is: selected) }?.id
+        }
         // A deleted bot leaves the list. Its chat closes, and Home shows instead.
         .onChange(of: store.bots.map(\.id)) { _, ids in
             if case .bot(let id) = selection, !ids.contains(id) { selection = .home }
@@ -568,6 +576,15 @@ struct MacSidebar: View {
     private func chatRows(of agent: Bot) -> some View {
         ForEach(AgentChats.chats(of: agent.id, in: store.bots, latest: store.chatSummaries.newestActivity)) { chat in
             botRow(chat, nested: true)
+        }
+    }
+
+    /// True when the row of `item` is the chat of `selection`.
+    private static func item(_ item: ChatListItem, is selection: MacSelection?) -> Bool {
+        switch (item, selection) {
+        case (.bot(let bot), .bot(let id)?): bot.id == id
+        case (_, .team(let chat)?): item.chat == chat
+        default: false
         }
     }
 
