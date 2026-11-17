@@ -75,13 +75,15 @@ struct CoconutHome: View {
     @State private var teamJoin: TeamJoinRequest?
     @State private var shownTeamJoin: UUID?
 
-    private var conversationCanMinimize: Bool? { conversationFooters[selectedTab] }
+    /// What the conversation on top of the open stack says: nil when the page on top is not a conversation. A root has
+    /// no conversation, so a value that a closed conversation left behind never counts there.
+    private var conversationCanMinimize: Bool? { atRoot ? nil : conversationFooters[selectedTab] }
 
     /// The cards that wait show alone on the stack of Home. They keep the tab bar, as a tab root does.
     private var cardsOnTop: Bool { selectedTab == .home && cardsShown && homePath.count == 1 }
 
-    private var tabBarVisibility: Visibility {
-        let activePath = switch selectedTab {
+    private var activePath: NavigationPath {
+        switch selectedTab {
         case .home: homePath
         case .chats: chatsPath
         case .agents: agentsPath
@@ -89,8 +91,22 @@ struct CoconutHome: View {
         case .reports: reportsPath
         case .profile: profilePath
         }
-        return keyboardVisible || (!activePath.isEmpty && conversationCanMinimize == nil && !cardsOnTop) ? .hidden : .automatic
     }
+
+    /// A tab root, with nothing pushed on its stack.
+    private var atRoot: Bool { activePath.isEmpty }
+
+    /// The tab bar always shows on a tab root and under the cards. A page pushed on a stack hides it, unless that page
+    /// is a conversation, which keeps it. The keyboard hides it on a pushed page only: a keyboard state that was left
+    /// behind must never take the bar from a root.
+    private var tabBarVisibility: Visibility {
+        if atRoot || cardsOnTop { return .automatic }
+        return keyboardVisible || conversationCanMinimize == nil ? .hidden : .automatic
+    }
+
+    /// The bar collapses to the icon of the open tab only while the person scrolls a conversation that is pushed. A
+    /// root never keeps a collapsed bar.
+    private var barMayCollapse: Bool { conversationCanMinimize == true && !keyboardVisible }
 
     var body: some View {
         // The tab bar shows filled symbols, as the system tab bars do.
@@ -140,7 +156,7 @@ struct CoconutHome: View {
                 }
             }.accessibilityIdentifier("home-profile")
         }
-        .modifier(NativeTabCollapse(enabled: conversationCanMinimize == true && !keyboardVisible))
+        .modifier(NativeTabCollapse(enabled: barMayCollapse))
         // A document card in a chat opens the page on the Agents tab over the page of its agent, so Back leads to the
         // agent that keeps it.
         .environment(\.openDocument) { id in
@@ -248,6 +264,10 @@ struct CoconutHome: View {
         .environment(\.pushRoute) { route in path.wrappedValue.append(route) }
         .onPreferenceChange(ConversationFooterPreference.self) { allowed in
             conversationFooters[tab] = allowed
+        }
+        // A conversation that closed can leave its value behind. A stack with nothing pushed forgets it.
+        .onChange(of: path.wrappedValue.isEmpty) { _, empty in
+            if empty { conversationFooters[tab] = nil }
         }
     }
 
