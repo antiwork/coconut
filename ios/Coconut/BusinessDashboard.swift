@@ -10,11 +10,14 @@ struct BusinessWorkspaceView: View {
         VStack(spacing: 0) {
             // Two views only: the report of the function, and its work. The tiles of every report are on Business
             // home, so a third Library segment showed the same tiles a second time.
-            Picker("View", selection: $tab) {
-                if hasReport { Text("Overview").tag("overview") }
-                Text("Work").tag("work")
-            }.pickerStyle(.segmented).labelsHidden().frame(maxWidth: 360)
-                .padding(.horizontal, BoardStyle.Space.l).padding(.vertical, BoardStyle.Space.m)
+            // A function without a report has its work only, and a control with one segment is no choice.
+            if hasReport {
+                Picker("View", selection: $tab) {
+                    Text("Overview").tag("overview")
+                    Text("Work").tag("work")
+                }.pickerStyle(.segmented).labelsHidden().frame(maxWidth: 360)
+                    .padding(.horizontal, BoardStyle.Space.l).padding(.vertical, BoardStyle.Space.m)
+            }
             if tab == "work" || !hasReport { BusinessWorkListView(function: function) }
             else { BusinessReportView(key: function) }
         }

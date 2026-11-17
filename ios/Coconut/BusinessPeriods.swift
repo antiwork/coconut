@@ -98,9 +98,20 @@ struct BusinessReportsView: View {
     @Environment(AppStore.self) private var store
     @State private var report: BusinessReport?
     @State private var error: String?
-    @State private var period: BusinessReportPeriod = .monthly
+    @State private var period: BusinessReportPeriod = BusinessReportsView.startPeriod
 
     private var shownReport: BusinessReport? { store.businessReports["periods"] ?? report }
+
+    /// A screenshot of the daily or the yearly cut starts the app with `--period daily`. Only a debug build on a
+    /// simulator reads it.
+    private static var startPeriod: BusinessReportPeriod {
+        #if DEBUG && targetEnvironment(simulator)
+        let arguments = ProcessInfo.processInfo.arguments
+        if let index = arguments.firstIndex(of: "--period"), index + 1 < arguments.count,
+           let period = BusinessReportPeriod(rawValue: arguments[index + 1]) { return period }
+        #endif
+        return .monthly
+    }
 
     var body: some View {
         BoardPage(width: .wide, spacing: BoardStyle.Space.l) {
@@ -133,6 +144,15 @@ struct BusinessReportsView: View {
         .onChange(of: store.businessGeneration) { _, _ in report = nil; error = nil }
     }
 
+    /// The values of the money axis in the one form of the figures, "$250.0K" and not "250,000", at the trailing edge
+    /// as on each other chart.
+    private static var moneyAxis: some AxisContent {
+        AxisMarks(values: .automatic(desiredCount: 3)) { value in
+            AxisGridLine().foregroundStyle(BoardStyle.line)
+            AxisValueLabel { if let number = value.as(Double.self) { Text(BusinessFormat.money(number)) } }
+        }
+    }
+
     private func load() async {
         do {
             let loaded = try await store.businessReport("periods")
@@ -152,8 +172,8 @@ struct BusinessReportsView: View {
                                    value: BusinessPeriodFormat.money(periods.lastDayGmv, compact: false),
                                    note: periods.weekday)
             HStack(spacing: BoardStyle.Space.m) {
-                BusinessReportDelta(value: periods.vsAverage, caption: "vs the 30-day average")
-                BusinessReportDelta(value: periods.vsWeekday, caption: "vs the same weekday")
+                BusinessReportDelta(value: periods.vsAverage, caption: "vs 30 days")
+                BusinessReportDelta(value: periods.vsWeekday, caption: "vs weekday")
             }
             if periods.days.count > 1 {
                 Chart(periods.days) { day in
@@ -162,18 +182,19 @@ struct BusinessReportsView: View {
                 }
                 .frame(height: 150)
                 .chartXAxis {
-                    AxisMarks(values: .automatic(desiredCount: 4)) { value in
+                    // A date for each seventh day, counted from the fourth last. A date for each of the thirty bars
+                    // ran into the next one, and a date under the last bar is cut at the edge of the chart.
+                    let days = periods.days
+                    AxisMarks(values: days.indices.filter { (days.count - 1 - $0) % 7 == 3 }.map { days[$0].date }) { value in
                         AxisValueLabel {
                             if let raw = value.as(String.self) { Text(BusinessFormat.axisDay(raw)).font(.caption2) }
                         }
                     }
                 }
-                .chartYAxis { AxisMarks(position: .leading, values: .automatic(desiredCount: 3)) }
+                .chartYAxis { Self.moneyAxis }
                 .accessibilityIdentifier("business-reports-daily-chart")
-                Text(periods.averageGmv == nil
-                     ? "No daily average in the last 30 days."
-                     : BusinessFormat.money(periods.averageGmv) + " a day on average over the last 30 days.")
-                    .font(.caption).foregroundStyle(.secondary)
+                // Data only, in the words of the tile of Finance: the name and the number.
+                Text("Daily average " + BusinessFormat.money(periods.averageGmv)).font(.callout).monospacedDigit()
             }
         }
     }
@@ -197,7 +218,7 @@ struct BusinessReportsView: View {
                         }
                     }
                 }
-                .chartYAxis { AxisMarks(position: .leading, values: .automatic(desiredCount: 3)) }
+                .chartYAxis { Self.moneyAxis }
                 .accessibilityIdentifier("business-reports-monthly-chart")
             }
             if let revenue3m = periods.revenue3m, let previous = periods.revenuePrev3m {
@@ -226,7 +247,13 @@ struct BusinessReportsView: View {
                         .foregroundStyle(year.id == periods.years.last?.id ? BoardStyle.accent : Color.secondary.opacity(0.35))
                 }
                 .frame(height: 160)
-                .chartYAxis { AxisMarks(position: .leading, values: .automatic(desiredCount: 3)) }
+                // The axis of the two other cuts: the name of each bar, and no line between the bars.
+                .chartXAxis {
+                    AxisMarks { value in
+                        AxisValueLabel { if let year = value.as(String.self) { Text(year).font(.caption2) } }
+                    }
+                }
+                .chartYAxis { Self.moneyAxis }
                 .accessibilityIdentifier("business-reports-yearly-chart")
             }
             ForEach(periods.years.reversed()) { year in
@@ -284,7 +311,7 @@ struct BusinessReportRow: View {
                 Text(title)
                 Text(detail).font(.caption).foregroundStyle(.secondary)
             }
-            Spacer(minLength: 8)
+            Spacer(minLength: BoardStyle.Space.s)
             VStack(alignment: .trailing, spacing: BoardStyle.Space.line) {
                 Text(value).monospacedDigit()
                 if let trailing { Text(trailing).font(.caption).foregroundStyle(.secondary).monospacedDigit() }
