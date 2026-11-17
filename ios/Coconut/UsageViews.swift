@@ -56,7 +56,7 @@ struct UsageChart: View {
     let buckets: [UsageBucket]
     let metric: UsageMetric
     let byWeek: Bool
-    /// The small chart of the card of an agent has no axes.
+    /// The small chart of the card of a project has its dates and no axis of values.
     var compact = false
 
     var body: some View {
@@ -66,7 +66,6 @@ struct UsageChart: View {
             }
         }
         .chartLegend(.hidden)
-        .chartXAxis(compact ? .hidden : .visible)
         .chartYAxis(compact ? .hidden : .visible)
         .chartXAxis {
             AxisMarks(values: labelDates) { _ in
@@ -96,8 +95,8 @@ struct UsageChart: View {
     }
 }
 
-/// The usage of an agent on its page: today, the last 7 days in four numbers, and the tokens of 30 days as small bars.
-/// A tap opens the usage page of the agent.
+/// The usage of an agent on its page: today, the last 7 days in four numbers, and the tokens of 30 days as small bars
+/// over their dates, so the bars say which days they are. A tap opens the usage page of the agent.
 struct AgentUsageCard: View {
     @Environment(AppStore.self) private var store
     @Environment(\.pushRoute) private var pushRoute
@@ -138,8 +137,8 @@ struct AgentUsageCard: View {
                             }
                             #endif
                         }
-                        HStack(alignment: .bottom, spacing: BoardStyle.Space.m) {
-                            UsageChart(buckets: month, metric: .tokens, byWeek: false, compact: true).frame(height: 40)
+                        HStack(alignment: .center, spacing: BoardStyle.Space.m) {
+                            UsageChart(buckets: month, metric: .tokens, byWeek: false, compact: true).frame(height: 60)
                             Image(systemName: "chevron.right").font(.footnote.weight(.semibold)).foregroundStyle(.tertiary)
                         }
                     }

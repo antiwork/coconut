@@ -286,7 +286,14 @@ struct AgentProjectRow: View {
                     if project.bot.unreadCount > 0 && project.bot.notifications { UnreadBadge(count: project.bot.unreadCount) }
                     if !project.bot.notifications { MutedMark() }
                 }
-                Text(Self.line(project)).font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
+                // The role and what the project has where both fit. A narrow row leaves the counts out, so no count
+                // is cut in half ("1 p…").
+                let role = project.bot.role.trimmingCharacters(in: .whitespacesAndNewlines)
+                ViewThatFits(in: .horizontal) {
+                    Text(Self.line(project))
+                    Text(role.isEmpty ? Self.line(project) : role)
+                }
+                .font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
             }
             Spacer(minLength: BoardStyle.Space.s)
             VStack(alignment: .trailing, spacing: BoardStyle.Space.line) {
