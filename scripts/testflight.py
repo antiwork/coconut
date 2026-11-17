@@ -57,7 +57,8 @@ NOTES_LIMIT = 1800
 TRY_FIRST = 5
 # A commit that only touches these never changes what a tester sees.
 NOT_USER_FACING = ('docs/', '.github/', 'scripts/test_', '.gitignore', 'qa-media/', 'ios/CoconutTests/',
-                   'ios/CoconutUITests/', 'CONTRIBUTING.md', 'README.md', 'AGENTS.md', 'CLAUDE.md')
+                   'ios/CoconutUITests/', 'CONTRIBUTING.md', 'README.md', 'AGENTS.md', 'CLAUDE.md', 'app-store/',
+                   'scripts/appstore.py')
 NOT_USER_FACING_SUFFIXES = ('.md',)
 
 
