@@ -784,20 +784,41 @@ private struct BusinessDataRows: View {
     }
 }
 
+/// The files of the ledger, as the rows of Work and Projects: the name of a file with its folder under it.
 struct BusinessLedgerView: View {
     @Environment(AppStore.self) private var store
-    @State private var files: [LedgerIndex.File] = []
+    @State private var files: [LedgerIndex.File]?
     @State private var error: String?
     @State private var search = ""
     var body: some View {
-        List {
-            Section { Label("Beancount · Accounting is the system of record", systemImage: "books.vertical").font(.subheadline) }
-            ForEach(files.filter { search.isEmpty || $0.path.localizedCaseInsensitiveContains(search) }) { file in
-                NavigationLink { BusinessLedgerFileView(path: file.path) } label: { Label(file.path, systemImage: "doc.text").font(.subheadline.monospaced()) }
+        let shown = (files ?? []).filter { search.isEmpty || $0.path.localizedCaseInsensitiveContains(search) }
+        BoardPage {
+            if let files {
+                BoardSection("Files", count: shown.count) {
+                    ForEach(shown) { file in
+                        NavigationLink { BusinessLedgerFileView(path: file.path) } label: {
+                            BoardRow(symbol: "doc.text", title: file.name, detail: file.folder)
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityIdentifier("business-ledger-" + file.path)
+                    }
+                    if shown.isEmpty { BoardEmptyRow(text: files.isEmpty ? "No files yet." : "No file has this name.") }
+                }
+            } else if error == nil {
+                BoardLoading(title: "Loading ledger")
             }
-            if let error { Text(error).foregroundStyle(BoardStyle.attention) }
-        }.navigationTitle("Beancount").searchable(text: $search)
-            .task { do { files = try await store.businessLedger().files } catch { self.error = error.localizedDescription } }
+            if let error { BoardLoadNotice(title: "Ledger unavailable", message: error) { Task { await load() } } }
+        }
+        .navigationTitle("Beancount ledger").inlineNavigationTitle()
+        .searchable(text: $search)
+        .task { await load() }
+        .refreshable { await load() }
+    }
+
+    private func load() async {
+        do { files = try await store.businessLedger().files; error = nil }
+        catch is CancellationError { }
+        catch { self.error = error.localizedDescription }
     }
 }
 

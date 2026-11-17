@@ -64,10 +64,66 @@ struct BusinessReport: Decodable, Sendable {
 }
 
 struct LedgerIndex: Decodable, Sendable {
-    struct File: Decodable, Identifiable, Sendable { let path: String; let sha: String; var id: String { path } }
+    struct File: Decodable, Identifiable, Sendable {
+        let path: String; let sha: String
+        var id: String { path }
+        /// "2026-10.beancount" of "books/2026/2026-10.beancount".
+        var name: String { path.components(separatedBy: "/").last ?? path }
+        /// "books/2026", or nil for a file at the top of the ledger.
+        var folder: String? {
+            let parts = path.components(separatedBy: "/").dropLast()
+            return parts.isEmpty ? nil : parts.joined(separator: "/")
+        }
+    }
     let files: [File]
+
+    /// The ledger of the demo: synthetic files, never copied from private books.
+    static let preview = LedgerIndex(files: ["main.beancount", "accounts.beancount", "books/2026/2026-10.beancount",
+                                             "books/2026/2026-09.beancount"].map { File(path: $0, sha: "demo") })
 }
-struct LedgerFile: Decodable, Sendable { let path: String; let content: String; let url: String; let sha: String }
+struct LedgerFile: Decodable, Sendable {
+    let path: String; let content: String; let url: String; let sha: String
+
+    /// A file of the demo ledger: a few synthetic entries in the form of Beancount.
+    static func preview(_ path: String) -> LedgerFile {
+        let name = path.components(separatedBy: "/").last ?? path
+        let month = String(name.prefix(7))
+        let content: String
+        switch name {
+        case "main.beancount":
+            content = """
+            option "title" "Example ledger"
+            option "operating_currency" "USD"
+
+            include "accounts.beancount"
+            include "books/2026/2026-09.beancount"
+            include "books/2026/2026-10.beancount"
+            """
+        case "accounts.beancount":
+            content = """
+            2021-01-01 open Assets:Bank:Operating USD
+            2021-01-01 open Income:Fees USD
+            2021-01-01 open Expenses:Payroll USD
+            2021-01-01 open Expenses:Hosting USD
+            """
+        default:
+            content = """
+            \(month)-05 * "Fees of the first week"
+              Assets:Bank:Operating   712,400.00 USD
+              Income:Fees            -712,400.00 USD
+
+            \(month)-15 * "Payroll"
+              Expenses:Payroll        486,000.00 USD
+              Assets:Bank:Operating  -486,000.00 USD
+
+            \(month)-28 * "Hosting"
+              Expenses:Hosting         91,300.00 USD
+              Assets:Bank:Operating   -91,300.00 USD
+            """
+        }
+        return LedgerFile(path: path, content: content, url: "https://github.com/example/accounting", sha: "demo")
+    }
+}
 
 extension AppStore {
     func businessReport(_ key: String) async throws -> BusinessReport {
@@ -76,8 +132,12 @@ extension AppStore {
         businessReports[key] = report
         return report
     }
-    func businessLedger() async throws -> LedgerIndex { try await businessRequest("business/ledger") }
+    func businessLedger() async throws -> LedgerIndex {
+        if isDemo { return .preview }
+        return try await businessRequest("business/ledger")
+    }
     func businessLedgerFile(_ path: String) async throws -> LedgerFile {
+        if isDemo { return .preview(path) }
         var components = URLComponents()
         components.queryItems = [URLQueryItem(name: "path", value: path)]
         return try await businessRequest("business/ledger?" + (components.percentEncodedQuery ?? ""))
