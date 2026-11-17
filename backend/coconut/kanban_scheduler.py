@@ -40,6 +40,8 @@ class KanbanScheduler:
         self.lock = threading.Lock()
         self.process = None
         self.tasks = {}
+        # The limits and the queue of each agent that the board reported last (kanban_runtime.Board.limits, queues).
+        self.limits, self.queues = None, {}
         self.observed_at = None
         self.log = None
         self.closed = False
@@ -95,6 +97,10 @@ class KanbanScheduler:
                     from .service import now
                     self.tasks = {t['external_id']: t for t in result['tasks']}
                     self.observed_at = now()
+                if 'limits' in result:
+                    self.limits = result['limits']
+                if 'queues' in result:
+                    self.queues = result['queues']
                 return result
 
     @staticmethod
@@ -344,7 +350,7 @@ class NativeKanban(NativeOutcomes):
                     created_at=source.get('created_at', task.get('created_at', '')))
 
     def _dispatch_kanban(self):
-        from .work_capacity import chat_turn, execution_key, state as capacity_state
+        from .work_capacity import chat_turn, execution_key
         self._kanban_pass_started = time.monotonic()
         if self.restart_pending or self.stopping.is_set():
             # Finish committed turns, but neither adopt work nor claim/start any
@@ -358,6 +364,7 @@ class NativeKanban(NativeOutcomes):
         self._drain_returns()
         # Read committed claims first. A lost adapter response cannot create another turn.
         self.kanban.call({'op': 'snapshot'})
+        self._migrate_work_capacity()
         with self.transaction():
             self._migrate_native_work()
         self._adopt_native_outcomes()
@@ -370,7 +377,7 @@ class NativeKanban(NativeOutcomes):
             self.running = {k: v for k, v in self.running.items() if v.is_alive()}
             self.context_threads = {k: v for k, v in self.context_threads.items() if v.is_alive()}
             self._dispatch_status_request()
-            capacity = capacity_state(self._setting('work_capacity'))['effective_limit']
+            capacity = self._work_limits()['total']['effective_limit']
             self._dispatch_chat(capacity)
             rows = self._kanban_rows()
             by_id = {r['id']: r for r in rows}

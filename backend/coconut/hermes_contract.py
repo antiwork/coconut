@@ -50,6 +50,14 @@ def verify_contract():
     for operation in (kanban_db.complete_task, kanban_db.request_review, kanban_db.block_task, kanban_db.schedule_task):
         require_keywords(operation, {'conn', 'task_id', 'expected_run_id'})
     require_keywords(kanban_db_workspace.resolve_workspace, {'task'})
+    # Coconut's board keeps the limits of parallel work in these Hermes keys (work_limits) and reports a capped agent
+    # in the dispatch result of Hermes.
+    from hermes_cli.config_defaults import DEFAULT_CONFIG
+    if not {'max_in_progress', 'max_in_progress_per_profile'} <= set(DEFAULT_CONFIG['kanban']) or \
+            'max_concurrent_children' not in DEFAULT_CONFIG['delegation']:
+        raise ValueError('Hermes changed the keys of its parallel work limits.')
+    if not hasattr(kanban_db_dispatch.DispatchResult(), 'skipped_per_profile_capped'):
+        raise ValueError('Hermes changed the dispatch result of a capped profile.')
     assert callable(kanban_db_connect.connect) and callable(kanban_db.reopen_review_task)
     # The phone shows Hermes' own diagnostics and archives idle tasks with Hermes' archive.
     from hermes_cli.kanban_diagnostics import compute_task_diagnostics

@@ -17,6 +17,8 @@ A future execution provider can move work to another host without changing agent
 | Model, effort, tool settings | Native `config.yaml` |
 | Global and per-agent access | Native `approvals.mode` |
 | Schedules and cron state | Native `cron/jobs.json` |
+| Each agent's queue of work | Coconut's Hermes Kanban board, one tenant per agent |
+| Limits of parallel work | Native `kanban.max_in_progress` and `kanban.max_in_progress_per_profile` of the board home, and `delegation.max_concurrent_children` of each profile |
 | Avatar, pinning, notification preference | Coconut presentation data |
 | Pairing, transcript replay, Inbox, routing | Coconut SQLite database |
 | Tool and dispatch receipts | Coconut coordination data |
@@ -34,6 +36,12 @@ Inbox threads group decisions. They do not restrict an agent's recall of its own
 The gateway resumes native history and compression continuations. The phone never displays those internal boundaries.
 Model and access defaults resolve from the active native default profile.
 Each agent stores its MCP servers, approval settings and fallback models in its own native configuration, as in Hermes. An agent without its own model uses the default model.
+Parallel work has three limits, all in Hermes config. The total (`PUT /v1/settings/work-capacity`) and the limit per agent
+(`PUT /v1/settings/agent-limit`) live in the config of Coconut's board home. Hermes derives no total on macOS, so Automatic
+is the limit of the Mac's processors and memory. Automatic per agent is 2. Hermes caps each assignee, but every task of the
+board has the assignee `default` and the agent as its tenant, so the board adapter applies the Hermes cap to each tenant.
+Helpers per task (`PUT /v1/settings/parallel-work`) is `delegation.max_concurrent_children`; Automatic is the Hermes default.
+The phone reads each agent's queue (running, waiting, needs you, done today) from the board.
 The Model page shows the fallback chain of the default profile (`fallback_providers`, then the legacy `fallback_model`). Only the model and the provider of each entry leave the Mac. The page sets the first fallback model from the same list as the default model. `PUT /v1/settings/fallback` replaces the whole chain: an entry that the chain has keeps its other keys, and a new entry gets only its provider and model.
 
 ## Business

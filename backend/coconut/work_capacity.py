@@ -1,11 +1,7 @@
-"""Bound Coconut work independently of native Hermes delegated helpers."""
-from .parallel_work import automatic_limit, hardware, validate_limit
+"""Classify Coconut turns for dispatch: the person's turns go first, and one execution runs one turn at a time.
 
-
-def state(limit=None):
-    validate_limit(limit)
-    automatic = automatic_limit(*hardware())
-    return dict(limit=limit, automatic_limit=automatic, effective_limit=limit or automatic)
+Hermes has no person or chat turn, so these rules stay in Coconut. Hermes config holds the limits (work_limits).
+"""
 
 
 def execution_key(task):
