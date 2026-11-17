@@ -530,8 +530,10 @@ reason (`gateway_unsupported`).
 - The Hermes contract checks only the interfaces that Coconut still uses (`hermes_contract.verify_contract`).
 
 Known gaps of the gateway, which the worker covered and no turn covers now:
-- No live steering of a running turn (`steer_task`), no `continuation_task_id` in `coconut_message_bot`, and no receipt
-  index in the text of a follow-up on a card.
+- No `continuation_task_id` in `coconut_message_bot`, and no receipt index in the text of a follow-up on a card.
+- A message that the person sends into a running turn (`Send now` in the queue) reaches it in a model call after a
+  tool result, which the turn asks for (`POST /v1/gateway/steering`), so the turn sees it at its next safe point and
+  never mid-call. The messenger platforms of Hermes show no such action.
 - The global limit of parallel helpers of the Coconut settings does not reach a profile that inherits it.
 - A work session that session maintenance ended as idle is not reopened. Its next turn starts a new Hermes session.
 

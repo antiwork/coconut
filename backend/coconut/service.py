@@ -213,6 +213,9 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
         self.profiles = HermesProfiles(self.root)
         self.pr_tracker = pr_tracker
         self._profile_trackers = {}
+        # The task of a live turn, by the turn id that the gateway knows (`gateway_steering`). A turn runs many model
+        # calls, and the scan of the task table gives its task: keep it while the task runs.
+        self._turn_task_ids: dict[str, str] = {}
         self.pr_refresh_requested = threading.Event()
         self.pr_refresh_lock = threading.Lock()
         self._pending_decision_sources = set()
@@ -2566,30 +2569,74 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
         if direct:
             task['_direct_reply_message_id'] = direct['id']
 
+    def _live_deliveries(self, task) -> list[dict]:
+        """The live messages of a working task, in conversation order, as a delivery to its running turn."""
+        from .native_conversation import chat_message_content
+        messages = []
+        # encoded() sorts mapping keys; database insertion order is the
+        # conversation order, including messages with equal timestamps.
+        for message in self._task_messages(task['id']):
+            identity = message['id']
+            if identity not in task.get('_live_messages', {}):
+                continue
+            current = dict(task, _visible_reply_contexts={identity: message.get('_visible_reply_context')})
+            delivery = dict(id=identity, text=chat_message_content(
+                {'operation': 'start', 'task': current}, message))
+            try:
+                source = self._human_source(task, identity, task, 'create or delete agents')
+            except ServiceError:
+                pass
+            else:
+                delivery['bot_source'] = {'id': source['id'], 'text': source['text']}
+            messages.append(delivery)
+        return messages
+
+    def gateway_steering(self, data: dict) -> dict:
+        """The live messages of a running turn, for the gateway to give to the turn itself.
+
+        The Hermes gateway cannot be pushed into a turn that it runs, so the turn asks here at each safe point
+        (hooks.steer_live_message, an `llm_request` middleware after a tool result) and reports what it took with
+        `steering_consumed`. A worker that the service can push into needs none of this: `_deliver_live_messages`
+        gives it the messages as soon as the gateway says `steering_ready`.
+        """
+        if not getattr(self.provider, 'steers_live', False):
+            return {'messages': []}
+        turn_id = str(data.get('turn_id') or '')
+        if not turn_id:
+            return {'messages': []}
+        with self.lock:
+            task = self._task_for_turn(turn_id)
+            if task is None or task['status'] != 'working' or not task.get('_live_messages'):
+                return {'messages': []}
+            return {'messages': self._live_deliveries(task)}
+
+    def _task_for_turn(self, turn_id: str):
+        """The task of the turn `turn_id`, or None. A turn runs many model calls, so the scan of the first call keeps
+        the task while it runs."""
+        task_id = self._turn_task_ids.get(turn_id)
+        if task_id is not None:
+            try:
+                task = self._get('tasks', task_id)
+            except Exception:
+                task = None
+            if task is not None and task.get('_native_turn_id') == turn_id:
+                return task
+            self._turn_task_ids.pop(turn_id, None)
+        task = next((record for record in self._all('tasks')
+                     if record.get('_native_turn_id') == turn_id), None)
+        if task is not None:
+            if len(self._turn_task_ids) > 50:
+                self._turn_task_ids.clear()
+            self._turn_task_ids[turn_id] = task['id']
+        return task
+
     def _deliver_live_messages(self, task_id):
         deliver = getattr(self.provider, 'steer_task', None)
         if deliver is None:
             return
         with self.lock:
             task = self._get('tasks', task_id)
-            from .native_conversation import chat_message_content
-            messages = []
-            # encoded() sorts mapping keys; database insertion order is the
-            # conversation order, including messages with equal timestamps.
-            for message in self._task_messages(task_id):
-                identity = message['id']
-                if identity not in task.get('_live_messages', {}):
-                    continue
-                current = dict(task, _visible_reply_contexts={identity: message.get('_visible_reply_context')})
-                delivery = dict(id=identity, text=chat_message_content(
-                    {'operation': 'start', 'task': current}, message))
-                try:
-                    source = self._human_source(task, identity, task, 'create or delete agents')
-                except ServiceError:
-                    pass
-                else:
-                    delivery['bot_source'] = {'id': source['id'], 'text': source['text']}
-                messages.append(delivery)
+            messages = self._live_deliveries(task)
             turn_id = task.get('_native_turn_id')
         if messages:
             try:

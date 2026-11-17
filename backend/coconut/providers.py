@@ -124,6 +124,10 @@ class HermesProvider(FixtureProvider):
     supports_native_outcomes = True
     # Coconut's Kanban board runs in a Kanban runtime of this Hermes (kanban_scheduler.KanbanScheduler).
     native_board = True
+    # A turn of this gateway takes the person's new message at its next safe point: it asks the service for the
+    # message in a model call after a tool result (service.gateway_steering), instead of the service pushing it into
+    # a running worker (`steer_task`). The queue of a chat offers that as Send now (message_queue._queued_messages).
+    steers_live = True
 
     def __init__(self, data_dir, *, python=None, hermes_root=None, home=None, model=None, base_url=None, catalog=None):
         super().__init__(data_dir)

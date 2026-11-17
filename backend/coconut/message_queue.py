@@ -5,9 +5,10 @@ messages as `queued_messages`, in the order of their delivery. Each item has the
 IDs of its attachments, and a state: `queued`, or `steering` when the message already went to the running turn. The
 apps show the queue above the message field and leave these messages out of the transcript until a turn takes them.
 
-The person can change a queued message, remove it, and move it. Where the provider can give input to a running turn
-(`steer_task`), the person can also send a text message into the turn at once. A message that is `steering` stays as
-it is: the turn can have it already.
+The person can change a queued message, remove it, and move it. They can also send a text message into the running
+turn at once: the Hermes gateway asks the service for such a message in its own model calls (`steers_live`,
+service.gateway_steering), and a worker that the service can push into takes it through `steer_task`. A message that
+is `steering` stays as it is: the turn may already have it.
 
 Routes, each with the task in its answer:
     PATCH  /v1/tasks/<task>/queue/<message>        {text}
@@ -25,6 +26,12 @@ GONE = 'This message is not in the queue. A turn may have taken it.'
 
 
 class MessageQueue:
+    def _steers_live(self) -> bool:
+        """Whether a running turn can take a new message of the person now. The Hermes gateway asks the service for
+        them in its own model calls (`steers_live`); a worker that the service can push into has `steer_task`."""
+        return bool(getattr(self.provider, 'steers_live', False)
+                    or getattr(self.provider, 'steer_task', None) is not None)
+
     def _queue_blocks(self, task: dict) -> list[dict]:
         """The queued messages of a task, oldest first. Each block has the message, the position of its text in
         `_steering`, and the attachment messages that came with it."""
@@ -57,7 +64,7 @@ class MessageQueue:
         return list(reversed(blocks))
 
     def _queued_messages(self, task: dict) -> list[dict]:
-        steers = getattr(self.provider, 'steer_task', None) is not None
+        steers = self._steers_live()
         live = task.get('_live_messages') or {}
         return [dict(id=block['message']['id'], text=block['message']['text'], created_at=block['message']['created_at'],
                      attachment_ids=[m['artifact_id'] for m in block['files'] if m.get('artifact_id')],
@@ -83,7 +90,7 @@ class MessageQueue:
         block = next((b for b in blocks if b['message']['id'] == parts[4]), None) if len(parts) >= 5 else None
         if block is None:
             raise ServiceError(409, GONE)
-        steers = getattr(self.provider, 'steer_task', None) is not None
+        steers = self._steers_live()
         identity = block['message']['id']
         if steers and identity in (task.get('_live_messages') or {}):
             raise ServiceError(409, 'This message already went to the running turn.')
