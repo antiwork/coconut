@@ -97,8 +97,8 @@ What each place is now:
 - **Agents** — `AgentsView` lists `AgentProject.list`. `AgentProjectView` has the header and the five sections of
   `AgentSection`. "All pages" keeps the whole Library one row away, also for the pages of team agents.
 - **People** — `PeopleView` from `PeopleSections`. Without a team it shows the Team screen, which makes or joins one.
-- **Profile** — `ProfileView`. It has the rows of the Settings sheet, so `AppSettingsView` is gone. Business opens
-  from here.
+- **Profile** — `ProfileView`, named "You" on the iPhone tab and in the Mac sidebar. It has the rows of the Settings
+  sheet, so `AppSettingsView` is gone. Business opens from here.
 
 Moved, not removed: the Inbox (Home), the Library (agent pages and "All pages"), the To-dos of the sidebar (Home and
 agent pages), the Notices of the sidebar (People), Business with its functions and projects (Profile), Model, Access,
