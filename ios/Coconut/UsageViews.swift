@@ -95,8 +95,8 @@ struct UsageChart: View {
     }
 }
 
-/// The usage of an agent on its page: today, the last 7 days in four numbers, and the tokens of 30 days as small bars
-/// over their dates, so the bars say which days they are. A tap opens the usage page of the agent.
+/// The usage of a project on its page: today, then the last 30 days in four numbers and as small bars of tokens over
+/// their dates, so the bars say which days they are. A tap opens the usage page of the project on the same range.
 struct AgentUsageCard: View {
     @Environment(AppStore.self) private var store
     @Environment(\.pushRoute) private var pushRoute
@@ -104,41 +104,40 @@ struct AgentUsageCard: View {
 
     var body: some View {
         BoardSection("Usage") {
-            Text("Last 7 days")
+            Text("Last " + UsageRange.opening.title)
         } rows: {
             if let report = store.usage, let usage = report.agents[botId] {
-                let week = UsageSummary(agents: [usage], range: .week, today: report.today)
-                let month = UsageMath.buckets(usage.days, range: .month, today: report.today)
-                if UsageMath.sum(month.map(\.total)).isEmpty {
-                    BoardEmptyRow(text: "No usage in the last 30 days.")
+                let range = UsageSummary(agents: [usage], range: .opening, today: report.today)
+                if range.total.isEmpty {
+                    BoardEmptyRow(text: "No usage in the last " + UsageRange.opening.title + ".")
                 } else {
                     VStack(alignment: .leading, spacing: BoardStyle.Space.m) {
                         Grid(alignment: .leading, horizontalSpacing: BoardStyle.Space.m, verticalSpacing: BoardStyle.Space.m) {
                             #if os(macOS)
                             GridRow {
                                 today(usage, report.today)
-                                turns(week)
-                                tokens(week)
-                                cost(week)
-                                time(week)
+                                turns(range)
+                                tokens(range)
+                                cost(range)
+                                time(range)
                             }
                             #else
                             GridRow {
                                 today(usage, report.today)
-                                cost(week)
+                                cost(range)
                             }
                             GridRow {
-                                turns(week)
-                                tokens(week)
+                                turns(range)
+                                tokens(range)
                             }
                             GridRow {
-                                time(week)
+                                time(range)
                                 Color.clear.frame(height: 0)
                             }
                             #endif
                         }
                         HStack(alignment: .center, spacing: BoardStyle.Space.m) {
-                            UsageChart(buckets: month, metric: .tokens, byWeek: false, compact: true).frame(height: 60)
+                            UsageChart(buckets: range.buckets, metric: .tokens, byWeek: false, compact: true).frame(height: 60)
                             Image(systemName: "chevron.right").font(.footnote.weight(.semibold)).foregroundStyle(.tertiary)
                         }
                     }
@@ -159,20 +158,20 @@ struct AgentUsageCard: View {
         return UsageStat(title: "Today", value: usage.costKnown ? UsageMath.cost(day.costUsd) : "\u{2014}")
     }
 
-    private func turns(_ week: UsageSummary) -> UsageStat {
-        UsageStat(title: "Turns", value: UsageMath.count(week.total.turns))
+    private func turns(_ range: UsageSummary) -> UsageStat {
+        UsageStat(title: "Turns", value: UsageMath.count(range.total.turns))
     }
 
-    private func tokens(_ week: UsageSummary) -> UsageStat {
-        UsageStat(title: "Tokens", value: UsageMath.count(week.total.tokens))
+    private func tokens(_ range: UsageSummary) -> UsageStat {
+        UsageStat(title: "Tokens", value: UsageMath.count(range.total.tokens))
     }
 
-    private func cost(_ week: UsageSummary) -> UsageStat {
-        UsageStat(title: "7 days", value: week.cost, detail: week.costNote)
+    private func cost(_ range: UsageSummary) -> UsageStat {
+        UsageStat(title: UsageRange.opening.title, value: range.cost, detail: range.costNote)
     }
 
-    private func time(_ week: UsageSummary) -> UsageStat {
-        UsageStat(title: "Time working", value: UsageMath.duration(week.total.workingSeconds))
+    private func time(_ range: UsageSummary) -> UsageStat {
+        UsageStat(title: "Time working", value: UsageMath.duration(range.total.workingSeconds))
     }
 }
 
@@ -183,7 +182,7 @@ struct UsageView: View {
     @Environment(AppStore.self) private var store
     @Environment(\.pushRoute) private var pushRoute
     var botId: String? = nil
-    @State private var range = UsageRange.month
+    @State private var range = UsageRange.opening
     @State private var metric = UsageMetric.tokens
 
     private var bot: Bot? { store.bots.first { $0.id == botId } }
@@ -206,7 +205,10 @@ struct UsageView: View {
                 if botId == nil { agentRows(report) }
                 let models = UsageMath.models(agents)
                 if !models.isEmpty {
-                    BoardSection("Models · \(report.days) days", count: models.count) {
+                    // The Mac has one total of each model for the whole report, so the title names its length, in the
+                    // words of the range above ("12 weeks").
+                    let length = UsageRange.allCases.first { $0.days == report.days }?.title ?? "\(report.days) days"
+                    BoardSection("Models · " + length, count: models.count) {
                         ForEach(models) { model in
                             BoardRow(title: store.modelCatalog?.models.first { $0.id == model.model }?.name ?? model.model,
                                      detail: model.provider.isEmpty ? nil : model.provider,

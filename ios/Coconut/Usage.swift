@@ -80,6 +80,10 @@ struct UsageReport: Codable, Equatable, Sendable {
 enum UsageRange: String, CaseIterable, Identifiable, Sendable {
     case week, month, quarter
 
+    /// The range that the usage page opens on. The usage card of a project shows the same one, so a tap on the card
+    /// leads to the same numbers.
+    static let opening = UsageRange.month
+
     var id: String { rawValue }
     var days: Int {
         switch self {
