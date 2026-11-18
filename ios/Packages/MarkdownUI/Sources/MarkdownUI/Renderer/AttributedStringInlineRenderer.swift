@@ -26,6 +26,7 @@ private struct AttributedStringInlineRenderer {
   private let softBreakMode: SoftBreak.Mode
   private var attributes: AttributeContainer
   private var shouldSkipNextWhitespace = false
+  private var html = InlineHTMLFormatting()
 
   init(
     baseURL: URL?,
@@ -72,6 +73,7 @@ private struct AttributedStringInlineRenderer {
       text = text.replacingOccurrences(of: "^\\s+", with: "", options: .regularExpression)
     }
 
+    self.html.didRender(text)
     self.result += .init(text, attributes: self.attributes)
   }
 
@@ -87,22 +89,25 @@ private struct AttributedStringInlineRenderer {
   }
 
   private mutating func renderLineBreak() {
+    self.html.didBreak()
     self.result += .init("\n", attributes: self.attributes)
   }
 
   private mutating func renderCode(_ code: String) {
+    self.html.didRenderInline()
     self.result += .init(code, attributes: self.textStyles.code.mergingAttributes(self.attributes))
   }
 
   private mutating func renderHTML(_ html: String) {
-    let tag = HTMLTag(html)
-
-    switch tag?.name.lowercased() {
-    case "br":
+    // Coconut patch: HTML tags are formatted or dropped, not shown raw.
+    switch self.html.apply(html, textStyles: self.textStyles, attributes: &self.attributes) {
+    case .lineBreak:
       self.renderLineBreak()
       self.shouldSkipNextWhitespace = true
-    default:
+    case .literal:
       self.renderText(html)
+    case .none:
+      break
     }
   }
 

@@ -1,4 +1,5 @@
 import Foundation
+import MarkdownUI
 
 struct MessagePhoto: Equatable, Sendable {
     let url: URL
@@ -83,6 +84,8 @@ enum TranscriptPresentation {
         guard let detector = try? NSDataDetector(types: NSTextCheckingResult.CheckingType.link.rawValue) else { return [] }
         var links: [URL] = []
         var seen: Set<String> = []
+        // An address in an HTML tag, such as the `href` of a link, is not shown, so it loads no preview.
+        let markdown = markdown.replacing(#/<[a-zA-Z][a-zA-Z0-9-]*\s[^<>]*>/#, with: " ")
         for match in detector.matches(in: markdown, range: NSRange(markdown.startIndex..., in: markdown)) {
             guard let url = match.url, isPublicWebAddress(url), !isPhotoAddress(url),
                   seen.insert(url.absoluteString).inserted else { continue }
@@ -138,7 +141,7 @@ enum TranscriptPresentation {
             let text = prose.joined(separator: "\n")
             prose = []
             let options = AttributedString.MarkdownParsingOptions(interpretedSyntax: .inlineOnlyPreservingWhitespace)
-            let plain = (try? AttributedString(markdown: text, options: options)).map { String($0.characters) } ?? text
+            let plain = (try? AttributedString(markdown: text, options: options)).map(withoutHTMLTags) ?? text
             parts += plain.split(whereSeparator: \.isNewline).map { $0.trimmingCharacters(in: .whitespaces) }
         }
         for line in markdown.split(omittingEmptySubsequences: false, whereSeparator: \.isNewline) {
@@ -161,6 +164,15 @@ enum TranscriptPresentation {
         }
         flush()
         return parts.filter { !$0.isEmpty }.joined(separator: " ")
+    }
+
+    /// The characters without the HTML tags that a message formats or drops, so a preview shows no `<sub>`.
+    private static func withoutHTMLTags(_ text: AttributedString) -> String {
+        text.runs.reduce(into: "") { plain, run in
+            let piece = String(text[run.range].characters)
+            let html = run.inlinePresentationIntent?.contains(.inlineHTML) == true
+            plain += (html ? InlineHTML.plainText(for: piece) : nil) ?? piece
+        }
     }
 
     private static let genericProgress: Set<String> = ["working", "working on your request", "preparing an answer"]

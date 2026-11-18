@@ -60,7 +60,11 @@ extension BlockNode {
     case .codeBlock:
       self = .codeBlock(fenceInfo: unsafeNode.fenceInfo, content: unsafeNode.literal ?? "")
     case .htmlBlock:
-      self = .htmlBlock(content: unsafeNode.literal ?? "")
+      // Coconut patch: an HTML block is a paragraph, so its tags are formatted or dropped as inline tags are. A
+      // block of tags alone is no block: an empty one would take the gap of the block after it.
+      let inlines = HTMLTag.inlines(inBlock: unsafeNode.literal ?? "")
+      guard !inlines.isEmpty else { return nil }
+      self = .paragraph(content: inlines)
     case .paragraph:
       self = .paragraph(content: unsafeNode.children.compactMap(InlineNode.init(unsafeNode:)))
     case .heading:

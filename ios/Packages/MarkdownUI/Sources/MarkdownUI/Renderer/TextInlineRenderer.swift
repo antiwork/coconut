@@ -27,8 +27,9 @@ private struct TextInlineRenderer {
   private let textStyles: InlineTextStyles
   private let images: [String: Image]
   private let softBreakMode: SoftBreak.Mode
-  private let attributes: AttributeContainer
+  private var attributes: AttributeContainer
   private var shouldSkipNextWhitespace = false
+  private var html = InlineHTMLFormatting()
 
   init(
     baseURL: URL?,
@@ -60,7 +61,11 @@ private struct TextInlineRenderer {
       self.renderHTML(content)
     case .image(let source, _):
       self.renderImage(source)
+    case .lineBreak:
+      self.html.didBreak()
+      self.defaultRender(inline)
     default:
+      self.html.didRenderInline()
       self.defaultRender(inline)
     }
   }
@@ -73,6 +78,7 @@ private struct TextInlineRenderer {
       text = text.replacingOccurrences(of: "^\\s+", with: "", options: .regularExpression)
     }
 
+    self.html.didRender(text)
     self.defaultRender(.text(text))
   }
 
@@ -81,22 +87,25 @@ private struct TextInlineRenderer {
     case .space where self.shouldSkipNextWhitespace:
       self.shouldSkipNextWhitespace = false
     case .space:
+      self.html.didBreak()
       self.defaultRender(.softBreak)
     case .lineBreak:
+      self.html.didBreak()
       self.shouldSkipNextWhitespace = true
       self.defaultRender(.lineBreak)
     }
   }
 
   private mutating func renderHTML(_ html: String) {
-    let tag = HTMLTag(html)
-
-    switch tag?.name.lowercased() {
-    case "br":
+    // Coconut patch: a tag changes the attributes of the inlines after it, up to its closing tag.
+    switch self.html.apply(html, textStyles: self.textStyles, attributes: &self.attributes) {
+    case .lineBreak:
       self.defaultRender(.lineBreak)
       self.shouldSkipNextWhitespace = true
-    default:
-      self.defaultRender(.html(html))
+    case .literal:
+      self.renderText(html)
+    case .none:
+      break
     }
   }
 
