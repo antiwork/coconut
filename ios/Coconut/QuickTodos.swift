@@ -143,7 +143,7 @@ extension AppStore {
     }
 }
 
-/// The sheet of a new to-do: one line of text, and the agent that takes it. Return adds it.
+/// The sheet of a new to-do: one line of text, and the project that takes it. Return adds it.
 struct NewTodoSheet: View {
     @Environment(AppStore.self) private var store
     @Environment(\.dismiss) private var dismiss
@@ -157,7 +157,7 @@ struct NewTodoSheet: View {
         let choices = QuickTodos.choices(in: store.bots, latest: latest)
         let agent = chosen.flatMap { id in choices.first { $0.id == id } } ?? QuickTodos.defaultAgent(last: lastAgent, in: choices)
         VStack(alignment: .leading, spacing: BoardStyle.Space.m) {
-            TextField(agent == nil ? "Create a project first" : "New to-do", text: $text)
+            TextField(agent == nil ? "No project yet" : "New to-do", text: $text)
                 .font(.title3)
                 .focused($focused)
                 .submitLabel(.done)
@@ -167,16 +167,16 @@ struct NewTodoSheet: View {
             HStack(spacing: BoardStyle.Space.s) {
                 if let agent {
                     Menu {
-                        Picker("Agent", selection: Binding(get: { agent.id }, set: { chosen = $0 })) {
+                        Picker("Project", selection: Binding(get: { agent.id }, set: { chosen = $0 })) {
                             ForEach(choices) { Text($0.name).tag($0.id) }
                         }
                         .pickerStyle(.inline)
                     } label: {
-                        ComposerChipLabel(symbol: "person.crop.circle", title: agent.name)
+                        ComposerChipLabel(title: agent.name)
                     }
                     .menuOrder(.fixed)
                     .fixedSize()
-                    .accessibilityLabel("Agent, \(agent.name)")
+                    .accessibilityLabel("Project, \(agent.name)")
                     .accessibilityIdentifier("new-todo-agent")
                 }
                 Spacer(minLength: 0)

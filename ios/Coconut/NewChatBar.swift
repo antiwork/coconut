@@ -84,7 +84,7 @@ struct NewChatBar: View {
         let shape = RoundedRectangle(cornerRadius: BoardStyle.Radius.large, style: .continuous)
         let canSend = target != nil && !sending && !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         return VStack(alignment: .leading, spacing: 0) {
-            TextField(target.map { "New chat with \($0.name)" } ?? "No project yet", text: $text, axis: .vertical)
+            TextField("New chat", text: $text, axis: .vertical)
                 .focused($focused)
                 .modifier(ComposerFieldStyle(send: { if let target { send(to: target) } }, stacked: true))
                 .padding(.horizontal, BoardStyle.Space.m)
@@ -120,15 +120,7 @@ struct NewChatBar: View {
                     .accessibilityIdentifier("new-chat-all-projects")
                 #endif
             } label: {
-                HStack(spacing: BoardStyle.Space.xs) {
-                    Text(target.name).lineLimit(1)
-                    Image(systemName: "chevron.down").font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
-                }
-                .font(.subheadline.weight(.medium))
-                .foregroundStyle(.primary)
-                .padding(.horizontal, BoardStyle.Space.s)
-                .frame(minHeight: 44)
-                .contentShape(Rectangle())
+                ComposerChipLabel(title: target.name)
             }
             .modifier(ComposerChipMenuStyle())
             // The first item stays first, also when the menu opens above the chip.

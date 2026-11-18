@@ -12,7 +12,7 @@ struct DecisionReplyComposer: View {
     var body: some View {
         VStack(alignment: .leading, spacing: BoardStyle.Space.s) {
             HStack(alignment: .bottom, spacing: 8) {
-                TextField("Reply…", text: Binding(
+                TextField("Reply", text: Binding(
                     get: { store.decisionReplyDrafts[decision.id] ?? "" },
                     set: { store.decisionReplyDrafts[decision.id] = $0 }
                 ), axis: .vertical)
