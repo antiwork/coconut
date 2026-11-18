@@ -1,6 +1,7 @@
 import SwiftUI
 
-// The routines of an agent, and its scheduled checks.
+// The routines of an agent, and its scheduled checks. The page has the title "Routines", and the Mac shows it under a
+// tab of that name, so the first section needs no header.
 struct BotSettingsView: View {
     @Environment(AppStore.self) private var store
     @ShownError private var shownError
@@ -10,7 +11,7 @@ struct BotSettingsView: View {
     var body: some View {
         Form {
             let groups = RoutineGroups(store.routines.filter { $0.botId == botId })
-            Section("Routines") {
+            Section {
                 ForEach(groups.recurring) { routine in
                     routineLink(routine, detail: routine.error ?? routineLabel(routine))
                 }
@@ -26,7 +27,7 @@ struct BotSettingsView: View {
             if let error = shownError { Section { InlineError(error) } }
         }
         .settingsBackground()
-        .navigationTitle(store.bots.first { $0.id == botId }?.name ?? "Agent").inlineNavigationTitle()
+        .navigationTitle("Routines").inlineNavigationTitle()
         // A sheet has no notice over it, so it shows the error itself.
         .sheet(isPresented: $routineOpen) {
             NavigationStack { RoutineEditorView(botId: botId) }.sheetShowsError()
