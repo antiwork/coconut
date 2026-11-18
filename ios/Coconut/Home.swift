@@ -167,7 +167,7 @@ struct HomeView: View {
                 }
             } rows: {
                 if unread.isEmpty {
-                    BoardEmptyRow(text: "Nothing unread. New messages and cards from your agents show here.")
+                    BoardEmptyRow(text: "Nothing unread.")
                         .accessibilityIdentifier("home-unread-empty")
                 } else {
                     ForEach(unread) { unreadRow($0) }

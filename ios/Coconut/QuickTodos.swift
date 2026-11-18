@@ -285,7 +285,7 @@ struct QuickTodoRows: View {
         let todos = QuickTodos.list(store)
         Group {
             if !inList && pending.isEmpty && todos.isEmpty {
-                BoardEmptyRow(text: "No to-dos. New to-do adds one, and an agent starts on it at once.")
+                BoardEmptyRow(text: "No to-dos. An agent starts on a new one at once.")
             }
             ForEach(pending) { item in
                 let agent = store.bots.first { $0.id == item.agentId }
