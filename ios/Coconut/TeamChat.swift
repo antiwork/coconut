@@ -1626,7 +1626,8 @@ enum ChatList {
     /// same form. The Coconut chat and the starred projects come first, in the order they were made. Then every other
     /// chat of a project and every direct chat with a bot of a team, newest activity first, as the Mac sidebar has them
     /// under Project chats. A chat that is archived, a chat of an archived project, and a chat that nobody wrote in
-    /// (AgentChats.isListed) are not in the list. `latest` is the date of the newest message of each bot.
+    /// (AgentChats.isListed) are not in the list. `latest` is the date of the newest message of each bot. Agents
+    /// shows the chats of this list in two tabs, Working and Idle (AgentsFilter).
     static func agents(bots: [Bot], latest: [String: Date], rooms: [TeamRoom],
                        local: [TeamChatKey: TeamLastMessage] = [:]) -> [ChatListItem] {
         func activity(_ bot: Bot) -> Date { latest[bot.id] ?? bot.createdAt.apiDate ?? .distantPast }

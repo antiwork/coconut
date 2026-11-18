@@ -2,11 +2,14 @@ import SwiftUI
 
 /// Three tabs of the iPhone. Inbox has what asks for the person: the rules that breach, the cards that wait, and the
 /// to-dos. Chats is one list of the chats with people, as Telegram has it: the teams, their named chats and the direct
-/// chats. Agents is one list of the chats of the projects, with the message box under the list (NewChatBar).
+/// chats. Agents is the list of the chats of the projects in two tabs, Working and Idle (AgentsFilter), with the
+/// message box under the list (NewChatBar).
 struct HomeLaunchView: View {
     enum Part { case inbox, chats, agents }
     var part = Part.agents
     @Environment(AppStore.self) private var store
+    /// The tab of Agents that shows. The phone keeps the choice.
+    @AppStorage(AgentsFilter.key) private var filter = AgentsFilter.working
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @Environment(\.pushRoute) private var pushRoute
     /// Opens the place of a row of Needs attention, or the cards that wait.
@@ -60,19 +63,24 @@ struct HomeLaunchView: View {
 
     /// The list of Chats or of Agents, as Telegram has it: the pinned chats first, then every other chat newest
     /// activity first (ChatList.chats, ChatList.agents). Every row has the same form: the name, the last message, the
-    /// age and the badges. A starred row only adds the star mark.
+    /// age and the badges. A starred row only adds the star mark. Agents shows the chats of one of its two tabs, in the
+    /// same order.
     private func chatList(_ rows: [ChatListItem]) -> some View {
         let archivedCount = part == .agents ? store.bots.filter(\.archived).count : 0
+        let now = Date.now
+        let working: Set<String> = part == .agents ? Set(rows.filter { works($0, at: now) }.map(\.id)) : []
+        let shown = part != .agents ? rows : rows.filter { working.contains($0.id) == (filter == .working) }
         // A list, not a stack, so that a row of a chat has the swipe of the system: swipe left to archive.
         return List {
-            if rows.isEmpty {
-                Text(part == .agents ? "No chats yet." : "No chats with people yet.")
+            if shown.isEmpty {
+                Text(part == .chats ? "No chats with people yet." : rows.isEmpty ? "No chats yet."
+                     : filter == .working ? "No chat is working." : "No chat is idle.")
                     .font(.subheadline).foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity).padding(.vertical, BoardStyle.Space.xxl)
                     .accessibilityIdentifier("chats-empty")
                     .homeRow()
             }
-            ForEach(rows) { item in
+            ForEach(shown) { item in
                 switch item {
                 case .bot(let bot):
                     BotContactRow(bot: bot, title: bot.isChat ? bot.listName : nil, pinned: ChatList.isStarred(bot))
@@ -106,8 +114,9 @@ struct HomeLaunchView: View {
                     }
                 }
             }
-            // The archived chats wait behind one row at the end, as the archived chats of WhatsApp.
-            if archivedCount > 0 {
+            // The archived chats wait behind one row at the end, as the archived chats of WhatsApp. On Agents the row
+            // ends Idle, because an archived chat does not work.
+            if archivedCount > 0 && (part != .agents || filter == .idle) {
                 Button { pushRoute?(ArchivedAgentsRoute()) } label: {
                     HStack(spacing: BoardStyle.Space.m) {
                         Image(systemName: "archivebox").foregroundStyle(.secondary)
@@ -129,6 +138,20 @@ struct HomeLaunchView: View {
         .contentMargins(.top, BoardStyle.Space.s, for: .scrollContent)
         .contentMargins(.bottom, BoardStyle.Space.xl, for: .scrollContent)
         .background(BoardStyle.paper)
+        // The two tabs of Agents, with the count of each. The control stays under the title while the list scrolls, as
+        // Overview and Work of a function (BusinessWorkspaceView).
+        .safeAreaInset(edge: .top, spacing: 0) {
+            if part == .agents {
+                Picker("Agents", selection: $filter) {
+                    Text("Working \(working.count)").tag(AgentsFilter.working)
+                    Text("Idle \(rows.count - working.count)").tag(AgentsFilter.idle)
+                }.pickerStyle(.segmented).labelsHidden().frame(maxWidth: 360)
+                    .padding(.horizontal, BoardStyle.Space.l).padding(.vertical, BoardStyle.Space.s)
+                    // The paper ends at the control and leaves the bar of the page to the system.
+                    .frame(maxWidth: .infinity).background(BoardStyle.paper, ignoresSafeAreaEdges: [])
+                    .accessibilityIdentifier("agents-filter")
+            }
+        }
         .navigationTitle(part == .agents ? "Agents" : "Chats")
         .toolbar {
             // One tap reads every chat of both lists, as Read All in Telegram. It shows while a chat of this list has
@@ -142,6 +165,16 @@ struct HomeLaunchView: View {
         .refreshable { await store.reconnect() }
         // The message box under the list gives the keyboard back when the list moves.
         .scrollDismissesKeyboard(.interactively)
+    }
+
+    /// A chat of Agents works while its row says so: a working line, or a card that waits for the person. A direct chat
+    /// with a bot of a team works while the bot types in it. Every other chat is idle.
+    private func works(_ item: ChatListItem, at date: Date) -> Bool {
+        switch item {
+        case .bot(let bot): store.botPhase(bot) != nil || store.botNeedsYou(bot)
+        case .botDirect(_, let direct): !(direct.typing?.active(at: date).isEmpty ?? true)
+        case .team, .direct: false
+        }
     }
 
     /// What asks for the person comes first on Inbox: the rules that breach now, then the cards that wait. Each row
@@ -240,6 +273,13 @@ struct HomeLaunchView: View {
         return chat.member.map { "direct-chat-" + $0 } ?? "team-chat-" + chat.room + (chat.chat.map { "-" + $0 } ?? "")
     }
 
+}
+
+/// The two tabs of Agents. Working has the chats that work or wait for the person, and Idle has the others, so the
+/// person finds a free chat for the next task in one tap.
+enum AgentsFilter: String {
+    case working, idle
+    static let key = "agents-filter"
 }
 
 /// The archived chats, and the archived agents of an earlier release: swipe left or hold a row to bring one back. A row

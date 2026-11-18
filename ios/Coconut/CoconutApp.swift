@@ -58,10 +58,11 @@ struct CoconutApp: App {
 
 /// The five tabs of the iPhone in their order: Inbox, Chats, Agents, Dashboards and You. Inbox has what asks for the
 /// person, and its badge counts each thing that it lists (TodosCount). Chats is one list of the chats with people: the
-/// teams, their named chats and the direct chats. Agents is one list of the chats of the projects, with the message box
-/// under the list. The page of a project opens from the name of its chat, and the list of all projects from the project
-/// chip of the box. Dashboards has Finance, which opens Support and the other functions. The app opens on Agents,
-/// because the person does not want to land in the inbox. The Mac sidebar has its own list.
+/// teams, their named chats and the direct chats. Agents is the list of the chats of the projects in two tabs, Working
+/// and Idle, with the message box under the list. The page of a project opens from the name of its chat, and the list
+/// of all projects from the project chip of the box. Dashboards has Finance, which opens Support and the other
+/// functions. The app opens on Agents, because the person does not want to land in the inbox. The Mac sidebar has its
+/// own list.
 ///
 /// The tab bar always has exactly five tabs. With a sixth, iOS puts the last tabs behind a More tab, and the person
 /// does not want More. A new place goes on the page of a tab, or it takes the place of a tab.
