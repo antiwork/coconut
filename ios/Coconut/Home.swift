@@ -76,17 +76,13 @@ enum HomeFeed {
         }
     }
 
-    /// The count of the Chats tab of the iPhone: the unread messages of the chats with people (ChatList.chats), and
-    /// the notices of the teams that the person did not see. A muted chat counts none.
-    static func chatsBadge(rooms: [TeamRoom], local: [TeamChatKey: TeamLastMessage] = [:]) -> Int {
-        ChatList.chats(rooms, local: local).reduce(0) { $0 + $1.unreadCount } + rooms.reduce(0) { $0 + $1.unseenNotices }
-    }
-
-    /// The count of the Agents tab of the iPhone: the unread messages of the chats of the projects and of the direct
-    /// chats with a bot of a team. A muted chat and an archived chat count none. The cards that wait count on Inbox.
-    static func agentsBadge(bots: [Bot], rooms: [TeamRoom], local: [TeamChatKey: TeamLastMessage] = [:]) -> Int {
-        (bots.filter { !$0.archived }.map(ChatListItem.bot) + ChatList.botDirects(rooms, local: local))
-            .reduce(0) { $0 + $1.unreadCount }
+    /// The count of the Chats tab of the iPhone: the unread messages of every chat (ChatList.all), and the notices of
+    /// the teams that the person did not see. A muted chat and an archived chat count none. The cards that wait count
+    /// on Product.
+    static func chatsBadge(bots: [Bot], rooms: [TeamRoom], local: [TeamChatKey: TeamLastMessage] = [:]) -> Int {
+        let chats = bots.filter { !$0.archived }.map(ChatListItem.bot) + ChatList.pinnedChats(rooms)
+            + ChatList.people(rooms, local: local) + ChatList.botDirects(rooms, local: local)
+        return chats.reduce(0) { $0 + $1.unreadCount } + rooms.reduce(0) { $0 + $1.unseenNotices }
     }
 
     /// "In progress": the turns that run now, then the open To-dos (AgentTodos), then the active notices of the
@@ -173,7 +169,7 @@ struct HomeView: View {
                     ForEach(unread) { unreadRow($0) }
                 }
             }
-            // The quick to-dos (QuickTodos), with + to add one. The iPhone lists them on Inbox, the Mac on Home.
+            // The quick to-dos (QuickTodos), with + to add one. The iPhone lists them on Product, the Mac on Home.
             BoardSection("To-dos", count: QuickTodos.list(store).count) {
                 Button("New to-do", systemImage: "plus") { PendingTodos.shared.adding = true }
                     .accessibilityIdentifier("home-new-todo")

@@ -10,15 +10,7 @@ struct BoardPage<Content: View>: View {
     var spacing: CGFloat = BoardStyle.Space.xl
     @ViewBuilder let content: () -> Content
 
-    /// A screenshot of the lower part of a page starts the app with `--bottom`. Only a debug build on a simulator
-    /// reads it.
-    private static var startsAtBottom: Bool {
-        #if DEBUG && targetEnvironment(simulator)
-        return ProcessInfo.processInfo.arguments.contains("--bottom")
-        #else
-        return false
-        #endif
-    }
+    private static var startsAtBottom: Bool { PreviewLaunch.startsAtBottom }
 
     var body: some View {
         ScrollViewReader { proxy in
@@ -43,6 +35,18 @@ struct BoardPage<Content: View>: View {
     }
 
     private static var contentID: String { "board-page-content" }
+}
+
+enum PreviewLaunch {
+    /// A screenshot of the lower part of a page starts the app with `--bottom`. Only a debug build on a simulator
+    /// reads it.
+    static var startsAtBottom: Bool {
+        #if DEBUG && targetEnvironment(simulator)
+        return ProcessInfo.processInfo.arguments.contains("--bottom")
+        #else
+        return false
+        #endif
+    }
 }
 
 /// The title of a page of sections with one quiet line under it.

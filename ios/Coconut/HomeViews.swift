@@ -1,53 +1,85 @@
 import SwiftUI
 
-/// Three tabs of the iPhone. Inbox has what asks for the person: the rules that breach, the cards that wait, and the
-/// to-dos. Chats is one list of the chats with people, as Telegram has it: the teams, their named chats and the direct
-/// chats. Agents is the list of the chats of the projects in two tabs, Working and Idle (AgentsFilter), with the
-/// message box under the list (NewChatBar).
+/// Two tabs of the iPhone. Product has what asks for the person, the rules that breach, the cards that wait and the
+/// to-dos, then the product issues and the open pull requests (ProductWork). Chats is one list of every chat, as
+/// Telegram has it: the projects, the teams, their named chats and the direct chats, in two tabs, Working and Idle
+/// (AgentsFilter), with the message box under the list (NewChatBar).
 struct HomeLaunchView: View {
-    enum Part { case inbox, chats, agents }
-    var part = Part.agents
+    enum Part { case product, chats }
+    var part = Part.chats
     @Environment(AppStore.self) private var store
-    /// The tab of Agents that shows. The phone keeps the choice.
+    /// The tab of Chats that shows, Working or Idle. The phone keeps the choice.
     @AppStorage(AgentsFilter.key) private var filter = AgentsFilter.working
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @Environment(\.pushRoute) private var pushRoute
+    @Environment(\.openURL) private var openURL
     /// Opens the place of a row of Needs attention, or the cards that wait.
     let open: (HomeTarget) -> Void
     @ScaledMetric(relativeTo: .title3) private var todoIconWidth = 24
+    /// The reports of the product work as they loaded here. A demo has no copy in the store (businessReports).
+    @State private var productReports: [String: BusinessReport] = [:]
+    @State private var productError: String?
 
     var body: some View {
         switch part {
-        case .inbox: todoList
-        case .chats: chatList(ChatList.chats(store.shownTeamRooms, local: store.newestLocalMessages))
-        case .agents: chatList(ChatList.agents(bots: store.bots, latest: store.chatSummaries.newestActivity,
-                                               rooms: store.shownTeamRooms, local: store.newestLocalMessages))
+        case .product: productList
+        case .chats: chatList(ChatList.all(bots: store.bots, latest: store.chatSummaries.newestActivity,
+                                           rooms: store.shownTeamRooms, local: store.newestLocalMessages))
         }
     }
 
-    private var todoList: some View {
+    private var productList: some View {
         let todos = AgentTodos.make(artifacts: store.artifacts, bots: store.bots)
         let cards = store.pendingCardCount
         let quick = QuickTodos.list(store).count + PendingTodos.shared.items.count
-        return List {
-            attention(cards: cards)
-            QuickTodoRows()
-            ForEach(todos) { item in todoRow(item).homeRow() }
-            if todos.isEmpty && cards == 0 && quick == 0 {
-                Text("Nothing waits for you. Tap + to add a to-do.")
-                    .font(.subheadline).foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity).padding(.vertical, BoardStyle.Space.xxl)
-                    .accessibilityIdentifier("todos-empty")
-                    .homeRow()
+        let issues = ProductWork.issues(productReport("support")?.data)
+        let pulls = ProductWork.pulls(productReport("engineering")?.data)
+        return ScrollViewReader { proxy in
+            List {
+                attention(cards: cards)
+                QuickTodoRows()
+                ForEach(todos) { item in todoRow(item).homeRow() }
+                if todos.isEmpty && cards == 0 && quick == 0 {
+                    Text("Nothing waits for you. Tap + to add a to-do.")
+                        .font(.subheadline).foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity).padding(.vertical, BoardStyle.Space.xxl)
+                        .accessibilityIdentifier("todos-empty")
+                        .homeRow()
+                }
+                // The work of the product. A section without rows does not show.
+                if !issues.isEmpty {
+                    productHeader("Product issues", count: issues.count)
+                    ForEach(issues) { productRow($0) }
+                }
+                if !pulls.isEmpty {
+                    productHeader("Pull requests", count: pulls.count)
+                    ForEach(pulls) { productRow($0) }
+                }
+                if let productError {
+                    BoardLoadNotice(message: productError) { Task { await loadProductWork() } }
+                        .padding(.vertical, BoardStyle.Space.l)
+                        .accessibilityIdentifier("product-work-error")
+                        .homeRow()
+                }
+                Color.clear.frame(height: 1).id(Self.productEnd).homeRow()
+            }
+            .listStyle(.plain)
+            .scrollContentBackground(.hidden)
+            .environment(\.defaultMinListRowHeight, 0)
+            .contentMargins(.top, BoardStyle.Space.l, for: .scrollContent)
+            .contentMargins(.bottom, BoardStyle.Space.xl, for: .scrollContent)
+            .background(BoardStyle.paper)
+            // A screenshot of the end of the page starts the app with `--bottom` (PreviewLaunch).
+            .task {
+                guard PreviewLaunch.startsAtBottom else { return }
+                for wait in [1.0, 2, 3] {
+                    try? await Task.sleep(for: .seconds(wait))
+                    proxy.scrollTo(Self.productEnd, anchor: .bottom)
+                }
             }
         }
-        .listStyle(.plain)
-        .scrollContentBackground(.hidden)
-        .environment(\.defaultMinListRowHeight, 0)
-        .contentMargins(.top, BoardStyle.Space.l, for: .scrollContent)
-        .contentMargins(.bottom, BoardStyle.Space.xl, for: .scrollContent)
-        .background(BoardStyle.paper)
-        .navigationTitle("Inbox")
+        .navigationTitle("Product")
+        .task(id: "\(store.connection)/\(store.businessChanges)") { await loadProductWork() }
         .toolbar {
             // One tap and one line add a to-do, which an agent starts on at once (QuickTodos).
             ToolbarItem(placement: .primaryAction) {
@@ -58,23 +90,92 @@ struct HomeLaunchView: View {
         .sheet(isPresented: Binding(get: { PendingTodos.shared.adding }, set: { PendingTodos.shared.adding = $0 })) { NewTodoSheet() }
         // The root of the app loads the overview of Finance for the count of the tab (CoconutHome), so a pull only
         // loads it again.
-        .refreshable { await store.reconnect(); await store.loadBusinessAttention() }
+        .refreshable {
+            await store.reconnect()
+            await store.loadBusinessAttention()
+            await loadProductWork()
+        }
     }
 
-    /// The list of Chats or of Agents, as Telegram has it: the pinned chats first, then every other chat newest
-    /// activity first (ChatList.chats, ChatList.agents). Every row has the same form: the name, the last message, the
-    /// age and the badges. A starred row only adds the star mark. Agents shows the chats of one of its two tabs, in the
-    /// same order.
+    private static let productEnd = "product-end"
+
+    private func productReport(_ key: String) -> BusinessReport? { store.businessReports[key] ?? productReports[key] }
+
+    /// Loads the reports of the product work. The first failure shows under the rows, with the one way to try again.
+    private func loadProductWork() async {
+        var failure: String?
+        for key in ProductWork.reports {
+            do {
+                let report = try await store.businessReport(key)
+                guard !Task.isCancelled else { return }
+                productReports[key] = report
+            } catch is CancellationError { return }
+            catch { failure = failure ?? error.localizedDescription }
+        }
+        guard !Task.isCancelled else { return }
+        productError = failure
+    }
+
+    /// The title of a section of the product work, as the title of a BoardSection.
+    private func productHeader(_ title: String, count: Int) -> some View {
+        HStack(spacing: BoardStyle.Space.s) {
+            Text(title).font(.subheadline.weight(.semibold)).foregroundStyle(.secondary)
+            CountPill(count: count)
+            Spacer(minLength: 0)
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityAddTraits(.isHeader)
+        .padding(.top, BoardStyle.Space.xl).padding(.bottom, BoardStyle.Space.xs)
+        .homeRow()
+    }
+
+    /// An issue or a pull request. A tap opens it on GitHub.
+    private func productRow(_ item: ProductWork.Item) -> some View {
+        Button { if let url = item.url { openURL(url) } } label: {
+            HStack(spacing: BoardStyle.Space.m) {
+                Image(systemName: item.symbol)
+                    .font(.title3)
+                    .foregroundStyle(item.tint)
+                    .frame(width: todoIconWidth)
+                    .accessibilityHidden(true)
+                VStack(alignment: .leading, spacing: BoardStyle.Space.xs) {
+                    Text(item.title).font(.body).foregroundStyle(.primary)
+                        .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 2)
+                    Text(item.detail).font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
+                }
+                Spacer(minLength: 0)
+                if let change = item.change {
+                    HStack(spacing: BoardStyle.Space.xs) {
+                        Text(change.additions).foregroundStyle(BoardStyle.positive)
+                        Text(change.deletions).foregroundStyle(BoardStyle.attention)
+                    }
+                    .font(.caption.weight(.medium)).monospacedDigit().lineLimit(1)
+                }
+            }
+            .frame(minHeight: 44, alignment: .leading)
+            .padding(.vertical, BoardStyle.Space.m)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(BoardStyle.paper)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(HomePressStyle())
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier("product-" + item.id)
+        .homeRow()
+    }
+
+    /// The list of Chats, as Telegram has it: the pinned chats first, then every other chat newest activity first
+    /// (ChatList.all). Every row has the same form: the name, the last message, the age and the badges. A starred row
+    /// only adds the star mark. The list shows the chats of one of its two tabs, Working or Idle, in the same order.
     private func chatList(_ rows: [ChatListItem]) -> some View {
-        let archivedCount = part == .agents ? store.bots.filter(\.archived).count : 0
+        let archivedCount = store.bots.filter(\.archived).count
         let now = Date.now
-        let working: Set<String> = part == .agents ? Set(rows.filter { works($0, at: now) }.map(\.id)) : []
-        let shown = part != .agents ? rows : rows.filter { working.contains($0.id) == (filter == .working) }
+        let working = Set(rows.filter { works($0, at: now) }.map(\.id))
+        let shown = rows.filter { working.contains($0.id) == (filter == .working) }
         // A list, not a stack, so that a row of a chat has the swipe of the system: swipe left to archive.
         return List {
             if shown.isEmpty {
-                Text(part == .chats ? "No chats with people yet." : rows.isEmpty ? "No chats yet."
-                     : filter == .working ? "No chat is working." : "No chat is idle.")
+                Text(rows.isEmpty ? "No chats yet." : filter == .working ? "No chat is working." : "No chat is idle.")
                     .font(.subheadline).foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity).padding(.vertical, BoardStyle.Space.xxl)
                     .accessibilityIdentifier("chats-empty")
@@ -114,9 +215,9 @@ struct HomeLaunchView: View {
                     }
                 }
             }
-            // The archived chats wait behind one row at the end, as the archived chats of WhatsApp. On Agents the row
-            // ends Idle, because an archived chat does not work.
-            if archivedCount > 0 && (part != .agents || filter == .idle) {
+            // The archived chats wait behind one row at the end of Idle, as the archived chats of WhatsApp, because an
+            // archived chat does not work.
+            if archivedCount > 0 && filter == .idle {
                 Button { pushRoute?(ArchivedAgentsRoute()) } label: {
                     HStack(spacing: BoardStyle.Space.m) {
                         Image(systemName: "archivebox").foregroundStyle(.secondary)
@@ -138,24 +239,22 @@ struct HomeLaunchView: View {
         .contentMargins(.top, BoardStyle.Space.s, for: .scrollContent)
         .contentMargins(.bottom, BoardStyle.Space.xl, for: .scrollContent)
         .background(BoardStyle.paper)
-        // The two tabs of Agents, with the count of each. The control stays under the title while the list scrolls, as
+        // The two tabs of Chats, with the count of each. The control stays under the title while the list scrolls, as
         // Overview and Work of a function (BusinessWorkspaceView).
         .safeAreaInset(edge: .top, spacing: 0) {
-            if part == .agents {
-                Picker("Agents", selection: $filter) {
-                    Text("Working \(working.count)").tag(AgentsFilter.working)
-                    Text("Idle \(rows.count - working.count)").tag(AgentsFilter.idle)
-                }.pickerStyle(.segmented).labelsHidden().frame(maxWidth: 360)
-                    .padding(.horizontal, BoardStyle.Space.l).padding(.vertical, BoardStyle.Space.s)
-                    // The paper ends at the control and leaves the bar of the page to the system.
-                    .frame(maxWidth: .infinity).background(BoardStyle.paper, ignoresSafeAreaEdges: [])
-                    .accessibilityIdentifier("agents-filter")
-            }
+            Picker("Chats", selection: $filter) {
+                Text("Working \(working.count)").tag(AgentsFilter.working)
+                Text("Idle \(rows.count - working.count)").tag(AgentsFilter.idle)
+            }.pickerStyle(.segmented).labelsHidden().frame(maxWidth: 360)
+                .padding(.horizontal, BoardStyle.Space.l).padding(.vertical, BoardStyle.Space.s)
+                // The paper ends at the control and leaves the bar of the page to the system.
+                .frame(maxWidth: .infinity).background(BoardStyle.paper, ignoresSafeAreaEdges: [])
+                .accessibilityIdentifier("agents-filter")
         }
-        .navigationTitle(part == .agents ? "Agents" : "Chats")
+        .navigationTitle("Chats")
         .toolbar {
-            // One tap reads every chat of both lists, as Read All in Telegram. It shows while a chat of this list has
-            // an unread count.
+            // One tap reads every chat, as Read All in Telegram. It shows while a chat of the list has an unread
+            // count.
             if rows.contains(where: { $0.unreadCount > 0 }) {
                 ToolbarItem(placement: .primaryAction) {
                     MarkAllReadButton().accessibilityIdentifier("chats-mark-all-read")
@@ -167,8 +266,8 @@ struct HomeLaunchView: View {
         .scrollDismissesKeyboard(.interactively)
     }
 
-    /// A chat of Agents works while its row says so: a working line, or a card that waits for the person. A direct chat
-    /// with a bot of a team works while the bot types in it. Every other chat is idle.
+    /// A chat works while its row says so: a working line, or a card that waits for the person. A direct chat with a
+    /// bot of a team works while the bot types in it. Every other chat is idle, also a chat with people.
     private func works(_ item: ChatListItem, at date: Date) -> Bool {
         switch item {
         case .bot(let bot): store.botPhase(bot) != nil || store.botNeedsYou(bot)
@@ -177,7 +276,7 @@ struct HomeLaunchView: View {
         }
     }
 
-    /// What asks for the person comes first on Inbox: the rules that breach now, then the cards that wait. Each row
+    /// What asks for the person comes first on Product: the rules that breach now, then the cards that wait. Each row
     /// draws nothing when there is nothing to show.
     @ViewBuilder
     private func attention(cards: Int) -> some View {
@@ -275,7 +374,7 @@ struct HomeLaunchView: View {
 
 }
 
-/// The two tabs of Agents. Working has the chats that work or wait for the person, and Idle has the others, so the
+/// The two tabs of Chats. Working has the chats that work or wait for the person, and Idle has the others, so the
 /// person finds a free chat for the next task in one tap.
 enum AgentsFilter: String {
     case working, idle
@@ -381,6 +480,85 @@ struct ChipButton: View {
 struct HomePressStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label.opacity(configuration.isPressed ? 0.55 : 1)
+    }
+}
+
+/// The work of the product on Product: the product issues, which are the issues queue of the support report (the
+/// issues of Gumroad's private repository), and the open pull requests of the engineering report. The dashboards
+/// repository publishes both, as Support and Finance read them. They add nothing to the badge of the tab, which counts
+/// what asks for the person (TodosCount): an issue or a pull request is the state of the product, not a to-do.
+enum ProductWork {
+    /// The reports that Product reads.
+    static let reports = ["support", "engineering"]
+
+    struct Change: Equatable {
+        let additions: String
+        let deletions: String
+    }
+
+    /// One row: an issue or a pull request.
+    struct Item: Identifiable, Equatable {
+        let id: String
+        let title: String
+        /// The number, the state, the person and the day, in one line.
+        let detail: String
+        let symbol: String
+        let tint: Color
+        let url: URL?
+        /// The lines that a pull request adds and removes.
+        var change: Change? = nil
+    }
+
+    /// The open product issues, newest first, as the report lists them. The state comes from the labels: an agent
+    /// works on it, or it waits for someone.
+    static func issues(_ data: BusinessValue?, now: Date = .now) -> [Item] {
+        guard let data else { return [] }
+        return data["issues"]["open"].array.compactMap { issue in
+            let number = issue["slug"].text
+            var title = issue["subject"].text
+            if !number.isEmpty, title.hasPrefix("#" + number + " ") { title.removeFirst(number.count + 2) }
+            guard !title.isEmpty else { return nil }
+            let labels = issue["labels"].array.map(\.text)
+            let working = labels.contains("working")
+            let waiting = labels.first { $0.hasPrefix("awaiting-") }
+            let state = working ? "Working"
+                : waiting.map { "Awaiting " + $0.dropFirst("awaiting-".count).replacingOccurrences(of: "-", with: " ") }
+            let day = issue["createdAt"].text.apiDate.map { BusinessFormat.date($0, now: now) }
+            let detail = [number.isEmpty ? nil : "#" + number, state, issue["assignedToId"].text, day]
+                .compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " · ")
+            return Item(id: "issue-" + (number.isEmpty ? title : number), title: title, detail: detail,
+                        symbol: AgentTodos.symbol(working ? "working" : waiting == nil ? "open" : "waiting"),
+                        tint: working ? BoardStyle.positive : waiting == "awaiting-human" ? BoardStyle.attention : .secondary,
+                        url: SupportFormat.issueURL(issue))
+        }
+    }
+
+    /// The open pull requests of every repository of the report, newest change first. The symbol is the state of the
+    /// checks. A row names its repository when more than one repository has a pull request open.
+    static func pulls(_ data: BusinessValue?, now: Date = .now) -> [Item] {
+        guard let data else { return [] }
+        let repositories = data["data"].object.filter { !$0.value["pullRequests"]["nodes"].array.isEmpty }
+        let named = repositories.count > 1
+        let pulls = repositories.flatMap { key, repository in
+            repository["pullRequests"]["nodes"].array.map { (key: key, name: repository["name"].text.isEmpty ? key : repository["name"].text, pull: $0) }
+        }
+        return pulls.sorted { ($0.pull["updatedAt"].text, $0.pull["url"].text) > ($1.pull["updatedAt"].text, $1.pull["url"].text) }
+            .map { key, name, node in
+                let pull = PullRequestRow(node)
+                let number = node["number"].number.map { "#\(Int($0))" }
+                let author = node["author"]["login"].text
+                let day = node["updatedAt"].text.apiDate.map { BusinessFormat.date($0, now: now) }
+                let detail = [named ? [name, number].compactMap { $0 }.joined(separator: " ") : number,
+                              author.isEmpty ? nil : author, pull.state, day].compactMap { $0 }.joined(separator: " · ")
+                let tint: Color = switch pull.checks {
+                case "SUCCESS": BoardStyle.positive
+                case "FAILURE", "ERROR": BoardStyle.attention
+                default: .secondary
+                }
+                return Item(id: "pull-" + key + "-" + (number ?? node["url"].text), title: pull.title, detail: detail,
+                            symbol: pull.checkSymbol, tint: tint, url: pull.url,
+                            change: Change(additions: pull.additions, deletions: pull.deletions))
+            }
     }
 }
 

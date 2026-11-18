@@ -272,7 +272,7 @@ struct TodoCommentsSheet: View {
     }
 }
 
-/// The rows of the quick to-dos, on Inbox of the iPhone and on Home of the Mac. A row opens the chat of the
+/// The rows of the quick to-dos, on Product of the iPhone and on Home of the Mac. A row opens the chat of the
 /// to-do. Swipe or hold it to comment or to check it off.
 struct QuickTodoRows: View {
     @Environment(AppStore.self) private var store
@@ -365,12 +365,13 @@ private struct QuickTodoRowInset: ViewModifier {
     }
 }
 
-/// The number on the Inbox tab: each thing that the Inbox page lists, once. The cards that wait, the rows of Needs
-/// attention, the quick to-dos with the ones on their way, and the To-dos of the agents. A late card is a card that
-/// counts already, and stale data is a state of the connection, so neither adds to it. A blocked To-do of an agent is
-/// also a row of "Blocked or failed", so it counts one time. The rows of Finance come from the overview, which the root
-/// of the app loads for every tab and keeps for the next start (CoconutHome, BusinessReport.overviewCache), so the
-/// number stays the same whichever tab shows.
+/// The number on the Product tab: each thing on the Product page that asks for the person, once. The cards that wait,
+/// the rows of Needs attention, the quick to-dos with the ones on their way, and the To-dos of the agents. The product
+/// issues and the pull requests are the state of the product, not to-dos, so they add nothing (ProductWork). A late
+/// card is a card that counts already, and stale data is a state of the connection, so neither adds to it. A blocked
+/// To-do of an agent is also a row of "Blocked or failed", so it counts one time. The rows of Finance come from the
+/// overview, which the root of the app loads for every tab and keeps for the next start (CoconutHome,
+/// BusinessReport.overviewCache), so the number stays the same whichever tab shows.
 enum TodosCount {
     static func count(cards: Int, attention: [AttentionItem], stuck: [ConversationRoute], quick: Int,
                       agentTodos: [Artifact]) -> Int {
@@ -381,7 +382,7 @@ enum TodosCount {
 }
 
 extension AppStore {
-    /// The badge of the Inbox tab (TodosCount).
+    /// The badge of the Product tab (TodosCount).
     func todosCount(now: Date = Date()) -> Int {
         let input = attentionInput
         return TodosCount.count(cards: pendingCardCount, attention: AttentionRules.items(input, now: now),

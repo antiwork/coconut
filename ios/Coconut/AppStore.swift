@@ -462,7 +462,7 @@ final class AppStore {
             apply(cache.snapshotForRestore, persist: false)
             lastSync = cache.syncedAt
         }
-        // The overview of Finance from the last start, so the count of Inbox has its breaches at once. The rules
+        // The overview of Finance from the last start, so the count of Product has its breaches at once. The rules
         // count a breach only while the overview is under an hour old (BusinessHomePresentation).
         if businessReports["overview"] == nil,
            let overview: BusinessReport = ProtectedCache.read(BusinessReport.overviewCache) {

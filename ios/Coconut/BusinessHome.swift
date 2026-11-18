@@ -215,14 +215,9 @@ struct BusinessHomeContent: View {
         }.foregroundStyle(BoardStyle.ink)
     }
 
-    /// On the iPhone, Dashboards holds Finance and Support in one tab, so its page opens Support with the other
-    /// functions. The Mac has Support in its sidebar, so Finance there opens the others.
-    #if os(iOS)
-    private static let functions = BusinessFunction.builtIns.filter { $0.key == "support" }
-        + BusinessFunction.builtIns.filter { $0.key != "support" }
-    #else
+    /// Support is a place of its own, a tab of the iPhone and a row of the Mac sidebar, so Finance opens the other
+    /// functions.
     private static let functions = BusinessFunction.builtIns.filter { $0.key != "support" }
-    #endif
 
     private var urgent: Bool { model.attention.contains { !$0.unavailable } }
     private var attention: some View {
