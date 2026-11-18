@@ -6,11 +6,19 @@ name: Exact updates
 # (Exact's update/src/binary.rs, head_url). A release binary of the pinned Exact needs Xcode 27.1, which GitHub's
 # xcode-27 image has. Two actions:
 #
-#   build  A release binary with an update store, for AppDrop (the artifact coconut-exact-ipa), and the first release
-#          of its stream. Run it after a change to native code: a new grant, a native module, a newer Exact.
-#   push   An update of the Contract, the assets and app.ts to every installed binary of the same native code. With
+#   build  A release binary with an update store, for AppDrop (the artifact coconut-exact-ipa). Run it after a change
+#          to native code: a new grant, a native module, a newer Exact. It publishes nothing: the next push starts
+#          the binary's stream, so a first launch takes no update while the person pairs.
+#   push   An update of the Contract, the assets and app.ts to every installed binary that can take it. With
 #          deploy.activate "immediate", an app takes it the next time it comes to the foreground (at most one check a
-#          minute). Exact refuses an update that needs a new binary, which then needs `build`.
+#          minute). A binary that cannot take it (one built before a grant) keeps what it has. When no binary can,
+#          the run fails and publishes nothing: the change then needs `build`.
+#   check  What push would publish to each stream, without publishing: the compile check of a change.
+#
+# push finds a binary's stream on the origin once the stream has a head. The newest binary's first head comes from its
+# production build receipt, which the build embeds in the app as receipt.json; the job takes it from the newest
+# coconut-exact-ipa artifact. Exact at the pinned commit gets the patches in .github/exact-patches: unpatched, push
+# refuses every update while the channel holds a stream of an older binary that needs a new one.
 #
 # The channel is "appdrop": AppDrop's origin for the signing key, with no server and no account. The private key is the
 # secret EXACT_SIGNING_KEY of the environment exact-updates (main only); its public half is deploy.signing.keys.coconut
@@ -19,13 +27,15 @@ on:
   workflow_dispatch:
     inputs:
       action:
-        description: push sends an update to installed apps; build makes a new binary and starts its stream.
+        description: push sends an update to installed apps; check shows what push would send; build makes a new binary.
         type: choice
-        options: [push, build]
+        options: [push, check, build]
         default: push
 
 permissions:
   contents: read
+  # The receipt of the newest binary is in the artifact of its build.
+  actions: read
 
 concurrency:
   group: exact-updates
@@ -52,6 +62,8 @@ jobs:
           set -euo pipefail
           git clone --quiet --filter=blob:none https://github.com/expo/exact.git "$RUNNER_TEMP/exact"
           git -C "$RUNNER_TEMP/exact" checkout --quiet "$EXACT_COMMIT"
+          # Written for this commit: a patch that no longer applies after a bump fails here, so check it upstream.
+          git -C "$RUNNER_TEMP/exact" apply "$GITHUB_WORKSPACE"/.github/exact-patches/*.patch
           echo "EXACT=$RUNNER_TEMP/exact" >> "$GITHUB_ENV"
 
       - name: Install Bun and rustup
@@ -94,19 +106,35 @@ jobs:
         with:
           name: coconut-exact-ipa
           path: exact/.exact/app.ipa
-          retention-days: 14
+          # The first push after a build starts the binary's stream from this artifact.
+          retention-days: 90
           if-no-files-found: error
 
-      - name: Publish the first release of the stream
-        if: inputs.action == 'build'
-        working-directory: exact
+      - name: Restore the receipt of the newest binary
+        if: inputs.action != 'build'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EXACT_BAKE_OUTPUT: ${{ runner.temp }}/exact-bake
         run: |
           set -euo pipefail
-          bun exact.mjs deploy --dirty --platform ios --yes
+          mkdir -p "$EXACT_BAKE_OUTPUT"
+          id=$(gh api "repos/$GITHUB_REPOSITORY/actions/artifacts?name=coconut-exact-ipa&per_page=100" \
+            --jq '[.artifacts[] | select(.expired | not)] | sort_by(.created_at) | last | .id // empty')
+          if [ -z "$id" ]; then
+            echo "No build artifact: push reaches only the streams that have a head."
+            exit 0
+          fi
+          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$id/zip" > "$RUNNER_TEMP/ipa.zip"
+          unzip -q -o "$RUNNER_TEMP/ipa.zip" -d "$RUNNER_TEMP/ipa"
+          unzip -p "$RUNNER_TEMP/ipa/app.ipa" 'Payload/*.app/receipt.json' | jq '.build' > "$EXACT_BAKE_OUTPUT/ios-aarch64-apple-ios.build.json"
+          jq -r '"The receipt of binary \(.binary.sha256[0:12]), stream \(.compat.id[0:8])"' "$EXACT_BAKE_OUTPUT/ios-aarch64-apple-ios.build.json"
 
       - name: Push an update to installed apps
-        if: inputs.action == 'push'
+        if: inputs.action != 'build'
         working-directory: exact
+        env:
+          EXACT_BAKE_OUTPUT: ${{ runner.temp }}/exact-bake
+          EXACT_PUSH_DRY_RUN: ${{ inputs.action == 'check' && '1' || '0' }}
         run: |
           set -euo pipefail
           bun exact.mjs push

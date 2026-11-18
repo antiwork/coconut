@@ -122,9 +122,16 @@ The target of Exact is 100 ms from saving an edit to seeing it, on the web host 
    it needs a machine with 10 GB free. `scripts/agent.mjs` takes screenshots of it.
 2. Updates to a phone, over the air: the workflow `Exact updates` (`.github/workflows/exact-updates.yml`). `build`
    makes a release binary with an update store on GitHub's `xcode-27` runner (an IPA in the artifact
-   `coconut-exact-ipa`, which goes to AppDrop with `npx appdrop app.ipa --update <link>`) and publishes the first
-   release of its stream. `push` publishes the Contract, the assets and `app.ts` to every installed binary of the same
-   native code, which takes it the next time the app comes to the foreground (`deploy.activate` is `immediate`).
+   `coconut-exact-ipa`, which goes to AppDrop with `npx appdrop app.ipa --update <link>`) and publishes nothing.
+   `push` publishes the Contract, the assets and `app.ts` to every installed binary that can take them, which takes
+   them the next time the app comes to the foreground (`deploy.activate` is `immediate`); `check` prints what `push`
+   would publish and publishes nothing. A stream is one binary's line of updates (a compatibility id). The first push
+   after a build starts the stream of the new binary from its build receipt (`receipt.json` in the IPA, taken from the
+   newest artifact), and later pushes find it on the origin. Its first update reloads the app once, as every update
+   does, so the build leaves that to the next push and a first launch can pair undisturbed. A binary built before a
+   grant cannot take a module that declares it, so it keeps what it has; Exact's own `push` then refuses the whole
+   update and `deploy` never starts the new binary's stream, so CI applies the patch in `.github/exact-patches`, which
+   leaves such a stream as it is. Check whether Exact still needs the patch when `EXACT_COMMIT` moves.
    The channel is `"appdrop"`, AppDrop's origin for the key. The private key is the secret `EXACT_SIGNING_KEY` of the
    environment `exact-updates`, and on the Mac that made it `~/.config/exact/keys/coconut.pem`; the public half is in
    `app.json`. Exact Build cannot make such a binary: it builds development binaries, which never check the channel
@@ -168,6 +175,9 @@ Not yet measured: the time from save to screen on the web host, and a `push --wa
   lists the projects and ends with New project, as asked. A message from Home always starts a new chat with the project.
 - Not ported: slash commands, mentions, the access menu, editing a queued message, link and GitHub previews, photos,
   the schedule of a message, the fifth rule of Needs attention (stale data, which a preview has none of).
+- The pairing code lives in the memory of the data module. An update that applies while a phone pairs reloads the app,
+  which then shows a new code, and the Mac seals its setup for the old one; send the new code. Keeping the code in the
+  Keychain until the phone pairs would end this.
 
 ## Plan for the rest
 
