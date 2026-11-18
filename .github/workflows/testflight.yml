@@ -66,7 +66,10 @@ jobs:
   upload:
     needs: plan
     if: needs.plan.outputs.skip != 'true'
-    runs-on: macos-latest
+    # From April 2027, App Store Connect takes only iPhone apps built with the iOS 27 SDK or later (ITMS-90725).
+    # GitHub's macos-latest image has Xcode 26 only. The xcode-27 image has Xcode 27, and its default Xcode is a
+    # release, as App Review and the public link need.
+    runs-on: xcode-27
     timeout-minutes: 90
     environment: mac-release
     outputs:
