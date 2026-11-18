@@ -38,11 +38,14 @@ shape ChatRow
   unread: number
   at: number
 
+// `live` is true when the chats come from the Mac, and `banner` says why they may be old (a connection that failed).
 shape Home
   target: Project
   projects: Project[]
   attention: Attention[]
   chats: ChatRow[]
+  live: bool
+  banner: string
 
 shape Choice
   id: string
@@ -79,6 +82,7 @@ shape Model
   id: string
   name: string
 
+// `live` is a chat of the Mac: it takes words only here, so its composer has no attachments.
 shape Chat
   id: string
   kind: string
@@ -95,6 +99,7 @@ shape Chat
   efforts: string[]
   models: Model[]
   toolbar: bool
+  live: bool
 
 shape Ack
   ok: bool
@@ -102,3 +107,34 @@ shape Ack
 // The reply of a write that makes a thing: the id of the chat or of the project.
 shape Made
   id: string
+
+// The pairing that this phone keeps (app.ts keeps the keys in the Keychain): whether there is one, and the name of the Mac.
+shape Saved
+  paired: bool
+  macName: string
+
+// The pairing code that this phone shows: the person sends `pair <code>` to their Hermes, which seals a setup for the
+// rendezvous box of the code on the relay. `id` is the box.
+shape PairCode
+  code: string
+  id: string
+  error: string
+
+// The box of a pairing code: `waiting`, `ready` (a setup came, so the phone pairs), `expired` or `error`.
+shape PairState
+  status: string
+  id: string
+  macName: string
+  error: string
+
+// The socket of one connection to the relay: `connecting`, `open` or `closed`, and how many events it had.
+shape Sock
+  key: string
+  status: string
+  n: number
+
+// The last sync with the Mac: the version of the state, the pairings made, and the error of the last try.
+shape Live
+  version: number
+  pairs: number
+  error: string

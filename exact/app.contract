@@ -1,10 +1,13 @@
 // Coconut on Exact. Home: Needs attention, one flat list of chats (newest first) and a message box that is always open,
 // with a project picker that names the project the message goes to. A chat: its messages with Markdown, the working
-// line, and the composer. app.ts answers all of it from the preview fixture of the Swift app (ios/Coconut/Fixtures);
-// app.forma has the palette of Theme.swift. The rows write its values out, because the SDK snapshot that Exact Build
-// compiles with (2026-11-14) refuses a token name as a colour; name the tokens again once its catalog is newer.
+// line, and the composer. Paired with a Mac, app.ts answers it from the Mac's Coconut through the relay, and a round
+// is one connection: `prepare` gets a socket ticket, `sock` is the socket, `deliver` lets the answers that wait for it
+// go on, and `live` is the handshake and the sync. Before a pairing the app shows a pairing code; "Look around with demo
+// data" answers from the preview fixture of the Swift app (ios/Coconut/Fixtures). app.forma has the palette of
+// Theme.swift. The rows write its values out, because the SDK snapshot that Exact Build compiles with (2026-11-14)
+// refuses a token name as a colour; name the tokens again once its catalog is newer.
 // Colours, fonts, sizes and the safe area are the platform's unless a row says otherwise.
-use Ack, Chat, Home, Made, Time from "./shapes.contract"
+use Ack, Chat, Home, Live, Made, PairCode, PairState, Saved, Sock, Time from "./shapes.contract"
 use ArtifactCard, AttentionRow, Bubble, ChatRowView, DecisionCard, Face, NoticeCard, OptionButton, WorkingLine from "./parts.contract"
 
 routes nav
@@ -25,18 +28,39 @@ component Coconut
   state projectName = ""
   // The time since launch, written once a second: the age of a chat and the seconds of a turn read it.
   state since = 0
+  // The demo answers from the fixture. A round is one connection to the Mac; `refresh` reads its state again.
+  state demo = false
+  state round = 0
+  state refresh = 0
+  state codeRound = 0
+  state poll = 0
+  // The pairings that the screens have read from the Keychain: a pairing or an unpairing in `live` moves it.
+  state pairsRead = 0
   resource time = exactTime() as shape Time
-  resource home = loadHome(time.epochAtZero, target) as shape Home else empty()
-  resource chat = loadChat(time.epochAtZero, openId) when openId != "" as shape Chat else empty()
+  resource saved = loadSaved(pairsRead) as shape Saved else empty()
+  resource code = pairCode(codeRound) when mode == "pair" as shape PairCode else empty()
+  resource pairing = pairWait(code.id, poll) when mode == "pair" and code.id != "" as shape PairState else empty()
+  resource ticket = prepare(connectKey) when connectKey != "" as shape string else empty()
+  resource sock = socket(ticket) when ticket != "" and ticket == connectKey as shape Sock else empty()
+  resource pump = deliver(sock.n) when sock.n > 0 as shape number else empty()
+  resource live = sync(connectKey, sock.status == "open" and sock.key == connectKey, refresh) when connectKey != "" as shape Live else empty()
+  resource home = loadHome(time.epochAtZero, target, mode == "live", live.version) when mode != "pair" as shape Home else empty()
+  resource chat = loadChat(time.epochAtZero, openId, mode == "live", live.version) when openId != "" and mode != "pair" as shape Chat else empty()
   mutation started as shape Made refreshes home then afterStart
   mutation created as shape Made refreshes home then afterCreate
   mutation read as shape Ack refreshes home
-  mutation sent as shape Ack refreshes chat, home
-  mutation stopped as shape Ack refreshes chat, home
-  mutation answered as shape Ack refreshes chat, home
+  mutation sent as shape Ack refreshes chat, home then afterWrite
+  mutation stopped as shape Ack refreshes chat, home then afterWrite
+  mutation answered as shape Ack refreshes chat, home then afterWrite
   mutation modelSet as shape Ack refreshes chat
   mutation effortSet as shape Ack refreshes chat
   derive now = time.epochAtZero + since
+  derive mode = demo ? "demo" : saved.paired ? "live" : "pair"
+  // What the round connects for: the Mac's state, or the pairing of a setup that came into the box of the code.
+  derive connectKey = mode == "live" ? `token:${round}` : mode == "pair" and pairing.status == "ready" ? `pair:${pairing.id}` : ""
+  derive pairText = code.code == "" ? "" : `pair ${code.code}`
+  derive pairStatus = code.error != "" ? code.error : pairing.status == "ready" ? (live.error != "" ? live.error : `Pairing with ${pairing.macName}…`) : pairing.status == "expired" ? "This code expired." : pairing.status == "error" ? pairing.error : code.code == "" ? "" : "Waiting for your Mac…"
+  derive pairFailed = code.error != "" or pairing.status == "expired" or pairing.status == "error" or (pairing.status == "ready" and live.error != "")
   derive openId = match stack(nav).filter(e => e.name == "chat").at(-1) { case some(e) => e.params.id, case none => "" }
   derive startedId = match started { case some(s) => s.id, case none => "" }
   derive createdId = match created { case some(c) => c.id, case none => "" }
@@ -51,6 +75,33 @@ component Coconut
     every(1000, tick)
   action tick
     since = performanceNow()
+
+  // Every 15 seconds: the Mac's state again, or a new round when the socket closed or the last try failed.
+  task syncing when mode == "live"
+    every(15000, resync)
+  action resync
+    if sock.status == "closed" or live.error != "" or (connectKey != "" and ticket == "" and not pending(ticket))
+      round = round + 1
+    if not (sock.status == "closed" or live.error != "" or (connectKey != "" and ticket == "" and not pending(ticket)))
+      refresh = refresh + 1
+
+  // The box answers a long poll within 25 seconds; a poll that found nothing asks again.
+  task polling when mode == "pair" and pairing.status == "waiting" and not pending(pairing)
+    every(500, pollAgain)
+  action pollAgain
+    poll = poll + 1
+
+  task pairedChanged when live.pairs != pairsRead
+    after(1, readPairing)
+  action readPairing
+    pairsRead = live.pairs
+
+  action copyCode
+    copyText(pairText)
+  action newCode
+    codeRound = codeRound + 1
+  action useDemo
+    demo = true
 
   action back
     nav = back(nav)
@@ -73,6 +124,9 @@ component Coconut
     if startedId != ""
       draft = ""
       nav = push(nav, path("chat", startedId))
+    refresh = refresh + 1
+  action afterWrite
+    refresh = refresh + 1
 
   // A new project: a name in a sheet. The box of Home then sends to it.
   action editName(v: string)
@@ -117,105 +171,126 @@ component Coconut
 
   view
     main navigationKey=`${top(nav).id}` navigationBack="back" interactive-widget="resizes-content" testId="app" width="100%" height="100%" accent-color="light-dark(#7a4e2d, #d4a574)"
-      for e in stack(nav) key=e.id
-        if e.name == "home"
-          column navigationKey=`${e.id}` navigationScroll="home-scroll" position="absolute" inset=0 display="flex" flex-direction="column" background-color="light-dark(#ffffff, #111111)"
-            header display="flex" align-items="center" padding="8px 16px"
-              text "Coconut" role="heading" aria-level=1 flex=1
-            scroll id="home-scroll" flex=1 min-height=0 keyboardDismissMode="on-drag" testId="home-scroll"
-              if home.attention.length > 0
-                column gap=8 padding="4px 16px 12px" testId="attention-card"
-                  row align-items="center" gap=8 testId="attention-header"
-                    text "Needs attention" font="-exact-subheadline" font-weight=600 color="-exact-system-red"
-                    text `${attentionTotal}` font="-exact-caption1" font-weight=600 font-variant-numeric="tabular-nums" color="#ffffff" background-color="-exact-system-red" border-radius=9 min-width=18 height=18 padding="0px 6px" text-align="center" line-height="18px" box-sizing="border-box" testId="attention-count"
-                  column border-radius=12 background-color="light-dark(rgb(255 56 60 / 0.08), rgb(255 66 69 / 0.08))" border-width=1 border-style="solid" border-color="light-dark(rgb(255 56 60 / 0.22), rgb(255 66 69 / 0.22))" overflow="hidden"
-                    for a, i in home.attention key=a.id
-                      AttentionRow(item=a, first=(i == 0), choose=openChat(a.chat))
-              for c in home.chats key=c.id
-                ChatRowView(chat=c, now=now, offset=time.utcOffset, choose=openChat(c.id))
-            column flex-shrink=0 padding="6px 12px 8px" testId="home-bar"
-              column border-radius=24 background-color="light-dark(#f4f4f4, #212121)" testId="home-box"
-                textarea id="home-input" value=draft input=editDraft rows=1 field-sizing="content" max-height=140 placeholder=`Message ${home.target.name}` aria-label="Message" border="none" background-color="transparent" min-width=0 padding="12px 16px 4px" testId="home-input"
-                row align-items="center" gap=4 height=44 padding="0px 6px 6px 6px"
-                  button appearance="none" popovertarget="project-menu" retainFocus=true aria-label=`Project, ${home.target.name}` display="flex" flex-direction="row" align-items="center" gap=6 padding="4px 8px" min-width=0 testId="project-picker"
-                    Face(letter=home.target.letter, face=home.target.face, size=20, circle=false)
-                    text home.target.name font="-exact-subheadline" font-weight=600 color="-exact-secondary-label" line-clamp=1 testId="project-name"
-                    image "symbol:chooser" font="-exact-caption2" color="-exact-secondary-label" aria-hidden=true
-                  view flex=1
-                  button appearance="none" press=sendHome disabled=(not hasText or pending(started)) retainFocus=true aria-label="Send" width=32 height=32 border-radius=16 background-color="light-dark(#7a4e2d, #d4a574)" opacity=(hasText ? 1 : 0.35) display="flex" align-items="center" justify-content="center" testId="home-send"
-                    image "symbol:send" width=16 height=16 color="-exact-background"
-        if e.name == "chat"
-          column navigationKey=`${e.id}` navigationScroll="transcript" position="absolute" inset=0 display="flex" flex-direction="column" background-color="light-dark(#ffffff, #111111)"
-            header display="flex" align-items="center" padding="8px 16px"
-              text chat.title role="heading" aria-level=2 line-clamp=1 flex=1 testId="chat-title"
-            list id="transcript" appearance="none" virtualized=true scroll-start="end" scrollFollowEnd=true keyboardDismissMode="interactive" flex=1 min-height=0 testId="transcript"
-              for m in chat.messages key=m.id
-                column padding="3px 12px"
-                  if m.kind == "text"
-                    Bubble(m=m, now=now, offset=time.utcOffset)
-                  else if m.kind == "activity"
-                    text m.body font="-exact-footnote" color="-exact-secondary-label" padding="2px 12px" testId=`activity-${m.id}`
-                  else if m.kind == "notice"
-                    NoticeCard(m=m, now=now, offset=time.utcOffset)
-                  else if m.kind == "artifact"
-                    ArtifactCard(m=m)
-                  else if m.kind == "decision"
-                    DecisionCard(m=m)
-                      if m.status == "pending"
-                        for o in m.options key=o.id
-                          OptionButton(label=o.label, explanation=o.explanation, pick=answerCard(chat.id, m.ref, o.id))
-                  else
-                    WorkingLine(turn=chat.turn, now=now)
-            column flex-shrink=0 padding="6px 12px 8px" testId="composer-bar"
-              column position="relative" border-radius=24 background-color="light-dark(#f4f4f4, #212121)" testId="composer-box"
-                if attached.length > 0
-                  row flex-wrap="wrap" gap=6 padding="10px 12px 0px 12px" testId="attachments"
-                    for n in attached key=n
-                      button appearance="none" press=detach(n) aria-label=`Remove ${n}` display="flex" flex-direction="row" align-items="center" gap=4 padding="4px 10px" border-radius=12 background-color="-exact-fill" testId=`attached-${n}`
-                        text n font="-exact-footnote" line-clamp=1 max-width=160
-                        image "symbol:close" width=10 height=10 aria-hidden=true
-                textarea id="chat-input" value=chatDraft input=editChat focus=focusChat blur=blurChat rows=1 field-sizing="content" max-height=140 placeholder=`Message ${chat.project}` aria-label="Message" border="none" background-color="transparent" min-width=0 padding-top=12 padding-bottom=(expanded ? 4 : 12) padding-left=(expanded ? 16 : 48) padding-right=(expanded ? 16 : 52) testId="chat-input"
-                if expanded
-                  row align-items="center" gap=2 height=44 padding-left=44 padding-right=84 overflow="hidden" testId="composer-toolbar"
-                    button appearance="none" popovertarget="model-menu" retainFocus=true aria-label=`Model, ${chat.modelName}` display="flex" flex-direction="row" align-items="center" gap=4 padding="6px 8px" min-width=0 testId="model-chip"
-                      text chat.modelName font="-exact-subheadline" font-weight=500 line-clamp=1
-                      image "symbol:sf/chevron.down" font="-exact-caption2" color="-exact-secondary-label" aria-hidden=true
-                    button appearance="none" popovertarget="effort-menu" retainFocus=true aria-label=`Reasoning effort, ${effortName(chat.effort)}` display="flex" flex-direction="row" align-items="center" gap=4 padding="6px 8px" min-width=0 testId="effort-chip"
-                      image "symbol:sf/brain" font="-exact-subheadline" aria-hidden=true
-                      text effortName(chat.effort) font="-exact-subheadline" font-weight=500 line-clamp=1
-                      image "symbol:sf/chevron.down" font="-exact-caption2" color="-exact-secondary-label" aria-hidden=true
-                button appearance="none" popovertarget="plus-menu" retainFocus=true aria-label="More options" position="absolute" left=6 bottom=6 width=32 height=32 border-radius=16 display="flex" align-items="center" justify-content="center" testId="composer-plus"
-                  image "symbol:add" width=18 height=18
-                // Send and Stop (sendControls): Stop while the agent works, quiet when there is a draft and the
-                // filled button when there is none; Send when there is a draft.
-                row position="absolute" right=6 bottom=6 gap=4 align-items="center"
-                  if chat.turn.running
-                    button appearance="none" press=stopChat retainFocus=true aria-label="Stop" width=32 height=32 border-radius=16 background-color=(canSend ? "transparent" : "light-dark(#7a4e2d, #d4a574)") display="flex" align-items="center" justify-content="center" testId="composer-stop"
-                      image "symbol:stop-fill" width=14 height=14 color=(canSend ? "-exact-secondary-label" : "-exact-background")
-                  if canSend
-                    button appearance="none" press=sendChat disabled=pending(sent) retainFocus=true aria-label="Send" width=32 height=32 border-radius=16 background-color="light-dark(#7a4e2d, #d4a574)" display="flex" align-items="center" justify-content="center" testId="composer-send"
+      if mode == "pair"
+        column position="absolute" inset=0 display="flex" flex-direction="column" justify-content="center" gap=20 padding="24px 28px" background-color="light-dark(#ffffff, #111111)" testId="pair"
+          text "Pair with your Mac" role="heading" aria-level=1 font="-exact-title2" font-weight=700
+          text "Send this to Coconut on your Mac." font="-exact-body" color="-exact-secondary-label"
+          if pairText != ""
+            button appearance="none" press=copyCode aria-label=`Copy ${pairText}` display="flex" flex-direction="row" align-items="center" gap=10 padding="14px 16px" border-radius=14 background-color="light-dark(#f4f4f4, #212121)" testId="pair-code"
+              text pairText font="-exact-body" font-weight=600 flex=1 min-width=0 testId="pair-text"
+              image "symbol:copy" width=18 height=18 color="light-dark(#7a4e2d, #d4a574)" aria-hidden=true
+          text pairStatus font="-exact-footnote" color="-exact-secondary-label" testId="pair-status"
+          if pairFailed
+            button press=newCode buttonStyle="bordered-prominent" testId="pair-new"
+              text "New code"
+          button appearance="none" press=useDemo padding="8px 0px" testId="pair-demo"
+            text "Look around with demo data" font="-exact-subheadline" color="light-dark(#7a4e2d, #d4a574)"
+      else
+        for e in stack(nav) key=e.id
+          if e.name == "home"
+            column navigationKey=`${e.id}` navigationScroll="home-scroll" position="absolute" inset=0 display="flex" flex-direction="column" background-color="light-dark(#ffffff, #111111)"
+              header display="flex" align-items="center" padding="8px 16px"
+                text "Coconut" role="heading" aria-level=1 flex=1
+              if home.banner != ""
+                text home.banner font="-exact-footnote" color="-exact-secondary-label" padding="0px 16px 6px" testId="home-banner"
+              scroll id="home-scroll" flex=1 min-height=0 keyboardDismissMode="on-drag" testId="home-scroll"
+                if home.attention.length > 0
+                  column gap=8 padding="4px 16px 12px" testId="attention-card"
+                    row align-items="center" gap=8 testId="attention-header"
+                      text "Needs attention" font="-exact-subheadline" font-weight=600 color="-exact-system-red"
+                      text `${attentionTotal}` font="-exact-caption1" font-weight=600 font-variant-numeric="tabular-nums" color="#ffffff" background-color="-exact-system-red" border-radius=9 min-width=18 height=18 padding="0px 6px" text-align="center" line-height="18px" box-sizing="border-box" testId="attention-count"
+                    column border-radius=12 background-color="light-dark(rgb(255 56 60 / 0.08), rgb(255 66 69 / 0.08))" border-width=1 border-style="solid" border-color="light-dark(rgb(255 56 60 / 0.22), rgb(255 66 69 / 0.22))" overflow="hidden"
+                      for a, i in home.attention key=a.id
+                        AttentionRow(item=a, first=(i == 0), choose=openChat(a.chat))
+                for c in home.chats key=c.id
+                  ChatRowView(chat=c, now=now, offset=time.utcOffset, choose=openChat(c.id))
+              column flex-shrink=0 padding="6px 12px 8px" testId="home-bar"
+                column border-radius=24 background-color="light-dark(#f4f4f4, #212121)" testId="home-box"
+                  textarea id="home-input" value=draft input=editDraft rows=1 field-sizing="content" max-height=140 placeholder=`Message ${home.target.name}` aria-label="Message" border="none" background-color="transparent" min-width=0 padding="12px 16px 4px" testId="home-input"
+                  row align-items="center" gap=4 height=44 padding="0px 6px 6px 6px"
+                    button appearance="none" popovertarget="project-menu" retainFocus=true aria-label=`Project, ${home.target.name}` display="flex" flex-direction="row" align-items="center" gap=6 padding="4px 8px" min-width=0 testId="project-picker"
+                      Face(letter=home.target.letter, face=home.target.face, size=20, circle=false)
+                      text home.target.name font="-exact-subheadline" font-weight=600 color="-exact-secondary-label" line-clamp=1 testId="project-name"
+                      image "symbol:chooser" font="-exact-caption2" color="-exact-secondary-label" aria-hidden=true
+                    view flex=1
+                    button appearance="none" press=sendHome disabled=(not hasText or pending(started)) retainFocus=true aria-label="Send" width=32 height=32 border-radius=16 background-color="light-dark(#7a4e2d, #d4a574)" opacity=(hasText ? 1 : 0.35) display="flex" align-items="center" justify-content="center" testId="home-send"
                       image "symbol:send" width=16 height=16 color="-exact-background"
-        if e.name == "new"
-          column navigationKey=`${e.id}` navigationPresentation="modal" navigationScroll="new-form" position="absolute" inset=0 display="flex" flex-direction="column"
-            header display="flex" align-items="center" justify-content="space-between" padding="8px 16px"
-              button id="back" press=back aria-label="Cancel" testId="new-cancel"
-                image "symbol:close"
-              text "New project" role="heading"
-              button press=saveProject buttonStyle="bordered-prominent" aria-label="Save" disabled=(projectName.trim() == "" or pending(created)) testId="new-save"
-                image "symbol:checkmark"
-            list id="new-form" appearance="auto" listStyle="inset-grouped" flex=1 min-height=0
-              section
-                row
-                  input value=projectName input=editName placeholder="Name" aria-label="Name" autofocus=true submit=saveProject testId="new-name" flex=1 min-width=0
+          if e.name == "chat"
+            column navigationKey=`${e.id}` navigationScroll="transcript" position="absolute" inset=0 display="flex" flex-direction="column" background-color="light-dark(#ffffff, #111111)"
+              header display="flex" align-items="center" padding="8px 16px"
+                text chat.title role="heading" aria-level=2 line-clamp=1 flex=1 testId="chat-title"
+              list id="transcript" appearance="none" virtualized=true scroll-start="end" scrollFollowEnd=true keyboardDismissMode="interactive" flex=1 min-height=0 testId="transcript"
+                for m in chat.messages key=m.id
+                  column padding="3px 12px"
+                    if m.kind == "text"
+                      Bubble(m=m, now=now, offset=time.utcOffset)
+                    else if m.kind == "activity"
+                      text m.body font="-exact-footnote" color="-exact-secondary-label" padding="2px 12px" testId=`activity-${m.id}`
+                    else if m.kind == "notice"
+                      NoticeCard(m=m, now=now, offset=time.utcOffset)
+                    else if m.kind == "artifact"
+                      ArtifactCard(m=m)
+                    else if m.kind == "decision"
+                      DecisionCard(m=m)
+                        if m.status == "pending"
+                          for o in m.options key=o.id
+                            OptionButton(label=o.label, explanation=o.explanation, pick=answerCard(chat.id, m.ref, o.id))
+                    else
+                      WorkingLine(turn=chat.turn, now=now)
+              column flex-shrink=0 padding="6px 12px 8px" testId="composer-bar"
+                column position="relative" border-radius=24 background-color="light-dark(#f4f4f4, #212121)" testId="composer-box"
+                  if attached.length > 0
+                    row flex-wrap="wrap" gap=6 padding="10px 12px 0px 12px" testId="attachments"
+                      for n in attached key=n
+                        button appearance="none" press=detach(n) aria-label=`Remove ${n}` display="flex" flex-direction="row" align-items="center" gap=4 padding="4px 10px" border-radius=12 background-color="-exact-fill" testId=`attached-${n}`
+                          text n font="-exact-footnote" line-clamp=1 max-width=160
+                          image "symbol:close" width=10 height=10 aria-hidden=true
+                  textarea id="chat-input" value=chatDraft input=editChat focus=focusChat blur=blurChat rows=1 field-sizing="content" max-height=140 placeholder=`Message ${chat.project}` aria-label="Message" border="none" background-color="transparent" min-width=0 padding-top=12 padding-bottom=(expanded ? 4 : 12) padding-left=(expanded or chat.live ? 16 : 48) padding-right=(expanded ? 16 : 52) testId="chat-input"
+                  if expanded
+                    row align-items="center" gap=2 height=44 padding-left=44 padding-right=84 overflow="hidden" testId="composer-toolbar"
+                      button appearance="none" popovertarget="model-menu" retainFocus=true aria-label=`Model, ${chat.modelName}` display="flex" flex-direction="row" align-items="center" gap=4 padding="6px 8px" min-width=0 testId="model-chip"
+                        text chat.modelName font="-exact-subheadline" font-weight=500 line-clamp=1
+                        image "symbol:sf/chevron.down" font="-exact-caption2" color="-exact-secondary-label" aria-hidden=true
+                      button appearance="none" popovertarget="effort-menu" retainFocus=true aria-label=`Reasoning effort, ${effortName(chat.effort)}` display="flex" flex-direction="row" align-items="center" gap=4 padding="6px 8px" min-width=0 testId="effort-chip"
+                        image "symbol:sf/brain" font="-exact-subheadline" aria-hidden=true
+                        text effortName(chat.effort) font="-exact-subheadline" font-weight=500 line-clamp=1
+                        image "symbol:sf/chevron.down" font="-exact-caption2" color="-exact-secondary-label" aria-hidden=true
+                  // A chat of the Mac takes words only here, so it has no plus.
+                  if not chat.live
+                    button appearance="none" popovertarget="plus-menu" retainFocus=true aria-label="More options" position="absolute" left=6 bottom=6 width=32 height=32 border-radius=16 display="flex" align-items="center" justify-content="center" testId="composer-plus"
+                      image "symbol:add" width=18 height=18
+                  // Send and Stop (sendControls): Stop while the agent works, quiet when there is a draft and the
+                  // filled button when there is none; Send when there is a draft.
+                  row position="absolute" right=6 bottom=6 gap=4 align-items="center"
+                    if chat.turn.running
+                      button appearance="none" press=stopChat retainFocus=true aria-label="Stop" width=32 height=32 border-radius=16 background-color=(canSend ? "transparent" : "light-dark(#7a4e2d, #d4a574)") display="flex" align-items="center" justify-content="center" testId="composer-stop"
+                        image "symbol:stop-fill" width=14 height=14 color=(canSend ? "-exact-secondary-label" : "-exact-background")
+                    if canSend
+                      button appearance="none" press=sendChat disabled=pending(sent) retainFocus=true aria-label="Send" width=32 height=32 border-radius=16 background-color="light-dark(#7a4e2d, #d4a574)" display="flex" align-items="center" justify-content="center" testId="composer-send"
+                        image "symbol:send" width=16 height=16 color="-exact-background"
+          if e.name == "new"
+            column navigationKey=`${e.id}` navigationPresentation="modal" navigationScroll="new-form" position="absolute" inset=0 display="flex" flex-direction="column"
+              header display="flex" align-items="center" justify-content="space-between" padding="8px 16px"
+                button id="back" press=back aria-label="Cancel" testId="new-cancel"
+                  image "symbol:close"
+                text "New project" role="heading"
+                button press=saveProject buttonStyle="bordered-prominent" aria-label="Save" disabled=(projectName.trim() == "" or pending(created)) testId="new-save"
+                  image "symbol:checkmark"
+              list id="new-form" appearance="auto" listStyle="inset-grouped" flex=1 min-height=0
+                section
+                  row
+                    input value=projectName input=editName placeholder="Name" aria-label="Name" autofocus=true submit=saveProject testId="new-name" flex=1 min-width=0
       // The picker of Home ends with New project.
       column id="project-menu" popover="auto" role="menu" aria-label="Project"
         for p in home.projects key=p.id
           button role="menuitemradio" aria-checked=(p.id == home.target.id) press=pickProject(p.id) popovertarget="project-menu" popovertargetaction="hide" testId=`project-${p.id}`
             text p.name
-        hr
-        button press=openNew popovertarget="project-menu" popovertargetaction="hide" testId="new-project"
-          image "symbol:add"
-          text "New project"
+        // The Mac's projects are fixed (Coconut, Gumroad, Personal), so only the demo makes one.
+        if not home.live
+          hr
+          button press=openNew popovertarget="project-menu" popovertargetaction="hide" testId="new-project"
+            image "symbol:add"
+            text "New project"
       // The plus of the composer: a file, or a photo (ComposerAttachments).
       column id="plus-menu" popover="auto" role="menu" aria-label="More options"
         button press=pickFile popovertarget="plus-menu" popovertargetaction="hide" testId="attach-file-item"

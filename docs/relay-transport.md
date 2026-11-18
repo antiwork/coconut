@@ -171,6 +171,12 @@ The pairing steps:
 6. Before the sidecar sends the 200 answer, it allows the client token on the relay and records the key in `peers.json`.
 7. The iPhone connects again with `Authorization: Bearer <client token>` and an IK handshake.
 
+A client that cannot set headers on a socket, such as the Exact app (`docs/exact.md`), first sends
+`POST /v1/tunnels/<route>/client-ticket` with the `Authorization` of step 3 or 7. The relay answers `{"ticket"}`, a
+socket ticket that works once, for 60 seconds, and opens `/v1/tunnels/<route>/client?ticket=<ticket>` without the
+header. The relay checks the authorization again at the socket, so a revoked token or a used pairing ticket fails
+there, and only the socket uses up a pairing ticket.
+
 On a ticket session, the sidecar forwards only `POST /v1/pair` and `GET /health` until pairing succeeds. On a token session, the sidecar answers the handshake only for the iPhone key that belongs to that token.
 
 The backend accepts a tunnel secret only with an `X-Coconut-Peer` key, and a TLS code only without one. A device that paired through the tunnel must send the same key with each request.

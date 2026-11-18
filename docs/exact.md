@@ -6,8 +6,10 @@ TestFlight and Sparkle. The Python service in `backend/` is unchanged.
 
 - Exact: github.com/expo/exact at `8ed52642a2c4a6227c8abfafd80ecf501b1eb5aa` (2026-11-17). Build with that value as `exact`.
 - Name Coconut, bundle id `com.gumroad.coconut.exact`. Never `com.gumroad.coconut` or `com.gumroad.coconut.mac`.
-- Data: the preview fixture of the Swift app (`ios/Coconut/Fixtures/PreviewState.json`, copied to `exact/preview.json`)
-  and the Gumroad team of its team preview (`exact/team-preview.json`). Nothing is connected to a Mac yet.
+- Data: the Mac's Coconut once the phone is paired, read through the relay with the tunnel of the Swift app (see Live
+  data). Before a pairing, "Look around with demo data" shows the preview fixture of the Swift app
+  (`ios/Coconut/Fixtures/PreviewState.json`, copied to `exact/preview.json`) and the Gumroad team of its team preview
+  (`exact/team-preview.json`).
 
 ## What is in it
 
@@ -16,7 +18,9 @@ TestFlight and Sparkle. The Python service in `backend/` is unchanged.
 | `app.contract` | The root: Home, a chat, the New project sheet, the composer and the menus |
 | `parts.contract` | Parts that only draw: face, unread badge, chat row, Needs attention row, bubble, cards, working line |
 | `shapes.contract` | The records `app.ts` answers |
-| `app.ts` | The data module over the fixture. State lives in memory until the app launches again |
+| `app.ts` | The data module: the pairing, the connection to the Mac, the Mac's state, and the fixture for the demo |
+| `tunnel.ts` | The phone's end of the tunnel (`docs/relay-transport.md`): pairing setups and the rendezvous box, Noise IK and IKpsk2 as the initiator, frames, requests as streams |
+| `crypto.ts` | X25519 and Poly1305 of TweetNaCl, and SHA-256, HMAC, HKDF and ChaCha20 from their specs, in TypeScript: Exact's `crypto.subtle` has no X25519 and no ChaCha20-Poly1305 |
 | `app.forma` | The palette of `Theme.swift`: page, card, user bubble, warm accent, green, the red tints, the eight faces |
 | `app.json`, `assets/` | Manifest (iOS and web hosts, no updates yet) and the icon of the Swift app |
 
@@ -32,6 +36,39 @@ the notices of a team, and the working line: the phase, the time of the turn to 
 one box: a short draft is one line with the plus inside it and Send beside it. A draft over 80 characters, a newline,
 an attachment, or focus opens it, with the model and the reasoning level under the text (`ComposerExpansion`). Send
 shows when there is a draft. Stop shows while the agent works (`sendControls`).
+
+## Live data
+
+Pairing. Without a pairing the app shows `pair <code>`, a one-time code of 16 random bytes, and makes the rendezvous box
+of the code on the relay (`docs/relay-transport.md`, "Pairing code from the iPhone"). The person sends that line to
+Coconut on the Mac, whose agent runs `coconut pair <code>`, which seals a setup into the box. The app opens it, pairs
+with Noise IKpsk2 and `POST /v1/pair` (device name "Coconut on Exact"), and keeps the Mac's route and key, its own key,
+the device token and the relay's client token in the Keychain (`secret.keep coconut-pairing`). A link of the Mac
+(`coconut://pair/...`) would open the Swift app, so the Exact app takes the code. "Look around with demo data" shows the
+fixture instead.
+
+Connection. Exact's sockets send no headers, so the relay gives a socket ticket for the client token
+(`POST /v1/tunnels/<route>/client-ticket`, one use, 60 seconds) and the app opens `/client?ticket=`. A round is one
+socket: `prepare` gets the ticket, `socket` is the stream resource, and `sync` does the handshake and reads
+`GET /v1/state` (recent, gzip: about 150 KB on the wire for 620 KB of state). The socket's mapper only queues bytes and
+wakes the answer that waits; the handshake and the frames run in answers that `await scheduler.yield()` between steps.
+A waiting answer goes on only when another answer is asked, so `deliver` is asked for each event of the socket. An
+answer may send on the socket only in its own turns, which Exact restores after an `await`: chain requests with
+`await`, never with a plain `.then`. Every 15 seconds the app reads the state again, or starts a new round when the
+socket closed or the last try failed.
+
+What a chat of the Mac does here: its messages, cards and files, the working line, Send (words only: no attachments),
+answers to cards, Stop and read marks. It does not change the model or the effort, make projects (they are fixed),
+show team chats, or get push yet.
+
+Checked. Every primitive of `crypto.ts` against `node:crypto` with random inputs (SHA-256 and HMAC at every length to
+200 bytes and beyond, HKDF, ChaCha20-Poly1305 both ways and a changed byte, X25519 keys and secrets), the test vector of
+the rendezvous box, a version 3 link, and a rekey. `tunnel.ts` under bun against the live relay and this Mac: box,
+`coconut pair`, IKpsk2, pairing, IK, the state. The web build of the app (`bun exact.mjs web`) in Chromium against the
+live relay: the code, the pairing, Home with the Mac's 17 chats, a chat, and a launch again with the kept pairing.
+Chromium ran without web security for that check, because the relay sends no CORS headers. Not checked: a phone,
+whose Hermes may be slower than this Mac (without a JIT, here: an X25519 in 17 ms, a 60 KB frame in 17 ms), and Send,
+answers and Stop against the Mac, which would have written in the person's chats.
 
 ## What was checked, and what was not
 
@@ -139,7 +176,7 @@ Keep it shipping until each phase reaches parity, and keep the bundle id of the 
 
 | Phase | Swift to port | Exact |
 |---|---|---|
-| 1 Live data | `APIClient`, `AppStore` (4,102), `Models`, `TunnelConnection`, `Onboarding`, pairing | Sources in `app.ts` that call the service through the tunnel; a SQLite cache (`sqlite.open`); pairing by a deep link (`protocol_handlers`); the secret in the Keychain (`secret.keep`) |
+| 1 Live data | `APIClient`, `AppStore` (4,102), `Models`, `TunnelConnection`, `Onboarding`, pairing | Started: the pairing, the tunnel and the state are in `app.ts`, `tunnel.ts` and `crypto.ts` (see Live data). Left: `updates?wait=20` instead of the whole state every 15 seconds, a SQLite cache (`sqlite.open`) for a launch without the Mac, attachments, the model and effort of a chat |
 | 2 Conversation | `ConversationView` (1,642), `Cards`, `MessagePhotos`, `MessageQueue`, `BotMentions`, `ModelSettingsView`, `LiveView`, previews | More parts and routes in `parts.contract`; photos by the file picker and `image`; a virtualized list for long chats |
 | 3 Team | `TeamChat` (2,093), `TeamChatView` (1,710), `TeamViews`, `Team`, `PeopleView` | A second family of chats and a notice board, over the same list |
 | 4 Business and library | `BusinessDashboard` and the other Business files, `Library`, `DocumentPage`, `UsageViews`, `DecisionInboxView`, `AgentProject`, `Bento`, `ChatDeckView` | Routes and tabs (`select(nav, name)`); Markdown for documents; charts as `svg` |
@@ -149,7 +186,7 @@ Native parts:
 
 | Part | Swift today | On Exact |
 |---|---|---|
-| Noise tunnel | `ios/Tunnel` (Noise IK and IKpsk2, 25519, ChaChaPoly, SHA-256; frames of `TunnelFrames`), `URLSessionWebSocketTask` to the relay | First try TypeScript in the data module: `net.websocket` grant, a stream resource for the socket, pure-JS crypto (`@noble`), the same frames, checked against test vectors of `Noise.swift`. If it costs too much battery or time, a Swift `ExactModule` in `modules/apple/` with the same CryptoKit code, or a Rust data crate. The Mac sidecar keeps `Noise.swift` unchanged |
+| Noise tunnel | `ios/Tunnel` (Noise IK and IKpsk2, 25519, ChaChaPoly, SHA-256; frames of `TunnelFrames`), `URLSessionWebSocketTask` to the relay | TypeScript in the data module (`tunnel.ts`, `crypto.ts`): a stream resource for the socket under `net.websocket`, the same frames. If a phone finds it too slow, a Swift `ExactModule` in `modules/apple/` with the same CryptoKit code. The Mac sidecar keeps `Noise.swift` unchanged |
 | Push | `PushNotifications.swift`, APNs from the service | `@exact/push`: `subscribePush()` and `pushSubscription()` give `{apple: {deviceToken}}`; the app sends it to the service, which sends APNs with `apns-topic` `com.gumroad.coconut.exact` (then the final id) and a top-level `navigate`. Grants `device.notifications purpose.notifications` and `device.push`. Needs the App ID with Push and a key valid for the topic |
 | Notification service | `CoconutNotificationService`, `PushShared` (207) | Swift in `modules/apple/notification-service/NotificationService.swift`, with the `PushShared` files copied there (links are refused). It runs no Contract or TypeScript. It shares the App Group and the Keychain group of the app, so it can read the key the app keeps |
 | Share extensions | `CoconutShare`, `ShareShared`, `CoconutMacShare` | `share_target` in `app.json` derives an Apple share extension (presentation `compose` or `confirmation`); a route such as `/share` reads `searchParam(entry, "text")` and `sharedFiles(entry, "files")`, and the app asks for the project. `apps/fieldnotes` does it. The extension of the Mac is not checked |

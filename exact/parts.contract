@@ -47,7 +47,7 @@ component ChatRowView
   derive since = max(now - chat.at, 0)
   derive age = since < 60000 ? "Now" : since < 3600000 ? `${floor(since / 60000)} min` : since < 86400000 ? `${floor(since / 3600000)} hr` : formatDate(chat.at, offset, "month-day")
   view
-    button press=choose appearance="none" display="flex" flex-direction="row" align-items="center" gap=12 text-align="start" padding="8px 16px" min-height=52 width="100%" testId=`chat-${chat.id}`
+    button press=choose appearance="none" display="flex" flex-direction="row" align-items="center" gap=12 text-align="start" box-sizing="border-box" padding="8px 16px" min-height=52 width="100%" testId=`chat-${chat.id}`
       column position="relative" width=46 height=46 flex-shrink=0
         Face(letter=chat.letter, face=chat.face, size=46, circle=chat.circle)
         if chat.active
@@ -76,7 +76,7 @@ component AttentionRow
     column width="100%"
       if not first
         view height=1 margin-left=44 background-color="light-dark(rgb(255 56 60 / 0.18), rgb(255 66 69 / 0.18))"
-      button press=choose appearance="none" display="flex" flex-direction="row" align-items="center" gap=12 text-align="start" padding="10px 12px" width="100%" testId=`attention-${item.id}`
+      button press=choose appearance="none" display="flex" flex-direction="row" align-items="center" gap=12 text-align="start" box-sizing="border-box" padding="10px 12px" width="100%" testId=`attention-${item.id}`
         image item.symbol width=20 height=20 color="-exact-system-red" aria-hidden=true
         column flex=1 min-width=0 gap=2
           text item.label font="-exact-body" font-weight=600 color="-exact-system-red" line-clamp=1

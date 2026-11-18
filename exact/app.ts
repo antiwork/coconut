@@ -1,17 +1,33 @@
-// The data module of Coconut on Exact. It answers the screens from the preview fixture of the Swift app
-// (ios/Coconut/Fixtures/PreviewState.json, copied as preview.json) and the Gumroad team of its team preview
-// (team-preview.json). The state lives in memory: a message, a stop, an answered card and a new project change it until
-// the app launches again. No Mac and no relay sit behind it yet (docs/exact.md).
+// The data module of Coconut on Exact. Paired with a Mac, it answers the screens from the state of the Mac's Coconut,
+// read through the relay with the tunnel of the Swift app (tunnel.ts, docs/relay-transport.md), and sends messages,
+// answers, stops and reads back to it. Before a pairing it shows a pairing code; "Look around with demo data" answers
+// from the preview fixture of the Swift app (ios/Coconut/Fixtures/PreviewState.json, copied as preview.json) and the
+// Gumroad team of its team preview (team-preview.json), in memory until the app launches again.
 //
-// Time. A data module reads no clock, so every time in the state is in milliseconds from the launch: the fixture's
-// history is negative (the fixture moves its server_time to the launch, as PreviewStateFixture.decode does), and a
-// message written now is performanceNow(). A source adds the launch (`zero`, the contract's `time.epochAtZero`) to each
-// time it answers, so the screens hold times since 1970 and the state does not depend on when it was built.
-import type { Answer, Result, Sources } from './app.contract.d.ts';
+// The connection. The relay takes a socket without headers only with a socket ticket (`prepare` asks for it over
+// HTTPS), so `socket` opens a stream resource with `?ticket=`. Its mapper only queues the bytes that come and wakes the
+// answer that waits for them: the Noise handshake and the frames run in answers (`sync`, the writes), which pause
+// between steps so each turn stays inside its time budget. A waiting answer goes on when another answer is asked, so
+// `deliver` is asked for each event of the socket. Each connection is one round: a closed socket or an error starts the
+// next round with a new ticket and a new handshake.
+//
+// Time. A data module reads no clock. A time of the fixture is in milliseconds from the launch (its history is
+// negative: the fixture moves its server_time to the launch, as PreviewStateFixture.decode does), and a source adds the
+// launch (`zero`, the contract's `time.epochAtZero`). A state of the Mac is in milliseconds from its server_time, which
+// is its `zero`. So the screens hold times since 1970.
+import type { Answer, Result, Sources, StreamEvent, StreamSocket, Store } from './app.contract.d.ts';
+import { noPause, type Pause } from './crypto.ts';
+import {
+  clientToken, connect, fromBase64Url, newBox, newKeys, openBox, pairingPsk, relayTicket, text, toBase64Url, utf8,
+  type Box, type Keys, type Link, type Reply, type Setup, type Tunnel,
+} from './tunnel.ts';
 import preview from './preview.json';
 import team from './team-preview.json';
 
-export const grants = '';
+// The relay of Coconut. A pairing setup that names another relay is refused, because the grants name this one.
+const RELAY = 'https://coconut-push.gumroad.workers.dev';
+const SAVED = 'coconut-pairing';
+export const grants = `net.fetch ${RELAY}\nnet.websocket wss://coconut-push.gumroad.workers.dev\nsecret.keep ${SAVED}`;
 
 type Home = Result<'loadHome'>;
 type Chat = Result<'loadChat'>;
@@ -20,6 +36,8 @@ type Row = Home['chats'][number];
 type Attention = Home['attention'][number];
 type Message = Chat['messages'][number];
 type Turn = Chat['turn'];
+type Live = Result<'sync'>;
+type Sock = Result<'socket'>;
 
 // The parts of the fixture that are read here.
 interface FxOption { id: string; label: string; explanation: string }
@@ -97,6 +115,8 @@ interface Wait { ref: string; chat: string; at: number }
 // A To-do that got blocked, with the chat of its agent.
 interface Stuck { title: string; chat: string; at: number }
 interface State {
+  // The epoch of time 0: null for the fixture, whose 0 is the launch; the server_time of a state of the Mac.
+  zero: number | null;
   chats: Map<string, ChatState>;
   projects: Project[];
   notices: Notice[];
@@ -197,16 +217,22 @@ const build = (): State => {
       messages: [message(`direct-${direct.member}-1`, 'text', false, -direct.minutes_ago * MINUTE, direct.text, { author: direct.name })],
     });
   }
-  return { chats, projects, notices, waits, stuck, teamId, counter: 0 };
+  return { zero: null, chats, projects, notices, waits, stuck, teamId, counter: 0 };
 };
 
-// Built once, when the first source asks, and not at the top of the module: the top of a data module runs before the
-// first frame.
-let state: State | undefined;
+// The fixture's state is built once, when the first source asks, and not at the top of the module: the top of a data
+// module runs before the first frame. The Mac's state is the newest that `sync` read. `useLive` follows the screens.
+let demoState: State | undefined;
+let liveState: State | undefined;
+let useLive = false;
 const ensure = (): State => {
-  if (!state) state = build();
-  return state;
+  if (useLive) return liveState ?? emptyState();
+  if (!demoState) demoState = build();
+  return demoState;
 };
+const emptyState = (): State => ({ zero: null, chats: new Map(), projects: [], notices: [], waits: [], stuck: [], teamId: '', counter: 0 });
+// The epoch to add to the times of a state.
+const zeroOf = (s: State, launch: number): number => s.zero ?? launch;
 
 // The newest message that is no notice: the age and the place of the row of a chat.
 const newest = (chat: ChatState): number => chat.messages.reduce((t, m) => (m.kind === 'notice' ? t : Math.max(t, m.at)), -Infinity);
@@ -270,97 +296,586 @@ const ordered = (s: State): Project[] => {
   return [...s.projects].sort((a, b) => latest(b) - latest(a) || (a.name < b.name ? -1 : 1));
 };
 
+// MARK: The Mac's state
+
+// The parts of the Mac's state (`GET /v1/state` with recent content) that are read here.
+interface LvOption { id: string; label: string; explanation: string; answer: string }
+interface LvBot { id: string; name: string; avatar: string; archived: boolean; pinned: boolean; project?: boolean; profile: string; status: string; unread_count: number; model_override: { model: string; reasoning_effort: string } | null }
+interface LvMessage { id: string; bot_id: string; task_id: string | null; kind: string; role: string; text: string; created_at: string; decision_id: string | null; artifact_id: string | null }
+interface LvTask { id: string; bot_id: string; status: string; title: string | null; created_at: string; updated_at: string }
+interface LvDecision { id: string; bot_id: string; title: string; context: string | null; explanation: string | null; consequences: string | null; risk: string | null; uncertainty: string | null; status: string; created_at: string; revision: number; options: LvOption[]; selected_option_label: string | null }
+interface LvArtifact { id: string; title: string; preview: string }
+interface Snapshot { server_time: string; model: string | null; bots: LvBot[]; messages: LvMessage[]; tasks: LvTask[]; decisions: LvDecision[]; artifacts: LvArtifact[] }
+
+// The decisions and tasks of the Mac's state, for the writes: a card's options and revision, a chat's running task.
+const decisions = new Map<string, LvDecision>();
+const running = new Map<string, string>();
+
+// A model id as a name: claude-opus-5-5 is Claude Opus 5.5.
+const modelName = (id: string): string => id.split('-').reduce((name, part) => {
+  if (/^\d+$/.test(part) && /\d$/.test(name)) return `${name}.${part}`;
+  return `${name}${name === '' ? '' : ' '}${/^\d/.test(part) ? part : part.slice(0, 1).toUpperCase() + part.slice(1)}`;
+}, '');
+
+const fromSnapshot = (snap: Snapshot): State => {
+  const server = parse(snap.server_time);
+  const rel = (iso: string): number => parse(iso) - server;
+  const bots = snap.bots.filter((b) => !b.archived);
+  // A project is a bot with `project`; its chats are the bots of its Hermes profile.
+  const projectOf = new Map(bots.filter((b) => b.project === true).map((b) => [b.profile, b]));
+  const artifacts = new Map(snap.artifacts.map((a) => [a.id, a]));
+  decisions.clear();
+  for (const d of snap.decisions) decisions.set(d.id, d);
+  const byBot = new Map<string, LvMessage[]>();
+  for (const m of snap.messages) byBot.set(m.bot_id, [...(byBot.get(m.bot_id) ?? []), m]);
+  const chats = new Map<string, ChatState>();
+  const projects: Project[] = [];
+  const waits: Wait[] = [];
+  for (const bot of bots) {
+    const project = projectOf.get(bot.profile) ?? bot;
+    const letter = letterOf(bot.avatar || project.avatar, project.name);
+    if (bot.project === true) projects.push({ id: bot.id, name: bot.name, letter, face: faceOf(letter) });
+    const messages = (byBot.get(bot.id) ?? []).sort((a, b) => (a.created_at < b.created_at ? -1 : a.created_at > b.created_at ? 1 : 0)).map((m): Msg => {
+      const at = rel(m.created_at);
+      const decision = m.decision_id ? decisions.get(m.decision_id) : undefined;
+      if (decision) {
+        return message(m.id, 'decision', false, at, decision.context || decision.explanation || '', {
+          title: decision.title,
+          detail: [decision.consequences, decision.risk, decision.uncertainty].filter((part): part is string => !!part && part.trim() !== '').join('\n\n'),
+          ref: decision.id,
+          status: decision.status === 'pending' ? 'pending' : 'replied',
+          receipt: decision.selected_option_label ?? '',
+          options: decision.options.map((o) => ({ id: o.id, label: o.label, explanation: o.explanation })),
+        });
+      }
+      const artifact = m.artifact_id ? artifacts.get(m.artifact_id) : undefined;
+      if (artifact) return message(m.id, 'artifact', false, at, artifact.preview, { title: artifact.title });
+      return message(m.id, m.kind === 'text' ? 'text' : 'activity', m.role === 'user', at, m.text);
+    });
+    // A chat that nobody wrote in shows nowhere (AgentChats.isBlank), but a project and a starred chat always show.
+    if (messages.length === 0 && bot.unread_count === 0 && bot.status === 'idle' && !bot.pinned && bot.project !== true) continue;
+    chats.set(bot.id, {
+      id: bot.id, kind: 'agent', project: project.id, projectName: project.name, title: bot.name, letter, face: faceOf(letter),
+      circle: false, messages, run: null, model: bot.model_override?.model ?? snap.model ?? '', effort: bot.model_override?.reasoning_effort ?? '',
+      unread: bot.unread_count, health: '',
+    });
+  }
+  for (const d of snap.decisions) {
+    if (d.status === 'pending' && chats.has(d.bot_id)) waits.push({ ref: d.id, chat: d.bot_id, at: rel(d.created_at) });
+  }
+  running.clear();
+  const stuck: Stuck[] = [];
+  for (const task of snap.tasks) {
+    const chat = chats.get(task.bot_id);
+    if (!chat) continue;
+    if (task.status === 'working') {
+      running.set(chat.id, task.id);
+      chat.run = { startedAt: rel(task.created_at), phase: PHASES.working, detail: '', model: modelName(chat.model), queued: 0 };
+    }
+    if (task.status === 'failed' && -rel(task.updated_at) <= DAY) stuck.push({ title: task.title || 'A task failed', chat: chat.id, at: rel(task.updated_at) });
+  }
+  return { zero: server, chats, projects, notices: [], waits, stuck, teamId: '', counter: 0 };
+};
+
+// MARK: The pairing
+
+// What this phone keeps of its pairing, in the Keychain (secret.keep): the Mac's route and key, the phone's key, the
+// device token of the Mac's Coconut and the relay's client token.
+interface Pairing {
+  route: string;
+  macKey: string;
+  macName: string;
+  deviceId: string;
+  token: string;
+  client: string;
+  privateKey: string;
+  publicKey: string;
+}
+
+let pairing: Pairing | null | undefined;
+const loadPairing = (store: Store): Pairing | null => {
+  if (pairing === undefined) {
+    try {
+      const value = store.get(SAVED);
+      pairing = value ? (JSON.parse(value) as Pairing) : null;
+    } catch {
+      pairing = null;
+    }
+  }
+  return pairing;
+};
+const forget = (store: Store): void => {
+  pairing = null;
+  liveState = undefined;
+  pairs += 1;
+  try {
+    store.forget(SAVED);
+  } catch {
+    // Nothing kept.
+  }
+};
+
+// The code that this phone shows, and the setup that the Mac sealed into its box.
+let box: Box | null = null;
+let setup: Setup | null = null;
+let pairKeys: Keys | null = null;
+// Pairings made since launch: the screens read the Keychain again after each.
+let pairs = 0;
+
+const boxRequest = (method: string, path = ''): Promise<Response> => fetch(`${RELAY}/v1/rendezvous/${box?.id ?? ''}${path}`, {
+  method, headers: { Authorization: `Bearer ${box?.token ?? ''}` },
+});
+
+// MARK: The connection
+
+// One socket of the relay, and the bytes it brought that no answer took yet.
+interface Conn {
+  key: string;
+  socket: StreamSocket | null;
+  open: boolean;
+  ended: string;
+  queue: Uint8Array[];
+  waiters: Array<{ resolve: (bytes: Uint8Array) => void; reject: (error: Error) => void }>;
+  n: number;
+}
+
+// The plan of a round: what its socket ticket authorizes, and the handshake that follows.
+interface Plan {
+  kind: 'pair' | 'token';
+  route: string;
+  macKey: Uint8Array;
+  keys: Keys;
+  psk: Uint8Array | null;
+}
+
+const tickets = new Map<string, { ticket: string; plan: Plan }>();
+let conn: Conn | null = null;
+let plan: Plan | null = null;
+let tunnel: Tunnel | null = null;
+let tunnelKey = '';
+let version = 0;
+let lastError = '';
+
+// A turn of its own for the next step, so long work spreads over turns that each stay inside the budget.
+const pause: Pause = () => {
+  const scheduler = (globalThis as { scheduler?: { yield(): Promise<void> } }).scheduler;
+  return scheduler ? scheduler.yield() : noPause();
+};
+
+const RELAY_ERRORS: Record<string, string> = {
+  mac_offline: 'Your Mac does not answer. Check that it is awake.',
+  host_reconnected: 'Your Mac connected again.',
+  revoked: 'This phone is no longer paired with your Mac.',
+  closed: 'Your Mac closed the connection.',
+};
+
+const end = (c: Conn, reason: string): void => {
+  if (c.ended !== '') return;
+  c.ended = reason;
+  for (const w of c.waiters.splice(0)) w.reject(new Error(reason));
+};
+
+const linkOf = (c: Conn): Link => ({
+  send(bytes: Uint8Array): void {
+    if (!c.socket || c.ended !== '') throw new Error(c.ended || 'The connection to your Mac is not open.');
+    c.socket.send(bytes);
+  },
+  async next(): Promise<Uint8Array> {
+    const queued = c.queue.shift();
+    if (queued) return queued;
+    if (c.ended !== '') throw new Error(c.ended);
+    const bytes = await new Promise<Uint8Array>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        c.waiters = c.waiters.filter((w) => w.reject !== fail);
+        reject(new Error('Your Mac did not answer in time.'));
+      }, 20000);
+      const fail = (error: Error): void => {
+        clearTimeout(timer);
+        reject(error);
+      };
+      c.waiters.push({ resolve: (b) => { clearTimeout(timer); resolve(b); }, reject: fail });
+    });
+    // The mapper woke this answer inside another answer's turn: go on in a turn of its own.
+    await pause();
+    return bytes;
+  },
+  pause,
+});
+
+const headers = (method: string, extra: Record<string, string> = {}): Record<string, string> => {
+  const out: Record<string, string> = { Accept: 'application/json', ...extra };
+  if (pairing) out.Authorization = `Bearer ${pairing.token}`;
+  if (method !== 'GET') {
+    out['Content-Type'] = 'application/json';
+    out['Idempotency-Key'] = crypto.randomUUID();
+  }
+  return out;
+};
+
+const failureOf = (reply: Reply): string => {
+  try {
+    const body = JSON.parse(text(reply.body)) as { error?: string };
+    if (body.error) return body.error;
+  } catch {
+    // Not JSON.
+  }
+  return `Your Mac answered ${reply.status}.`;
+};
+
+// A write to the Mac on the open connection. It returns the answer's JSON, or throws the Mac's reason.
+const write = async (method: string, path: string, body: unknown): Promise<unknown> => {
+  if (!tunnel || tunnel.session.broken || !conn || conn.ended !== '') throw new Error('Your Mac is not connected.');
+  const reply = await tunnel.request(method, path, headers(method), utf8(JSON.stringify(body ?? {})));
+  if (reply.status < 200 || reply.status >= 300) throw new Error(failureOf(reply));
+  return reply.body.length > 0 ? JSON.parse(text(reply.body)) : {};
+};
+
+const gunzip = async (bytes: Uint8Array): Promise<Uint8Array> => {
+  const stream = new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.enqueue(bytes);
+      controller.close();
+    },
+  }).pipeThrough(new DecompressionStream('gzip') as unknown as ReadableWritablePair<Uint8Array, Uint8Array>);
+  const reader = stream.getReader();
+  const parts: Uint8Array[] = [];
+  let size = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    parts.push(value);
+    size += value.length;
+  }
+  const out = new Uint8Array(size);
+  let at = 0;
+  for (const part of parts) {
+    out.set(part, at);
+    at += part.length;
+  }
+  return out;
+};
+
+const status = (): Live => ({ version, pairs, error: lastError });
+
 const none: Project = { id: '', name: '', letter: '', face: 0 };
 const idle: Turn = { running: false, startedAt: 0, phase: '', detail: '', model: '', queued: 0 };
 const emptyChat: Chat = {
   id: '', kind: 'agent', title: '', project: '', letter: '', face: 0, circle: false, messages: [], turn: idle, model: '', modelName: '', effort: '',
-  efforts: [], models: [], toolbar: false,
+  efforts: [], models: [], toolbar: false, live: false,
 };
 
+const failed = (error: unknown): string => (error instanceof Error ? error.message : String(error));
+
 const sources: Sources = {
-  loadHome: ([zero, chosen]): Home => {
+  loadSaved: (_args, store) => {
+    const saved = loadPairing(store);
+    return { paired: saved !== null, macName: saved?.macName ?? '' };
+  },
+
+  // A new pairing code and its box on the relay, which keeps it for 10 minutes.
+  pairCode: async () => {
+    box = newBox();
+    setup = null;
+    try {
+      const made = await boxRequest('PUT');
+      if (made.status === 201 || made.status === 200) return { code: box.code, id: box.id, error: '' };
+      return { code: '', id: '', error: made.status === 429 ? 'The relay is busy. Wait one minute, then ask for a new code.' : `The relay answered ${made.status}.` };
+    } catch {
+      return { code: '', id: '', error: 'The relay cannot be reached. Check the connection, then ask for a new code.' };
+    }
+  },
+
+  // Waits up to 25 seconds for the setup that the Mac seals into the box, then opens it.
+  pairWait: async ([id]) => {
+    const state = (status: string, macName = '', error = '') => ({ status, id, macName, error });
+    if (!box || box.id !== id) return state('error', '', 'Ask for a new code.');
+    if (setup) return state('ready', setup.name);
+    try {
+      const got = await boxRequest('GET', '?wait=25');
+      if (got.status === 204) return state('waiting');
+      if (got.status === 404) return state('expired');
+      if (got.status !== 200) return state('error', '', `The relay answered ${got.status}.`);
+      const opened = await openBox(box, new Uint8Array(await got.arrayBuffer()), pause);
+      await boxRequest('DELETE').catch(() => undefined);
+      if (!opened) return state('error', '', 'The setup from the Mac did not open. Ask for a new code.');
+      if (opened.relay !== RELAY) return state('error', '', 'This Mac uses another relay, which this app cannot reach.');
+      setup = opened;
+      return state('ready', opened.name);
+    } catch {
+      // A long poll that the network dropped: the next poll asks again.
+      return state('waiting');
+    }
+  },
+
+  // The socket ticket of a round: with the pairing ticket of the setup, or with the client token of the saved pairing.
+  prepare: async ([key], store) => {
+    try {
+      let next: Plan;
+      let authorization: string;
+      if (key.startsWith('pair:')) {
+        if (!setup) throw new Error('Ask for a new code.');
+        pairKeys = pairKeys ?? (await newKeys(pause));
+        next = { kind: 'pair', route: setup.route, macKey: setup.macKey, keys: pairKeys, psk: pairingPsk(setup.secret) };
+        authorization = `Ticket ${relayTicket(setup.secret)}`;
+      } else {
+        const saved = loadPairing(store);
+        const macKey = saved ? fromBase64Url(saved.macKey) : null;
+        const privateKey = saved ? fromBase64Url(saved.privateKey) : null;
+        const publicKey = saved ? fromBase64Url(saved.publicKey) : null;
+        if (!saved || !macKey || !privateKey || !publicKey) throw new Error('Pair this phone with your Mac.');
+        next = { kind: 'token', route: saved.route, macKey, keys: { privateKey, publicKey }, psk: null };
+        authorization = `Bearer ${saved.client}`;
+      }
+      const minted = await fetch(`${RELAY}/v1/tunnels/${next.route}/client-ticket`, { method: 'POST', headers: { Authorization: authorization } });
+      if (minted.status === 401 || minted.status === 404) {
+        if (next.kind === 'token') forget(store);
+        throw new Error(next.kind === 'token' ? 'This phone is no longer paired with your Mac.' : 'This pairing code no longer works. Ask for a new one.');
+      }
+      if (!minted.ok) throw new Error(minted.status === 429 ? 'The relay is busy. Coconut tries again soon.' : `The relay answered ${minted.status}.`);
+      const { ticket } = (await minted.json()) as { ticket: string };
+      tickets.clear();
+      tickets.set(key, { ticket, plan: next });
+      return key;
+    } catch (error) {
+      lastError = failed(error);
+      return '';
+    }
+  },
+
+  // The socket of a round. It opens synchronously, with the ticket that `prepare` kept, and queues what comes.
+  socket: ([key]) => {
+    const entry = tickets.get(key);
+    tickets.delete(key);
+    if (!entry) throw new Error('Connect again for a new ticket.');
+    if (conn) end(conn, 'A new connection replaced this one.');
+    const c: Conn = { key, socket: null, open: false, ended: '', queue: [], waiters: [], n: 0 };
+    conn = c;
+    plan = entry.plan;
+    tunnel = null;
+    tunnelKey = '';
+    return fetch(`wss://coconut-push.gumroad.workers.dev/v1/tunnels/${entry.plan.route}/client?ticket=${entry.ticket}`, {
+      exactStream(event: StreamEvent, socket?: StreamSocket): Sock {
+        if (socket) c.socket = socket;
+        if (event.type === 'open') {
+          c.open = true;
+        } else if (event.type === 'message') {
+          if (typeof event.data === 'string') {
+            // The relay's own words: an error before it closes the socket, or a pong.
+            try {
+              const said = JSON.parse(event.data) as { type?: string; code?: string };
+              if (said.type === 'error') end(c, RELAY_ERRORS[said.code ?? ''] ?? 'The relay closed the connection.');
+            } catch {
+              // A pong.
+            }
+          } else {
+            const bytes = new Uint8Array(event.data);
+            const waiter = c.waiters.shift();
+            if (waiter) waiter.resolve(bytes);
+            else c.queue.push(bytes);
+          }
+        } else if (event.type === 'close' || event.type === 'error') {
+          end(c, c.open ? 'The connection to your Mac ended.' : 'The relay refused the connection.');
+        }
+        c.n += 1;
+        return { key, status: c.ended !== '' ? 'closed' : c.open ? 'open' : 'connecting', n: c.n };
+      },
+    });
+  },
+
+  // Asked for each event of the socket, so an answer that waits for the socket goes on (see the top of the module).
+  deliver: ([n]) => n,
+
+  // The handshake of a round, then its work: a pairing pairs and keeps the keys; a session with the Mac reads its state.
+  sync: async ([key, open], store) => {
+    if (!open || !conn || conn.key !== key || !plan) return status();
+    try {
+      if (!tunnel || tunnelKey !== key || tunnel.session.broken) {
+        tunnel = null;
+        tunnel = await connect(linkOf(conn), plan.keys, plan.macKey, plan.psk);
+        tunnelKey = key;
+      }
+      if (plan.kind === 'pair') {
+        if (!setup) throw new Error('Ask for a new code.');
+        const reply = await tunnel.request('POST', '/v1/pair', { Accept: 'application/json', 'Content-Type': 'application/json', 'Idempotency-Key': crypto.randomUUID() },
+          utf8(JSON.stringify({ code: setup.code, device_name: 'Coconut on Exact' })));
+        if (reply.status !== 200) throw new Error(reply.status === 401 ? 'This pairing code no longer works. Ask for a new one.' : failureOf(reply));
+        const made = JSON.parse(text(reply.body)) as { token: string; device_id: string };
+        const kept: Pairing = {
+          route: plan.route, macKey: toBase64Url(plan.macKey), macName: setup.name, deviceId: made.device_id, token: made.token,
+          client: clientToken(tunnel.session.handshakeHash), privateKey: toBase64Url(plan.keys.privateKey), publicKey: toBase64Url(plan.keys.publicKey),
+        };
+        store.set(SAVED, JSON.stringify(kept));
+        pairing = kept;
+        setup = null;
+        box = null;
+        pairKeys = null;
+        pairs += 1;
+        lastError = '';
+        return status();
+      }
+      const reply = await tunnel.request('GET', '/v1/state', headers('GET', { 'Accept-Encoding': 'gzip', 'X-Coconut-State': 'recent', 'X-Coconut-Work': 'recent' }));
+      if (reply.status === 401) {
+        forget(store);
+        throw new Error('This phone is no longer paired with your Mac.');
+      }
+      if (reply.status !== 200) throw new Error(failureOf(reply));
+      const encoding = Object.entries(reply.headers).find(([name]) => name.toLowerCase() === 'content-encoding')?.[1] ?? '';
+      const body = encoding.toLowerCase() === 'gzip' ? await gunzip(reply.body) : reply.body;
+      await pause();
+      const snapshot = JSON.parse(text(body)) as Snapshot;
+      await pause();
+      liveState = fromSnapshot(snapshot);
+      version += 1;
+      lastError = '';
+      return status();
+    } catch (error) {
+      lastError = failed(error);
+      return status();
+    }
+  },
+
+  loadHome: ([zero, chosen, live]): Home => {
+    useLive = live;
     const s = ensure();
     const list = ordered(s);
+    const at = zeroOf(s, zero);
+    const banner = !live ? '' : lastError !== '' ? lastError : liveState ? '' : `Connecting to ${pairing?.macName ?? 'your Mac'}…`;
     return {
       target: list.find((p) => p.id === chosen) ?? list[0] ?? none,
       projects: list,
       attention: attention(s),
-      chats: Array.from(s.chats.values()).map((c) => rowOf(c, zero)).sort((a, b) => b.at - a.at || (a.id < b.id ? -1 : 1)),
+      chats: Array.from(s.chats.values()).map((c) => rowOf(c, at)).sort((a, b) => b.at - a.at || (a.id < b.id ? -1 : 1)),
+      live,
+      banner,
     };
   },
 
-  loadChat: ([zero, id]): Chat => {
-    const chat = ensure().chats.get(id);
+  loadChat: ([zero, id, live]): Chat => {
+    useLive = live;
+    const s = ensure();
+    const chat = s.chats.get(id);
     if (!chat) return emptyChat;
+    const at = zeroOf(s, zero);
     const agent = chat.kind === 'agent';
     const model = modelOf(chat.model);
-    const lines: Message[] = chat.messages.map((m) => ({ ...m, at: zero + m.at }));
+    const lines: Message[] = chat.messages.map((m) => ({ ...m, at: at + m.at }));
     // The working line is the last row of a chat whose agent works.
     if (chat.run) lines.push(message('working', 'status', false, 0, ''));
     const turn: Turn = chat.run
-      ? { running: true, startedAt: zero + chat.run.startedAt, phase: chat.run.phase, detail: chat.run.detail, model: chat.run.model, queued: chat.run.queued }
+      ? { running: true, startedAt: at + chat.run.startedAt, phase: chat.run.phase, detail: chat.run.detail, model: chat.run.model, queued: chat.run.queued }
       : idle;
+    // The Mac's chats choose no model or effort here yet: the Swift app does.
     return {
       id: chat.id, kind: chat.kind, title: chat.title, project: chat.projectName, letter: chat.letter, face: chat.face, circle: chat.circle,
-      messages: lines, turn, model: chat.model, modelName: agent ? model.name : '', effort: chat.effort,
-      efforts: agent ? model.reasoning_efforts : [], models: agent ? fx.model_catalog.models.map((m) => ({ id: m.id, name: m.name })) : [], toolbar: agent,
+      messages: lines, turn, model: chat.model, modelName: !agent ? '' : live ? modelName(chat.model) : model.name, effort: chat.effort,
+      efforts: agent && !live ? model.reasoning_efforts : [], models: agent && !live ? fx.model_catalog.models.map((m) => ({ id: m.id, name: m.name })) : [],
+      toolbar: agent && !live, live,
     };
   },
 
   // Opening a chat reads it: its unread count goes, and the notices of a team are seen.
-  markRead: ([id]) => {
+  markRead: async ([id]) => {
     const s = ensure();
     const chat = s.chats.get(id);
     if (!chat) return { ok: false };
     chat.unread = 0;
     if (chat.kind === 'team') for (const n of s.notices) n.seen = true;
-    return { ok: true };
+    if (!useLive) return { ok: true };
+    try {
+      await write('POST', `/v1/bots/${id}/read`, {});
+      return { ok: true };
+    } catch {
+      return { ok: false };
+    }
   },
 
   // A message of Home starts a chat with the project, titled by its words, and its agent starts a turn.
-  startChat: ([projectId, text, at]) => {
+  startChat: async ([projectId, words, at]) => {
     const s = ensure();
     const project = s.projects.find((p) => p.id === projectId) ?? s.projects[0];
+    if (!project) return { id: '' };
     s.counter += 1;
-    const id = `chat-${s.counter}`;
-    const model = fx.model_catalog.default;
+    let id = `chat-${s.counter}`;
+    if (useLive) {
+      try {
+        const made = (await write('POST', `/v1/bots/${project.id}/chats`, { todo: false })) as { id?: string };
+        if (!made.id) return { id: '' };
+        id = made.id;
+        await write('POST', `/v1/bots/${id}/messages`, { text: words, mode: 'auto', attachment_ids: [], recipient_bot_ids: [] });
+      } catch (error) {
+        lastError = failed(error);
+        return { id: '' };
+      }
+    }
+    const model = useLive ? { model: '', reasoning_effort: '' } : fx.model_catalog.default;
+    const firstAt = useLive && s.zero !== null ? at - s.zero : at;
     s.chats.set(id, {
-      id, kind: 'agent', project: project.id, projectName: project.name, title: text.length > 48 ? `${text.slice(0, 47).trimEnd()}…` : text,
-      letter: project.letter, face: project.face, circle: false, messages: [message(`${id}-1`, 'text', true, at, text)],
-      run: { startedAt: at, phase: PHASES.thinking, detail: '', model: modelOf(model.model).name, queued: 0 },
+      id, kind: 'agent', project: project.id, projectName: project.name, title: words.length > 48 ? `${words.slice(0, 47).trimEnd()}…` : words,
+      letter: project.letter, face: project.face, circle: false, messages: [message(`${id}-1`, 'text', true, firstAt, words)],
+      run: { startedAt: firstAt, phase: PHASES.thinking, detail: '', model: useLive ? '' : modelOf(model.model).name, queued: 0 },
       model: model.model, effort: model.reasoning_effort, unread: 0, health: '',
     });
     return { id };
   },
 
-  // A message of a chat. Names of files that were attached close it as a line of code. The agent of the chat starts a turn,
-  // or, when one runs, the message waits for the next.
-  sendMessage: ([chatId, text, files, at]) => {
+  // A message of a chat. In the demo, names of files that were attached close it as a line of code; the Mac's chats
+  // take words only here. The agent of the chat starts a turn, or, when one runs, the message waits for the next.
+  sendMessage: async ([chatId, words, files, at]) => {
     const s = ensure();
     const chat = s.chats.get(chatId);
     if (!chat) return { ok: false };
+    if (useLive && words === '') return { ok: false };
     s.counter += 1;
-    const body = [text, files === '' ? '' : '`' + files + '`'].filter((part) => part !== '').join('\n\n');
-    chat.messages = [...chat.messages, message(`${chat.id}-m${s.counter}`, 'text', true, at, body)];
+    const body = useLive ? words : [words, files === '' ? '' : '`' + files + '`'].filter((part) => part !== '').join('\n\n');
+    const sentAt = useLive && s.zero !== null ? at - s.zero : at;
+    chat.messages = [...chat.messages, message(`${chat.id}-m${s.counter}`, 'text', true, sentAt, body)];
+    if (useLive) {
+      try {
+        await write('POST', `/v1/bots/${chatId}/messages`, { text: words, mode: 'auto', attachment_ids: [], recipient_bot_ids: [] });
+      } catch (error) {
+        chat.messages = [...chat.messages, message(`${chat.id}-f${s.counter}`, 'activity', false, sentAt, `Not sent: ${failed(error)}`)];
+        return { ok: false };
+      }
+    }
     if (chat.kind === 'agent') {
       if (chat.run) chat.run = { ...chat.run, queued: chat.run.queued + 1 };
-      else chat.run = { startedAt: at, phase: PHASES.thinking, detail: '', model: modelOf(chat.model).name, queued: 0 };
+      else chat.run = { startedAt: sentAt, phase: PHASES.thinking, detail: '', model: useLive ? modelName(chat.model) : modelOf(chat.model).name, queued: 0 };
     }
     return { ok: true };
   },
 
-  stopTurn: ([chatId]) => {
+  stopTurn: async ([chatId]) => {
     const chat = ensure().chats.get(chatId);
     if (!chat) return { ok: false };
+    if (useLive) {
+      const task = running.get(chatId);
+      if (!task) return { ok: false };
+      try {
+        await write('POST', `/v1/tasks/${task}/cancel`, {});
+      } catch {
+        return { ok: false };
+      }
+    }
     chat.run = null;
     return { ok: true };
   },
 
   // The answer to a card: it keeps the label of the option, and the chat no longer waits on the person.
-  answerCard: ([chatId, ref, optionId]) => {
+  answerCard: async ([chatId, ref, optionId]) => {
     const s = ensure();
     const chat = s.chats.get(chatId);
     if (!chat) return { ok: false };
+    if (useLive) {
+      const decision = decisions.get(ref);
+      const option = decision?.options.find((o) => o.id === optionId);
+      if (!decision || !option) return { ok: false };
+      try {
+        await write('POST', `/v1/decisions/${ref}/answer`, { choice: option.answer, revision: decision.revision, option_id: option.id });
+      } catch (error) {
+        lastError = failed(error);
+        return { ok: false };
+      }
+    }
     chat.messages = chat.messages.map((m) => {
       if (m.kind !== 'decision' || m.ref !== ref) return m;
       const option = m.options.find((o) => o.id === optionId);
@@ -371,10 +886,10 @@ const sources: Sources = {
     return { ok: true };
   },
 
-  // A model that lacks the effort of the chat gives it its own default.
+  // A model that lacks the effort of the chat gives it its own default. Only the demo changes models here.
   setModel: ([chatId, modelId]) => {
     const chat = ensure().chats.get(chatId);
-    if (!chat) return { ok: false };
+    if (!chat || useLive) return { ok: false };
     const model = modelOf(modelId);
     chat.model = model.id;
     if (!model.reasoning_efforts.includes(chat.effort)) chat.effort = model.default_reasoning_effort;
@@ -383,14 +898,16 @@ const sources: Sources = {
 
   setEffort: ([chatId, effort]) => {
     const chat = ensure().chats.get(chatId);
-    if (!chat) return { ok: false };
+    if (!chat || useLive) return { ok: false };
     chat.effort = effort;
     return { ok: true };
   },
 
   // AgentLetter.free: a new project takes the initial of its name when no agent holds it, else the first free letter.
+  // The Mac's projects are fixed, so only the demo makes one.
   createProject: ([name]) => {
     const s = ensure();
+    if (useLive) return { id: '' };
     const held = new Set(s.projects.map((p) => p.letter));
     const initial = name.trim().slice(0, 1).toUpperCase();
     const letter = LETTERS.includes(initial) && !held.has(initial) ? initial : (LETTERS.split('').find((l) => !held.has(l)) ?? 'A');
