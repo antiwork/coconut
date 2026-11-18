@@ -1252,7 +1252,7 @@ final class AppStore {
             guard let current = tasks.first(where: { $0.id == task.id }) else { return false }
             if current.status == "needs_you" {
                 guard let decisionId, let decision = decisions.first(where: { $0.id == decisionId && $0.taskId == task.id && $0.isPending }) else {
-                    error = "Choose the pending decision before asking for context."
+                    error = "Choose the pending card before asking for context."
                     return false
                 }
                 await requestContext(decision, question: text)

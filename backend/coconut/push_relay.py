@@ -261,7 +261,7 @@ def notice_alert(store, room, entry):
     return {'title': writer, 'subtitle': label, 'body': body}
 
 
-GROUP_NOUNS = (('decision', 'decision', 'decisions'), ('message', 'message', 'messages'), ('team', 'team message', 'team messages'),
+GROUP_NOUNS = (('decision', 'card', 'cards'), ('message', 'message', 'messages'), ('team', 'team message', 'team messages'),
                ('direct', 'direct message', 'direct messages'), ('notice', 'notice', 'notices'), ('failed', 'failed task', 'failed tasks'),
                ('completed', 'finished task', 'finished tasks'))
 
@@ -275,7 +275,7 @@ def group_lines(lines, total):
 
 
 def group_text(items):
-    """The count of a group, for example "3 decisions and 1 message are waiting". It names no bot and no content."""
+    """The count of a group, for example "3 cards and 1 message are waiting". It names no bot and no content."""
     counts = {kind: sum(item['kind'] == kind for item in items) for kind, _, _ in GROUP_NOUNS}
     parts = [f'{counts[kind]} {one if counts[kind] == 1 else many}' for kind, one, many in GROUP_NOUNS if counts[kind]]
     text = parts[0] if len(parts) == 1 else ', '.join(parts[:-1]) + ' and ' + parts[-1]

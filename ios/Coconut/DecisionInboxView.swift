@@ -258,7 +258,7 @@ struct DecisionInboxView: View {
                     }
                 }
             }
-            .navigationTitle("Decisions").inlineNavigationTitle()
+            .navigationTitle("Cards").inlineNavigationTitle()
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { overviewOpen = false } } }
         }
     }

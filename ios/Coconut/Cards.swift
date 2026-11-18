@@ -200,7 +200,7 @@ struct DecisionCard: View {
                         .textSelection(.enabled)
                 }
             } else if decision.isRefreshing {
-                Text("Updating this decision…").font(.subheadline).foregroundStyle(.secondary)
+                Text("Updating this card…").font(.subheadline).foregroundStyle(.secondary)
                     .accessibilityIdentifier("decision-refreshing-\(decision.id)")
             } else {
                 decisionReceipt

@@ -84,8 +84,6 @@ These need a choice of the person, or belong to a run that works on them now.
   strings in 26 files still say agent: the settings of a project, Notifications, the team screens, "Deleted agent" in
   a chat. This audit changed only the titles above. A rule would settle the rest: project for the thing, agent for
   the worker.
-- Card, decision or to-do. The To-dos tab shows "1 card waits for you", the list of the deck is "Decisions", and
-  Notifications says that cards "wait in Decisions".
 - Support has two doors: the Support tab, and Finance, Functions, Support.
 - Chats is the one tab root without its name in the bar. Chats, the message box with its project chip and each New
   chat path belong to another run. Seen there and left: a held message offers "Send in New Chat" in title case.

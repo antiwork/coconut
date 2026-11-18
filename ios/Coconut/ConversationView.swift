@@ -811,7 +811,7 @@ struct MessageBubble: View {
                 if cardReference == nil, let decisionId = message.decisionId,
                    store.decisions.first(where: { $0.id == decisionId })?.status != "replied" {
                     Button { scrollToDecision(decisionId) } label: {
-                        Label("View decision", systemImage: "arrow.turn.up.left")
+                        Label("View card", systemImage: "arrow.turn.up.left")
                             .font(.footnote.weight(.semibold)).foregroundStyle(.secondary)
                             .frame(minHeight: 44)
                     }.buttonStyle(.plain)
