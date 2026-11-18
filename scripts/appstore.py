@@ -394,8 +394,15 @@ def submit(api: Api, number: int | None, wait: bool = False) -> None:
 PUBLIC_GROUP = '5415faea-f406-477b-be44-5b3d068355a8'
 # Apple processes an upload for 5 to 20 minutes before a group or a review takes it.
 PROCESSING_MINUTES = 60
-# Apple takes no new submission while another build waits for TestFlight App Review, and says so in this text.
-ANOTHER_IN_REVIEW = 'another build is in review'
+# Apple takes no new submission while another build of the version waits for TestFlight App Review. It answers 422
+# with this error code and "Another build in the same train is already in beta review". The text changes, so the code
+# decides: a match on older text failed the run of build 321.
+ANOTHER_IN_REVIEW = 'ANOTHER_BUILD_IN_REVIEW'
+
+
+def another_in_review(document: dict) -> bool:
+    """True when App Store Connect refused a TestFlight App Review submission because another build waits for one."""
+    return any(ANOTHER_IN_REVIEW in (error.get('code') or '') for error in document.get('errors') or [])
 
 
 def patient(api: Api, method: str, path: str, body: dict | None = None, quiet: bool = False) -> tuple[int, dict]:
@@ -474,7 +481,7 @@ def public_testflight(api: Api, number: int | None) -> None:
             'relationships': {'build': {'data': {'type': 'builds', 'id': build['id']}}}}})
         if code == 201:
             review = document.get('data')
-        elif ANOTHER_IN_REVIEW in problems(document).lower():
+        elif another_in_review(document):
             print(f'::notice::Build {number} waits in the public group without a review: another build is in '
                   'TestFlight App Review, so Apple took no submission. The next release sends its own build.')
             return
