@@ -272,7 +272,7 @@ struct TodoCommentsSheet: View {
     }
 }
 
-/// The rows of the quick to-dos, on the To-dos tab of the iPhone and on Home of the Mac. A row opens the chat of the
+/// The rows of the quick to-dos, on Inbox of the iPhone and on Home of the Mac. A row opens the chat of the
 /// to-do. Swipe or hold it to comment or to check it off.
 struct QuickTodoRows: View {
     @Environment(AppStore.self) private var store

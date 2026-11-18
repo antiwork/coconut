@@ -27,8 +27,8 @@ struct ProfileSummary: Equatable {
     }
 }
 
-/// The Profile tab: the person, this device, the settings of every chat, and Coconut itself. Coconut has no Settings
-/// screen: the few things that need this device are here, and the Coconut chat changes the rest.
+/// You, the place of the person: the person, this device, the settings of every chat, and Coconut itself. Coconut
+/// has no Settings screen: the few things that need this device are here, and the Coconut chat changes the rest.
 struct ProfileView: View {
     @Environment(AppStore.self) private var store
     @Environment(\.pushRoute) private var pushRoute
@@ -82,7 +82,7 @@ struct ProfileView: View {
                     .accessibilityIdentifier("profile-version")
             }
         }
-        // An iPhone tab root has the name of its tab in the bar, as Finance and To-dos have.
+        // An iPhone tab root has the name of its tab in the bar.
         #if os(iOS)
         .navigationTitle("You").inlineNavigationTitle()
         #endif

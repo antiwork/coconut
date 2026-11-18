@@ -68,7 +68,7 @@ enum HomeFeed {
         return rows.sorted { ($0.date, $1.id) > ($1.date, $0.id) }
     }
 
-    /// The count of the Home tab and of the Home row of the sidebar: the unread messages and the pending cards.
+    /// The count of "Unread" on Home and of the Home row of the sidebar: the unread messages and the pending cards.
     static func badge(_ unread: [HomeUnread]) -> Int {
         unread.reduce(0) { sum, row in
             if case .chat(let item, _) = row { return sum + item.unreadCount }
@@ -173,7 +173,7 @@ struct HomeView: View {
                     ForEach(unread) { unreadRow($0) }
                 }
             }
-            // The quick to-dos (QuickTodos), with + to add one. The Mac has no To-dos tab, so they show on Home.
+            // The quick to-dos (QuickTodos), with + to add one. The iPhone lists them on Inbox, the Mac on Home.
             BoardSection("To-dos", count: QuickTodos.list(store).count) {
                 Button("New to-do", systemImage: "plus") { PendingTodos.shared.adding = true }
                     .accessibilityIdentifier("home-new-todo")
