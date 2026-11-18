@@ -90,7 +90,7 @@ struct PersonalBudgetFooter: View {
         .contentShape(Rectangle())
         .contextMenu {
             if budget.isSignedIn {
-                Button("Sign Out of the Antiwork Budget", role: .destructive) { Task { await signOut() } }
+                Button("Sign out of the Antiwork budget", role: .destructive) { Task { await signOut() } }
             }
         }
         .accessibilityElement(children: .contain)

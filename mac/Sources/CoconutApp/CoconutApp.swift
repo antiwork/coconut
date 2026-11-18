@@ -257,11 +257,11 @@ struct PairingView: View {
                     .truncationMode(.middle)
                     .textSelection(.enabled)
                 HStack {
-                    Button("Copy Link") {
+                    Button("Copy link") {
                         NSPasteboard.general.clearContents()
                         NSPasteboard.general.setString(pairing.link, forType: .string)
                     }
-                    Button("New Code") { Task { await model.pair() } }
+                    Button("New code") { Task { await model.pair() } }
                 }
                 Text("The code works once and expires after ten minutes. Send it only to the person who pairs.")
                     .font(.footnote)
@@ -272,7 +272,7 @@ struct PairingView: View {
             } else {
                 Text(model.pairingError ?? "Create a one-time setup code for an iPhone.")
                     .multilineTextAlignment(.center)
-                Button("Create Code") { Task { await model.pair() } }
+                Button("Create code") { Task { await model.pair() } }
             }
         }
         .padding(24)

@@ -86,7 +86,7 @@ These need a choice of the person, or belong to a run that works on them now.
   the worker.
 - Support has two doors: the Support tab, and Finance, Functions, Support.
 - Chats is the one tab root without its name in the bar. Chats, the message box with its project chip and each New
-  chat path belong to another run. Seen there and left: a held message offers "Send in New Chat" in title case.
+  chat path belong to another run.
 - Spend keeps the legend of Cost by day. The bars are split by project, and the names are the labels of the split.
 - All pages lists the pages in its own rows with the report tiles above them. The rows are not the shared rows yet.
 - Settings pages (Notifications, Connections, the Team screen) are grouped system forms on the grouped page color.

@@ -1610,7 +1610,7 @@ struct ComposerSendButton: View {
     let enabled: Bool
     let label: String
     let action: () -> Void
-    /// Send in New Chat, from the menu of the button: a long press on an iPhone, a secondary click on a Mac.
+    /// Send in new chat, from the menu of the button: a long press on an iPhone, a secondary click on a Mac.
     var newChat: (() -> Void)? = nil
     var identifier = "send-message"
     @ScaledMetric(relativeTo: .body) private var size = 34
@@ -1628,12 +1628,12 @@ struct ComposerSendButton: View {
         .disabled(!enabled)
         .contextMenu {
             if let newChat {
-                Button("Send in New Chat", systemImage: "square.and.pencil", action: newChat)
+                Button("Send in new chat", systemImage: "square.and.pencil", action: newChat)
                     .accessibilityIdentifier("send-in-new-chat")
             }
         }
         .accessibilityLabel(label)
-        .accessibilityAction(named: "Send in New Chat") { newChat?() }
+        .accessibilityAction(named: "Send in new chat") { newChat?() }
         .accessibilityIdentifier(identifier)
     }
 }

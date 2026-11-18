@@ -141,12 +141,12 @@ struct AgentProject: Identifiable, Equatable {
             .map { AgentProject(bot: $0, input: input, now: now) }
     }
 
-    /// The quiet line of a row of the list: "2 To-dos · 3 pages · 1 routine". Nil when the agent has none of them.
+    /// The quiet line of a row of the list: "2 tasks · 3 pages · 1 routine". Nil when the agent has none of them.
     var summary: String? {
         func part(_ count: Int, _ one: String, _ many: String) -> String? {
             count == 0 ? nil : "\(count) \(count == 1 ? one : many)"
         }
-        let parts = [part(todos.count, "Task", "Tasks"), part(pages.count, "page", "pages"),
+        let parts = [part(todos.count, "task", "tasks"), part(pages.count, "page", "pages"),
                      part(routines.count + checks.count, "routine", "routines")].compactMap { $0 }
         return parts.isEmpty ? nil : parts.joined(separator: " · ")
     }

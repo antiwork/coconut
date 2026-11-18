@@ -23,7 +23,7 @@ struct MacPairingView: View {
                         Button {
                             Task { await pairHere() }
                         } label: {
-                            if pairingHere { ProgressView().controlSize(.small) } else { Text("Use This Mac") }
+                            if pairingHere { ProgressView().controlSize(.small) } else { Text("Use this Mac") }
                         }
                         .buttonStyle(.borderedProminent)
                         .disabled(pairingHere)
