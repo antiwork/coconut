@@ -140,14 +140,11 @@ struct LibraryView: View {
                                     message: "Agents keep pages here: notes, checklists and charts that they update.")
                 }
                 if !sections.pinned.isEmpty {
-                    header("Starred") {
-                        Image(systemName: "star.fill").font(.footnote).foregroundStyle(.secondary)
-                            .accessibilityHidden(true)
-                    }
+                    header("Starred")
                     ForEach(sections.pinned) { row($0) }
                 }
                 ForEach(sections.groups, id: \.owner.id) { group in
-                    header(group.owner.name, detail: group.owner.teamName) { EmptyView() }
+                    header(group.owner.name, detail: group.owner.teamName)
                     ForEach(group.documents) { row($0, pinMark: !sections.showsPinned) }
                 }
             }
@@ -162,9 +159,8 @@ struct LibraryView: View {
     }
 
     /// `detail` is the name of the team of a team bot. It is quieter than the name of the bot.
-    private func header(_ title: String, detail: String? = nil, @ViewBuilder icon: () -> some View) -> some View {
-        HStack(spacing: 8) {
-            icon()
+    private func header(_ title: String, detail: String? = nil) -> some View {
+        HStack(spacing: BoardStyle.Space.s) {
             Text(title).font(.subheadline.weight(.semibold)).foregroundStyle(.secondary).layoutPriority(1)
             if let detail {
                 Text(detail).font(.subheadline).foregroundStyle(.tertiary)
