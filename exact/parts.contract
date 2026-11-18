@@ -15,7 +15,7 @@ fn faceInk(i: number): string = i == 0 ? "#1f334e" : i == 1 ? "#fcedce" : i == 2
 fn dayKey(ms: number, offset: number): string = formatDate(ms, offset, "iso")
 // The time of a message, as MessageTimes.label shows it: 4:02 PM today, Yesterday 4:02 PM, Mon 4:02 PM within six days,
 // else Nov 3, 4:02 PM.
-fn messageTime(at: number, now: number, offset: number): string = dayKey(at, offset) == dayKey(now, offset) ? formatTime(at, offset, "short") : dayKey(at, offset) == dayKey(now - 86400000, offset) ? `Yesterday ${formatTime(at, offset, "short")}` : now - at < 518400000 ? `${formatDay(at, now, offset, "day").slice(0, 3)} ${formatTime(at, offset, "short")}` : `${formatDate(at, offset, "medium")}, ${formatTime(at, offset, "short")}`
+fn messageTime(at: number, now: number, offset: number): string = dayKey(at, offset) == dayKey(now, offset) ? formatTime(at, offset, "short") : dayKey(at, offset) == dayKey(now - 86400000, offset) ? `Yesterday ${formatTime(at, offset, "short")}` : now - at < 518400000 ? `${formatDay(at, now, offset, "day").slice(0, 3)} ${formatTime(at, offset, "short")}` : `${formatDate(at, offset, "month-day")}, ${formatTime(at, offset, "short")}`
 
 // The face of an agent is a rounded square, the face of a person or a team a circle; its letter is bold at 56% of the
 // size (LetterTile).
@@ -45,7 +45,7 @@ component ChatRowView
     offset: number
     choose: action
   derive since = max(now - chat.at, 0)
-  derive age = since < 60000 ? "Now" : since < 3600000 ? `${floor(since / 60000)} min` : since < 86400000 ? `${floor(since / 3600000)} hr` : formatDate(chat.at, offset, "medium")
+  derive age = since < 60000 ? "Now" : since < 3600000 ? `${floor(since / 60000)} min` : since < 86400000 ? `${floor(since / 3600000)} hr` : formatDate(chat.at, offset, "month-day")
   view
     button press=choose appearance="none" display="flex" flex-direction="row" align-items="center" gap=12 text-align="start" padding="8px 16px" min-height=52 width="100%" testId=`chat-${chat.id}`
       column position="relative" width=46 height=46 flex-shrink=0

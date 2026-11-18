@@ -102,7 +102,6 @@ jobs:
         working-directory: exact
         run: |
           set -euo pipefail
-          bun exact.mjs deploy --dirty --platform ios
           bun exact.mjs deploy --dirty --platform ios --yes
 
       - name: Push an update to installed apps

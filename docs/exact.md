@@ -111,9 +111,9 @@ Not yet measured: the time from save to screen on the web host, and a `push --wa
 - Exact Build compiles with the newest snapshot of its catalog, and the catalog lags main: on 2026-11-17 it listed main
   of 2026-11-14, and the build status said so in `sdk.note`. That snapshot refuses a Forma token name as a colour
   (`background-color="surface.card"`), and has no `"section"` style for `formatDay` and no `"month-day"` style for
-  `formatDate` (`"medium"`, `"month-year"` and `"iso"` only). So the rows write the values of `app.forma` out, and a
-  date older than a week, in a message and in the list of chats, reads like "Nov 10, 2026". Name the tokens again
-  once `sdk.note` shows a newer snapshot.
+  `formatDate` (`"medium"`, `"month-year"` and `"iso"` only). So the rows write the values of `app.forma` out. The
+  binary that takes updates comes from the workflow `Exact updates` with the pinned Exact, which has `"month-day"`,
+  so a date older than a week reads "Nov 10" again; an upload to Exact Build fails on it until its catalog is newer.
 - Exact Build builds iOS only. The Mac app needs a Mac with Xcode and Rust (`bun exact.mjs mac`).
 - Its manual lists `widgets`, `activities`, `intents` and `alarms` as `extensions`. The notification service and the
   share extension are not named there, so whether the cloud build includes them is unverified.
