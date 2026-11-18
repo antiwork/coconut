@@ -9,13 +9,6 @@ import AppKit
 import UserNotifications
 import SwiftUI
 
-struct NotificationSettingsRow: View {
-    var body: some View {
-        NavigationLink("Notifications") { NotificationSettingsView() }
-            .accessibilityIdentifier("notification-settings")
-    }
-}
-
 struct NotificationSettingsView: View {
     @Environment(AppStore.self) private var store
     @Bindable private var push = PushNotifications.shared

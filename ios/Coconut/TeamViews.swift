@@ -898,23 +898,6 @@ struct TeamJoinView: View {
     }
 }
 
-/// The row of the Team screen in Settings.
-struct TeamSettingsRow: View {
-    @Environment(AppStore.self) private var store
-
-    var body: some View {
-        NavigationLink { TeamView() } label: {
-            SettingsNavigationLabel(title: "Team", subtitle: summary)
-        }
-        .accessibilityIdentifier("team-settings")
-    }
-
-    private var summary: String {
-        guard let rooms = store.team?.rooms, !rooms.isEmpty else { return "Share pages with people" }
-        return rooms.map(\.name).joined(separator: ", ")
-    }
-}
-
 /// The notices of the app on each page of the Team screen: the connection to the Mac, and the error of an action
 /// with the text of the Mac.
 private struct TeamBanners: ViewModifier {

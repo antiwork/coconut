@@ -3945,7 +3945,6 @@ private struct TeamNoticeChange: Encodable { let closed: Bool }
 private struct TeamNoticesSeen: Encodable { let notices: [String] }
 /// The answer of a change of the named chats: the room, and the ID of the chat.
 private struct TeamChatAnswer: Decodable, Sendable { let room: TeamRoom; let chat: String }
-private struct PreferenceRequest: Encodable { let text: String }
 private struct RoutineRequest: Encodable { let name: String; let prompt: String; let cron: String; let timezone: String; let enabled: Bool }
 struct MessageRequest: Codable, Equatable { let text: String; let mode: String; let taskId: String?; let scheduledAt: String?; let attachmentIds: [String]; let recipientBotIds: [String]; var replyToMessageId: String? = nil; var mentionedBotIds: [String]? = nil; var workArtifactId: String? = nil; var workStatusOnly: Bool? = nil; var aboutDocumentId: String? = nil }
 private struct ReactionRequest: Encodable { let emoji: String; let active: Bool }
