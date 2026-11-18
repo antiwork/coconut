@@ -10,7 +10,8 @@ import UniformTypeIdentifiers
 struct ComposerPlusMenu<Items: View>: View {
     let uploading: Bool
     let enabled: Bool
-    /// Inside the box of the composer, under the text: a solid white circle. Outside it, a glass circle of its own.
+    /// Inside the box of the composer, under the text: a soft circle of the coconut brown with a brown plus, as the quiet
+    /// button (CoconutButtonStyle), never a black or white one. Outside it, a glass circle of its own.
     var embedded = false
     @ViewBuilder let items: () -> Items
     @ScaledMetric(relativeTo: .body) private var size = 32
@@ -23,10 +24,9 @@ struct ComposerPlusMenu<Items: View>: View {
                 } label: {
                     Image(systemName: uploading ? "hourglass" : "plus")
                         .font(.body.weight(.semibold))
-                        .foregroundStyle(Color.black)
+                        .foregroundStyle(BoardStyle.control)
                         .frame(width: size, height: size)
-                        .background(Color.white, in: Circle())
-                        .overlay(Circle().stroke(Color.black.opacity(0.12), lineWidth: 0.5))
+                        .background(BoardStyle.control.opacity(0.12), in: Circle())
                         .frame(minWidth: 44, minHeight: 44)
                         .contentShape(Circle())
                 }
