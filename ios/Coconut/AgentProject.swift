@@ -361,7 +361,7 @@ struct AgentProjectView: View {
         return BoardPage {
             header(project)
             #if os(iOS)
-            chatButton(bot)
+            if bot.isProject { chatButton(bot) }
             #endif
             BoardSection(project.chats.isEmpty ? AgentSection.chat.title : "Chats", count: project.count(.chat)) {
                 // The newest chats come first. The first chat of the agent, with its name, is the last row.
@@ -478,13 +478,14 @@ struct AgentProjectView: View {
             Spacer(minLength: 0)
             // A Mac window has room for the button next to the name. An iPhone shows it under the header.
             #if os(macOS)
-            chatButton(project.bot)
+            if project.bot.isProject { chatButton(project.bot) }
             #endif
         }
     }
 
-    /// A project has many chats, so the button starts a fresh one: the message box of Home with this project chosen.
-    /// The old chats are in the list below. It is the one New chat control of this page.
+    /// A project has many chats, so the button starts a fresh one: the message box with this project chosen. The old
+    /// chats are in the list below. It is the one New chat control of this page. An agent of an earlier release takes
+    /// no new chat and has no button.
     private func chatButton(_ bot: Bot) -> some View {
         Button { store.startChat(in: bot) } label: {
             Label("New chat", systemImage: "square.and.pencil")
@@ -524,11 +525,11 @@ struct AgentDestinations: ViewModifier {
 }
 
 extension AppStore {
-    /// The pages to push for a document: the page of its agent first, so Back leads to the agent. A page of a team
-    /// agent has no agent page on this Mac.
+    /// The pages to push for a document: the page of its project first, so Back leads to the project. A page of a team
+    /// agent has no project page on this Mac.
     func documentPath(_ id: String) -> [any Hashable] {
         let owner = documents?.first { $0.id == id }?.botId
-        let agent = bots.agents.first { $0.id == owner }.map { [AgentRoute(botId: $0.id) as any Hashable] } ?? []
+        let agent = bots.withoutChats.first { $0.id == owner }.map { [AgentRoute(botId: $0.id) as any Hashable] } ?? []
         return agent + [DocumentRoute(id: id)]
     }
 }

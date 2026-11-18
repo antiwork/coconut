@@ -460,6 +460,7 @@ struct MacSidebar: View {
             if let coconut = store.bots.coconutChat {
                 CoconutChatRow(bot: coconut).tag(MacSelection.bot(coconut.id))
                     .contextMenu {
+                        NewChatButton(bot: coconut)
                         Button("Show all chats") { showDeck(from: coconut) }
                         Button(BotChatMute.label(coconut)) { Task { await store.muteBot(coconut, muted: coconut.notifications) } }
                     }

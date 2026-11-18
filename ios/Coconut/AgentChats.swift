@@ -112,6 +112,12 @@ struct NewChatRequest: Equatable {
 }
 
 extension AppStore {
+    /// True when a chat can start from `bot`: its project is on the Mac, is not archived and takes new chats. The
+    /// Coconut chat of an older Mac and an agent of an earlier release take none, so they show no New chat.
+    func takesNewChat(_ bot: Bot) -> Bool {
+        bots.first { $0.id == bot.agentId }.map { !$0.archived && $0.isProject } ?? false
+    }
+
     /// Every way to start a chat ends here: the New chat of a project page, of a chat, of a menu and of the Mac. The window shows the message box (Home) with the project chosen and the cursor in its field, ready
     /// to type. Nothing is asked of the Mac yet: the first message makes the chat (sendNewChat), so a chat that the
     /// person never writes in is never made. Returns false, with the reason in the error notice, when no chat can start.
@@ -201,8 +207,7 @@ extension AppStore {
     }
 }
 
-/// The menu item "New chat" of a project or of one of its chats: the message box with that project chosen. The Coconut
-/// chat has one chat, so it has no item.
+/// The menu item "New chat" of a project or of one of its chats: the message box with that project chosen.
 struct NewChatButton: View {
     let bot: Bot
     /// Runs after the chat starts, for example to close the deck that the menu is in.
@@ -210,7 +215,7 @@ struct NewChatButton: View {
     @Environment(AppStore.self) private var store
 
     var body: some View {
-        if !bot.archived && !bot.coconut {
+        if !bot.archived && store.takesNewChat(bot) {
             // A Mac menu has titles only, as the other items of these menus. An iPhone menu shows the symbol too.
             #if os(macOS)
             Button("New chat", action: start).accessibilityIdentifier("new-chat-\(bot.id)")
@@ -226,14 +231,13 @@ struct NewChatButton: View {
 }
 
 /// The control in the header of a chat that starts a new chat in the same project: the message box with that project
-/// chosen. On the Mac it sits next to the project's title, and the menu File has the same command with
-/// Option-Command-N (Command-N makes a project, and Shift-Command-N belongs to notices).
+/// chosen. On the Mac it sits next to the project's title, and the menu File has the same command with Command-N.
 struct NewChatHeaderButton: View {
     let bot: Bot
     @Environment(AppStore.self) private var store
 
     var body: some View {
-        if !bot.archived && !bot.coconut {
+        if !bot.archived && store.takesNewChat(bot) {
             Button { store.startChat(in: bot) } label: {
                 #if os(macOS)
                 Image(systemName: "square.and.pencil").font(.body.weight(.medium))
@@ -245,7 +249,7 @@ struct NewChatHeaderButton: View {
                 #endif
             }
             #if os(macOS)
-            .help("New chat in \(bot.name) (Option-Command-N)")
+            .help("New chat in \(bot.name) (⌘N)")
             #endif
             .accessibilityLabel("New chat in \(bot.name)")
             .accessibilityIdentifier("new-chat")

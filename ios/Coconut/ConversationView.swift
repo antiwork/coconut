@@ -516,8 +516,8 @@ struct ConversationView: View {
                         .onTapGesture {
                             focusAfterPush = nil
                             composerFocused = false
-                            // The Coconut chat is not a project: its name opens its routines.
-                            if bot.coconut { pushRoute?(BotSettingsRoute(botId: bot.agentId)) }
+                            // The Coconut chat of an older Mac is no project: its name opens its routines.
+                            if bot.coconut && !bot.isProject { pushRoute?(BotSettingsRoute(botId: bot.agentId)) }
                             else { pushRoute?(AgentRoute(botId: bot.agentId)) }
                         }
                         .onLongPressGesture(minimumDuration: 0.4) { showDeck(bot) }
