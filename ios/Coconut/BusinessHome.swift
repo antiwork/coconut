@@ -160,7 +160,6 @@ struct BusinessHomePresentation {
             return MoneyRow(id: key, title: title, value: money["ltm_" + key].number, subtitle: subtitle, months: months)
         }
     }
-    var closedThrough: String? { sourceNotice("ledger") == nil ? nonempty(data["money"]["closed_through"].text) : nil }
     private func nonempty(_ text: String) -> String? { text.isEmpty ? nil : text }
     static func decimal(_ value: Double) -> String { BusinessFormat.number(value) }
     static func percent(_ value: Double, signed: Bool = false) -> String { BusinessFormat.percent(value, signed: signed) }
@@ -203,18 +202,15 @@ struct BusinessHomeContent: View {
                     .accessibilityIdentifier("business-home-daily-average").bento(3, 1, compact: (1, 1))
                 ForEach(Self.functions) { function in
                     BentoLink(route: .function(function.key)) {
-                        BentoPlace(title: function.name, detail: Self.functionDetail[function.key], symbol: function.symbol)
+                        BentoPlace(title: function.name)
                     }.accessibilityIdentifier("business-home-function-" + function.key).bento(3, 1, compact: (1, 1))
                 }
                 BentoLink(route: .projects) {
-                    BentoPlace(title: "Projects", detail: "Repositories", symbol: "square.stack.3d.up")
+                    BentoPlace(title: "Projects")
                 }.accessibilityIdentifier("business-home-projects").bento(3, 1, compact: (1, 1))
                 BentoLink(route: .reports) {
-                    BentoPlace(title: "History", detail: "Daily, monthly, yearly", symbol: "chart.bar.doc.horizontal")
+                    BentoPlace(title: "History")
                 }.accessibilityIdentifier("business-home-history").bento(3, 1, compact: (1, 1))
-            }
-            if let closed = model.closedThrough {
-                Text("Books closed through " + BusinessHomePresentation.month(closed) + " · USD").font(.caption).foregroundStyle(.secondary)
             }
         }.foregroundStyle(BoardStyle.ink)
     }
@@ -227,7 +223,6 @@ struct BusinessHomeContent: View {
     #else
     private static let functions = BusinessFunction.builtIns.filter { $0.key != "support" }
     #endif
-    private static let functionDetail = ["accounting": "Ledger and close", "marketing": "Campaigns", "support": "Queues and SLAs"]
 
     private var urgent: Bool { model.attention.contains { !$0.unavailable } }
     private var attention: some View {

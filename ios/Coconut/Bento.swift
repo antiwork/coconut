@@ -331,40 +331,20 @@ struct BentoStat: View {
     }
 }
 
-/// A symbol on a soft square of its color, as at the start of a row of a tile.
-struct BentoSymbol: View {
-    let name: String
-    var tint: Color = BoardStyle.accent
-    @ScaledMetric(relativeTo: .body) private var side: CGFloat = 28
-
-    var body: some View {
-        Image(systemName: name).font(.footnote.weight(.semibold)).foregroundStyle(tint)
-            .frame(width: side, height: side)
-            .background(tint.opacity(0.14), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-            .accessibilityHidden(true)
-    }
-}
-
-/// A tile that names a place and opens it: a function, a report, the ledger.
+/// A tile that names a place and opens it: a function, the projects, History. It has the name and nothing under it,
+/// as a tile of a number has its name and its number.
 struct BentoPlace: View {
     let title: String
-    var detail: String? = nil
-    let symbol: String
-    var tint: Color = BoardStyle.accent
 
     var body: some View {
         BentoTile {
             VStack(alignment: .leading, spacing: 0) {
                 HStack(alignment: .top) {
-
                     Spacer(minLength: 0)
                     BentoChevron()
                 }
                 Spacer(minLength: BoardStyle.Space.s)
                 Text(title).font(.headline).lineLimit(1)
-                if let detail {
-                    Text(detail).font(.caption).foregroundStyle(.secondary).lineLimit(1)
-                }
             }
         }
         .accessibilityElement(children: .combine)
