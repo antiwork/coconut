@@ -318,7 +318,7 @@ struct QuickTodoRows: View {
                     Button("Done", systemImage: "checkmark") { Task { await store.archiveBot(chat, archived: true) } }
                 }
                 .swipeActions(edge: .leading) {
-                    Button("Comment", systemImage: "text.bubble") { PendingTodos.shared.commenting = chat.id }.tint(.blue)
+                    Button("Comment", systemImage: "text.bubble") { PendingTodos.shared.commenting = chat.id }.tint(BoardStyle.husk)
                 }
                 .swipeActions(edge: .trailing, allowsFullSwipe: true) {
                     Button("Done", systemImage: "checkmark") { Task { await store.archiveBot(chat, archived: true) } }.tint(.green)

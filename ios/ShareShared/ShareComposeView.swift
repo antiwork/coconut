@@ -80,7 +80,7 @@ struct ShareComposeView: View {
         }
         .frame(width: 440)
         .background(BoardStyle.paper)
-        .tint(.primary)
+        .tint(BoardStyle.control)
         .task { noteFocused = true }
         #else
         NavigationStack {
@@ -123,7 +123,7 @@ struct ShareComposeView: View {
                 ShareDestinationList(model: model) { picking = false }
             }
         }
-        .tint(.primary)
+        .tint(BoardStyle.control)
         #endif
     }
 

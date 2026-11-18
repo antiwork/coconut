@@ -188,8 +188,6 @@ struct OnboardingView: View {
                 Label(copied ? "Copied" : "Copy message", systemImage: copied ? "checkmark" : "doc.on.doc")
             }
             .buttonStyle(.borderedProminent)
-            // The window tints its controls black and white. The one action of the page keeps the system blue.
-            .tint(.accentColor)
             .keyboardShortcut(.defaultAction)
             .accessibilityIdentifier("copy-hermes-message")
         }

@@ -629,7 +629,7 @@ struct MacSidebar: View {
                     Button { Task { await store.archiveBot(bot, archived: !bot.archived) } } label: {
                         Label(bot.archived ? "Unarchive" : "Archive", systemImage: bot.archived ? "tray.and.arrow.up" : "archivebox")
                     }
-                    .tint(bot.archived ? .blue : .gray)
+                    .tint(bot.archived ? BoardStyle.husk : .gray)
                 }
             }
             .accessibilityIdentifier("sidebar-bot-\(bot.id)")

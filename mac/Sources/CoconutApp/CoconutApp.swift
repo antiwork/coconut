@@ -37,7 +37,8 @@ struct CoconutApp: App {
                 .modifier(ShareDirectoryPublisher())
                 .modifier(MacShareDelivery(model: model))
                 .environment(store)
-                .tint(.primary)
+                // Controls take the coconut brown of the app, never black (BoardStyle.control).
+                .tint(BoardStyle.control)
                 .modifier(BannerWindowOpener(banners: banners))
                 .onOpenURL { url in
                     // A team-only Mac pairs no iPhone, and it joins a team with coconut team join.

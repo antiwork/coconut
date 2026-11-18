@@ -271,7 +271,7 @@ struct DecisionInboxView: View {
         let action: InboxSwipeAction = offset > 0 ? .dismiss : .later
         return ZStack(alignment: offset < 0 ? .topTrailing : .topLeading) {
             if offset != 0 {
-                let color = action == .dismiss ? BoardStyle.destructive : BoardStyle.ink
+                let color = action == .dismiss ? BoardStyle.destructive : BoardStyle.control
                 RoundedRectangle(cornerRadius: BoardStyle.Radius.large).fill(color.opacity(min(abs(offset) / (width * 0.4), 0.85)))
                 VStack(alignment: offset < 0 ? .trailing : .leading, spacing: 8) {
                     Image(systemName: action == .dismiss ? "xmark.circle" : "clock")

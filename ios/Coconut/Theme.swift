@@ -22,10 +22,19 @@ enum BoardStyle {
     static let green = Color.adaptive { dark, _ in
         dark ? PlatformColor(red: 0.56, green: 0.75, blue: 0.60, alpha: 1) : PlatformColor(red: 0.27, green: 0.43, blue: 0.32, alpha: 1)
     }
+    /// The brown of the husk in the app icon, the same in light and dark mode. A swipe action takes it, because its
+    /// label is always white.
+    static let husk = Color(platformColor: PlatformColor(red: 0.48, green: 0.31, blue: 0.18, alpha: 1))
+    /// The coconut brown of the app: the husk in light mode, and a lighter tan in dark mode, so it reads on the dark page.
+    static let brown = Color.adaptive { dark, _ in
+        dark ? PlatformColor(red: 0.83, green: 0.65, blue: 0.45, alpha: 1) : PlatformColor(red: 0.48, green: 0.31, blue: 0.18, alpha: 1)
+    }
     static let line = Color.adaptive { dark, highContrast in
         (dark ? PlatformColor.white : .black).withAlphaComponent(highContrast ? 0.4 : 0.1)
     }
-    static let control = Color.primary
+    /// The fill of each button and the tint of the app: the selected tab, the toolbar, links and switches. It is coconut
+    /// brown, never black: the person rejects black buttons. The unread badge takes the green of the New line.
+    static let control = brown
     static let controlLabel = Color(platformColor: .pageBackground)
     // Semantic tints. Each one names a meaning, not a hue.
     static let positive = green
@@ -76,9 +85,9 @@ enum BoardStyle {
     #endif
 }
 
-/// The button of Coconut. The primary kind is a capsule in the ink of the app with a label in the paper color, as the
-/// send button of the composer and the unread badge. The quiet kind is a soft capsule of the text color, for the
-/// second action next to it. The same on a Mac and on an iPhone; an iPhone gets the height that a finger needs.
+/// The button of Coconut. The primary kind is a coconut brown capsule (BoardStyle.control) with a label in the paper
+/// color, as the send button of the composer. The quiet kind is a soft capsule of the same brown with a brown label,
+/// for the second action next to it. The same on a Mac and on an iPhone; an iPhone gets the height that a finger needs.
 struct CoconutButtonStyle: ButtonStyle {
     enum Kind { case primary, quiet }
 
@@ -99,8 +108,8 @@ struct CoconutButtonStyle: ButtonStyle {
             .lineLimit(1)
             .padding(.horizontal, large ? BoardStyle.Space.l : BoardStyle.Space.m)
             .frame(minHeight: Self.height + (large ? 8 : 0))
-            .foregroundStyle(kind == .primary ? BoardStyle.controlLabel : BoardStyle.ink)
-            .background(kind == .primary ? BoardStyle.control : Color.primary.opacity(0.08), in: Capsule())
+            .foregroundStyle(kind == .primary ? BoardStyle.controlLabel : BoardStyle.control)
+            .background(kind == .primary ? BoardStyle.control : BoardStyle.control.opacity(0.12), in: Capsule())
             .opacity(!enabled ? 0.4 : configuration.isPressed ? 0.65 : 1)
             .contentShape(Capsule())
     }

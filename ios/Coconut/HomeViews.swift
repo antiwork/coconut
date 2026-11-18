@@ -187,7 +187,7 @@ struct HomeLaunchView: View {
         Button { Task { await store.muteBot(bot, muted: bot.notifications) } } label: {
             Label(BotChatMute.label(bot), systemImage: BotChatMute.symbol(bot))
         }
-        .tint(.indigo)
+        .tint(BoardStyle.husk)
         .accessibilityIdentifier("mute-bot-\(bot.id)")
     }
 
@@ -199,7 +199,7 @@ struct HomeLaunchView: View {
         } label: {
             Label(mute.label, systemImage: mute.symbol)
         }
-        .tint(.indigo)
+        .tint(BoardStyle.husk)
         .disabled(TeamChatMute.waits(mute.chat, store.teamChatMuteChoices))
         .accessibilityIdentifier("chat-row-mute-swipe")
     }
@@ -277,7 +277,7 @@ struct ArchivedAgentsView: View {
                     Button { Task { await store.archiveBot(bot, archived: false) } } label: {
                         Label("Unarchive", systemImage: "tray.and.arrow.up")
                     }
-                    .tint(.blue)
+                    .tint(BoardStyle.husk)
                     .accessibilityIdentifier("unarchive-bot-\(bot.id)")
                 }
                 .homeRow()
@@ -569,9 +569,8 @@ struct MentionBadge: View {
     }
 }
 
-/// The unread count of a chat: a filled round badge in the ink of the app with digits in the paper color, as the
-/// round send button of the composer. One digit gives a circle, more digits a capsule of the same height, and over 99
-/// shows "99+".
+/// The unread count of a chat: a filled round badge in the green of the New line of a chat, with digits in the paper
+/// color. One digit gives a circle, more digits a capsule of the same height, and over 99 shows "99+".
 struct UnreadBadge: View {
     let count: Int
     @ScaledMetric(relativeTo: .subheadline) private var size = BoardStyle.badge
@@ -585,16 +584,16 @@ struct UnreadBadge: View {
             .fixedSize()
             .padding(.horizontal, Self.sidePadding(text))
             .frame(minWidth: size, minHeight: size)
-            // The ink as a plain color: a Mac sidebar draws `Color.primary` with the vibrancy of its material, which
-            // would make the fill of the badge pale.
+            // A plain color: a Mac sidebar draws `Color.primary` with the vibrancy of its material, which would make
+            // the fill of the badge pale.
             .background(Self.fill, in: Capsule())
             .accessibilityElement()
             .accessibilityLabel(Self.spoken(count))
             .accessibilityIdentifier("unread-badge")
     }
 
-    /// The ink of the app (the fill of the send button) without vibrancy: black in light mode, white in dark mode.
-    static let fill = Color.adaptive { dark, _ in dark ? .white : .black }
+    /// The green of the New line of a chat (BoardStyle.green), never black. Unread is green everywhere.
+    static let fill = BoardStyle.green
 
     /// The digits of the badge. Over 99 shows "99+".
     nonisolated static func text(_ count: Int) -> String { count > 99 ? "99+" : "\(count)" }

@@ -15,6 +15,9 @@ theme
   accent.warm = light-dark(#b84524, #fc855c)
   // BoardStyle.green (BoardStyle.positive): the dot of an agent that works.
   status.positive = light-dark(#456d52, #8fbf99)
+  // BoardStyle.control: the coconut brown of the husk in the icon, the fill of each button and the accent of the app
+  // (accent-color on the root), a lighter tan in dark mode. Never black. The unread badge is status.positive.
+  control.fill = light-dark(#7a4e2d, #d4a574)
   // The Needs attention card (AttentionCard): the destructive red at 8% under the card, 22% on its edge, 18% between
   // its rows, and white on the pill of the count.
   attention.fill = light-dark(rgb(255 56 60 / 0.08), rgb(255 66 69 / 0.08))

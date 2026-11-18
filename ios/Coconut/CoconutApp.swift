@@ -20,7 +20,8 @@ struct CoconutApp: App {
                     store = AppStore(demo: on)
                     store.start()
                 }
-                .tint(.primary)
+                // Controls take the coconut brown of the app, never black (BoardStyle.control).
+                .tint(BoardStyle.control)
                 .task { store.start() }
                 .onOpenURL { url in
                     // A Hermes agent sends this link. Coconut shows the Mac address before it pairs.
