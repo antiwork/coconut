@@ -160,7 +160,7 @@ enum AttentionRules {
         return BusinessHomePresentation(report: report, now: now).attention.compactMap { row in
             guard !row.unavailable, row.count > 0 else { return nil }
             return AttentionItem(kind: .business, count: row.count, value: "\(row.count)", label: row.label,
-                                 detail: row.detail ?? "Finance", symbol: row.symbol, target: .business(row.route),
+                                 detail: row.detail ?? "", symbol: row.symbol, target: .business(row.route),
                                  key: row.id)
         }
     }
@@ -302,7 +302,10 @@ struct AttentionCard: View {
                     .frame(width: 20)
                 VStack(alignment: .leading, spacing: BoardStyle.Space.line) {
                     Text(item.label).font(.body.weight(.semibold)).foregroundStyle(Self.tint)
-                    Text(item.detail).font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
+                    // A breach of the business without a record to name has its label only.
+                    if !item.detail.isEmpty {
+                        Text(item.detail).font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
+                    }
                 }
                 Spacer(minLength: BoardStyle.Space.s)
                 Text(item.value).font(.title2.weight(.semibold).monospacedDigit()).foregroundStyle(Self.tint)
@@ -313,7 +316,7 @@ struct AttentionCard: View {
         }
         .buttonStyle(HomePressStyle())
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("\(item.label), \(item.value), \(item.detail)")
+        .accessibilityLabel([item.label, item.value, item.detail].filter { !$0.isEmpty }.joined(separator: ", "))
         .accessibilityIdentifier("attention-\(item.id)")
     }
 }
