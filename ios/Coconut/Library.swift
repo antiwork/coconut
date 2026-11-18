@@ -120,8 +120,9 @@ struct DocumentRoute: Hashable {
     let id: String
 }
 
-/// The Library tab: the pinned documents, then the other documents of the bots, grouped by bot. The bot with the
-/// latest update comes first, and a pin does not move a bot.
+/// All pages: the pinned documents, then the other documents of the bots, grouped by bot. The bot with the latest
+/// update comes first, and a pin does not move a bot. The reports of the business are on Dashboards and in the Mac
+/// sidebar (Finance, Support), not here.
 struct LibraryView: View {
     @Environment(AppStore.self) private var store
     /// Shows the documents of this bot only, as the inspector of a Mac chat does.
@@ -133,11 +134,10 @@ struct LibraryView: View {
                                        botId: botId)
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 0) {
-                if botId == nil {
-                    BusinessReportTiles().padding(.horizontal, BoardStyle.Space.l).padding(.top, BoardStyle.Space.l).padding(.bottom, BoardStyle.Space.m)
-                }
-                if store.documents?.isEmpty == true && botId != nil {
-                    emptyLibrary
+                // The list loaded and this view has no page: no page at all, or none of this bot.
+                if store.documents != nil && sections.pinned.isEmpty && sections.groups.isEmpty {
+                    QuietEmptyState(symbol: "rectangle.3.group", title: "No pages yet",
+                                    message: "Agents keep pages here: notes, checklists and charts that they update.")
                 }
                 if !sections.pinned.isEmpty {
                     header("Starred") {
@@ -192,16 +192,6 @@ struct LibraryView: View {
                                                  set: { deleting = $0 })))
         .accessibilityIdentifier("library-document-\(document.key)")
         .padding(.horizontal, BoardStyle.Space.l)
-    }
-
-    private var emptyLibrary: some View {
-        VStack(spacing: 8) {
-            Image(systemName: "rectangle.3.group").font(.largeTitle.weight(.light)).foregroundStyle(.secondary)
-            Text("Your Library").font(.title3.weight(.semibold))
-            Text("Agents keep pages here: notes, checklists, and charts that they update.")
-                .font(.subheadline).foregroundStyle(.secondary).multilineTextAlignment(.center)
-        }
-        .frame(maxWidth: .infinity).padding(.horizontal, 40).padding(.top, 120)
     }
 }
 

@@ -47,7 +47,7 @@ The fallback chain of the default profile is `fallback_providers`, then the lega
 ## Business
 
 Accounting, Marketing and Support serve every project. A project repository never becomes a function repository.
-The Business screen and Library reports read GitHub through Coconut's connected account. They require no additional
+The Business screen and its reports read GitHub through Coconut's connected account. They require no additional
 SaaS connection. `COCONUT_BUSINESS_OWNER` selects the organization (default `antiwork`). Register a project by adding
 the `coconut-project` topic. The native project picker preserves the repository's other topics.
 

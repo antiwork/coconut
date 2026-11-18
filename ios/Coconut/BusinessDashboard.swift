@@ -30,36 +30,6 @@ struct BusinessWorkspaceView: View {
     }
 }
 
-/// The reports as tiles. The Library shows them over the pages of the agents, and a function shows its own.
-struct BusinessReportTiles: View {
-    var function: String? = nil
-    static let details = ["overview": "GMV, money and queues", "accounting": "Revenue, EBITDA, net income", "support": "Queues and resolution times",
-                          "risk": "Review queue and chargebacks", "engineering": "Open pull requests"]
-    private var keys: [String] {
-        // History is a tile of its own on Business home, so the report grid never offers it as a report.
-        BusinessReport.keys.filter { $0 != "periods" }
-            .filter { function == nil || $0 == function || $0 == "overview" || (function == "support" && $0 == "risk") }
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: BoardStyle.Space.m) {
-            Text("Reports").font(.subheadline.weight(.semibold)).foregroundStyle(.secondary).accessibilityAddTraits(.isHeader)
-            BentoBoard {
-                ForEach(keys, id: \.self) { key in
-                    BentoLink(route: .report(key)) {
-                        BentoPlace(title: BusinessReport.titles[key] ?? key, detail: Self.details[key], symbol: BusinessReport.symbols[key] ?? "doc.text")
-                    }.accessibilityIdentifier("business-report-" + key).bento(3, 1, compact: (1, 1))
-                }
-                if function == nil || function == "accounting" {
-                    BentoLink(route: .ledger) {
-                        BentoPlace(title: "Beancount ledger", detail: "The books, file by file", symbol: "text.document", tint: BentoColor.money)
-                    }.accessibilityIdentifier("business-report-ledger").bento(3, 1, compact: (1, 1))
-                }
-            }
-        }
-    }
-}
-
 struct BusinessReportView: View {
     @Environment(AppStore.self) private var store
     let key: String

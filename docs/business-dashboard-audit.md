@@ -8,12 +8,11 @@ views are `ios/Coconut/Business*.swift`; the Mac target compiles the same files.
 | Screen | View | Opens from | Data |
 | --- | --- | --- | --- |
 | Business home | `BusinessHomeView`, `BusinessHomeContent` | Profile, "Business" | `overview` report (`home.json`) |
-| Business report | `BusinessReportView` + `MoneyDashboard` | Home GMV tile, Library | `overview` (`home.json`) |
+| Business report | `BusinessReportView` + `MoneyDashboard` | Home GMV tile | `overview` (`home.json`) |
 | Accounting report | `BusinessReportView` + `MoneyDashboard(accounting:)` | Home money rows, Accounting function | `accounting` (`home.json`) |
 | Support report | `BusinessReportView` + `SupportDashboard` | Home attention rows, Support function | `support.json` |
-| Risk report | `BusinessReportView` + `RiskDashboard` | Home "Risk review", Library | `risk.json` |
-| Engineering report | `BusinessReportView` + `EngineeringDashboard` | Home "Pull requests", Library | `prs.json` |
-| Report library | `BusinessReportLibrary` | Top of the Library tab, "Library" of a function | Static list |
+| Risk report | `BusinessReportView` + `RiskDashboard` | Home "Risk review" | `risk.json` |
+| Engineering report | `BusinessReportView` + `EngineeringDashboard` | Home "Pull requests" | `prs.json` |
 | Function | `BusinessWorkspaceView` | Functions menu of Home | Overview, Work, Library |
 | Work list, work, projects | `BusinessWorkListView`, `BusinessWorkDetailView`, `BusinessProjectsView` | Function, Projects | GitHub issues |
 | Ledger | `BusinessLedgerView`, `BusinessLedgerFileView` | Accounting, Library | Beancount files |
