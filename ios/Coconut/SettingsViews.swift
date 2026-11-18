@@ -65,14 +65,6 @@ struct MacConnectionSettingsView: View {
                     Text("All agents start fresh after current work finishes. Chats, memory, and routines stay.")
                 }
             }
-            Section("When the app closes") {
-                // The style is on the lines, not on the section: the header keeps the look of each other header.
-                Group {
-                    Text("Your Mac keeps working when you close Coconut.")
-                    Text("Open the app to sync messages and cards. Push alerts can arrive while the app is closed.")
-                    Text("When your phone cannot reach the Mac, it shows the last known state.")
-                }.font(.subheadline).foregroundStyle(.secondary)
-            }
             if let error = store.syncIssue ?? shownError {
                 Section { InlineError(error) }
             }
