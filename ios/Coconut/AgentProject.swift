@@ -203,10 +203,10 @@ struct AgentsView: View {
                     }
                 }
             }
-            // One lane for each agent with work on the Hermes board of the Mac.
+            // One lane for each project with work on the Hermes board of the Mac: its queue, as on its page.
             let lanes = projects.filter { !(store.queues[$0.id]?.isEmpty ?? true) }
             if !lanes.isEmpty {
-                BoardSection("Work", count: lanes.count) {
+                BoardSection("Queue", count: lanes.count) {
                     ForEach(lanes) { project in
                         let queue = store.queues[project.id] ?? AgentQueue()
                         BoardRow(symbol: queue.running > 0 ? "circle.dotted" : queue.needsYou > 0 ? "circle.inset.filled" : "clock",
@@ -230,7 +230,8 @@ struct AgentsView: View {
             BoardSection("Usage") {
                 #if os(iOS)
                 // The iPhone Home has no tile for the agents that work now, so the page of the agents has the row.
-                BoardRow(symbol: "circle.dotted", title: "Live", value: "\(LiveFeed.agents(bots: store.bots, tasks: store.tasks).count) working")
+                // The symbol of the Live place, as its row of the Mac sidebar has it.
+                BoardRow(symbol: "dot.radiowaves.left.and.right", title: "Live", value: "\(LiveFeed.agents(bots: store.bots, tasks: store.tasks).count) working")
                     .boardButton("agents-live") { pushRoute?(LiveRoute()) }
                 #endif
                 BoardRow(symbol: "dollarsign.circle", title: "Spend", value: store.spendTodayTotal)
@@ -390,7 +391,7 @@ struct AgentProjectView: View {
                 }
             }
             BoardSection(AgentSection.todos.title, count: project.count(.todos)) {
-                if project.todos.isEmpty { BoardEmptyRow(text: "No open work. The agent lists what it works on here.") }
+                if project.todos.isEmpty { BoardEmptyRow(text: "No open tasks.") }
                 ForEach(project.todos) { item in
                     BoardRow(symbol: AgentTodos.symbol(item.status),
                              tint: item.status == "blocked" ? BoardStyle.destructive
@@ -415,7 +416,7 @@ struct AgentProjectView: View {
                 .accessibilityIdentifier("agent-queue")
             }
             BoardSection(AgentSection.pages.title, count: project.count(.pages)) {
-                if project.pages.isEmpty { BoardEmptyRow(text: "No pages. The agent keeps notes, checklists and charts here.") }
+                if project.pages.isEmpty { BoardEmptyRow(text: "No pages.") }
                 ForEach(project.pages) { page in
                     BoardRow(symbol: page.isPinned ? "star.fill" : page.symbol, title: page.title, detail: page.detail,
                              value: page.endText)
@@ -428,7 +429,7 @@ struct AgentProjectView: View {
                     .accessibilityIdentifier("agent-add-routine")
             } rows: {
                 if project.routines.isEmpty && project.checks.isEmpty {
-                    BoardEmptyRow(text: "No routines. A routine runs the agent on a schedule.")
+                    BoardEmptyRow(text: "No routines.")
                 }
                 ForEach(project.routines + project.checks) { routine in
                     BoardRow(symbol: routine.error != nil ? "exclamationmark.circle" : routine.enabled ? "repeat" : "pause",
@@ -471,7 +472,10 @@ struct AgentProjectView: View {
         let role = project.bot.role.trimmingCharacters(in: .whitespacesAndNewlines)
         return HStack(alignment: .center, spacing: BoardStyle.Space.l) {
             VStack(alignment: .leading, spacing: BoardStyle.Space.xs) {
+                // The Mac window shows the name in the page. An iPhone has it in the bar, as each pushed page.
+                #if os(macOS)
                 Text(project.bot.name).font(.title.weight(.bold)).lineLimit(1).minimumScaleFactor(0.7)
+                #endif
                 if !role.isEmpty { Text(role).font(.subheadline).foregroundStyle(.secondary).lineLimit(2) }
                 AgentStatusLabel(status: project.status).accessibilityElement(children: .combine)
                     .accessibilityIdentifier("agent-status")
