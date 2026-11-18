@@ -120,8 +120,8 @@ struct MarkAllReadCommand: View {
     }
 }
 
-/// Coconut > Settings, with Command-comma. It brings the main window to the front on Profile. A Mac that runs Coconut
-/// for a team only has no Profile: its window shows the note of that mode.
+/// Coconut > Settings, with Command-comma. It brings the main window to the front on You. A Mac that runs Coconut
+/// for a team only has no such page: its window shows the note of that mode.
 struct ProfileCommand: View {
     @ObservedObject var model: AppModel
     @Environment(\.openWindow) private var openWindow

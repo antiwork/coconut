@@ -20,7 +20,7 @@ enum MacSelection: Hashable {
     /// The teams, their people and their notice boards. No row of the sidebar leads here: a notice notification does,
     /// and the boards also sit under Profile > Team.
     case people
-    /// The person and this device.
+    /// The person and this device: "You" in the sidebar, as the tab of the iPhone.
     case profile
     case bot(String)
     /// A To-do of an agent: its chat, with the work item attached.
@@ -274,7 +274,7 @@ struct MacMainWindow: View {
         case .support:
             placeStack { BusinessWorkspaceView(function: "support") }
         case .profile:
-            placeStack { ProfileView().navigationTitle("Profile") }
+            placeStack { ProfileView().navigationTitle("You") }
         case .document(let documentId):
             // A page has no links to other pages, so its stack has only the page.
             NavigationStack { DocumentView(documentId: documentId).id(documentId) }
@@ -422,8 +422,8 @@ struct DetailColumnBottomInset: NSViewRepresentable {
     }
 }
 
-/// The sidebar: the Coconut chat, then Home, Projects, People and Profile, then the chats: the pinned bots and the pinned pages, and the chats: every other bot and each team, with the
-/// last message.
+/// The sidebar: the Coconut chat, then the places (Home, Live, Spend, Finance, Support, Projects and You), then the
+/// chats in sections: Starred, Unread, Team chats, Project chats and Archived.
 struct MacSidebar: View {
     @Environment(AppStore.self) private var store
     @Environment(\.showChatDeck) private var showChatDeck
@@ -487,7 +487,8 @@ struct MacSidebar: View {
             MacSidebarLabel(title: "Projects", symbol: "square.stack.3d.up")
                 .tag(MacSelection.agents)
                 .accessibilityIdentifier("sidebar-agents")
-            MacSidebarLabel(title: "Profile", symbol: "person.crop.circle")
+            // The person and this device: "You", as the tab of the iPhone.
+            MacSidebarLabel(title: "You", symbol: "person.crop.circle")
                 .tag(MacSelection.profile)
                 .accessibilityIdentifier("sidebar-profile")
             // The chats, in the sections of Slack: each one folds with its header, and the Mac keeps the choice. A
