@@ -384,18 +384,19 @@ struct ChatDeckCard: View {
         Menu {
             NewChatButton(bot: bot, done: close)
             if !bot.isChat && !bot.coconut {
-                item(bot.pinned ? "Unstar project" : "Star project", bot.pinned ? "star.slash" : "star") {
+                item(bot.pinned ? "Unstar" : "Star", bot.pinned ? "star.slash" : "star") {
                     Task { await store.pinBot(bot, pinned: !bot.pinned) }
                 }
             }
             item(BotChatMute.label(bot), BotChatMute.symbol(bot)) {
                 Task { await store.muteBot(bot, muted: bot.notifications) }
             }
-            if !bot.coconut {
-                item(bot.isChat ? "Archive chat" : "Archive project", "archivebox") {
+            // A project stays, and so does the Coconut chat (Bot.canRemove).
+            if bot.canRemove {
+                item(bot.isChat ? "Archive chat" : "Archive agent", "archivebox") {
                     Task { await store.archiveBot(bot, archived: true) }
                 }
-                item(bot.isChat ? "Delete chat" : "Delete project", "trash", role: .destructive) { delete(bot) }
+                item(bot.isChat ? "Delete chat" : "Delete agent", "trash", role: .destructive) { delete(bot) }
             }
         } label: {
             Image(systemName: "ellipsis")

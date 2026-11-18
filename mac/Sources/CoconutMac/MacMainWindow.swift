@@ -611,16 +611,24 @@ struct MacSidebar: View {
                     }
                     Button(BotChatMute.label(bot)) { Task { await store.muteBot(bot, muted: bot.notifications) } }
                 }
-                Button(bot.archived ? "Unarchive" : "Archive") { Task { await store.archiveBot(bot, archived: !bot.archived) } }
-                Divider()
-                Button(bot.isChat ? "Delete Chat…" : "Delete Project…", role: .destructive) { deleting = bot }
-            }
-            // A swipe to the left on the trackpad archives the agent, as in the Chats list of the iPhone.
-            .swipeActions(edge: .trailing, allowsFullSwipe: true) {
-                Button { Task { await store.archiveBot(bot, archived: !bot.archived) } } label: {
-                    Label(bot.archived ? "Unarchive" : "Archive", systemImage: bot.archived ? "tray.and.arrow.up" : "archivebox")
+                // A project stays, and so does the Coconut chat: the Mac refuses to archive or delete them
+                // (Bot.canRemove). An archived row can always come back.
+                if bot.archived || bot.canRemove {
+                    Button(bot.archived ? "Unarchive" : "Archive") { Task { await store.archiveBot(bot, archived: !bot.archived) } }
                 }
-                .tint(bot.archived ? .blue : .gray)
+                if bot.canRemove {
+                    Divider()
+                    Button(bot.isChat ? "Delete chat…" : "Delete agent…", role: .destructive) { deleting = bot }
+                }
+            }
+            // A swipe to the left on the trackpad archives a chat, as in the list of the iPhone.
+            .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+                if bot.archived || bot.canRemove {
+                    Button { Task { await store.archiveBot(bot, archived: !bot.archived) } } label: {
+                        Label(bot.archived ? "Unarchive" : "Archive", systemImage: bot.archived ? "tray.and.arrow.up" : "archivebox")
+                    }
+                    .tint(bot.archived ? .blue : .gray)
+                }
             }
             .accessibilityIdentifier("sidebar-bot-\(bot.id)")
     }

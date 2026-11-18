@@ -81,8 +81,8 @@ struct HomeLaunchView: View {
                         .modifier(ChatDeckRow(botId: bot.id) { pushRoute?(ConversationRoute(botId: bot.id)) })
                         .accessibilityIdentifier(ChatList.isCoconut(bot) ? "coconut-chat" : "bot-conversation-\(bot.id)")
                         .swipeActions(edge: .trailing, allowsFullSwipe: true) {
-                            // The Coconut chat stays: it is where the person changes Coconut.
-                            if !ChatList.isCoconut(bot) { archiveButton(bot) }
+                            // A project stays, and so does the Coconut chat (Bot.canRemove).
+                            if bot.canRemove { archiveButton(bot) }
                             muteButton(bot)
                         }
                         .homeRow()
@@ -242,8 +242,8 @@ struct HomeLaunchView: View {
 
 }
 
-/// The archived chats and projects: swipe left or hold a row to bring one back. A row opens the conversation, which keeps its
-/// history.
+/// The archived chats, and the archived agents of an earlier release: swipe left or hold a row to bring one back. A row
+/// opens the conversation, which keeps its history.
 struct ArchivedAgentsView: View {
     @Environment(AppStore.self) private var store
     @Environment(\.pushRoute) private var pushRoute
@@ -268,7 +268,7 @@ struct ArchivedAgentsView: View {
                             Button("Unarchive", systemImage: "tray.and.arrow.up") {
                                 Task { await store.archiveBot(bot, archived: false) }
                             }
-                            Button(bot.isChat ? "Delete chat" : "Delete project", systemImage: "trash", role: .destructive) { deleting = bot }
+                            Button(bot.isChat ? "Delete chat" : "Delete agent", systemImage: "trash", role: .destructive) { deleting = bot }
                         }
                 }
                 .buttonStyle(HomePressStyle())

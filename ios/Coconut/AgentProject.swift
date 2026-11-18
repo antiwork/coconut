@@ -438,12 +438,15 @@ struct AgentProjectView: View {
                 }
             }
             AgentUsageCard(botId: bot.id)
-            BoardSection(AgentSection.manage.title) {
-                BoardRow(symbol: bot.archived ? "tray.and.arrow.up" : "archivebox",
-                         title: bot.archived ? "Unarchive" : "Archive", chevron: false)
-                    .boardButton("agent-archive") { Task { await store.archiveBot(bot, archived: !bot.archived) } }
-                BoardRow(symbol: "trash", tint: BoardStyle.destructive, title: "Delete project", chevron: false)
-                    .boardButton("agent-delete") { deleting = bot }
+            // A project stays. Only an agent of an earlier release can go (Bot.canRemove).
+            if bot.canRemove {
+                BoardSection(AgentSection.manage.title) {
+                    BoardRow(symbol: bot.archived ? "tray.and.arrow.up" : "archivebox",
+                             title: bot.archived ? "Unarchive" : "Archive", chevron: false)
+                        .boardButton("agent-archive") { Task { await store.archiveBot(bot, archived: !bot.archived) } }
+                    BoardRow(symbol: "trash", tint: BoardStyle.destructive, title: "Delete agent", chevron: false)
+                        .boardButton("agent-delete") { deleting = bot }
+                }
             }
         }
         .navigationTitle(bot.name).inlineNavigationTitle()

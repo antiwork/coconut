@@ -8,6 +8,10 @@ extension Bot {
     var isChat: Bool { chatOf != nil }
     /// A project takes new chats. An older Mac sends no `project`: each agent but the Coconut chat is then a project.
     var isProject: Bool { !isChat && (project ?? !coconut) }
+    /// The Mac keeps the Coconut chat and each project: it refuses to archive or delete them (coconut_chat.py,
+    /// bot_profiles.py). A further chat can go, and so can an agent of an earlier release. No view offers an archive
+    /// or a delete that the Mac refuses.
+    var canRemove: Bool { isChat || !(coconut || project == true) }
 
     /// The agent of this bot: the bot itself, or the agent of a chat. The settings and the pages belong to it.
     var agentId: String { chatOf ?? id }
