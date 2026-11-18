@@ -183,7 +183,8 @@ struct AgentsView: View {
 
     var body: some View {
         let projects = AgentProject.list(store.agentProjectInput)
-        let archived = store.bots.projects.filter(\.archived).count
+        // Everything that the Archived page lists: a project stays, so these are chats and agents of an earlier release.
+        let archived = store.bots.filter(\.archived).count
         BoardPage {
             // The Mac window shows the title of this place in the page, with the counts. An iPhone has the title in the
             // bar, as each pushed page.
@@ -215,7 +216,7 @@ struct AgentsView: View {
                     }
                 }
             }
-            // What the projects keep: their pages, and the projects that the person put away.
+            // What the projects keep: their pages, and the chats that the person put away.
             BoardSection("Library") {
                 BoardRow(symbol: "rectangle.3.group", title: "All pages",
                          value: store.documents.map { "\($0.count)" })
