@@ -27,6 +27,10 @@ import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 //   - `{"type":"open","id":n,"auth":"token"|"ticket","hash":h}` when a client connects.
 //   - `{"type":"closed","id":n}` when a client socket closes or the channel does not exist.
 //   - `{"type":"error","code":c}` when a control message is invalid or a limit is full.
+// - A client that cannot set headers on a socket (Exact's sockets) first sends `POST /v1/tunnels/<route>/client-ticket`
+//   with its `Authorization` (a client token or a pairing ticket). The relay answers `{"ticket":t}`, a socket ticket
+//   that works once, for 60 seconds, and carries that authorization. The client then opens
+//   `/v1/tunnels/<route>/client?ticket=<t>` without a header. A pairing ticket is still used up only by the socket.
 // - Close codes:
 //   - 1003 for a text message other than `ping`, or a host message shorter than 4 bytes.
 //   - 1008 for the channels of a removed client token.
@@ -41,6 +45,8 @@ const MAX_FRAME = 70 * 1024;
 const MAX_CHANNELS = 8;
 const MAX_CLIENT_TOKENS = 32;
 const MAX_TICKETS = 8;
+const MAX_SOCKET_TICKETS = 16;
+const SOCKET_TICKET_MS = 60000;
 const FRAMES_PER_MINUTE = 3000;
 // How long a client waits for a host.
 const HOST_WAIT_MS = 5000;
@@ -99,15 +105,26 @@ export async function handleTunnel(request, env) {
     }
     return env.TUNNELS.get(env.TUNNELS.idFromName(route)).fetch('https://tunnel/register', { method: 'POST' });
   }
-  const match = /^\/v1\/tunnels\/([a-f0-9]{64})\/(host|client)$/.exec(path);
+  const match = /^\/v1\/tunnels\/([a-f0-9]{64})\/(host|client|client-ticket)$/.exec(path);
   if (!match) return null;
+  const authorization = request.headers.get('authorization') || '';
+  if (match[2] === 'client-ticket') {
+    if (request.method !== 'POST') return new Response(null, { status: 405 });
+    if (!/^(Bearer|Ticket) [a-f0-9]{64}$/.test(authorization)) return new Response(null, { status: 401 });
+    if (!(await env.TUNNEL_CONNECT.limit({ key: ip })).success) return new Response(null, { status: 429 });
+    return env.TUNNELS.get(env.TUNNELS.idFromName(match[1]))
+      .fetch('https://tunnel/client-ticket', { method: 'POST', headers: { authorization } });
+  }
   if (request.method !== 'GET') return new Response(null, { status: 405 });
   if (request.headers.get('upgrade')?.toLowerCase() !== 'websocket') return new Response(null, { status: 426 });
-  if (!/^(Bearer|Ticket) [a-f0-9]{64}$/.test(request.headers.get('authorization') || '')) {
+  // A client socket without a header carries a socket ticket instead.
+  const ticket = match[2] === 'client' && !authorization ? new URL(request.url).searchParams.get('ticket') : null;
+  if (ticket !== null ? !HEX64.test(ticket) : !/^(Bearer|Ticket) [a-f0-9]{64}$/.test(authorization)) {
     return new Response(null, { status: 401 });
   }
   if (!(await env.TUNNEL_CONNECT.limit({ key: ip })).success) return new Response(null, { status: 429 });
-  return env.TUNNELS.get(env.TUNNELS.idFromName(match[1])).fetch(new Request(`https://tunnel/${match[2]}`, request));
+  const target = `https://tunnel/${match[2]}${ticket === null ? '' : `?ticket=${ticket}`}`;
+  return env.TUNNELS.get(env.TUNNELS.idFromName(match[1])).fetch(new Request(target, request));
 }
 
 export class Tunnel {
@@ -117,6 +134,7 @@ export class Tunnel {
     this.sql.exec(`CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value);
       CREATE TABLE IF NOT EXISTS clients (hash TEXT PRIMARY KEY);
       CREATE TABLE IF NOT EXISTS tickets (hash TEXT PRIMARY KEY, expires INTEGER NOT NULL);
+      CREATE TABLE IF NOT EXISTS socket_tickets (hash TEXT PRIMARY KEY, scheme TEXT NOT NULL, digest TEXT NOT NULL, expires INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS frames (minute INTEGER PRIMARY KEY, count INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS registrations (hour INTEGER PRIMARY KEY, count INTEGER NOT NULL);`);
     ctx.setWebSocketAutoResponse(new WebSocketRequestResponsePair('ping', 'pong'));
@@ -155,8 +173,19 @@ export class Tunnel {
     }
     const hostHash = this.meta('host_hash');
     if (!hostHash) return new Response(null, { status: 404 });
-    const [scheme, secret] = request.headers.get('authorization').split(' ');
-    const digest = hash(secret);
+    let scheme, digest;
+    const socketTicket = path === '/client' ? new URL(request.url).searchParams.get('ticket') : null;
+    if (socketTicket) {
+      // A socket ticket works once: it is gone before the checks below, which run again for its authorization.
+      this.sql.exec('DELETE FROM socket_tickets WHERE expires <= ?', now);
+      const row = this.sql.exec('DELETE FROM socket_tickets WHERE hash = ? RETURNING scheme, digest', hash(socketTicket)).toArray()[0];
+      if (!row) return new Response(null, { status: 401 });
+      ({ scheme, digest } = row);
+    } else {
+      const [given, secret] = request.headers.get('authorization').split(' ');
+      scheme = given;
+      digest = hash(secret);
+    }
     if (path === '/host') {
       if (scheme !== 'Bearer' || !timingSafeEqual(Buffer.from(digest), Buffer.from(hostHash))) {
         return new Response(null, { status: 401 });
@@ -179,6 +208,16 @@ export class Tunnel {
       if (this.sql.exec('SELECT 1 FROM tickets WHERE hash = ?', digest).toArray().length) auth = 'ticket';
     }
     if (!auth) return new Response(null, { status: 401 });
+    if (path === '/client-ticket') {
+      // The socket checks the authorization again, so a revoked token or a used pairing ticket fails there.
+      this.sql.exec('DELETE FROM socket_tickets WHERE expires <= ?', now);
+      const { count } = this.sql.exec('SELECT COUNT(*) AS count FROM socket_tickets').one();
+      if (count >= MAX_SOCKET_TICKETS) return new Response(null, { status: 429 });
+      const ticket = randomBytes(32).toString('hex');
+      this.sql.exec('INSERT INTO socket_tickets (hash, scheme, digest, expires) VALUES (?, ?, ?, ?)', hash(ticket), scheme, digest,
+        now + SOCKET_TICKET_MS);
+      return Response.json({ ticket }, { headers: { 'Cache-Control': 'no-store' } });
+    }
     if (this.clients().length >= MAX_CHANNELS) return new Response(null, { status: 429 });
     // A full route keeps the ticket, so the iPhone can pair after a channel closes.
     if (auth === 'ticket') this.sql.exec('DELETE FROM tickets WHERE hash = ?', digest);
