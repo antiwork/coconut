@@ -114,6 +114,92 @@ enum ComposerDrafts {
     }
 }
 
+/// The keyboard of an iPhone can hold text that it has not given to the field yet: dictation that goes on, marked
+/// text, an autocorrection. A send that read and cleared the field then missed that text, and the clear did not stay:
+/// the keyboard gave the text back, so the sent message stayed in the box, and a second Send of it did nothing
+/// (DraftSend) or sent it again. A field takes all that the keyboard holds when it loses the keyboard. So a send first
+/// gives the keyboard to a field outside the screen, reads and clears the draft, and gives the keyboard back, all in
+/// one update: the keyboard never leaves the screen. A Mac has no such keyboard.
+@MainActor
+enum KeyboardSettle {
+    /// Runs `send` after the field with the keyboard took all that the keyboard held, when the field of the box is
+    /// `focused`. With `keepsKeyboard` false, the keyboard closes.
+    static func run(if focused: Bool, keepsKeyboard: Bool = true, _ send: () -> Void) {
+        #if os(iOS)
+        guard focused, let field = FirstResponder.find() as? UIView, field is UITextInput, let window = field.window else {
+            send()
+            return
+        }
+        guard keepsKeyboard else {
+            field.resignFirstResponder()
+            send()
+            return
+        }
+        let holder = UITextField(frame: CGRect(x: -100, y: -100, width: 1, height: 1))
+        holder.isAccessibilityElement = false
+        window.addSubview(holder)
+        holder.becomeFirstResponder()
+        send()
+        field.becomeFirstResponder()
+        holder.removeFromSuperview()
+        #else
+        send()
+        #endif
+    }
+}
+
+#if os(iOS)
+/// The responder with the keyboard: an action sent to nil goes to the first responder.
+@MainActor
+private enum FirstResponder {
+    static weak var found: UIResponder?
+
+    static func find() -> UIResponder? {
+        found = nil
+        UIApplication.shared.sendAction(#selector(UIResponder.coconutNoteFirstResponder), to: nil, from: nil, for: nil)
+        return found
+    }
+}
+
+extension UIResponder {
+    @objc fileprivate func coconutNoteFirstResponder() { FirstResponder.found = self }
+}
+#endif
+
+/// The text of a send, for a moment after the send. Dictation that the send stopped can still give its last words to
+/// the field after the clear (KeyboardSettle), and the field then showed the message that went. When the empty field
+/// gets that text or a piece of it at once, the box clears it again. The first other change ends the moment, so
+/// typing, a paste and a draft that comes back after a failed send stay.
+struct SentEcho {
+    private var text = ""
+    private var until = Date.distantPast
+    private static let moment: TimeInterval = 1.5
+
+    mutating func sent(_ text: String, at now: Date = .now) {
+        self.text = text
+        until = now.addingTimeInterval(Self.moment)
+    }
+
+    /// A failed send gives its draft back to the box: that is no echo.
+    mutating func cancel() { until = .distantPast }
+
+    /// True when the field went from `old` to `new` because the keyboard gave back the text of the send.
+    mutating func takesBack(old: String, new: String, at now: Date = .now) -> Bool {
+        guard now < until, !new.isEmpty else { return false }
+        until = .distantPast
+        return old.isEmpty && Self.isEcho(new, of: text)
+    }
+
+    /// Dictation gives back the text that went, with its last words changed or more after them, or only its last
+    /// words. A short word, as a suggestion of the keyboard, is no echo unless the send began with it.
+    static func isEcho(_ new: String, of sent: String) -> Bool {
+        let new = new.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let sent = sent.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard new.count > 1, !sent.isEmpty else { return false }
+        return new.count < 5 ? sent.hasPrefix(new) : sent.contains(new.prefix(8))
+    }
+}
+
 /// The label of the project chip of a message box: the box of a new chat and the sheet of a new to-do. A project has
 /// no face, so the chip is its name.
 struct ComposerChipLabel: View {

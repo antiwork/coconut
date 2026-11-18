@@ -39,7 +39,13 @@ struct DecisionReplyComposer: View {
         }
     }
 
+    /// The keyboard first gives the field all that it holds and closes, so the reply is the text that the person sees
+    /// (KeyboardSettle).
     private func sendReply() {
+        KeyboardSettle.run(if: focused, keepsKeyboard: false) { startReply() }
+    }
+
+    private func startReply() {
         let text = (store.decisionReplyDrafts[decision.id] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty, !sendingReply else { return }
         onSend()

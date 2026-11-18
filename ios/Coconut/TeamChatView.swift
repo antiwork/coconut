@@ -583,7 +583,13 @@ struct TeamChatView: View {
                           report: { store.error = $0 })
     }
 
+    /// The keyboard first gives the field all that it holds, so the message is the text that the person sees, and the
+    /// clear stays (KeyboardSettle).
     private func send() {
+        KeyboardSettle.run(if: composerFocused) { sendDraft() }
+    }
+
+    private func sendDraft() {
         let text = composer.draft.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let room, canWrite(room), composer.canSend(enabled: true) else { return }
         if let message = composer.editing {

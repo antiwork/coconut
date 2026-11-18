@@ -32,6 +32,8 @@ struct NewChatBar: View {
     @AppStorage(ChatProject.projectKey) private var chosen = ""
     @State private var text = ComposerDrafts.read(NewChatBar.draftKey)
     @State private var sending = false
+    /// The text of the last send, for the moment after it (SentEcho).
+    @State private var echo = SentEcho()
     /// A new request puts the cursor in the field when the page is settled: a pop of the stack takes a moment.
     @State private var focusRequest: UUID?
     @FocusState private var focused: Bool
@@ -56,7 +58,11 @@ struct NewChatBar: View {
             if let id, id != chosen { chosen = id }
         }
         .onChange(of: store.newChatRequest, initial: true) { _, request in apply(request) }
-        .onChange(of: text) { _, draft in ComposerDrafts.write(draft, chat: Self.draftKey) }
+        // The text of a send that the keyboard gives back right after it goes again (SentEcho).
+        .onChange(of: text) { old, draft in
+            if echo.takesBack(old: old, new: draft) { text = ""; return }
+            ComposerDrafts.write(draft, chat: Self.draftKey)
+        }
         .task(id: focusRequest) {
             guard focusRequest != nil else { return }
             try? await Task.sleep(for: Self.focusDelay)
@@ -148,16 +154,23 @@ struct NewChatBar: View {
     }
 
     /// Sends the text as the first message of a new chat in the project and opens the chat. When the Mac does not make
-    /// the chat, the notice says why and the text comes back.
+    /// the chat, the notice says why and the text comes back. The keyboard first gives the field all that it holds and
+    /// closes, so the message is the text that the person sees, and the box stays empty (KeyboardSettle).
     private func send(to project: Bot) {
+        KeyboardSettle.run(if: focused, keepsKeyboard: false) { start(in: project) }
+    }
+
+    private func start(in project: Bot) {
         let message = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !message.isEmpty, !sending else { return }
         sending = true
         text = ""
+        echo.sent(message)
         focused = false
         Task {
             defer { sending = false }
             guard let chat = await store.sendNewChat(in: project, text: message) else {
+                echo.cancel()
                 if text.isEmpty { text = message }
                 return
             }

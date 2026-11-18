@@ -1058,6 +1058,8 @@ struct ConversationComposer: View {
     @State private var selection: TextSelection?
     /// One draft sends one time (DraftSend).
     @State private var draftSend = DraftSend()
+    /// The text of the last send, for the moment after it (SentEcho).
+    @State private var echo = SentEcho()
     @FocusState.Binding var focused: Bool
     @Binding var replyTo: MessageReference?
     @Binding var workContext: WorkReference?
@@ -1172,8 +1174,12 @@ struct ConversationComposer: View {
         } report: { store.error = $0 })
         // Only after a send: a key without a send changes no state.
         .onChange(of: draftKey) { _, draft in if draftSend.sent != nil { draftSend.shows(draft) } }
-        // A new character starts the choice of the slash menu at its first row.
-        .onChange(of: text) { _, _ in slashIndex = 0 }
+        // A new character starts the choice of the slash menu at its first row. The text of a send that the keyboard
+        // gives back right after it goes again (SentEcho).
+        .onChange(of: text) { old, new in
+            slashIndex = 0
+            if echo.takesBack(old: old, new: new) { text = "" }
+        }
     }
 
     #if os(iOS)
@@ -1338,11 +1344,25 @@ struct ConversationComposer: View {
         draft.hasPrefix(sent) ? String(draft.dropFirst(sent.count)) : ""
     }
 
-    /// Sends the draft. In a new chat, the draft starts a fresh chat with the same agent, which then opens.
+    /// Sends the draft. In a new chat, the draft starts a fresh chat with the same agent, which then opens. The keyboard
+    /// first gives the field all that it holds, so the send has the text that the person sees, and the clear stays
+    /// (KeyboardSettle).
     private func send(inNewChat: Bool = false) {
+        KeyboardSettle.run(if: focused) { sendDraft(inNewChat: inNewChat) }
+    }
+
+    private func sendDraft(inNewChat: Bool) {
         // A command that the text begins runs instead of sending the text.
         if let choice = slashChoice, attachments.isEmpty { run(choice); return }
-        guard canSend, draftSend.begin(draftKey) else { return }
+        guard canSend else { return }
+        guard draftSend.begin(draftKey) else {
+            #if !os(macOS)
+            // The box shows the draft that went, because the keyboard gave it back. Send clears it, and the draft does
+            // not go two times.
+            clearDraft()
+            #endif
+            return
+        }
         let submittedText = text
         let submittedWork = workContext
         let submittedReply = replyTo
@@ -1355,6 +1375,7 @@ struct ConversationComposer: View {
         onSend()
         #if !os(macOS)
         clearDraft()
+        echo.sent(submittedText)
         #endif
         Task {
             #if os(macOS)
@@ -1369,6 +1390,7 @@ struct ConversationComposer: View {
                 // the Mac does not make it, the notice says why and the draft comes back.
                 guard let chat = await store.chatForFirstMessage(in: bot) else {
                     draftSend.failed()
+                    echo.cancel()
                     if text.isEmpty { text = submittedText; attachments = submittedArtifacts }
                     return
                 }
@@ -1384,6 +1406,7 @@ struct ConversationComposer: View {
                                            mentionedBotIds: submittedRecipients, replyTo: submittedReply, workContext: submittedWork)
             guard !success else { return }
             draftSend.failed()
+            echo.cancel()
             if text.isEmpty {
                 text = submittedText; mentions = submittedMentions; attachments = submittedArtifacts
                 scheduling = submittedScheduling; scheduledAt = submittedDate; replyTo = submittedReply; workContext = submittedWork
