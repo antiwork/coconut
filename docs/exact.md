@@ -83,13 +83,15 @@ The target of Exact is 100 ms from saving an edit to seeing it, on the web host 
 
 1. Web host (`bun host/web/dev.mjs`, or `bun exact.mjs web`): the fast one. It needs the Rust toolchain and a compile, so
    it needs a machine with 10 GB free. `scripts/agent.mjs` takes screenshots of it.
-2. Updates to a phone: `bun exact.mjs push --watch` publishes the working tree on each save to an installed build that
-   takes signed updates, in seconds, and refuses what needs a new binary (a grant, native code). It needs
-   `deploy.store.ios: "A"`, a key (`bun <exact>/scripts/deploy.mjs keygen coconut`, public half in
-   `deploy.signing.keys`), a channel in `deploy.channels` whose origin is `"appdrop"` (AppDrop's origin for the key, with
-   no server of ours), and a build made with `EXACT_UPDATE_GENESIS=1`.
-   `app.json` says `deploy.store.ios: "0"` now, so the first build takes no updates. Whether Exact Build produces such
-   a build is not known.
+2. Updates to a phone, over the air: the workflow `Exact updates` (`.github/workflows/exact-updates.yml`). `build`
+   makes a release binary with an update store on GitHub's `xcode-27` runner (an IPA in the artifact
+   `coconut-exact-ipa`, which goes to AppDrop with `npx appdrop app.ipa --update <link>`) and publishes the first
+   release of its stream. `push` publishes the Contract, the assets and `app.ts` to every installed binary of the same
+   native code, which takes it the next time the app comes to the foreground (`deploy.activate` is `immediate`).
+   The channel is `"appdrop"`, AppDrop's origin for the key. The private key is the secret `EXACT_SIGNING_KEY` of the
+   environment `exact-updates`, and on the Mac that made it `~/.config/exact/keys/coconut.pem`; the public half is in
+   `app.json`. Exact Build cannot make such a binary: it builds development binaries, which never check the channel
+   of `app.json`, and a release build of this Exact needs Xcode 27.1, which this Mac lacks (26.6).
 3. Rebuild and `npx appdrop --update`: a build of about 4 seconds with `base`, plus the upload and the install.
 
 ## Numbers

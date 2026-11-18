@@ -12,8 +12,18 @@
   "deploy": {
     "store": {
       "web": "0",
-      "ios": "0"
-    }
+      "ios": "A"
+    },
+    "channels": {
+      "prod": "appdrop"
+    },
+    "signing": {
+      "key": "coconut",
+      "keys": {
+        "coconut": "gmwyHNFTus2ExDRSicou4CXrYZOLFClDHMihh1bbkWI="
+      }
+    },
+    "activate": "immediate"
   },
   "dev": {
     "rebuild": {

@@ -1,0 +1,117 @@
+name: Exact updates
+
+# Builds Coconut's Exact app (exact/) as a binary that takes signed over-the-air updates, and publishes those updates.
+#
+# Exact Build only makes development binaries, and a development binary never checks the update channel of app.json
+# (Exact's update/src/binary.rs, head_url). A release binary of the pinned Exact needs Xcode 27.1, which GitHub's
+# xcode-27 image has. Two actions:
+#
+#   build  A release binary with an update store, for AppDrop (the artifact coconut-exact-ipa), and the first release
+#          of its stream. Run it after a change to native code: a new grant, a native module, a newer Exact.
+#   push   An update of the Contract, the assets and app.ts to every installed binary of the same native code. With
+#          deploy.activate "immediate", an app takes it the next time it comes to the foreground (at most one check a
+#          minute). Exact refuses an update that needs a new binary, which then needs `build`.
+#
+# The channel is "appdrop": AppDrop's origin for the signing key, with no server and no account. The private key is the
+# secret EXACT_SIGNING_KEY of the environment exact-updates (main only); its public half is deploy.signing.keys.coconut
+# in exact/app.json, and a binary takes only updates signed by it.
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: push sends an update to installed apps; build makes a new binary and starts its stream.
+        type: choice
+        options: [push, build]
+        default: push
+
+permissions:
+  contents: read
+
+concurrency:
+  group: exact-updates
+  cancel-in-progress: false
+
+env:
+  # docs/exact.md records this commit. Each update must come from the Exact that built the binary.
+  EXACT_COMMIT: 8ed52642a2c4a6227c8abfafd80ecf501b1eb5aa
+  BUN_VERSION: 1.4.4
+
+jobs:
+  exact:
+    if: github.ref == 'refs/heads/main'
+    runs-on: xcode-27
+    timeout-minutes: 90
+    environment: exact-updates
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Check out Exact at the pinned commit
+        run: |
+          set -euo pipefail
+          git clone --quiet --filter=blob:none https://github.com/expo/exact.git "$RUNNER_TEMP/exact"
+          git -C "$RUNNER_TEMP/exact" checkout --quiet "$EXACT_COMMIT"
+          echo "EXACT=$RUNNER_TEMP/exact" >> "$GITHUB_ENV"
+
+      - name: Install Bun and rustup
+        run: |
+          set -euo pipefail
+          curl -fsSL https://bun.sh/install | bash -s "bun-v$BUN_VERSION"
+          command -v rustup >/dev/null || curl -sSf https://sh.rustup.rs | sh -s -- -y --no-modify-path --default-toolchain none --profile minimal
+          echo "BUN=$HOME/.bun/bin/bun" >> "$GITHUB_ENV"
+          echo "$HOME/.bun/bin" >> "$GITHUB_PATH"
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          xcodebuild -version
+
+      - name: Set up Exact for iPhones
+        working-directory: ${{ runner.temp }}/exact
+        run: |
+          set -euo pipefail
+          bun scripts/exact.mjs setup
+          bun scripts/exact.mjs setup --check --platform ios --device
+
+      - name: Write the update signing key
+        env:
+          EXACT_SIGNING_KEY: ${{ secrets.EXACT_SIGNING_KEY }}
+        run: |
+          set -euo pipefail
+          test -n "$EXACT_SIGNING_KEY"
+          mkdir -p ~/.config/exact/keys
+          umask 077
+          printf '%s\n' "$EXACT_SIGNING_KEY" > ~/.config/exact/keys/coconut.pem
+
+      - name: Build the release binary
+        if: inputs.action == 'build'
+        working-directory: exact
+        run: |
+          set -euo pipefail
+          EXACT_UPDATE_GENESIS=1 EXACT_BUILD_NUMBER=$((GITHUB_RUN_NUMBER + 1)) \
+            bun exact.mjs ios --device --release --unsigned --archive .exact/app.ipa --json
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: inputs.action == 'build'
+        with:
+          name: coconut-exact-ipa
+          path: exact/.exact/app.ipa
+          retention-days: 14
+          if-no-files-found: error
+
+      - name: Publish the first release of the stream
+        if: inputs.action == 'build'
+        working-directory: exact
+        run: |
+          set -euo pipefail
+          bun exact.mjs deploy --dirty --platform ios
+          bun exact.mjs deploy --dirty --platform ios --yes
+
+      - name: Push an update to installed apps
+        if: inputs.action == 'push'
+        working-directory: exact
+        run: |
+          set -euo pipefail
+          bun exact.mjs push
+
+      - name: Remove the signing key
+        if: always()
+        run: rm -f ~/.config/exact/keys/coconut.pem
