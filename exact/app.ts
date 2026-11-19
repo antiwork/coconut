@@ -49,8 +49,14 @@ interface FxDecision { id: string; bot_id: string; task_id: string; title: strin
 interface FxArtifact { id: string; task_id: string; title: string; preview: string }
 interface FxMessage { id: string; bot_id: string; task_id: string | null; kind: string; role: string; text: string; created_at: string }
 interface FxTask { id: string; bot_id: string; status: string; updated_at: string }
-interface FxBot { id: string; name: string; avatar: string; archived: boolean; unread_count: number; chat_of: string | null; chat_title: string | null; effective_model: { model: string; reasoning_effort: string } }
-interface FxModel { id: string; name: string; reasoning_efforts: string[]; default_reasoning_effort: string }
+interface FxBot { id: string; name: string; avatar: string; archived: boolean; unread_count: number; chat_of: string | null; chat_title: string | null }
+// What a chat runs with: a model of a provider and its reasoning effort (null: the model's own default).
+interface Selection { model: string; provider: string; reasoning_effort: string | null }
+// A model of a catalog (`model_catalog` of GET /v1/state/settings, and of the fixture), with the efforts it takes.
+interface CatalogModel { id: string; name: string; provider: string; reasoning_efforts: string[]; default_reasoning_effort: string | null }
+// The models and the default of every chat: one Hermes profile runs the chats of a project, so `/model` and `/effort`
+// change the default, as in the Swift app (ModelChoice).
+interface Catalog { default: Selection; models: CatalogModel[] }
 interface Fixture {
   server_time: string;
   bots: FxBot[];
@@ -58,7 +64,7 @@ interface Fixture {
   tasks: FxTask[];
   decisions: FxDecision[];
   artifacts: FxArtifact[];
-  model_catalog: { default: { model: string; reasoning_effort: string }; models: FxModel[] };
+  model_catalog: Catalog;
 }
 const fx = preview as unknown as Fixture;
 
@@ -95,7 +101,7 @@ const PHASES: Record<string, string> = {
 };
 
 interface Msg { id: string; kind: string; mine: boolean; author: string; at: number; title: string; body: string; detail: string; ref: string; status: string; receipt: string; options: FxOption[] }
-interface Run { startedAt: number; phase: string; detail: string; model: string; queued: number }
+interface Run { startedAt: number; phase: string; detail: string; queued: number }
 interface ChatState {
   id: string;
   kind: 'agent' | 'team' | 'direct';
@@ -107,8 +113,6 @@ interface ChatState {
   circle: boolean;
   messages: Msg[];
   run: Run | null;
-  model: string;
-  effort: string;
   unread: number;
   // BotHealth.label of an agent that cannot run, or an empty string.
   health: string;
@@ -135,7 +139,6 @@ const message = (id: string, kind: string, mine: boolean, at: number, body: stri
 });
 
 const kindName = (kind: string): string => kind.slice(0, 1).toUpperCase() + kind.slice(1);
-const modelOf = (id: string): FxModel => fx.model_catalog.models.find((m) => m.id === id) ?? fx.model_catalog.models[0];
 
 // A short age, as AttentionRules.age gives it: 12m, 5h, 3d.
 const shortAge = (ms: number): string => {
@@ -173,8 +176,7 @@ const build = (): State => {
     if (!bot.chat_of) projects.push({ id: bot.id, name: bot.name, letter, face: faceOf(letter) });
     chats.set(bot.id, {
       id: bot.id, kind: 'agent', project: bot.chat_of ?? bot.id, projectName: bot.name, title: bot.chat_title ?? bot.name,
-      letter, face: faceOf(letter), circle: false, messages, run: null, model: bot.effective_model.model,
-      effort: bot.effective_model.reasoning_effort, unread: bot.unread_count, health: '',
+      letter, face: faceOf(letter), circle: false, messages, run: null, unread: bot.unread_count, health: '',
     });
     for (const d of fx.decisions) {
       if (d.bot_id === bot.id && d.status === 'pending') waits.push({ ref: d.id, chat: bot.id, at: rel(d.created_at) });
@@ -186,7 +188,7 @@ const build = (): State => {
   for (const task of fx.tasks) {
     const chat = chats.get(task.bot_id);
     if (!chat || task.status !== 'working') continue;
-    chat.run = { startedAt: rel(task.updated_at), phase: PHASES.thinking, detail: '', model: modelOf(chat.model).name, queued: 0 };
+    chat.run = { startedAt: rel(task.updated_at), phase: PHASES.thinking, detail: '', queued: 0 };
   }
 
   // What AppStore.applyAttentionPreview does for the UI test of Home: a card that waits for 5 hours, an agent with a
@@ -207,7 +209,7 @@ const build = (): State => {
   }));
   chats.set(teamId, {
     id: teamId, kind: 'team', project: '', projectName: team.name, title: team.name, letter: team.name.slice(0, 1).toUpperCase(),
-    face: faceOf(team.name.slice(0, 1).toUpperCase()), circle: true, run: null, model: '', effort: '', unread: 0, health: '',
+    face: faceOf(team.name.slice(0, 1).toUpperCase()), circle: true, run: null, unread: 0, health: '',
     messages: [
       message(`${teamId}-last`, 'text', false, -team.last.minutes_ago * MINUTE, team.last.text, { author: team.last.name }),
       ...notices.map((n) => message(`notice-${n.id}`, 'notice', false, n.at, n.text, { author: n.author, title: kindName(n.type) })),
@@ -217,7 +219,7 @@ const build = (): State => {
     const letter = direct.name.slice(0, 1).toUpperCase();
     chats.set(`direct-${direct.member}`, {
       id: `direct-${direct.member}`, kind: 'direct', project: '', projectName: direct.name, title: direct.name, letter, face: faceOf(letter),
-      circle: true, run: null, model: '', effort: '', unread: direct.unread, health: '',
+      circle: true, run: null, unread: direct.unread, health: '',
       messages: [message(`direct-${direct.member}-1`, 'text', false, -direct.minutes_ago * MINUTE, direct.text, { author: direct.name })],
     });
   }
@@ -304,7 +306,7 @@ const ordered = (s: State): Project[] => {
 
 // The parts of the Mac's state (`GET /v1/state` with recent content) that are read here.
 interface LvOption { id: string; label: string; explanation: string; answer: string }
-interface LvBot { id: string; name: string; avatar: string; archived: boolean; pinned: boolean; project?: boolean; profile: string; status: string; unread_count: number; model_override: { model: string; reasoning_effort: string } | null }
+interface LvBot { id: string; name: string; avatar: string; archived: boolean; pinned: boolean; project?: boolean; profile: string; status: string; unread_count: number }
 interface LvMessage { id: string; bot_id: string; task_id: string | null; kind: string; role: string; text: string; created_at: string; decision_id: string | null; artifact_id: string | null }
 interface LvTask { id: string; bot_id: string; status: string; title: string | null; created_at: string; updated_at: string }
 interface LvDecision { id: string; bot_id: string; title: string; context: string | null; explanation: string | null; consequences: string | null; risk: string | null; uncertainty: string | null; status: string; created_at: string; revision: number; options: LvOption[]; selected_option_label: string | null }
@@ -326,6 +328,7 @@ interface Page {
   collection_deltas?: boolean;
   removed_decisions?: string[];
   removed_artifacts?: string[];
+  settings_changed?: boolean;
 }
 
 // The values of `updates` over those of `values`, by id: a known one in its place, a new one at the end.
@@ -379,6 +382,38 @@ const modelName = (id: string): string => id.split('-').reduce((name, part) => {
   return `${name}${name === '' ? '' : ' '}${/^\d/.test(part) ? part : part.slice(0, 1).toUpperCase() + part.slice(1)}`;
 }, '');
 
+// The models of the Mac (`model_catalog` of GET /v1/state/settings) and the model of each chat that has one of its own,
+// read with the state. The demo's are the fixture's, which `/model` and `/effort` change in memory.
+let macCatalog: Catalog | null = null;
+const macModels = new Map<string, Selection>();
+// The time on the Mac of the last read of its settings: as in the Swift app, they are read again at most once a
+// minute, and at once when an update says that they changed.
+let settingsAt = -Infinity;
+let demoCatalog: Catalog | null = null;
+const catalogNow = (): Catalog | null => {
+  if (useLive) return macCatalog;
+  if (!demoCatalog) demoCatalog = { default: { ...fx.model_catalog.default }, models: fx.model_catalog.models };
+  return demoCatalog;
+};
+const entryOf = (catalog: Catalog, s: Selection): CatalogModel | undefined => catalog.models.find((m) => m.id === s.model && m.provider === s.provider);
+// A model in the slash menu: its provider and its id, as ModelCatalogEntry.selectionKey.
+const keyOf = (m: { provider: string; id: string }): string => `${m.provider}\u001f${m.id}`;
+// The name of the model of a chat, as the working line shows it: its own model on the Mac, else the default.
+const modelOfChat = (id: string): string => {
+  const catalog = catalogNow();
+  const selection = (useLive ? macModels.get(id) : undefined) ?? catalog?.default;
+  if (!selection) return '';
+  return (catalog ? entryOf(catalog, selection)?.name : undefined) ?? modelName(selection.model);
+};
+// ModelPresentation.effortName: none is Off, low is Low.
+const effortName = (effort: string): string => (effort === 'none' ? 'Off' : effort.slice(0, 1).toUpperCase() + effort.slice(1));
+// The commands of the slash menu that the app knows. The Swift app has more (ComposerSlash.commands), which come with
+// the rest of its composer.
+const COMMANDS = [
+  { name: 'model', detail: 'Change the model', symbol: 'symbol:sf/cpu' },
+  { name: 'effort', detail: 'Change the reasoning effort', symbol: 'symbol:sf/brain' },
+];
+
 const fromSnapshot = (snap: Snapshot): State => {
   const server = parse(snap.server_time);
   const rel = (iso: string): number => parse(iso) - server;
@@ -418,8 +453,7 @@ const fromSnapshot = (snap: Snapshot): State => {
     if (messages.length === 0 && bot.unread_count === 0 && bot.status === 'idle' && !bot.pinned && bot.project !== true) continue;
     chats.set(bot.id, {
       id: bot.id, kind: 'agent', project: project.id, projectName: project.name, title: bot.name, letter, face: faceOf(letter),
-      circle: false, messages, run: null, model: bot.model_override?.model ?? snap.model ?? '', effort: bot.model_override?.reasoning_effort ?? '',
-      unread: bot.unread_count, health: '',
+      circle: false, messages, run: null, unread: bot.unread_count, health: '',
     });
   }
   for (const d of snap.decisions) {
@@ -432,7 +466,7 @@ const fromSnapshot = (snap: Snapshot): State => {
     if (!chat) continue;
     if (task.status === 'working') {
       running.set(chat.id, task.id);
-      chat.run = { startedAt: rel(task.created_at), phase: PHASES.working, detail: '', model: modelName(chat.model), queued: 0 };
+      chat.run = { startedAt: rel(task.created_at), phase: PHASES.working, detail: '', queued: 0 };
     }
     if (task.status === 'failed' && -rel(task.updated_at) <= DAY) stuck.push({ title: task.title || 'A task failed', chat: chat.id, at: rel(task.updated_at) });
   }
@@ -631,16 +665,64 @@ const gunzip = async (bytes: Uint8Array): Promise<Uint8Array> => {
   return out;
 };
 
+// The JSON of an answer, which the Mac gzips when the request takes it.
+const jsonOf = async (reply: Reply): Promise<unknown> => {
+  const encoding = Object.entries(reply.headers).find(([name]) => name.toLowerCase() === 'content-encoding')?.[1] ?? '';
+  const body = encoding.toLowerCase() === 'gzip' ? await gunzip(reply.body) : reply.body;
+  await pause();
+  const value = JSON.parse(text(body)) as unknown;
+  await pause();
+  return value;
+};
+
+// The models of the Mac and the model of each chat that has its own (GET /v1/state/settings, as NativeSnapshot). A read
+// that fails keeps what the app had, and a later one tries again.
+const readSettings = async (t: Tunnel, at: number): Promise<void> => {
+  settingsAt = at;
+  try {
+    const reply = await t.request('GET', '/v1/state/settings', headers('GET', { 'Accept-Encoding': 'gzip' }));
+    if (reply.status !== 200) return;
+    const settings = (await jsonOf(reply)) as { bots: Array<{ id: string; model_override: Selection | null; effective_model: Selection | null }>; model_catalog: Catalog | null };
+    if (settings.model_catalog) macCatalog = settings.model_catalog;
+    macModels.clear();
+    for (const bot of settings.bots) if (bot.model_override) macModels.set(bot.id, bot.effective_model ?? bot.model_override);
+    version += 1;
+  } catch {
+    // Kept as it was.
+  }
+};
+
 const status = (): Live => ({ version, pairs, error: lastError });
 
 const none: Project = { id: '', name: '', letter: '', face: 0 };
 const idle: Turn = { running: false, startedAt: 0, phase: '', detail: '', model: '', queued: 0 };
-const emptyChat: Chat = {
-  id: '', kind: 'agent', title: '', project: '', letter: '', face: 0, circle: false, messages: [], turn: idle, model: '', modelName: '', effort: '',
-  efforts: [], models: [], toolbar: false, live: false,
-};
+const emptyChat: Chat = { id: '', kind: 'agent', title: '', project: '', letter: '', face: 0, circle: false, messages: [], turn: idle, toolbar: false, live: false };
 
 const failed = (error: unknown): string => (error instanceof Error ? error.message : String(error));
+
+// The model and the effort of every chat. A Mac that refuses says why in the chat: for example a Personal budget that
+// holds the model.
+const choose = async (catalog: Catalog, chatId: string, selection: Selection): Promise<{ ok: boolean }> => {
+  const resolved: Selection = { ...selection, reasoning_effort: selection.reasoning_effort ?? entryOf(catalog, selection)?.default_reasoning_effort ?? null };
+  if (!useLive) {
+    catalog.default = resolved;
+    return { ok: true };
+  }
+  try {
+    const answer = (await write('PUT', '/v1/settings/model', selection)) as { model_catalog?: Catalog };
+    macCatalog = answer.model_catalog ?? { ...catalog, default: resolved };
+    return { ok: true };
+  } catch (error) {
+    const s = ensure();
+    const chat = s.chats.get(chatId);
+    if (chat) {
+      s.counter += 1;
+      const at = newest(chat);
+      chat.messages = [...chat.messages, message(`${chat.id}-f${s.counter}`, 'activity', false, Number.isFinite(at) ? at : 0, `The model did not change: ${failed(error)}`)];
+    }
+    return { ok: false };
+  }
+};
 
 const sources: Sources = {
   loadSaved: (_args, store) => {
@@ -799,36 +881,29 @@ const sources: Sources = {
           throw new Error('This phone is no longer paired with your Mac.');
         }
         if (reply.status !== 200) throw new Error(failureOf(reply));
-        const encoding = Object.entries(reply.headers).find(([name]) => name.toLowerCase() === 'content-encoding')?.[1] ?? '';
-        const body = encoding.toLowerCase() === 'gzip' ? await gunzip(reply.body) : reply.body;
-        await pause();
-        const value = JSON.parse(text(body)) as unknown;
-        await pause();
-        return value;
+        return jsonOf(reply);
       };
       const read = { 'Accept-Encoding': 'gzip', 'X-Coconut-State': 'recent', 'X-Coconut-Work': 'recent', 'X-Coconut-Updates': '4' };
       const base = latest;
       let next: Snapshot | null;
+      let page: Page | null = null;
       if (!base) {
         next = (await decoded(await tunnel.request('GET', '/v1/state', headers('GET', read)))) as Snapshot;
       } else {
         const wait = polled === key ? 20 : 0;
-        const page = (await decoded(await tunnel.request('GET', `/v1/updates?after=${base.cursor}&wait=${wait}`, headers('GET', read), undefined, LONG_POLL))) as Page;
+        page = (await decoded(await tunnel.request('GET', `/v1/updates?after=${base.cursor}&wait=${wait}`, headers('GET', read), undefined, LONG_POLL))) as Page;
         // A page that does not follow the state drops it, and the next read takes the whole state again.
         next = latest === base ? applying(page, base) : null;
-        if (next && !page.reset && page.cursor === page.after) {
-          latest = next;
-          polled = key;
-          settle('');
-          return status();
-        }
       }
       latest = next;
       polled = key;
-      if (next) {
+      if (next && (!page || page.reset || page.cursor !== page.after)) {
         liveState = fromSnapshot(next);
         version += 1;
       }
+      // The models of the Mac come with the first state, again when they changed, and at most once a minute.
+      const at = next ? parse(next.server_time) : settingsAt;
+      if (next && (!macCatalog || page?.settings_changed || page?.reset || at - settingsAt >= MINUTE)) await readSettings(tunnel, at);
       settle('');
       return status();
     } catch (error) {
@@ -860,20 +935,51 @@ const sources: Sources = {
     if (!chat) return emptyChat;
     const at = zeroOf(s, zero);
     const agent = chat.kind === 'agent';
-    const model = modelOf(chat.model);
     const lines: Message[] = chat.messages.map((m) => ({ ...m, at: at + m.at }));
-    // The working line is the last row of a chat whose agent works.
+    // The working line is the last row of a chat whose agent works, with the model the chat runs with.
     if (chat.run) lines.push(message('working', 'status', false, 0, ''));
     const turn: Turn = chat.run
-      ? { running: true, startedAt: at + chat.run.startedAt, phase: chat.run.phase, detail: chat.run.detail, model: chat.run.model, queued: chat.run.queued }
+      ? { running: true, startedAt: at + chat.run.startedAt, phase: chat.run.phase, detail: chat.run.detail, model: modelOfChat(chat.id), queued: chat.run.queued }
       : idle;
-    // The Mac's chats choose no model or effort here yet: the Swift app does.
     return {
       id: chat.id, kind: chat.kind, title: chat.title, project: chat.projectName, letter: chat.letter, face: chat.face, circle: chat.circle,
-      messages: lines, turn, model: chat.model, modelName: !agent ? '' : live ? modelName(chat.model) : model.name, effort: chat.effort,
-      efforts: agent && !live ? model.reasoning_efforts : [], models: agent && !live ? fx.model_catalog.models.map((m) => ({ id: m.id, name: m.name })) : [],
-      toolbar: agent && !live, live,
+      messages: lines, turn, toolbar: agent && !live, live,
     };
+  },
+
+  // The slash menu over the message box (ComposerSlash.suggestions): the commands that start with what follows the
+  // slash, then the models or the efforts of the command. Without a catalog of the Mac yet it has no models.
+  suggest: ([id, draft, live]) => {
+    useLive = live;
+    const chat = ensure().chats.get(id);
+    if (!chat || chat.kind !== 'agent' || !draft.startsWith('/') || draft.includes('\n')) return [];
+    const body = draft.slice(1);
+    const space = body.indexOf(' ');
+    if (space < 0) {
+      const head = body.toLowerCase();
+      return COMMANDS.filter((c) => c.name.startsWith(head)).map((c) => ({
+        id: c.name, kind: 'complete', value: `/${c.name} `, title: `/${c.name}`, detail: c.detail, symbol: c.symbol, chosen: false,
+      }));
+    }
+    const catalog = catalogNow();
+    if (!catalog) return [];
+    const head = body.slice(0, space).toLowerCase();
+    const argument = body.slice(space + 1).trim().toLowerCase();
+    const current = catalog.default;
+    if (head === 'model') {
+      return catalog.models.filter((m) => argument === '' || m.name.toLowerCase().includes(argument)).slice(0, 6).map((m, i) => ({
+        id: `model-${i}`, kind: 'model', value: keyOf(m), title: m.name, detail: m.provider, symbol: 'symbol:sf/cpu',
+        chosen: m.id === current.model && m.provider === current.provider,
+      }));
+    }
+    if (head === 'effort') {
+      const entry = entryOf(catalog, current);
+      const chosen = current.reasoning_effort ?? entry?.default_reasoning_effort ?? '';
+      return (entry?.reasoning_efforts ?? []).filter((e) => argument === '' || e.toLowerCase().startsWith(argument)).map((e) => ({
+        id: `effort-${e}`, kind: 'effort', value: e, title: effortName(e), detail: 'Reasoning effort', symbol: 'symbol:sf/brain', chosen: e === chosen,
+      }));
+    }
+    return [];
   },
 
   // Opening a chat reads it: its unread count goes, and the notices of a team are seen.
@@ -910,13 +1016,11 @@ const sources: Sources = {
         return { id: '' };
       }
     }
-    const model = useLive ? { model: '', reasoning_effort: '' } : fx.model_catalog.default;
     const firstAt = useLive && s.zero !== null ? at - s.zero : at;
     s.chats.set(id, {
       id, kind: 'agent', project: project.id, projectName: project.name, title: words.length > 48 ? `${words.slice(0, 47).trimEnd()}…` : words,
       letter: project.letter, face: project.face, circle: false, messages: [message(`${id}-1`, 'text', true, firstAt, words)],
-      run: { startedAt: firstAt, phase: PHASES.thinking, detail: '', model: useLive ? '' : modelOf(model.model).name, queued: 0 },
-      model: model.model, effort: model.reasoning_effort, unread: 0, health: '',
+      run: { startedAt: firstAt, phase: PHASES.thinking, detail: '', queued: 0 }, unread: 0, health: '',
     });
     return { id };
   },
@@ -942,7 +1046,7 @@ const sources: Sources = {
     }
     if (chat.kind === 'agent') {
       if (chat.run) chat.run = { ...chat.run, queued: chat.run.queued + 1 };
-      else chat.run = { startedAt: sentAt, phase: PHASES.thinking, detail: '', model: useLive ? modelName(chat.model) : modelOf(chat.model).name, queued: 0 };
+      else chat.run = { startedAt: sentAt, phase: PHASES.thinking, detail: '', queued: 0 };
     }
     return { ok: true };
   },
@@ -989,21 +1093,19 @@ const sources: Sources = {
     return { ok: true };
   },
 
-  // A model that lacks the effort of the chat gives it its own default. Only the demo changes models here.
-  setModel: ([chatId, modelId]) => {
-    const chat = ensure().chats.get(chatId);
-    if (!chat || useLive) return { ok: false };
-    const model = modelOf(modelId);
-    chat.model = model.id;
-    if (!model.reasoning_efforts.includes(chat.effort)) chat.effort = model.default_reasoning_effort;
-    return { ok: true };
+  // `/model` and `/effort` change the model and the effort of every chat, as ModelChoice of the Swift app does: on the
+  // Mac with PUT /v1/settings/model, in the demo in the fixture's catalog. A new model takes its own default effort.
+  setModel: async ([chatId, key]) => {
+    const catalog = catalogNow();
+    const model = catalog?.models.find((m) => keyOf(m) === key);
+    if (!catalog || !model) return { ok: false };
+    return choose(catalog, chatId, { model: model.id, provider: model.provider, reasoning_effort: null });
   },
 
-  setEffort: ([chatId, effort]) => {
-    const chat = ensure().chats.get(chatId);
-    if (!chat || useLive) return { ok: false };
-    chat.effort = effort;
-    return { ok: true };
+  setEffort: async ([chatId, effort]) => {
+    const catalog = catalogNow();
+    if (!catalog || !(entryOf(catalog, catalog.default)?.reasoning_efforts ?? []).includes(effort)) return { ok: false };
+    return choose(catalog, chatId, { model: catalog.default.model, provider: catalog.default.provider, reasoning_effort: effort });
   },
 
   // AgentLetter.free: a new project takes the initial of its name when no agent holds it, else the first free letter.

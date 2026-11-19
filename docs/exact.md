@@ -36,8 +36,12 @@ a picker that names the project the message goes to and ends with New project. S
 Chat. Messages with Markdown and the time of each under it (`MessageTimes.label`), activity lines, cards with their options (an answer keeps the option chosen), files,
 the notices of a team, and the working line: the phase, the time of the turn to the second, the model. The composer is
 one box: a short draft is one line with the plus inside it and Send beside it. A draft over 80 characters, a newline,
-an attachment, or focus opens it, with the model and the reasoning level under the text (`ComposerExpansion`). Send
-shows when there is a draft. Stop shows while the agent works (`sendControls`).
+an attachment, or focus opens it, with a row under the text for the plus and Send (`ComposerExpansion`). Send shows
+when there is a draft. Stop shows while the agent works (`sendControls`). A draft that starts with a slash shows the
+slash menu over the box (`ComposerSlash`): `/model` lists the models and `/effort` the efforts of the model, with a
+mark on the one in use, and a row changes the model or the effort of every chat, as in the Swift app, where one Hermes
+profile runs the chats and options have no other place on the screens (#570). Send runs the first row. The model has no
+chip under the text: the Swift app removed its chips (e6c152f).
 
 ## Live data
 
@@ -75,8 +79,12 @@ and an ended socket fails them all. A write no longer asks for a read after it: 
 waits.
 
 What a chat of the Mac does here: its messages, cards and files, the working line, Send (words only: no attachments),
-answers to cards, Stop and read marks. It does not change the model or the effort, make projects (they are fixed),
-show team chats, or get push yet.
+answers to cards, Stop and read marks, and `/model` and `/effort`. Those two send `PUT /v1/settings/model` (model,
+provider and effort, as `ModelOverride`), which changes the model of every chat of the Mac, and take the catalog of its
+answer. The app reads the catalog and the chats that have a model of their own from `GET /v1/state/settings` with the
+first state, again when an update says the settings changed (or brings a whole state), and at most once a minute, as
+the Swift app does; the working line names the model of the chat. A Mac that refuses a model says why in the chat. It
+does not make projects (they are fixed), show team chats, or get push yet.
 
 Checked. Every primitive of `crypto.ts` against `node:crypto` with random inputs (SHA-256 and HMAC at every length to
 200 bytes and beyond, HKDF, ChaCha20-Poly1305 both ways and a changed byte, X25519 keys and secrets), the test vector of
@@ -94,6 +102,13 @@ upload of 2.5 MB beside a read, and eight requests at once. The merge of updates
 fixture mode (an empty data folder, no relay): a state, then a new chat and its turn read as updates (one page was a
 `reset`), gave the same messages, bots, cards, files, task statuses and chats as a fresh state. Not checked: the reads
 in Exact itself, on the web host or a phone (the disk had 7.4 GB free), and the socket of the relay.
+
+`/model` and `/effort` under bun against the fixture: a slash alone offers both, `/m` completes to `/model `, the models
+and the efforts of the model list with a mark on the one in use, a name filters them, a model brings its own default
+effort, an effort the model lacks is refused, and the working line names the new model. Checked by reading: the body
+of `PUT /v1/settings/model` against `Service._model_override` and the Swift `ModelOverride`, and the catalog against
+`ModelCatalog`. Not checked: the route on a Mac, because the service in fixture mode has no catalog and the person's
+Mac would have changed the model of every chat.
 
 On a phone. Gianfranco installed build 0.1.0 (5) from AppDrop on his iPhone on 2026-11-19 and reported the steps of
 issue #573 (the pairing, his chats, a chat, Send, a card, Stop and a relaunch) as done. AppDrop's sign-in to Apple
@@ -217,7 +232,7 @@ Not yet measured: the time from save to screen on the web host, and a `push --wa
   `turn_started_at`) and the bots with `chat_of`.
 - The picker of the Swift message box (`NewChatBar`) starts with All projects and ends with Open and All agents. This one
   lists the projects and ends with New project, as asked. A message from Home always starts a new chat with the project.
-- Not ported: slash commands, mentions, the access menu, editing a queued message, link and GitHub previews, photos,
+- Not ported: the slash commands other than `/model` and `/effort` (new, compact, stop, mute, help), mentions, the access menu, editing a queued message, link and GitHub previews, photos,
   the schedule of a message, the fifth rule of Needs attention (stale data, which a preview has none of).
 - The pairing code lives in the memory of the data module. An update that applies while a phone pairs reloads the app,
   which then shows a new code, and the Mac seals its setup for the old one; send the new code. Keeping the code in the
@@ -230,7 +245,7 @@ Keep it shipping until each phase reaches parity, and keep the bundle id of the 
 
 | Phase | Swift to port | Exact |
 |---|---|---|
-| 1 Live data | `APIClient`, `AppStore` (4,102), `Models`, `TunnelConnection`, `Onboarding`, pairing | Started: the pairing, the tunnel, the state and its updates are in `app.ts`, `tunnel.ts` and `crypto.ts` (see Live data). Left: a SQLite cache (`sqlite.open`) for a launch without the Mac, attachments, the model and effort of a chat |
+| 1 Live data | `APIClient`, `AppStore` (4,102), `Models`, `TunnelConnection`, `Onboarding`, pairing | Started: the pairing, the tunnel, the state and its updates, and the model and effort (`/model`, `/effort`) are in `app.ts`, `tunnel.ts` and `crypto.ts` (see Live data). Left: a SQLite cache (`sqlite.open`) for a launch without the Mac, attachments |
 | 2 Conversation | `ConversationView` (1,642), `Cards`, `MessagePhotos`, `MessageQueue`, `BotMentions`, `ModelSettingsView`, `LiveView`, previews | More parts and routes in `parts.contract`; photos by the file picker and `image`; a virtualized list for long chats |
 | 3 Team | `TeamChat` (2,093), `TeamChatView` (1,710), `TeamViews`, `Team`, `PeopleView` | A second family of chats and a notice board, over the same list |
 | 4 Business and library | `BusinessDashboard` and the other Business files, `Library`, `DocumentPage`, `UsageViews`, `DecisionInboxView`, `AgentProject`, `Bento`, `ChatDeckView` | Routes and tabs (`select(nav, name)`); Markdown for documents; charts as `svg` |

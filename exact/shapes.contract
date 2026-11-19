@@ -84,11 +84,7 @@ shape Turn
   model: string
   queued: number
 
-shape Model
-  id: string
-  name: string
-
-// `live` is a chat of the Mac: it takes words only here, so its composer has no attachments.
+// `live` is a chat of the Mac. `toolbar` opens the box of the composer under a long draft (ComposerExpansion).
 shape Chat
   id: string
   kind: string
@@ -99,13 +95,20 @@ shape Chat
   circle: bool
   messages: Message[]
   turn: Turn
-  model: string
-  modelName: string
-  effort: string
-  efforts: string[]
-  models: Model[]
   toolbar: bool
   live: bool
+
+// A row of the slash menu over the message box (ComposerSlash): a command to complete (`kind` complete, `value` the
+// text it completes to), or a model or an effort to choose (`value` the model's key or the effort). `chosen` marks the
+// one every chat runs with now.
+shape Suggestion
+  id: string
+  kind: string
+  value: string
+  title: string
+  detail: string
+  symbol: string
+  chosen: bool
 
 shape Ack
   ok: bool

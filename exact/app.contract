@@ -8,16 +8,13 @@
 // snapshot that Exact Build compiles with (2026-11-14) refuses a token name as a colour; name the tokens again once its
 // catalog is newer.
 // Colours, fonts, sizes and the safe area are the platform's unless a row says otherwise.
-use Ack, Chat, DeliveryState, Home, Live, Made, PairCode, PairState, Saved, Sock, Time from "./shapes.contract"
+use Ack, Chat, DeliveryState, Home, Live, Made, PairCode, PairState, Saved, Sock, Suggestion, Time from "./shapes.contract"
 use ArtifactCard, AttentionRow, Bubble, ChatRowView, DecisionCard, Face, NoticeCard, OptionButton, WorkingLine from "./parts.contract"
 
 routes nav
   home "/"
     chat "/chat/:id"
     new "/new"
-
-// The name of a reasoning effort in a chip: low is Low, an empty one is Auto.
-fn effortName(effort: string): string = effort == "" ? "Auto" : `${effort.slice(0, 1).toUpperCase()}${effort.slice(1)}`
 
 component Coconut
   // The project the box of Home sends to. Empty is the project of the newest chat; app.ts names it in `home.target`.
@@ -51,6 +48,9 @@ component Coconut
   resource live = sync(connectKey, sock.status == "open" and sock.key == connectKey, refresh) when connectKey != "" as shape Live else empty()
   resource home = loadHome(time.epochAtZero, target, mode == "live", live.version) when mode != "pair" as shape Home else empty()
   resource chat = loadChat(time.epochAtZero, openId, mode == "live", live.version) when openId != "" and mode != "pair" as shape Chat else empty()
+  // The slash menu over the message box: `/model` and `/effort`, as in the Swift app, where they change the model and
+  // the effort of every chat (ComposerSlash). Options have no other place in the screens.
+  resource slash = suggest(openId, chatDraft, mode == "live", live.version) when openId != "" and mode != "pair" and chatDraft.slice(0, 1) == "/" as shape Suggestion[] else empty()
   mutation started as shape Made refreshes home then afterStart
   mutation created as shape Made refreshes home then afterCreate
   mutation read as shape Ack refreshes home
@@ -163,20 +163,33 @@ component Coconut
     composing = true
   action blurChat
     composing = false
+  // Send runs the first row of the slash menu when it shows, as Return does in the Swift app.
   action sendChat
-    if canSend and not pending(sent)
-      send sent = sendMessage(chat.id, chatDraft.trim(), attached.join(", "), performanceNow())
-      chatDraft = ""
-      attached = []
-    focus("chat-input")
+    match slash.at(0)
+      case some(s)
+        pickSlash(s.kind, s.value)
+      case none
+        if canSend and not pending(sent)
+          send sent = sendMessage(chat.id, chatDraft.trim(), attached.join(", "), performanceNow())
+          chatDraft = ""
+          attached = []
+        focus("chat-input")
   action stopChat
     send stopped = stopTurn(chat.id)
   action answerCard(chatId: string, ref: string, option: string)
     send answered = answerCard(chatId, ref, option)
-  action pickModel(id: string)
-    send modelSet = setModel(chat.id, id)
-  action pickEffort(effort: string)
-    send effortSet = setEffort(chat.id, effort)
+  // A row of the slash menu: a command fills the box with itself and keeps the menu open for its choices; a model or
+  // an effort is chosen, and the box empties.
+  action pickSlash(kind: string, value: string)
+    if kind == "complete"
+      chatDraft = value
+    if kind == "model"
+      chatDraft = ""
+      send modelSet = setModel(chat.id, value)
+    if kind == "effort"
+      chatDraft = ""
+      send effortSet = setEffort(chat.id, value)
+    focus("chat-input")
   action pickFile
     showPicker("attach-file")
   action pickPhoto
@@ -265,6 +278,17 @@ component Coconut
                     else
                       WorkingLine(turn=chat.turn, now=now)
               column flex-shrink=0 padding="6px 12px 8px" testId="composer-bar"
+                // The slash menu (ComposerSlashMenu) over the box: a row for each command, model or effort, and a mark on
+                // the one that every chat runs with.
+                if slash.length > 0
+                  column role="menu" aria-label="Commands" margin-bottom=8 border-radius=16 background-color="light-dark(#f4f4f4, #212121)" overflow="hidden" testId="slash-menu"
+                    for s in slash key=s.id
+                      button role="menuitem" appearance="none" press=pickSlash(s.kind, s.value) retainFocus=true display="flex" flex-direction="row" align-items="center" gap=10 padding="0px 14px" min-height=44 text-align="start" width="100%" box-sizing="border-box" testId=`slash-${s.id}`
+                        image s.symbol width=20 height=20 color="-exact-secondary-label" aria-hidden=true
+                        text s.title font="-exact-subheadline" font-weight=500 flex-shrink=0
+                        text s.detail font="-exact-subheadline" color="-exact-secondary-label" line-clamp=1 flex=1 min-width=0
+                        if s.chosen
+                          image "symbol:checkmark" width=14 height=14 color="light-dark(#7a4e2d, #d4a574)" aria-label="Chosen"
                 column position="relative" border-radius=24 background-color="light-dark(#f4f4f4, #212121)" testId="composer-box"
                   if attached.length > 0
                     row flex-wrap="wrap" gap=6 padding="10px 12px 0px 12px" testId="attachments"
@@ -273,15 +297,10 @@ component Coconut
                           text n font="-exact-footnote" line-clamp=1 max-width=160
                           image "symbol:close" width=10 height=10 aria-hidden=true
                   textarea id="chat-input" value=chatDraft input=editChat focus=focusChat blur=blurChat rows=1 field-sizing="content" max-height=140 placeholder=`Message ${chat.project}` aria-label="Message" border="none" background-color="transparent" min-width=0 padding-top=12 padding-bottom=(expanded ? 4 : 12) padding-left=(expanded or chat.live ? 16 : 48) padding-right=(expanded ? 16 : 52) testId="chat-input"
+                  // An open box keeps a row under the text for the plus and Send. The model and the effort have no chips
+                  // there: `/model` and `/effort` change them, as in the Swift app.
                   if expanded
-                    row align-items="center" gap=2 height=44 padding-left=44 padding-right=84 overflow="hidden" testId="composer-toolbar"
-                      button appearance="none" popovertarget="model-menu" retainFocus=true aria-label=`Model, ${chat.modelName}` display="flex" flex-direction="row" align-items="center" gap=4 padding="6px 8px" min-width=0 testId="model-chip"
-                        text chat.modelName font="-exact-subheadline" font-weight=500 line-clamp=1
-                        image "symbol:sf/chevron.down" font="-exact-caption2" color="-exact-secondary-label" aria-hidden=true
-                      button appearance="none" popovertarget="effort-menu" retainFocus=true aria-label=`Reasoning effort, ${effortName(chat.effort)}` display="flex" flex-direction="row" align-items="center" gap=4 padding="6px 8px" min-width=0 testId="effort-chip"
-                        image "symbol:sf/brain" font="-exact-subheadline" aria-hidden=true
-                        text effortName(chat.effort) font="-exact-subheadline" font-weight=500 line-clamp=1
-                        image "symbol:sf/chevron.down" font="-exact-caption2" color="-exact-secondary-label" aria-hidden=true
+                    view height=44 testId="composer-toolbar"
                   // A chat of the Mac takes words only here, so it has no plus.
                   if not chat.live
                     button appearance="none" popovertarget="plus-menu" retainFocus=true aria-label="More options" position="absolute" left=6 bottom=6 width=32 height=32 border-radius=16 display="flex" align-items="center" justify-content="center" testId="composer-plus"
@@ -326,13 +345,5 @@ component Coconut
         button press=pickPhoto popovertarget="plus-menu" popovertargetaction="hide" testId="attach-photo-item"
           image "symbol:photo"
           text "Photo library"
-      column id="model-menu" popover="auto" role="menu" aria-label="Model"
-        for md in chat.models key=md.id
-          button role="menuitemradio" aria-checked=(md.id == chat.model) press=pickModel(md.id) popovertarget="model-menu" popovertargetaction="hide" testId=`model-${md.id}`
-            text md.name
-      column id="effort-menu" popover="auto" role="menu" aria-label="Reasoning effort"
-        for f in chat.efforts key=f
-          button role="menuitemradio" aria-checked=(f == chat.effort) press=pickEffort(f) popovertarget="effort-menu" popovertargetaction="hide" testId=`effort-${f}`
-            text effortName(f)
       input type="file" id="attach-file" multiple=true display="none" change=picked testId="attach-file"
       input type="file" id="attach-photo" accept="image/*" multiple=true display="none" change=picked testId="attach-photo"
