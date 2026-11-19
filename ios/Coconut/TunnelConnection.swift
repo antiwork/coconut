@@ -266,8 +266,6 @@ actor TunnelConnection {
 
     private(set) var state: State = .idle
     private(set) var handshakeHash: Data?
-    // The number of handshakes that this connection started. Tests read it.
-    private(set) var connectAttempts = 0
     private var link: Link?
     private var generation = 0
     private var connecting = false
@@ -460,7 +458,6 @@ actor TunnelConnection {
     }
 
     private func openLink() async {
-        connectAttempts += 1
         generation += 1
         let generation = generation
         state = .connecting

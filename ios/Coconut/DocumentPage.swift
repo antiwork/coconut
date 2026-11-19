@@ -109,7 +109,7 @@ struct DocumentPage {
     }
 
     /// d3, Observable Plot, marked and the tokens before the page, and page.js after it. Mermaid joins only a page that
-    /// can have a diagram. Each file is read once from the app. The tests load a page with them.
+    /// can have a diagram. Each file is read once from the app.
     static func scripts(diagrams: Bool) -> [WKUserScript] {
         let start = libraries + [tokens]
         let end = (diagrams ? [mermaid] : []) + [blocks]

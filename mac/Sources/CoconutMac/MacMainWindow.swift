@@ -444,7 +444,7 @@ struct MacSidebar: View {
     @State private var keptUnread: String?
 
     /// The bots that are not archived, newest activity first, split into the pinned bots and the other bots.
-    /// It reads only its arguments, so it needs no main actor, and a test can call it from any context.
+    /// It reads only its arguments, so it needs no main actor.
     var body: some View {
         // The store keeps the newest activity of each bot (ChatSummaries), so the sidebar reads no message. A pass
         // over the messages for each body cost about 3 ms with 1,500 messages.

@@ -1,7 +1,6 @@
 import SwiftUI
 
-/// The People tab as data: each team with its chats, its board and its members, and the direct chats with a person.
-/// It reads only its arguments, so a test can make one.
+/// The People page of the Mac as data: each team with its chats, its board and its members, and the direct chats with a person.
 struct PeopleSections: Equatable {
     struct Team: Identifiable, Equatable {
         let room: TeamRoom
@@ -44,12 +43,12 @@ struct PeopleSections: Equatable {
     }
 }
 
-/// The People tab: the direct chats, then each team with its chats, its notice board, its members and its invite. A
+/// The People page: the direct chats, then each team with its chats, its notice board, its members and its invite. A
 /// Mac without a team shows the Team screen, which makes or joins one.
 struct PeopleView: View {
     @Environment(AppStore.self) private var store
     @Environment(\.pushRoute) private var pushRoute
-    /// Opens a chat of a team. The Mac window selects it; without it the chat goes onto the stack of the tab, so Back
+    /// Opens a chat of a team. The Mac window selects it; without it the chat goes onto the stack of the page, so Back
     /// leads to People.
     var openTeamChat: ((TeamChatKey) -> Void)? = nil
 

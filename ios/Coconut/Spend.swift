@@ -41,7 +41,7 @@ struct SpendDaily: Identifiable, Equatable, Sendable {
     var id: String { UsageMath.day(date) + series }
 }
 
-/// The spend of the agents in a period, by agent, model and chat. It reads only its arguments, so a test can call it.
+/// The spend of the agents in a period, by agent, model and chat. It reads only its arguments.
 struct SpendSummary: Equatable, Sendable {
     /// The most agents that the chart names. The others share one series.
     static let seriesLimit = 4

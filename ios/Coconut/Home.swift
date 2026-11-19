@@ -53,7 +53,7 @@ enum HomeProgress: Identifiable, Equatable {
     }
 }
 
-/// The lists of Home. They read only their arguments, so a test can call them.
+/// The lists of Home. They read only their arguments.
 enum HomeFeed {
     /// "Unread": each chat with unread messages (an agent, the Coconut chat, a team, a named chat, a direct chat) and
     /// each pending card, newest first. A starred chat counts too: Home is the one place that has them all. An

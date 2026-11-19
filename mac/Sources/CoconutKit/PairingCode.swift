@@ -45,12 +45,6 @@ public struct PairingCode: Equatable {
     public func seal(_ setup: Data) throws -> Data {
         try ChaChaPoly.seal(setup, using: SymmetricKey(data: derive("coconut rendezvous key")), authenticating: boxID).combined
     }
-
-    /// Open a sealed setup. The iPhone does this. The tests use it to check `seal`.
-    public func open(_ message: Data) throws -> Data {
-        try ChaChaPoly.open(ChaChaPoly.SealedBox(combined: message), using: SymmetricKey(data: derive("coconut rendezvous key")),
-                            authenticating: boxID)
-    }
 }
 
 /// Sends a sealed setup to the rendezvous box of a pairing code on the relay.

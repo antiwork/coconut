@@ -26,7 +26,7 @@ enum AgentSection: String, CaseIterable, Identifiable {
 }
 
 /// An agent as a project: the agent with its state, its open work, its pages and its routines. The agents list and the
-/// page of an agent read it. It reads only its arguments, so a test can make one.
+/// page of an agent read it. It reads only its arguments.
 struct AgentProject: Identifiable, Equatable {
     /// What the agent does now. One state shows, in this order of importance.
     enum Status: Equatable {

@@ -161,7 +161,7 @@ extension AppStore {
 }
 
 extension BusinessReport {
-    /// Synthetic numbers, used only by previews and tests. Never copied from private business records.
+    /// Synthetic numbers, used only by the demo. Never copied from private business records.
     /// The shapes follow the published snapshots, so the demo shows each tile of each dashboard.
     static func preview(_ key: String, now: Date = Date()) throws -> BusinessReport {
         let stamp = now.formatted(.iso8601)

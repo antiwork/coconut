@@ -55,7 +55,7 @@ enum AttentionRules {
     /// The states of a To-do and of a task that count as blocked or failed.
     static let stuckStates: Set<String> = ["blocked", "failed", "needs_recovery"]
 
-    /// What the rules read. A view fills it from the store, and a test fills it by hand.
+    /// What the rules read. A view fills it from the store.
     struct Input {
         var decisions: [Decision] = []
         /// The cards that the person answered already while the answer travels to the Mac.
@@ -242,7 +242,7 @@ extension AppStore {
 
 #if DEBUG && targetEnvironment(simulator)
 extension AppStore {
-    /// Makes the preview data breach three rules, for the UI test of Home: a card that waits for 5 hours, an agent
+    /// Makes the preview data breach three rules, for `--attention-preview`: a card that waits for 5 hours, an agent
     /// with a provider limit, and a blocked To-do.
     func applyAttentionPreview(now: Date = Date()) {
         let formatter = ISO8601DateFormatter()

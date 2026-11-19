@@ -21,7 +21,7 @@ struct LivePerson: Identifiable, Equatable {
     var id: String { member.member }
 }
 
-/// The two lists of the live view. They read only their arguments, so a test can call them.
+/// The two lists of the live view. They read only their arguments.
 enum LiveFeed {
     /// A teammate who wrote in a team chat this long ago is active now.
     static let activeSeconds: TimeInterval = 10 * 60

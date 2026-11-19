@@ -6,7 +6,7 @@ import SwiftUI
 /// list, so the screen shows none.
 struct TeamView: View {
     @Environment(AppStore.self) private var store
-    /// The title of the screen without a team to name. The People tab shows the screen under its own name.
+    /// The title of the screen without a team to name. The People page of the Mac shows the screen under its own name.
     var emptyTitle = "Team"
 
     private var screen: TeamScreen {

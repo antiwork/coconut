@@ -1111,11 +1111,8 @@ final class AppStore {
         // file.
         var cache = OutgoingCache(deviceId: pairing.deviceId, messages: outgoingMessages, answers: outgoingAnswers)
         cache.pendingTeamMessages = teamChats.compactMapValues { $0.pending.isEmpty ? nil : $0.pending }
-        try writeOutgoing(cache)
+        try ProtectedCache.write(cache, name: "outgoing.json")
     }
-
-    /// Writes outgoing.json. A test can replace it to make the write fail.
-    @ObservationIgnored var writeOutgoing: (OutgoingCache) throws -> Void = { try ProtectedCache.write($0, name: "outgoing.json") }
 
     func decisionReference(for id: String) -> MessageReference? {
         guard let decision = decisions.first(where: { $0.id == id }) else { return nil }
