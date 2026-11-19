@@ -29,6 +29,15 @@ def now() -> str:
     return datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
 
 
+def instant(value) -> datetime | None:
+    """A saved time as an aware datetime, or None when the value is not a time. A time without a zone counts as UTC."""
+    try:
+        moment = datetime.fromisoformat(value.replace('Z', '+00:00'))
+    except (AttributeError, TypeError, ValueError):
+        return None
+    return moment if moment.tzinfo else moment.replace(tzinfo=timezone.utc)
+
+
 def uid() -> str:
     return str(uuid4())
 

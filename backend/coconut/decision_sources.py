@@ -1,7 +1,10 @@
 """Keep the sources for a decision visible in chat and Inbox."""
+from datetime import timezone
 import hashlib
 import json
 from urllib.parse import urlsplit
+
+from .service_base import instant
 
 
 def attach_sources(decision, payload):
@@ -135,15 +138,6 @@ def issue_facts(current):
     return {key: value for key, value in current.items() if key != 'closed_at'}
 
 
-def _instant(value):
-    from datetime import datetime, timezone
-    try:
-        instant = datetime.fromisoformat(value.replace('Z', '+00:00'))
-    except (AttributeError, TypeError, ValueError):
-        return None
-    return instant if instant.tzinfo else instant.replace(tzinfo=timezone.utc)
-
-
 # The time of a revision of a card comes from this Mac's clock, and the time of an end from GitHub's clock. A close needs
 # the end to be this many seconds after the revision.
 CLOCK_MARGIN_SECONDS = 120
@@ -168,12 +162,12 @@ def source_change(decision, url, *, state, ended_at=None):
     if not decision.get('_revised_at') and decision.get('revision', 1) != 1:
         # A card of an older store that was revised at a time that the store does not have.
         return None
-    end = _instant(ended_at)
-    revised = _instant(decision.get('_revised_at') or decision.get('created_at'))
+    end = instant(ended_at)
+    revised = instant(decision.get('_revised_at') or decision.get('created_at'))
     seen = decision.get('_source_seen', {}).get(url)
     if end is None or revised is None or end <= revised + timedelta(seconds=CLOCK_MARGIN_SECONDS):
         return None
-    if seen is not None and (_instant(seen) is None or end <= _instant(seen)):
+    if seen is not None and (instant(seen) is None or end <= instant(seen)):
         return None
     if github_source(url)[0] == 'issues':
         return f'Issue #{number} closed on GitHub.'
@@ -182,14 +176,8 @@ def source_change(decision, url, *, state, ended_at=None):
 
 def _github_time(value):
     """Return a GitHub `since` value, or None if the value is not a time."""
-    from datetime import datetime, timezone
-    try:
-        instant = datetime.fromisoformat(value.replace('Z', '+00:00'))
-    except (AttributeError, TypeError, ValueError):
-        return None
-    if instant.tzinfo is None:
-        instant = instant.replace(tzinfo=timezone.utc)
-    return instant.astimezone(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+    moment = instant(value)
+    return moment.astimezone(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ') if moment else None
 
 
 def _issue_url(url):

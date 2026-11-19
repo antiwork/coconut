@@ -5,6 +5,7 @@ import json
 from uuid import UUID, uuid5
 
 from .native_failure import TRANSIENT_ERROR_CODES
+from .service_base import instant
 from .work_sources import ANSWERED, STALE_NOTE, source_origin
 
 
@@ -70,17 +71,6 @@ EXECUTED_PROPOSAL = ("SELECT 1 FROM decisions WHERE json_extract(data,'$.task_id
                      "AND json_extract(data,'$._execution_task_id')=? AND json_extract(data,'$.inbox_kind')='proposal' "
                      "AND json_extract(data,'$.bot_id')=? "
                      "AND json_extract(data,'$.status') IN (" + ','.join('?' * len(ANSWERED)) + ") LIMIT 1")
-
-def _instant(value):
-    """A time of Hermes as an aware datetime, or None. A time without a zone counts as UTC."""
-    if not isinstance(value, str) or not value:
-        return None
-    try:
-        moment = datetime.fromisoformat(value.replace('Z', '+00:00'))
-    except ValueError:
-        return None
-    return moment if moment.tzinfo else moment.replace(tzinfo=timezone.utc)
-
 
 class NativeRoutines:
     def _routine_continuation_input(self, task, job, owner):
@@ -865,7 +855,7 @@ class NativeRoutines:
         for task in self._waiting_triggers():
             triggered = datetime.fromisoformat(task['_gateway_trigger']['at'].replace('Z', '+00:00'))
             job = routines.get(task.get('routine_id'), {}).get('_job') or {}
-            ran = _instant(job.get('last_run_at'))
+            ran = instant(job.get('last_run_at'))
             if ran is not None and ran >= triggered:
                 failed = job.get('last_status') == 'error'
                 task.update(status='failed' if failed else 'completed', updated_at=now(), summary=(

@@ -11,6 +11,8 @@ from pathlib import Path
 import subprocess
 import time
 
+from .service_base import instant
+
 
 def source_fingerprint(source):
     """Identify the current source configuration that supplied an audit."""
@@ -275,14 +277,6 @@ def source_cards(items, decisions):
     return cards
 
 
-def _instant(value):
-    try:
-        instant = datetime.fromisoformat(value.replace('Z', '+00:00'))
-    except (AttributeError, TypeError, ValueError):
-        return None
-    return instant if instant.tzinfo else instant.replace(tzinfo=timezone.utc)
-
-
 LIVE_TASK_STATES = ('queued', 'working', 'waiting', 'needs_you', 'scheduled')
 
 
@@ -302,9 +296,9 @@ def answer_state(decision, tasks):
 def recent_answers(item, binding, decisions, cards):
     """Yield the cards about an item that are pending, or answered or dismissed after the item's latest change."""
     linked = list(cards.get(item['id'], [])) + [decisions[key] for key in binding.get('decision_ids', []) if key in decisions]
-    changed = _instant(item.get('updated_at'))
+    changed = instant(item.get('updated_at'))
     for decision in linked:
-        answered = _instant(decision.get('decided_at') or decision.get('_inbox_dismissed_at'))
+        answered = instant(decision.get('decided_at') or decision.get('_inbox_dismissed_at'))
         if decision.get('status') == 'pending' or (answered and changed and answered >= changed):
             yield decision
 
@@ -315,9 +309,9 @@ def dismissal_covers(item, cards):
     The dismissal records no answer, so nothing goes to the source. The change is the item's updated_at, the same
     revision that starts a new audit: for example a new comment, label, assignee, or push. Then a new card may come.
     """
-    changed = _instant(item.get('updated_at'))
+    changed = instant(item.get('updated_at'))
     for decision in cards.get(item['id'], []):
-        at = _instant(decision['_inbox_dismissed_at']) if dismissed(decision) else None
+        at = instant(decision['_inbox_dismissed_at']) if dismissed(decision) else None
         if changed and at and at >= changed:
             return True
     return False
@@ -358,7 +352,7 @@ def no_card_covers(item, record, tasks, current):
 
     A record that names an owner task covers the item only while that task is live.
     """
-    until = _instant((record or {}).get('next_check_at'))
+    until = instant((record or {}).get('next_check_at'))
     if not until or until <= current or record.get('updated_at') != item.get('updated_at'):
         return False
     return not record.get('task_id') or tasks.get(record['task_id'], {}).get('status') in LIVE_TASK_STATES
@@ -586,7 +580,7 @@ class WorkSources:
         if (task.get('_native_job') or {}).get('no_agent') is True:
             return
         failure = self._setting('provider-limit:' + task['bot_id'])
-        started = _instant(task.get('_turn_started_at') or task.get('created_at'))
+        started = instant(task.get('_turn_started_at') or task.get('created_at'))
         if failure and started and started.timestamp() >= failure.get('recorded_at', 0):
             self.db.execute('DELETE FROM settings WHERE key=?', ('provider-limit:' + task['bot_id'],))
             self.update_bot_health(task['bot_id'])
@@ -633,7 +627,7 @@ class WorkSources:
         if '\n' in reason:
             raise ServiceError(400, 'Give one short reason.')
         current = datetime.now(timezone.utc)
-        until = _instant(payload['next_check_at']) if payload.get('next_check_at') else None
+        until = instant(payload['next_check_at']) if payload.get('next_check_at') else None
         if payload.get('next_check_at') and (until is None or until <= current):
             raise ServiceError(400, 'next_check_at must be a future ISO 8601 time.')
         until = min(until or current + timedelta(seconds=NO_CARD_DEFAULT), current + timedelta(seconds=NO_CARD_MAX))
