@@ -303,11 +303,6 @@ class WorkStatus:
         return linked, explicit_waits
 
     @staticmethod
-    def _work_task_links(tasks, include_continuations):
-        """The links and explicit waits that the tasks record. They do not depend on the receipts."""
-        return WorkStatus._work_task_link_pairs(tasks)[include_continuations]
-
-    @staticmethod
     def _work_task_link_pairs(tasks):
         """The task links without continuations (False) and with them (True), from one pass over the tasks."""
         plain, plain_waits, linked, explicit_waits = {}, {}, {}, {}
@@ -343,16 +338,9 @@ class WorkStatus:
                 mapping.setdefault(task['id'], set()).update(task.get('_waiting_on', []))
         return {False: (plain, plain_waits), True: (linked, explicit_waits)}
 
-    @staticmethod
-    def _work_links(tasks, records, include_continuations):
-        linked, explicit_waits = WorkStatus._work_task_links(tasks, include_continuations)
-        for target, source in zip((linked, explicit_waits), WorkStatus._work_record_links(records)):
-            for identity, identities in source.items():
-                target.setdefault(identity, set()).update(identities)
-        return linked, explicit_waits
-
-    # The work graph builders read these tables: _work_links reads tasks and receipts, _proposal_work_links
-    # reads decisions, and _link_external_work reads artifacts. A write to one of them drops the shared graphs.
+    # The work graph builders read these tables: _work_task_link_pairs reads tasks, _work_record_links reads receipts,
+    # _proposal_work_links reads decisions, and _link_external_work reads artifacts. A write to one of them drops the
+    # shared graphs.
     GRAPH_TABLES = frozenset(('tasks', 'native_receipts', 'decisions', 'artifacts'))
 
     def _graph_memo(self, records=None):
