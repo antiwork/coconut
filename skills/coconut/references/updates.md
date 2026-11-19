@@ -11,7 +11,7 @@ Coconut.app updates itself with Sparkle from the Coconut update feed. The app ca
 
 The second part is safe for running work:
 
-1. The service starts no new turn. The running agent turns finish. The update waits up to ten minutes for them, then it stops the service, its Hermes gateway, and its workers.
+1. The service starts no new turn. The running agent turns finish. The update waits up to ten minutes for them, then it stops the service and its Hermes gateway.
 2. The update replaces the source files. It checks each hash first. It refuses to replace a file that somebody changed.
 3. It runs the Coconut contract check against the installed Hermes.
 4. It starts the service and waits for its health check.

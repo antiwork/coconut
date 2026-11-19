@@ -357,8 +357,9 @@ def managed_current_process(data_dir: Path | None = None) -> bool:
     return launchd_pid(LABEL) == os.getpid()
 
 
-# The service stops its Hermes gateway and its workers before it exits (Service.close). Each one can take many seconds, so
-# a stop waits this long for a clean exit. Then it sends SIGKILL. An update drains the turns first, so little work is lost.
+# The service stops its Hermes gateway, the placeholders of its Kanban claims and its Kanban runtime before it exits
+# (Service.close). Each one can take many seconds, so a stop waits this long for a clean exit. Then it sends SIGKILL.
+# An update drains the turns first, so little work is lost.
 STOP_GRACE_SECONDS = 120
 # After SIGKILL, the kernel ends a process at once. The wait covers a slow ps.
 KILL_WAIT_SECONDS = 10
@@ -402,8 +403,8 @@ def record_descendants(known: dict[int, tuple[str, str]], table: dict) -> None:
     """Add to `known` the processes that provably belong to the service, with their start time and command.
 
     A process belongs when its parent is a known process that still runs as itself, or when it is in the process group
-    that such a process leads. `known` starts with the service. The service starts its Hermes gateway, its workers, and the
-    Kanban dispatcher in sessions of their own, and a worker starts the background commands of its turns in further
+    that such a process leads. `known` starts with the service. The service starts its Hermes gateway and the Kanban
+    dispatcher in sessions of their own, and a turn of the gateway starts its background commands in further
     sessions, so a signal to the service reaches none of them. A process ID that now runs another process proves nothing,
     so its children and its group are never added. Only processes of the same session can join a group, so a member of a
     group whose leader still runs as itself is a process of that leader. A gateway that a person started has no such link.
@@ -433,8 +434,8 @@ def stop_descendants(service: int, known: dict[int, tuple[str, str]]) -> None:
     """Stop the processes of an ended service that are still alive: SIGTERM, then SIGKILL. Check each one before each
     signal, and add the processes that they started meanwhile.
 
-    A Hermes gateway of the old source that keeps running blocks the gateway of the new source. A worker or a background
-    command of the old source can change the files of the new one. So the update waits until each one has ended.
+    A Hermes gateway of the old source that keeps running blocks the gateway of the new source. A background command of
+    the old source can change the files of the new one. So the update waits until each one has ended.
     """
     def remaining(table):
         record_descendants(known, table)

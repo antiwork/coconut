@@ -239,7 +239,7 @@ A write (`memory`, `skill_manage`) is refused only when the guard knows that the
 - A refusal is a tool error: `{"success": false, "error": "..."}`. Each refused search has the same text, so a refusal does not tell that a session exists.
 - Hermes runs a tool without a middleware that raises, and keeps the result that the middleware got. So the guard catches each of its faults. A fault refuses a search: a `state.db` that does not open, a `sessions` table without `chat_id`, and a result of a form that it does not know.
 - A write reads `state.db` a second time after 0.5 seconds when the first read fails. When the second read also fails, the write runs, unless the gateway turn of the call is a Coconut turn without a chat ID: then the agent gets "Coconut could not check the chat of this turn, so it refused this memory write. Try it again later." The guard writes a log line for each such fault. A turn of a direct chat is refused before the read, by its gateway turn.
-- Hermes 0.22.5 writes the row of a session of a Coconut chat before the first tool call of the first turn, and the native test `test_the_first_tool_call_of_a_direct_chat_finds_the_chat_in_its_row` checks that. If a later Hermes does not, the gateway turn still refuses the writes of a direct chat, and a search still fails closed: the session of the turn then belongs to nobody, so it reads no direct chat.
+- Hermes 0.22.5 writes the row of a session of a Coconut chat before the first tool call of the first turn. If a later Hermes does not, the gateway turn still refuses the writes of a direct chat, and a search still fails closed: the session of the turn then belongs to nobody, so it reads no direct chat.
 - What the agent loses: the sessions of a direct chat in each other chat, the reads of another profile, the memory and the new skills of a direct chat. It keeps its memory and its skill writes in each session that is not a direct chat. A discover call can return fewer results than `limit`, because Hermes cuts the list before the guard filters it.
 - The plugin registers the guard also when the channel stays off (`team.missing`), because the other platforms of the profile can still read the sessions of earlier direct chats.
 
@@ -251,7 +251,7 @@ What the guard does not cover:
 - A memory provider plugin of Hermes (an external store with its own tools).
 - The guard runs only while the plugin loads in the mode `team`. After the operator takes the team chat away, the sessions of the direct chats stay in `state.db` without a guard.
 - The guard hides only the direct chats. The Team chat and the named chats of one team stay searchable from each chat, also from a chat of another team of the same agent.
-- A new Hermes release can change the call path or the tool. The native test `test_native_team_chat.py` runs each mode against the minimum and the latest release.
+- A new Hermes release can change the call path or the tool. Check each mode when you support a new release.
 
 ### Phase 3: one conversation, Coconut tools and cards
 
@@ -309,7 +309,7 @@ What the guard does not cover:
 - The coconut adapter sets `keeps_gateway_up = False`, because Coconut starts its own gateway when no gateway runs. The attribute takes effect when Hermes ships that change. An earlier Hermes ignores it.
 - A runnable cron job of a served profile still keeps an auto-started gateway up (`_cron_busy`), as Hermes intends for each gateway that ticks a cron store. The routines of the agents are such jobs.
 - Coconut's own gateway runs without `--idle-exit`, so the idle check does not apply to it. When Coconut uses a gateway that a client started and that gateway exits, Coconut starts its own gateway.
-- `test_native_gateway_idle_exit.py` runs client-started gateways on each tested Hermes, with a short idle time and no cron jobs. A gateway without the platform exits. A gateway with the platform and an idle Coconut service exits on a Hermes that has `keeps_gateway_up`, and stays up on an earlier Hermes. A running Coconut turn holds the gateway up on each Hermes.
+- A client-started gateway without the platform exits when it is idle. A gateway with the platform and an idle Coconut service exits on a Hermes that has `keeps_gateway_up`, and stays up on an earlier Hermes. A running Coconut turn holds the gateway up on each Hermes.
 
 ### Phase 5: the gateway is always on
 
@@ -343,7 +343,7 @@ What the guard does not cover:
 ### Phase 5, group 2b: the work of a chat
 
 - A chat turn has the work context that the worker gives it: the recent work updates of the chat, the other work of the exchange that the turn can wait for, and for a tracked assignment the worker's work rules and the saved task list (`gateway_chat.work_notes`, with the shared `native_conversation.recent_work_note` and `dependencies_note`).
-- `coconut_wait` is a tool of the plugin (`card_tools.GATEWAY_WAIT_SCHEMA`). It records a wait for another task or a card of the exchange (`work_progress.wait_for_task`), or lists them. Hermes starts and watches the background processes of a gateway turn, and Coconut has no record of them. So the gateway schema has no `process_id`: a turn waits for a process with the native `process` tool, or starts it with `notify_on_complete` and finishes, and Hermes continues the chat with the result.
+- `coconut_wait` is a tool of the plugin (`card_tools.WAIT_SCHEMA`). It records a wait for another task or a card of the exchange (`work_progress.wait_for_task`), or lists them. Hermes starts and watches the background processes of a gateway turn, and Coconut has no record of them. So the gateway schema has no `process_id`: a turn waits for a process with the native `process` tool, or starts it with `notify_on_complete` and finishes, and Hermes continues the chat with the result.
 - The plugin's `post_tool_call` hook (`hooks.save_todos`) reports each todo list of a Coconut turn. The service keeps it as the work of the task, as the worker keeps the todo store of its Hermes `AIAgent` (`NativeWork.from_state`). Hermes restores the list of a session from its history, so the gateway needs no restore. Coconut does not change the list of Hermes, so it adds the root of the assignment to its saved copy each time, and completes that root when every step is completed or cancelled.
 - An unfinished list continues in a later turn, as after a worker turn (`work_progress._continue_unfinished_work`). That turn starts with the worker's text for it (`WORK_RESUME`) and runs in the gateway. A cron run keeps its list in its own session: Coconut does not continue a routine itself.
 - Still in the worker: a question about a Work item. Such a turn has its own work session (`_execution_session_id`), which the worker seeds with the messages of that work, and its own checkout of the repository (`coconut_workspace`). Kanban claims use the same work sessions. A status question about a Work item (`_work_status_only`) is a short answer of the worker without tools and without a session.
@@ -400,9 +400,8 @@ What the guard does not cover:
 
 - An audit of a work source (`_source_audit_prompt`, `_source_answer_steps`) now runs in the gateway, in the chat of its work session. The turn text is the worker's audit text, with a note that names the board tools of this chat (`gateway_chat.AUDIT_BOARD_TOOLS`). An audit that becomes a native outcome stays with the worker.
 - The audit text tells the agent to record facts with `kanban_comment` and to create a task with `kanban_create` on Coconut's own board. The worker binds the Hermes tools to that board (`HERMES_KANBAN_DB`). The gateway's own board tools write to another board, so the hooks block every `kanban_` tool in an audit turn (mode `audit`).
-- The plugin offers `coconut_kanban_list` and `coconut_kanban_show`, which read only the tasks of the agent, so an audit finds the existing task of an outcome before it acts. It also offers `coconut_kanban_create` and `coconut_kanban_comment`. The service records each write as a receipt of the turn, the Kanban runtime runs the Hermes tool on Coconut's board for the agent's profile (`kanban_runtime.board_tool`), and the service records the result (`gateway_chat.gateway_kanban_tool`). `kanban_create` gets the worker's arguments (`native_bridge.kanban_arguments`): the agent's tenant, a blocked task and an idempotency key of the turn's input. The receipts then adopt a created task as an outcome and record a comment, as for a worker turn.
+- The plugin offers `coconut_kanban_list` and `coconut_kanban_show`, which read only the tasks of the agent, so an audit finds the existing task of an outcome before it acts. It also offers `coconut_kanban_create` and `coconut_kanban_comment`. The service records each write as a receipt of the turn, the Kanban runtime runs the Hermes tool on Coconut's board for the agent's profile (`kanban_runtime.board_tool`), and the service records the result (`gateway_chat.gateway_kanban_tool`). `kanban_create` gets these arguments (`gateway_chat.kanban_arguments`): the agent's tenant, a blocked task and an idempotency key of the turn's input. The receipts then adopt a created task as an outcome and record a comment, as for a worker turn.
 - The receipts of these board tools do not route a turn to the worker, so the continuation of an audit after a card answer runs in the gateway too. The claim of the task and its turn then agree: the claim holds the gateway's placeholder, and the gateway runs the turn.
-- When a claimed task still goes to the worker, but its claim has no prepared worker, the task waits instead of failing (`kanban_scheduler.await_prepared_worker`). The placeholder stops, and the next claim prepares a worker (`_needs_worker`). Once, at a start, Coconut runs again the tasks that failed this way before the fix, with the person's card answer (`_recover_unprepared_workers`).
 - Audits have their own capacity. The Kanban pass bounds them, and an audit that the gateway runs does not take a slot of the person's chats (`native_outcomes._dispatch_chat`).
 - A source in `work-sources.json` can set `"track_pull_requests": true`. Then Coconut tracks each open pull request that the source reports (an item with `kind` `pull_request`) for the agent of the source, unless the agent already tracks it with a review owner (`work_sources.pull_requests_to_track`, `_track_source_pr`). The review owner is the audit of the PR: the new one of this pass, or else the newest audit or bound task of that item, so a PR that already has a card or a no-card record is tracked too. This is the tracking that `coconut_track_pr` does, without a model call. Coconut then resumes the agent when the checks or reviews of the PR change, and the agent's own skills decide about a merge card. A PR that another author opens, for example under a shared GitHub account, gets the same review and card flow as a PR that the agent opened itself.
 
@@ -497,10 +496,6 @@ What the guard does not cover:
 Coconut has no worker runtime of its own. The gateway runs each turn, and a turn that it does not run fails with the
 reason (`gateway_unsupported`).
 
-- Deleted: the worker (`hermes_worker.py`), its transport and protocol (`worker_transport.py`, `worker_protocol.py`,
-  `worker_cli.py`, `worker_activity.py`), the worker parts of `providers.py`, and the modules that only served worker
-  turns (`native_bridge.py`, `native_turn_scope.py`, `native_compression_head.py`, `native_routine_execution.py`,
-  `native_processes.py`, `native_relay.py`, `live_messages.py`).
 - `HermesProvider` keeps the settings, the models, the profiles and the routines of Hermes. Its turn methods refuse a
   turn. `FixtureProvider` runs each turn of fixture mode and the tests.
 - Each Kanban claim holds a placeholder process (`kanban_worker_pid`), also in fixture mode. The placeholder ends with
@@ -521,6 +516,7 @@ reason (`gateway_unsupported`).
 - The agent change context of a turn moved to `bot_changes.py`. The routing of a turn has no worker inputs:
   `gateway_bridge.WORK_SESSION_INPUTS` and `OTHER_PATHS` choose its chat.
 - The Hermes contract checks only the interfaces that Coconut still uses (`hermes_contract.verify_contract`).
+- Tasks of earlier routine claims keep their `_native_job` as history, and the continuation guards still read it. The receipt files of earlier claims in `<data-dir>/bots/<uuid>/runs` stay, and nothing reads them.
 
 Known gaps of the gateway, which the worker covered and no turn covers now:
 - No `continuation_task_id` in `coconut_message_bot`, and no receipt index in the text of a follow-up on a card.
@@ -538,13 +534,10 @@ Known gaps of the gateway, which the worker covered and no turn covers now:
   records an outcome with `coconut_kanban_create`, and a native outcome reports on its card, so the service refuses the
   tool there with that rule (`TRACK_WORK_CHAT`, `TRACK_WORK_OUTCOME`), as the worker did not offer it there.
 - A follow-up on a card and a technical lane refuse both tools, as they refuse the card tools.
-- `coconut_unlink_dependency` and `coconut_restart_service` are gone, with their service handlers: the unlink of a native
-  dependency and its fence, and the restart that an agent asked for. A new Hermes, an update drain and a workspace
-  recovery still restart the service.
 
 ### Kanban: not yet
 
-Coconut keeps its private board in `<data>/kanban/kanban.db` and dispatches it itself (`kanban_scheduler`, `kanban_runtime`). Its spawn function makes a Coconut task for each claim, so the work has Coconut cards, receipts and workspaces. The embedded dispatcher of the gateway calls `dispatch_once` with the default spawn of Hermes (`gateway/kanban_watchers_dispatcher.py`, `tick_once_for_board`), which starts a plain `hermes -p <assignee>` worker, and a plugin cannot give it another spawn function. It dispatches the boards of the Hermes home, not `<data>/kanban`. So the gateway does not serve Coconut's board, and the two dispatchers never share one. Upstream ask: a spawn hook for the embedded dispatcher.
+Coconut keeps its private board in `<data>/kanban/kanban.db` and dispatches it itself (`kanban_scheduler`, `kanban_runtime`). Its spawn function makes a Coconut task for each claim, so the work has Coconut cards, receipts and workspaces. The embedded dispatcher of the gateway calls `dispatch_once` with the default spawn of Hermes (`gateway/kanban_watchers_dispatcher.py`, `tick_once_for_board`), which starts a plain `hermes -p <assignee>` worker, and a plugin cannot give it another spawn function. It dispatches the boards of the Hermes home, not `<data>/kanban`. So the gateway does not serve Coconut's board, and the two dispatchers never share one. Upstream ask: a spawn hook for the embedded dispatcher. Until Hermes has one, `kanban_scheduler.py` and `kanban_runtime.py` stay.
 
 #### Respawn guards of Hermes
 
@@ -556,19 +549,6 @@ Hermes refuses to start a ready task again for some reasons (`check_respawn_guar
 A task without a run keeps the guard: its creator may have opened the PR, and the task waits for new input. Comments and heartbeats do not repeat its guard event, so audits that comment on it leave one event (`_note_respawn_guard`).
 
 A task that a guard holds for more than an hour shows: Coconut logs a warning once and puts the guard in the status of the task and of its Work item (`_note_respawn_guards`).
-
-### What phase 5 deletes
-
-- Done: the worker turn types, one group at a time, after the gateway ran them, and then the worker runtime (see "The
-  worker is gone").
-- Done: Coconut's own claims of routines. The `native_routines` operations `routine_claim`, `routine_heartbeat`,
-  `routine_finish` and `routine_prune_completions`, `native_routine_receipts.py`, the release of a waiting occurrence,
-  the interception of a worker's `cronjob_manage` run, and the reports of routines that an owner created
-  (`routine_reports.py`) are gone. The gateway fires each routine, and a gateway cron run records no `cronjob_manage`
-  receipt that such a report needs. Tasks of earlier claims keep their `_native_job` as history, and the continuation
-  guards still read it. The receipt files of earlier claims in `<data-dir>/bots/<uuid>/runs` stay, and nothing reads
-  them.
-- `kanban_scheduler.py` and `kanban_runtime.py` only after Hermes gives its dispatcher a spawn hook. Until then they stay.
 
 ## Team-only mode
 
