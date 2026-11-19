@@ -355,10 +355,12 @@ export class Session {
 
 // MARK: Requests
 
-// One socket of the relay. `next` gives the next binary message, and fails when the socket ends.
+// One socket of the relay. `next` gives the next binary message, and fails when the socket ends or when none comes
+// within `patience` milliseconds. `open` says whether the socket still runs: a timeout leaves it open.
 export interface Link {
   send(bytes: Uint8Array): void;
-  next(): Promise<Uint8Array>;
+  next(patience: number): Promise<Uint8Array>;
+  open(): boolean;
   pause: Pause;
 }
 
@@ -368,13 +370,29 @@ export interface Reply {
   body: Uint8Array;
 }
 
-// HTTP requests as streams of one session. A request reads every message of the socket in order, so the receive key
-// sees each one once; frames of an earlier stream that no one waits for are dropped. Requests run one at a time. Only
-// `await` in async functions chains them: Exact lets an answer send on a socket in its own turns, which it restores
-// after an `await`, and a plain `.then` callback has no answer.
+// The patience of a request: how long it waits for each frame of its answer. A long poll (`updates?wait=20`) waits up
+// to 25 seconds on the Mac before it answers, so it waits longer.
+export const PATIENCE = 20000;
+
+// A request that waits for its answer: the frames that came for its stream, and the wake of the answer that waits.
+interface Waiting {
+  frames: Frame[];
+  wake: (() => void) | null;
+}
+
+// HTTP requests as streams of one session, side by side, as the Swift app sends them: a long poll waits on the Mac
+// while a message goes. Both keys number their messages, so one answer at a time seals (`sending`) and one at a time
+// reads (`reading`): the reader opens the next message of the socket and hands its frame to the request of its
+// stream, and the other requests wait for that, each with its own patience. Frames of a stream that no request waits
+// for any more are dropped. Only `await` in async functions chains them: Exact lets an answer send on a socket in its
+// own turns, which it restores after an `await`, and a plain `.then` callback has no answer.
 export class Tunnel {
   private nextStream = 1;
-  private queue: Promise<void> = Promise.resolve();
+  private sending: Promise<void> = Promise.resolve();
+  private reading = false;
+  private streams = new Map<number, Waiting>();
+  // Why every request fails: the socket ended, or a message did not open.
+  private failure: Error | null = null;
   readonly session: Session;
   private link: Link;
 
@@ -383,37 +401,97 @@ export class Tunnel {
     this.link = link;
   }
 
-  async request(method: string, path: string, headers: Record<string, string>, body?: Uint8Array): Promise<Reply> {
-    const previous = this.queue;
+  async request(method: string, path: string, headers: Record<string, string>, body?: Uint8Array, patience = PATIENCE): Promise<Reply> {
+    if (this.failure) throw this.failure;
+    if (this.session.broken) throw new Error('The connection to the Mac ended.');
+    const id = this.nextStream;
+    this.nextStream = this.nextStream >= 0xfffffffd ? 1 : this.nextStream + 2;
+    const waiting: Waiting = { frames: [], wake: null };
+    this.streams.set(id, waiting);
+    try {
+      return await this.exchange(id, waiting, method, path, headers, body ?? new Uint8Array(0), patience);
+    } catch (error) {
+      // A request that stops before its answer tells the Mac, which then stops it too. The socket stays.
+      if (!this.failure && !this.session.broken && this.link.open()) {
+        try {
+          await this.send(frame(FRAME.cancel, id));
+        } catch {
+          // The socket ended meanwhile.
+        }
+      }
+      throw error;
+    } finally {
+      this.streams.delete(id);
+    }
+  }
+
+  private async send(f: Frame): Promise<void> {
+    const previous = this.sending;
     let release = (): void => undefined;
-    this.queue = new Promise<void>((resolve) => {
+    this.sending = new Promise<void>((resolve) => {
       release = resolve;
     });
     try {
       await previous;
-      return await this.exchange(method, path, headers, body ?? new Uint8Array(0));
+      for (const message of await this.session.seal(f, this.link.pause)) this.link.send(message);
     } finally {
       release();
     }
   }
 
-  private async send(f: Frame): Promise<void> {
-    for (const message of await this.session.seal(f, this.link.pause)) this.link.send(message);
+  // Every request fails with `error`, and the requests that wait learn it now.
+  private fail(error: Error): void {
+    this.failure = this.failure ?? error;
+    for (const w of this.streams.values()) w.wake?.();
   }
 
-  private async exchange(method: string, path: string, headers: Record<string, string>, body: Uint8Array): Promise<Reply> {
-    if (this.session.broken) throw new Error('The connection to the Mac ended.');
-    const id = this.nextStream;
-    this.nextStream = this.nextStream >= 0xfffffffd ? 1 : this.nextStream + 2;
+  // The next frame of a stream. The request that finds no reader reads one message and hands its frame on; the others
+  // wait until a reader hands them one or stops reading, and then look again.
+  private async frameOf(waiting: Waiting, patience: number): Promise<Frame> {
+    for (;;) {
+      const queued = waiting.frames.shift();
+      if (queued) return queued;
+      if (this.failure) throw this.failure;
+      if (!this.reading) {
+        this.reading = true;
+        try {
+          const f = await this.session.open(await this.link.next(patience), this.link.pause);
+          if (f && f.type === FRAME.ping) await this.send(frame(FRAME.pong, 0));
+          else if (f) this.streams.get(f.stream)?.frames.push(f);
+        } catch (error) {
+          // A timeout fails this request only. An ended socket or a message that did not open fails them all.
+          if (this.session.broken || !this.link.open()) this.fail(error instanceof Error ? error : new Error(String(error)));
+          throw error;
+        } finally {
+          this.reading = false;
+          for (const w of this.streams.values()) w.wake?.();
+        }
+      } else {
+        await new Promise<void>((resolve, reject) => {
+          const timer = setTimeout(() => {
+            waiting.wake = null;
+            reject(new Error('Your Mac did not answer in time.'));
+          }, patience);
+          waiting.wake = () => {
+            clearTimeout(timer);
+            waiting.wake = null;
+            resolve();
+          };
+        });
+        // The reader woke this request inside its own turn: go on in a turn of this request.
+        await this.link.pause();
+      }
+    }
+  }
+
+  private async exchange(id: number, waiting: Waiting, method: string, path: string, headers: Record<string, string>, body: Uint8Array,
+    patience: number): Promise<Reply> {
     await this.send(frame(FRAME.requestHead, id, utf8(JSON.stringify({ method, path, headers }))));
     let window = INITIAL_WINDOW, offset = 0, status = 0, unacknowledged = 0, finished = false;
     let replyHeaders: Record<string, string> = {};
     const chunks: Uint8Array[] = [];
     const take = async (): Promise<void> => {
-      const f = await this.session.open(await this.link.next(), this.link.pause);
-      if (!f) return;
-      if (f.type === FRAME.ping) return this.send(frame(FRAME.pong, 0));
-      if (f.stream !== id) return;
+      const f = await this.frameOf(waiting, patience);
       switch (f.type) {
         case FRAME.responseHead: {
           const head = JSON.parse(text(f.payload)) as { status?: unknown; headers?: unknown };
@@ -464,5 +542,5 @@ export class Tunnel {
 export async function connect(link: Link, keys: Keys, macKey: Uint8Array, psk: Uint8Array | null): Promise<Tunnel> {
   const handshake = new Handshake(keys, macKey, psk);
   link.send(await handshake.first(link.pause));
-  return new Tunnel(await handshake.finish(await link.next(), link.pause), link);
+  return new Tunnel(await handshake.finish(await link.next(PATIENCE), link.pause), link);
 }

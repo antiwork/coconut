@@ -9,7 +9,8 @@
 // answer that waits for them: the Noise handshake and the frames run in answers (`sync`, the writes), which pause
 // between steps so each turn stays inside its time budget. A waiting answer goes on when another answer is asked, so
 // `deliver` is asked for each event of the socket. Each connection is one round: a closed socket or an error starts the
-// next round with a new ticket and a new handshake.
+// next round with a new ticket and a new handshake. The first read takes the Mac's whole state; each read after it
+// waits on the Mac for the next change (`updates?wait=20`) and merges it, while writes go beside it on the same socket.
 //
 // Time. A data module reads no clock. A time of the fixture is in milliseconds from the launch (its history is
 // negative: the fixture moves its server_time to the launch, as PreviewStateFixture.decode does), and a source adds the
@@ -28,6 +29,9 @@ import team from './team-preview.json';
 const RELAY = 'https://coconut-push.gumroad.workers.dev';
 const SAVED = 'coconut-pairing';
 export const grants = `net.fetch ${RELAY}\nnet.websocket wss://coconut-push.gumroad.workers.dev\nsecret.keep ${SAVED}`;
+// How long a read of updates waits for each frame of its answer: the Mac holds it up to 25 seconds (the Swift app
+// gives a long poll 45).
+const LONG_POLL = 45000;
 
 type Home = Result<'loadHome'>;
 type Chat = Result<'loadChat'>;
@@ -305,7 +309,65 @@ interface LvMessage { id: string; bot_id: string; task_id: string | null; kind: 
 interface LvTask { id: string; bot_id: string; status: string; title: string | null; created_at: string; updated_at: string }
 interface LvDecision { id: string; bot_id: string; title: string; context: string | null; explanation: string | null; consequences: string | null; risk: string | null; uncertainty: string | null; status: string; created_at: string; revision: number; options: LvOption[]; selected_option_label: string | null }
 interface LvArtifact { id: string; title: string; preview: string }
-interface Snapshot { server_time: string; model: string | null; bots: LvBot[]; messages: LvMessage[]; tasks: LvTask[]; decisions: LvDecision[]; artifacts: LvArtifact[] }
+interface Snapshot { server_time: string; cursor: number; model: string | null; bots: LvBot[]; messages: LvMessage[]; tasks: LvTask[]; decisions: LvDecision[]; artifacts: LvArtifact[] }
+// An answer of `GET /v1/updates` (X-Coconut-Updates 4, StateUpdates.swift): the changes after `after` up to `cursor`, or
+// a whole state in `reset` when the Mac cannot list them.
+interface Page {
+  after: number;
+  cursor: number;
+  server_time: string;
+  reset?: Snapshot;
+  bots?: LvBot[];
+  tasks?: LvTask[];
+  messages?: LvMessage[];
+  removed_messages?: string[];
+  decisions?: LvDecision[];
+  artifacts?: LvArtifact[];
+  collection_deltas?: boolean;
+  removed_decisions?: string[];
+  removed_artifacts?: string[];
+}
+
+// The values of `updates` over those of `values`, by id: a known one in its place, a new one at the end.
+const merge = <T extends { id: string }>(updates: T[], values: T[]): T[] => {
+  const places = new Map(values.map((v, i) => [v.id, i]));
+  const result = [...values];
+  for (const value of updates) {
+    const at = places.get(value.id);
+    if (at === undefined) {
+      places.set(value.id, result.length);
+      result.push(value);
+    } else {
+      result[at] = value;
+    }
+  }
+  return result;
+};
+
+// The state after a page of updates, as StateUpdates.applying makes it, or null when the page does not follow it.
+const applying = (page: Page, snap: Snapshot): Snapshot | null => {
+  if (page.after !== snap.cursor) return null;
+  if (page.reset) return page.reset.cursor === page.cursor ? page.reset : null;
+  if (page.cursor < page.after) return null;
+  const next: Snapshot = { ...snap, cursor: page.cursor, server_time: page.server_time };
+  if (page.bots) next.bots = page.bots;
+  if (page.tasks) next.tasks = merge(page.tasks, snap.tasks);
+  if (page.messages || page.removed_messages?.length) {
+    const gone = new Set(page.removed_messages ?? []);
+    next.messages = merge(page.messages ?? [], snap.messages).filter((m) => !gone.has(m.id))
+      .sort((a, b) => (a.created_at < b.created_at ? -1 : a.created_at > b.created_at ? 1 : a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+  }
+  if (page.collection_deltas) {
+    const cards = new Set(page.removed_decisions ?? []);
+    const files = new Set(page.removed_artifacts ?? []);
+    next.decisions = merge(page.decisions ?? [], snap.decisions).filter((d) => !cards.has(d.id));
+    next.artifacts = merge(page.artifacts ?? [], snap.artifacts).filter((a) => !files.has(a.id));
+  } else {
+    if (page.decisions) next.decisions = page.decisions;
+    if (page.artifacts) next.artifacts = page.artifacts;
+  }
+  return next;
+};
 
 // The decisions and tasks of the Mac's state, for the writes: a card's options and revision, a chat's running task.
 const decisions = new Map<string, LvDecision>();
@@ -407,6 +469,7 @@ const loadPairing = (store: Store): Pairing | null => {
 const forget = (store: Store): void => {
   pairing = null;
   liveState = undefined;
+  latest = null;
   pairs += 1;
   try {
     store.forget(SAVED);
@@ -455,6 +518,18 @@ let tunnel: Tunnel | null = null;
 let tunnelKey = '';
 let version = 0;
 let lastError = '';
+// The Mac's state as it came, with every update since merged in: what the screens show, and where the next read of
+// updates starts (its cursor). It outlives a round, so a new socket asks only for what changed meanwhile.
+let latest: Snapshot | null = null;
+// The round that read the Mac once: its next reads wait on the Mac for a change.
+let polled = '';
+
+// The error of the last try. A change of it moves the version, so the screens show the banner of it, or drop it.
+const settle = (error: string): void => {
+  if (error === lastError) return;
+  lastError = error;
+  version += 1;
+};
 
 // A turn of its own for the next step, so long work spreads over turns that each stay inside the budget.
 const pause: Pause = () => {
@@ -480,7 +555,7 @@ const linkOf = (c: Conn): Link => ({
     if (!c.socket || c.ended !== '') throw new Error(c.ended || 'The connection to your Mac is not open.');
     c.socket.send(bytes);
   },
-  async next(): Promise<Uint8Array> {
+  async next(patience: number): Promise<Uint8Array> {
     const queued = c.queue.shift();
     if (queued) return queued;
     if (c.ended !== '') throw new Error(c.ended);
@@ -488,7 +563,7 @@ const linkOf = (c: Conn): Link => ({
       const timer = setTimeout(() => {
         c.waiters = c.waiters.filter((w) => w.reject !== fail);
         reject(new Error('Your Mac did not answer in time.'));
-      }, 20000);
+      }, patience);
       const fail = (error: Error): void => {
         clearTimeout(timer);
         reject(error);
@@ -499,6 +574,7 @@ const linkOf = (c: Conn): Link => ({
     await pause();
     return bytes;
   },
+  open: () => c.ended === '',
   pause,
 });
 
@@ -713,23 +789,50 @@ const sources: Sources = {
         lastError = '';
         return status();
       }
-      const reply = await tunnel.request('GET', '/v1/state', headers('GET', { 'Accept-Encoding': 'gzip', 'X-Coconut-State': 'recent', 'X-Coconut-Work': 'recent' }));
-      if (reply.status === 401) {
-        forget(store);
-        throw new Error('This phone is no longer paired with your Mac.');
+      // The first read of the Mac is its whole state. Each read after it asks for what changed after the cursor of the
+      // last one (`updates`) and merges it, also on a new socket. In a round it waits up to 20 seconds on the Mac for a
+      // change, so the next read starts as soon as it ends; the first read of a round waits for nothing, so a round
+      // that follows a failure clears it at once.
+      const decoded = async (reply: Reply): Promise<unknown> => {
+        if (reply.status === 401) {
+          forget(store);
+          throw new Error('This phone is no longer paired with your Mac.');
+        }
+        if (reply.status !== 200) throw new Error(failureOf(reply));
+        const encoding = Object.entries(reply.headers).find(([name]) => name.toLowerCase() === 'content-encoding')?.[1] ?? '';
+        const body = encoding.toLowerCase() === 'gzip' ? await gunzip(reply.body) : reply.body;
+        await pause();
+        const value = JSON.parse(text(body)) as unknown;
+        await pause();
+        return value;
+      };
+      const read = { 'Accept-Encoding': 'gzip', 'X-Coconut-State': 'recent', 'X-Coconut-Work': 'recent', 'X-Coconut-Updates': '4' };
+      const base = latest;
+      let next: Snapshot | null;
+      if (!base) {
+        next = (await decoded(await tunnel.request('GET', '/v1/state', headers('GET', read)))) as Snapshot;
+      } else {
+        const wait = polled === key ? 20 : 0;
+        const page = (await decoded(await tunnel.request('GET', `/v1/updates?after=${base.cursor}&wait=${wait}`, headers('GET', read), undefined, LONG_POLL))) as Page;
+        // A page that does not follow the state drops it, and the next read takes the whole state again.
+        next = latest === base ? applying(page, base) : null;
+        if (next && !page.reset && page.cursor === page.after) {
+          latest = next;
+          polled = key;
+          settle('');
+          return status();
+        }
       }
-      if (reply.status !== 200) throw new Error(failureOf(reply));
-      const encoding = Object.entries(reply.headers).find(([name]) => name.toLowerCase() === 'content-encoding')?.[1] ?? '';
-      const body = encoding.toLowerCase() === 'gzip' ? await gunzip(reply.body) : reply.body;
-      await pause();
-      const snapshot = JSON.parse(text(body)) as Snapshot;
-      await pause();
-      liveState = fromSnapshot(snapshot);
-      version += 1;
-      lastError = '';
+      latest = next;
+      polled = key;
+      if (next) {
+        liveState = fromSnapshot(next);
+        version += 1;
+      }
+      settle('');
       return status();
     } catch (error) {
-      lastError = failed(error);
+      settle(failed(error));
       return status();
     }
   },

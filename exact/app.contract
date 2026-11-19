@@ -31,7 +31,7 @@ component Coconut
   state chatsTab = "working" persist
   // The time since launch, written once a second: the age of a chat and the seconds of a turn read it.
   state since = 0
-  // The demo answers from the fixture. A round is one connection to the Mac; `refresh` reads its state again.
+  // The demo answers from the fixture. A round is one connection to the Mac; `refresh` asks for its next read.
   state demo = false
   state round = 0
   state refresh = 0
@@ -54,9 +54,10 @@ component Coconut
   mutation started as shape Made refreshes home then afterStart
   mutation created as shape Made refreshes home then afterCreate
   mutation read as shape Ack refreshes home
-  mutation sent as shape Ack refreshes chat, home then afterWrite
-  mutation stopped as shape Ack refreshes chat, home then afterWrite
-  mutation answered as shape Ack refreshes chat, home then afterWrite
+  // A write needs no read of its own after it: the Mac's change ends the read that waits for one (see `following`).
+  mutation sent as shape Ack refreshes chat, home
+  mutation stopped as shape Ack refreshes chat, home
+  mutation answered as shape Ack refreshes chat, home
   mutation modelSet as shape Ack refreshes chat
   mutation effortSet as shape Ack refreshes chat
   derive now = time.epochAtZero + since
@@ -88,16 +89,19 @@ component Coconut
   action tick
     since = performanceNow()
 
-  // Every 15 seconds: the Mac's state again, or a new round when the socket closed or the last try failed. A read is
-  // never asked again while it runs: that lets it go with its timeout, so a socket that died while the phone slept kept
-  // a read running for good. An update applies only when no request runs, so no read starts while one waits.
-  task syncing when mode == "live" and not pending(live) and not delivery.staged
-    every(15000, resync)
-  action resync
-    if sock.status == "closed" or live.error != "" or (connectKey != "" and ticket == "" and not pending(ticket))
-      round = round + 1
-    if not (sock.status == "closed" or live.error != "" or (connectKey != "" and ticket == "" and not pending(ticket)))
-      refresh = refresh + 1
+  // The Mac's state follows the Mac. A read of updates waits up to 20 seconds on the Mac for a change (app.ts, `sync`),
+  // and the next starts as it ends. A round whose socket closed, whose last read failed or whose ticket did not come
+  // gives way to a new round after 15 seconds. No read is asked again while it runs: that lets it go with its
+  // timeout, so a socket that died while the phone slept kept a read running for good. An update applies only when no
+  // request runs, so no read starts while one waits.
+  task following when mode == "live" and sock.status == "open" and sock.key == connectKey and live.error == "" and not pending(live) and not delivery.staged
+    every(100, follow)
+  action follow
+    refresh = refresh + 1
+  task retrying when mode == "live" and not pending(live) and not delivery.staged and (sock.status == "closed" or live.error != "" or (connectKey != "" and ticket == "" and not pending(ticket)))
+    every(15000, reconnect)
+  action reconnect
+    round = round + 1
 
   // The box answers a long poll within 25 seconds; a poll that found nothing asks again.
   task polling when mode == "pair" and pairing.status == "waiting" and not pending(pairing)
@@ -140,9 +144,6 @@ component Coconut
     if startedId != ""
       draft = ""
       nav = push(nav, path("chat", startedId))
-    refresh = refresh + 1
-  action afterWrite
-    refresh = refresh + 1
 
   // A new project: a name in a sheet. The box of Home then sends to it.
   action editName(v: string)

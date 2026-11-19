@@ -19,7 +19,7 @@ TestFlight and Sparkle. The Python service in `backend/` is unchanged.
 | `parts.contract` | Parts that only draw: face, unread badge, chat row, Needs attention row, bubble, cards, working line |
 | `shapes.contract` | The records `app.ts` answers |
 | `app.ts` | The data module: the pairing, the connection to the Mac, the Mac's state, and the fixture for the demo |
-| `tunnel.ts` | The phone's end of the tunnel (`docs/relay-transport.md`): pairing setups and the rendezvous box, Noise IK and IKpsk2 as the initiator, frames, requests as streams |
+| `tunnel.ts` | The phone's end of the tunnel (`docs/relay-transport.md`): pairing setups and the rendezvous box, Noise IK and IKpsk2 as the initiator, frames, requests as streams side by side |
 | `crypto.ts` | X25519 and Poly1305 of TweetNaCl, and SHA-256, HMAC, HKDF and ChaCha20 from their specs, in TypeScript: Exact's `crypto.subtle` has no X25519 and no ChaCha20-Poly1305 |
 | `app.forma` | The palette of `Theme.swift`: page, card, user bubble, warm accent, green, the red tints, the eight faces |
 | `app.json`, `assets/` | Manifest (iOS and web hosts, no updates yet) and the icon of the Swift app |
@@ -51,14 +51,28 @@ fixture instead.
 
 Connection. Exact's sockets send no headers, so the relay gives a socket ticket for the client token
 (`POST /v1/tunnels/<route>/client-ticket`, one use, 60 seconds) and the app opens `/client?ticket=`. A round is one
-socket: `prepare` gets the ticket, `socket` is the stream resource, and `sync` does the handshake and reads
-`GET /v1/state` (recent, gzip: about 150 KB on the wire for 620 KB of state). The socket's mapper only queues bytes and
-wakes the answer that waits; the handshake and the frames run in answers that `await scheduler.yield()` between steps.
-A waiting answer goes on only when another answer is asked, so `deliver` is asked for each event of the socket. An
-answer may send on the socket only in its own turns, which Exact restores after an `await`: chain requests with
-`await`, never with a plain `.then`. Every 15 seconds the app reads the state again, or starts a new round when the
-socket closed or the last try failed; it never asks for a read again while one runs, which would let that read go
-with its timeout.
+socket: `prepare` gets the ticket, `socket` is the stream resource, and `sync` does the handshake and the reads. The
+socket's mapper only queues bytes and wakes the answer that waits; the handshake and the frames run in answers that
+`await scheduler.yield()` between steps. A waiting answer goes on only when another answer is asked, so `deliver` is
+asked for each event of the socket. An answer may send on the socket only in its own turns, which Exact restores after
+an `await`: chain requests with `await`, never with a plain `.then`.
+
+Reads. The first read is the whole state, `GET /v1/state` (recent, gzip: about 150 KB on the wire for 620 KB of
+state). Each read after it is `GET /v1/updates?after=<cursor>&wait=20` (`X-Coconut-Updates: 4`, as the Swift app
+sends it): the Mac holds it until something changes or 20 seconds pass, and the app merges what changed into the state
+it keeps, as `StateUpdates.applying` does (bots whole, tasks, messages, cards and files by id, the removed ones out, or a
+whole state in `reset` when the Mac cannot list the changes, for example after a new chat). The next read starts as the
+last one ends. The state outlives a round: the first read of a
+new socket asks only for the changes since its cursor, without waiting, so a round after a failure clears the banner
+at once. A round whose socket closed or whose read failed gives way to a new one after 15 seconds. No read is asked
+again while it runs, which would let it go with its timeout, and none starts while an update waits.
+
+Requests side by side. `tunnel.ts` sends each request as its own stream, as the Swift app does, so a Send or an answer
+goes while a read of updates waits on the Mac. Both keys number their messages, so one answer at a time seals and one
+reads: the reader opens the next message and hands its frame to the request of its stream. Each request waits for
+each frame for its own time, 20 seconds, or 45 for a read of updates; one that runs out sends CANCEL and fails alone,
+and an ended socket fails them all. A write no longer asks for a read after it: the change it makes ends the read that
+waits.
 
 What a chat of the Mac does here: its messages, cards and files, the working line, Send (words only: no attachments),
 answers to cards, Stop and read marks. It does not change the model or the effort, make projects (they are fixed),
@@ -72,6 +86,14 @@ live relay: the code, the pairing, Home with the Mac's 17 chats, a chat, and a l
 Chromium ran without web security for that check, because the relay sends no CORS headers. Not checked: a phone,
 whose Hermes may be slower than this Mac (without a JIT, here: an X25519 in 17 ms, a 60 KB frame in 17 ms), and Send,
 answers and Stop against the Mac, which would have written in the person's chats.
+
+The requests side by side, under bun against a Mac in memory with real ciphers, so a message opened out of order fails:
+a write answered while a read of updates waits, two answers of 1.5 MB at once with their window grants, a write and a
+reader that each run out of time alone (the write sends CANCEL), an ended socket that fails every request, a ping, an
+upload of 2.5 MB beside a read, and eight requests at once. The merge of updates against the service of main in
+fixture mode (an empty data folder, no relay): a state, then a new chat and its turn read as updates (one page was a
+`reset`), gave the same messages, bots, cards, files, task statuses and chats as a fresh state. Not checked: the reads
+in Exact itself, on the web host or a phone (the disk had 7.4 GB free), and the socket of the relay.
 
 On a phone. Gianfranco installed build 0.1.0 (5) from AppDrop on his iPhone on 2026-11-19 and reported the steps of
 issue #573 (the pairing, his chats, a chat, Send, a card, Stop and a relaunch) as done. AppDrop's sign-in to Apple
@@ -208,7 +230,7 @@ Keep it shipping until each phase reaches parity, and keep the bundle id of the 
 
 | Phase | Swift to port | Exact |
 |---|---|---|
-| 1 Live data | `APIClient`, `AppStore` (4,102), `Models`, `TunnelConnection`, `Onboarding`, pairing | Started: the pairing, the tunnel and the state are in `app.ts`, `tunnel.ts` and `crypto.ts` (see Live data). Left: `updates?wait=20` instead of the whole state every 15 seconds, a SQLite cache (`sqlite.open`) for a launch without the Mac, attachments, the model and effort of a chat |
+| 1 Live data | `APIClient`, `AppStore` (4,102), `Models`, `TunnelConnection`, `Onboarding`, pairing | Started: the pairing, the tunnel, the state and its updates are in `app.ts`, `tunnel.ts` and `crypto.ts` (see Live data). Left: a SQLite cache (`sqlite.open`) for a launch without the Mac, attachments, the model and effort of a chat |
 | 2 Conversation | `ConversationView` (1,642), `Cards`, `MessagePhotos`, `MessageQueue`, `BotMentions`, `ModelSettingsView`, `LiveView`, previews | More parts and routes in `parts.contract`; photos by the file picker and `image`; a virtualized list for long chats |
 | 3 Team | `TeamChat` (2,093), `TeamChatView` (1,710), `TeamViews`, `Team`, `PeopleView` | A second family of chats and a notice board, over the same list |
 | 4 Business and library | `BusinessDashboard` and the other Business files, `Library`, `DocumentPage`, `UsageViews`, `DecisionInboxView`, `AgentProject`, `Bento`, `ChatDeckView` | Routes and tabs (`select(nav, name)`); Markdown for documents; charts as `svg` |
