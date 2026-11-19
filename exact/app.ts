@@ -445,11 +445,14 @@ let launchAt = 0;
 // send that went and that two states do not show goes with the third (`states`).
 interface Outgoing { rows: Msg[]; text: string; before: Set<string>; went: boolean; states: number; failed: boolean }
 const outgoing = new Map<string, Outgoing[]>();
+// The number of the last send, for the ids of its rows (`out-<n>`). Each state of the Mac counts its own rows from 0
+// again, and the rows of a send outlive states.
+let sends = 0;
 const shows = (snap: Snapshot, chatId: string, send: Outgoing): boolean => snap.messages.some((m) =>
   m.bot_id === chatId && m.role === 'user' && m.kind === 'text' && m.text.trim() === send.text && !send.before.has(m.id));
-// A message that shows and has yet to go, by its chat: what `queueMessage` took for `sendMessage`. `at` is from the
-// launch.
-const unsent = new Map<string, { words: string; files: PickedFile[]; photos: string[]; n: number; at: number }>();
+// A message that shows and has yet to go, by its chat: what `queueMessage` took for `sendMessage`, and its rows in a
+// chat of the Mac. `at` is from the launch.
+const unsent = new Map<string, { words: string; files: PickedFile[]; photos: string[]; at: number; send: Outgoing | null }>();
 
 const fromSnapshot = (snap: Snapshot): State => {
   const server = parse(snap.server_time);
@@ -551,6 +554,7 @@ const forget = (store: Store, storage: Storage): void => {
   macCatalog = null;
   macModels.clear();
   outgoing.clear();
+  unsent.clear();
   pairs += 1;
   try {
     store.forget(SAVED);
@@ -1277,15 +1281,16 @@ const sources: Sources = {
     const s = ensure();
     const chat = s.chats.get(chatId);
     if (!chat || (words === '' && files.length === 0) || unsent.has(chatId)) return { id: '' };
-    s.counter += 1;
-    const n = s.counter;
-    unsent.set(chatId, { words, files, photos, n, at });
     if (!useLive) {
+      s.counter += 1;
+      unsent.set(chatId, { words, files, photos, at, send: null });
       const names = files.map((f) => f.name).join(', ');
       const body = [words, names === '' ? '' : '`' + names + '`'].filter((part) => part !== '').join('\n\n');
-      chat.messages = [...chat.messages, message(`${chat.id}-m${n}`, 'text', true, at, body)];
+      chat.messages = [...chat.messages, message(`${chat.id}-m${s.counter}`, 'text', true, at, body)];
       return { id: chatId };
     }
+    sends += 1;
+    const n = sends;
     const sentAt = launchAt + at;
     const textOf = words || ATTACHMENT_ONLY;
     const send: Outgoing = {
@@ -1297,6 +1302,7 @@ const sources: Sources = {
       before: new Set((latest?.messages ?? []).filter((m) => m.bot_id === chatId && m.role === 'user' && m.text.trim() === textOf).map((m) => m.id)),
       went: false, states: 0, failed: false,
     };
+    unsent.set(chatId, { words, files, photos, at, send });
     // The next send of a chat takes the place of a failure.
     outgoing.set(chatId, [...(outgoing.get(chatId) ?? []).filter((o) => !o.failed), send]);
     showOutgoing(chatId);
@@ -1311,7 +1317,7 @@ const sources: Sources = {
     unsent.delete(chatId);
     if (!send) return { ok: false };
     if (useLive) {
-      const mine = (outgoing.get(chatId) ?? []).find((o) => o.rows.some((m) => m.id.startsWith(`out-${send.n}`)));
+      const mine = send.send;
       try {
         if (send.files.length > MOST_FILES) throw new Error(`A message takes at most ${MOST_FILES} files.`);
         const ids = await upload(storage, chatId, send.files, send.photos);
@@ -1319,7 +1325,7 @@ const sources: Sources = {
       } catch (error) {
         if (mine) {
           mine.failed = true;
-          mine.rows = [...mine.rows, message(`out-${send.n}-f`, 'activity', false, launchAt + send.at, `Not sent: ${failed(error)}`)];
+          mine.rows = [...mine.rows, message(`${mine.rows[0]?.id ?? 'out'}-f`, 'activity', false, launchAt + send.at, `Not sent: ${failed(error)}`)];
         }
         showOutgoing(chatId);
         return { ok: false };
