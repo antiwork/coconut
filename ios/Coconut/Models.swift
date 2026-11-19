@@ -560,10 +560,6 @@ struct StateSnapshot: Codable, Sendable {
     var baseUrl: String? = nil
     var routines: [Routine]? = nil
     var modelCatalog: ModelCatalog? = nil
-    var approvals: ApprovalSettings? = nil
-    var parallelWork: ParallelWorkSettings? = nil
-    var fallback: FallbackSettings? = nil
-    var agentLimit: ParallelWorkSettings? = nil
     /// Each agent's queue on the Hermes board, by agent ID.
     var queues: [String: AgentQueue]? = nil
     var mcpServers: [MCPServer]? = nil
@@ -719,16 +715,12 @@ final class TextCache<Value: Sendable>: Sendable {
     }
 }
 
-struct ApprovalMode: Codable, Identifiable, Equatable, Sendable {
-    let id: String
-    let label: String
-    let description: String
-}
-
-struct ApprovalSettings: Codable, Equatable, Sendable {
-    let defaults: String
-    let modes: [ApprovalMode]
-    enum CodingKeys: String, CodingKey { case defaults = "default", modes }
+/// An agent's queue on the Hermes board of the Mac.
+struct AgentQueue: Codable, Equatable, Sendable {
+    var running = 0
+    var waiting = 0
+    var needsYou = 0
+    var doneToday = 0
 }
 
 struct MCPServer: Codable, Identifiable, Equatable, Sendable {
@@ -751,16 +743,6 @@ struct MCPRequest: Encodable {
     let name: String
     var url: String? = nil
     var token: String? = nil
-}
-
-/// The fallback chain of the default Hermes profile, in order. Hermes tries each model when the default model fails.
-struct FallbackSettings: Codable, Equatable, Sendable {
-    var models: [FallbackModel]
-}
-
-struct FallbackModel: Codable, Equatable, Hashable, Sendable {
-    var model: String
-    var provider: String
 }
 
 /// The position of the first message with each ID and each client request ID. AppStore makes it again each time its

@@ -14,7 +14,6 @@ struct StateUpdates: Decodable, Sendable {
     var collectionDeltas: Bool?
     var removedDecisions: [String]?
     var removedArtifacts: [String]?
-    var agentLimit: ParallelWorkSettings?
     var queues: [String: AgentQueue]?
     var settingsChanged: Bool?
     /// A document or a team page changed. The list of the Library is not part of the state.
@@ -64,7 +63,6 @@ struct StateUpdates: Decodable, Sendable {
             if let decisions { result.decisions = decisions }
             if let artifacts { result.artifacts = artifacts }
         }
-        if let agentLimit { result.agentLimit = agentLimit }
         if let queues { result.queues = queues }
         if let confirmedRequestIds { result.confirmedRequestIds = confirmedRequestIds }
         result.cursor = cursor
@@ -176,9 +174,6 @@ struct NativeSnapshot: Decodable, Sendable {
     let bots: [Bot]
     let modelCatalog: ModelCatalog?
     let modelConfigured: Bool
-    let approvals: ApprovalSettings?
-    let parallelWork: ParallelWorkSettings?
-    let fallback: FallbackSettings?
     let mcpServers: [MCPServer]?
     let routines: [Routine]?
     let pushConfigured: Bool?

@@ -42,10 +42,6 @@ final class AppStore {
     }
     /// Only saved task answers change a transcript. Work cards change on most updates, so conversations do not read them.
     private(set) var transcriptArtifacts: [Artifact] = []
-    var approvals: ApprovalSettings?
-    var parallelWork: ParallelWorkSettings?
-    var fallback: FallbackSettings?
-    var agentLimit: ParallelWorkSettings?
     /// Each agent's queue on the Hermes board: running, waiting, needs you, done today.
     var queues: [String: AgentQueue] = [:]
     var routines: [Routine] = []
@@ -763,7 +759,7 @@ final class AppStore {
         teamChatsOnScreen = []; teamOlderRequests = [:]; teamMessageChanges = [:]; teamTypingPace = [:]
         teamReactionWriters = [:]
         teamAlertFilters = [:]; teamAlertChats = [:]; teamAlertRequests = [:]
-        approvals = nil; parallelWork = nil; fallback = nil; agentLimit = nil; queues = [:]; mcpServers = []
+        queues = [:]; mcpServers = []
         optimisticUpdates.reset()
         documentContents = [:]; resetBusiness()
         reactionOverrides = [:]; decisionReplyDrafts = [:]; answeringDecisionIds = []
@@ -3026,8 +3022,8 @@ final class AppStore {
             let explicitKey = idempotencyKey ?? OptimisticRequest.id
             let key = explicitKey ?? uncertainWriteKeys[requestSignature] ?? UUID().uuidString
             if explicitKey == nil { uncertainWriteKeys[requestSignature] = key }
-            let (receiptModel, receiptBaseURL, receiptCatalog, receiptApproval, receiptMCP, receiptParallelLimit, receiptFallback, receiptMessages, receiptDecisions, receiptBots, receiptRoutines, receiptNativeReadAt, receiptCursor, receiptEpoch) = optimisticUpdates.receive {
-                (model, modelBaseURL, modelCatalog, approvals?.defaults, mcpServers, parallelWork?.limit, fallback, messages, decisions, bots, routines, nativeSettingsReadAt, cachedState?.cursor, snapshotEpoch)
+            let (receiptModel, receiptBaseURL, receiptCatalog, receiptMCP, receiptMessages, receiptDecisions, receiptBots, receiptRoutines, receiptNativeReadAt, receiptCursor, receiptEpoch) = optimisticUpdates.receive {
+                (model, modelBaseURL, modelCatalog, mcpServers, messages, decisions, bots, routines, nativeSettingsReadAt, cachedState?.cursor, snapshotEpoch)
             }
             let result: Response = try await client.request(path, method: method, body: body, idempotencyKey: key)
             guard belongsToPairing() else { return nil }
@@ -3064,14 +3060,7 @@ final class AppStore {
                     for index in bots.indices where bots[index].modelOverride == nil {
                         bots[index].effectiveModel = settings.modelCatalog?.defaults.selection
                     }
-                } else if let settings = result as? ApprovalSettings, approvals?.defaults == receiptApproval { approvals = settings }
-                else if let settings = result as? FallbackSettings, fallback == receiptFallback { fallback = settings }
-                else if let settings = result as? MCPResponse, mcpServers == receiptMCP { mcpServers = settings.servers }
-                else if let settings = result as? ParallelWorkSettings {
-                    if path == "settings/agent-limit" {
-                        agentLimit = settings; cachedState?.agentLimit = settings
-                    } else if path == "settings/parallel-work", parallelWork?.limit == receiptParallelLimit { parallelWork = settings }
-                }
+                } else if let settings = result as? MCPResponse, mcpServers == receiptMCP { mcpServers = settings.servers }
                 if method == "DELETE", path.hasPrefix("routines/") {
                     routines.removeAll { "routines/" + $0.id == path }
                     cachedState?.routines = routines
@@ -3296,9 +3285,6 @@ final class AppStore {
                 snapshot.modelConfigured = modelConfigured
                 snapshot.baseUrl = modelBaseURL
                 snapshot.modelCatalog = modelCatalog
-                snapshot.approvals = approvals
-                snapshot.parallelWork = parallelWork
-                snapshot.fallback = fallback
                 snapshot.mcpServers = mcpServers
                 snapshot.routines = routines
                 snapshot.bots = preservingNativeSettings(in: snapshot.bots)
@@ -3316,12 +3302,7 @@ final class AppStore {
             assign(\.messages, snapshot.messages)
             assign(\.decisions, snapshot.decisions)
             assign(\.artifacts, snapshot.artifacts)
-            assign(\.approvals, snapshot.approvals)
-            let previewLimit = ParallelWorkSettings(limit: nil, effectiveLimit: 4, automaticLimit: 4)
-            assign(\.agentLimit, snapshot.agentLimit ?? (isDemo ? ParallelWorkSettings(limit: nil, effectiveLimit: 2, automaticLimit: 2) : nil))
             assign(\.queues, snapshot.queues ?? [:])
-            assign(\.parallelWork, snapshot.parallelWork ?? (isDemo ? previewLimit : nil))
-            assign(\.fallback, snapshot.fallback ?? (isDemo ? FallbackSettings(models: []) : nil))
             assign(\.mcpServers, snapshot.mcpServers ?? [])
             assign(\.routines, snapshot.routines ?? [])
             if foreground { scheduleDelivery() }
@@ -3547,9 +3528,6 @@ final class AppStore {
                     self.assign(\.model, native.modelCatalog?.defaults.model ?? "")
                     self.assign(\.modelBaseURL, native.modelCatalog?.defaults.baseUrl ?? "")
                     self.assign(\.modelConfigured, native.modelConfigured)
-                    self.assign(\.approvals, native.approvals)
-                    self.assign(\.parallelWork, native.parallelWork)
-                    self.assign(\.fallback, native.fallback)
                     self.assign(\.mcpServers, native.mcpServers ?? [])
                     self.assign(\.routines, native.routines ?? [])
                     if let configured = native.pushConfigured { self.assign(\.pushConfigured, configured) }

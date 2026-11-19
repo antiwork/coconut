@@ -152,7 +152,6 @@
 		72B9632ECD84E69F42B8799E /* marked.min.js in Resources */ = {isa = PBXBuildFile; fileRef = DFB2E316A71DED8BD963AEC4 /* marked.min.js */; };
 		72D1DDA3CDF3634298717101 /* hermes-pairing-message.txt in Resources */ = {isa = PBXBuildFile; fileRef = BF7C349246F8FA67CFC7F7D9 /* hermes-pairing-message.txt */; };
 		72FDE484D7179448E383E724 /* TunnelFrames.swift in Sources */ = {isa = PBXBuildFile; fileRef = 124BFA46377F786FAC3CB2EE /* TunnelFrames.swift */; };
-		73119561E88C6E6447E3CEE7 /* ParallelWorkSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 700B733AA852AB61242F7E50 /* ParallelWorkSettingsView.swift */; };
 		73ECEBF3AA3D1531AFF6AC40 /* TranscriptWindow.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0C177466512540E1010ADAD1 /* TranscriptWindow.swift */; };
 		74B0F3C3D13752AAC5100DC1 /* ShareDirectory.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1BCCBD2348AD6BFA9CD627F6 /* ShareDirectory.swift */; };
 		77599D8DBF501C8105E0D7CB /* HomeViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4244E5068C8ECED6C1D1E124 /* HomeViews.swift */; };
@@ -174,7 +173,6 @@
 		801E7451AAE12BBA468F080E /* PreviewDiagnostics.swift in Sources */ = {isa = PBXBuildFile; fileRef = A3A43A7E155EAC1270A61B25 /* PreviewDiagnostics.swift */; };
 		803ECED2ACDFD7FE3B416D95 /* FileFit.swift in Sources */ = {isa = PBXBuildFile; fileRef = 45AD5F38FCEB559AD2F8D09E /* FileFit.swift */; };
 		8301BB546514BED2D50D486A /* Usage.swift in Sources */ = {isa = PBXBuildFile; fileRef = 733045D7C4C7256AF9744660 /* Usage.swift */; };
-		8355B52BB9772B22B337E236 /* ParallelWorkSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 700B733AA852AB61242F7E50 /* ParallelWorkSettingsView.swift */; };
 		83A183384E4CA5BE5148A610 /* PersonalBudget.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A8F53E58407F24E776A975C /* PersonalBudget.swift */; };
 		856A34243B6ABBB67DB5E059 /* Library.swift in Sources */ = {isa = PBXBuildFile; fileRef = 314F7F34480A83406A676837 /* Library.swift */; };
 		86259EBC5A39AEE162388FD2 /* NotificationKeys.swift in Sources */ = {isa = PBXBuildFile; fileRef = 66C75106310254DAF919E136 /* NotificationKeys.swift */; };
@@ -423,7 +421,6 @@
 		6AA2396057CD5325BD54D0A7 /* DecisionPreviews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DecisionPreviews.swift; sourceTree = "<group>"; };
 		6B414E7E9F968575DD28C6A2 /* CoconutMac.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = CoconutMac.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		6D6ED0DA53DA444633F861A5 /* MacShareInbox.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MacShareInbox.swift; sourceTree = "<group>"; };
-		700B733AA852AB61242F7E50 /* ParallelWorkSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ParallelWorkSettingsView.swift; sourceTree = "<group>"; };
 		733045D7C4C7256AF9744660 /* Usage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Usage.swift; sourceTree = "<group>"; };
 		7603EA9BBA8F58A8E5440011 /* TeamChat.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TeamChat.swift; sourceTree = "<group>"; };
 		766B7FAF417AC083D750B041 /* MessageText.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MessageText.swift; sourceTree = "<group>"; };
@@ -697,7 +694,6 @@
 				4DA4590DED32EBD6745877E1 /* PairingCode.swift */,
 				4E55B585FD3DDC0CF935CC3E /* PairingScannerView.swift */,
 				F148539DFD85BF3879FA031A /* PairingSetup.swift */,
-				700B733AA852AB61242F7E50 /* ParallelWorkSettingsView.swift */,
 				AA3A363D562BF930B8F9A826 /* PeopleView.swift */,
 				0A8F53E58407F24E776A975C /* PersonalBudget.swift */,
 				E6BADED5520F6428F59143DF /* Platform.swift */,
@@ -1135,7 +1131,6 @@
 				DEF6B2D2EBFB97012A8C03D4 /* PairingCode.swift in Sources */,
 				77C41A23566894901D29012E /* PairingScannerView.swift in Sources */,
 				0C38F4A2D993E1604FB4DA70 /* PairingSetup.swift in Sources */,
-				73119561E88C6E6447E3CEE7 /* ParallelWorkSettingsView.swift in Sources */,
 				F40C913893E8346DE9F02C31 /* PeopleView.swift in Sources */,
 				22923541B529F1685A2056E9 /* PersonalBudget.swift in Sources */,
 				525C5E505B6CA9CF22C241C1 /* Platform.swift in Sources */,
@@ -1262,7 +1257,6 @@
 				6F274E8D9D2AA0D5176D2D5E /* PairingCode.swift in Sources */,
 				2F9037AC6BD00EE689BBC91A /* PairingScannerView.swift in Sources */,
 				93D8D55FE5A94348416B8153 /* PairingSetup.swift in Sources */,
-				8355B52BB9772B22B337E236 /* ParallelWorkSettingsView.swift in Sources */,
 				0FBE71F2917658FC7E2EE812 /* PeopleView.swift in Sources */,
 				83A183384E4CA5BE5148A610 /* PersonalBudget.swift in Sources */,
 				EF509B0647E0D4B066213085 /* Platform.swift in Sources */,
