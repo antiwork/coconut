@@ -70,6 +70,12 @@ Chromium ran without web security for that check, because the relay sends no COR
 whose Hermes may be slower than this Mac (without a JIT, here: an X25519 in 17 ms, a 60 KB frame in 17 ms), and Send,
 answers and Stop against the Mac, which would have written in the person's chats.
 
+On a phone. Gianfranco installed build 0.1.0 (5) from AppDrop on his iPhone on 2026-11-19 and reported the steps of
+issue #573 (the pairing, his chats, a chat, Send, a card, Stop and a relaunch) as done. AppDrop's sign-in to Apple
+failed twice before that with "Couldn't sign in to Apple", and an app-specific password got the install through. The
+first update of that build's stream titles the list of Home Chats, as the Swift app does; it checks that updates reach
+a phone.
+
 ## What was checked, and what was not
 
 Checked by running. `app.ts` under bun against the fixture: every answer is exactly its declared shape, the sources

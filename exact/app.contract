@@ -189,8 +189,9 @@ component Coconut
         for e in stack(nav) key=e.id
           if e.name == "home"
             column navigationKey=`${e.id}` navigationScroll="home-scroll" position="absolute" inset=0 display="flex" flex-direction="column" background-color="light-dark(#ffffff, #111111)"
+              // The list is titled Chats, as the Chats tab of the Swift app is.
               header display="flex" align-items="center" padding="8px 16px"
-                text "Coconut" role="heading" aria-level=1 flex=1
+                text "Chats" role="heading" aria-level=1 flex=1 testId="home-title"
               if home.banner != ""
                 text home.banner font="-exact-footnote" color="-exact-secondary-label" padding="0px 16px 6px" testId="home-banner"
               scroll id="home-scroll" flex=1 min-height=0 keyboardDismissMode="on-drag" testId="home-scroll"
