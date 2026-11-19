@@ -218,7 +218,6 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
         self.pr_refresh_lock = threading.Lock()
         self._pending_decision_sources = set()
         self._ready_decision_sources = None
-        self.pr_follow_lock = threading.Lock()
         self.lock = threading.RLock()
         self.dispatch_gate = threading.RLock()
         self.model_settings_lock = threading.Lock()
@@ -1118,18 +1117,6 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
         if path.startswith('/v1/support/conversations/'):
             from .support_threads import mutate_support
             return mutate_support(self, method, path.split('/')[4:], data, key, fingerprint)
-        if method == 'POST' and path == '/v1/work/pull-requests':
-            with self.pr_follow_lock:
-                with self.lock:
-                    previous = self.db.execute('SELECT fingerprint,response FROM requests WHERE key=?', (key,)).fetchone()
-                    if previous:
-                        if not hmac.compare_digest(previous[0], fingerprint):
-                            raise ServiceError(409, 'This idempotency key belongs to a different request.')
-                        return json.loads(previous[1])
-                result = self._register_pr_artifact(None, data, bot_id=data.get('bot_id'))
-                with self.transaction():
-                    self.db.execute('INSERT INTO requests(key,fingerprint,response) VALUES (?,?,?)', (key, fingerprint, encoded(result)))
-                return result
         if method in ('DELETE', 'PATCH') and path.startswith('/v1/documents/') and path.count('/') == 3:
             # A delete or a pin is the same each time, so it needs no saved response.
             document_id = path.rsplit('/', 1)[1]
