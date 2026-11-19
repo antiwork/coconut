@@ -46,7 +46,8 @@ These rules came out of the audits of the screens (the information architecture,
 - One loading state and one failed state for each page that loads: `BoardLoading` and `BoardLoadNotice`, with one way to try again.
 - A page of tiles is a `BoardPage`. The business dashboards use the one grid and the one tile of `ios/Coconut/Bento.swift` (`BentoGrid`: 12 columns at a Mac width, 2 at an iPhone width), Swift Charts, and the colors of Coconut.
 - A pushed page on an iPhone has its title in the bar. The count of a section counts its rows.
-- A form edits and a board reads: a settings page is a grouped system form, and a board is sections on paper.
+- No settings screens. The person changes a setting by asking the Coconut chat (`coconut_settings`); a setting of one device goes in that chat's bar menu or in You. A new preference never gets a screen, a gear or a toggle.
+- A form edits and a board reads: a form (Your Mac) is a grouped system form, and a board is sections on paper.
 - The business screens compute nothing: no total, change or margin in the client (`BusinessHomePresentation`). A missing value shows as "—" or "Not published", never as zero. A failed or stale source never reads as "All clear".
 - The rules of "Needs attention" live in one type, `AttentionRules` (`ios/Coconut/Attention.swift`), with named thresholds. The service counts the same rules for the number on the app icon (`backend/coconut/app_badge.py`): change both together.
 
