@@ -31,7 +31,9 @@ A small client is easy to keep up to date with Hermes releases. This matters mor
 
 ## Tests
 
-The repository has no tests, no commit hook and no CI. Push without running checks. The release agent starts the TestFlight workflow twice a day.
+The repository has no tests, no commit hook and no CI. Do not write tests or run test suites. QA each change by hand
+before the push: build it and use it the way a person would (see [AGENTS.md](AGENTS.md)). The release agent starts the
+TestFlight and Mac release workflows twice a day.
 
 ## Hermes versions
 

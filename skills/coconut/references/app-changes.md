@@ -7,10 +7,10 @@ The source is `antiwork/coconut`, checked out at `~/Projects/coconut`. The insta
 1. Confirm the request against `origin/main` before saying anything about current behavior. A person who describes how the app works ("+ opens a new chat with a random letter") may be describing the change they want. `git fetch origin main` and `git grep ... origin/main -- ios mac backend` show what the app does today.
 2. Check that no open PR or branch already does it: `gh pr list -R antiwork/coconut --state open`.
 3. Work in a fresh worktree: `git worktree add -b <topic> ~/Projects/coconut-wt-<topic> origin/main`. The main checkout often holds another session's uncommitted work on another branch; never stash or reset it.
-4. Follow `AGENTS.md`: commit straight to `main` and push at once, without tests, builds or other checks; no PR unless the person asks. Commit messages describe the resulting behavior. Prefer deleting code that the change makes unused.
+4. Follow `AGENTS.md`: no tests and no test suites; check the change by hand (see below), then commit straight to `main`; no PR unless the person asks. Commit messages describe the resulting behavior. Prefer deleting code that the change makes unused.
 5. Most UI flows exist twice: iPhone (`ios/Coconut/*.swift`, e.g. `CoconutApp.swift` root toolbar) and Mac (`mac/Sources/CoconutMac/MacMainWindow.swift`). Put shared logic in an `AppStore` extension and call it from both. The iPhone tab bar always has exactly five tabs (`HomeTab`): a sixth makes iOS add a More tab, which the person does not want, so a new place goes on the page of a tab or takes the place of one. Buttons and the tint of the app are coconut brown (`BoardStyle.control` in Swift, `accent-color` on the root of the Exact app), and an unread badge is the green of the New line: never black (`Color.primary`) or the system blue, because the person rejects black buttons.
    Nothing links out of Coconut: the person reads, answers, closes and merges in the app, and agents do the same work there. An issue or a pull request opens as `GitHubItemView`, a support conversation as `SupportConversationView` with its answer box, and `stackRoutes` on each navigation stack sends every link of those kinds to these pages (`InAppLink`). Any other web page opens in the browser of the app on an iPhone (iOS 26). A new place that shows a GitHub issue, a pull request or a Gmail thread pushes its route, never `Link` to github.com or Gmail, and a new navigation stack wears `stackRoutes` and `InAppDestinations`.
-6. Rebase onto the latest `origin/main`, `git push origin HEAD:main`, and confirm `git rev-parse HEAD origin/main` match. Then check the change by hand (see below) and fix forward; revert a change that is confirmed broken.
+6. When the change works, rebase onto the latest `origin/main`, `git push origin HEAD:main`, and confirm `git rev-parse HEAD origin/main` match. Revert a change that is confirmed broken, then fix forward.
 7. Remove the worktree and its branch. Report: the commit, what changed, what was verified (demo mode vs real Mac service), and whether it has reached the person's devices (see "Releases" below). Never say a push to `main` ships by itself without checking.
 
 ## Releases
@@ -38,7 +38,9 @@ A short request ("Coconut needs to be X") is often for something that landed hou
 
 ## Check by hand
 
-The repository has no tests. After the push, build the iPhone app into your own simulator and look at the change:
+The repository has no tests, and `AGENTS.md` asks for none. Check the change by hand before the push.
+
+The iPhone app: `python3 scripts/qa.py <place>` builds what changed, installs it in its own simulator ("Coconut QA") and opens the app on one screen with demo data. `qa.py open <place>` opens another screen without a build, and `qa.py shot [file]` saves a screenshot. A place is a name of the `--open` launch argument (`showPreviewPlace` in `ios/Coconut/CoconutApp.swift`). Further launch arguments: `--team-preview` (a team with notices), `--attention-preview` (Needs attention), `--bottom` (the end of a page), `--scrolling` (a chat during a scroll) and `--period daily|yearly` (the cut of History). The same steps by hand, in your own simulator:
 
 ```sh
 xcodegen generate --spec ios/project.yml            # after adding a Swift file
@@ -54,3 +56,8 @@ xcrun simctl io <udid> screenshot $TMPDIR/shot.png
 - Run one xcodebuild at a time, and shut your simulator down when you finish: many agents share this Mac.
 - Never launch the debug Mac app: it has the installed app's bundle ID. Never drive the desktop (mouse or keyboard): the person uses this Mac.
 - Demo mode skips the Mac service; say so when reporting, with what you checked by hand and what you did not.
+
+The service, the plugin and the scripts:
+
+- Run `/opt/homebrew/bin/python3.14 -m compileall -q backend hermes_plugin scripts`, then import each module that you changed. The system `python3` is 3.9 and fails at import.
+- Call the functions that you changed against a backup copy of the database (step 4 of "A bug report about the person's own data"), never the live file. Do not build a whole `Service` for that: it starts the team sync and talks to the relay. Call the method unbound with a small stand-in for `self` that has `db`, `_all`, `_put` and `_event`.

@@ -25,7 +25,7 @@ Coconut is an iPhone app and a Mac service. The service runs on this Mac and run
 | A routine, a cron job, a script gate (`wakeAgent`), a check that should cost fewer tokens, waiting for delegated work | `references/routines.md` |
 | A page of the Library, a report page, the notes of a save of `coconut_save_document` | `references/pages.md` |
 | Per-agent queues, parallel work limits, the kanban board, Coconut task data | `references/work-queues.md` |
-| Change the Coconut app or service code: worktree, push to `main` without checks, check by hand, which build each device runs | `references/app-changes.md` |
+| Change the Coconut app or service code: worktree, check by hand, push to `main`, which build each device runs | `references/app-changes.md` |
 
 ## When to Use
 
@@ -74,8 +74,8 @@ If the app is in `~/Applications`, use `~/Applications/Coconut.app/Contents/Help
 The person wants speed. The repository `antiwork/coconut` has no tests, no commit hook and no CI.
 
 1. Work on `main` in a separate worktree. Do not open a pull request unless the person asks.
-2. Do not run tests, builds or other checks before a push. Commit, rebase on `origin/main` and push.
-3. Never force-push `main`. Resolve conflicts and keep other people's changes.
+2. Do not write tests or run test suites. Check the change by hand before the push: build it and use it the way a person would.
+3. If it works, commit, rebase on `origin/main` and push at once. Never force-push `main`. Resolve conflicts and keep other people's changes.
 4. Do not release. The release agent starts the TestFlight and Mac release workflows twice a day.
 
 ## Teams
