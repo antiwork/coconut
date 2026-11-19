@@ -27,6 +27,8 @@ struct BusinessHomePresentation {
 
     struct AttentionRow: Identifiable {
         let id: String
+        /// The name of the row. A breach has one name on Finance and in Needs attention on Product ("Support past
+        /// SLA"), and a row without a current source says so ("Support · Unknown").
         let title: String
         let detail: String?
         /// The symbol of the row in Needs attention (AttentionRules). A tile of Finance draws none.
@@ -35,20 +37,18 @@ struct BusinessHomePresentation {
         let unavailable: Bool
         /// The published count of an informational row, when its source is current.
         var value: String? = nil
-        /// The count of a row that breaches, and its short name in Needs attention on Product.
+        /// The count of a row that breaches.
         var count = 0
-        var label = ""
     }
     var attention: [AttentionRow] {
-        [attentionRow("support", source: "support", title: "Support", count: data["support"]["gumroad_past_sla"].number,
-                      suffix: "past SLA", label: "Support past SLA", detail: supportDetail, symbol: "lifepreserver",
-                      route: .function("support")),
-         attentionRow("issues", source: "issues", title: "Product issues", count: data["issues"]["past_sla"].number,
-                      suffix: "past SLA", label: "Product issues past SLA", detail: nil, symbol: "wrench.and.screwdriver",
-                      route: .report("support")),
-         attentionRow("high-priority", source: "issues", title: "High priority", count: data["high_priority"]["count"].number,
-                      suffix: "open", label: "High-priority issues", detail: highPriorityDetail,
-                      symbol: "exclamationmark.circle", route: .report("support"))].compactMap { $0 }
+        [attentionRow("support", source: "support", name: "Support", count: data["support"]["gumroad_past_sla"].number,
+                      breach: "Support past SLA", detail: supportDetail, symbol: "lifepreserver", route: .function("support")),
+         // The hammer of the Product tab.
+         attentionRow("issues", source: "issues", name: "Product issues", count: data["issues"]["past_sla"].number,
+                      breach: "Product issues past SLA", detail: nil, symbol: "hammer", route: .report("support")),
+         attentionRow("high-priority", source: "issues", name: "High priority", count: data["high_priority"]["count"].number,
+                      breach: "High-priority issues", detail: highPriorityDetail, symbol: "exclamationmark.circle",
+                      route: .report("support"))].compactMap { $0 }
     }
     private var supportDetail: String? {
         let first = data["support"]["top"][0]
@@ -68,19 +68,19 @@ struct BusinessHomePresentation {
         let counts = data["prs"]["data"].object.values.compactMap { $0["pullRequests"]["totalCount"].number }
         return counts.isEmpty ? nil : counts.reduce(0, +)
     }
-    private func attentionRow(_ id: String, source: String, title: String, count: Double?, suffix: String, label: String,
+    /// `name` is the source of the row, and `breach` what the row is named while its count is over zero.
+    private func attentionRow(_ id: String, source: String, name: String, count: Double?, breach: String,
                               detail: String?, symbol: String, route: BusinessRoute) -> AttentionRow? {
         if let notice = sourceNotice(source) {
-            return AttentionRow(id: id, title: title + " · " + notice, detail: nil, symbol: symbol, route: route, unavailable: true)
+            return AttentionRow(id: id, title: name + " · " + notice, detail: nil, symbol: symbol, route: route, unavailable: true)
         }
         if currentStatusUnknown || count == nil {
-            return AttentionRow(id: id, title: title + " · Unknown", detail: currentStatusUnknown ? "Current status unknown" : "Not published",
+            return AttentionRow(id: id, title: name + " · Unknown", detail: currentStatusUnknown ? "Current status unknown" : "Not published",
                                 symbol: symbol, route: route, unavailable: true)
         }
         guard let count, count > 0 else { return nil }
-        return AttentionRow(id: id, title: title + " · " + Self.decimal(count) + " " + suffix,
-                            detail: detail, symbol: symbol, route: route, unavailable: false,
-                            count: Int(count.rounded(.up)), label: label)
+        return AttentionRow(id: id, title: breach, detail: detail, symbol: symbol, route: route, unavailable: false,
+                            count: Int(count.rounded(.up)))
     }
     var informational: [AttentionRow] {
         [("risk", "Risk review", "shield.lefthalf.filled", BusinessRoute.report("risk")),
@@ -273,6 +273,7 @@ struct BusinessHomeContent: View {
                     }
                 }
                 Spacer(minLength: BoardStyle.Space.xs)
+                if row.count > 0 { Text("\(row.count)").font(.subheadline.weight(.semibold).monospacedDigit()) }
                 BentoChevron().padding(.top, BoardStyle.Space.xs)
             }.frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
         }.buttonStyle(.plain).accessibilityElement(children: .combine)

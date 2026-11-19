@@ -159,7 +159,7 @@ enum AttentionRules {
         guard let report = input.business else { return [] }
         return BusinessHomePresentation(report: report, now: now).attention.compactMap { row in
             guard !row.unavailable, row.count > 0 else { return nil }
-            return AttentionItem(kind: .business, count: row.count, value: "\(row.count)", label: row.label,
+            return AttentionItem(kind: .business, count: row.count, value: "\(row.count)", label: row.title,
                                  detail: row.detail ?? "", symbol: row.symbol, target: .business(row.route),
                                  key: row.id)
         }
