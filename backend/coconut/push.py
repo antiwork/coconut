@@ -568,10 +568,6 @@ class PushDelivery:
         """The number on the app icon: pending cards, unread chats and the items of "Needs attention" (app_badge)."""
         return app_badge.badge_count(self.service)
 
-    def inbox_badge_count(self):
-        """The pending cards that the person can see."""
-        return app_badge.pending_cards(self.service)
-
     def start(self):
         if self.thread:
             return
