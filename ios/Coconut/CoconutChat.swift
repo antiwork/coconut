@@ -29,7 +29,8 @@ struct CoconutChatBar: View {
             Picker("Runs", selection: $mode) {
                 ForEach(CoconutMode.allCases) { mode in Text(mode.label).tag(mode) }
             }
-            .pickerStyle(.segmented)
+            // The line next to the segments says where Coconut runs, so a Mac window does not draw the label too.
+            .pickerStyle(.segmented).labelsHidden()
             .fixedSize()
             .accessibilityIdentifier("coconut-mode")
             .onChange(of: mode) { _, new in
