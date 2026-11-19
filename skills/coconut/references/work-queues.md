@@ -32,13 +32,9 @@ Do not run broad `find ~` searches for it; they time out.
 
 1. Check open PRs in `antiwork/coconut` that touch the same code, and find a clean clone (`~/Developer/coconut`). Never work in `~/Coconut`, which is the live install.
 2. Call `coconut_kanban_create` with the whole request in `body`: the user's words, scope, files to start from, a branch and worktree path off `origin/main`, limits (draft PRs only, no merge, deploy, service restart or live config change), and the done condition. Use `workspace_kind: dir` on the clone. The task is dispatched within seconds.
-3. When the person names a model, check which model the session actually runs: `sqlite3 -readonly ~/.hermes/profiles/<profile>/state.db "select id, model from sessions order by started_at desc limit 3"`. A kanban `set-model` override may not reach a Coconut gateway turn. Pin the model on the profile's helpers instead (`delegation.model` and `delegation.provider`, see the pitfall below), and tell the worker with `hermes kanban comment` to do the heavy work through `delegate_task`. A `set-model` plus `reclaim` restart can leave the first run going, so check for a second session before you report.
+3. When the person names a model, check which model the session actually runs: `sqlite3 -readonly ~/.hermes/profiles/<profile>/state.db "select id, model from sessions order by started_at desc limit 3"`. A kanban `set-model` override may not reach a Coconut gateway turn. Pin the model on the profile's helpers instead (`delegation.model` and `delegation.provider`, see the pitfall about a profile's config in `SKILL.md`), and tell the worker with `hermes kanban comment` to do the heavy work through `delegate_task`. A `set-model` plus `reclaim` restart can leave the first run going, so check for a second session before you report.
 4. Report the task, the model it actually runs on, and the limits. The PR links come back on the task.
-
-## Change one profile's Hermes config
-
-`hermes config set` writes `~/.hermes/config.yaml` (the default profile) unless `HERMES_HOME` points at the profile, and `hermes -p <name> config` may not find the profile. Use `HERMES_HOME=~/.hermes/profiles/<name> hermes config set <key> <value>`, then read that profile's `config.yaml` to confirm. When a write lands in the wrong file, remove it at once and tell the person.
 
 ## Realistic limits
 
-There is no total limit. Per agent = 2 (chat plus one work session) so several agents always progress; helpers per task = 2 keeps the process count near total × (1 + helpers). Model rate limits, not the Mac, are the next ceiling. Cloud runners would not count against the Mac total.
+Per agent = 2 (the chat plus one work session), so several agents always progress. Helpers per task = 2 keeps one task at 3 processes at most. Model rate limits, not the Mac, are the next ceiling.

@@ -12,7 +12,7 @@ metadata:
 
 # Coconut Skill
 
-Coconut is an iPhone app and a Mac service. The service runs on this Mac and runs three projects, Coconut, Gumroad and Personal, each on its own Hermes profile (`coconut`, `gumroad`, and `personal` or `home` or the Hermes home). The iPhone reaches the service through an end-to-end encrypted relay. This skill tells you how to update Coconut, pair an iPhone, find the cause of a problem, make a routine that spends model tokens only when there is work, and write a good page for the Library. It does not change Hermes itself.
+Coconut is an iPhone app and a Mac service. The service runs on this Mac and runs three projects, Coconut, Gumroad and Personal, each on its own Hermes profile. The iPhone reaches the service through an end-to-end encrypted relay. This skill tells you how to update Coconut, pair an iPhone, find the cause of a problem, make a routine that spends model tokens only when there is work, and write a good page for the Library. It does not change Hermes itself.
 
 **This skill is a hub.** Before you answer a detail question, load the matching reference with `skill_view`.
 
@@ -139,11 +139,12 @@ The person values autonomy and short replies. Treat a terse "Go" as approval of 
 
 ## Pitfalls
 
-- Do not run `scripts/host.py restart` while agents work. It stops their running turns at once. `coconut update` waits for running turns.
+- Do not run `scripts/host.py restart` while agents work. It stops their running turns at once, and their tasks fail. `coconut update` waits for running turns.
 - Do not use `coconut update --wait` inside your own turn. The update waits for running turns, also yours.
-- Do not edit files in the install folder (default `~/Coconut`). An update refuses to replace a changed file.
-- Do not copy model keys, OAuth tokens, or `.env` files between Hermes profiles or into Coconut. The merge of old profiles lists the credentials to connect again in default; it never copies them.
-- Set a profile's Hermes config with `hermes -p <name> config set <key> <value>` (or `HERMES_HOME=~/.hermes/profiles/<name> hermes config set ...`). Without the profile, the write goes to the default profile's `~/.hermes/config.yaml`. The `patch`/`write_file` tools refuse `config.yaml` as security-sensitive, and a hand-rolled script edit in the terminal triggers an approval prompt, so `hermes config set` is the one path that lands without a prompt.
+- Do not edit, move, or delete files in the install folder (default `~/Coconut`). An update refuses to replace a changed file.
+- Do not change the database with `sqlite3`, and do not delete `.runtime`. It holds all conversations and the pairing of the iPhone.
+- Do not copy model keys, OAuth tokens, or `.env` files between Hermes profiles, into Coconut, or into chat.
+- Set a profile's Hermes config with `hermes -p <name> config set <key> <value>` (or `HERMES_HOME=~/.hermes/profiles/<name> hermes config set ...`). Without the profile, the write goes to the profile of the current `HERMES_HOME`, else to the default `~/.hermes/config.yaml`; `hermes -p <name> config path` prints the file. Read the value back to confirm. When a write lands in the wrong file, remove it at once and tell the person. The `patch`/`write_file` tools refuse `config.yaml` as security-sensitive, and a hand-rolled script edit in the terminal triggers an approval prompt, so `hermes config set` is the one path that lands without a prompt.
 - Never tell the person the app already behaves some way without checking `origin/main`. A message that describes app behavior is often a feature request; answering "that's how it works" makes them ask twice.
 - A bug report ("counts too high") usually reflects the installed build, not `main`: compare the installed service code and test the fix on a backup copy of the live database before changing code (`references/app-changes.md`, "A bug report about the person's own data").
 - The reverse also happens: a feature request for something already on `main`. Do not rebuild it and do not stop at "it exists"; check which build each device runs (`references/app-changes.md`, "The requested feature is already on main").

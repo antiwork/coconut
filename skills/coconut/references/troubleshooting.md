@@ -104,15 +104,7 @@ All Coconut data is in the install folder (default `~/Coconut`). Read the files 
 | `.runtime/host/tunnel/status.json` | The state of the relay sidecar, with the last disconnect and its cause. |
 | `.runtime/host/hermes.json` | The result of the last Hermes check. |
 | `.runtime/host/coconut.sqlite3` | The Coconut database: agents, conversations, and tasks. |
-| `.runtime/host/bots/<agent ID>/home` | The Hermes profile of one agent: `SOUL.md`, `config.yaml`, `.env`, and its memory. |
+| `.runtime/host/bots/<agent ID>` | Coconut's own files of one agent: its workspace, its browser and its temporary files. Its `SOUL.md`, `config.yaml` and memory are in the Hermes profile of its project (`~/.hermes/profiles/<name>`). |
 | `skills/coconut` | This skill. |
 
 The menu item **Open Logs** opens the logs folder.
-
-## Never do these
-
-- Do not run `scripts/host.py restart` while agents work. It stops the running turns at once, and their tasks fail. Use `coconut update`, which waits for running turns.
-- Do not edit, move, or delete files in the install folder. Updates own the source files.
-- Do not change the database with `sqlite3`.
-- Do not copy model keys, OAuth tokens, or `.env` files between Hermes profiles, into an agent profile, or into chat.
-- Do not delete `.runtime`. It holds all conversations and the pairing of the iPhone.
