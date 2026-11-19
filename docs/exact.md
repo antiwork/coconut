@@ -83,8 +83,9 @@ last one had ended: asking again lets the last read go with its timeout, so a so
 the background kept a read running for good, and the update waited for the next launch. Now `syncing` starts no read
 while one runs or while an update waits (`exactDelivery().staged`), and the number of the running update is part of
 the round, so the new data module of an applied update opens its own socket instead of waiting on the old one's.
-Gianfranco loaded that fix with two launches. The next visible update, the tabs Working and Idle under the title,
-checks that an update applies while the app stays open.
+Gianfranco loaded that fix with two launches. The next visible update, the tabs Working and Idle under the title
+(7fa2af5), applied while the app stayed open: the tabs showed up in the first minute, without a relaunch or a switch
+to another app, and his chats and the pairing stayed. That ended the check of build 5 on a phone (#573, closed).
 
 ## What was checked, and what was not
 
@@ -132,7 +133,7 @@ for the real app; AppDrop is for previews.
 ## Hot reload
 
 The target of Exact is 100 ms from saving an edit to seeing it, on the web host and the simulator. `app.json` sets
-`dev.rebuild.typescript` to `save`, which is the default. Three loops exist; none was measured here:
+`dev.rebuild.typescript` to `save`, which is the default. Three loops exist; only the second was timed (Numbers):
 
 1. Web host (`bun host/web/dev.mjs`, or `bun exact.mjs web`): the fast one. It needs the Rust toolchain and a compile, so
    it needs a machine with 10 GB free. `scripts/agent.mjs` takes screenshots of it.
@@ -164,6 +165,10 @@ Measured on 2026-11-17 with snapshot `exact-2026-11-14T0909Z`:
 | First successful build | 33.7 s | 86 s with polling and the IPA | cache restore 4.3, cargo 12.8, swift 6.5, package 7.1 |
 | Rebuild with `base=<id>`, same code | 6.6 s | 11 s with upload and IPA | |
 | A build that fails in the bake | about 7.5 s | 10 to 20 s | free for the first 30 minutes a week |
+
+An update over the air (loop 2), measured on 2026-11-19 with the update that added Working and Idle: 14 minutes from
+`gh workflow run` to the publish (the publish itself took 18 s), then it showed on Gianfranco's iPhone within a minute
+of opening the app, without a relaunch.
 
 Not yet measured: the time from save to screen on the web host, and a `push --watch` update.
 
