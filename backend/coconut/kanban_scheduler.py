@@ -42,7 +42,6 @@ class KanbanScheduler:
         self.tasks = {}
         # The limits and the queue of each agent that the board reported last (kanban_runtime.Board.limits, queues).
         self.limits, self.queues = None, {}
-        self.observed_at = None
         self.log = None
         self.closed = False
         self.frames = None
@@ -94,9 +93,7 @@ class KanbanScheduler:
                     raise KanbanRequestError(frame['error'])
                 result = frame['result']
                 if 'tasks' in result:
-                    from .service import now
                     self.tasks = {t['external_id']: t for t in result['tasks']}
-                    self.observed_at = now()
                 if 'limits' in result:
                     self.limits = result['limits']
                 if 'queues' in result:

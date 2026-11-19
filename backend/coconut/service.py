@@ -318,7 +318,6 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
         self.context_threads: dict[str, threading.Thread] = {}
         self.dispatcher: threading.Thread | None = None
         self.chat_dispatcher: threading.Thread | None = None
-        self._kanban_dispatching = False
         self._kanban_claiming = 0
         self._kanban_claim_outcomes = set()
         self._kanban_claim_bots = set()
@@ -3306,15 +3305,10 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
                 return self._dispatch_pending_locked()
             with self.lock:
                 self._dispatch_foreground()
-                self._kanban_dispatching = True
             result = self._dispatch_pending_locked()
-        # The sole queue-dispatch thread keeps its foreground reservation through idle.
-        # Claims and their reconciliation are finished. Slow idle-worker cleanup
-        # and condition waits must not exclude an otherwise valid dependency unlink.
+        # Claims and their reconciliation are finished. The rest between two passes leaves the dispatch gate free.
         self._idle_kanban()
-        # Retain the reservation after an uncertain native response until reconciliation succeeds.
         with self.lock:
-            self._kanban_dispatching = False
             self.changed.notify_all()
         return result
 
