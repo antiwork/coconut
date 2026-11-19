@@ -254,7 +254,7 @@ const showOutgoing = (chatId: string): void => {
   const chat = s.chats.get(chatId);
   if (!chat || s.zero === null) return;
   const zero = s.zero;
-  const rows = (outgoing.get(chatId) ?? []).map((m) => ({ ...m, at: m.at - zero }));
+  const rows = (outgoing.get(chatId) ?? []).flatMap((send) => send.rows.map((m) => ({ ...m, at: m.at - zero })));
   chat.messages = [...chat.messages.filter((m) => !m.id.startsWith('out-')), ...rows];
 };
 
@@ -437,10 +437,16 @@ const COMMANDS = [
 const ATTACHMENT_ONLY = '[attachment]';
 // The epoch of the launch, which the screens give with each read: a time of the contract is from the launch.
 let launchAt = 0;
-// The rows of a chat of the Mac that this phone sends and the Mac's state does not have yet, at times since 1970: a
-// message while its files go up and it goes, and why a send failed. Each state of the Mac shows them after its own
-// rows. A send that ends takes its rows away, and the next state shows the Mac's; a failure stays until the next send.
-const outgoing = new Map<string, Msg[]>();
+// A message that this phone sends to a chat of the Mac, from Send until a state of the Mac shows it: its rows, at times
+// since 1970 (the words and a row for each file, and why it failed), its text as the Mac keeps it, and the ids of the
+// chat's messages with that text when it was sent. The Mac answers a message with its task, not the message, so a
+// state shows the message when it has a message of the person with that text and a new id. Each state shows the rows
+// of the sends that it does not show yet after its own rows. A failure stays until the next send of the chat, and a
+// send that went and that two states do not show goes with the third (`states`).
+interface Outgoing { rows: Msg[]; text: string; before: Set<string>; went: boolean; states: number; failed: boolean }
+const outgoing = new Map<string, Outgoing[]>();
+const shows = (snap: Snapshot, chatId: string, send: Outgoing): boolean => snap.messages.some((m) =>
+  m.bot_id === chatId && m.role === 'user' && m.kind === 'text' && m.text.trim() === send.text && !send.before.has(m.id));
 // A message that shows and has yet to go, by its chat: what `queueMessage` took for `sendMessage`. `at` is from the
 // launch.
 const unsent = new Map<string, { words: string; files: PickedFile[]; photos: string[]; n: number; at: number }>();
@@ -480,8 +486,11 @@ const fromSnapshot = (snap: Snapshot): State => {
       if (artifact) return message(m.id, 'artifact', m.role === 'user', at, artifact.preview, { title: artifact.title });
       return message(m.id, m.kind === 'text' ? 'text' : 'activity', m.role === 'user', at, m.text);
     }).filter((m) => !(m.mine && m.kind === 'text' && m.body.trim() === ATTACHMENT_ONLY));
-    // What this phone sends to the chat and the Mac does not have yet.
-    for (const row of outgoing.get(bot.id) ?? []) messages.push({ ...row, at: row.at - server });
+    // What this phone sends to the chat and the Mac does not show yet.
+    const sends = (outgoing.get(bot.id) ?? []).filter((send) => !shows(snap, bot.id, send) && !(send.went && ++send.states > 2));
+    if (sends.length > 0) outgoing.set(bot.id, sends);
+    else outgoing.delete(bot.id);
+    for (const send of sends) for (const row of send.rows) messages.push({ ...row, at: row.at - server });
     // A chat that nobody wrote in shows nowhere (AgentChats.isBlank), but a project and a starred chat always show.
     if (messages.length === 0 && bot.unread_count === 0 && bot.status === 'idle' && !bot.pinned && bot.project !== true) continue;
     chats.set(bot.id, {
@@ -841,11 +850,11 @@ const readSettings = async (t: Tunnel, at: number): Promise<void> => {
 // launch still takes the whole state, so a state that the phone kept for days never grows with their updates.
 const CACHE_EVERY = 10_000;
 // The time on the Mac of the last write, whether the state changed since, whether the screens show the cache because
-// the Mac has not answered yet, and whether this launch has read it.
+// the Mac has not answered yet, and the reads of it that this launch tried.
 let cachedAt = -Infinity;
 let unsaved = false;
 let cached = false;
-let cacheRead = false;
+let cacheTries = 0;
 // An open database locks its file, so one use of the cache at a time, in order.
 let cacheTail: Promise<void> = Promise.resolve();
 const withCache = async <T>(storage: Storage, work: (db: Database) => Promise<T>): Promise<T> => {
@@ -869,18 +878,19 @@ const withCache = async <T>(storage: Storage, work: (db: Database) => Promise<T>
   }
 };
 
-// The kept state of the Mac of `route`, or null: none, another Mac's, or one that cannot be read.
+// The kept state of the Mac of `route`, or null: none, another Mac's, or one that cannot be read. It throws when the
+// storage does not answer.
 const readCache = async (storage: Storage, route: string): Promise<Snapshot | null> => {
+  const found = await withCache(storage, (db) => db.query('SELECT state FROM snapshot WHERE route = ?', [route]));
+  const value = found.rows[0]?.[0];
+  if (typeof value !== 'string') return null;
+  await pause();
   try {
-    const found = await withCache(storage, (db) => db.query('SELECT state FROM snapshot WHERE route = ?', [route]));
-    const value = found.rows[0]?.[0];
-    if (typeof value !== 'string') return null;
-    await pause();
-    const snap = JSON.parse(value) as Snapshot;
-    await pause();
-    return snap;
+    return JSON.parse(value) as Snapshot;
   } catch {
     return null;
+  } finally {
+    await pause();
   }
 };
 
@@ -1054,13 +1064,18 @@ const sources: Sources = {
   sync: async ([key, open], store, storage) => {
     // A launch shows the last state that the phone kept until the Mac answers, also without the Mac.
     const paired = loadPairing(store);
-    if (!liveState && !latest && !cacheRead && paired) {
-      const snap = await readCache(storage, paired.route);
-      cacheRead = true;
-      if (snap && !liveState && !latest) {
-        liveState = fromSnapshot(snap);
-        cached = true;
-        version += 1;
+    if (!liveState && !latest && cacheTries < 3 && paired) {
+      cacheTries += 1;
+      try {
+        const snap = await readCache(storage, paired.route);
+        cacheTries = 3;
+        if (snap && !liveState && !latest) {
+          liveState = fromSnapshot(snap);
+          cached = true;
+          version += 1;
+        }
+      } catch {
+        // The app's storage did not answer: the next read tries again, three times in all.
       }
     }
     if (!open || !conn || conn.key !== key || !plan) return status();
@@ -1272,10 +1287,18 @@ const sources: Sources = {
       return { id: chatId };
     }
     const sentAt = launchAt + at;
-    outgoing.set(chatId, [
-      ...(words === '' ? [] : [message(`out-${n}`, 'text', true, sentAt, words)]),
-      ...files.map((f, i) => message(`out-${n}-${i}`, 'artifact', true, sentAt, bytesText(f.size), { title: f.name })),
-    ]);
+    const textOf = words || ATTACHMENT_ONLY;
+    const send: Outgoing = {
+      rows: [
+        ...(words === '' ? [] : [message(`out-${n}`, 'text', true, sentAt, words)]),
+        ...files.map((f, i) => message(`out-${n}-${i}`, 'artifact', true, sentAt, bytesText(f.size), { title: f.name })),
+      ],
+      text: textOf,
+      before: new Set((latest?.messages ?? []).filter((m) => m.bot_id === chatId && m.role === 'user' && m.text.trim() === textOf).map((m) => m.id)),
+      went: false, states: 0, failed: false,
+    };
+    // The next send of a chat takes the place of a failure.
+    outgoing.set(chatId, [...(outgoing.get(chatId) ?? []).filter((o) => !o.failed), send]);
     showOutgoing(chatId);
     return { id: chatId };
   },
@@ -1288,17 +1311,26 @@ const sources: Sources = {
     unsent.delete(chatId);
     if (!send) return { ok: false };
     if (useLive) {
+      const mine = (outgoing.get(chatId) ?? []).find((o) => o.rows.some((m) => m.id.startsWith(`out-${send.n}`)));
       try {
         if (send.files.length > MOST_FILES) throw new Error(`A message takes at most ${MOST_FILES} files.`);
         const ids = await upload(storage, chatId, send.files, send.photos);
         await write('POST', `/v1/bots/${chatId}/messages`, { text: send.words || ATTACHMENT_ONLY, mode: 'auto', attachment_ids: ids, recipient_bot_ids: [] });
       } catch (error) {
-        outgoing.set(chatId, [...(outgoing.get(chatId) ?? []), message(`out-${send.n}-f`, 'activity', false, launchAt + send.at, `Not sent: ${failed(error)}`)]);
+        if (mine) {
+          mine.failed = true;
+          mine.rows = [...mine.rows, message(`out-${send.n}-f`, 'activity', false, launchAt + send.at, `Not sent: ${failed(error)}`)];
+        }
         showOutgoing(chatId);
         return { ok: false };
       }
-      // The Mac has the message: the next state shows its rows in place of these.
-      outgoing.delete(chatId);
+      // The Mac has the message. A state that came while it went can show it already: then its rows go now, and
+      // otherwise with the next state that shows it.
+      if (mine) {
+        mine.went = true;
+        if (latest && shows(latest, chatId, mine)) outgoing.set(chatId, (outgoing.get(chatId) ?? []).filter((o) => o !== mine));
+        showOutgoing(chatId);
+      }
     }
     const s = ensure();
     const chat = s.chats.get(chatId);

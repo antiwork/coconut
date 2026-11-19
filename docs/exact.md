@@ -95,13 +95,17 @@ the text `[attachment]`, which the chat does not show (`AttachmentOnly`). A file
 no HEIC or HEIF image, a GIF always, and any other photo as a JPEG of at most 2400 pixels and 4 MB at quality 0.8
 (`storage.fs.compressImage` into `app:/tmp/upload`, removed after its upload). The base64 goes straight into the bytes
 of the body, part by part with a pause between, so a file of 4 MB makes no string of 5.6 MB. The rows of a message
-stay (`outgoing`) while new states of the Mac come, until the Mac has the message; a send that fails says why under
-them until the next send of the chat. Reading the files needs the grants `fs.read app:/tmp/picked`, `fs.read
+stay (`outgoing`) while new states of the Mac come, until a state shows it. The Mac answers a message with its task,
+not the message, so a state shows it when it holds a message of the person with that text and an id that the chat did
+not have at Send; a state that comes before the answer of the send does too, so no row shows twice. A send that went
+and that two states do not show goes with the third. A send that fails says why under its rows until the next send of
+the chat. Reading the files needs the grants `fs.read app:/tmp/picked`, `fs.read
 app:/tmp/upload` and `fs.write app:/tmp/upload`, so attachments need a new binary: build 5 keeps its last update.
 
 Cache. The phone keeps the last state of the Mac in SQLite (`app:/data/coconut.db`, one row of the table `snapshot`:
 the route of the Mac and its state as JSON), as the Swift app keeps `snapshot.json`. The first `sync` of a launch with
-a pairing reads it before the socket opens, so Home and the chats show at once, also without the Mac, with
+a pairing reads it before the socket opens (three times in all while the storage does not answer), so Home and the
+chats show at once, also without the Mac, with
 "Connecting to <Mac>…" or the reason the Mac does not answer until it does. Sends then fail with that reason. The first
 read of the launch still takes the whole state, which replaces the kept one, so a kept state never grows with the
 updates of earlier launches; the Swift app goes on from the kept cursor instead. While changes stream, the state is
@@ -139,7 +143,9 @@ request to it and a storage in memory: the body is JSON whose base64 is the file
 and a PDF of 1.5 MB show at once and keep their rows while a new state comes, the Mac keeps the same bytes, files alone
 go with the hidden marker, a HEIC photo of 4032 pixels goes as a JPEG through `compressImage` with 2400 pixels, 4 MB and
 0.8 and its copy goes away, a JPEG of 1200 pixels and a GIF of 3000 go as they are, a file over 4 MB and 21 files do not
-go and the chat says why, and the demo names the files. Not checked: Exact's pickers and `compressImage` on a phone,
+go and the chat says why, the rows stay until a state shows the message, a state that comes before the answer of the
+send shows it once, a send that states do not show goes with the third, and the demo names the files. Not checked:
+Exact's pickers and `compressImage` on a phone,
 and the time an upload of 4 MB takes there (base64, ChaCha20-Poly1305 in TypeScript, the relay).
 
 The cache under bun against the service of main in fixture mode, with bun:sqlite in place of Exact's SQLite and its
@@ -147,8 +153,8 @@ lock (a second open fails while one is open): the first state is kept for the ro
 seconds of the last write waits and a read with no change writes it, a launch without the Mac shows the kept chats at
 once with Connecting and a chat with its messages and times, a Mac that does not answer keeps them with its reason,
 the first read when the Mac answers is the whole state and Connecting goes, another Mac shows nothing of the first and
-its first state replaces the row, a phone that is no longer paired keeps no state, a damaged row shows nothing, and no
-use of the database met another. Not checked: Exact's SQLite on a phone, and the time the JSON of a real state takes
+its first state replaces the row, a phone that is no longer paired keeps no state, a damaged row shows nothing, a read
+of the cache that fails is tried again, and no use of the database met another. Not checked: Exact's SQLite on a phone, and the time the JSON of a real state takes
 there (620 KB for this Mac's, against 2 KB in the fixture).
 
 On a phone. Gianfranco installed build 0.1.0 (5) from AppDrop on his iPhone on 2026-11-19 and reported the steps of
