@@ -22,7 +22,7 @@ TestFlight and Sparkle. The Python service in `backend/` is unchanged.
 | `tunnel.ts` | The phone's end of the tunnel (`docs/relay-transport.md`): pairing setups and the rendezvous box, Noise IK and IKpsk2 as the initiator, frames, requests as streams side by side |
 | `crypto.ts` | X25519 and Poly1305 of TweetNaCl, and SHA-256, HMAC, HKDF and ChaCha20 from their specs, in TypeScript: Exact's `crypto.subtle` has no X25519 and no ChaCha20-Poly1305 |
 | `app.forma` | The palette of `Theme.swift`: page, card, user bubble, warm accent, green, the red tints, the eight faces |
-| `app.json`, `assets/` | Manifest (iOS and web hosts, no updates yet) and the icon of the Swift app |
+| `app.json`, `assets/` | Manifest (iOS and web hosts, the update channel and its signing key) and the icon of the Swift app |
 
 Home. Needs attention at the top, with the four rules of `Attention.swift` (a card waiting over 4 hours, an agent that
 cannot run, blocked work, an unseen notice of the team); the fixture alone breaches none, so `app.ts` applies what
@@ -170,6 +170,12 @@ the round, so the new data module of an applied update opens its own socket inst
 Gianfranco loaded that fix with two launches. The next visible update, the tabs Working and Idle under the title
 (7fa2af5), applied while the app stayed open: the tabs showed up in the first minute, without a relaunch or a switch
 to another app, and his chats and the pairing stayed. That ended the check of build 5 on a phone (#573, closed).
+
+Build 0.1.0 (19), built by the workflow on 2026-11-19, adds the grants of attachments and the cache, so it is a new
+binary with a stream of its own (`e06cea81`), whose first update carries main at f7d0ad1. Build 5 cannot take a module
+with those grants and keeps its last update (f434da9: the reads of updates, `/model` and `/effort`). Build 19 is on the
+AppDrop link, and its check on a phone is #575: the install over build 5, a photo and a file, `/model` and `/effort`,
+and a launch in Airplane Mode.
 
 ## What was checked, and what was not
 
