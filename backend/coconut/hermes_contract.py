@@ -140,10 +140,8 @@ def verify_contract():
     verify_session_lifecycle_contract()
     verify_gateway_contract()
     verify_parallel_work_contract()
-    verify_terminal_contract()
 
-    return {'native_terminal_path': True, 'provider_contract': 'compatible',
-            'native_model_effort_roundtrip': True, 'model_request_sent': False}
+    return {'provider_contract': 'compatible', 'native_model_effort_roundtrip': True, 'model_request_sent': False}
 
 
 def verify_gateway_contract():
@@ -231,43 +229,6 @@ def verify_gateway_contract():
     if not callable(getattr(BasePlatformAdapter, '_send_retry_is_final', None)) or (
             'raw_response' not in SendResult.__dataclass_fields__):
         raise ValueError('Hermes changed the retry of a failed send. Review the coconut adapter.')
-
-
-def verify_terminal_contract():
-    import os
-    from unittest.mock import patch
-    from hermes_constants import set_hermes_home_override, reset_hermes_home_override
-    from tools.environments import local
-    from tools.environments.local import LocalEnvironment
-    from .terminal_setup import configure_terminal
-    with tempfile.TemporaryDirectory(prefix='coconut-terminal-contract-') as temporary:
-        directory = Path(temporary)
-        home = directory / 'home'
-        home.mkdir()
-        (home / 'config.yaml').write_text('terminal:\n  auto_source_bashrc: false\n')
-        token = set_hermes_home_override(str(home))
-        original = local._resolve_shell_init_files
-        try:
-            with patch.dict(os.environ, {'HOME': str(home), 'HERMES_HOME': str(home), 'PATH': '/usr/bin:/bin:/usr/sbin:/sbin'}):
-                configure_terminal(home)
-                configure_terminal(home)
-                files = local._resolve_shell_init_files()
-                if files.count(str(directory / 'terminal' / 'coconut-terminal.sh')) != 1:
-                    raise ValueError('Hermes did not load Coconut terminal initialization.')
-                terminal = LocalEnvironment(cwd=str(home), timeout=10)
-                try:
-                    result = terminal.execute('printf "%s" "$PATH"')
-                    paths = result['output'].strip().split(':')
-                    for prefix in ('/opt/homebrew', '/usr/local'):
-                        if Path(prefix + '/bin').is_dir() and paths.index(prefix + '/bin') > paths.index('/usr/bin'):
-                            raise ValueError('Native Hermes terminal puts system tools before package tools.')
-                    if result.get('returncode') != 0:
-                        raise ValueError('The native Hermes terminal check failed.')
-                finally:
-                    terminal.cleanup()
-        finally:
-            local._resolve_shell_init_files = original
-            reset_hermes_home_override(token)
 
 
 def verify_parallel_work_contract():

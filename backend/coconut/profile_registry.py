@@ -73,10 +73,5 @@ def lookup(data_dir, bot_id: str) -> dict | None:
     return dict(zip(('bot_id', 'name', 'home', 'state'), found[0])) if found else None
 
 
-def bot_for_home(data_dir, home) -> str | None:
-    found = _query(data_dir, "SELECT bot_id FROM profiles WHERE home=? AND state!='removed' ORDER BY rowid", (str(Path(home).absolute()),))
-    return found[0][0] if found else None
-
-
 def homes(data_dir) -> list[str]:
     return [row[0] for row in _query(data_dir, "SELECT DISTINCT home FROM profiles WHERE state!='removed'")]

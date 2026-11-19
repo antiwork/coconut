@@ -284,31 +284,3 @@ def bot_environment(env, token_file):
         count = 0
     env.update(git_settings(token_file, count))
     return env
-
-
-SHELL_HOOK = '''# Managed by Coconut. GitHub sign-in stays in Coconut Settings. Other GitHub logins on this Mac stay unused.
-if [ -r {token} ] && _coconut_github_token=$(cat {token}) && [ -n "$_coconut_github_token" ]; then
-    export GH_TOKEN="$_coconut_github_token"
-    unset GITHUB_TOKEN GH_ENTERPRISE_TOKEN GITHUB_ENTERPRISE_TOKEN
-    # A bot process that started with the login already has the git settings.
-    if [ "$COCONUT_GITHUB_LOGIN" != 1 ]; then
-        _coconut_git_count=${{GIT_CONFIG_COUNT:-0}}
-{settings}
-        export GIT_CONFIG_COUNT=$_coconut_git_count COCONUT_GITHUB_LOGIN=1
-        unset _coconut_git_count
-    fi
-elif [ "$COCONUT_GITHUB_LOGIN" = 1 ]; then
-    # The bot process started with a login that no longer exists. git finds no token file and asks no other account.
-    unset GH_TOKEN
-fi
-unset _coconut_github_token
-'''
-
-
-def shell_hook(token_file):
-    settings = git_settings(token_file)
-    lines = '\n'.join(
-        f'        export "GIT_CONFIG_KEY_$_coconut_git_count="{shlex.quote(settings[f"GIT_CONFIG_KEY_{index}"])}'
-        f' "GIT_CONFIG_VALUE_$_coconut_git_count="{shlex.quote(settings[f"GIT_CONFIG_VALUE_{index}"])}\n'
-        '        _coconut_git_count=$((_coconut_git_count + 1))' for index in range(int(settings['GIT_CONFIG_COUNT'])))
-    return SHELL_HOOK.format(token=shlex.quote(str(token_file)), settings=lines)

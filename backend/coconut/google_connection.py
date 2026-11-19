@@ -1,4 +1,4 @@
-"""Phone OAuth with native gog token storage and Hermes terminal integration."""
+"""Phone OAuth with native gog token storage."""
 from contextlib import contextmanager
 from datetime import datetime, timezone
 import base64
@@ -10,28 +10,22 @@ import os
 from pathlib import Path
 import secrets
 import subprocess
-import sys
 import tempfile
 import time
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
-try:
-    from .profiles import _safe, _write
-    from .runtime_environment import profile_environment
-    from .google_cli import VERSION as GOG_VERSION
-except ImportError:
-    from profiles import _safe, _write
-    from runtime_environment import profile_environment
-    from google_cli import VERSION as GOG_VERSION
+from .profiles import _safe, _write
+from .runtime_environment import profile_environment
+from .google_cli import VERSION as GOG_VERSION
 
 # Public publisher identity. Google registers this client for com.gumroad.coconut.
 CLIENT_ID = '3509104299-du1m1pcfgm7meeivk712bmltf4bus8ae.apps.googleusercontent.com'
 SCOPES = ['openid', 'email', 'https://www.googleapis.com/auth/gmail.readonly',
           'https://www.googleapis.com/auth/calendar.readonly']
 # The support mailbox is a second connection, Coconut's own: the support page answers and closes conversations with
-# it (support_threads.py). Hermes shells export only the connection above (main), so the agents keep read-only Gmail.
+# it (support_threads.py). The connection above stays read-only.
 SUPPORT_SCOPES = ['openid', 'email', 'https://www.googleapis.com/auth/gmail.modify']
 # Each connection: its folder under connections/, its scopes, and the services that it gives.
 MAILBOXES = {'': ('google', SCOPES, ('gmail', 'calendar')), 'support': ('google-support', SUPPORT_SCOPES, ('gmail',))}
@@ -273,25 +267,3 @@ class GoogleConnections:
             if receipt:
                 write_json(receipt, result)
             return result
-
-
-def main():
-    # Called by Hermes shell initialization. Never print refresh tokens or diagnostics with secrets.
-    try:
-        profile = GoogleProfile(Path(sys.argv[1]))
-        if not profile.status()['connected']:
-            print('unset GOG_ACCESS_TOKEN GOG_ACCOUNT')
-            return
-        access, email = profile.access()
-        import shlex
-        if profile.executable:
-            print('export PATH=' + shlex.quote(str(Path(profile.executable).parent)) + ':"$PATH"')
-        print('export GOG_ACCESS_TOKEN=' + shlex.quote(access))
-        print('export GOG_ACCOUNT=' + shlex.quote(email))
-    except (GoogleError, OSError, ValueError):
-        print('unset GOG_ACCESS_TOKEN GOG_ACCOUNT')
-        print('Google access needs attention. Open Coconut Settings → Connections.', file=sys.stderr)
-
-
-if __name__ == '__main__':
-    main()

@@ -1,8 +1,7 @@
 """Find the Hermes profile of each Coconut bot.
 
-Each bot is a Hermes profile of the person. The `profiles` table (profile_registry) names its folder. Coconut never
-creates a profile folder itself: bot_profiles uses the Hermes profile API. Coconut keeps its own files of a bot in
-`<data>/bots/<uuid>` (bot_folder).
+A project and each of its chats run on a Hermes profile of the person. The `profiles` table (profile_registry) names
+its folder. Coconut creates no profile folder. It keeps its own files of a bot in `<data>/bots/<uuid>`.
 """
 
 from __future__ import annotations
@@ -15,11 +14,7 @@ import stat
 import tempfile
 from uuid import UUID
 
-
-try:
-    from . import profile_registry
-except ImportError:
-    import profile_registry
+from . import profile_registry
 
 
 class ProfileError(ValueError):
@@ -108,26 +103,6 @@ def prompt_revision(home: str | Path, *, boundary: str | Path | None = None) -> 
             raise ProfileError('The Hermes profile prompt file must contain valid UTF-8: ' + name) from None
         hashes[name] = hashlib.sha256(content).hexdigest()
     return hashlib.sha256(json.dumps(hashes, sort_keys=True).encode()).hexdigest()
-
-
-def bot_folder(home: str | Path) -> Path:
-    """Coconut's own folder of a bot, `<data>/bots/<uuid>`, for its profile home.
-
-    Routine receipts, terminal scripts and worker progress go there, never into the profile. A worker knows its folder
-    from COCONUT_BOT_DIR. A settings process finds it in the profiles table of COCONUT_DATA_DIR. A tool without either
-    uses the parent of the home.
-    """
-    home = Path(home).absolute()
-    folder, current = os.environ.get('COCONUT_BOT_DIR'), os.environ.get('HERMES_HOME')
-    if folder and current and Path(current).absolute() == home:
-        return Path(folder)
-    data_dir = os.environ.get('COCONUT_DATA_DIR')
-    if not data_dir:
-        return home.parent
-    bot_id = profile_registry.bot_for_home(data_dir, home)
-    if bot_id is None:
-        raise ProfileError('Coconut cannot find the agent of this Hermes profile.')
-    return Path(data_dir) / 'bots' / bot_id
 
 
 # The revision of a profile without prompt files.

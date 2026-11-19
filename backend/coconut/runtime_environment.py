@@ -5,7 +5,6 @@ import pwd
 import re
 
 
-CLAUDE_PROFILE_OVERRIDES = ('CLAUDE_CONFIG_DIR', 'CLAUDE_SECURESTORAGE_CONFIG_DIR')
 # The login folders that a profile's .env can set. Without them, tools use the Mac account's folders.
 LOGIN_FOLDERS = ('CODEX_HOME', 'GH_CONFIG_DIR', 'XDG_CONFIG_HOME', 'XDG_DATA_HOME', 'XDG_CACHE_HOME')
 

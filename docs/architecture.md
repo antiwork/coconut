@@ -134,7 +134,7 @@ A project is a name and its chats (`backend/coconut/bot_profiles.py`, `PROJECTS`
 - A bot view carries `project`: true for a project, false for an agent of an earlier release. The apps list only projects under Projects and in the message box. An agent of an earlier release keeps its profile, its chats and its routines, but takes no new chat (409). Removing it is the person's choice.
 - The Coconut project is the Coconut chat: it carries the mark `coconut_chat`, and its chats have `coconut_settings`.
 - `PATCH /v1/bots/<id>` refuses `model_override`, `instructions`, `approval_override` and `worker_limit` with 409, and ignores `avatar` and `color`. The API still sends both, empty, so older apps decode a bot.
-- Coconut keeps its own files of an agent in `<data-dir>/bots/<uuid>`: workspace, browser, temporary files, and terminal scripts.
+- Coconut keeps its own files of an agent in `<data-dir>/bots/<uuid>`: workspace, browser and temporary files.
 - New chat: the person picks Coconut, Gumroad or Personal. `POST /v1/bots/<id>/chats` makes a bot with `chat_of` (the project's ID), a new session, and a `profiles` row with the folder of the project's profile. Its first message is its title (`chat_title`). A chat can be archived or removed by itself.
 - A chat goes to Archived by itself after 48 hours without activity (`AgentChats.archive_idle_chats`, every 10 minutes from the dispatcher). Activity is a visible message, a change of its newest task, a read of a new reply (`_read_at`), its start, and a restore from Archived (`_restored_at`). A chat stays while it is starred, is a quick to-do, has an unread reply, or still waits for something: a queued, running, waiting or paused task, a card, a wait or a result on its way back, Work that runs, or a scheduled or paused routine. An archived chat runs nothing and sends no notification, so the pass leaves those alone. A message of the person brings an archived chat back, where the service refused it before. The apps list Archived newest first.
 - Deleting an agent means "Remove from Coconut": its Hermes sessions stay.
@@ -144,7 +144,9 @@ Coconut scopes Codex, GitHub CLI, and XDG settings through their native environm
 Settings → Connections → GitHub connects one account for all agents through the Antiwork-owned Coconut OAuth app.
 Device sign-in uses its public client ID, without a client secret. Coconut keeps access and refresh tokens in private
 files under `<data-dir>/connections/github`, refreshes expiring tokens before they expire, and stops refresh on shutdown
-or disconnect. Agent shells read the current token for each command; new agent processes and PR tracking use it too.
+or disconnect. PR tracking, the Business pages, the GitHub previews and the command of a work source use the current token.
+The shells of an agent in the Hermes gateway do not get it: they run with the logins of the Mac account. Only the
+worker of earlier releases gave its shells this token.
 Coconut runs no `gh auth` command and changes no other GitHub login, Git config, or Keychain entry. A GitHub SSH remote
 uses HTTPS with Coconut's credential helper. A pre-existing Git rule that rewrites GitHub HTTPS URLs back to SSH can
 still select the Mac account's SSH key; remove that rule when this connection must own all GitHub Git traffic.
