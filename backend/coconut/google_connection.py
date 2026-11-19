@@ -1,4 +1,4 @@
-"""Phone OAuth with native gog token storage."""
+"""Phone OAuth with native gog token storage, and the Google access of each bot's managed shell initializer."""
 from contextlib import contextmanager
 from datetime import datetime, timezone
 import base64
@@ -9,23 +9,32 @@ import json
 import os
 from pathlib import Path
 import secrets
+import shlex
 import subprocess
+import sys
 import tempfile
 import time
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
-from .profiles import _safe, _write
-from .runtime_environment import profile_environment
-from .google_cli import VERSION as GOG_VERSION
+# The initializers run this file by its path (main).
+if __package__:
+    from .profiles import _safe, _write
+    from .runtime_environment import profile_environment
+    from .google_cli import VERSION as GOG_VERSION
+else:
+    from profiles import _safe, _write
+    from runtime_environment import profile_environment
+    from google_cli import VERSION as GOG_VERSION
 
 # Public publisher identity. Google registers this client for com.gumroad.coconut.
 CLIENT_ID = '3509104299-du1m1pcfgm7meeivk712bmltf4bus8ae.apps.googleusercontent.com'
 SCOPES = ['openid', 'email', 'https://www.googleapis.com/auth/gmail.readonly',
           'https://www.googleapis.com/auth/calendar.readonly']
 # The support mailbox is a second connection, Coconut's own: the support page answers and closes conversations with
-# it (support_threads.py). The connection above stays read-only.
+# it (support_threads.py). The shell initializers export only the connection above (main), so the agents keep read-only
+# Gmail.
 SUPPORT_SCOPES = ['openid', 'email', 'https://www.googleapis.com/auth/gmail.modify']
 # Each connection: its folder under connections/, its scopes, and the services that it gives.
 MAILBOXES = {'': ('google', SCOPES, ('gmail', 'calendar')), 'support': ('google-support', SUPPORT_SCOPES, ('gmail',))}
@@ -267,3 +276,44 @@ class GoogleConnections:
             if receipt:
                 write_json(receipt, result)
             return result
+
+
+# The Google initializer of a bot, `<data>/bots/<uuid>/terminal/coconut-google.sh`. A tool of the bot sources it to read
+# Gmail and Calendar. When this file fails, even before main runs, the shell keeps no earlier token and the source fails.
+INITIALIZER = ('# Managed by Coconut. Google sign-in stays in the phone app.\n'
+               'eval "$({command} || echo \'unset GOG_ACCESS_TOKEN GOG_ACCOUNT; false\')"\n')
+
+
+def refresh_initializers(data_dir):
+    """Point each existing Google initializer at this Python. A change of the Hermes runtime replaces it."""
+    data_dir = Path(data_dir)
+    command = shlex.join([sys.executable, str(Path(__file__).absolute()),
+                          str(data_dir / 'connections' / MAILBOXES[''][0] / 'home')])
+    for path in sorted((data_dir / 'bots').glob('*/terminal/coconut-google.sh')):
+        _write(path, INITIALIZER.replace('{command}', command), path.parent.parent)
+
+
+def main():
+    # The initializer evals the output. It clears earlier access first and ends with a failed command when access
+    # fails. Never print refresh tokens or diagnostics with secrets.
+    print('unset GOG_ACCESS_TOKEN GOG_ACCOUNT', flush=True)
+    try:
+        home = Path(sys.argv[1])
+        # The support mailbox can send and change mail. Shells get only the read-only connection.
+        if home.parent.name != MAILBOXES[''][0]:
+            raise GoogleError('Shells get only the Google connection of the agents.')
+        profile = GoogleProfile(home)
+        access, email = profile.access()
+    except Exception:
+        print('false')
+        print('Google access needs attention. Open Coconut Settings → Connections.', file=sys.stderr)
+        return 1
+    if profile.executable:
+        print('export PATH=' + shlex.quote(str(Path(profile.executable).parent)) + ':"$PATH"')
+    print('export GOG_ACCESS_TOKEN=' + shlex.quote(access))
+    print('export GOG_ACCOUNT=' + shlex.quote(email))
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())

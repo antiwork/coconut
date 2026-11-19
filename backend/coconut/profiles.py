@@ -14,7 +14,10 @@ import stat
 import tempfile
 from uuid import UUID
 
-from . import profile_registry
+if __package__:
+    from . import profile_registry
+else:
+    import profile_registry
 
 
 class ProfileError(ValueError):

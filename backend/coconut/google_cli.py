@@ -9,7 +9,10 @@ import tarfile
 import tempfile
 from urllib.request import urlopen
 
-from .profiles import _safe
+if __package__:
+    from .profiles import _safe
+else:
+    from profiles import _safe
 
 VERSION = '0.39.1'
 BASE = 'https://github.com/openclaw/gogcli/releases/download/v' + VERSION + '/'
