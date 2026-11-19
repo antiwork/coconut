@@ -209,15 +209,6 @@ def builds(bearer: str) -> list[dict]:
     return get('/builds?' + query, bearer).get('data', [])
 
 
-def previous_upload(bearer: str, build: int | None) -> str | None:
-    """When the build before this one reached App Store Connect, so its commits are the ones a tester has not seen."""
-    for item in builds(bearer):
-        if build and str(item['attributes'].get('version')) == str(build):
-            continue
-        return item['attributes'].get('uploadedDate')
-    return None
-
-
 def git(*arguments: str) -> str:
     result = subprocess.run(['git', *arguments], cwd=ROOT, capture_output=True, text=True, check=True)
     return result.stdout

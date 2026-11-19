@@ -21,7 +21,6 @@ import re
 
 LEVELS = ('info', 'notice', 'critical')
 DEFAULT_LEVEL = 'notice'
-CRITICAL = 'critical'
 MAX_TYPE = 32
 TYPE = re.compile(r'[a-z0-9_-]{1,32}')
 # The part of a chat ID that starts the alert of a send (split_target).

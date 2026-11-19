@@ -176,10 +176,6 @@ class TeamRelay:
             position = entry['seq']
         return {'entries': entries, 'last': last}
 
-    def destroy(self, relay: str, room: str, token: str) -> None:
-        """Delete the room with all its data. Only the admin can do this."""
-        self._expect(self.request(relay, 'DELETE', room, authorization='Bearer ' + token), 204)
-
 
 def valid_entry(entry) -> bool:
     """True when an entry of an answer has the fields of the entry table of the contract."""
