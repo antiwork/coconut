@@ -36,6 +36,20 @@ A short request ("Coconut needs to be X") is often for something that landed hou
 4. Confirm the installed part with evidence, not from the doc: for an app extension, `ls Coconut.app/Contents/PlugIns` and `pluginkit -m -v -i <extension bundle id>`.
 5. Report per device: on it now, or which build brings it and whether that upload is running. Add any first-use step that the feature's doc names (e.g. open the app once, enable the extension in System Settings). Say what you did not see with your own eyes (a menu you could not open).
 
+## Rules of the screens
+
+These rules came out of the audits of the screens (the information architecture, the business dashboards and the iPhone app). They hold for each new screen.
+
+- Text is data. A number shows with its name only: no eyebrow, no headline that sells, no note or caption that repeats the title, and no legend for a chart that draws one number for each bar.
+- Sentence case in each title, menu and button ("Copy link", not "Copy Link").
+- One look for one meaning. The dotted circle is work that runs. A tile that opens a screen of the app has a chevron or nothing, never "↗".
+- One loading state and one failed state for each page that loads: `BoardLoading` and `BoardLoadNotice`, with one way to try again.
+- A page of tiles is a `BoardPage`. The business dashboards use the one grid and the one tile of `ios/Coconut/Bento.swift` (`BentoGrid`: 12 columns at a Mac width, 2 at an iPhone width), Swift Charts, and the colors of Coconut.
+- A pushed page on an iPhone has its title in the bar. The count of a section counts its rows.
+- A form edits and a board reads: a settings page is a grouped system form, and a board is sections on paper.
+- The business screens compute nothing: no total, change or margin in the client (`BusinessHomePresentation`). A missing value shows as "—" or "Not published", never as zero. A failed or stale source never reads as "All clear".
+- The rules of "Needs attention" live in one type, `AttentionRules` (`ios/Coconut/Attention.swift`), with named thresholds. The service counts the same rules for the number on the app icon (`backend/coconut/app_badge.py`): change both together.
+
 ## Check by hand
 
 The repository has no tests, and `AGENTS.md` asks for none. Check the change by hand before the push.
