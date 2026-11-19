@@ -5,11 +5,39 @@ struct GoogleConnectionStatus: Decodable, Sendable {
     let connected: Bool
     let email: String?
     let needsReconnect: Bool
+    /// "support" for the support mailbox. A Mac without the support mailbox leaves it out.
+    var mailbox: String? = nil
 }
 
 struct GoogleConnectionRequest: Encodable {
     var state: String? = nil
     var code: String? = nil
+    /// nil for the Google connection of the agents, GoogleMailbox.support for the support mailbox.
+    var mailbox: String? = nil
+}
+
+/// The two Google connections of a Mac. The agents read Gmail and Calendar through the first one. The support mailbox is
+/// Coconut's own: the Support page answers and closes conversations with it, and no agent gets it
+/// (backend/coconut/google_connection.py).
+enum GoogleMailbox {
+    static let support = "support"
+}
+
+extension AppStore {
+    /// Signs in to Google in the sign-in sheet of the system and saves the connection on the Mac. A sign-in that the
+    /// person cancels throws CancellationError.
+    func connectGoogle(_ signIn: GoogleSignIn, mailbox: String? = nil) async throws -> GoogleConnectionStatus {
+        do {
+            let authorization = try await googleRequest("start", request: GoogleConnectionRequest(mailbox: mailbox), as: GoogleAuthorization.self)
+            try Task.checkCancellation()
+            let code = try await signIn.open(authorization)
+            try Task.checkCancellation()
+            return try await googleRequest("finish", request: GoogleConnectionRequest(state: authorization.state, code: code, mailbox: mailbox),
+                                           as: GoogleConnectionStatus.self)
+        } catch let authError as ASWebAuthenticationSessionError where authError.code == .canceledLogin {
+            throw CancellationError()
+        }
+    }
 }
 
 struct GoogleAuthorization: Decodable, Sendable {
@@ -99,9 +127,11 @@ final class GoogleSignIn: NSObject, ASWebAuthenticationPresentationContextProvid
     }
 }
 
-// The Google account shows inline on the Connections page.
+// The Google account shows inline on the Connections page, and the support mailbox under it.
 struct GoogleConnectionSection: View {
     @Environment(AppStore.self) private var store
+    /// nil for the connection of the agents, GoogleMailbox.support for the support mailbox.
+    var mailbox: String? = nil
     @State private var status: GoogleConnectionStatus?
     @State private var busy = false
     @State private var loading = false
@@ -111,8 +141,16 @@ struct GoogleConnectionSection: View {
     @State private var connectionTask: Task<Void, Never>?
 
     private var canConnect: Bool { store.isDemo || store.connection == .connected }
+    private var support: Bool { mailbox == GoogleMailbox.support }
+    /// A Mac before the support mailbox answers with its one connection, so the section of the mailbox goes away once
+    /// the answer shows that. It shows while it loads, because its task loads the answer.
+    private var shown: Bool { !support || status == nil || status?.mailbox == GoogleMailbox.support || store.isDemo }
 
     var body: some View {
+        if shown { section }
+    }
+
+    private var section: some View {
         Section {
             if let status, status.connected {
                 LabeledContent("Account", value: status.email ?? "Google")
@@ -121,21 +159,23 @@ struct GoogleConnectionSection: View {
                     Button(busy ? "Connecting…" : "Reconnect Google") { connect() }
                         .disabled(busy || !canConnect).accessibilityIdentifier("google-reconnect")
                 }
-                Button("Disconnect Google", role: .destructive) { confirmingDisconnect = true }
-                    .disabled(busy || !canConnect).accessibilityIdentifier("google-disconnect")
-                    .confirmationDialog("Disconnect Google from all agents?", isPresented: $confirmingDisconnect, titleVisibility: .visible) {
+                Button(support ? "Disconnect support mailbox" : "Disconnect Google", role: .destructive) { confirmingDisconnect = true }
+                    .disabled(busy || !canConnect).accessibilityIdentifier(support ? "support-mailbox-disconnect" : "google-disconnect")
+                    .confirmationDialog(support ? "Disconnect the support mailbox?" : "Disconnect Google from all agents?",
+                                        isPresented: $confirmingDisconnect, titleVisibility: .visible) {
                         Button("Disconnect", role: .destructive) { disconnect() }
                     }
             } else {
-                Button(busy ? "Connecting…" : "Connect Google") { connect() }
+                Button(busy ? "Connecting…" : support ? "Connect support mailbox" : "Connect Google") { connect() }
                     .disabled(busy || loading || !canConnect)
-                    .accessibilityIdentifier("google-connect")
+                    .accessibilityIdentifier(support ? "support-mailbox-connect" : "google-connect")
             }
             if let error { InlineError(error) }
         } header: {
-            Text("Google")
+            Text(support ? "Support mailbox" : "Google")
         } footer: {
-            Text(canConnect ? "All agents can read Gmail and Calendar. This connection cannot send email or change events."
+            Text(support ? "Coconut answers and closes support conversations from this account. Agents cannot use it."
+                 : canConnect ? "All agents can read Gmail and Calendar. This connection cannot send email or change events."
                  : "Connect to your Mac first. All agents can read Gmail and Calendar. This connection cannot send email or change events.")
         }
         .task(id: canConnect) { if canConnect { await refresh() } }
@@ -147,7 +187,7 @@ struct GoogleConnectionSection: View {
         status = nil; error = nil; loading = true
         defer { loading = false }
         do {
-            let result = try await store.googleStatus()
+            let result = try await store.googleStatus(mailbox: mailbox)
             guard !Task.isCancelled else { return }
             status = result
         } catch is CancellationError { }
@@ -159,14 +199,8 @@ struct GoogleConnectionSection: View {
         connectionTask = Task {
             defer { busy = false }
             do {
-                let authorization = try await store.googleRequest("start", request: GoogleConnectionRequest(), as: GoogleAuthorization.self)
-                try Task.checkCancellation()
-                let code = try await signIn.open(authorization)
-                try Task.checkCancellation()
-                let result = try await store.googleRequest("finish", request: GoogleConnectionRequest(state: authorization.state, code: code), as: GoogleConnectionStatus.self)
-                status = result
-            } catch let authError as ASWebAuthenticationSessionError where authError.code == .canceledLogin { }
-            catch is CancellationError { }
+                status = try await store.connectGoogle(signIn, mailbox: mailbox)
+            } catch is CancellationError { }
             catch { self.error = error.localizedDescription }
         }
     }
@@ -176,7 +210,7 @@ struct GoogleConnectionSection: View {
         Task {
             defer { busy = false }
             do {
-                let result = try await store.googleRequest("disconnect", request: GoogleConnectionRequest(), as: GoogleConnectionStatus.self)
+                let result = try await store.googleRequest("disconnect", request: GoogleConnectionRequest(mailbox: mailbox), as: GoogleConnectionStatus.self)
                 status = result
             } catch { self.error = error.localizedDescription }
         }

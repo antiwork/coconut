@@ -2,8 +2,6 @@ import Foundation
 
 enum BusinessRoute: Hashable {
     case home, projects, reports, function(String), project(String), report(String), ledger
-    /// A conversation of the customer queue of Support: the ID of its Gmail thread and the subject of its row.
-    case supportConversation(id: String, subject: String)
 }
 
 struct BusinessRepository: Decodable, Identifiable, Hashable, Sendable {
@@ -161,36 +159,8 @@ extension AppStore {
         return items.filter { (function == nil || $0.functionKey == function) && (project == nil || $0.projectKey == project) && (state == "all" || $0.state == state) }
             .sorted { ($0.updatedAt, $0.id) > ($1.updatedAt, $1.id) }
     }
-
-    func setBusinessWork(_ work: BusinessWork, state: String) async throws -> BusinessWork {
-        var changed = work; changed.state = state
-        if isDemo {
-            if let index = demoBusinessWork.firstIndex(where: { $0.id == work.id }) { demoBusinessWork[index] = changed }
-            businessChanges += 1
-            return changed
-        }
-        if businessItems[work.id] == nil { businessItems[work.id] = work }
-        let generation = businessGeneration
-        guard optimistically("business/\(generation)/\(work.id)", change: { transaction in
-            optimisticUpdates.set("business/\(generation)/\(work.id)/state", to: state, in: transaction,
-                read: { self.businessItems[work.id]?.state ?? work.state },
-                write: { if self.businessGeneration == generation { self.businessItems[work.id]?.state = $0 } })
-        }, save: {
-            guard self.businessGeneration == generation else { return }
-            do {
-                let result: BusinessWork = try await self.businessRequest("business/functions/\(work.functionKey)/work/\(work.number)", method: "PATCH", body: APIJSON.encode(BusinessStateRequest(state: state)))
-                self.optimisticUpdates.receive { self.businessItems[work.id] = result }
-            } catch is CancellationError { return }
-            catch { self.error = error.localizedDescription }
-            self.businessChanges += 1
-        }) else { throw ServiceError.configuration(error ?? "Connect your Mac to continue.") }
-        businessChanges += 1
-        return changed
-    }
-
 }
 
 private struct BusinessWorkList: Decodable, Sendable { let items: [BusinessWork] }
 private struct BusinessProjectRequest: Encodable { let key: String }
 private struct BusinessWorkRequest: Encodable { let title: String; let body: String; let projectKey: String? }
-private struct BusinessStateRequest: Encodable { let state: String }

@@ -9,6 +9,7 @@ struct MCPSettingsView: View {
     var body: some View {
         Form {
             GoogleConnectionSection()
+            GoogleConnectionSection(mailbox: GoogleMailbox.support)
             Section {
                 NavigationLink { GitHubSettingsView() } label: { Text("GitHub") }
                     .accessibilityIdentifier("github-settings")

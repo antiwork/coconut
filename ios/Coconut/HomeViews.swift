@@ -129,7 +129,8 @@ struct HomeLaunchView: View {
         .homeRow()
     }
 
-    /// An issue or a pull request. A tap opens it on GitHub.
+    /// An issue or a pull request. A tap opens it in Coconut (GitHubItemView): the stack opens the link of GitHub as a
+    /// page of its own (stackRoutes), never in the browser.
     private func productRow(_ item: ProductWork.Item) -> some View {
         Button { if let url = item.url { openURL(url) } } label: {
             HStack(spacing: BoardStyle.Space.m) {

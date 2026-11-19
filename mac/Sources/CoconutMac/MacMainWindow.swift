@@ -208,8 +208,9 @@ struct MacMainWindow: View {
                 .navigationDestination(for: ArchivedAgentsRoute.self) { _ in ArchivedAgentsView() }
                 .navigationDestination(for: NoticeBoardRoute.self) { NoticeBoardView(roomId: $0.roomId) }
                 .navigationDestination(for: TeamScreenRoute.self) { TeamRoomView(roomId: $0.roomId, pushed: true) }
+                .modifier(InAppDestinations())
         }
-        .environment(\.pushRoute) { route in chatPath.append(route) }
+        .stackRoutes { route in chatPath.append(route) }
         // A grouped Mac form keeps each section in a box, as the iPhone settings show them.
         .formStyle(.grouped)
     }
@@ -288,8 +289,9 @@ struct MacMainWindow: View {
                                              focusMessageId: route.messageId, attachedWork: route.workContext)
                         }
                         .navigationDestination(for: BotSettingsRoute.self) { BotSettingsView(botId: $0.botId) }
+                        .modifier(InAppDestinations())
                 }
-                .environment(\.pushRoute) { route in chatPath.append(route) }
+                .stackRoutes { route in chatPath.append(route) }
                 .ignoresSafeArea(.container, edges: .top)
                 .toolbarBackgroundVisibility(.hidden, for: .windowToolbar)
                 .toolbar(removing: .title)
@@ -312,8 +314,9 @@ struct MacMainWindow: View {
                         }
                         .navigationDestination(for: BotExchangeRoute.self) { BotExchangeView(route: $0) }
                         .navigationDestination(for: BotSettingsRoute.self) { BotSettingsView(botId: $0.botId) }
+                        .modifier(InAppDestinations())
                 }
-                .environment(\.pushRoute) { route in chatPath.append(route) }
+                .stackRoutes { route in chatPath.append(route) }
                 .frame(minWidth: 300, maxWidth: .infinity)
                 if inspectorShown {
                     Divider()
@@ -335,7 +338,9 @@ struct MacMainWindow: View {
             NavigationStack(path: $chatPath) {
                 TeamChatView(chatKey: chat)
                     .id(chat)
+                    .modifier(InAppDestinations())
             }
+            .stackRoutes { route in chatPath.append(route) }
             .ignoresSafeArea(.container, edges: .top)
             .toolbarBackgroundVisibility(.hidden, for: .windowToolbar)
             .toolbar(removing: .title)
@@ -765,6 +770,7 @@ struct MacBotDetails: View {
                     LibraryView(botId: botId)
                         .navigationDestination(for: DocumentRoute.self) { DocumentView(documentId: $0.id) }
                     .navigationDestination(for: BusinessRoute.self) { BusinessDestinationView(route: $0) }
+                    .modifier(InAppDestinations())
                 }
             }
         }

@@ -328,13 +328,19 @@ private struct SupportDashboard: View {
                 VStack(alignment: .leading, spacing: 0) {
                     ForEach(Array(items.prefix(shown).enumerated()), id: \.offset) { index, item in
                         if index > 0 { Divider() }
-                        // A conversation of the customer queue opens its Gmail thread in Coconut (SupportConversationView).
+                        // A row opens in Coconut, never in Gmail or on GitHub: a conversation of the customer queue
+                        // opens its Gmail thread (SupportConversationView), and a product issue its issue
+                        // (GitHubItemView).
                         if queue == "support", !item["slug"].text.isEmpty {
-                            NavigationLink(value: BusinessRoute.supportConversation(id: item["slug"].text, subject: item["subject"].text)) {
+                            NavigationLink(value: SupportThreadRoute(id: item["slug"].text, subject: item["subject"].text)) {
                                 conversationRow(item, opens: true)
                             }
                             .buttonStyle(.plain)
                             .accessibilityIdentifier("support-conversation-" + item["slug"].text)
+                        } else if queue == "issues", let route = SupportFormat.issueURL(item).flatMap(InAppLink.route) as? GitHubItemRoute {
+                            NavigationLink(value: route) { conversationRow(item, opens: true) }
+                                .buttonStyle(.plain)
+                                .accessibilityIdentifier("support-issue-" + item["slug"].text)
                         } else {
                             conversationRow(item, opens: false)
                         }
@@ -367,8 +373,6 @@ private struct SupportDashboard: View {
                 .font(.caption).foregroundStyle(.secondary).lineLimit(1)
             if opens {
                 Image(systemName: "chevron.right").font(.caption.weight(.semibold)).foregroundStyle(.tertiary).accessibilityHidden(true)
-            } else if queue == "issues", let url = SupportFormat.issueURL(item) {
-                Link(destination: url) { Image(systemName: "arrow.up.right").font(.caption.weight(.semibold)) }.accessibilityLabel("Open issue")
             }
         }
         .padding(.vertical, BoardStyle.Space.s)
@@ -632,9 +636,12 @@ private struct EngineeringDashboard: View {
                 Text(pull.additions).foregroundStyle(BoardStyle.positive)
                 Text(pull.deletions).foregroundStyle(BoardStyle.attention)
             }.font(.caption.weight(.medium)).monospacedDigit().lineLimit(1)
-            Image(systemName: "arrow.up.right").font(.caption2.weight(.bold)).foregroundStyle(.tertiary).accessibilityHidden(true)
+            Image(systemName: "chevron.right").font(.caption.weight(.semibold)).foregroundStyle(.tertiary).accessibilityHidden(true)
         }.padding(.vertical, BoardStyle.Space.s).contentShape(Rectangle())
-        if let url = pull.url { Link(destination: url) { content }.buttonStyle(.plain) } else { content }
+        // A pull request opens in Coconut (GitHubItemView), with its checks, changes, comments and Merge.
+        if let route = pull.url.flatMap(InAppLink.route) as? GitHubItemRoute {
+            NavigationLink(value: route) { content }.buttonStyle(.plain)
+        } else { content }
     }
 }
 
@@ -827,7 +834,6 @@ private struct BusinessLedgerFileView: View {
             else if let error { Text(error).padding(BoardStyle.Space.xl) }
             else { ProgressView().padding(BoardStyle.Space.xl) }
         }.navigationTitle(path.components(separatedBy: "/").last ?? path)
-            .toolbar { if let file, let url = URL(string: file.url) { Link("GitHub", destination: url) } }
             .task { do { file = try await store.businessLedgerFile(path) } catch { self.error = error.localizedDescription } }
     }
 }

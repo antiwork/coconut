@@ -15,7 +15,6 @@ struct GitHubConnectionStatus: Decodable, Sendable {
 
 struct GitHubSettingsView: View {
     @Environment(AppStore.self) private var store
-    @Environment(\.openURL) private var openURL
     @State private var status: GitHubConnectionStatus?
     @State private var busy = false
     @State private var loading = false
@@ -101,7 +100,8 @@ struct GitHubSettingsView: View {
         }
         Pasteboard.copy(pending.userCode)
         copied = true
-        openURL(url)
+        // The person signs in to GitHub in their own browser, where they are signed in already.
+        SystemBrowser.open(url)
     }
 
     private func connect() {

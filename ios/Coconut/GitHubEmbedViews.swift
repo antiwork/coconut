@@ -92,7 +92,8 @@ extension View {
     func loadsGitHubEmbeds(in text: String) -> some View { modifier(GitHubEmbedLoading(text: text)) }
 }
 
-/// One GitHub page as a compact card. A tap opens the address. The menu copies it or opens it.
+/// One GitHub page as a compact card. A tap opens an issue or a pull request in Coconut (InAppLink), and any other page
+/// in the browser. The menu copies the address.
 struct GitHubEmbedCard: View {
     #if os(macOS)
     static let maxWidth: CGFloat = 440
@@ -110,14 +111,18 @@ struct GitHubEmbedCard: View {
             .buttonStyle(.plain)
             .contextMenu {
                 Button("Copy link", systemImage: "link") { Pasteboard.copy(preview.url) }
-                Button("Open in browser", systemImage: "safari") { if let link = preview.link { openURL(link) } }
+                if !opensInApp {
+                    Button("Open in browser", systemImage: "safari") { if let link = preview.link { openURL(link) } }
+                }
             }
             .accessibilityElement(children: .ignore)
             .accessibilityLabel(preview.spoken)
-            .accessibilityHint("Opens the page on GitHub")
+            .accessibilityHint(opensInApp ? "Opens it in Coconut" : "Opens the page on GitHub")
             .accessibilityAddTraits(.isLink)
             .accessibilityIdentifier("github-embed-\(preview.kind.rawValue)")
     }
+
+    private var opensInApp: Bool { preview.link.flatMap(InAppLink.route) != nil }
 
     private var label: some View {
         HStack(alignment: .firstTextBaseline, spacing: BoardStyle.Space.s) {
@@ -322,7 +327,7 @@ struct GitHubAvatar: View {
 }
 
 /// A label of an issue: a dot in the color of the label and its name on a light fill of that color.
-private struct GitHubLabelChip: View {
+struct GitHubLabelChip: View {
     let label: GitHubLabel
 
     var body: some View {

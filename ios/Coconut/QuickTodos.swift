@@ -329,7 +329,12 @@ struct QuickTodoRows: View {
         }
         .sheet(item: Binding(get: { PendingTodos.shared.commenting.map(CommentTarget.init) },
                              set: { PendingTodos.shared.commenting = $0?.id })) {
-            TodoCommentsSheet(chatId: $0.id).environment(store).environment(\.pushRoute, pushRoute)
+            // A page that the sheet opens, from Open chat or a link in a comment, shows on the stack behind the sheet, so the
+            // sheet closes first.
+            TodoCommentsSheet(chatId: $0.id).environment(store).stackRoutes { route in
+                PendingTodos.shared.commenting = nil
+                pushRoute?(route)
+            }
         }
     }
 

@@ -1764,10 +1764,10 @@ final class AppStore {
         return response
     }
 
-    func googleStatus() async throws -> GoogleConnectionStatus {
-        if isDemo { return GoogleConnectionStatus(connected: false, email: nil, needsReconnect: false) }
+    func googleStatus(mailbox: String? = nil) async throws -> GoogleConnectionStatus {
+        if isDemo { return GoogleConnectionStatus(connected: false, email: nil, needsReconnect: false, mailbox: mailbox) }
         guard let client else { throw ServiceError.configuration("Connect your Mac to continue.") }
-        return try await client.request("settings/google")
+        return try await client.request("settings/google" + (mailbox.map { "?mailbox=" + $0 } ?? ""))
     }
 
     func googleRequest<Response: Decodable & Sendable>(_ action: String, request: GoogleConnectionRequest, as type: Response.Type) async throws -> Response {

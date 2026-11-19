@@ -30,6 +30,11 @@ except ImportError:
 CLIENT_ID = '3509104299-du1m1pcfgm7meeivk712bmltf4bus8ae.apps.googleusercontent.com'
 SCOPES = ['openid', 'email', 'https://www.googleapis.com/auth/gmail.readonly',
           'https://www.googleapis.com/auth/calendar.readonly']
+# The support mailbox is a second connection, Coconut's own: the support page answers and closes conversations with
+# it (support_threads.py). Hermes shells export only the connection above (main), so the agents keep read-only Gmail.
+SUPPORT_SCOPES = ['openid', 'email', 'https://www.googleapis.com/auth/gmail.modify']
+# Each connection: its folder under connections/, its scopes, and the services that it gives.
+MAILBOXES = {'': ('google', SCOPES, ('gmail', 'calendar')), 'support': ('google-support', SUPPORT_SCOPES, ('gmail',))}
 TOKEN_URL = 'https://oauth2.googleapis.com/token'
 USERINFO_URL = 'https://openidconnect.googleapis.com/v1/userinfo'
 
@@ -72,8 +77,9 @@ def write_json(path, value):
 
 
 class GoogleProfile:
-    def __init__(self, home, executable=None):
+    def __init__(self, home, executable=None, services=('gmail', 'calendar')):
         self.home = Path(home)
+        self.services = list(services)
         self.root = self.home / '.google'
         _safe(self.root, self.home)
         self.root.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -135,7 +141,7 @@ class GoogleProfile:
     def status(self):
         saved = read_json(self.root / 'connection.json')
         return dict(connected=bool(saved.get('email')), email=saved.get('email'),
-                    needs_reconnect=bool(saved.get('needs_reconnect')), services=['gmail', 'calendar'])
+                    needs_reconnect=bool(saved.get('needs_reconnect')), services=self.services)
 
     def disconnect(self):
         saved = read_json(self.root / 'connection.json')
@@ -174,13 +180,16 @@ def expiry(result):
 
 
 class GoogleConnections:
-    def __init__(self, root, client_id=None, profile_factory=GoogleProfile):
+    def __init__(self, root, client_id=None, profile_factory=GoogleProfile, mailbox=''):
         self.root = Path(root)
         self.client_id = CLIENT_ID if client_id is None else client_id
         self.profile_factory = profile_factory
+        if mailbox not in MAILBOXES:
+            raise GoogleError('Choose the Google connection or the support mailbox.')
+        self.folder, self.scopes, self.services = MAILBOXES[mailbox]
 
     def profile(self):
-        return self.profile_factory(self.root / 'connections' / 'google' / 'home')
+        return self.profile_factory(self.root / 'connections' / self.folder / 'home', services=self.services)
 
     def start(self, device, key):
         if not self.client_id:
@@ -202,7 +211,7 @@ class GoogleConnections:
             redirect = scheme + ':/oauthredirect'
             challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).decode().rstrip('=')
             url = 'https://accounts.google.com/o/oauth2/v2/auth?' + urlencode(dict(
-                client_id=self.client_id, redirect_uri=redirect, response_type='code', scope=' '.join(SCOPES),
+                client_id=self.client_id, redirect_uri=redirect, response_type='code', scope=' '.join(self.scopes),
                 state=state, code_challenge=challenge, code_challenge_method='S256', access_type='offline', prompt='consent select_account'))
             response = dict(authorization_url=url, callback_scheme=scheme, state=state)
             write_json(profile.root / 'pending.json', dict(key=key, device=device, expires=time.time() + 900,
@@ -230,17 +239,18 @@ class GoogleConnections:
                 code_verifier=pending['verifier'], redirect_uri=pending['redirect'], grant_type='authorization_code'))
             if not result.get('access_token') or not result.get('refresh_token'):
                 raise GoogleError('Google did not grant background access. Connect Google again.')
-            required = set(SCOPES[2:])
+            required = set(self.scopes[2:])
             granted = set(result.get('scope', '').split())
             if not required.issubset(granted):
-                raise GoogleError('Allow both Gmail and Calendar read access to connect.')
+                raise GoogleError('Allow both Gmail and Calendar read access to connect.' if self.scopes == SCOPES
+                                  else 'Allow Coconut to read, send and label the mail of this account to connect it.')
             identity = request_json(USERINFO_URL, access_token=result['access_token'])
             if identity.get('email_verified') is not True or not isinstance(identity.get('email'), str) or not identity.get('sub'):
                 raise GoogleError('Google could not verify this account.')
             email = identity['email']
             if saved.get('email') and saved['email'] != email:
                 profile.disconnect()
-            profile.save_tokens(dict(email=email, subject=identity['sub'], client='coconut-ios', services=['gmail', 'calendar'],
+            profile.save_tokens(dict(email=email, subject=identity['sub'], client='coconut-ios', services=self.services,
                 scopes=sorted(granted), refresh_token=result['refresh_token'], access_token=result['access_token'], access_token_expires_at=expiry(result)))
             write_json(profile.root / 'connection.json', dict(email=email, client_id=pending['client_id'], receipt=signature))
             (profile.root / 'pending.json').unlink(missing_ok=True)

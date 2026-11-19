@@ -37,6 +37,15 @@ def key(value):
     return value.lower()
 
 
+def refusal(error):
+    """GitHub's own sentence for a refused change, such as "Pull Request is not mergeable", or None."""
+    try:
+        message = json.loads(error.read(65_536) or b'{}').get('message')
+    except (OSError, ValueError, AttributeError):
+        return None
+    return message.strip()[:300] if isinstance(message, str) and message.strip() else None
+
+
 def github_request(method, path, token, body=None):
     data = json.dumps(body).encode() if body is not None else None
     request = Request('https://api.github.com/' + path, data=data, method=method, headers={
@@ -55,6 +64,10 @@ def github_request(method, path, token, body=None):
             raise ServiceError(404, 'This repository or work item is unavailable to the connected GitHub account.') from None
         if error.code in (403, 429):
             raise ServiceError(403, 'GitHub refused this request. Check repository access or try again after its rate limit resets.') from None
+        if error.code in (405, 409, 422):
+            # GitHub says why it refused a change: a pull request that cannot merge yet, a head that moved, a closed
+            # issue. The person reads that reason in the app.
+            raise ServiceError(422, refusal(error) or 'GitHub refused this change. Refresh before retrying.') from None
         raise ServiceError(502, 'GitHub did not confirm the change. Refresh the work before retrying.') from None
     except (URLError, TimeoutError, ValueError):
         raise ServiceError(502, 'GitHub is unavailable. Refresh before retrying a change.') from None

@@ -337,6 +337,8 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
         self.business = GitHubBusiness(self.github)
         from .github_preview import GitHubPreviews
         self.github_previews = GitHubPreviews(lambda: self.business)
+        from .github_items import GitHubItems
+        self.github_items = GitHubItems(lambda: self.business)
         self.github_requests = threading.Lock()
         try:
             self._recover_workspace_binding()
@@ -1112,6 +1114,12 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
         if path.startswith('/v1/business/'):
             from .business import mutate_business
             return mutate_business(self, method, path.split('/')[3:], data, key, fingerprint)
+        if path == '/v1/github/item' or path.startswith('/v1/github/item/'):
+            from .github_items import mutate_github_item
+            return mutate_github_item(self, method, path.split('/')[4:], data, key, fingerprint)
+        if path.startswith('/v1/support/conversations/'):
+            from .support_threads import mutate_support
+            return mutate_support(self, method, path.split('/')[4:], data, key, fingerprint)
         if method == 'POST' and path == '/v1/work/pull-requests':
             with self.pr_follow_lock:
                 with self.lock:
@@ -1435,17 +1443,21 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
 
 
     def google_connection(self, action, data, device, key=None):
+        """The Google connection of the agents, or with `mailbox` 'support' the support mailbox of Coconut itself."""
         from .google_connection import GoogleConnections, GoogleError
-        manager = GoogleConnections(self.root)
         try:
+            mailbox = data.get('mailbox') or ''
+            manager = GoogleConnections(self.root, mailbox=mailbox if isinstance(mailbox, str) else '?')
+            # Each status names its connection, so an app tells the support mailbox from a Mac that has none.
+            named = lambda status: dict(status, mailbox=mailbox or None)
             if action == 'status':
-                return manager.profile().status()
+                return named(manager.profile().status())
             if action == 'start':
                 return manager.start(device, key)
             if action == 'finish':
-                result = manager.finish(device, data.get('state'), data.get('code'))
+                result = named(manager.finish(device, data.get('state'), data.get('code')))
             elif action == 'disconnect':
-                result = manager.disconnect(device, key)
+                result = named(manager.disconnect(device, key))
             else:
                 raise ServiceError(404, 'This Google connection action was not found.')
             with self.transaction():

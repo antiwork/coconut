@@ -375,13 +375,23 @@ class Handler(BaseHTTPRequestHandler):
                     self._json(200, ledger(service.business, parse_qs(url.query).get('path', [None])[0]))
                 elif url.path == '/v1/github/preview':
                     self._json(200, service.github_previews.preview(parse_qs(url.query).get('url', [''])[0]))
+                elif url.path in ('/v1/github/item', '/v1/github/item/files'):
+                    query = parse_qs(url.query)
+                    read = service.github_items.files if url.path.endswith('/files') else service.github_items.item
+                    self._json(200, read(query.get('repository', [''])[0], query.get('number', [''])[0]))
                 elif url.path == '/v1/settings/github':
                     self._json(200, service.github_connection('status'))
                 elif url.path == '/v1/settings/google':
-                    self._json(200, service.google_connection('status', {}, device))
+                    self._json(200, service.google_connection('status', {'mailbox': parse_qs(url.query).get('mailbox', [''])[0]}, device))
                 elif url.path.startswith('/v1/support/conversations/'):
-                    from .support_threads import conversation
-                    self._json(200, conversation(service.root, url.path.rsplit('/', 1)[1]))
+                    from .support_threads import conversation, full_message
+                    parts = url.path.split('/')[4:]
+                    if len(parts) == 3 and parts[1] == 'messages':
+                        self._json(200, full_message(service.root, parts[0], parts[2]))
+                    elif len(parts) == 1:
+                        self._json(200, conversation(service.root, parts[0], everything=parse_qs(url.query).get('all') == ['1']))
+                    else:
+                        raise ServiceError(404, 'This route was not found.')
                 elif url.path == '/v1/device/push':
                     self._json(200, service.push_status(device))
                 elif url.path == '/v1/push/config':

@@ -94,6 +94,19 @@ struct PasteAttachmentMonitor: ViewModifier {
 }
 #endif
 
+/// The browser of the system, outside the app: for a sign-in that needs the person's own browser session, such as the
+/// device page of GitHub. Every other link opens through `openURL`, which keeps the person in Coconut (stackRoutes).
+@MainActor
+enum SystemBrowser {
+    static func open(_ url: URL) {
+        #if os(macOS)
+        NSWorkspace.shared.open(url)
+        #else
+        UIApplication.shared.open(url)
+        #endif
+    }
+}
+
 enum Pasteboard {
     static func copy(_ text: String) {
         #if canImport(UIKit)

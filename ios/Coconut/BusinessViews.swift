@@ -53,7 +53,6 @@ struct BusinessDestinationView: View {
         case .project(let key): BusinessWorkListView(project: key)
         case .report(let key): BusinessReportView(key: key)
         case .ledger: BusinessLedgerView()
-        case .supportConversation(let id, let subject): SupportConversationView(id: id, subject: subject)
         }
         }.id(store.businessGeneration)
     }
@@ -118,14 +117,15 @@ struct BusinessWorkListView: View {
                     Text("Open").tag("open")
                     Text("Completed").tag("closed")
                 }.pickerStyle(.segmented)
-                if let repository, let url = URL(string: repository.url) {
-                    Link(destination: url) { Label(repository.fullName, systemImage: "folder") }.font(.caption)
+                if let repository {
+                    Label(repository.fullName, systemImage: "folder").font(.caption).foregroundStyle(.secondary)
                 }
             }
             if loading && shownItems.isEmpty { BoardLoading(title: "Loading work", height: 200) }
             BoardSection("Work", count: shownItems.count) {
+                // A row opens its issue in Coconut: its comments, a box to answer, and Close or Reopen (GitHubItemView).
                 ForEach(shownItems) { item in
-                    NavigationLink { BusinessWorkDetailView(work: item) } label: {
+                    NavigationLink(value: route(item)) {
                         BoardRow(symbol: "circle.dotted", title: item.title, detail: subtitle(item))
                     }
                     .buttonStyle(.plain)
@@ -149,6 +149,12 @@ struct BusinessWorkListView: View {
         .sheet(isPresented: $adding) { BusinessWorkEditor(function: function, project: project) }
     }
 
+    /// The issue of a row of work, in the function repository of its organization.
+    private func route(_ item: BusinessWork) -> GitHubItemRoute {
+        URL(string: item.url).flatMap(InAppLink.route) as? GitHubItemRoute
+            ?? GitHubItemRoute(repository: (store.businessCatalog?.owner ?? "antiwork") + "/" + item.functionKey, number: item.number)
+    }
+
     /// "Support · gumroad · #412": the function or the project, whichever the page is not already about.
     private func subtitle(_ item: BusinessWork) -> String {
         [function == nil ? BusinessFunction.name(item.functionKey) : nil,
@@ -165,57 +171,6 @@ struct BusinessWorkListView: View {
             error = nil
         } catch is CancellationError { }
         catch { self.error = error.localizedDescription }
-    }
-}
-
-struct BusinessWorkDetailView: View {
-    @Environment(AppStore.self) private var store
-    @State var work: BusinessWork
-    private var shownWork: BusinessWork { store.businessItems[work.id] ?? work }
-    @State private var busy = false
-    @State private var error: String?
-    @State private var asking = false
-
-    /// "Support · gumroad · Open".
-    private var meta: String {
-        [BusinessFunction.name(shownWork.functionKey), shownWork.projectKey, shownWork.isOpen ? "Open" : "Completed"]
-            .compactMap { $0 }.joined(separator: " · ")
-    }
-
-    var body: some View {
-        BoardPage {
-            BoardPageTitle(title: shownWork.title, detail: meta)
-            if !shownWork.body.isEmpty { Markdown(shownWork.body).textSelection(.enabled) }
-            if let error { Text(error).font(.subheadline).foregroundStyle(BoardStyle.destructive) }
-            BoardSection("Work") {
-                Button {
-                    busy = true
-                    Task {
-                        defer { busy = false }
-                        do { work = try await store.setBusinessWork(shownWork, state: shownWork.isOpen ? "closed" : "open"); error = nil }
-                        catch { self.error = error.localizedDescription }
-                    }
-                } label: {
-                    BoardRow(symbol: shownWork.isOpen ? "checkmark.circle" : "arrow.uturn.backward",
-                             title: busy ? "Saving…" : shownWork.isOpen ? "Complete work" : "Reopen work")
-                }
-                .buttonStyle(.plain)
-                .disabled(busy)
-                .accessibilityIdentifier("business-work-state")
-                Button { asking = true } label: {
-                    BoardRow(symbol: "bubble.left.and.bubble.right", title: "Ask an agent")
-                }
-                .buttonStyle(.plain)
-                .disabled(store.bots.allSatisfy(\.archived))
-                .accessibilityIdentifier("business-ask-agent")
-                if let url = URL(string: shownWork.url) {
-                    Link(destination: url) { BoardRow(symbol: "arrow.up.right.square", title: "Open on GitHub") }
-                        .buttonStyle(.plain)
-                }
-            }
-        }
-        .navigationTitle("Work").inlineNavigationTitle()
-        .sheet(isPresented: $asking) { BusinessAgentSheet(work: work) }
     }
 }
 
@@ -323,44 +278,5 @@ private struct BusinessWorkEditor: View {
                 }.disabled(title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || busy).accessibilityIdentifier("business-create-work") }
             }
         }.frame(minWidth: 360, minHeight: 380)
-    }
-}
-
-private struct BusinessAgentSheet: View {
-    @Environment(AppStore.self) private var store
-    @Environment(\.dismiss) private var dismiss
-    @Environment(\.openChat) private var openChat
-    @Environment(\.pushRoute) private var pushRoute
-    let work: BusinessWork
-    @State private var selected = ""
-    @State private var instruction = ""
-    @State private var busy = false
-    var body: some View {
-        NavigationStack {
-            Form {
-                Picker("Agent", selection: $selected) {
-                    Text("Choose an agent").tag("")
-                    ForEach(store.bots.withoutChats.filter { !$0.archived }) { Text($0.name).tag($0.id) }
-                }
-                TextField("Instructions (optional)", text: $instruction, axis: .vertical).lineLimit(3...6)
-            }
-            .navigationTitle("Ask an agent").inlineNavigationTitle().settingsBackground()
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
-                ToolbarItem(placement: .confirmationAction) { Button(busy ? "Sending…" : "Send") {
-                    guard let bot = store.bots.first(where: { $0.id == selected }) else { return }
-                    busy = true
-                    Task {
-                        defer { busy = false }
-                        let scope = [BusinessFunction.name(work.functionKey), work.projectKey].compactMap { $0 }.joined(separator: " · ")
-                        let text = "Work on this \(scope) issue: \(work.url)\n\n\(instruction)\n\nKeep the work and results in this GitHub issue and its function repository. Use its project label to retain the project context."
-                        if await store.send(bot: bot, text: text, mode: "queue") {
-                            dismiss()
-                            if let openChat { openChat(bot.id) } else { pushRoute?(ConversationRoute(botId: bot.id)) }
-                        }
-                    }
-                }.disabled(selected.isEmpty || busy) }
-            }
-        }.frame(minWidth: 360, minHeight: 300)
     }
 }

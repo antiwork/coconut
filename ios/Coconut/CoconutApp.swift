@@ -268,10 +268,12 @@ struct CoconutHome: View {
                 .navigationDestination(for: NoticeBoardRoute.self) { NoticeBoardView(roomId: $0.roomId).inlineNavigationTitle() }
                 .modifier(AgentDestinations())
                 .modifier(ProfileDestinations())
+                .modifier(InAppDestinations())
                 .background(BoardStyle.paper)
         }
-        // On the stack itself, so that the pushed pages get it too.
-        .environment(\.pushRoute) { route in path.wrappedValue.append(route) }
+        // On the stack itself, so that the pushed pages get it too. A link to an issue, a pull request or a support
+        // thread opens on this stack (InAppLink).
+        .stackRoutes { route in path.wrappedValue.append(route) }
     }
 
     /// Shows the join sheet of a tapped invite link. An open sheet closes first, because a second sheet cannot show
@@ -496,7 +498,10 @@ extension CoconutHome {
         case "accounting": open(.finance, [BusinessRoute.function("accounting")])
         case "support-work": open(.support)
         case "support-conversation":
-            open(.support, [BusinessRoute.supportConversation(id: "sample-0", subject: "Payout timing question")])
+            open(.support, [SupportThreadRoute(id: "sample-0", subject: "Payout timing question")])
+        // An issue and a pull request of Product, as a tap on their rows opens them.
+        case "github-issue": open(.product, [GitHubItemRoute(repository: "example/gumroad", number: 4712)])
+        case "github-pull": open(.product, [GitHubItemRoute(repository: "example/gumroad", number: 4731)])
         case "reports", "history": open(.finance, [BusinessRoute.reports])
         case "marketing": open(.finance, [BusinessRoute.function("marketing")])
         case "ledger": open(.finance, [BusinessRoute.ledger])
