@@ -2938,6 +2938,11 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
     def start(self):
         if self.dispatcher or getattr(self, '_workspace_recovery_hold', False):
             return
+        try:
+            from .google_connection import refresh_initializers
+            refresh_initializers(self.root)
+        except (OSError, ValueError):
+            logging.getLogger(__name__).exception('Coconut could not refresh the Google initializers of the agents.')
         self.dispatcher = threading.Thread(target=self._dispatch, name='coconut-dispatch', daemon=True)
         self.dispatcher.start()
         if self.kanban is not None:
