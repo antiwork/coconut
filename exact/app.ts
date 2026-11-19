@@ -1,8 +1,8 @@
 // The data module of Coconut on Exact. Paired with a Mac, it answers the screens from the state of the Mac's Coconut,
-// read through the relay with the tunnel of the Swift app (tunnel.ts, docs/relay-transport.md), and sends messages,
-// answers, stops and reads back to it. Before a pairing it shows a pairing code; "Look around with demo data" answers
-// from the preview fixture of the Swift app (ios/Coconut/Fixtures/PreviewState.json, copied as preview.json) and the
-// Gumroad team of its team preview (team-preview.json), in memory until the app launches again.
+// read through the relay with the tunnel of the Swift app (tunnel.ts, docs/relay-transport.md), and sends messages
+// with their files, answers, stops and reads back to it. Before a pairing it shows a pairing code; "Look around with
+// demo data" answers from the preview fixture of the Swift app (ios/Coconut/Fixtures/PreviewState.json, copied as
+// preview.json) and the Gumroad team of its team preview (team-preview.json), in memory until the app launches again.
 //
 // The connection. The relay takes a socket without headers only with a socket ticket (`prepare` asks for it over
 // HTTPS), so `socket` opens a stream resource with `?ticket=`. Its mapper only queues the bytes that come and wakes the
@@ -16,7 +16,7 @@
 // negative: the fixture moves its server_time to the launch, as PreviewStateFixture.decode does), and a source adds the
 // launch (`zero`, the contract's `time.epochAtZero`). A state of the Mac is in milliseconds from its server_time, which
 // is its `zero`. So the screens hold times since 1970.
-import type { Answer, Result, Sources, StreamEvent, StreamSocket, Store } from './app.contract.d.ts';
+import type { Answer, Result, Sources, Storage, StreamEvent, StreamSocket, Store } from './app.contract.d.ts';
 import { noPause, type Pause } from './crypto.ts';
 import {
   clientToken, connect, fromBase64Url, newBox, newKeys, openBox, pairingPsk, relayTicket, text, toBase64Url, utf8,
@@ -28,7 +28,12 @@ import team from './team-preview.json';
 // The relay of Coconut. A pairing setup that names another relay is refused, because the grants name this one.
 const RELAY = 'https://coconut-push.gumroad.workers.dev';
 const SAVED = 'coconut-pairing';
-export const grants = `net.fetch ${RELAY}\nnet.websocket wss://coconut-push.gumroad.workers.dev\nsecret.keep ${SAVED}`;
+// The picked files of a message (app:/tmp/picked) and the smaller copies of photos that go to the Mac (UPLOADS).
+const UPLOADS = 'app:/tmp/upload';
+export const grants = [
+  `net.fetch ${RELAY}`, 'net.websocket wss://coconut-push.gumroad.workers.dev', `secret.keep ${SAVED}`,
+  'fs.read app:/tmp/picked', `fs.read ${UPLOADS}`, `fs.write ${UPLOADS}`,
+].join('\n');
 // How long a read of updates waits for each frame of its answer: the Mac holds it up to 25 seconds (the Swift app
 // gives a long poll 45).
 const LONG_POLL = 45000;
@@ -239,6 +244,17 @@ const ensure = (): State => {
 const emptyState = (): State => ({ zero: null, chats: new Map(), projects: [], notices: [], waits: [], stuck: [], teamId: '', counter: 0 });
 // The epoch to add to the times of a state.
 const zeroOf = (s: State, launch: number): number => s.zero ?? launch;
+// The time of a row made here, `at` milliseconds after the launch, in the times of a state.
+const localAt = (s: State, at: number): number => (s.zero === null ? at : launchAt + at - s.zero);
+// The rows of `outgoing` in the state that the screens read now, in place of the ones it showed before.
+const showOutgoing = (chatId: string): void => {
+  const s = ensure();
+  const chat = s.chats.get(chatId);
+  if (!chat || s.zero === null) return;
+  const zero = s.zero;
+  const rows = (outgoing.get(chatId) ?? []).map((m) => ({ ...m, at: m.at - zero }));
+  chat.messages = [...chat.messages.filter((m) => !m.id.startsWith('out-')), ...rows];
+};
 
 // The newest message that is no notice: the age and the place of the row of a chat.
 const newest = (chat: ChatState): number => chat.messages.reduce((t, m) => (m.kind === 'notice' ? t : Math.max(t, m.at)), -Infinity);
@@ -414,6 +430,19 @@ const COMMANDS = [
   { name: 'effort', detail: 'Change the reasoning effort', symbol: 'symbol:sf/brain' },
 ];
 
+// The text of a message of files alone: the Mac needs a text for each message, and the chat does not show this one
+// (AttachmentOnly).
+const ATTACHMENT_ONLY = '[attachment]';
+// The epoch of the launch, which the screens give with each read: a time of the contract is from the launch.
+let launchAt = 0;
+// The rows of a chat of the Mac that this phone sends and the Mac's state does not have yet, at times since 1970: a
+// message while its files go up and it goes, and why a send failed. Each state of the Mac shows them after its own
+// rows. A send that ends takes its rows away, and the next state shows the Mac's; a failure stays until the next send.
+const outgoing = new Map<string, Msg[]>();
+// A message that shows and has yet to go, by its chat: what `queueMessage` took for `sendMessage`. `at` is from the
+// launch.
+const unsent = new Map<string, { words: string; files: PickedFile[]; photos: string[]; n: number; at: number }>();
+
 const fromSnapshot = (snap: Snapshot): State => {
   const server = parse(snap.server_time);
   const rel = (iso: string): number => parse(iso) - server;
@@ -446,9 +475,11 @@ const fromSnapshot = (snap: Snapshot): State => {
         });
       }
       const artifact = m.artifact_id ? artifacts.get(m.artifact_id) : undefined;
-      if (artifact) return message(m.id, 'artifact', false, at, artifact.preview, { title: artifact.title });
+      if (artifact) return message(m.id, 'artifact', m.role === 'user', at, artifact.preview, { title: artifact.title });
       return message(m.id, m.kind === 'text' ? 'text' : 'activity', m.role === 'user', at, m.text);
-    });
+    }).filter((m) => !(m.mine && m.kind === 'text' && m.body.trim() === ATTACHMENT_ONLY));
+    // What this phone sends to the chat and the Mac does not have yet.
+    for (const row of outgoing.get(bot.id) ?? []) messages.push({ ...row, at: row.at - server });
     // A chat that nobody wrote in shows nowhere (AgentChats.isBlank), but a project and a starred chat always show.
     if (messages.length === 0 && bot.unread_count === 0 && bot.status === 'idle' && !bot.pinned && bot.project !== true) continue;
     chats.set(bot.id, {
@@ -632,13 +663,116 @@ const failureOf = (reply: Reply): string => {
   return `Your Mac answered ${reply.status}.`;
 };
 
-// A write to the Mac on the open connection. It returns the answer's JSON, or throws the Mac's reason.
+// A write to the Mac on the open connection: a value as JSON, or the bytes of a JSON body made already. It returns the
+// answer's JSON, or throws the Mac's reason.
 const write = async (method: string, path: string, body: unknown): Promise<unknown> => {
   if (!tunnel || tunnel.session.broken || !conn || conn.ended !== '') throw new Error('Your Mac is not connected.');
-  const reply = await tunnel.request(method, path, headers(method), utf8(JSON.stringify(body ?? {})));
+  const bytes = body instanceof Uint8Array ? body : utf8(JSON.stringify(body ?? {}));
+  const reply = await tunnel.request(method, path, headers(method), bytes);
   if (reply.status < 200 || reply.status >= 300) throw new Error(failureOf(reply));
   return reply.body.length > 0 ? JSON.parse(text(reply.body)) : {};
 };
+
+// MARK: Attachments
+
+// The largest file that the Mac takes (`_attachment` in backend/coconut/service.py, FileRules.largest), and the longest
+// side of a photo that goes as it is (FileFit.longestSide).
+const LARGEST = 4 * 1024 * 1024;
+const LONGEST_SIDE = 2400;
+const SIZE_TEXT = 'Choose a file between 1 byte and 4 MB.';
+const CANNOT_SEND = 'This file cannot be sent.';
+// `_validate_attachments`: a message takes at most 20 files.
+const MOST_FILES = 20;
+
+// A file of the pickers, as `change` gives it (`Picked`): `width` and `height` are null when the picker did not read them.
+interface PickedFile { path: string; name: string; type: string; size: number; width: number | null; height: number | null }
+
+// FileFit.jpegName: a photo that becomes a JPEG takes the extension .jpg.
+const jpegName = (name: string): string => `${name.replace(/\.[^./]*$/, '') || 'Photo'}.jpg`;
+
+// The file as it goes to the Mac (FileFit.outcome of an agent chat, which keeps the metadata of a photo): a file of the
+// file picker as it is, from 1 byte to 4 MB. A photo of the library goes as it is when it fits 2400 pixels and 4 MB and
+// is no HEIC or HEIF image, and a GIF always does, because a JPEG loses its frames; any other photo becomes a JPEG of at
+// most 2400 pixels and 4 MB.
+const fitted = async (storage: Storage, file: PickedFile, photo: boolean, n: number): Promise<{ path: string; name: string; size: number }> => {
+  const type = file.type.toLowerCase();
+  const heif = /^image\/hei[cf]/.test(type) || /\.hei[cf]$/i.test(file.name);
+  const longest = Math.max(file.width ?? 0, file.height ?? 0);
+  const keep = !photo || !type.startsWith('image/') || type === 'image/gif' || (!heif && longest <= LONGEST_SIDE && file.size <= LARGEST);
+  if (keep) {
+    if (file.size < 1 || file.size > LARGEST) throw new Error(SIZE_TEXT);
+    return { path: file.path, name: file.name, size: file.size };
+  }
+  try {
+    await storage.fs.mkdir(UPLOADS);
+  } catch (error) {
+    if ((error as { code?: string }).code !== 'EEXIST') throw error;
+  }
+  try {
+    const out = await storage.fs.compressImage(file.path, `${UPLOADS}/${n}.jpg`, { maxDimension: LONGEST_SIDE, maxBytes: LARGEST, quality: 0.8 });
+    return { path: out.path, name: jpegName(file.name), size: out.size };
+  } catch (error) {
+    const code = (error as { code?: string }).code;
+    throw new Error(code === 'unfit' || code === 'too-large' ? SIZE_TEXT : CANNOT_SEND);
+  }
+};
+
+const BASE64 = Uint8Array.from('ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/', (c) => c.charCodeAt(0));
+// What POST /v1/attachments takes (AttachmentRequest): the agent, the file name and the bytes in base64. The base64 goes
+// straight into the bytes of the body, a part of the file in each turn, so a file of 4 MB makes no string of 5.6 MB.
+const attachmentBody = async (botId: string, filename: string, bytes: Uint8Array): Promise<Uint8Array> => {
+  const head = utf8(`${JSON.stringify({ bot_id: botId, filename }).slice(0, -1)},"content_base64":"`);
+  const tail = utf8('"}');
+  const out = new Uint8Array(head.length + Math.ceil(bytes.length / 3) * 4 + tail.length);
+  out.set(head, 0);
+  let o = head.length;
+  const STEP = 3 * 32768;
+  for (let start = 0; start < bytes.length; start += STEP) {
+    const end = Math.min(start + STEP, bytes.length);
+    let i = start;
+    for (; i + 2 < end; i += 3) {
+      const n = (bytes[i] << 16) | (bytes[i + 1] << 8) | bytes[i + 2];
+      out[o++] = BASE64[n >>> 18];
+      out[o++] = BASE64[(n >>> 12) & 63];
+      out[o++] = BASE64[(n >>> 6) & 63];
+      out[o++] = BASE64[n & 63];
+    }
+    // The last one or two bytes of the file, with the padding of base64.
+    if (i < end) {
+      const two = end - i === 2;
+      const n = (bytes[i] << 16) | (two ? bytes[i + 1] << 8 : 0);
+      out[o++] = BASE64[n >>> 18];
+      out[o++] = BASE64[(n >>> 12) & 63];
+      out[o++] = two ? BASE64[(n >>> 6) & 63] : 61;
+      out[o++] = 61;
+    }
+    await pause();
+  }
+  out.set(tail, o);
+  return out;
+};
+
+// The files of a message on the Mac, one upload each, in the order of the picks (AppStore.uploadAttachment): the ids of
+// their attachments. A copy that a photo needed goes away after its upload.
+const upload = async (storage: Storage, botId: string, files: PickedFile[], photos: string[]): Promise<string[]> => {
+  const ids: string[] = [];
+  for (const [n, file] of files.entries()) {
+    const fit = await fitted(storage, file, photos.includes(file.path), n);
+    try {
+      const bytes = new Uint8Array(await storage.fs.readFile(fit.path));
+      if (bytes.length < 1 || bytes.length > LARGEST) throw new Error(SIZE_TEXT);
+      const made = (await write('POST', '/v1/attachments', await attachmentBody(botId, fit.name, bytes))) as { id?: string };
+      if (!made.id) throw new Error('Your Mac did not keep the file.');
+      ids.push(made.id);
+    } finally {
+      if (fit.path !== file.path) await storage.fs.rm(fit.path).catch(() => undefined);
+    }
+  }
+  return ids;
+};
+
+// The size of a file as the Mac writes it under the file (`preview` of an attachment).
+const bytesText = (size: number): string => `${String(size).replace(/\B(?=(\d{3})+(?!\d))/g, ',')} bytes`;
 
 const gunzip = async (bytes: Uint8Array): Promise<Uint8Array> => {
   const stream = new ReadableStream<Uint8Array>({
@@ -914,6 +1048,7 @@ const sources: Sources = {
 
   loadHome: ([zero, chosen, live]): Home => {
     useLive = live;
+    launchAt = zero;
     const s = ensure();
     const list = ordered(s);
     const at = zeroOf(s, zero);
@@ -930,6 +1065,7 @@ const sources: Sources = {
 
   loadChat: ([zero, id, live]): Chat => {
     useLive = live;
+    launchAt = zero;
     const s = ensure();
     const chat = s.chats.get(id);
     if (!chat) return emptyChat;
@@ -943,7 +1079,7 @@ const sources: Sources = {
       : idle;
     return {
       id: chat.id, kind: chat.kind, title: chat.title, project: chat.projectName, letter: chat.letter, face: chat.face, circle: chat.circle,
-      messages: lines, turn, toolbar: agent && !live, live,
+      messages: lines, turn, toolbar: agent, live,
     };
   },
 
@@ -1016,7 +1152,7 @@ const sources: Sources = {
         return { id: '' };
       }
     }
-    const firstAt = useLive && s.zero !== null ? at - s.zero : at;
+    const firstAt = localAt(s, at);
     s.chats.set(id, {
       id, kind: 'agent', project: project.id, projectName: project.name, title: words.length > 48 ? `${words.slice(0, 47).trimEnd()}…` : words,
       letter: project.letter, face: project.face, circle: false, messages: [message(`${id}-1`, 'text', true, firstAt, words)],
@@ -1025,28 +1161,56 @@ const sources: Sources = {
     return { id };
   },
 
-  // A message of a chat. In the demo, names of files that were attached close it as a line of code; the Mac's chats
-  // take words only here. The agent of the chat starts a turn, or, when one runs, the message waits for the next.
-  sendMessage: async ([chatId, words, files, at]) => {
+  // A message of a chat shows at once, with the files that were attached, and `sendMessage` then sends it. In the demo
+  // the names of the files close it as a line of code. A chat of the Mac shows a row for each file, and its rows stay in
+  // `outgoing` until the Mac's state has them.
+  queueMessage: ([chatId, words, files, photos, at]) => {
     const s = ensure();
     const chat = s.chats.get(chatId);
-    if (!chat) return { ok: false };
-    if (useLive && words === '') return { ok: false };
+    if (!chat || (words === '' && files.length === 0) || unsent.has(chatId)) return { id: '' };
     s.counter += 1;
-    const body = useLive ? words : [words, files === '' ? '' : '`' + files + '`'].filter((part) => part !== '').join('\n\n');
-    const sentAt = useLive && s.zero !== null ? at - s.zero : at;
-    chat.messages = [...chat.messages, message(`${chat.id}-m${s.counter}`, 'text', true, sentAt, body)];
+    const n = s.counter;
+    unsent.set(chatId, { words, files, photos, n, at });
+    if (!useLive) {
+      const names = files.map((f) => f.name).join(', ');
+      const body = [words, names === '' ? '' : '`' + names + '`'].filter((part) => part !== '').join('\n\n');
+      chat.messages = [...chat.messages, message(`${chat.id}-m${n}`, 'text', true, at, body)];
+      return { id: chatId };
+    }
+    const sentAt = launchAt + at;
+    outgoing.set(chatId, [
+      ...(words === '' ? [] : [message(`out-${n}`, 'text', true, sentAt, words)]),
+      ...files.map((f, i) => message(`out-${n}-${i}`, 'artifact', true, sentAt, bytesText(f.size), { title: f.name })),
+    ]);
+    showOutgoing(chatId);
+    return { id: chatId };
+  },
+
+  // The message that `queueMessage` showed goes. On the Mac its files go up first, and the message names them; files
+  // alone go with ATTACHMENT_ONLY. A failure stays under the rows of the message. The agent of the chat starts a turn,
+  // or, when one runs, the message waits for the next.
+  sendMessage: async ([chatId], _store, storage) => {
+    const send = unsent.get(chatId);
+    unsent.delete(chatId);
+    if (!send) return { ok: false };
     if (useLive) {
       try {
-        await write('POST', `/v1/bots/${chatId}/messages`, { text: words, mode: 'auto', attachment_ids: [], recipient_bot_ids: [] });
+        if (send.files.length > MOST_FILES) throw new Error(`A message takes at most ${MOST_FILES} files.`);
+        const ids = await upload(storage, chatId, send.files, send.photos);
+        await write('POST', `/v1/bots/${chatId}/messages`, { text: send.words || ATTACHMENT_ONLY, mode: 'auto', attachment_ids: ids, recipient_bot_ids: [] });
       } catch (error) {
-        chat.messages = [...chat.messages, message(`${chat.id}-f${s.counter}`, 'activity', false, sentAt, `Not sent: ${failed(error)}`)];
+        outgoing.set(chatId, [...(outgoing.get(chatId) ?? []), message(`out-${send.n}-f`, 'activity', false, launchAt + send.at, `Not sent: ${failed(error)}`)]);
+        showOutgoing(chatId);
         return { ok: false };
       }
+      // The Mac has the message: the next state shows its rows in place of these.
+      outgoing.delete(chatId);
     }
-    if (chat.kind === 'agent') {
+    const s = ensure();
+    const chat = s.chats.get(chatId);
+    if (chat && chat.kind === 'agent') {
       if (chat.run) chat.run = { ...chat.run, queued: chat.run.queued + 1 };
-      else chat.run = { startedAt: sentAt, phase: PHASES.thinking, detail: '', queued: 0 };
+      else chat.run = { startedAt: localAt(s, send.at), phase: PHASES.thinking, detail: '', queued: 0 };
     }
     return { ok: true };
   },

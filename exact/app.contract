@@ -22,7 +22,9 @@ component Coconut
   state draft = ""
   state chatDraft = ""
   state composing = false
-  state attached = []
+  // The files of the next message, as the pickers gave them, and which of them came from the photo library.
+  state attached: Picked[] = []
+  state photos: string[] = []
   state projectName = ""
   // The tab of Chats that shows, Working or Idle (AgentsFilter of the Swift app). The phone keeps the choice.
   state chatsTab = "working" persist
@@ -55,6 +57,7 @@ component Coconut
   mutation created as shape Made refreshes home then afterCreate
   mutation read as shape Ack refreshes home
   // A write needs no read of its own after it: the Mac's change ends the read that waits for one (see `following`).
+  mutation queued as shape Made refreshes chat, home then afterQueued
   mutation sent as shape Ack refreshes chat, home
   mutation stopped as shape Ack refreshes chat, home
   mutation answered as shape Ack refreshes chat, home
@@ -72,6 +75,7 @@ component Coconut
   derive openId = match stack(nav).filter(e => e.name == "chat").at(-1) { case some(e) => e.params.id, case none => "" }
   derive startedId = match started { case some(s) => s.id, case none => "" }
   derive createdId = match created { case some(c) => c.id, case none => "" }
+  derive queuedId = match queued { case some(q) => q.id, case none => "" }
   derive attentionTotal = sum(home.attention.map(a => a.count))
   // A chat works while its row says so: a working line, or a card that waits for the person. Every other chat is idle,
   // also a chat with people. Both tabs keep the order of the list.
@@ -81,6 +85,7 @@ component Coconut
   derive hasText = draft.trim() != ""
   derive chatHasText = chatDraft.trim() != ""
   derive canSend = chatHasText or attached.length > 0
+  derive sending = pending(queued) or pending(sent)
   // ComposerExpansion.isOpen: a draft of more than one line, or an attachment, or the field with focus on a phone.
   derive expanded = chat.toolbar and (composing or chatDraft.length > 80 or chatDraft.includes("\n") or attached.length > 0)
 
@@ -163,17 +168,22 @@ component Coconut
     composing = true
   action blurChat
     composing = false
-  // Send runs the first row of the slash menu when it shows, as Return does in the Swift app.
+  // Send runs the first row of the slash menu when it shows, as Return does in the Swift app. A message shows at once
+  // (`queued`), and its files and words then go to the Mac (`sent`), which can take seconds for a photo.
   action sendChat
     match slash.at(0)
       case some(s)
         pickSlash(s.kind, s.value)
       case none
-        if canSend and not pending(sent)
-          send sent = sendMessage(chat.id, chatDraft.trim(), attached.join(", "), performanceNow())
+        if canSend and not sending
+          send queued = queueMessage(chat.id, chatDraft.trim(), attached, photos, performanceNow())
           chatDraft = ""
           attached = []
+          photos = []
         focus("chat-input")
+  action afterQueued
+    if queuedId != ""
+      send sent = sendMessage(queuedId)
   action stopChat
     send stopped = stopTurn(chat.id)
   action answerCard(chatId: string, ref: string, option: string)
@@ -194,10 +204,15 @@ component Coconut
     showPicker("attach-file")
   action pickPhoto
     showPicker("attach-photo")
-  action picked(files: Picked[])
-    attached = attached.concat(files.map(f => f.name))
-  action detach(name: string)
-    attached = attached.filter(n => n != name)
+  action pickedFiles(files: Picked[])
+    attached = attached.concat(files)
+  // A photo of the library goes at the size a screen shows (app.ts, as FileFit), so the app keeps where it came from.
+  action pickedPhotos(files: Picked[])
+    attached = attached.concat(files)
+    photos = photos.concat(files.map(f => f.path))
+  action detach(path: string)
+    attached = attached.filter(f => f.path != path)
+    photos = photos.filter(p => p != path)
 
   view
     main navigationKey=`${top(nav).id}` navigationBack="back" interactive-widget="resizes-content" testId="app" width="100%" height="100%" accent-color="light-dark(#7a4e2d, #d4a574)"
@@ -292,19 +307,18 @@ component Coconut
                 column position="relative" border-radius=24 background-color="light-dark(#f4f4f4, #212121)" testId="composer-box"
                   if attached.length > 0
                     row flex-wrap="wrap" gap=6 padding="10px 12px 0px 12px" testId="attachments"
-                      for n in attached key=n
-                        button appearance="none" press=detach(n) aria-label=`Remove ${n}` display="flex" flex-direction="row" align-items="center" gap=4 padding="4px 10px" border-radius=12 background-color="-exact-fill" testId=`attached-${n}`
-                          text n font="-exact-footnote" line-clamp=1 max-width=160
+                      for n in attached key=n.path
+                        button appearance="none" press=detach(n.path) aria-label=`Remove ${n.name}` display="flex" flex-direction="row" align-items="center" gap=4 padding="4px 10px" border-radius=12 background-color="-exact-fill" testId=`attached-${n.name}`
+                          text n.name font="-exact-footnote" line-clamp=1 max-width=160
                           image "symbol:close" width=10 height=10 aria-hidden=true
-                  textarea id="chat-input" value=chatDraft input=editChat focus=focusChat blur=blurChat rows=1 field-sizing="content" max-height=140 placeholder=`Message ${chat.project}` aria-label="Message" border="none" background-color="transparent" min-width=0 padding-top=12 padding-bottom=(expanded ? 4 : 12) padding-left=(expanded or chat.live ? 16 : 48) padding-right=(expanded ? 16 : 52) testId="chat-input"
+                  textarea id="chat-input" value=chatDraft input=editChat focus=focusChat blur=blurChat rows=1 field-sizing="content" max-height=140 placeholder=`Message ${chat.project}` aria-label="Message" border="none" background-color="transparent" min-width=0 padding-top=12 padding-bottom=(expanded ? 4 : 12) padding-left=(expanded ? 16 : 48) padding-right=(expanded ? 16 : 52) testId="chat-input"
                   // An open box keeps a row under the text for the plus and Send. The model and the effort have no chips
                   // there: `/model` and `/effort` change them, as in the Swift app.
                   if expanded
                     view height=44 testId="composer-toolbar"
-                  // A chat of the Mac takes words only here, so it has no plus.
-                  if not chat.live
-                    button appearance="none" popovertarget="plus-menu" retainFocus=true aria-label="More options" position="absolute" left=6 bottom=6 width=32 height=32 border-radius=16 display="flex" align-items="center" justify-content="center" testId="composer-plus"
-                      image "symbol:add" width=18 height=18
+                  // The plus: a file, or a photo of the library (ComposerAttachments).
+                  button appearance="none" popovertarget="plus-menu" retainFocus=true aria-label="More options" position="absolute" left=6 bottom=6 width=32 height=32 border-radius=16 display="flex" align-items="center" justify-content="center" testId="composer-plus"
+                    image "symbol:add" width=18 height=18
                   // Send and Stop (sendControls): Stop while the agent works, quiet when there is a draft and the
                   // filled button when there is none; Send when there is a draft.
                   row position="absolute" right=6 bottom=6 gap=4 align-items="center"
@@ -312,7 +326,7 @@ component Coconut
                       button appearance="none" press=stopChat retainFocus=true aria-label="Stop" width=32 height=32 border-radius=16 background-color=(canSend ? "transparent" : "light-dark(#7a4e2d, #d4a574)") display="flex" align-items="center" justify-content="center" testId="composer-stop"
                         image "symbol:stop-fill" width=14 height=14 color=(canSend ? "-exact-secondary-label" : "-exact-background")
                     if canSend
-                      button appearance="none" press=sendChat disabled=pending(sent) retainFocus=true aria-label="Send" width=32 height=32 border-radius=16 background-color="light-dark(#7a4e2d, #d4a574)" display="flex" align-items="center" justify-content="center" testId="composer-send"
+                      button appearance="none" press=sendChat disabled=sending retainFocus=true aria-label="Send" width=32 height=32 border-radius=16 background-color="light-dark(#7a4e2d, #d4a574)" display="flex" align-items="center" justify-content="center" testId="composer-send"
                         image "symbol:send" width=16 height=16 color="-exact-background"
           if e.name == "new"
             column navigationKey=`${e.id}` navigationPresentation="modal" navigationScroll="new-form" position="absolute" inset=0 display="flex" flex-direction="column"
@@ -345,5 +359,5 @@ component Coconut
         button press=pickPhoto popovertarget="plus-menu" popovertargetaction="hide" testId="attach-photo-item"
           image "symbol:photo"
           text "Photo library"
-      input type="file" id="attach-file" multiple=true display="none" change=picked testId="attach-file"
-      input type="file" id="attach-photo" accept="image/*" multiple=true display="none" change=picked testId="attach-photo"
+      input type="file" id="attach-file" multiple=true display="none" change=pickedFiles testId="attach-file"
+      input type="file" id="attach-photo" accept="image/*" multiple=true display="none" change=pickedPhotos testId="attach-photo"

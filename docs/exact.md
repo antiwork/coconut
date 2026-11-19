@@ -78,13 +78,26 @@ each frame for its own time, 20 seconds, or 45 for a read of updates; one that r
 and an ended socket fails them all. A write no longer asks for a read after it: the change it makes ends the read that
 waits.
 
-What a chat of the Mac does here: its messages, cards and files, the working line, Send (words only: no attachments),
-answers to cards, Stop and read marks, and `/model` and `/effort`. Those two send `PUT /v1/settings/model` (model,
+What a chat of the Mac does here: its messages, cards and files, the working line, Send with words and files, answers
+to cards, Stop and read marks, and `/model` and `/effort`. Those two send `PUT /v1/settings/model` (model,
 provider and effort, as `ModelOverride`), which changes the model of every chat of the Mac, and take the catalog of its
 answer. The app reads the catalog and the chats that have a model of their own from `GET /v1/state/settings` with the
 first state, again when an update says the settings changed (or brings a whole state), and at most once a minute, as
 the Swift app does; the working line names the model of the chat. A Mac that refuses a model says why in the chat. It
 does not make projects (they are fixed), show team chats, or get push yet.
+
+Attachments. The plus of the composer offers Attach file and Photo library, Exact's pickers, which copy each file into
+`app:/tmp/picked`. Send shows the message at once (`queueMessage`), with a row for each file, and then sends it
+(`sendMessage`): each file goes up with `POST /v1/attachments` (the agent, the name and the bytes in base64, with its own
+idempotency key, as `AppStore.uploadAttachment`), and the message names them in `attachment_ids`. Files alone go with
+the text `[attachment]`, which the chat does not show (`AttachmentOnly`). A file of the file picker goes as it is, from
+1 byte to 4 MB. A photo goes as `FileFit` sends it in an agent chat: as it is when it fits 2400 pixels and 4 MB and is
+no HEIC or HEIF image, a GIF always, and any other photo as a JPEG of at most 2400 pixels and 4 MB at quality 0.8
+(`storage.fs.compressImage` into `app:/tmp/upload`, removed after its upload). The base64 goes straight into the bytes
+of the body, part by part with a pause between, so a file of 4 MB makes no string of 5.6 MB. The rows of a message
+stay (`outgoing`) while new states of the Mac come, until the Mac has the message; a send that fails says why under
+them until the next send of the chat. Reading the files needs the grants `fs.read app:/tmp/picked`, `fs.read
+app:/tmp/upload` and `fs.write app:/tmp/upload`, so attachments need a new binary: build 5 keeps its last update.
 
 Checked. Every primitive of `crypto.ts` against `node:crypto` with random inputs (SHA-256 and HMAC at every length to
 200 bytes and beyond, HKDF, ChaCha20-Poly1305 both ways and a changed byte, X25519 keys and secrets), the test vector of
@@ -109,6 +122,14 @@ effort, an effort the model lacks is refused, and the working line names the new
 of `PUT /v1/settings/model` against `Service._model_override` and the Swift `ModelOverride`, and the catalog against
 `ModelCatalog`. Not checked: the route on a Mac, because the service in fixture mode has no catalog and the person's
 Mac would have changed the model of every chat.
+
+Attachments under bun against the service of main in fixture mode, with a stand-in of the tunnel that sends each
+request to it and a storage in memory: the body is JSON whose base64 is the file at every length around a part, words
+and a PDF of 1.5 MB show at once and keep their rows while a new state comes, the Mac keeps the same bytes, files alone
+go with the hidden marker, a HEIC photo of 4032 pixels goes as a JPEG through `compressImage` with 2400 pixels, 4 MB and
+0.8 and its copy goes away, a JPEG of 1200 pixels and a GIF of 3000 go as they are, a file over 4 MB and 21 files do not
+go and the chat says why, and the demo names the files. Not checked: Exact's pickers and `compressImage` on a phone,
+and the time an upload of 4 MB takes there (base64, ChaCha20-Poly1305 in TypeScript, the relay).
 
 On a phone. Gianfranco installed build 0.1.0 (5) from AppDrop on his iPhone on 2026-11-19 and reported the steps of
 issue #573 (the pairing, his chats, a chat, Send, a card, Stop and a relaunch) as done. AppDrop's sign-in to Apple
@@ -245,7 +266,7 @@ Keep it shipping until each phase reaches parity, and keep the bundle id of the 
 
 | Phase | Swift to port | Exact |
 |---|---|---|
-| 1 Live data | `APIClient`, `AppStore` (4,102), `Models`, `TunnelConnection`, `Onboarding`, pairing | Started: the pairing, the tunnel, the state and its updates, and the model and effort (`/model`, `/effort`) are in `app.ts`, `tunnel.ts` and `crypto.ts` (see Live data). Left: a SQLite cache (`sqlite.open`) for a launch without the Mac, attachments |
+| 1 Live data | `APIClient`, `AppStore` (4,102), `Models`, `TunnelConnection`, `Onboarding`, pairing | Started: the pairing, the tunnel, the state and its updates, the model and effort (`/model`, `/effort`) and attachments are in `app.ts`, `tunnel.ts` and `crypto.ts` (see Live data). Left: a SQLite cache (`sqlite.open`) for a launch without the Mac |
 | 2 Conversation | `ConversationView` (1,642), `Cards`, `MessagePhotos`, `MessageQueue`, `BotMentions`, `ModelSettingsView`, `LiveView`, previews | More parts and routes in `parts.contract`; photos by the file picker and `image`; a virtualized list for long chats |
 | 3 Team | `TeamChat` (2,093), `TeamChatView` (1,710), `TeamViews`, `Team`, `PeopleView` | A second family of chats and a notice board, over the same list |
 | 4 Business and library | `BusinessDashboard` and the other Business files, `Library`, `DocumentPage`, `UsageViews`, `DecisionInboxView`, `AgentProject`, `Bento`, `ChatDeckView` | Routes and tabs (`select(nav, name)`); Markdown for documents; charts as `svg` |
