@@ -18,9 +18,9 @@ Your Mac runs Hermes and Coconut and stores the work. Your iPhone reaches the Ma
 
 ## How it works
 
-- **Agents are Hermes profiles.** `default` is your Hermes home, usually `~/.hermes`. Each other agent is `~/.hermes/profiles/<name>`. An agent in Coconut and `hermes -p <name>` in Terminal are the same agent.
-- **Turns run in your Hermes gateway.** Coconut runs `hermes gateway` for your Hermes home, and its `coconut` gateway plugin connects the gateway to the iPhone. Routines run in the gateway as Coconut turns. Some turn types still run in Coconut's own workers; [architecture](docs/architecture.md) lists them.
-- **Settings are native.** The app's default model is the default profile's model. An agent follows it, unless you give that agent its own model.
+- **Projects are Hermes profiles.** Coconut runs on `~/.hermes/profiles/coconut` and Gumroad on `~/.hermes/profiles/gumroad`. Personal runs on the profile `personal`, else `home`, else your Hermes home, usually `~/.hermes`. A project in Coconut and `hermes -p <name>` in Terminal are the same agent.
+- **Turns run in your Hermes gateway.** Coconut runs `hermes gateway` for your Hermes home, and its `coconut` gateway plugin connects the gateway to the iPhone. Routines run in the gateway as Coconut turns.
+- **Settings are native.** The app's default model is the default profile's model. Every chat follows it, unless the profile of its project sets a model of its own. Ask the Coconut chat to change it.
 - **Hermes knows Coconut.** Coconut ships a `coconut` skill, so your Hermes, for example in Telegram, can update, pair, and repair Coconut.
 
 ## Setup
@@ -38,7 +38,7 @@ Coconut runs on the Hermes that you already use. It does not install its own cop
 
 ## Updates
 
-- **Coconut.app** is a menu bar app. Its login items run the service and the relay sidecar. It updates itself with Sparkle. Each merge to `main` publishes a build that every Mac gets. Run `coconut update` to install it at once, and `coconut status` to see the version, the last update, the service, the relay, and Hermes. See [mac/README.md](mac/README.md).
+- **Coconut.app** is a menu bar app. Its login items run the service and the relay sidecar. It updates itself with Sparkle. The release agent publishes a build of `main` twice a day, and every Mac gets it. Run `coconut update` to install it at once, and `coconut status` to see the version, the last update, the service, the relay, and Hermes. See [mac/README.md](mac/README.md).
 - **Each update** sets Coconut's own entries in your Hermes profiles again: the skill folder and the gateway plugin. It changes no other setting.
 - **Hermes** updates with `hermes update`. Coconut sees the new Hermes and restarts itself after the running turns finish.
 - **The iPhone app** ships through TestFlight. Successful release builds upload app changes at most once per hour.
@@ -53,7 +53,7 @@ xcodegen generate --spec ios/project.yml
 open ios/Coconut.xcodeproj
 ```
 
-Work directly on `main` and push. The repository has no tests and no CI. The release agent starts the TestFlight workflow twice a day.
+Work directly on `main`: check each change by hand, then push. The repository has no tests and no CI. The release agent starts the TestFlight and Mac release workflows twice a day.
 See [architecture](docs/architecture.md) for implementation details, [relay transport](docs/relay-transport.md) for the relay, and [relay](relay/README.md) to deploy it.
 
 ## Parallel work
