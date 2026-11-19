@@ -209,9 +209,6 @@ struct BusinessHomeContent: View {
         }.foregroundStyle(BoardStyle.ink)
     }
 
-    /// Support is a place of its own, a tab of the iPhone and a row of the Mac sidebar, so Finance opens the other
-    /// functions.
-    private static let functions = BusinessFunction.builtIns.filter { $0.key != "support" }
     /// The places that Finance opens, as the rows of one tile: a name needs no tile of its own.
     private var places: some View {
         let rows = Self.functions.map { (title: $0.name, route: BusinessRoute.function($0.key), id: "function-" + $0.key) }
@@ -236,13 +233,16 @@ struct BusinessHomeContent: View {
         }
     }
 
+    /// Support is a place of its own, a tab of the iPhone and a row of the Mac sidebar, so Finance opens the other
+    /// functions.
+    private static let functions = BusinessFunction.builtIns.filter { $0.key != "support" }
 
     private var urgent: Bool { model.attention.contains { !$0.unavailable } }
     private var attention: some View {
         BentoTile(wash: model.attention.isEmpty ? BoardStyle.positive : urgent ? BoardStyle.attention : nil) {
             VStack(alignment: .leading, spacing: BoardStyle.Space.m) {
                 HStack {
-                    BentoLabel("Attention")
+                    BentoLabel("Needs attention")
                     Spacer(minLength: 0)
                     if urgent { CountPill(count: model.attention.filter { !$0.unavailable }.count) }
                 }
