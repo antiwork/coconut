@@ -11,7 +11,7 @@ LOG_LIMIT_BYTES = 50 * 1024 * 1024
 def rotate_log(fd, path, limit=LOG_LIMIT_BYTES):
     """Rotate `path` when the descriptor `fd` writes to it and the file is larger than `limit`.
 
-    The same inode proves that the service owns the file. In a terminal or a test, the descriptor writes elsewhere,
+    The same inode proves that the service owns the file. In a terminal, the descriptor writes elsewhere,
     and nothing changes. A child process that inherited the old descriptor continues to write to `<name>.1`.
     """
     path = str(path)

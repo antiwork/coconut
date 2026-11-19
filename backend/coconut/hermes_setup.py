@@ -23,7 +23,7 @@ class HermesSetup:
     hermes_restart_deadline = None
 
     def hermes_setup(self) -> dict:
-        # A service that a test or a tool starts directly has no checked status. Fixture mode runs no Hermes.
+        # A service that a tool starts directly has no checked status. Fixture mode runs no Hermes.
         hermes = self.hermes_status or {
             'status': 'ok' if getattr(self.provider, 'name', None) == 'hermes' else 'fixture', 'version': None, 'reason': None,
             'tested': None}

@@ -11,7 +11,7 @@ number. Nobody changes a state: a newer state copies the two maps and replaces t
 every unchanged task object. Before, the writer, each card pass and each read view kept or parsed a copy of their own,
 about 270 MB each on a copy of the Mac mini data.
 
-Set COCONUT_VERIFY_TASK_CACHE=1 to compare the kept tasks with the table on every read. CI runs the backend tests so.
+Set COCONUT_VERIFY_TASK_CACHE=1 to compare the kept tasks with the table on every read.
 """
 import json
 import os

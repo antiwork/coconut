@@ -560,7 +560,7 @@ class Documents:
     library_reader = True
 
     def _now(self) -> str:
-        """The time of the store. Service gives the clock of service.py, which the tests of the full service set."""
+        """The time of the store."""
         from .service_base import now
         return now()
 

@@ -2,10 +2,9 @@
 
 A chat turn (gateway_bridge.plain_chat_turn) always goes to the `coconut` platform of the Hermes gateway. When no
 adapter of the bot's profile is connected, for example while the supervised gateway starts again, the turn waits for
-one, at most GATEWAY_WAIT_SECONDS, and the task says so. Then the task fails with the reason. The other turn types still
-run in the Coconut worker until phase 5 moves them. Both continue the same native conversation of the bot
-(hermes_plugin/coconut/hooks.py). A service without a Hermes home (fixture mode and tests) has no gateway, and its
-provider runs every turn.
+one, at most GATEWAY_WAIT_SECONDS, and the task says so. Then the task fails with the reason. A turn continues the
+native conversation of its chat (hermes_plugin/coconut/hooks.py). A service without a Hermes home (fixture mode) has no
+gateway, and its provider runs every turn.
 
 Hermes also runs a bot's chat by itself, for example when a background process of an earlier turn finishes. The adapter
 asks for a Coconut turn for such a run (gateway_hermes_run), so its messages go to the chat and the coconut tools act
@@ -388,7 +387,7 @@ class GatewayChat:
         self.db.execute("DELETE FROM settings WHERE key='chat_runtime'")
 
     def gateway_enabled(self) -> bool:
-        """Whether this service runs on the person's Hermes and so has a gateway. Fixture mode and tests have none."""
+        """Whether this service runs on the person's Hermes and so has a gateway. Fixture mode has none."""
         return bool(getattr(self, 'uses_hermes', False) and getattr(self.provider, 'python', None)
                     and getattr(self.provider, 'hermes_root', None))
 
@@ -1673,7 +1672,7 @@ class GatewayChat:
                     self._event('decision.updated', self._public(decision), decision['bot_id'], task_id)
 
     def _start_gateway_supervisor(self):
-        # Only a service on the person's Hermes runs a gateway. Fixture mode and tests have no Hermes home.
+        # Only a service on the person's Hermes runs a gateway. Fixture mode has no Hermes home.
         if self.gateway_supervisor is not None or not self.gateway_enabled():
             return
         self.gateway_supervisor = threading.Thread(target=self._supervise_gateway, name='coconut-gateway', daemon=True)

@@ -322,7 +322,7 @@ def team_folder_refusal(root, package):
         return None
     source = package.files.get('backend/coconut/service_base.py')
     if source is None:
-        # Each package of scripts/remote.py has the module. Only the small packages of the tests lack it.
+        # Each package of scripts/remote.py has the module.
         return None
     module = type(sys)('coconut_deploy_service_base')
     exec(compile(source, 'backend/coconut/service_base.py', 'exec'), module.__dict__)

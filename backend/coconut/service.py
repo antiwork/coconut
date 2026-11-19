@@ -167,7 +167,7 @@ from .team import SCHEMA as TEAM_SCHEMA, Team
 from .turn_activity import TurnActivity
 
 
-# The statements of Service._refresh_bot. Each needs an index and no sort. A test reads the plan of each one.
+# The statements of Service._refresh_bot. Each needs an index and no sort.
 BOT_TASK_STATES = ("SELECT DISTINCT json_extract(data,'$.status') FROM tasks WHERE json_extract(data,'$.bot_id')=? "
                    "AND json_extract(data,'$.status') IN ('working','needs_you','scheduled')")
 BOT_LATEST_TASK = "SELECT json_extract(data,'$.status') FROM tasks WHERE json_extract(data,'$.bot_id')=? ORDER BY rowid DESC LIMIT 1"
@@ -624,10 +624,6 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
             if row and isinstance(row[0], int) and isinstance(obj.get('revision'), int) and obj['revision'] > row[0]:
                 obj['_revised_at'] = now()
         self.db.execute(f'INSERT INTO {table}(id,data) VALUES (?,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data', (obj['id'], encoded(obj)))
-
-    def _now(self) -> str:
-        # The global of this module, so a test that sets service.now also sets the clock of the documents.
-        return now()
 
     def _event(self, event_type: str, data: dict, bot_id: str | None = None, task_id: str | None = None):
         self.db.execute('INSERT INTO events(type,bot_id,task_id,data,created_at) VALUES (?,?,?,?,?)', (event_type, bot_id, task_id, encoded(data), now()))

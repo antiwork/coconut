@@ -9,7 +9,7 @@ from .service_base import instant
 from .work_sources import ANSWERED, STALE_NOTE, source_origin
 
 
-# Statements of the routine pass. Each needs an index and no scan. A test reads the plan of each one.
+# Statements of the routine pass. Each needs an index and no scan.
 ROUTINE_EVENTS = 'SELECT type,data,created_at FROM events WHERE task_id=? AND bot_id=? ORDER BY seq'
 COMPLETION_EVENTS = 'SELECT type,data FROM events WHERE task_id=? AND bot_id=? ORDER BY seq'
 REQUEST_EVENTS = 'SELECT bot_id,type,data FROM events WHERE task_id=? ORDER BY seq'
@@ -49,7 +49,7 @@ EARLIER_UNSERVED = ('No Hermes gateway serves the profile of this bot now, so it
 EARLIER_PARKED = 'The Hermes profile of this bot is parked ('
 UNSERVED_REASONS = (ROUTINES_UNSERVED, EARLIER_UNSERVED)
 PARKED_PREFIXES = (ROUTINES_PARKED.split('{', 1)[0], EARLIER_PARKED)
-# Without a Hermes gateway (fixture mode and tests), nothing runs a routine.
+# Without a Hermes gateway (fixture mode), nothing runs a routine.
 ROUTINES_NEED_GATEWAY = 'Only the Hermes gateway runs routines, and this Mac has none.'
 # Records that only a routine occurrence has. A request that has any of them, even an empty one, follows the routine
 # rules alone. Only the routine code writes them, so an ordinary request never has one.

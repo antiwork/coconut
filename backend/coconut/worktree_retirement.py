@@ -24,7 +24,7 @@ WORKTREE_RETIRE_SECONDS = 6 * 60 * 60
 # A process that launchd adopted and that is older than this does not belong to a turn.
 ORPHAN_AGE_SECONDS = WORKTREE_RETIRE_SECONDS
 # These Coconut task states mean that a turn runs or starts soon. They are Service.ACTIVE without the states
-# that wait for a person. A test keeps the two lists in step.
+# that wait for a person. Keep the two lists in step.
 ACTIVE_STATUSES = ('queued', 'working', 'scheduled', 'waiting')
 # These native states mean that no worker runs or claims the outcome soon. Another state keeps the worktree.
 NATIVE_IDLE_STATUSES = ('done', 'archived', 'blocked', 'triage', 'review', 'todo', 'scheduled')

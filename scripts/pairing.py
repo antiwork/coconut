@@ -38,7 +38,7 @@ def validate(payload: dict) -> dict:
     if not isinstance(payload, dict) or set(payload) != V2_FIELDS or type(payload["version"]) is not int or payload["version"] != 2:
         raise ValueError("The setup data uses an unsupported format.")
     relay, route, name, expires = payload["relay"], payload["route"], payload["name"], payload["expires"]
-    # Plain HTTP is only for a relay on this Mac, for example in the loopback test.
+    # Plain HTTP is only for a relay on this Mac.
     if not isinstance(relay, str) or not re.fullmatch(r"https://[A-Za-z0-9.-]+(?::[0-9]+)?|http://127\.0\.0\.1:[0-9]+", relay):
         raise ValueError("The relay address is invalid.")
     if not isinstance(route, str) or not re.fullmatch(r"[0-9a-f]{64}", route):

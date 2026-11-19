@@ -319,7 +319,7 @@ What the guard does not cover:
 - While the supervised gateway starts again, the chat turns wait. The service starts it again 30 seconds after an exit, and the adapters connect after the gateway restored its sessions. The waiting turns then run. A turn that the gateway ran when it stopped fails, because the adapter stops listing it.
 - The gateway fires the routines of each profile that it serves (phase 4). The routines of a profile that no gateway serves do not run: a profile that the person parked in Hermes (`gateway.parked`), or any profile while the gateway starts again. Hermes runs an agent cron job only in the profile's gateway (`hermes cron run` sends the job to that gateway, and `hermes cron tick` skips agent jobs without one), so Coconut has no other way to run them without its worker. Each such routine shows that it is paused, and why (`routine_coordinator._pause_unserved_routines`, the routine's `error`), in the style of the refusal of a parked chat. It runs again on its schedule when a gateway serves the profile, without a catch-up by Coconut. Coconut does not remove a parked file, because that is the person's setting. `GET /v1/setup` lists these profiles in `gateway.unserved_profiles`. A chat turn of a parked profile fails at once and says why.
 - Coconut starts no worker with the gateway on. See "No worker with the gateway".
-- A service without a Hermes home (fixture mode and tests) has no gateway. Its provider runs every turn.
+- A service without a Hermes home (fixture mode) has no gateway. Its provider runs every turn.
 
 ### Phase 5, group 1: attachments and reactions
 
@@ -497,7 +497,7 @@ Coconut has no worker runtime of its own. The gateway runs each turn, and a turn
 reason (`gateway_unsupported`).
 
 - `HermesProvider` keeps the settings, the models, the profiles and the routines of Hermes. Its turn methods refuse a
-  turn. `FixtureProvider` runs each turn of fixture mode and the tests.
+  turn. `FixtureProvider` runs each turn of fixture mode.
 - Each Kanban claim holds a placeholder process (`kanban_worker_pid`), also in fixture mode. The placeholder ends with
   the service (`HOLDER`, `_close_gateway_chat`). The board runs when the provider has a Hermes Kanban runtime
   (`HermesProvider.native_board`).

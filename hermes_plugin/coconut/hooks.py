@@ -219,8 +219,8 @@ def _owner(session_id=''):
 
 def report_subagent_start(parent_session_id='', child_session_id=None, child_subagent_id=None, child_role=None,
                           child_goal='', **_):
-    """subagent_start: tell Coconut that a helper of the turn started, with its goal, so the chat and the live view
-    list the running helpers."""
+    """subagent_start: tell Coconut that a helper of the turn started, with its goal, so the chat lists the
+    running helpers."""
     holder, turn = _turn()
     helper = str(child_subagent_id or child_session_id or '')[:80]
     if turn is None or not helper or getattr(holder, '_bridge', None) is None:

@@ -108,7 +108,7 @@ REPLY_LIMIT = 256
 REMOVAL_LABEL = b'coconut room remove'
 # The answer on a person's Mac to a team route that only a paired device can call (tool_route).
 PERSON_ONLY = 'Only the person can do this in the team. Use the Coconut app.'
-# The clock of the saved answers. A test replaces it, so it needs no wait of 10 minutes.
+# The clock of the saved answers.
 clock = time.monotonic
 
 log = logging.getLogger(__name__)

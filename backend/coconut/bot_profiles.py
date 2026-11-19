@@ -36,7 +36,7 @@ PROFILE_FIELDS = ('instructions', 'approval_override', 'worker_limit')
 
 class BotProfiles:
     def _init_profiles(self, hermes_home) -> None:
-        # Without a Hermes home (fixture mode and tests), the one profile lives in <data>/hermes.
+        # Without a Hermes home (fixture mode), the one profile lives in <data>/hermes.
         self.uses_hermes = hermes_home is not None
         self.hermes_home = Path(hermes_home).expanduser().absolute() if hermes_home else self.root / 'hermes'
         profile_registry.ensure_table(self.db)
@@ -103,7 +103,7 @@ class BotProfiles:
         return bot_id in self._project_ids()
 
     def _project_home(self, names) -> tuple[str, Path] | None:
-        """The first profile of a project that exists: (name, folder). Without Hermes (fixture mode and tests), the
+        """The first profile of a project that exists: (name, folder). Without Hermes (fixture mode), the
         last profile, the one that a fresh install has, lives in <data>/hermes."""
         for name in names:
             home = self.hermes_home if name == profile_registry.DEFAULT else self.hermes_home / 'profiles' / name

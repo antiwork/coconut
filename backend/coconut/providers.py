@@ -1,7 +1,7 @@
 """Execution adapters. The service owns decisions, permissions, and file writes.
 
 With a Hermes home, the Hermes gateway runs each turn (gateway_chat). HermesProvider reads and writes the settings,
-models, profiles and routines of Hermes. FixtureProvider runs each turn of fixture mode and the tests."""
+models, profiles and routines of Hermes. FixtureProvider runs each turn of fixture mode."""
 
 from __future__ import annotations
 

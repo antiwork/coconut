@@ -48,7 +48,7 @@ TYPING_LABEL = b'coconut room typing'
 DIRECT_TYPING_LABEL = b'coconut room direct typing'
 # The answer of a Mac for a team only: no person types there.
 TEAM_ONLY = 'This Mac runs Coconut for a team only, so nobody types here.'
-# The clock of FLOOR_SECONDS. A test replaces it, so it needs no wait.
+# The clock of FLOOR_SECONDS.
 clock = time.monotonic
 
 
