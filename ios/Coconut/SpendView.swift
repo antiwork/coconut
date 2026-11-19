@@ -4,8 +4,8 @@ import SwiftUI
 /// The Spend page.
 struct SpendRoute: Hashable {}
 
-/// What the agents cost: today, the last 7 days and the last 30 days, then where it went by agent, model and chat.
-/// Data only: numbers, charts and rows.
+/// What the agents cost: today, the last 7 days and the last 30 days, then where it went by project, model and chat.
+/// Data only: numbers, charts and rows. A tap on the tile of a period chooses it for the models and the two lists.
 struct SpendView: View {
     @Environment(AppStore.self) private var store
     @Environment(\.pushRoute) private var pushRoute
@@ -46,13 +46,6 @@ struct SpendView: View {
             periodTile(report, .month).bento(4, 1, compact: (2, 1))
             dailyTile(daily).bento(8, 3, compact: (2, 3))
             modelsTile(selected).bento(4, 3, compact: (2, 3))
-        }
-        Picker("Period", selection: $period) {
-            ForEach(SpendPeriod.allCases) { Text($0.title).tag($0) }
-        }
-        .pickerStyle(.segmented).labelsHidden().bentoLeadingControl()
-        .accessibilityIdentifier("spend-period")
-        BentoBoard {
             // The list of the Projects page, so it has that name.
             ranking("Projects", selected.agents, summary: selected).bento(6, nil, compact: (2, nil))
             ranking("Chats", Array(selected.chats.prefix(SpendSummary.chatLimit)), summary: selected)
@@ -62,15 +55,22 @@ struct SpendView: View {
 
     // MARK: Periods
 
-    private func periodTile(_ report: UsageReport, _ period: SpendPeriod) -> some View {
-        let summary = SpendSummary(report: report, bots: store.bots, period: period, modelName: modelName)
-        let days = SpendSummary.daily(report: report, bots: store.bots, days: period.days)
+    /// The tile of a period, which is also its choice: the chosen one has the line of a control around it.
+    private func periodTile(_ report: UsageReport, _ tile: SpendPeriod) -> some View {
+        let summary = SpendSummary(report: report, bots: store.bots, period: tile, modelName: modelName)
+        let days = SpendSummary.daily(report: report, bots: store.bots, days: tile.days)
         var byDay: [Date: Double] = [:]
         for point in days { byDay[point.date, default: 0] += point.cost }
         let trend = byDay.sorted { $0.key < $1.key }.map(\.value)
-        return BentoStat(title: period.title, value: summary.costKnown ? UsageMath.cost(summary.cost) : "\u{2014}",
-                         note: UsageMath.count(summary.tokens) + " tokens", trend: period == .today ? [] : trend, trendBars: true)
-            .accessibilityIdentifier("spend-" + period.rawValue)
+        let chosen = tile == period
+        return Button { period = tile } label: {
+            BentoStat(title: tile.title, value: summary.costKnown ? UsageMath.cost(summary.cost) : "\u{2014}",
+                      note: UsageMath.count(summary.tokens) + " tokens", trend: tile == .today ? [] : trend, trendBars: true)
+                .overlay { if chosen { BentoShape.tile.strokeBorder(BoardStyle.control, lineWidth: 2) } }
+        }
+        .buttonStyle(BentoPressStyle())
+        .accessibilityAddTraits(chosen ? .isSelected : [])
+        .accessibilityIdentifier("spend-" + tile.rawValue)
     }
 
     // MARK: Daily chart
