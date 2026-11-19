@@ -130,7 +130,6 @@ struct LiveAgentTile: View {
     @Environment(AppStore.self) private var store
     @Environment(\.pushRoute) private var pushRoute
     @Environment(\.openChat) private var openChat
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let agent: LiveAgent
 
     private var feed: TurnActivity? { store.turnActivity[agent.task.id] }
@@ -326,17 +325,14 @@ struct LivePersonTile: View {
 /// current call of each helper. The finished helpers follow the running ones.
 struct LiveHelpersList: View {
     let helpers: [ActivitySubagent]
-    /// Starts open, as the live panel shows it.
-    var startsOpen = false
-    @State private var expanded: Bool?
+    @State private var isOpen = false
 
-    private var isOpen: Bool { expanded ?? startsOpen }
     private var running: [ActivitySubagent] { helpers.filter(\.isRunning) }
     private var ordered: [ActivitySubagent] { running + helpers.filter { !$0.isRunning } }
 
     var body: some View {
         VStack(alignment: .leading, spacing: BoardStyle.Space.xs) {
-            Button { withAnimation(.snappy(duration: 0.2)) { expanded = !isOpen } } label: {
+            Button { withAnimation(.snappy(duration: 0.2)) { isOpen.toggle() } } label: {
                 HStack(spacing: BoardStyle.Space.xs) {
                     Image(systemName: "chevron.right").font(.caption2.weight(.bold)).foregroundStyle(.tertiary)
                         .rotationEffect(.degrees(isOpen ? 90 : 0))

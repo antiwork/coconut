@@ -2,7 +2,8 @@ import SwiftUI
 
 // The live activity of a turn: what the agent does now, the files it touches and the images it sees. The Mac keeps one
 // bounded feed for each task (backend/coconut/turn_activity.py). The app reads it with GET /v1/tasks/<task>/activity
-// while the live panel of the task is open, and again when the updates name the task (`activity_changed`).
+// while a tile of Live or the helpers of a chat show the task, and again when the updates name the task
+// (`activity_changed`).
 
 struct TurnActivity: Codable, Equatable, Sendable {
     var taskId: String
@@ -25,12 +26,8 @@ struct TurnActivity: Codable, Equatable, Sendable {
     /// The helpers that work now, oldest first.
     var runningHelpers: [ActivitySubagent] { endedAt == nil ? helpers.filter(\.isRunning) : [] }
 
-    var isEmpty: Bool { entries.isEmpty && files.isEmpty && images.isEmpty }
-    var isRunning: Bool { startedAt != nil && endedAt == nil }
     /// The tool calls that run now, oldest first. A turn can run several at once.
     var running: [ActivityEntry] { endedAt == nil ? entries.filter(\.isRunning) : [] }
-    /// The entries as the timeline shows them: newest first.
-    var timeline: [ActivityEntry] { entries.reversed() }
     /// The files as the list shows them: the file of the newest touch first.
     var recentFiles: [ActivityFile] { files.reversed() }
     /// The images as the film strip shows them: newest first.
@@ -60,7 +57,6 @@ struct ActivityEntry: Codable, Equatable, Identifiable, Sendable {
     var images: [String]? = nil
 
     var isRunning: Bool { status == "running" }
-    var failed: Bool { status == "error" }
     var botPhase: BotPhase { BotPhase(rawValue: phase) ?? .working }
 
     /// What the call does, in one or two words: "Read", "Run", "Search".
@@ -106,9 +102,6 @@ struct ActivityEntry: Codable, Equatable, Identifiable, Sendable {
 
     /// A line of a file is cut at its start, so its name stays whole. A command and an address keep their start.
     var cutsStart: Bool { [.reading, .editing].contains(botPhase) && path != nil }
-
-    /// The file that a tap on the entry opens.
-    var file: String? { [.reading, .editing].contains(botPhase) ? path : nil }
 }
 
 /// A helper of a turn: a subagent that delegate_task started, with its goal, its time and the call it runs now.
@@ -131,7 +124,6 @@ struct ActivitySubagent: Codable, Equatable, Identifiable, Sendable {
 
     var isRunning: Bool { status == "running" }
     var failed: Bool { status == "error" }
-    var botPhase: BotPhase { phase.flatMap(BotPhase.init(rawValue:)) ?? .working }
 
     /// The goal as one line.
     var title: String {
@@ -164,15 +156,6 @@ struct ActivityFile: Codable, Equatable, Identifiable, Sendable {
 
     var id: String { path }
     var edited: Bool { action == "edit" }
-    var name: String { LiveActivityText.fileName(path) }
-    var folder: String { LiveActivityText.folder(path) }
-    /// The Mac finds a file only by its whole path.
-    var canPreview: Bool { path.hasPrefix("/") || path.hasPrefix("~") }
-    /// "Edited", "Read", "Read 3 times".
-    var note: String {
-        let verb = edited ? "Edited" : "Read"
-        return count > 1 ? "\(verb) \(count) times" : verb
-    }
 }
 
 struct ActivityImage: Codable, Equatable, Identifiable, Sendable {
@@ -192,22 +175,6 @@ struct ActivityImage: Codable, Equatable, Identifiable, Sendable {
         if name.contains("computer") { return "Desktop" }
         return "Image"
     }
-}
-
-/// The start of a text file that a turn touched, as GET /v1/tasks/<task>/activity/file gives it.
-struct ActivityFilePreview: Codable, Equatable, Sendable {
-    var path: String
-    var name: String
-    var size: Int
-    var truncated: Bool
-    var text: String
-}
-
-/// A file that the live panel opens: the task of its turn and its path on the Mac.
-struct ActivityFileRoute: Identifiable, Hashable {
-    let taskId: String
-    let path: String
-    var id: String { taskId + ":" + path }
 }
 
 enum LiveActivityText {
@@ -242,25 +209,6 @@ enum LiveActivityText {
         var text = address
         for start in ["https://", "http://", "www."] where text.hasPrefix(start) { text.removeFirst(start.count) }
         return text.hasSuffix("/") ? String(text.dropLast()) : text
-    }
-
-    /// The time of a tool call: "0.4s", "12s", "1m 05s". A call under a tenth of a second shows no time.
-    static func duration(_ seconds: Double?) -> String? {
-        guard let seconds, seconds >= 0.1 else { return nil }
-        if seconds < 10 { return String(format: "%.1fs", seconds) }
-        return ConversationActivity.elapsed(seconds)
-    }
-
-    /// "4 KB", "1.2 MB".
-    static func size(_ bytes: Int) -> String {
-        ByteCountFormatter.string(fromByteCount: Int64(bytes), countStyle: .file)
-    }
-}
-
-extension AppStore {
-    /// The task whose activity the live panel of a chat shows: the turn that runs, or the newest turn of the chat.
-    func liveTask(_ botId: String) -> AgentTask? {
-        tasks.last { $0.chatBotId == botId && $0.isRunning } ?? tasks.last { $0.chatBotId == botId }
     }
 }
 
@@ -320,38 +268,5 @@ extension TurnActivity {
         ]
         return TurnActivity(taskId: taskId, revision: 31, startedAt: ago(258), endedAt: nil, entries: entries,
                             files: files, images: images, subagents: helpers)
-    }
-}
-
-extension ActivityFilePreview {
-    static func preview(path: String) -> ActivityFilePreview {
-        let text = """
-        # frozen_string_literal: true
-
-        module Payouts
-          # Pays each seller once for a payout period.
-          class Processor
-            def initialize(period:)
-              @period = period
-            end
-
-            def call
-              sellers.find_each do |seller|
-                next if Payment.exists?(seller:, period: @period)
-
-                Payment.create!(seller:, period: @period, amount_cents: seller.balance_cents)
-              end
-            end
-
-            private
-
-            def sellers
-              Seller.payable.where(payouts_paused: false)
-            end
-          end
-        end
-        """
-        return ActivityFilePreview(path: path, name: LiveActivityText.fileName(path), size: text.utf8.count,
-                                   truncated: false, text: text)
     }
 }

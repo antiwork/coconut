@@ -49,7 +49,6 @@ final class AppStore {
     /// Each agent's queue on the Hermes board: running, waiting, needs you, done today.
     var queues: [String: AgentQueue] = [:]
     var routines: [Routine] = []
-    var learning: [LearningGroup] = []
     /// The documents of the Library, newest first, without their content. Nil until the first load.
     var documents: [BotDocument]?
     var documentContents: [String: BotDocument] = [:]
@@ -184,7 +183,6 @@ final class AppStore {
     /// a locked screen. The pairing is saved, not missing: the app shows no pairing page and reads the file again.
     private var savedPairingLocked = false
     @ObservationIgnored private var savedPairingRetry: Task<Void, Never>?
-    private var writeCount = 0
     @ObservationIgnored private var client: APIClient?
     // The one tunnel socket of a version 2 pairing. Every client of the pairing shares it.
     @ObservationIgnored private var tunnel: TunnelConnection?
@@ -221,9 +219,9 @@ final class AppStore {
     @ObservationIgnored private var nativeSettingsPending = false
     @ObservationIgnored private var nativeSettingsRequiredCursor = 0
     var historyLoading: Set<String> = []
-    /// The live activity of the turns whose live panel is open, by task (LiveActivity.swift).
+    /// The live activity of the turns that a view shows now, by task (LiveActivity.swift).
     var turnActivity: [String: TurnActivity] = [:]
-    /// The open live panels of each task, and the tasks whose feed loads now: true when the feed changed meanwhile.
+    /// The views that show each task, and the tasks whose feed loads now: true when the feed changed meanwhile.
     @ObservationIgnored private var activityWatchers: [String: Int] = [:]
     @ObservationIgnored private var activityLoads: [String: Bool] = [:]
     @ObservationIgnored let activityImages = NSCache<NSString, PlatformImage>()
@@ -248,7 +246,6 @@ final class AppStore {
         return pairing.macName ?? "your Mac"
     }
     var canSubmitDecision: Bool { isDemo || hasPairing }
-    var isBusy: Bool { writeCount > 0 }
     var pendingDecisions: [Decision] { decisions.filter(\.isPending) }
     /// The number on the app icon: the pending cards and the unread chats of "Unread" on Home, plus the items of
     /// "Needs attention" (AttentionRules.badgeCount). The Mac service counts the same for the push badge of the
@@ -310,7 +307,6 @@ final class AppStore {
         if let id = chat.chat { return room.chats?.first { $0.id == id }?.unread }
         return room.unread
     }
-    var activeTasks: [AgentTask] { tasks.filter(\.isActive) }
     func isBotActive(_ bot: Bot) -> Bool {
         guard !bot.archived else { return false }
         if outgoingMessages.contains(where: { $0.expectsResponse && $0.executorIds.contains(bot.id) }) { return true }
@@ -366,29 +362,6 @@ final class AppStore {
 
     func decisionChatRoute(for decision: Decision) -> ConversationRoute {
         ConversationRoute(botId: conversationBotId(for: decision), decisionId: decision.id)
-    }
-
-    func decisionActor(_ decision: Decision) -> String {
-        if let deviceId = pairing?.deviceId, decision.decidedBy == deviceId { return "You" }
-        if let name = decision.decidedByName?.trimmingCharacters(in: .whitespacesAndNewlines), !name.isEmpty { return name }
-        switch decision.decidedBy {
-        case "cancellation": return "Task cancellation"
-        case "You", "you", "You (preview)": return "You"
-        default: return "Paired device"
-        }
-    }
-
-    var connectionDetail: String {
-        switch connection {
-        case .preview: return "Preview data. No agents run in this mode."
-        case .unconfigured: return "Pair with your Mac to start."
-        case .connecting: return "Connecting to your Mac…"
-        case .connected: return "Your Mac runs the agents."
-        case .disconnected: return "The phone cannot confirm current activity. Work can continue on your Mac."
-        case .macOffline: return TunnelError.macOffline.message
-        case .relayUnreachable: return TunnelError.relayUnreachable.message
-        case .needsRepair: return TunnelError.needsRepair.message
-        }
     }
 
     /// The demo that a person chose on the pairing screen: preview data on this device, with no Mac. It stays on until
@@ -619,8 +592,6 @@ final class AppStore {
     func pair(setup: PairingSetup) async -> Bool {
         guard !isDemo else { return false }
         error = nil
-        writeCount += 1
-        defer { writeCount -= 1 }
         let previousConnection = connection
         connection = .connecting
         // Each pairing makes a new phone key. The Mac binds it to the new device.
@@ -678,8 +649,6 @@ final class AppStore {
     // Pairs with a test server on the Mac's loopback, with its one-time code.
     func pairOverLoopback(address: String, code: String) async {
         guard !isDemo else { return }
-        writeCount += 1
-        defer { writeCount -= 1 }
         connection = .connecting
         do {
             let candidate = try APIClient(loopback: address, token: nil)
@@ -782,7 +751,7 @@ final class AppStore {
             cacheQueue.sync { ProtectedCache.remove("snapshot.json") }
             ProtectedCache.remove("outgoing.json")
         }
-        bots = []; tasks = []; messages = []; decisions = []; artifacts = []; learning = []
+        bots = []; tasks = []; messages = []; decisions = []; artifacts = []
         routines = []
         // The team bots name the team pages of the earlier Mac, so the Library of a later pairing would show them.
         documents = nil; teamBots = []; latestDocumentLoad = nil
@@ -1244,42 +1213,6 @@ final class AppStore {
             .filter { $0.kind != "activity" }
     }
 
-    @discardableResult
-    func reply(task: AgentTask, text: String, attachments: [String] = [], decisionId: String? = nil, mentionedBotIds: [String] = []) async -> Bool {
-        let text = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty else { return false }
-        if isDemo {
-            guard let current = tasks.first(where: { $0.id == task.id }) else { return false }
-            if current.status == "needs_you" {
-                guard let decisionId, let decision = decisions.first(where: { $0.id == decisionId && $0.taskId == task.id && $0.isPending }) else {
-                    error = "Choose the pending card before asking for context."
-                    return false
-                }
-                await requestContext(decision, question: text)
-                return true
-            }
-            var target = current
-            if ["completed", "failed", "cancelled"].contains(current.status) {
-                target = AgentTask(id: UUID().uuidString, botId: current.botId, sessionId: current.sessionId,
-                                   title: current.title, status: "queued", summary: "Preview: continuation queued in this thread.",
-                                   createdAt: Self.now, updatedAt: Self.now, scheduledAt: nil, threadId: current.threadId,
-                                   conversationBotId: current.conversationBotId)
-                tasks.append(target)
-            }
-            let conversationBotId = target.conversationBotId ?? target.botId
-            messages.append(Message(id: UUID().uuidString, botId: conversationBotId, taskId: target.id, role: "user", kind: "text", text: text,
-                                    decisionId: nil, artifactId: nil, createdAt: Self.now, streaming: false, threadId: target.threadId))
-            messages.append(Message(id: UUID().uuidString, botId: conversationBotId, taskId: target.id, role: "system", kind: "text",
-                                    text: current.status == "working" ? "Preview: your reply applies to this task at its next safe turn." : "Preview: your reply stays in this task thread.",
-                                    decisionId: nil, artifactId: nil, createdAt: Self.now, streaming: false, threadId: target.threadId))
-            return true
-        }
-        let result: AgentTask? = await write("tasks/\(task.id)/replies", payload: ReplyRequest(text: text, attachmentIds: attachments,
-                                                                                         decisionId: decisionId, mentionedBotIds: mentionedBotIds), as: AgentTask.self)
-        return result != nil
-    }
-
-
     func cancel(_ task: AgentTask) async {
         if isDemo {
             if let index = tasks.firstIndex(where: { $0.id == task.id }) { tasks[index].status = "cancelled"; tasks[index].summary = "You stopped this task." }
@@ -1656,40 +1589,6 @@ final class AppStore {
         return await answer(decision, choice: "reply", correction: reply)
     }
 
-    func requestContext(_ decision: Decision, question: String) async {
-        guard !question.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
-        if isDemo {
-            let task = tasks.first { $0.id == decision.taskId }
-            let conversationBotId = task?.conversationBotId ?? decision.botId
-            messages.append(Message(id: UUID().uuidString, botId: conversationBotId, taskId: decision.taskId, role: "user", kind: "text", text: question,
-                                    decisionId: decision.id, artifactId: nil, createdAt: Self.now, streaming: false, threadId: task?.threadId))
-            messages.append(Message(id: UUID().uuidString, botId: conversationBotId, taskId: decision.taskId, role: "assistant", kind: "text",
-                                    text: "The fix changes the payout job and its spec. All 212 payout specs pass. Approval saves the patch locally; it does not deploy anything.",
-                                    decisionId: decision.id, artifactId: nil, createdAt: Self.now, streaming: false,
-                                    threadId: task?.threadId, senderBotId: decision.botId))
-            return
-        }
-        let _: Message? = await write("decisions/\(decision.id)/context", payload: ContextRequest(question: question), as: Message.self)
-    }
-
-
-
-    func refreshSettings() async {
-        guard !isDemo else { return }
-        guard let client, connection == .connected else {
-            if hasPairing { await reconnect() }
-            return
-        }
-        do {
-            try await refresh(using: client)
-            refreshNativeSettings(using: client, force: true)
-            while let pending = nativeSettingsTask { await pending.value }
-        }
-        catch is CancellationError { }
-        catch let error as URLError where error.code == .cancelled && Task.isCancelled { }
-        catch { recordSyncFailure(error) }
-    }
-
     func setModel(_ selection: ModelOverride) async -> Bool {
         guard modelCatalog?.contains(selection) == true else {
             error = "Choose a model and effort from the Mac's catalog."
@@ -1823,7 +1722,8 @@ final class AppStore {
 
     // MARK: Live activity
 
-    /// A live panel of a task opened. The store keeps the feed of the task fresh until each panel of it closed.
+    /// A view shows the turn of a task: its tile on Live, or its helpers in a chat. The store keeps the feed of the
+    /// task fresh until each of them is gone.
     func watchActivity(_ taskId: String) {
         activityWatchers[taskId, default: 0] += 1
         Task { await loadActivity(taskId) }
@@ -1859,8 +1759,8 @@ final class AppStore {
         activityLoads[taskId] = nil
     }
 
-    /// The updates carry no feed. They name the tasks whose feed changed, and an open live panel reads its feed
-    /// again. A reset skips the events between the cursors, so each open panel reads again.
+    /// The updates carry no feed. They name the tasks whose feed changed, and a view that shows one reads its feed
+    /// again. A reset skips the events between the cursors, so each of them reads again.
     private func reloadChangedActivity(_ page: StateUpdates) {
         guard !activityWatchers.isEmpty else { return }
         let changed = page.reset != nil ? Set(activityWatchers.keys)
@@ -1877,13 +1777,6 @@ final class AppStore {
         let result = PlatformImage(decoded)
         activityImages.setObject(result, forKey: key)
         return result
-    }
-
-    /// The start of a text file that a turn touched, as it is on the Mac now.
-    func activityFilePreview(_ route: ActivityFileRoute) async throws -> ActivityFilePreview {
-        if isDemo { return .preview(path: route.path) }
-        guard let client else { throw ServiceError.configuration("Connect to your Mac to open this file.") }
-        return try await client.request(APIClient.activityFilePath(taskId: route.taskId, file: route.path))
     }
 
     /// The bytes of a file of a message of a team chat, or nil without a paired Mac or for a file that is not there.
@@ -1944,17 +1837,6 @@ final class AppStore {
             try data.write(to: file, options: [.atomic, .completeFileProtection])
             return file
         } catch { report(error); return nil }
-    }
-
-    func loadLearning() async {
-        if isDemo {
-            learning = [LearningGroup(botId: bots.first?.id ?? "", actionType: "create_file", total: 8, agreed: 7, agreement: 0.875,
-                                      suggestion: "Review more examples before changing permissions.")]
-            return
-        }
-        guard let client else { return }
-        do { let response: LearningResponse = try await client.request("learning"); learning = response.groups }
-        catch { report(error) }
     }
 
     // The state of the Mac's Hermes, for example an untested version. Demo mode has none.
@@ -2631,9 +2513,6 @@ final class AppStore {
         teamChatsOnScreen.insert(chat)
     }
 
-    /// The chat is on the screen: it appeared and did not disappear since.
-    func isTeamChatOnScreen(_ chat: TeamChatKey) -> Bool { teamChatsOnScreen.contains(chat) }
-
     /// The chat of a room leaves the screen. It keeps its newest page only, so it opens again without stale history.
     func closeTeamChat(_ chat: TeamChatKey) {
         teamChatsOnScreen.remove(chat)
@@ -3134,8 +3013,6 @@ final class AppStore {
         func belongsToPairing() -> Bool {
             self.pairing == pairing
         }
-        writeCount += 1
-        defer { writeCount -= 1 }
         var signature: String?
         let generation = connectionGeneration
         var requestClient: APIClient?
@@ -4046,12 +3923,9 @@ struct OutgoingAnswer: Codable, Identifiable, Equatable {
 struct AnswerRequest: Codable, Equatable { let choice: String; let revision: Int; let correction: String?; let optionId: String?; let draftHash: String?; let previewsHash: String? }
 private struct DraftEditRequest: Encodable { let revision: Int; let draft: MessageDraft }
 private struct InboxRequest: Encodable { let action: String; let revision: Int; let swipeId: String? }
-private struct ReplyRequest: Encodable { let text: String; let attachmentIds: [String]; let decisionId: String?; let mentionedBotIds: [String] }
-private struct ContextRequest: Encodable { let question: String }
 
 private struct ModelResponse: Decodable, Sendable { let model: String; let modelConfigured: Bool; let baseUrl: String?; let modelCatalog: ModelCatalog? }
 private struct AttachmentRequest: Encodable { let botId: String; let filename: String; let contentBase64: String }
-private struct LearningResponse: Decodable, Sendable { let groups: [LearningGroup] }
 
 enum ProtectedCache {
     private static var directory: URL {

@@ -29,7 +29,7 @@ struct StateUpdates: Decodable, Sendable {
     var teamBotDirectsChanged: [TeamBotDirectChange]?
     /// The teams where who types changed. The list of the teams says who types now.
     var teamTypingChanged: [String]?
-    /// The tasks whose live activity changed. The feed is not part of the state: an open live panel reads it again.
+    /// The tasks whose live activity changed. The feed is not part of the state: a view that shows it reads it again.
     var activityChanged: [String]?
     var confirmedRequestIds: [String]?
 
@@ -115,12 +115,6 @@ struct StateUpdates: Decodable, Sendable {
         update(\.state)
         update(\.runAt)
         return result
-    }
-
-    static func sameRoutineSettings(_ left: Routine?, _ right: Routine?) -> Bool {
-        guard let left, let right else { return left == nil && right == nil }
-        return left.id == right.id && left.botId == right.botId
-            && (left.name, left.prompt, left.cron, left.timezone, left.enabled) == (right.name, right.prompt, right.cron, right.timezone, right.enabled)
     }
 
     /// An update of a few values finds each place with a scan from the end, where the newest values are. A table of
