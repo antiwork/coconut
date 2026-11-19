@@ -32,7 +32,7 @@ struct MacConnectionSettingsView: View {
                         .font(.subheadline).monospacedDigit()
                 }
                 if store.isDemo {
-                    Text("The demo uses sample agents and conversations.").foregroundStyle(.secondary)
+                    Text("The demo uses sample projects and chats.").foregroundStyle(.secondary)
                     PairMacButton()
                 } else if store.hasPairing {
                     LabeledContent("Mac") {

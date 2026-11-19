@@ -6,7 +6,7 @@
       "created_at": "2026-09-07T12:00:00Z",
       "id": "00000000-0000-4000-8000-000000000001",
       "instructions": "Keep progress brief. Prepare local changes. Ask before actions outside the working directory.",
-      "last_message": "The patch is ready. One decision needs you.",
+      "last_message": "The patch is ready. One card needs you.",
       "name": "Desk",
       "pinned": false,
       "role": "Code & pull requests",

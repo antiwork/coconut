@@ -88,8 +88,7 @@ enum NotificationSentence {
         let days = days(schedule.weekdays)
         let window = "From \(start) to \(end)" + (days.map { " on \($0)" } ?? "")
         let until = "until \(start)" + (days == nil ? "" : " on the next work day")
-        // A team message and a direct message do not wait in Inbox.
-        let wait = "wait" + (team || direct ? "" : " in Inbox") + " \(until), then one notification tells you about them."
+        let wait = "wait \(until), then one notification tells you about them."
         let rest: String
         switch (outside, level) {
         case (.nothing, .urgentOnly):
@@ -126,7 +125,7 @@ enum NotificationSentence {
                         direct ? "direct messages" : nil]) + ". "
                 + "Urgent cards notify you at once."
         case .urgentOnly:
-            "\(window), only urgent cards notify you. Other cards wait in Inbox without a notification."
+            "\(window), only urgent cards notify you. Other cards wait without a notification."
         }
     }
 }

@@ -17,7 +17,7 @@
       "created_at": "2026-09-07T12:00:00Z",
       "id": "00000000-0000-4000-8000-000000000001",
       "instructions": "Ship gumroad/web to production. Run the specs first. Ask before every deploy.",
-      "last_message": "The fix is ready. One decision needs you.",
+      "last_message": "The fix is ready. One card needs you.",
       "name": "Coconut",
       "pinned": false,
       "role": "Ships Gumroad to production",
@@ -213,7 +213,7 @@
       "role": "assistant",
       "streaming": false,
       "task_id": "00000000-0000-4000-8000-000000000021",
-      "text": "The fix is ready. One decision needs you.",
+      "text": "The fix is ready. One card needs you.",
       "thread_id": "00000000-0000-4000-8000-000000000021"
     },
     {

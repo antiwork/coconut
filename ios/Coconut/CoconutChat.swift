@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// Where this Coconut runs. Local runs on this Mac. Cloud, the hosted upstream Coconut, is not built yet.
+/// Where this Coconut runs. Local runs on the Mac of the person. Cloud, the hosted upstream Coconut, is not built yet.
 enum CoconutMode: String, CaseIterable, Identifiable {
     case local, cloud
     var id: String { rawValue }
@@ -36,7 +36,7 @@ struct CoconutChatBar: View {
                 // Cloud is not built yet: the switch says so and stays on Local.
                 if new == .cloud { cloudNote = true; mode = .local }
             }
-            Text(cloudNote ? "Cloud is coming soon. Coconut runs on this Mac." : "Runs on this Mac")
+            Text(cloudNote ? "Cloud is coming soon. Coconut runs on your Mac." : "Runs on your Mac")
                 .font(.caption).foregroundStyle(.secondary).lineLimit(1)
             Spacer(minLength: 0)
             Menu {

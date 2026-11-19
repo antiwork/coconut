@@ -246,7 +246,7 @@ enum NotificationLevel: String, Codable, CaseIterable, Sendable {
         switch self {
         case .every: "Each card notifies you at once, in its own notification."
         case .grouped: "Each card notifies you at once, in its own notification."
-        case .urgentOnly: "Only urgent cards notify you. Other cards wait in Inbox without a notification."
+        case .urgentOnly: "Only urgent cards notify you. Other cards wait without a notification."
         }
     }
 
