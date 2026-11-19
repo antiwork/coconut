@@ -18,7 +18,7 @@ TestFlight and Sparkle. The Python service in `backend/` is unchanged.
 | `app.contract` | The root: Home, a chat, the New project sheet, the composer and the menus |
 | `parts.contract` | Parts that only draw: face, unread badge, chat row, Needs attention row, bubble, cards, working line |
 | `shapes.contract` | The records `app.ts` answers |
-| `app.ts` | The data module: the pairing, the connection to the Mac, the Mac's state, and the fixture for the demo |
+| `app.ts` | The data module: the pairing, the connection to the Mac, the Mac's state and its cache, attachments, and the fixture for the demo |
 | `tunnel.ts` | The phone's end of the tunnel (`docs/relay-transport.md`): pairing setups and the rendezvous box, Noise IK and IKpsk2 as the initiator, frames, requests as streams side by side |
 | `crypto.ts` | X25519 and Poly1305 of TweetNaCl, and SHA-256, HMAC, HKDF and ChaCha20 from their specs, in TypeScript: Exact's `crypto.subtle` has no X25519 and no ChaCha20-Poly1305 |
 | `app.forma` | The palette of `Theme.swift`: page, card, user bubble, warm accent, green, the red tints, the eight faces |
@@ -99,6 +99,17 @@ stay (`outgoing`) while new states of the Mac come, until the Mac has the messag
 them until the next send of the chat. Reading the files needs the grants `fs.read app:/tmp/picked`, `fs.read
 app:/tmp/upload` and `fs.write app:/tmp/upload`, so attachments need a new binary: build 5 keeps its last update.
 
+Cache. The phone keeps the last state of the Mac in SQLite (`app:/data/coconut.db`, one row of the table `snapshot`:
+the route of the Mac and its state as JSON), as the Swift app keeps `snapshot.json`. The first `sync` of a launch with
+a pairing reads it before the socket opens, so Home and the chats show at once, also without the Mac, with
+"Connecting to <Mac>…" or the reason the Mac does not answer until it does. Sends then fail with that reason. The first
+read of the launch still takes the whole state, which replaces the kept one, so a kept state never grows with the
+updates of earlier launches; the Swift app goes on from the kept cursor instead. While changes stream, the state is
+written at most every 10 seconds of the Mac's clock, because a data module reads no clock, and a read that brings no
+change writes what is left. The first write for another Mac removes the state of the last one, and a phone that is no
+longer paired removes it with the pairing. An open database locks its file, so the uses of the cache wait for each
+other. The grant `sqlite.open app:/data/coconut.db` needs a new binary, as the grants of attachments do.
+
 Checked. Every primitive of `crypto.ts` against `node:crypto` with random inputs (SHA-256 and HMAC at every length to
 200 bytes and beyond, HKDF, ChaCha20-Poly1305 both ways and a changed byte, X25519 keys and secrets), the test vector of
 the rendezvous box, a version 3 link, and a rekey. `tunnel.ts` under bun against the live relay and this Mac: box,
@@ -130,6 +141,15 @@ go with the hidden marker, a HEIC photo of 4032 pixels goes as a JPEG through `c
 0.8 and its copy goes away, a JPEG of 1200 pixels and a GIF of 3000 go as they are, a file over 4 MB and 21 files do not
 go and the chat says why, and the demo names the files. Not checked: Exact's pickers and `compressImage` on a phone,
 and the time an upload of 4 MB takes there (base64, ChaCha20-Poly1305 in TypeScript, the relay).
+
+The cache under bun against the service of main in fixture mode, with bun:sqlite in place of Exact's SQLite and its
+lock (a second open fails while one is open): the first state is kept for the route of the pairing, a change within 10
+seconds of the last write waits and a read with no change writes it, a launch without the Mac shows the kept chats at
+once with Connecting and a chat with its messages and times, a Mac that does not answer keeps them with its reason,
+the first read when the Mac answers is the whole state and Connecting goes, another Mac shows nothing of the first and
+its first state replaces the row, a phone that is no longer paired keeps no state, a damaged row shows nothing, and no
+use of the database met another. Not checked: Exact's SQLite on a phone, and the time the JSON of a real state takes
+there (620 KB for this Mac's, against 2 KB in the fixture).
 
 On a phone. Gianfranco installed build 0.1.0 (5) from AppDrop on his iPhone on 2026-11-19 and reported the steps of
 issue #573 (the pairing, his chats, a chat, Send, a card, Stop and a relaunch) as done. AppDrop's sign-in to Apple
@@ -245,7 +265,7 @@ Not yet measured: the time from save to screen on the web host, and a `push --wa
   shared Mac use Exact Build. Edits to that file need approval, which did not come, so the note is here.
 - `exact/exact.mjs` names the bun of this Mac (`/opt/homebrew/Cellar/bun/1.4.4`) in its fallback. `bun exact.mjs <verb>`
   works anywhere bun is on the path. The Exact checkout is found at `../../exact` (beside the repository) or by `EXACT`.
-- `symbol:sf/<name>` draws blank on the web host (a warning). Eight are used: `chevron.down`, `brain`, `paperclip`,
+- `symbol:sf/<name>` draws blank on the web host (a warning). Eight are used: `cpu`, `brain`, `paperclip`,
   `circle.inset.filled`, and `hourglass`, `bolt.slash.fill`, `exclamationmark.octagon.fill`, `megaphone.fill` for the
   rows of Needs attention.
 - `preview.json` is a copy. An app folder cannot read outside itself, so it must be copied again when the fixture
@@ -266,7 +286,7 @@ Keep it shipping until each phase reaches parity, and keep the bundle id of the 
 
 | Phase | Swift to port | Exact |
 |---|---|---|
-| 1 Live data | `APIClient`, `AppStore` (4,102), `Models`, `TunnelConnection`, `Onboarding`, pairing | Started: the pairing, the tunnel, the state and its updates, the model and effort (`/model`, `/effort`) and attachments are in `app.ts`, `tunnel.ts` and `crypto.ts` (see Live data). Left: a SQLite cache (`sqlite.open`) for a launch without the Mac |
+| 1 Live data | `APIClient`, `AppStore` (4,102), `Models`, `TunnelConnection`, `Onboarding`, pairing | Done: the pairing, the tunnel, the state and its updates, the model and effort (`/model`, `/effort`), attachments and the SQLite cache for a launch without the Mac are in `app.ts`, `tunnel.ts` and `crypto.ts` (see Live data). Attachments and the cache need the binary of their grants |
 | 2 Conversation | `ConversationView` (1,642), `Cards`, `MessagePhotos`, `MessageQueue`, `BotMentions`, `ModelSettingsView`, `LiveView`, previews | More parts and routes in `parts.contract`; photos by the file picker and `image`; a virtualized list for long chats |
 | 3 Team | `TeamChat` (2,093), `TeamChatView` (1,710), `TeamViews`, `Team`, `PeopleView` | A second family of chats and a notice board, over the same list |
 | 4 Business and library | `BusinessDashboard` and the other Business files, `Library`, `DocumentPage`, `UsageViews`, `DecisionInboxView`, `AgentProject`, `Bento`, `ChatDeckView` | Routes and tabs (`select(nav, name)`); Markdown for documents; charts as `svg` |

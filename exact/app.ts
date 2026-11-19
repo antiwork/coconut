@@ -16,7 +16,7 @@
 // negative: the fixture moves its server_time to the launch, as PreviewStateFixture.decode does), and a source adds the
 // launch (`zero`, the contract's `time.epochAtZero`). A state of the Mac is in milliseconds from its server_time, which
 // is its `zero`. So the screens hold times since 1970.
-import type { Answer, Result, Sources, Storage, StreamEvent, StreamSocket, Store } from './app.contract.d.ts';
+import type { Answer, Database, Result, Sources, Storage, StreamEvent, StreamSocket, Store } from './app.contract.d.ts';
 import { noPause, type Pause } from './crypto.ts';
 import {
   clientToken, connect, fromBase64Url, newBox, newKeys, openBox, pairingPsk, relayTicket, text, toBase64Url, utf8,
@@ -28,11 +28,13 @@ import team from './team-preview.json';
 // The relay of Coconut. A pairing setup that names another relay is refused, because the grants name this one.
 const RELAY = 'https://coconut-push.gumroad.workers.dev';
 const SAVED = 'coconut-pairing';
-// The picked files of a message (app:/tmp/picked) and the smaller copies of photos that go to the Mac (UPLOADS).
+// The picked files of a message (app:/tmp/picked), the smaller copies of photos that go to the Mac (UPLOADS), and the
+// last state of the Mac (CACHE).
 const UPLOADS = 'app:/tmp/upload';
+const CACHE = 'app:/data/coconut.db';
 export const grants = [
   `net.fetch ${RELAY}`, 'net.websocket wss://coconut-push.gumroad.workers.dev', `secret.keep ${SAVED}`,
-  'fs.read app:/tmp/picked', `fs.read ${UPLOADS}`, `fs.write ${UPLOADS}`,
+  'fs.read app:/tmp/picked', `fs.read ${UPLOADS}`, `fs.write ${UPLOADS}`, `sqlite.open ${CACHE}`,
 ].join('\n');
 // How long a read of updates waits for each frame of its answer: the Mac holds it up to 25 seconds (the Swift app
 // gives a long poll 45).
@@ -531,16 +533,22 @@ const loadPairing = (store: Store): Pairing | null => {
   }
   return pairing;
 };
-const forget = (store: Store): void => {
+// A phone that is no longer paired keeps nothing of the Mac: not its keys, its state, its cache or its models.
+const forget = (store: Store, storage: Storage): void => {
   pairing = null;
   liveState = undefined;
   latest = null;
+  cached = false;
+  macCatalog = null;
+  macModels.clear();
+  outgoing.clear();
   pairs += 1;
   try {
     store.forget(SAVED);
   } catch {
     // Nothing kept.
   }
+  void withCache(storage, (db) => db.execute('DELETE FROM snapshot')).catch(() => undefined);
 };
 
 // The code that this phone shows, and the setup that the Mac sealed into its box.
@@ -826,6 +834,71 @@ const readSettings = async (t: Tunnel, at: number): Promise<void> => {
   }
 };
 
+// MARK: The cache
+
+// The last state of the Mac on the phone (SQLite, as the Swift app keeps snapshot.json), so a launch shows the chats
+// before the Mac answers, or without it: one row, for the Mac of the pairing. It is only shown: the first read of a
+// launch still takes the whole state, so a state that the phone kept for days never grows with their updates.
+const CACHE_EVERY = 10_000;
+// The time on the Mac of the last write, whether the state changed since, whether the screens show the cache because
+// the Mac has not answered yet, and whether this launch has read it.
+let cachedAt = -Infinity;
+let unsaved = false;
+let cached = false;
+let cacheRead = false;
+// An open database locks its file, so one use of the cache at a time, in order.
+let cacheTail: Promise<void> = Promise.resolve();
+const withCache = async <T>(storage: Storage, work: (db: Database) => Promise<T>): Promise<T> => {
+  const previous = cacheTail;
+  let release = (): void => undefined;
+  cacheTail = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  try {
+    await previous;
+    const db = await storage.sqlite.open(CACHE);
+    try {
+      const table = await db.query("SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = 'snapshot'");
+      if (table.rows.length === 0) await db.execute('CREATE TABLE IF NOT EXISTS snapshot (route TEXT PRIMARY KEY, state TEXT NOT NULL)');
+      return await work(db);
+    } finally {
+      await db.close();
+    }
+  } finally {
+    release();
+  }
+};
+
+// The kept state of the Mac of `route`, or null: none, another Mac's, or one that cannot be read.
+const readCache = async (storage: Storage, route: string): Promise<Snapshot | null> => {
+  try {
+    const found = await withCache(storage, (db) => db.query('SELECT state FROM snapshot WHERE route = ?', [route]));
+    const value = found.rows[0]?.[0];
+    if (typeof value !== 'string') return null;
+    await pause();
+    const snap = JSON.parse(value) as Snapshot;
+    await pause();
+    return snap;
+  } catch {
+    return null;
+  }
+};
+
+// The state replaces the kept one, and a state of another Mac goes. A write that fails leaves the last one.
+const saveCache = async (storage: Storage, route: string, snap: Snapshot): Promise<void> => {
+  try {
+    await pause();
+    const value = JSON.stringify(snap);
+    await pause();
+    await withCache(storage, (db) => db.transaction([
+      { sql: 'DELETE FROM snapshot WHERE route != ?', params: [route] },
+      { sql: 'INSERT INTO snapshot (route, state) VALUES (?, ?) ON CONFLICT(route) DO UPDATE SET state = excluded.state', params: [route, value] },
+    ]));
+  } catch {
+    // Kept as it was.
+  }
+};
+
 const status = (): Live => ({ version, pairs, error: lastError });
 
 const none: Project = { id: '', name: '', letter: '', face: 0 };
@@ -900,7 +973,7 @@ const sources: Sources = {
   },
 
   // The socket ticket of a round: with the pairing ticket of the setup, or with the client token of the saved pairing.
-  prepare: async ([key], store) => {
+  prepare: async ([key], store, storage) => {
     try {
       let next: Plan;
       let authorization: string;
@@ -920,7 +993,7 @@ const sources: Sources = {
       }
       const minted = await fetch(`${RELAY}/v1/tunnels/${next.route}/client-ticket`, { method: 'POST', headers: { Authorization: authorization } });
       if (minted.status === 401 || minted.status === 404) {
-        if (next.kind === 'token') forget(store);
+        if (next.kind === 'token') forget(store, storage);
         throw new Error(next.kind === 'token' ? 'This phone is no longer paired with your Mac.' : 'This pairing code no longer works. Ask for a new one.');
       }
       if (!minted.ok) throw new Error(minted.status === 429 ? 'The relay is busy. Coconut tries again soon.' : `The relay answered ${minted.status}.`);
@@ -978,7 +1051,18 @@ const sources: Sources = {
   deliver: ([n]) => n,
 
   // The handshake of a round, then its work: a pairing pairs and keeps the keys; a session with the Mac reads its state.
-  sync: async ([key, open], store) => {
+  sync: async ([key, open], store, storage) => {
+    // A launch shows the last state that the phone kept until the Mac answers, also without the Mac.
+    const paired = loadPairing(store);
+    if (!liveState && !latest && !cacheRead && paired) {
+      const snap = await readCache(storage, paired.route);
+      cacheRead = true;
+      if (snap && !liveState && !latest) {
+        liveState = fromSnapshot(snap);
+        cached = true;
+        version += 1;
+      }
+    }
     if (!open || !conn || conn.key !== key || !plan) return status();
     try {
       if (!tunnel || tunnelKey !== key || tunnel.session.broken) {
@@ -1011,7 +1095,7 @@ const sources: Sources = {
       // that follows a failure clears it at once.
       const decoded = async (reply: Reply): Promise<unknown> => {
         if (reply.status === 401) {
-          forget(store);
+          forget(store, storage);
           throw new Error('This phone is no longer paired with your Mac.');
         }
         if (reply.status !== 200) throw new Error(failureOf(reply));
@@ -1033,10 +1117,19 @@ const sources: Sources = {
       polled = key;
       if (next && (!page || page.reset || page.cursor !== page.after)) {
         liveState = fromSnapshot(next);
+        cached = false;
+        unsaved = true;
         version += 1;
       }
-      // The models of the Mac come with the first state, again when they changed, and at most once a minute.
+      // The phone keeps the state at most every 10 seconds of the Mac's clock while changes stream, and what is left once
+      // a read brings no change, as the Swift app writes snapshot.json.
       const at = next ? parse(next.server_time) : settingsAt;
+      if (next && paired && unsaved && (at - cachedAt >= CACHE_EVERY || (page !== null && page.cursor === page.after))) {
+        unsaved = false;
+        cachedAt = at;
+        await saveCache(storage, paired.route, next);
+      }
+      // The models of the Mac come with the first state, again when they changed, and at most once a minute.
       if (next && (!macCatalog || page?.settings_changed || page?.reset || at - settingsAt >= MINUTE)) await readSettings(tunnel, at);
       settle('');
       return status();
@@ -1052,7 +1145,8 @@ const sources: Sources = {
     const s = ensure();
     const list = ordered(s);
     const at = zeroOf(s, zero);
-    const banner = !live ? '' : lastError !== '' ? lastError : liveState ? '' : `Connecting to ${pairing?.macName ?? 'your Mac'}…`;
+    // A state from the cache says so until the Mac answers.
+    const banner = !live ? '' : lastError !== '' ? lastError : liveState && !cached ? '' : `Connecting to ${pairing?.macName ?? 'your Mac'}…`;
     return {
       target: list.find((p) => p.id === chosen) ?? list[0] ?? none,
       projects: list,
