@@ -1016,7 +1016,8 @@ const sources: Sources = {
       tickets.set(key, { ticket, plan: next });
       return key;
     } catch (error) {
-      lastError = failed(error);
+      // The next answer of `sync` carries the reason to the screens, which show it over the chats that the phone kept.
+      settle(failed(error));
       return '';
     }
   },

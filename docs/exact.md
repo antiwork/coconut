@@ -105,14 +105,14 @@ app:/tmp/upload` and `fs.write app:/tmp/upload`, so attachments need a new binar
 Cache. The phone keeps the last state of the Mac in SQLite (`app:/data/coconut.db`, one row of the table `snapshot`:
 the route of the Mac and its state as JSON), as the Swift app keeps `snapshot.json`. The first `sync` of a launch with
 a pairing reads it before the socket opens (three times in all while the storage does not answer), so Home and the
-chats show at once, also without the Mac, with
-"Connecting to <Mac>…" or the reason the Mac does not answer until it does. Sends then fail with that reason. The first
-read of the launch still takes the whole state, which replaces the kept one, so a kept state never grows with the
-updates of earlier launches; the Swift app goes on from the kept cursor instead. While changes stream, the state is
-written at most every 10 seconds of the Mac's clock, because a data module reads no clock, and a read that brings no
-change writes what is left. The first write for another Mac removes the state of the last one, and a phone that is no
-longer paired removes it with the pairing. An open database locks its file, so the uses of the cache wait for each
-other. The grant `sqlite.open app:/data/coconut.db` needs a new binary, as the grants of attachments do.
+chats show at once, also without the Mac, with "Connecting to <Mac>…" or the reason that the relay or the Mac does not
+answer until it does (a ticket of the relay that fails says why with the next answer of `sync`). Sends then fail with
+that reason. The first read of the launch still takes the whole state, which replaces the kept one, so a kept state
+never grows with the updates of earlier launches; the Swift app goes on from the kept cursor instead. While changes
+stream, the state is written at most every 10 seconds of the Mac's clock, because a data module reads no clock, and a
+read that brings no change writes what is left. The first write for another Mac removes the state of the last one, and
+a phone that is no longer paired removes it with the pairing. An open database locks its file, so the uses of the cache
+wait for each other. The grant `sqlite.open app:/data/coconut.db` needs a new binary, as the grants of attachments do.
 
 Checked. Every primitive of `crypto.ts` against `node:crypto` with random inputs (SHA-256 and HMAC at every length to
 200 bytes and beyond, HKDF, ChaCha20-Poly1305 both ways and a changed byte, X25519 keys and secrets), the test vector of
