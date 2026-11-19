@@ -2982,7 +2982,7 @@ final class AppStore {
         let origin = pairing
         var confirmed = false
         defer { if !confirmed { optimisticUpdates.markFailed() } }
-        if method == "POST", ["/messages", "/replies", "/run", "/context"].contains(where: { path.hasSuffix($0) }),
+        if method == "POST", ["/messages", "/run"].contains(where: { path.hasSuffix($0) }),
            !(await optimisticUpdates.wait(for: "native-settings")) {
             guard pairing == origin else { return nil }
             let message = "Your agent settings did not save. Review them before retrying this message or task."
