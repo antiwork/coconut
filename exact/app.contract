@@ -1,11 +1,12 @@
-// Coconut on Exact. Home: Needs attention, one flat list of chats (newest first) and a message box that is always open,
-// with a project picker that names the project the message goes to. A chat: its messages with Markdown, the working
-// line, and the composer. Paired with a Mac, app.ts answers it from the Mac's Coconut through the relay, and a round
-// is one connection: `prepare` gets a socket ticket, `sock` is the socket, `deliver` lets the answers that wait for it
-// go on, and `live` is the handshake and the sync. Before a pairing the app shows a pairing code; "Look around with demo
-// data" answers from the preview fixture of the Swift app (ios/Coconut/Fixtures). app.forma has the palette of
-// Theme.swift. The rows write its values out, because the SDK snapshot that Exact Build compiles with (2026-11-14)
-// refuses a token name as a colour; name the tokens again once its catalog is newer.
+// Coconut on Exact. Home: Needs attention, one flat list of chats (newest first) in two tabs, Working and Idle, and a
+// message box that is always open, with a project picker that names the project the message goes to. A chat: its
+// messages with Markdown, the working line, and the composer. Paired with a Mac, app.ts answers it from the Mac's
+// Coconut through the relay, and a round is one connection: `prepare` gets a socket ticket, `sock` is the socket,
+// `deliver` lets the answers that wait for it go on, and `live` is the handshake and the sync. Before a pairing the app
+// shows a pairing code; "Look around with demo data" answers from the preview fixture of the Swift app
+// (ios/Coconut/Fixtures). app.forma has the palette of Theme.swift. The rows write its values out, because the SDK
+// snapshot that Exact Build compiles with (2026-11-14) refuses a token name as a colour; name the tokens again once its
+// catalog is newer.
 // Colours, fonts, sizes and the safe area are the platform's unless a row says otherwise.
 use Ack, Chat, DeliveryState, Home, Live, Made, PairCode, PairState, Saved, Sock, Time from "./shapes.contract"
 use ArtifactCard, AttentionRow, Bubble, ChatRowView, DecisionCard, Face, NoticeCard, OptionButton, WorkingLine from "./parts.contract"
@@ -26,6 +27,8 @@ component Coconut
   state composing = false
   state attached = []
   state projectName = ""
+  // The tab of Chats that shows, Working or Idle (AgentsFilter of the Swift app). The phone keeps the choice.
+  state chatsTab = "working" persist
   // The time since launch, written once a second: the age of a chat and the seconds of a turn read it.
   state since = 0
   // The demo answers from the fixture. A round is one connection to the Mac; `refresh` reads its state again.
@@ -69,6 +72,11 @@ component Coconut
   derive startedId = match started { case some(s) => s.id, case none => "" }
   derive createdId = match created { case some(c) => c.id, case none => "" }
   derive attentionTotal = sum(home.attention.map(a => a.count))
+  // A chat works while its row says so: a working line, or a card that waits for the person. Every other chat is idle,
+  // also a chat with people. Both tabs keep the order of the list.
+  derive workingChats = home.chats.filter(c => c.status == "working" or c.status == "needs_you")
+  derive idleChats = home.chats.filter(c => c.status != "working" and c.status != "needs_you")
+  derive shownChats = chatsTab == "working" ? workingChats : idleChats
   derive hasText = draft.trim() != ""
   derive chatHasText = chatDraft.trim() != ""
   derive canSend = chatHasText or attached.length > 0
@@ -117,6 +125,8 @@ component Coconut
   action openNew
     projectName = ""
     nav = push(nav, "/new")
+  action showChats(tab: string)
+    chatsTab = tab
 
   // The box of Home: the project it sends to, the words, and Send, which starts a chat with that project.
   action pickProject(id: string)
@@ -198,6 +208,12 @@ component Coconut
               // The list is titled Chats, as the Chats tab of the Swift app is.
               header display="flex" align-items="center" padding="8px 16px"
                 text "Chats" role="heading" aria-level=1 flex=1 testId="home-title"
+              // The two tabs of Chats, with the count of each. They stay under the title while the list scrolls.
+              row role="tablist" aria-label="Chats" margin="8px 16px" testId="chats-tabs"
+                button role="tab" aria-selected=(chatsTab == "working") press=showChats("working") flex=1 testId="chats-working"
+                  text `Working ${workingChats.length}`
+                button role="tab" aria-selected=(chatsTab == "idle") press=showChats("idle") flex=1 testId="chats-idle"
+                  text `Idle ${idleChats.length}`
               if home.banner != ""
                 text home.banner font="-exact-footnote" color="-exact-secondary-label" padding="0px 16px 6px" testId="home-banner"
               scroll id="home-scroll" flex=1 min-height=0 keyboardDismissMode="on-drag" testId="home-scroll"
@@ -209,7 +225,10 @@ component Coconut
                     column border-radius=12 background-color="light-dark(rgb(255 56 60 / 0.08), rgb(255 66 69 / 0.08))" border-width=1 border-style="solid" border-color="light-dark(rgb(255 56 60 / 0.22), rgb(255 66 69 / 0.22))" overflow="hidden"
                       for a, i in home.attention key=a.id
                         AttentionRow(item=a, first=(i == 0), choose=openChat(a.chat))
-                for c in home.chats key=c.id
+                // A tab without chats says so, but only once the list has chats: a list that is still loading shows none.
+                if home.chats.length > 0 and shownChats.length == 0
+                  text (chatsTab == "working" ? "No chat is working." : "No chat is idle.") font="-exact-subheadline" color="-exact-secondary-label" text-align="center" padding="32px 16px" testId="chats-empty"
+                for c in shownChats key=c.id
                   ChatRowView(chat=c, now=now, offset=time.utcOffset, choose=openChat(c.id))
               column flex-shrink=0 padding="6px 12px 8px" testId="home-bar"
                 column border-radius=24 background-color="light-dark(#f4f4f4, #212121)" testId="home-box"

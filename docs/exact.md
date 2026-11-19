@@ -26,10 +26,12 @@ TestFlight and Sparkle. The Python service in `backend/` is unchanged.
 
 Home. Needs attention at the top, with the four rules of `Attention.swift` (a card waiting over 4 hours, an agent that
 cannot run, blocked work, an unseen notice of the team); the fixture alone breaches none, so `app.ts` applies what
-`AppStore.applyAttentionPreview` applies for the UI test of Home. Then one flat list of chats, newest first, in the
-layout of `ChatRowLayout`: face, name, age, a line that is the status or the last message, the unread badge, the green
-dot while the agent works. At the bottom a message box that is always open, with a picker that names the project the
-message goes to and ends with New project. Send starts a chat with that project.
+`AppStore.applyAttentionPreview` applies for the UI test of Home. Then one flat list of chats, newest first, in two tabs
+under the title with the count of each, Working and Idle (`AgentsFilter`): Working has the chats whose row shows work
+(a working line or a card that waits), Idle the rest, chats with people too, and the phone keeps the choice (a
+`persist` state). Each row has the layout of `ChatRowLayout`: face, name, age, a line that is the status or the last
+message, the unread badge, the green dot while the agent works. At the bottom a message box that is always open, with
+a picker that names the project the message goes to and ends with New project. Send starts a chat with that project.
 
 Chat. Messages with Markdown and the time of each under it (`MessageTimes.label`), activity lines, cards with their options (an answer keeps the option chosen), files,
 the notices of a team, and the working line: the phase, the time of the turn to the second, the model. The composer is
@@ -81,6 +83,8 @@ last one had ended: asking again lets the last read go with its timeout, so a so
 the background kept a read running for good, and the update waited for the next launch. Now `syncing` starts no read
 while one runs or while an update waits (`exactDelivery().staged`), and the number of the running update is part of
 the round, so the new data module of an applied update opens its own socket instead of waiting on the old one's.
+Gianfranco loaded that fix with two launches. The next visible update, the tabs Working and Idle under the title,
+checks that an update applies while the app stays open.
 
 ## What was checked, and what was not
 
