@@ -4,7 +4,6 @@ import threading
 
 # How to review a PR, and when to merge without a card, is the person's workflow. It lives in the bot's own Hermes skills.
 # Coconut keeps the merge card contract and the permission rails (card_tools.PR_MERGE_INSTRUCTIONS).
-from .card_tools import PR_MERGE_INSTRUCTIONS  # noqa: F401
 
 # The cards that name one PR as their merge. The index decisions_merge_url finds them.
 MERGE_DECISIONS = "SELECT data FROM decisions WHERE lower(json_extract(data,'$.merge_pr_url'))=?"

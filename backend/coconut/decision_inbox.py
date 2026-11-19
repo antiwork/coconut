@@ -457,5 +457,5 @@ class DecisionInbox:
         return {'status': 'recorded', 'decision': self._public(decision)}
 
 
-# The card rules of every bot turn. The coconut plugin of the gateway gives them to its sessions too.
-from .card_tools import DECISION_INSTRUCTIONS, RECOMMENDED_FIRST  # noqa: E402
+# The refusal of a card whose recommended option is not first. It lives with the other card texts.
+from .card_tools import RECOMMENDED_FIRST  # noqa: E402

@@ -134,7 +134,6 @@ def read_usage(path, days=DEFAULT_DAYS, now=None, chat_id=None):
     result = {day: _empty_day(day) for day in window}
     models, cost_known, cost_exact = {}, False, True
     rows_by = {}
-    turns = []
     path = Path(path)
     if not path.is_file() or path.stat().st_size == 0:
         return _report(result, models, False, False)

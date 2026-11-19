@@ -1,7 +1,6 @@
 """Explicit work tracking outside pull requests."""
 import json
 import re
-from datetime import datetime, timezone
 
 
 WORK_STATES = ('working', 'waiting', 'ready', 'blocked', 'completed', 'cancelled')

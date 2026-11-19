@@ -23,7 +23,7 @@ from uuid import NAMESPACE_URL, uuid5
 from . import app_badge, unread
 from .push_relay import RelayTransport, validate_route, notification_alert, group_text, team_alert, direct_alert, notice_alert
 from .team_store import ACTIVE
-from .push_schedule import (LEGACY_SCHEDULE, OUTSIDE, due, holds_urgent, in_window, merge as merge_schedule,
+from .push_schedule import (LEGACY_SCHEDULE, OUTSIDE, due, holds_urgent, merge as merge_schedule,
                             stored as stored_schedule)
 
 LEVELS = ('every', 'grouped', 'urgent_only')
@@ -610,7 +610,7 @@ class PushDelivery:
         for (device_id,) in db.execute("SELECT DISTINCT device_id FROM push_items WHERE status='waiting'").fetchall():
             device = db.execute('SELECT enabled FROM push_devices WHERE device_id=?', (device_id,)).fetchone()
             items = self._items("device_id=? AND status='waiting'", (device_id,))
-            schedule, level = self.schedule(device_id), self.preferences(device_id)['level']
+            schedule = self.schedule(device_id)
             # With Nothing outside work hours, an urgent card waits while work hours are closed, and also when it arrived
             # outside them. It then joins the count and follows the timing of the other waiting items.
             quiet = holds_urgent(schedule, current)

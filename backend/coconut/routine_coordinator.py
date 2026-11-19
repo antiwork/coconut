@@ -805,7 +805,7 @@ class NativeRoutines:
 
     def run_native_routine(self, routine):
         """Run a routine now for the person or a bot. The gateway's cron runs it (_trigger_routine)."""
-        from .service import ServiceError, now
+        from .service import ServiceError
         bot = self._get('bots', routine['bot_id'])
         if bot['archived'] or bot.get('_deleted'):
             raise ServiceError(409, 'Restore the agent before running this routine.')

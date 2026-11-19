@@ -9,7 +9,6 @@ from __future__ import annotations
 import argparse
 import faulthandler
 import gzip
-import hashlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import logging
@@ -24,7 +23,7 @@ import sqlite3
 import sys
 import threading
 import time
-from urllib.parse import parse_qs, unquote, urlsplit
+from urllib.parse import parse_qs, urlsplit
 
 # The modules of the full service load in main, so a team-only service (team_only.py) never imports them.
 from .service_base import ServiceError

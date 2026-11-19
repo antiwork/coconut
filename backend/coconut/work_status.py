@@ -1,6 +1,5 @@
 """Present PR activity from bot reports and current execution evidence."""
 import json
-from datetime import datetime, timezone
 from collections import deque
 
 PAUSE_DECISION_STATES = ('approved', 'rejected', 'modified', 'replied', 'executed', 'failed')

@@ -1591,7 +1591,7 @@ class GatewayChat:
         Return {skip: true} for a profile that is not a bot, for another chat, and while the bot's chat runs a turn.
         The run's input stays out of the chat: it is a notice of Hermes, not a message of the person.
         """
-        from .service import ServiceError, now, require_text, uid
+        from .service import now, require_text, uid
         home = os.path.realpath(require_text(data, 'home', 4096))
         chat_id, message_id = require_text(data, 'chat_id', 200), require_text(data, 'message_id', 200)
         row = self._gateway_profile(home, chat_id)
