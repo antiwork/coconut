@@ -1,80 +1,13 @@
 """Library replies: each new document shows as a card in the chat.
 
-Coconut does not save a chat reply as a page by itself. Those pages cost a model turn each and were rarely wanted: a
-page exists only when a bot saves one because the person asked. The helpers that read the shape of a report stay for
-the removal of pages that earlier builds kept (remove_unasked_reports).
+Coconut does not save a chat reply as a page by itself: a page exists only when an agent saves one because the person
+asked. remove_unasked_reports removes the pages that an earlier build kept from replies that nobody asked for.
 """
 from __future__ import annotations
 
 import hashlib
 import json
 import re
-
-from .documents import MAX_TITLE
-
-# A report has structure and some length. A short answer, or a long answer without structure, stays in the chat only.
-MIN_REPORT = 1200
-MIN_PHOTO_REPORT = 300
-_PHOTO = re.compile(r'^\s*!\[[^\]]*\]\((?:<[^>]*>|[^)\s]*)\)\s*$')
-_HEADING = re.compile(r'^\s{0,3}#{1,6}\s+(\S.*?)\s*#*\s*$')
-_BOLD_LINE = re.compile(r'^\s*(?:\*\*|__)([^*_].*?)(?:\*\*|__):?\s*$')
-_TABLE_RULE = re.compile(r'^\s*\|?\s*:?-{3,}:?\s*(?:\|\s*:?-{3,}:?\s*)+\|?\s*$')
-_LIST_ITEM = re.compile(r'^\s*(?:[-*+]|\d+[.)])\s+\S')
-_MARKUP = re.compile(r'[*_`~]+|\[([^\]]*)\]\([^)]*\)')
-
-
-def _plain(text: str) -> str:
-    return ' '.join(_MARKUP.sub(lambda match: match.group(1) or '', text).split()).strip(' :')
-
-
-def _heading(line: str) -> str | None:
-    match = _HEADING.match(line) or _BOLD_LINE.match(line)
-    return _plain(match.group(1)) if match else None
-
-
-def _in_code(lines: list[str]) -> list[bool]:
-    """For each line, whether it is in fenced code, where `# Setup` is a comment and not a heading."""
-    inside, fence, marks = False, '', []
-    for line in lines:
-        stripped = line.lstrip()
-        opener = stripped[:3] if stripped.startswith(('```', '~~~')) else ''
-        if opener and (not inside or opener == fence):
-            marks.append(True)
-            inside, fence = not inside, opener
-        else:
-            marks.append(inside)
-    return marks
-
-
-def is_report(text: str) -> bool:
-    """A reply with the shape of a report: headings, a table or a long list, with enough text, or with photos."""
-    lines = text.splitlines()
-    photos = sum(1 for line in lines if _PHOTO.match(line))
-    prose = sum(len(line.strip()) for line in lines if not _PHOTO.match(line))
-    headings = sum(1 for line, code in zip(lines, _in_code(lines)) if not code and _heading(line))
-    items = sum(1 for line in lines if _LIST_ITEM.match(line))
-    table = any(_TABLE_RULE.match(line) for line in lines)
-    if photos:
-        return prose >= MIN_PHOTO_REPORT and (headings >= 1 or table or items >= 3)
-    return prose >= MIN_REPORT and (headings >= 2 or table or (headings >= 1 and items >= 4) or items >= 8)
-
-
-def document_of(text: str, fallback_title: str) -> dict:
-    """The title, the key, the summary and the content of the document of a report."""
-    lines = text.strip().splitlines()
-    # The first heading names the report, also after a sentence such as "Here is today's report".
-    code = _in_code(lines)
-    heading = next(((index, _heading(line)) for index, line in enumerate(lines)
-                    if not code[index] and _heading(line)), None)
-    title = heading[1] if heading else next((_plain(line) for line in lines if _plain(line) and not _PHOTO.match(line)), '')
-    title = _shorten(title or fallback_title, MAX_TITLE)
-    # The Library shows the title over the page, so a heading that gave it at the top goes.
-    first = heading is not None and heading[0] == 0
-    content = '\n'.join(lines[1:]).strip() if first else text.strip()
-    summary = next((_plain(line) for line in lines[1 if first else 0:] if _plain(line) and not _PHOTO.match(line)
-                    and not _heading(line) and not _LIST_ITEM.match(line) and '|' not in line), None)
-    return dict(key=report_key(title), title=title, content=content or text.strip(),
-                summary=_shorten(summary, 160) if summary else None)
 
 
 def report_key(title: str) -> str:
@@ -84,43 +17,6 @@ def report_key(title: str) -> str:
     slug = re.sub(r'[^a-z0-9]+', '-', title.casefold()).strip('-')[:48].strip('-') or 'report'
     digest = hashlib.sha256(title.casefold().encode()).hexdigest()[:8]
     return f'reply-{slug}-{digest}'
-
-
-def _shorten(text: str, limit: int) -> str:
-    if len(text) <= limit:
-        return text
-    cut = text[:limit - 1].rsplit(' ', 1)[0]
-    return cut.rstrip(' ,;:.') + '…'
-
-
-def turn_reply(service, task: dict) -> str:
-    """The visible text replies of the bot in the current turn of the task, in order, as one text."""
-    started = task.get('_turn_started_at', task['created_at'])
-    replies = [message['text'] for message in service._task_messages(task['id'])
-               if message['role'] == 'assistant' and message['kind'] == 'text'
-               and message.get('sender_bot_id') in (None, task['bot_id']) and message['created_at'] >= started
-               and not message.get('recipient_bot_ids') and not message.get('_hidden')
-               and not message.get('_interim') and not message.get('_deleted') and message['text'].strip()]
-    return '\n\n'.join(text.strip() for text in replies)
-
-
-def saved_in_turn(service, task: dict) -> bool:
-    started = task.get('_turn_started_at', task['created_at'])
-    row = service.db.execute("SELECT 1 FROM documents WHERE json_extract(data,'$.task_id')=? "
-                             "AND json_extract(data,'$.updated_at')>=? LIMIT 1", (task['id'], started)).fetchone()
-    return row is not None
-
-
-def asked_by_person(service, task: dict) -> bool:
-    """Whether a message that a person typed in a chat started or joined this turn. Bots write structured status
-    replies all day: to each other, for work intake and for pull request gates. Only a person's request makes a
-    reply a report to keep."""
-    # A person can also join a turn that another bot or a routine started.
-    for identity in task.get('_turn_message_ids', []):
-        message = service.db.execute('SELECT data FROM messages WHERE id=?', (identity,)).fetchone()
-        if message and json.loads(message[0]).get('_human_source_kind') == 'chat':
-            return True
-    return False
 
 
 def show_card(service, task: dict, document: dict, created: bool):
