@@ -490,7 +490,7 @@ private struct RiskDashboard: View {
             }
         }
     }
-    private var accountsTitle: some View { BentoLabel("Risk queue") }
+    private var accountsTitle: some View { BentoLabel("Review queue") }
     private var picker: some View {
         Picker("Queue", selection: $queue) { ForEach(queues, id: \.0) { Text($0.1).tag($0.0) } }.labelsHidden()
     }

@@ -225,14 +225,14 @@ struct BusinessReportsView: View {
                 let now: String = BusinessPeriodFormat.money(revenue3m)
                 let before: String = BusinessPeriodFormat.money(previous)
                 let change: String = BusinessPeriodFormat.percent(periods.revenue3mPercent, signed: true)
-                // Data only: the two quarters and the change.
-                Text("3 mo \(now) vs \(before) · \(change)").font(.callout).monospacedDigit()
+                // Data only: the name, the two quarters and the change.
+                Text("Revenue · 3 mo \(now) vs \(before) · \(change)").font(.callout).monospacedDigit()
             }
             ForEach(periods.months.reversed()) { month in
                 BusinessReportRow(title: BusinessPeriodFormat.label(month.month),
                                   value: BusinessPeriodFormat.money(month.netIncome),
-                                  detail: "net income · " + BusinessPeriodFormat.percent(month.margin) + " margin",
-                                  trailing: BusinessPeriodFormat.money(month.revenue))
+                                  detail: "Net income · " + BusinessPeriodFormat.percent(month.margin) + " margin",
+                                  trailing: BusinessPeriodFormat.money(month.revenue) + " revenue")
             }
         }
     }
@@ -259,8 +259,8 @@ struct BusinessReportsView: View {
             ForEach(periods.years.reversed()) { year in
                 BusinessReportRow(title: year.year + (year.partial ? " · through \(periods.closedThrough.map(BusinessPeriodFormat.month) ?? "today")" : ""),
                                   value: BusinessPeriodFormat.money(year.netIncome),
-                                  detail: "net income · " + BusinessPeriodFormat.percent(year.margin) + " margin",
-                                  trailing: BusinessPeriodFormat.money(year.revenue))
+                                  detail: "Net income · " + BusinessPeriodFormat.percent(year.margin) + " margin",
+                                  trailing: BusinessPeriodFormat.money(year.revenue) + " revenue")
             }
         }
     }
