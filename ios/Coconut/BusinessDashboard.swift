@@ -19,10 +19,8 @@ struct BusinessWorkspaceView: View {
                 Picker("View", selection: $tab) {
                     Text("Overview").tag("overview")
                     Text("Work").tag("work")
-                }.pickerStyle(.segmented).labelsHidden().frame(maxWidth: 360)
-                    .padding(.horizontal, BoardStyle.Space.l).padding(.vertical, BoardStyle.Space.s)
-                    // The paper ends at the control and leaves the bar of the page to the system.
-                    .frame(maxWidth: .infinity).background(BoardStyle.paper, ignoresSafeAreaEdges: [])
+                }
+                .pinnedSegments()
             }
         }
         .background(BoardStyle.paper)

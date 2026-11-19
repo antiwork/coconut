@@ -241,16 +241,14 @@ struct HomeLaunchView: View {
         .contentMargins(.bottom, BoardStyle.Space.xl, for: .scrollContent)
         .background(BoardStyle.paper)
         // The two tabs of Chats, with the count of each. The control stays under the title while the list scrolls, as
-        // Overview and Work of a function (BusinessWorkspaceView).
+        // Overview and Work of a function (pinnedSegments).
         .safeAreaInset(edge: .top, spacing: 0) {
             Picker("Chats", selection: $filter) {
                 Text("Working \(working.count)").tag(AgentsFilter.working)
                 Text("Idle \(rows.count - working.count)").tag(AgentsFilter.idle)
-            }.pickerStyle(.segmented).labelsHidden().frame(maxWidth: 360)
-                .padding(.horizontal, BoardStyle.Space.l).padding(.vertical, BoardStyle.Space.s)
-                // The paper ends at the control and leaves the bar of the page to the system.
-                .frame(maxWidth: .infinity).background(BoardStyle.paper, ignoresSafeAreaEdges: [])
-                .accessibilityIdentifier("agents-filter")
+            }
+            .pinnedSegments()
+            .accessibilityIdentifier("agents-filter")
         }
         .navigationTitle("Chats")
         .toolbar {
