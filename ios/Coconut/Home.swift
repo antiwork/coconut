@@ -142,7 +142,7 @@ struct HomeView: View {
         let progress = HomeFeed.inProgress(bots: store.bots, tasks: store.tasks, artifacts: store.artifacts,
                                            rooms: store.shownTeamRooms)
         BoardPage {
-            BoardPageTitle(title: "Home", detail: Date().formatted(.dateTime.weekday(.wide).month(.wide).day()))
+            BoardPageTitle(title: "Home")
             // The rules read the clock, so the banner checks them again each minute.
             TimelineView(.periodic(from: .now, by: 60)) { timeline in
                 AttentionCard(items: store.attentionItems(now: timeline.date), open: open)
