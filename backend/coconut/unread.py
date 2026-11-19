@@ -7,10 +7,15 @@ streaming reply becomes an interim message, an interim message becomes the final
 which a counter that only went up and down did not: each interim message of a turn counted as an unread reply.
 """
 
+from .service_base import now
+
 UNREAD = ("json_extract(data,'$.bot_id')=? AND json_extract(data,'$.role')='assistant' "
           "AND COALESCE(json_extract(data,'$._hidden'),0)=0 AND COALESCE(json_extract(data,'$._deleted'),0)=0 "
           "AND COALESCE(json_extract(data,'$._interim'),0)=0 AND json_extract(data,'$.reaction_event') IS NULL")
 MARK = 'last_read_message_id'
+# The time when the mark last moved. A chat goes to Archived 48 hours after its newest activity, and a read of a new
+# reply is activity (agent_chats.archive_idle_chats), so a chat that the person reads late stays two more days.
+READ_AT = '_read_at'
 
 
 def is_read(method: str, path: str) -> bool:
@@ -78,4 +83,5 @@ def mark_read(db, bot: dict, message_id: str | None = None):
         else _newest(db, bot['id'])
     if row and row[0] > _mark_row(db, bot):
         bot[MARK] = row[1]
+        bot[READ_AT] = now()
     recount(db, bot)

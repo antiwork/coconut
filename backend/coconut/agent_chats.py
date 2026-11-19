@@ -11,14 +11,47 @@ newest first. A chat can be archived or removed by itself. The settings belong t
 
 A quick to-do of the apps is such a chat with `todo: true`: the apps start it with the to-do as its first message, list
 it on To-dos, and follow its state through the tasks of the chat. Archiving the chat checks the to-do off.
+
+A chat goes to Archived by itself after 48 hours without activity, as the person asked, so the lists keep the chats of
+the last two days (archive_idle_chats). A chat that still has something to do or to show stays. A message of the person
+brings an archived chat back (_bring_back), so an old chat continues where it was.
 """
 from __future__ import annotations
+
+from datetime import datetime, timedelta, timezone
+import json
+import logging
+
+from .unread import READ_AT
 
 # What a chat takes from its agent when the person starts it, and again when the agent changes.
 SHARED = ('name', 'role')
 # The fields that the person changes on one chat.
 OWN = frozenset({'archived', 'pinned', 'notifications', 'chat_title'})
 TITLE_LENGTH = 72
+# A chat without activity for this long goes to Archived (archive_idle_chats).
+ARCHIVE_AFTER = timedelta(hours=48)
+# How often the dispatcher looks for such chats (Service._dispatch).
+ARCHIVE_PASS_SECONDS = 600
+# A routine in this state never runs again, so it keeps no chat out of Archived. A scheduled or paused one does.
+FINISHED_ROUTINE = 'completed'
+# The newest visible message of a chat. The index messages_chat finds it without a sort, as in unread._newest.
+NEWEST_MESSAGE = ("SELECT json_extract(data,'$.created_at') FROM messages WHERE json_extract(data,'$.bot_id')=? "
+                  "AND COALESCE(json_extract(data,'$._hidden'),0)=0 AND COALESCE(json_extract(data,'$._deleted'),0)=0 "
+                  "ORDER BY rowid DESC LIMIT 1")
+NEWEST_TASK = "SELECT json_extract(data,'$.updated_at') FROM tasks WHERE json_extract(data,'$.bot_id')=? ORDER BY rowid DESC LIMIT 1"
+TASK_BOTS = "SELECT json_extract(data,'$.bot_id'), json_extract(data,'$.conversation_bot_id') FROM tasks WHERE id=?"
+
+
+def moment(value) -> datetime | None:
+    """A stored time as an aware datetime, or None. A time without a zone is UTC."""
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace('Z', '+00:00'))
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
 
 
 def chat_title(text: str) -> str:
@@ -90,6 +123,118 @@ class AgentChats:
                 self._put('bots', chat)
                 self._event('bot.updated', self._public(chat), chat['id'])
                 self._note_published(chat['id'], encoded(self._public(chat)))
+
+    def archive_idle_chats(self, current: datetime | None = None) -> list[str]:
+        """Archive each chat without activity for ARCHIVE_AFTER, as Archive in the apps does, and return their IDs.
+
+        Activity is a visible message, a change of the chat's newest task, a read of a new reply (unread.READ_AT), the
+        start of the chat, and a restore from Archived. Only a further chat of a project is a candidate, so a project
+        and the Coconut chat never go (_may_archive), and a chat that still waits for something stays (_busy_chats).
+        """
+        from .service_base import now
+        current = current or datetime.now(timezone.utc)
+        archived = []
+        with self.transaction():
+            candidates = [bot for bot in self._all('bots') if self._may_archive(bot)]
+            busy = self._busy_chats() if candidates else set()
+            for bot in candidates:
+                last = None if bot['id'] in busy else self._last_activity(bot)
+                if last is None or current - last < ARCHIVE_AFTER:
+                    continue
+                bot['archived'] = True
+                bot['_auto_archived_at'] = now()
+                self._publish_archive(bot)
+                archived.append(bot['id'])
+        if archived:
+            logging.getLogger(__name__).info('Archived %d chats without activity for 48 hours: %s',
+                                             len(archived), ', '.join(archived))
+        return archived
+
+    @staticmethod
+    def _may_archive(bot: dict) -> bool:
+        """A further chat that a list shows and that holds nothing for the person: no star, no unread reply, and no
+        work or card that its status shows. A quick to-do stays until the person checks it off, because its archive
+        checks it off."""
+        return (bool(bot.get('chat_of')) and not bot.get('archived') and not bot.get('_deleted')
+                and not bot.get('pinned') and not bot.get('todo') and not bot.get('unread_count')
+                and bot.get('status', 'idle') in ('idle', 'failed'))
+
+    def _busy_chats(self) -> set:
+        """The bots that still wait for something. The caller holds the transaction.
+
+        An archived chat runs no task, takes no result of a wait or of another agent, fires no routine and sends no
+        notification, not even for a card. So each of these keeps its chat out of Archived: a task that is queued,
+        runs, waits or is paused, a result on its way back (Service._deliver_returns), a wait of a turn without its
+        delivery (coconut_wait, a background process), a card that waits, also after Later, Work that runs, and a
+        routine that runs again or is paused.
+        """
+        from .background_processes import PENDING_COMPLETIONS
+        busy = set()
+        states = sorted(self.ACTIVE)
+        busy.update(value for row in self.db.execute(
+            "SELECT json_extract(data,'$.bot_id'), json_extract(data,'$.conversation_bot_id') FROM tasks "
+            f"WHERE json_extract(data,'$.status') IN ({','.join('?' * len(states))})", states) for value in row)
+        busy.update(value for row in self.db.execute(
+            "SELECT json_extract(data,'$.bot_id'), json_extract(data,'$.conversation_bot_id'), "
+            "json_extract(data,'$._return_pending.target_bot_id') FROM tasks "
+            "WHERE json_type(data,'$._return_pending') IN ('object','true')") for value in row)
+        waits = [row[0] for row in self.db.execute(
+            "SELECT json_extract(data,'$.task_id') FROM native_receipts INDEXED BY native_receipts_pending_wait WHERE "
+            + PENDING_COMPLETIONS)]
+        cards = [json.loads(raw) for (raw,) in self.db.execute(
+            "SELECT data FROM decisions WHERE json_extract(data,'$.status')='pending'")]
+        for card in cards:
+            busy.update((card.get('bot_id'), card.get('request_bot_id')))
+        for task_id in waits + [card.get('task_id') for card in cards]:
+            row = self.db.execute(TASK_BOTS, (task_id,)).fetchone() if task_id else None
+            busy.update(row or ())
+        busy.update(row[0] for row in self.db.execute(
+            "SELECT json_extract(data,'$.bot_id') FROM contexts "
+            "WHERE json_extract(data,'$.status') NOT IN ('completed','cancelled','failed')"))
+        for (raw,) in self.db.execute('SELECT data FROM routines'):
+            routine = json.loads(raw)
+            if not routine.get('_deleted') and (routine.get('enabled') or routine.get('state') not in (None, FINISHED_ROUTINE)):
+                busy.add(routine.get('bot_id'))
+        busy.discard(None)
+        return busy
+
+    def _last_activity(self, bot: dict) -> datetime | None:
+        """The newest activity of a chat, or None for a chat that nobody wrote in: no list shows such a chat, and the
+        next first message of its agent goes into it (AgentChats.spare in the apps), so it stays."""
+        newest = self.db.execute(NEWEST_MESSAGE, (bot['id'],)).fetchone()
+        if newest is None:
+            return None
+        task = self.db.execute(NEWEST_TASK, (bot['id'],)).fetchone()
+        times = (newest[0], task[0] if task else None, bot.get('created_at'), bot.get(READ_AT), bot.get('_restored_at'))
+        return max((value for value in map(moment, times) if value), default=None)
+
+    @staticmethod
+    def _note_restore(bot: dict) -> None:
+        """A restore from Archived counts as activity, so the next pass does not archive the chat again at once."""
+        from .service_base import now
+        bot['_restored_at'] = now()
+        bot.pop('_auto_archived_at', None)
+
+    def _bring_back(self, bot: dict) -> None:
+        """A message of the person brings an archived chat back, as in Telegram, where Coconut refused the message
+        before ("Restore this conversation"). The caller holds the transaction."""
+        if bot.get('archived') and not bot.get('_deleted'):
+            bot['archived'] = False
+            self._note_restore(bot)
+            self._publish_archive(bot)
+
+    def _publish_archive(self, bot: dict) -> None:
+        """Store an archive or a restore of a bot and tell the apps, as a PATCH of `archived` does. The caller holds
+        the transaction."""
+        from .service_base import encoded
+        self._sync_profile(bot)
+        self._put('bots', bot)
+        if self.team_store.shared(bot['id']):
+            # The team sync writes the `bot` entry again, or deletes it for an archived bot (team_pages.py).
+            self.team_wake()
+        self._event('bot.updated', self._public(bot), bot['id'])
+        self._note_published(bot['id'], encoded(self._public(bot)))
+        self._event('settings.updated', {'bot_id': bot['id']}, bot['id'])
 
     def _delete_agent_chats(self, agent: dict, callbacks: list, *, audit: dict | None = None) -> None:
         """The chats of a removed agent go with it."""

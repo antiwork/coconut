@@ -389,7 +389,7 @@ struct ArchivedAgentsView: View {
     @State private var deleting: Bot?
 
     var body: some View {
-        let archived = store.bots.filter(\.archived).sorted { $0.listName.localizedStandardCompare($1.listName) == .orderedAscending }
+        let archived = AgentChats.archived(in: store.bots, latest: store.chatSummaries.newestActivity)
         List {
             if archived.isEmpty {
                 Text("No archived chats.")

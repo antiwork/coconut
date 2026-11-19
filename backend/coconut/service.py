@@ -159,7 +159,7 @@ from .silent_responses import SilentResponses, is_silent_message, is_silent_resp
 from .technical_lane import TechnicalLane
 from .hermes_setup import HermesSetup
 from .bot_profiles import ONLY_PROJECTS, BotProfiles
-from .agent_chats import AgentChats
+from .agent_chats import ARCHIVE_PASS_SECONDS, AgentChats
 from .gateway_chat import GatewayChat
 from .message_queue import MessageQueue
 from .documents import SCHEMA as DOCUMENTS_SCHEMA, Documents
@@ -1510,6 +1510,8 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
                     if field in data:
                         if not isinstance(data[field], bool):
                             raise ServiceError(400, f'{field} must be true or false.')
+                        if field == 'archived' and bot['archived'] and not data[field]:
+                            self._note_restore(bot)
                         bot[field] = data[field]
                 self._sync_profile(bot)
                 self._put('bots', bot)
@@ -2149,6 +2151,8 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
                     author_bot_id=message.get('sender_bot_id') if message['role'] == 'assistant' else None)
 
     def _send_message_interaction(self, bot, data, *, task=None):
+        # A message of the person brings an archived chat back (agent_chats._bring_back).
+        self._bring_back(bot)
         if task and task.get('_work_status_only'):
             data = dict(data, work_artifact_id=task['_work_context_id'], work_status_only=False, mode='queue')
         work_item = self._work_message_target(bot, data) if data.get('work_artifact_id') else None
@@ -3218,6 +3222,8 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
         next_routine_tick = 0
         next_recovery_tick = 0
         next_decision_tick = 0
+        # The first archive pass waits a minute, so a start does not hold the lock for it.
+        next_archive_tick = time.monotonic() + 60
         while not self.stopping.is_set():
             if self.restart_pending:
                 try:
@@ -3246,6 +3252,12 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
                     self._queue_decision_refreshes()
                 except Exception:
                     logging.getLogger(__name__).exception('Decision refresh failed; the next scan will retry.')
+            if time.monotonic() >= next_archive_tick:
+                next_archive_tick = time.monotonic() + ARCHIVE_PASS_SECONDS
+                try:
+                    self.archive_idle_chats()
+                except Exception:
+                    logging.getLogger(__name__).exception('The archive of idle chats failed; the next pass will retry.')
             try:
                 self._dispatch_pending()
             except Exception:

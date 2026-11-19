@@ -519,9 +519,9 @@ struct MacSidebar: View {
                     ForEach(sections.bots) { item in itemRow(item) }
                 }
             }
-            // The archived agents, closed until the person opens the section. An archived chat stays readable.
-            let archived = store.bots.filter { $0.archived && !$0.coconut }
-                .sorted { $0.listName.localizedStandardCompare($1.listName) == .orderedAscending }
+            // The archived chats, newest first and closed until the person opens the section. An archived chat stays
+            // readable.
+            let archived = AgentChats.archived(in: store.bots, latest: store.chatSummaries.newestActivity).filter { !$0.coconut }
             if !archived.isEmpty {
                 Section("Archived", isExpanded: $archivedOpen) {
                     ForEach(archived) { bot in row(bot) }
