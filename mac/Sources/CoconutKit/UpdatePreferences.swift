@@ -158,19 +158,6 @@ public enum UpdateRequestAction: Equatable {
     }
 }
 
-/// An in-memory preferences domain for tests.
-public final class MemoryPreferences: PreferenceStore {
-    public var values: [String: Any] = [:]
-
-    public init(_ values: [String: Any] = [:]) {
-        self.values = values
-    }
-
-    public func value(forKey key: String) -> Any? { values[key] }
-
-    public func set(_ value: Any?, forKey key: String) { values[key] = value }
-}
-
 /// The plain text of `coconut status`, for a person or a Hermes agent.
 public enum StatusText {
     public static func lines(version: String, preferences: UpdatePreferences, status: Status,

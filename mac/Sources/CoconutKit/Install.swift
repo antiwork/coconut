@@ -42,7 +42,6 @@ public struct Install: Equatable, Sendable {
     }
 
     public var hostScript: URL { root.appendingPathComponent("scripts/host.py") }
-    public var pairingScript: URL { root.appendingPathComponent("scripts/pairing.py") }
     public var backend: URL { root.appendingPathComponent("backend", isDirectory: true) }
     public var data: URL { root.appendingPathComponent(".runtime/host", isDirectory: true) }
     public var logs: URL { data.appendingPathComponent("logs", isDirectory: true) }

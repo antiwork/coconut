@@ -1,20 +1,13 @@
 import Foundation
 
 /// The two login items of Coconut.app. Each one is a launch agent plist in `Contents/Library/LaunchAgents`, which the
-/// app registers with `SMAppService.agent(plistName:)`. Both start `Contents/Helpers/coconut` with one command.
+/// app registers with `SMAppService.agent(plistName:)`. Both start `Contents/Helpers/coconut` with one command:
+/// `service` for the service and `sidecar` for the relay.
 public enum Agent: String, CaseIterable, Sendable {
     case service = "com.gumroad.coconut.service"
     case relay = "com.gumroad.coconut.relay"
 
     public var plistName: String { "\(rawValue).plist" }
-
-    /// The command of the `coconut` tool that this agent runs.
-    public var command: String {
-        switch self {
-        case .service: return "service"
-        case .relay: return "sidecar"
-        }
-    }
 }
 
 /// The LaunchAgents that `scripts/host.py install-service` and `scripts/tunnel.py install` write. While one of them
