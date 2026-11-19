@@ -62,7 +62,7 @@ struct UsageChart: View {
     var body: some View {
         Chart {
             ForEach(buckets) { bucket in
-                bar(bucket.start, metric.value(bucket.total), metric.title).foregroundStyle(BoardStyle.ink.opacity(0.7))
+                bar(bucket.start, metric.value(bucket.total), metric.title).foregroundStyle(BoardStyle.green)
             }
         }
         .chartLegend(.hidden)
