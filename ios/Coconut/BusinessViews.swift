@@ -65,7 +65,8 @@ struct BusinessProjectsView: View {
 
     var body: some View {
         BoardPage {
-            BoardSection("Projects", count: store.businessCatalog?.projects.count ?? 0) {
+            // The repositories of the business that Coconut follows. Projects are Coconut, Gumroad and Personal.
+            BoardSection {
                 ForEach(store.businessCatalog?.projects ?? []) { project in
                     NavigationLink(value: BusinessRoute.project(project.key)) {
                         BoardRow(symbol: "shippingbox", title: project.displayName, detail: project.fullName)
@@ -73,12 +74,12 @@ struct BusinessProjectsView: View {
                     .buttonStyle(.plain)
                     .accessibilityIdentifier("business-project-" + project.key)
                 }
-                if store.businessCatalog?.projects.isEmpty == true { BoardEmptyRow(text: "No projects yet.") }
+                if store.businessCatalog?.projects.isEmpty == true { BoardEmptyRow(text: "No repositories.") }
             }
             if let error { BusinessConnectionNotice(message: error) }
         }
-        .navigationTitle("Projects")
-        .toolbar { ToolbarItem(placement: .primaryAction) { Button { adding = true } label: { Label("Add project", systemImage: "plus") }.accessibilityIdentifier("business-add-project") } }
+        .navigationTitle("Repositories")
+        .toolbar { ToolbarItem(placement: .primaryAction) { Button { adding = true } label: { Label("Add repository", systemImage: "plus") }.accessibilityIdentifier("business-add-project") } }
         .task(id: store.businessChanges) { await load() }
         .refreshable { await load() }
         .sheet(isPresented: $adding) { BusinessProjectEditor() }
@@ -155,7 +156,7 @@ struct BusinessWorkListView: View {
             ?? GitHubItemRoute(repository: (store.businessCatalog?.owner ?? "antiwork") + "/" + item.functionKey, number: item.number)
     }
 
-    /// "Support · gumroad · #412": the function or the project, whichever the page is not already about.
+    /// "Support · gumroad · #412": the function or the repository, whichever the page is not already about.
     private func subtitle(_ item: BusinessWork) -> String {
         [function == nil ? BusinessFunction.name(item.functionKey) : nil,
          project == nil ? item.projectKey : nil, "#\(item.number)"].compactMap { $0 }.joined(separator: " · ")
@@ -214,7 +215,7 @@ private struct BusinessProjectEditor: View {
                 }.accessibilityIdentifier("business-project-repository")
                 if let error { Text(error).foregroundStyle(BoardStyle.destructive) }
             }
-            .navigationTitle("Add project").inlineNavigationTitle().settingsBackground()
+            .navigationTitle("Add repository").inlineNavigationTitle().settingsBackground()
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
                 ToolbarItem(placement: .confirmationAction) { Button(busy ? "Adding…" : "Add") {
@@ -252,8 +253,8 @@ private struct BusinessWorkEditor: View {
                     }
                 }
                 if project == nil {
-                    Picker("Project", selection: $selectedProject) {
-                        Text("Across projects").tag("")
+                    Picker("Repository", selection: $selectedProject) {
+                        Text("All repositories").tag("")
                         ForEach(store.businessCatalog?.projects ?? []) { Text($0.displayName).tag($0.key) }
                     }
                 }

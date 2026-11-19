@@ -114,7 +114,7 @@ extension AppStore {
     func addBusinessProject(_ key: String) async throws {
         if isDemo { return }
         guard let repository = businessCatalog?.repositories.first(where: { $0.key == key }) else {
-            throw ServiceError.configuration("Choose a repository from Projects.")
+            throw ServiceError.configuration("Choose a repository.")
         }
         let generation = businessGeneration
         guard optimistically("business/\(generation)/project/\(key)", change: { transaction in

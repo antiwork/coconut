@@ -207,7 +207,7 @@ struct BusinessHomeContent: View {
                     }.accessibilityIdentifier("business-home-function-" + function.key).bento(3, 1, compact: (1, 1))
                 }
                 BentoLink(route: .projects) {
-                    BentoPlace(title: "Projects")
+                    BentoPlace(title: "Repositories")
                 }.accessibilityIdentifier("business-home-projects").bento(3, 1, compact: (1, 1))
                 BentoLink(route: .reports) {
                     BentoPlace(title: "History")
