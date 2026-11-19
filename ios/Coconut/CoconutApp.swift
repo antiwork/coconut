@@ -7,6 +7,19 @@ struct CoconutApp: App {
     @State private var store = AppStore()
     @Environment(\.scenePhase) private var scenePhase
 
+    init() {
+        // The counts of the tab bar take the green of each unread badge (UnreadBadge), not the red of the system.
+        let bar = UITabBarAppearance()
+        for layout in [bar.stackedLayoutAppearance, bar.inlineLayoutAppearance, bar.compactInlineLayoutAppearance] {
+            for state in [layout.normal, layout.selected] {
+                state.badgeBackgroundColor = UIColor(BoardStyle.green)
+                state.badgeTextAttributes = [.foregroundColor: UIColor(BoardStyle.controlLabel)]
+            }
+        }
+        UITabBar.appearance().standardAppearance = bar
+        UITabBar.appearance().scrollEdgeAppearance = bar
+    }
+
     var body: some Scene {
         WindowGroup {
             CoconutHome()
