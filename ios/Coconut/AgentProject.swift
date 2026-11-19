@@ -173,13 +173,11 @@ extension AppStore {
     }
 }
 
-/// The list of the agents: each agent as a project, with its role, its state, its open work and its last activity. The
-/// Mac window shows it as a place. The iPhone opens it from the project menu of Home.
+/// The list of the projects: each one with its role, its state, its open work and its last activity, then the pages of
+/// all of them. The Mac window shows it as a place. The iPhone opens it from the project menu of the message box.
 struct AgentsView: View {
     @Environment(AppStore.self) private var store
     @Environment(\.pushRoute) private var pushRoute
-    /// Opens the page of an agent. The Mac window selects it; without it the page goes onto the stack.
-    var open: ((String) -> Void)? = nil
 
     var body: some View {
         let projects = AgentProject.list(store.agentProjectInput)
@@ -195,7 +193,8 @@ struct AgentsView: View {
                 QuietEmptyState(symbol: "folder", title: "No projects yet",
                                 message: "Coconut, Gumroad and Personal show here when this Mac finds their Hermes profiles.")
             } else {
-                BoardSection("Projects", count: projects.count) {
+                // The bar of the iPhone and the title of the Mac page name the list, and the projects are always three.
+                BoardSection {
                     ForEach(projects) { project in
                         AgentProjectRow(project: project)
                             .boardButton("agent-" + project.id) { show(project.id) }
@@ -203,21 +202,8 @@ struct AgentsView: View {
                     }
                 }
             }
-            // One lane for each project with work on the Hermes board of the Mac: its queue, as on its page.
-            let lanes = projects.filter { !(store.queues[$0.id]?.isEmpty ?? true) }
-            if !lanes.isEmpty {
-                BoardSection("Queue", count: lanes.count) {
-                    ForEach(lanes) { project in
-                        let queue = store.queues[project.id] ?? AgentQueue()
-                        BoardRow(symbol: queue.running > 0 ? "circle.dotted" : queue.needsYou > 0 ? "circle.inset.filled" : "clock",
-                                 tint: queue.running > 0 ? BoardStyle.positive : queue.needsYou > 0 ? BoardStyle.attention : .secondary,
-                                 title: project.bot.name, detail: queue.summary, detailLines: 2)
-                            .boardButton("agent-queue-" + project.id) { show(project.id) }
-                    }
-                }
-            }
             // What the projects keep: their pages, and the chats that the person put away.
-            BoardSection("Library") {
+            BoardSection {
                 BoardRow(symbol: "rectangle.3.group", title: "All pages",
                          value: store.documents.map { "\($0.count)" })
                     .boardButton("agents-all-pages") { pushRoute?(AllPagesRoute()) }
@@ -238,11 +224,9 @@ struct AgentsView: View {
         .refreshable { await store.reconnect() }
     }
 
-    private func show(_ id: String) {
-        if let open { open(id) } else { pushRoute?(AgentRoute(botId: id)) }
-    }
+    private func show(_ id: String) { pushRoute?(AgentRoute(botId: id)) }
 
-    /// "5 agents · 2 working · 1 needs you".
+    /// "3 projects · 2 working · 1 needs you".
     static func detail(_ projects: [AgentProject]) -> String {
         let working = projects.filter { $0.status == .working }.count
         let waiting = projects.filter { $0.status == .needsYou }.count
@@ -324,8 +308,7 @@ struct AgentStatusLabel: View {
     }
 }
 
-/// The page of an agent, as the page of a project: a header with the icon, the name, the role, the state and the
-/// model, then Chat, To-dos, Pages, Routines and Settings.
+/// The page of a project: a header with the role and the state, then Chats, To-dos, Queue, Pages, Routines and Usage.
 struct AgentProjectView: View {
     @Environment(AppStore.self) private var store
     @Environment(\.pushRoute) private var pushRoute

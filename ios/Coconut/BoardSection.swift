@@ -64,15 +64,15 @@ struct BoardPageTitle: View {
     }
 }
 
-/// A titled group of rows on a surface: the title, the count of its rows, an optional action at the end of the title
-/// line, and the rows with a line between them.
+/// A group of rows on a surface: the title, the count of its rows, an optional action at the end of the title line,
+/// and the rows with a line between them. The one list of a page that its bar already names has no title.
 struct BoardSection<Rows: View, Action: View>: View {
-    let title: String
+    let title: String?
     var count = 0
     @ViewBuilder let action: () -> Action
     @ViewBuilder let rows: () -> Rows
 
-    init(_ title: String, count: Int = 0, @ViewBuilder action: @escaping () -> Action,
+    init(_ title: String?, count: Int = 0, @ViewBuilder action: @escaping () -> Action,
          @ViewBuilder rows: @escaping () -> Rows) {
         self.title = title
         self.count = count
@@ -82,15 +82,17 @@ struct BoardSection<Rows: View, Action: View>: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: BoardStyle.Space.s) {
-            HStack(spacing: BoardStyle.Space.s) {
+            if let title {
                 HStack(spacing: BoardStyle.Space.s) {
-                    Text(title).font(.subheadline.weight(.semibold)).foregroundStyle(.secondary)
-                    if count > 0 { CountPill(count: count) }
+                    HStack(spacing: BoardStyle.Space.s) {
+                        Text(title).font(.subheadline.weight(.semibold)).foregroundStyle(.secondary)
+                        if count > 0 { CountPill(count: count) }
+                    }
+                    .accessibilityElement(children: .combine)
+                    .accessibilityAddTraits(.isHeader)
+                    Spacer(minLength: 0)
+                    action().font(.subheadline).buttonStyle(.plain).foregroundStyle(.secondary)
                 }
-                .accessibilityElement(children: .combine)
-                .accessibilityAddTraits(.isHeader)
-                Spacer(minLength: 0)
-                action().font(.subheadline).buttonStyle(.plain).foregroundStyle(.secondary)
             }
             // The rows have a line between them. The section draws it, so a row knows nothing of its place.
             Group(subviews: rows()) { subviews in
@@ -108,7 +110,7 @@ struct BoardSection<Rows: View, Action: View>: View {
 }
 
 extension BoardSection where Action == EmptyView {
-    init(_ title: String, count: Int = 0, @ViewBuilder rows: @escaping () -> Rows) {
+    init(_ title: String? = nil, count: Int = 0, @ViewBuilder rows: @escaping () -> Rows) {
         self.init(title, count: count, action: { EmptyView() }, rows: rows)
     }
 }
