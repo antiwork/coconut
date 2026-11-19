@@ -144,11 +144,12 @@ struct SupportConversationView: View {
             ToolbarItem(placement: .primaryAction) {
                 Menu {
                     if conversation?.canReply == true, let state = conversation?.state {
+                        // Short labels: the narrow menu of an iPhone broke "Reopen conversation" with a hyphen.
                         if state == "open" {
-                            Button("Close conversation", systemImage: "checkmark.circle") { Task { await setState("closed") } }
+                            Button("Close", systemImage: "checkmark.circle") { Task { await setState("closed") } }
                                 .accessibilityIdentifier("support-close")
                         } else {
-                            Button("Reopen conversation", systemImage: "arrow.uturn.backward.circle") { Task { await setState("open") } }
+                            Button("Reopen", systemImage: "arrow.uturn.backward.circle") { Task { await setState("open") } }
                                 .accessibilityIdentifier("support-reopen")
                         }
                     }

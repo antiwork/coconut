@@ -38,7 +38,8 @@ struct GitHubItemView: View {
                          identifier: "github-comment") { text, key in await comment(text, key: key) }
             }
         }
-        .navigationTitle("#\(route.number)")
+        // A number of GitHub is a name, so it shows without the separator of an amount: #4731, not #4,731.
+        .navigationTitle(Text(verbatim: "#\(route.number)"))
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
                 Menu { menu } label: { Label("Actions", systemImage: "ellipsis.circle") }
@@ -65,7 +66,7 @@ struct GitHubItemView: View {
 
     private func header(_ item: GitHubItem) -> some View {
         VStack(alignment: .leading, spacing: BoardStyle.Space.s) {
-            Text("\(item.repository) #\(item.number)").font(.footnote.monospacedDigit()).foregroundStyle(.secondary)
+            Text(verbatim: "\(item.repository) #\(item.number)").font(.footnote.monospacedDigit()).foregroundStyle(.secondary)
                 .lineLimit(1).truncationMode(.middle)
             Text(item.title).font(.title3.weight(.semibold)).textSelection(.enabled)
                 .fixedSize(horizontal: false, vertical: true).accessibilityAddTraits(.isHeader)
@@ -411,7 +412,8 @@ struct GitHubFilesView: View {
     }
 }
 
-/// The lines of a unified patch in a monospaced font, each on the wash of its kind.
+/// The lines of a unified patch in a monospaced font, each on the wash of its kind. A long line scrolls sideways, as
+/// code does: a wrapped line of code broke words with hyphens.
 struct GitHubPatchLines: View {
     let patch: String
 
@@ -425,7 +427,8 @@ struct GitHubPatchLines: View {
                         .lineLimit(1).fixedSize()
                         .padding(.horizontal, BoardStyle.Space.m).padding(.vertical, 1)
                         .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(wash(line))
+                        // A plain color took rounded corners here, so each line drew as a pill.
+                        .background { Rectangle().fill(wash(line)) }
                 }
             }
             .padding(.vertical, BoardStyle.Space.xs)
@@ -464,12 +467,15 @@ struct ReplyBox: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: BoardStyle.Space.xs) {
+            // The line floats over the page as it scrolls under the box, so it sits in a capsule of its own.
             if let failure {
                 Text(failure).font(.caption).foregroundStyle(BoardStyle.destructive).fixedSize(horizontal: false, vertical: true)
-                    .padding(.horizontal, BoardStyle.Space.s)
+                    .padding(.horizontal, BoardStyle.Space.s).padding(.vertical, 3)
+                    .modifier(FloatingCapsule())
             } else if let note {
                 Text(note).font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
-                    .padding(.horizontal, BoardStyle.Space.s)
+                    .padding(.horizontal, BoardStyle.Space.s).padding(.vertical, 3)
+                    .modifier(FloatingCapsule())
             }
             HStack(alignment: .bottom, spacing: 0) {
                 TextField(placeholder, text: $text, axis: .vertical)
