@@ -106,22 +106,14 @@ struct BusinessWorkListView: View {
         if let function { return BusinessFunction.name(function) }
         return store.businessCatalog?.projects.first { $0.key == project }?.displayName ?? project ?? "Work"
     }
-    private var repository: BusinessRepository? {
-        if let function { return store.businessCatalog?.functions.first { $0.key == function }?.repository }
-        return store.businessCatalog?.projects.first { $0.key == project }
-    }
 
     var body: some View {
         BoardPage {
-            VStack(alignment: .leading, spacing: BoardStyle.Space.m) {
-                Picker("Work", selection: $state) {
-                    Text("Open").tag("open")
-                    Text("Completed").tag("closed")
-                }.pickerStyle(.segmented)
-                if let repository {
-                    Label(repository.fullName, systemImage: "folder").font(.caption).foregroundStyle(.secondary)
-                }
-            }
+            // The states of an issue, as GitHub and Support name them.
+            Picker("Work", selection: $state) {
+                Text("Open").tag("open")
+                Text("Closed").tag("closed")
+            }.pickerStyle(.segmented)
             if loading && shownItems.isEmpty { BoardLoading(title: "Loading work", height: 200) }
             BoardSection("Work", count: shownItems.count) {
                 // A row opens its issue in Coconut: its comments, a box to answer, and Close or Reopen (GitHubItemView).
@@ -133,7 +125,7 @@ struct BusinessWorkListView: View {
                     .accessibilityIdentifier("business-work-" + item.id)
                 }
                 if !loading && shownItems.isEmpty && error == nil {
-                    BoardEmptyRow(text: state == "open" ? "No open work yet." : "No completed work yet.")
+                    BoardEmptyRow(text: state == "open" ? "No open work." : "No closed work.")
                 }
             }
             if let error { BusinessConnectionNotice(message: error) }
