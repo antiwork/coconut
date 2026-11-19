@@ -226,24 +226,11 @@ struct AgentsView: View {
                         .boardButton("agents-archived") { pushRoute?(ArchivedAgentsRoute()) }
                 }
             }
-            // What the projects use: the work that runs now, the money, and the turns and tokens.
-            BoardSection("Usage") {
-                #if os(iOS)
-                // The iPhone Home has no tile for the agents that work now, so the page of the agents has the row.
-                // The symbol of the Live place, as its row of the Mac sidebar has it.
-                BoardRow(symbol: "dot.radiowaves.left.and.right", title: "Live", value: "\(LiveFeed.agents(bots: store.bots, tasks: store.tasks).count) working")
-                    .boardButton("agents-live") { pushRoute?(LiveRoute()) }
-                #endif
-                BoardRow(symbol: "dollarsign.circle", title: "Spend", value: store.spendTodayTotal)
-                    .boardButton("agents-spend") { pushRoute?(SpendRoute()) }
-                BoardRow(symbol: "chart.bar", title: "Usage")
-                    .boardButton("agents-usage") { pushRoute?(UsageRoute()) }
-            }
         }
         #if os(iOS)
         .navigationTitle("Projects").inlineNavigationTitle()
         #endif
-        // The page counts need the list of the pages, also before any page opens.
+        // The page counts need the list of the pages, also before any page opens. A row has the spend of its project.
         .task(id: store.connection == .connected) {
             if store.documents == nil { await store.loadDocuments(quiet: true) }
             await store.loadUsage()

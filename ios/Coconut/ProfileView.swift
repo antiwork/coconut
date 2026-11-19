@@ -58,10 +58,15 @@ struct ProfileView: View {
                 BoardRow(symbol: "link", title: "Connections", detail: "Google, GitHub and other tools")
                     .boardButton("mcp-settings") { pushRoute?(ProfileRoute.connections) }
             }
-            // What the projects use, in the order of the Projects page.
-            BoardSection("Usage") {
+            // What the agents do now, what they cost and what they use. The Mac has Live and Spend in its sidebar.
+            BoardSection("Agents") {
+                #if os(iOS)
+                BoardRow(symbol: "dot.radiowaves.left.and.right", title: "Live",
+                         value: "\(LiveFeed.agents(bots: store.bots, tasks: store.tasks).count) working")
+                    .boardButton("profile-live") { pushRoute?(LiveRoute()) }
                 BoardRow(symbol: "dollarsign.circle", title: "Spend", value: store.spendTodayTotal)
                     .boardButton("profile-spend") { pushRoute?(SpendRoute()) }
+                #endif
                 BoardRow(symbol: "chart.bar", title: "Usage")
                     .boardButton("profile-usage") { pushRoute?(UsageRoute()) }
             }
@@ -86,10 +91,12 @@ struct ProfileView: View {
         #if os(iOS)
         .navigationTitle("You").inlineNavigationTitle()
         #endif
-        // The Spend row has the cost of today, as on the Projects page, so Profile reads the usage. The Team row names
-        // the team, so Profile reads the teams of a connected Mac.
+        // The Spend row of the iPhone has the cost of today, so You reads the usage there. The Team row names the team,
+        // so You reads the teams of a connected Mac.
         .task(id: store.connection) {
+            #if os(iOS)
             await store.loadUsage()
+            #endif
             if store.connection == .connected { await store.loadTeam() }
         }
     }
