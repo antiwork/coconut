@@ -176,15 +176,18 @@ struct BusinessHomeContent: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: BoardStyle.Space.l) {
-            VStack(alignment: .leading, spacing: BoardStyle.Space.xs) {
-                Text(model.freshness)
-                    .foregroundStyle(model.freshnessWarning ? AnyShapeStyle(BoardStyle.attention) : AnyShapeStyle(.secondary))
-                    .accessibilityIdentifier("business-home-freshness")
-                if model.currentStatusUnknown {
-                    Text("Unknown")
-                        .foregroundStyle(.secondary).accessibilityIdentifier("business-home-stale")
-                }
-            }.font(.caption)
+            // Fresh numbers need no line. An old snapshot, or one that a refresh could not replace, says its age.
+            if model.freshnessWarning || model.currentStatusUnknown {
+                VStack(alignment: .leading, spacing: BoardStyle.Space.xs) {
+                    Text(model.freshness)
+                        .foregroundStyle(model.freshnessWarning ? AnyShapeStyle(BoardStyle.attention) : AnyShapeStyle(.secondary))
+                        .accessibilityIdentifier("business-home-freshness")
+                    if model.currentStatusUnknown {
+                        Text("Unknown")
+                            .foregroundStyle(.secondary).accessibilityIdentifier("business-home-stale")
+                    }
+                }.font(.caption)
+            }
             BentoBoard {
                 gmv.bento(8, 3, compact: (2, 3))
                 attention.bento(4, 3, compact: (2, nil))

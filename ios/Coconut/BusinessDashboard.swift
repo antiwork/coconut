@@ -43,7 +43,7 @@ struct BusinessReportView: View {
     var body: some View {
         BoardPage(width: .wide, spacing: BoardStyle.Space.l) {
             if let report = shownReport {
-                BusinessReportContent(key: key, report: report, sample: store.isDemo) { details = true }
+                BusinessReportContent(key: key, report: report) { details = true }
             } else if error == nil {
                 BoardLoading(title: "Loading report", height: 360)
             }
@@ -73,16 +73,15 @@ struct BusinessReportView: View {
     }
 }
 
-/// One report without its scroll view: the status line, the grid of its kind and the source.
+/// One report without its scroll view: a line for a snapshot that is old, the grid of its kind, and the door to its
+/// tables. A fresh snapshot has no line: the numbers are the page.
 struct BusinessReportContent: View {
     let key: String
     let report: BusinessReport
-    var sample = false
     var explore: () -> Void = {}
 
     var body: some View {
         VStack(alignment: .leading, spacing: BoardStyle.Space.l) {
-            status
             if report.stale {
                 Label(report.generatedAt == nil ? "This snapshot has no timestamp. Its freshness is unknown." : "This snapshot is over an hour old. Check the publisher before acting.", systemImage: "clock.badge.exclamationmark")
                     .font(.footnote).foregroundStyle(BoardStyle.attention)
@@ -100,19 +99,6 @@ struct BusinessReportContent: View {
                 Button("Explore all data", systemImage: "tablecells", action: explore).buttonStyle(.borderless)
             }.font(.caption).foregroundStyle(.secondary)
         }
-    }
-
-    /// One quiet line in place of a headline: how fresh the snapshot is and what its numbers are.
-    private var status: some View {
-        HStack(spacing: BoardStyle.Space.s) {
-            Circle().fill(report.stale ? BoardStyle.attention : BoardStyle.positive).frame(width: 7, height: 7).accessibilityHidden(true)
-            Text(report.generatedAt?.apiDate.map { BusinessFormat.time($0) } ?? "Unknown")
-            Spacer(minLength: BoardStyle.Space.s)
-            if sample {
-                Text("Sample data").font(.caption2.weight(.semibold)).padding(.horizontal, BoardStyle.Space.s).padding(.vertical, BoardStyle.Space.xs)
-                    .background(Color.primary.opacity(0.07), in: Capsule())
-            }
-        }.font(.caption).foregroundStyle(.secondary).lineLimit(1)
     }
 }
 
