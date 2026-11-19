@@ -201,17 +201,7 @@ struct BusinessHomeContent: View {
                     .accessibilityIdentifier("business-home-run-rate").bento(3, 1, compact: (1, 1))
                 BentoStat(title: "Daily average", value: reportNumber(model.dailyAverage, money: true), size: .medium)
                     .accessibilityIdentifier("business-home-daily-average").bento(3, 1, compact: (1, 1))
-                ForEach(Self.functions) { function in
-                    BentoLink(route: .function(function.key)) {
-                        BentoPlace(title: function.name)
-                    }.accessibilityIdentifier("business-home-function-" + function.key).bento(3, 1, compact: (1, 1))
-                }
-                BentoLink(route: .projects) {
-                    BentoPlace(title: "Repositories")
-                }.accessibilityIdentifier("business-home-projects").bento(3, 1, compact: (1, 1))
-                BentoLink(route: .reports) {
-                    BentoPlace(title: "History")
-                }.accessibilityIdentifier("business-home-history").bento(3, 1, compact: (1, 1))
+                places.bento(12, nil, compact: (2, nil))
             }
         }.foregroundStyle(BoardStyle.ink)
     }
@@ -219,6 +209,30 @@ struct BusinessHomeContent: View {
     /// Support is a place of its own, a tab of the iPhone and a row of the Mac sidebar, so Finance opens the other
     /// functions.
     private static let functions = BusinessFunction.builtIns.filter { $0.key != "support" }
+    /// The places that Finance opens, as the rows of one tile: a name needs no tile of its own.
+    private var places: some View {
+        let rows = Self.functions.map { (title: $0.name, route: BusinessRoute.function($0.key), id: "function-" + $0.key) }
+            + [(title: "Repositories", route: .projects, id: "projects"), (title: "History", route: .reports, id: "history")]
+        return BentoTile(padding: 0) {
+            VStack(spacing: 0) {
+                ForEach(Array(rows.enumerated()), id: \.element.id) { index, row in
+                    if index > 0 { Divider().padding(.leading, BoardStyle.Space.l) }
+                    NavigationLink(value: row.route) {
+                        HStack(spacing: BoardStyle.Space.s) {
+                            Text(row.title)
+                            Spacer(minLength: 0)
+                            BentoChevron()
+                        }
+                        .padding(.horizontal, BoardStyle.Space.l).padding(.vertical, BoardStyle.Space.m)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(HomePressStyle())
+                    .accessibilityIdentifier("business-home-" + row.id)
+                }
+            }
+        }
+    }
+
 
     private var urgent: Bool { model.attention.contains { !$0.unavailable } }
     private var attention: some View {

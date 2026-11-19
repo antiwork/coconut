@@ -322,26 +322,6 @@ struct BentoStat: View {
     }
 }
 
-/// A tile that names a place and opens it: a function, the projects, History. It has the name and nothing under it,
-/// as a tile of a number has its name and its number.
-struct BentoPlace: View {
-    let title: String
-
-    var body: some View {
-        BentoTile {
-            VStack(alignment: .leading, spacing: 0) {
-                HStack(alignment: .top) {
-                    Spacer(minLength: 0)
-                    BentoChevron()
-                }
-                Spacer(minLength: BoardStyle.Space.s)
-                Text(title).font(.headline).lineLimit(1)
-            }
-        }
-        .accessibilityElement(children: .combine)
-    }
-}
-
 extension View {
     /// A segmented control over a grid: its own width at the leading edge on the Mac, the whole width on an iPhone.
     func bentoLeadingControl() -> some View {
