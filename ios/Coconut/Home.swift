@@ -76,13 +76,13 @@ enum HomeFeed {
         }
     }
 
-    /// The count of the Chats tab of the iPhone: the unread messages of every chat (ChatList.all), and the notices of
-    /// the teams that the person did not see. A muted chat and an archived chat count none. The cards that wait count
-    /// on Product.
+    /// The count of the Chats tab of the iPhone: the unread messages of every chat (ChatList.all), which is what its
+    /// rows show. A muted chat and an archived chat count none. The cards that wait and the notices that hold work
+    /// count on Product.
     static func chatsBadge(bots: [Bot], rooms: [TeamRoom], local: [TeamChatKey: TeamLastMessage] = [:]) -> Int {
         let chats = bots.filter { !$0.archived }.map(ChatListItem.bot) + ChatList.pinnedChats(rooms)
             + ChatList.people(rooms, local: local) + ChatList.botDirects(rooms, local: local)
-        return chats.reduce(0) { $0 + $1.unreadCount } + rooms.reduce(0) { $0 + $1.unseenNotices }
+        return chats.reduce(0) { $0 + $1.unreadCount }
     }
 
     /// "In progress": the turns that run now, then the open To-dos (AgentTodos), then the active notices of the

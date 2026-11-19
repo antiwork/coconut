@@ -140,7 +140,7 @@ struct CoconutHome: View {
                 root(tab: .chats, path: $chatsPath)
             } label: {
                 Label { Text("Chats") } icon: { Image(systemName: "bubble.left.and.bubble.right.fill") }
-            // The cards that wait count on Product, so this badge has the unread chats and notices only.
+            // The cards and the notices that wait count on Product, so this badge has the unread chats only.
             }.badge(HomeFeed.chatsBadge(bots: store.bots, rooms: store.shownTeamRooms, local: store.newestLocalMessages))
                 .accessibilityIdentifier("home-chats")
             Tab(value: HomeTab.profile) {
