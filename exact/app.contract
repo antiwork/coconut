@@ -7,7 +7,7 @@
 // Theme.swift. The rows write its values out, because the SDK snapshot that Exact Build compiles with (2026-11-14)
 // refuses a token name as a colour; name the tokens again once its catalog is newer.
 // Colours, fonts, sizes and the safe area are the platform's unless a row says otherwise.
-use Ack, Chat, Home, Live, Made, PairCode, PairState, Saved, Sock, Time from "./shapes.contract"
+use Ack, Chat, DeliveryState, Home, Live, Made, PairCode, PairState, Saved, Sock, Time from "./shapes.contract"
 use ArtifactCard, AttentionRow, Bubble, ChatRowView, DecisionCard, Face, NoticeCard, OptionButton, WorkingLine from "./parts.contract"
 
 routes nav
@@ -37,6 +37,8 @@ component Coconut
   // The pairings that the screens have read from the Keychain: a pairing or an unpairing in `live` moves it.
   state pairsRead = 0
   resource time = exactTime() as shape Time
+  // The update that runs, and whether a newer one waits to apply.
+  resource delivery = exactDelivery() as shape DeliveryState
   resource saved = loadSaved(pairsRead) as shape Saved else empty()
   resource code = pairCode(codeRound) when mode == "pair" as shape PairCode else empty()
   resource pairing = pairWait(code.id, poll) when mode == "pair" and code.id != "" as shape PairState else empty()
@@ -56,8 +58,10 @@ component Coconut
   mutation effortSet as shape Ack refreshes chat
   derive now = time.epochAtZero + since
   derive mode = demo ? "demo" : saved.paired ? "live" : "pair"
-  // What the round connects for: the Mac's state, or the pairing of a setup that came into the box of the code.
-  derive connectKey = mode == "live" ? `token:${round}` : mode == "pair" and pairing.status == "ready" ? `pair:${pairing.id}` : ""
+  // What the round connects for: the Mac's state, or the pairing of a setup that came into the box of the code. An
+  // update that applies brings a new data module, which has no socket or handshake of the old one, so the number of the
+  // update is part of the round.
+  derive connectKey = mode == "live" ? `token:${delivery.seq}:${round}` : mode == "pair" and pairing.status == "ready" ? `pair:${pairing.id}` : ""
   derive pairText = code.code == "" ? "" : `pair ${code.code}`
   derive pairStatus = code.error != "" ? code.error : pairing.status == "ready" ? (live.error != "" ? live.error : `Pairing with ${pairing.macName}…`) : pairing.status == "expired" ? "This code expired." : pairing.status == "error" ? pairing.error : code.code == "" ? "" : "Waiting for your Mac…"
   derive pairFailed = code.error != "" or pairing.status == "expired" or pairing.status == "error" or (pairing.status == "ready" and live.error != "")
@@ -76,8 +80,10 @@ component Coconut
   action tick
     since = performanceNow()
 
-  // Every 15 seconds: the Mac's state again, or a new round when the socket closed or the last try failed.
-  task syncing when mode == "live"
+  // Every 15 seconds: the Mac's state again, or a new round when the socket closed or the last try failed. A read is
+  // never asked again while it runs: that lets it go with its timeout, so a socket that died while the phone slept kept
+  // a read running for good. An update applies only when no request runs, so no read starts while one waits.
+  task syncing when mode == "live" and not pending(live) and not delivery.staged
     every(15000, resync)
   action resync
     if sock.status == "closed" or live.error != "" or (connectKey != "" and ticket == "" and not pending(ticket))

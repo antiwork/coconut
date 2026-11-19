@@ -55,7 +55,8 @@ wakes the answer that waits; the handshake and the frames run in answers that `a
 A waiting answer goes on only when another answer is asked, so `deliver` is asked for each event of the socket. An
 answer may send on the socket only in its own turns, which Exact restores after an `await`: chain requests with
 `await`, never with a plain `.then`. Every 15 seconds the app reads the state again, or starts a new round when the
-socket closed or the last try failed.
+socket closed or the last try failed; it never asks for a read again while one runs, which would let that read go
+with its timeout.
 
 What a chat of the Mac does here: its messages, cards and files, the working line, Send (words only: no attachments),
 answers to cards, Stop and read marks. It does not change the model or the effort, make projects (they are fixed),
@@ -74,7 +75,12 @@ On a phone. Gianfranco installed build 0.1.0 (5) from AppDrop on his iPhone on 2
 issue #573 (the pairing, his chats, a chat, Send, a card, Stop and a relaunch) as done. AppDrop's sign-in to Apple
 failed twice before that with "Couldn't sign in to Apple", and an app-specific password got the install through. The
 first update of that build's stream titles the list of Home Chats, as the Swift app does; it checks that updates reach
-a phone.
+a phone. It reached his iPhone, but the title read Chats only after he quit the app and opened it again. An update
+that carries `app.ts` applies only when no request runs, and the 15-second read was asked again whether or not the
+last one had ended: asking again lets the last read go with its timeout, so a socket that died while the phone was in
+the background kept a read running for good, and the update waited for the next launch. Now `syncing` starts no read
+while one runs or while an update waits (`exactDelivery().staged`), and the number of the running update is part of
+the round, so the new data module of an applied update opens its own socket instead of waiting on the old one's.
 
 ## What was checked, and what was not
 
@@ -130,7 +136,8 @@ The target of Exact is 100 ms from saving an edit to seeing it, on the web host 
    makes a release binary with an update store on GitHub's `xcode-27` runner (an IPA in the artifact
    `coconut-exact-ipa`, which goes to AppDrop with `npx appdrop app.ipa --update <link>`) and publishes nothing.
    `push` publishes the Contract, the assets and `app.ts` to every installed binary that can take them, which takes
-   them the next time the app comes to the foreground (`deploy.activate` is `immediate`); `check` prints what `push`
+   them the next time the app comes to the foreground (`deploy.activate` is `immediate`) and no request runs: the app
+   starts no read while an update waits, and a launch boots one that could not apply; `check` prints what `push`
    would publish and publishes nothing. A stream is one binary's line of updates (a compatibility id). The first push
    after a build starts the stream of the new binary from its build receipt (`receipt.json` in the IPA, taken from the
    newest artifact), and later pushes find it on the origin. Its first update reloads the app once, as every update

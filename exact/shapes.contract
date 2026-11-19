@@ -5,6 +5,12 @@ shape Time
   epochAtZero: number
   utcOffset: number
 
+// What the binary knows of its updates (`exactDelivery()`): the number of the update that runs, and whether a newer one
+// is downloaded and waits to apply.
+shape DeliveryState
+  seq: number
+  staged: bool
+
 // Where a message can go: an agent, which the app calls a project.
 shape Project
   id: string
