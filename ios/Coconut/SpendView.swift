@@ -82,7 +82,7 @@ struct SpendView: View {
         }
         return BentoTile {
             VStack(alignment: .leading, spacing: BoardStyle.Space.s) {
-                BentoLabel("Cost by day")
+                BentoLabel("Spend by day")
                 Chart(points) { point in
                     BarMark(x: .value("Day", point.date, unit: .day), y: .value("Cost", point.cost), width: .ratio(0.72))
                         .foregroundStyle(by: .value("Project", point.series))
@@ -102,7 +102,7 @@ struct SpendView: View {
                     }
                 }
                 .frame(maxHeight: .infinity)
-                .accessibilityLabel("Cost by day, by project")
+                .accessibilityLabel("Spend by day, by project")
             }
         }
         .accessibilityIdentifier("spend-daily")
@@ -129,7 +129,7 @@ struct SpendView: View {
                         BentoNumber(summary.costKnown ? UsageMath.cost(summary.cost) : UsageMath.count(summary.tokens), size: .small)
                     }
                     .frame(maxWidth: .infinity, minHeight: 90, maxHeight: .infinity)
-                    .accessibilityLabel("Cost by model")
+                    .accessibilityLabel("Spend by model")
                     VStack(alignment: .leading, spacing: BoardStyle.Space.xs) {
                         ForEach(Array(models.enumerated()), id: \.element.id) { index, model in
                             HStack(spacing: BoardStyle.Space.s) {

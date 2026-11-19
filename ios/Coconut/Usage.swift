@@ -110,7 +110,7 @@ enum UsageMetric: String, CaseIterable, Identifiable, Sendable {
     var title: String {
         switch self {
         case .tokens: "Tokens"
-        case .cost: "Cost"
+        case .cost: "Spend"
         case .turns: "Turns"
         case .tools: "Tool calls"
         case .time: "Time working"

@@ -234,7 +234,7 @@ struct UsageView: View {
             UsageStat(title: "Turns", value: UsageMath.count(total.turns)),
             UsageStat(title: "Tokens in", value: UsageMath.count(total.tokensIn)),
             UsageStat(title: "Tokens out", value: UsageMath.count(total.outputTokens)),
-            UsageStat(title: "Cost", value: summary.cost, detail: summary.costNote),
+            UsageStat(title: "Spend", value: summary.cost, detail: summary.costNote),
             UsageStat(title: "Time working", value: UsageMath.duration(total.workingSeconds)),
             UsageStat(title: "Tool calls", value: UsageMath.count(total.toolCalls)),
         ]
