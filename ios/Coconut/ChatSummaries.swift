@@ -17,14 +17,10 @@ struct BotChatSummary: Equatable, Sendable {
 /// messages. A row reads only its summary, so it redraws only when a summary changes.
 struct ChatSummaries: Equatable, Sendable {
     private var bots: [String: BotChatSummary] = [:]
-    /// The date of the newest message of each bot, as `ChatList.lastMessageDates` gives it.
+    /// The date of the newest message of each bot. A reaction is no activity.
     private(set) var newestActivity: [String: Date] = [:]
 
     init() {}
-
-    init(_ messages: [Message]) {
-        self = ChatSummaries().updated(from: [], to: messages)
-    }
 
     subscript(botId: String) -> BotChatSummary { bots[botId] ?? BotChatSummary() }
 

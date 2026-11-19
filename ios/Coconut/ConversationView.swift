@@ -764,7 +764,6 @@ struct MessageBubble: View {
     @State private var editingOutgoing: OutgoingMessage?
     @State private var held = false
     @State private var forwarding = false
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let message: Message
     var scrollToDecision: (String) -> Void = { _ in }
     var onReply: (() -> Void)? = nil
@@ -1040,7 +1039,6 @@ private struct RejectedMessageEditor: View {
 
 struct ConversationComposer: View {
     @Environment(AppStore.self) private var store
-    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     let bot: Bot
     let task: AgentTask?
     @Binding var text: String

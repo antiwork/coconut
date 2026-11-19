@@ -15,7 +15,6 @@ extension Array where Element == Bot {
 /// The bar at the top of the Coconut chat: where Coconut runs, and the few things that need this device itself.
 /// Everything else changes when the person asks in the chat (coconut_settings).
 struct CoconutChatBar: View {
-    @Environment(AppStore.self) private var store
     @State private var mode = CoconutMode.local
     @State private var cloudNote = false
     @State private var sheet: Sheet?

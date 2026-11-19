@@ -100,7 +100,7 @@ struct AgentProject: Identifiable, Equatable {
         var decisions: [Decision] = []
         var answering: Set<String> = []
         var tasks: [AgentTask] = []
-        /// The date of the newest message of each agent (ChatList.lastMessageDates).
+        /// The date of the newest message of each agent (ChatSummaries).
         var latest: [String: Date] = [:]
     }
 

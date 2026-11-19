@@ -72,7 +72,6 @@ struct BusinessReport: Codable, Sendable {
     var stale: Bool { generatedAt?.apiDate.map { Date().timeIntervalSince($0) > 3600 } ?? true }
 
     static let titles = ["overview": "Finance", "accounting": "Accounting", "support": "Support", "risk": "Risk", "engineering": "Engineering", "periods": "History"]
-    static let keys = ["overview", "accounting", "support", "risk", "engineering", "periods"]
     /// The file of the overview of Finance. Its breaches count on Product (TodosCount), so the app keeps the last
     /// overview for its next start, and the count does not drop until the Mac answers. A new pairing and another
     /// GitHub account remove it (resetBusiness).

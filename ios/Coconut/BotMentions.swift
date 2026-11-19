@@ -52,8 +52,7 @@ enum BotMentions {
         return BotMentionQuery(range: at..<end, text: query)
     }
 
-    static func candidates<B: MentionableBot>(in bots: [B], text: String, selection: TextSelection?,
-                                              selected: [SelectedBotMention]) -> [B] {
+    static func candidates<B: MentionableBot>(in bots: [B], text: String, selection: TextSelection?) -> [B] {
         guard let query = query(in: text, selection: selection) else { return [] }
         return bots.filter { $0.isMentionable && (query.text.isEmpty || $0.name.range(of: query.text, options: [.anchored, .caseInsensitive, .diacriticInsensitive]) != nil) }
     }
@@ -232,7 +231,7 @@ struct BotMentionControls<B: MentionableBot>: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             if focused {
-                BotMentionPicker(bots: BotMentions.candidates(in: bots, text: text, selection: selection, selected: selected)) { bot in
+                BotMentionPicker(bots: BotMentions.candidates(in: bots, text: text, selection: selection)) { bot in
                     guard let query = BotMentions.query(in: text, selection: selection) else { return }
                     let prefixCount = text.distance(from: text.startIndex, to: query.range.lowerBound)
                     let replacement = "@\(bot.name) "

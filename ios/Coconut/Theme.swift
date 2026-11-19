@@ -243,12 +243,6 @@ enum BusinessFormat {
         money ? Self.money(value) : compact(value)
     }
 
-    /// A published count of things: `1,284`.
-    static func count(_ value: Double?) -> String {
-        guard let value, value.isFinite else { return "—" }
-        return whole(value)
-    }
-
     /// `51.8%`, or `+2.3%` when the sign carries the meaning.
     static func percent(_ value: Double?, signed: Bool = false) -> String {
         guard let value, value.isFinite else { return "—" }

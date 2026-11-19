@@ -14,11 +14,6 @@ struct PairingCode: Equatable, Sendable {
         Self(bytes: Data((0..<16).map { _ in UInt8.random(in: .min ... .max) }))
     }
 
-    init?(text: String) {
-        guard text.count == 26, let bytes = Data(base32: text.lowercased()), bytes.count == 16 else { return nil }
-        self.bytes = bytes
-    }
-
     // 26 characters of unpadded lowercase base32. No redaction rule of Hermes matches it.
     var text: String { bytes.base32String }
 
@@ -29,13 +24,6 @@ struct PairingCode: Equatable, Sendable {
     func open(_ sealed: Data) throws -> Data {
         try ChaChaPoly.open(ChaChaPoly.SealedBox(combined: sealed), using: boxKey, authenticating: boxID)
     }
-
-    #if DEBUG
-    // The tests seal a setup as the Mac does.
-    func seal(_ setup: Data) throws -> Data {
-        try ChaChaPoly.seal(setup, using: boxKey, authenticating: boxID).combined
-    }
-    #endif
 
     // The message that the person sends to Hermes. Resources/hermes-pairing-message.txt holds the text.
     var hermesMessage: String {

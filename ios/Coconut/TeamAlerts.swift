@@ -31,11 +31,6 @@ struct TeamAlert: Decodable, Equatable, Sendable {
     var type: String
     var level: TeamAlertLevel
 
-    init(type: String, level: TeamAlertLevel = .notice) {
-        self.type = type
-        self.level = level
-    }
-
     /// An alert that does not fit the rules decodes to an error, and its message then shows as a plain message.
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
@@ -72,12 +67,6 @@ struct TeamAlertSummary: Decodable, Equatable, Sendable {
 
         var id: String { type }
 
-        init(type: String, count: Int, critical: Int = 0) {
-            self.type = type
-            self.count = count
-            self.critical = critical
-        }
-
         init(from decoder: Decoder) throws {
             let container = try decoder.container(keyedBy: CodingKeys.self)
             type = try container.decode(String.self, forKey: .type)
@@ -91,12 +80,6 @@ struct TeamAlertSummary: Decodable, Equatable, Sendable {
     var total: Int
     var critical: Int
     var types: [TypeCount]
-
-    init(total: Int, critical: Int, types: [TypeCount]) {
-        self.total = total
-        self.critical = critical
-        self.types = types
-    }
 
     /// A type that the app cannot read drops only that type.
     init(from decoder: Decoder) throws {

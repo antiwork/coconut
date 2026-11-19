@@ -272,13 +272,6 @@ enum TeamChatMenuItem: Equatable {
         [TeamChatPin.listAction(item).map(TeamChatMenuItem.pin),
          TeamChatMute.listAction(item).map(TeamChatMenuItem.mute)].compactMap { $0 }
     }
-
-    var label: String {
-        switch self {
-        case .pin(let action): action.label
-        case .mute(let action): action.label
-        }
-    }
 }
 
 /// Which person makes, renames and deletes the named chats of a team: the admin of an active team, as the service says
@@ -776,7 +769,6 @@ struct TeamReactionSummary: Equatable {
 
     /// What VoiceOver reads: "Reactions: 2 thumbs up, 1 heart".
     let spoken: String
-    var text: String { emoji.joined() + (count > 1 ? " \(count)" : "") }
 }
 
 /// One person in the list of the reactions on a message.
@@ -1035,12 +1027,6 @@ struct TeamMessagePage: Decodable, Sendable {
     var before: Int?
     /// The alerts of the whole chat, for its filter. Only the newest page has them, and only from a Mac with alerts.
     var alerts: TeamAlertSummary?
-
-    init(messages: [TeamMessage], before: Int?, alerts: TeamAlertSummary? = nil) {
-        self.messages = messages
-        self.before = before
-        self.alerts = alerts
-    }
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
@@ -1381,10 +1367,7 @@ enum TeamNames {
         return peer ?? quote.memberName ?? formerMember
     }
 
-    /// The writer of a message of the Team chat, for a quote of a reply in the composer and for VoiceOver.
-    static func author(of message: TeamMessage) -> String { author(of: message, peer: nil) }
-
-    /// The writer of a message of a chat. `peer` as above.
+    /// The writer of a message of a chat, for a quote of a reply in the composer and for VoiceOver. `peer` as above.
     static func author(of message: TeamMessage, peer: String?) -> String {
         if message.bot != nil { return message.botName ?? "Agent" }
         if message.isOwn { return "You" }
@@ -1544,9 +1527,6 @@ enum ChatListItem: Identifiable, Equatable {
         }
     }
 
-    /// The room of a team or a direct chat. Nil for a bot.
-    var room: String? { chat?.room }
-
     /// A chat of a team that this person pinned (TeamChatPin). It shows at the top of the Chats list.
     var isPinnedChat: Bool {
         if case .team(let room) = self { return room.chatPinned }
@@ -1566,16 +1546,6 @@ enum ChatListItem: Identifiable, Equatable {
 }
 
 enum ChatList {
-    /// The date of the newest message of each bot, in one pass over the messages. A reaction is no activity.
-    static func lastMessageDates(_ messages: [Message]) -> [String: Date] {
-        var latest: [String: Date] = [:]
-        for message in messages where message.reactionEvent == nil {
-            guard let date = message.createdAt.apiDate else { continue }
-            if latest[message.botId].map({ date > $0 }) ?? true { latest[message.botId] = date }
-        }
-        return latest
-    }
-
     /// The bots and the chats of the teams in one list, newest activity first. Both are in that order already. The
     /// activity of a team is its newest message, or the time when this Mac made or joined it, the activity of a named
     /// chat is its newest message or the time of the chat, and the activity of a direct chat is its newest message. A
@@ -1679,14 +1649,8 @@ struct ChatSections: Equatable {
     /// The bots that are not pinned (`.bot`) and the direct chats with a bot of a team (`.botDirect`).
     var bots: [ChatListItem]
 
-    /// One pass over the messages. A section without rows does not show. A starred agent stays in "Starred", also with
-    /// an unread message, as in Slack.
-    static func make(bots: [Bot], messages: [Message], rooms: [TeamRoom],
-                     local: [TeamChatKey: TeamLastMessage] = [:]) -> ChatSections {
-        make(bots: bots, latest: ChatList.lastMessageDates(messages), rooms: rooms, local: local)
-    }
-
-    /// `latest` is the date of the newest message of each bot (ChatList.lastMessageDates). The chat `keeping` (a
+    /// A section without rows does not show. A starred agent stays in "Starred", also with an unread message, as in
+    /// Slack. `latest` is the date of the newest message of each bot (ChatSummaries). The chat `keeping` (a
     /// ChatListItem ID) stays in "Unread" without unread messages: the chat that the person opened from there keeps
     /// its row while it is open, as in Slack, so the read does not move the row away from under the pointer.
     static func make(bots: [Bot], latest: [String: Date], rooms: [TeamRoom],
@@ -1749,8 +1713,8 @@ enum AgentTodos {
 }
 
 extension ChatListItem {
-    /// The newest activity of the chat. `latest` is the date of the newest message of each bot
-    /// (ChatList.lastMessageDates). Home sorts its unread chats by it.
+    /// The newest activity of the chat. `latest` is the date of the newest message of each bot (ChatSummaries).
+    /// Home sorts its unread chats by it.
     func activity(latest: [String: Date]) -> Date {
         if case .bot(let bot) = self { return latest[bot.id] ?? bot.createdAt.apiDate ?? .distantPast }
         return teamActivity
@@ -1871,12 +1835,6 @@ enum TeamMentions {
     static func bots(of room: TeamRoom) -> [TeamRoomBot] {
         var seen = Set<String>()
         return room.botList.filter { $0.isOpen && seen.insert($0.id).inserted }
-    }
-
-    /// The `mentions` of a send: the ID of each row of the list that the text still names, one time each, in text
-    /// order. A bot gives its `t-` ID, and a person its member ID.
-    static func ids(in text: String, selected: [SelectedBotMention], room: TeamRoom) -> [String] {
-        BotMentions.recipients(in: text, selected: selected, bots: targets(of: room)).map(\.id)
     }
 }
 

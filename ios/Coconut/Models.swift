@@ -121,8 +121,6 @@ struct ModelOverride: Codable, Equatable, Sendable {
         try values.encode(provider, forKey: .provider)
         try values.encode(reasoningEffort, forKey: .reasoningEffort)
     }
-
-    var selectionKey: String { provider + "\u{1f}" + model }
 }
 
 struct ModelDefaults: Codable, Equatable, Sendable {
@@ -544,16 +542,6 @@ struct RoutineGroups: Equatable {
     }
 }
 
-struct LearningGroup: Codable, Identifiable, Equatable, Sendable {
-    var botId: String
-    var actionType: String
-    var total: Int
-    var agreed: Int
-    var agreement: Double
-    var suggestion: String?
-    var id: String { botId + ":" + actionType }
-}
-
 struct StateSnapshot: Codable, Sendable {
     var syncVersion: Int? = nil
     var contentOnly: Bool? = nil
@@ -729,8 +717,6 @@ final class TextCache<Value: Sendable>: Sendable {
         }
         return value
     }
-
-    var count: Int { values.withLock(\.count) }
 }
 
 struct ApprovalMode: Codable, Identifiable, Equatable, Sendable {
@@ -743,7 +729,6 @@ struct ApprovalSettings: Codable, Equatable, Sendable {
     let defaults: String
     let modes: [ApprovalMode]
     enum CodingKeys: String, CodingKey { case defaults = "default", modes }
-    func label(for value: String?) -> String { modes.first { $0.id == value }?.label ?? "Hermes default" }
 }
 
 struct MCPServer: Codable, Identifiable, Equatable, Sendable {
@@ -776,9 +761,6 @@ struct FallbackSettings: Codable, Equatable, Sendable {
 struct FallbackModel: Codable, Equatable, Hashable, Sendable {
     var model: String
     var provider: String
-
-    var selection: ModelOverride { ModelOverride(model: model, provider: provider, reasoningEffort: nil) }
-    var selectionKey: String { selection.selectionKey }
 }
 
 /// The position of the first message with each ID and each client request ID. AppStore makes it again each time its

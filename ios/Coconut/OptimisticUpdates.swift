@@ -83,10 +83,6 @@ final class OptimisticUpdates {
         tails[resource] = (id, task)
     }
 
-    func wait() async {
-        while let task = tails.values.first?.1 { await task.value }
-    }
-
     /// Execution waits for settings that the UI already shows. A failed prerequisite keeps the work unsent.
     func wait(for resource: String) async -> Bool {
         let epoch = epoch

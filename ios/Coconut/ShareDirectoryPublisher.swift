@@ -60,7 +60,7 @@ enum ShareFaces {
     static let size: CGFloat = 40
     private static var cache: [String: Data] = [:]
 
-    static func face(of destination: ShareDestination, bots: [Bot], rooms: [TeamRoom]) -> Data? {
+    static func face(of destination: ShareDestination, rooms: [TeamRoom]) -> Data? {
         let room = rooms.first { $0.room == destination.room }
         switch destination.kind {
         case .agent:
@@ -102,7 +102,7 @@ extension AppStore {
         guard hasPairing || isDemo, !destinations.isEmpty else { return nil }
         let defaultId = ShareDirectoryBuilder.defaultId(bots: bots, messages: messages, among: destinations)
         for index in destinations.indices {
-            destinations[index].face = ShareFaces.face(of: destinations[index], bots: bots, rooms: rooms)
+            destinations[index].face = ShareFaces.face(of: destinations[index], rooms: rooms)
         }
         return ShareDirectory(destinations: destinations, defaultId: defaultId, endpoint: shareEndpoint,
                               macName: hasPairing ? pairedMacDescription : nil)

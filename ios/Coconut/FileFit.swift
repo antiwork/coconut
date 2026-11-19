@@ -53,7 +53,7 @@ enum FileFit {
     /// The largest side that the Mac takes in `width` and `height` (`MAX_SIDE`).
     static let largestSide = 20_000
 
-    /// The file as it goes to the Mac, or nil when it cannot fit. Each piece of a file is one write to the relay and
+    /// The file as it goes to the Mac, or why it cannot go. Each piece of a file is one write to the relay and
     /// one download on each device, and the space of a person in a room holds 320 MiB in 90 days. So a photo goes at
     /// the size that a screen shows:
     /// - An image with a side over `longestSide` pixels becomes a JPEG of `longestSide` pixels, whatever its bytes.
@@ -69,12 +69,6 @@ enum FileFit {
     /// of its pixels. When that copy fails or is over the limit, the image becomes a JPEG: never the bytes with the
     /// position. An image without a position keeps its bytes. The agent chat sends to the Mac of the person and keeps
     /// the metadata.
-    static func fit(_ data: Data, name: String, limit: Int = FileRules.largest,
-                    removesPosition: Bool = true) -> FittedFile? {
-        outcome(data, name: name, limit: limit, removesPosition: removesPosition).file
-    }
-
-    /// The file as it goes to the Mac, or why it cannot go (`fit`).
     ///
     /// A file with more than one image (a TIFF with pages, an animated GIF, PNG, HEIC or WebP) is never encoded
     /// again: a JPEG would keep only the first image, for example page 1 of a scan of three pages. Without a position

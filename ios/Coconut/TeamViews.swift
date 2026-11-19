@@ -995,10 +995,3 @@ struct TeamInviteButton<Label: View>: View {
         .accessibilityIdentifier("team-invite-\(room.room)")
     }
 }
-
-extension TeamInviteButton where Label == SwiftUI.Label<Text, Image> {
-    /// "Invite someone" with the symbol of a person and a plus, for a menu.
-    init(room: TeamRoom) {
-        self.init(room: room) { _ in SwiftUI.Label("Invite someone", systemImage: "person.badge.plus") }
-    }
-}

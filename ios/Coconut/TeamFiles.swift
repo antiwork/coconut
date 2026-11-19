@@ -87,7 +87,6 @@ enum TeamFileRules {
     /// The text of the agent chat for a file that does not fit (AppStore.uploadAttachment).
     static let sizeText = FileRules.sizeText
     static let limitText = "Add at most \(limit) files to one message."
-    static let cannotSendText = FileRules.cannotSendText
     /// The largest file that the app reads to make an image fit. A larger file is not read.
     static let largestRead = 64 * 1024 * 1024
 

@@ -10,7 +10,6 @@ struct ModelChoice {
     var canEdit: Bool { store.connection == .connected || store.isDemo }
     var selection: ModelOverride? { catalog?.defaults.selection }
     var entry: ModelCatalogEntry? { selection.flatMap { catalog?.entry(for: $0) } }
-    var effort: String? { selection.flatMap { catalog?.resolved($0).reasoningEffort } }
 
     func choose(_ model: ModelCatalogEntry, effort: String? = nil) {
         guard canEdit else { return }

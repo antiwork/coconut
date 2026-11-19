@@ -306,20 +306,6 @@ struct BusinessHomeContent: View {
             BentoDelta(percent: change, label: model.changeLabel).accessibilityIdentifier("business-home-gmv-delta")
         }
     }
-    private var legend: some View {
-        HStack(spacing: BoardStyle.Space.m) {
-            HStack(spacing: BoardStyle.Space.xs) {
-                Capsule().fill(BentoColor.money).frame(width: 14, height: 3)
-                Text("Current period")
-            }
-            if !model.previousVolume.isEmpty {
-                HStack(spacing: BoardStyle.Space.xs) {
-                    HStack(spacing: BoardStyle.Space.line) { ForEach(0..<3, id: \.self) { _ in Capsule().fill(Color.secondary.opacity(0.6)).frame(width: 4, height: 2) } }
-                    Text("Prior period")
-                }
-            }
-        }.font(.caption2).foregroundStyle(.secondary).lineLimit(1).accessibilityHidden(true)
-    }
     /// The day under the pointer, or the last published day with its published comparison.
     @ViewBuilder private var reading: some View {
         HStack(alignment: .firstTextBaseline, spacing: BoardStyle.Space.s) {

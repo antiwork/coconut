@@ -207,12 +207,6 @@ struct PageTags: Equatable {
     let site: String
     let image: URL?
 
-    init(title: String, site: String, image: URL?) {
-        self.title = title
-        self.site = site
-        self.image = image
-    }
-
     init?(html: String, url: URL) {
         var tags: [String: String] = [:]
         for attributes in Self.metaTags(in: html) {

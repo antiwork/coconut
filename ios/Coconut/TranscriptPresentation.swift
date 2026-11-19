@@ -51,10 +51,6 @@ enum TranscriptPresentation {
         ["png", "jpg", "jpeg", "gif", "webp", "heic"].contains((name as NSString).pathExtension.lowercased())
     }
 
-    static func previewFallback(_ text: String, messages: [Message]) -> String {
-        previewFallback(text, streaming: messages.contains(where: \.streaming))
-    }
-
     /// `streaming` says whether a message of the chat streams in.
     static func previewFallback(_ text: String, streaming: Bool) -> String {
         if streaming || trimmed(text, equals: "[SILENT]")
