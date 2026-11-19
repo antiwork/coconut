@@ -30,9 +30,8 @@ DATABASE_RETRY_SECONDS = 5 * 60
 EVENT_RETENTION_DAYS = 2
 # The newest events stay at any age. MAX(seq) is the sync cursor, so the log never becomes empty.
 EVENT_MINIMUM_ROWS = 10000
-# Lookups read these old events: NativeOutcomes._unlink_conversation_current reads task.created and the newest
-# bots.restarted, NativeRoutines.native_routine_completion_input reads the history of a routine task, and
-# PullRequestReviews reads the swipe that dismissed a merge card. The newest task.updated and
+# Lookups read these old events: NativeRoutines.native_routine_completion_input reads the history of a routine task,
+# and PullRequestReviews reads the swipe that dismissed a merge card. The newest task.updated and
 # bot_message.delivered of each task also stay (see _prune_events).
 # The events of a task stay only until the task is retired (see HISTORY_DAYS). The task readers above read the events
 # of a task that runs, waits, or is queued, and a retired task does none of these.
