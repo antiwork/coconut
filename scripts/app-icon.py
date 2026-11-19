@@ -3,7 +3,7 @@
 
 The icon is full-bleed. The husk is drawn as thousands of tapered hairs that grow out of the three dots and spread
 across the whole square with a slight spiral, the way the fibres of a coconut grow from its eyes. The three dots are
-the only features. A fixed seed makes each run draw the same icon.
+the only features: two eyes with a light in each, and a smaller mouth. A fixed seed makes each run draw the same icon.
 
 Usage: python3 scripts/app-icon.py [svg path]
 Writes the SVG (default: a temporary file) and, with rsvg-convert and ImageMagick (`brew install librsvg imagemagick`),
@@ -20,29 +20,40 @@ import tempfile
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SIZE = 1024
 SEED = 1977
-# The dots: two eyes and the mouth below them, their centroid at the centre of the icon. Each is 192 px across, so the
-# three holes stay clear at the small sizes of the Home Screen and of Settings.
-DOTS = [(380.0, 439.0), (644.0, 439.0), (512.0, 658.0)]
+# The dots: two eyes and the mouth below them, (x, y) or (x, y, radius). The eyes are 208 px across and the mouth 168,
+# a little below the middle of the icon: big eyes, a small mouth and a high forehead make the face cute, and every hole
+# stays larger than the 126 px that read too small at the sizes of the Home Screen and of Settings.
+DOTS = [(382.0, 462.0, 104.0), (642.0, 462.0, 104.0), (512.0, 672.0, 84.0)]
 DOT_RADIUS = 96.0
 CENTRE = (512.0, 512.0)
 # How far the hairs bend away from the flow (noise). Lower is calmer.
 WAVE = 0.4
-# The husk, from the shadow between the hairs to the light on their tips. The browns stay close together and the light
-# hairs are few, so the texture stays quiet behind the dots: light tips on dark gaps made it too intense.
-GROUND = ('#5a3823', '#341f11')
+# The husk, from the shadow between the hairs to the light on their tips: a light, dry husk in creamy tans. The tans
+# stay close together and the light hairs are few, so the texture stays quiet behind the dots: light tips on dark gaps
+# made it too intense. The dark chocolate husk before it read as heavy fur.
+GROUND = ('#ead0a8', '#d2a878')
 LAYERS = [
     # count, length range, width range, colours, opacity
-    (2400, (80, 180), (3.5, 7.0), ['#523320', '#573622', '#5c3924'], 0.9),
-    (2000, (60, 150), (2.6, 5.0), ['#673f27', '#6c4329', '#71462b'], 0.6),
-    (900, (45, 120), (2.0, 3.8), ['#7c5032', '#825434'], 0.45),
-    (120, (35, 90), (1.2, 2.4), ['#956441'], 0.35),
+    (2400, (80, 180), (3.5, 7.0), ['#d0a77a', '#d4ab7e', '#d8b083'], 0.9),
+    (2000, (60, 150), (2.6, 5.0), ['#e0bd93', '#e4c299', '#e7c79f'], 0.6),
+    (900, (45, 120), (2.0, 3.8), ['#eed4b0', '#f1d9b7'], 0.45),
+    (120, (35, 90), (1.2, 2.4), ['#f8e9d0'], 0.35),
 ]
 # The hairs in the parting between the dots: how many, how far from the middle, and their colours.
-PARTING = (375, 100.0, ['#523320', '#5c3924', '#673f27', '#71462b', '#7c5032'])
+PARTING = (375, 100.0, ['#d0a77a', '#d6ae82', '#dfbb91', '#e6c59c', '#eed4b0'])
 # The short hairs that grow out of the rim of each dot: how many, and their colours.
-RIM = (137, ['#4a2e1c', '#563622', '#673f27', '#71462b'])
-# The darkness of the vignette at the edge of the icon.
-SHADE = 0.4
+RIM = (137, ['#c29466', '#cc9f72', '#d6ab7f', '#e0b98e'])
+# The vignette at the edge of the icon: its colour and how dark it gets.
+SHADE = ('#9a6a43', 0.22)
+# The shadow around each dot, which sinks it into the husk: colour, opacity, and its size against the dot.
+SOCKET = ('#7a4e2d', 0.3, 1.3)
+# The dots, from the middle to the rim: a warm dark brown, not black.
+DOT = ('#3b2213', '#5b3720')
+# The light on the two eyes, the first two dots: (x, y, radius x, radius y) against the dot's radius, colour, opacity.
+# The mouth, the third dot, has none, so the face reads as two eyes and a mouth. Empty for no light.
+GLINTS = [((-0.30, -0.34, 0.30, 0.26), '#fff8ec', 0.94), ((0.32, 0.30, 0.12, 0.11), '#fff4e4', 0.88)]
+# A soft blush under each eye: colour, opacity, (x, y) of its middle against the eye's centre, and radius. None for none.
+BLUSH = None
 OUTPUTS = [
     ('ios/Coconut/Assets.xcassets/CoconutAppIcon.appiconset/CoconutAppIcon.png', 1024),
     ('exact/assets/icon-1024.png', 1024),
@@ -61,7 +72,7 @@ def direction(x, y):
     slight spiral. Each point the hairs spread from lies under a dot, so no bare spot shows; between the dots the
     hairs only meet."""
     vx = vy = 0.0
-    for cx, cy in DOTS:
+    for cx, cy, _ in dots():
         ux, uy = x - cx, y - cy
         distance = ux * ux + uy * uy or 1.0
         vx, vy = vx + ux / distance, vy + uy / distance
@@ -101,8 +112,13 @@ def hair(random_, length, width, start=None, centred=False):
     return 'M' + ' L'.join('%.1f %.1f' % point for point in outline) + 'Z'
 
 
+def dots():
+    """Each dot as (x, y, radius). A dot of DOTS without a radius has DOT_RADIUS."""
+    return [(dot[0], dot[1], dot[2] if len(dot) > 2 else DOT_RADIUS) for dot in DOTS]
+
+
 def near_dot(x, y, margin):
-    return any(math.hypot(x - cx, y - cy) < DOT_RADIUS + margin for cx, cy in DOTS)
+    return any(math.hypot(x - cx, y - cy) < radius + margin for cx, cy, radius in dots())
 
 
 def svg():
@@ -111,12 +127,16 @@ def svg():
              '<defs>',
              '<radialGradient id="ground" cx="46%%" cy="44%%" r="75%%"><stop offset="0" stop-color="%s"/>'
              '<stop offset="1" stop-color="%s"/></radialGradient>' % GROUND,
-             '<radialGradient id="shade" cx="44%%" cy="42%%" r="78%%"><stop offset="0.45" stop-color="#1a0d06" '
-             'stop-opacity="0"/><stop offset="1" stop-color="#1a0d06" stop-opacity="%.2f"/></radialGradient>' % SHADE,
-             '<radialGradient id="socket"><stop offset="0.7" stop-color="#1c0f08" stop-opacity="0.75"/>'
-             '<stop offset="1" stop-color="#1c0f08" stop-opacity="0"/></radialGradient>',
-             '<radialGradient id="dot" cx="42%" cy="38%" r="70%"><stop offset="0" stop-color="#0d0704"/>'
-             '<stop offset="1" stop-color="#2a170d"/></radialGradient>',
+             '<radialGradient id="shade" cx="44%%" cy="42%%" r="78%%"><stop offset="0.45" stop-color="%s" '
+             'stop-opacity="0"/><stop offset="1" stop-color="%s" stop-opacity="%.2f"/></radialGradient>'
+             % (SHADE[0], SHADE[0], SHADE[1]),
+             '<radialGradient id="socket"><stop offset="0.7" stop-color="%s" stop-opacity="%.2f"/>'
+             '<stop offset="1" stop-color="%s" stop-opacity="0"/></radialGradient>' % (SOCKET[0], SOCKET[1], SOCKET[0]),
+             '<radialGradient id="dot" cx="42%%" cy="38%%" r="70%%"><stop offset="0" stop-color="%s"/>'
+             '<stop offset="1" stop-color="%s"/></radialGradient>' % DOT,
+             '<radialGradient id="blush"><stop offset="0" stop-color="%s" stop-opacity="%.2f"/>'
+             '<stop offset="1" stop-color="%s" stop-opacity="0"/></radialGradient>'
+             % ((BLUSH[0], BLUSH[1], BLUSH[0]) if BLUSH else ('#000000', 0, '#000000')),
              '</defs>',
              '<rect width="%d" height="%d" fill="url(#ground)"/>' % (SIZE, SIZE)]
     for count, (shortest, longest), (thinnest, thickest), colours, opacity in LAYERS:
@@ -129,7 +149,7 @@ def svg():
         parts.append('<g fill-opacity="%.2f">%s</g>' % (opacity, ''.join(group)))
     # Where the hairs of the three dots part, in the middle, hairs pass only with their thin ends. These have their
     # middle there, so the parting is covered like the rest.
-    middle = (sum(x for x, _ in DOTS) / 3, sum(y for _, y in DOTS) / 3)
+    middle = (sum(x for x, _, _ in dots()) / 3, sum(y for _, y, _ in dots()) / 3)
     count, reach, colours = PARTING
     group = []
     while len(group) < count:
@@ -142,19 +162,28 @@ def svg():
             random_.choice(colours)))
     parts.append('<g fill-opacity="0.85">%s</g>' % ''.join(group))
     parts.append('<rect width="%d" height="%d" fill="url(#shade)"/>' % (SIZE, SIZE))
-    for cx, cy in DOTS:
-        parts.append('<circle cx="%.1f" cy="%.1f" r="%.1f" fill="url(#socket)"/>' % (cx, cy, DOT_RADIUS * 1.38))
+    if BLUSH:
+        for side, (cx, cy, radius) in zip((-1, 1), dots()[:2]):
+            (dx, dy), size = BLUSH[2], BLUSH[3]
+            parts.append('<circle cx="%.1f" cy="%.1f" r="%.1f" fill="url(#blush)"/>' % (
+                cx + side * dx * radius, cy + dy * radius, size * radius))
+    for cx, cy, radius in dots():
+        parts.append('<circle cx="%.1f" cy="%.1f" r="%.1f" fill="url(#socket)"/>' % (cx, cy, radius * SOCKET[2]))
         # A few short hairs that start under the dot and grow out of its rim, at uneven places.
         count, colours = RIM
         group = []
         for _ in range(count):
             angle = random_.uniform(0, 2 * math.pi)
-            start = (cx + math.cos(angle) * DOT_RADIUS * 0.85, cy + math.sin(angle) * DOT_RADIUS * 0.85)
+            start = (cx + math.cos(angle) * radius * 0.85, cy + math.sin(angle) * radius * 0.85)
             colour = random_.choice(colours)
             group.append('<path d="%s" fill="%s"/>' % (
                 hair(random_, random_.uniform(26, 72), random_.uniform(2.5, 5.5), start), colour))
         parts.append('<g fill-opacity="0.9">%s</g>' % ''.join(group))
-        parts.append('<circle cx="%.1f" cy="%.1f" r="%.1f" fill="url(#dot)"/>' % (cx, cy, DOT_RADIUS))
+        parts.append('<circle cx="%.1f" cy="%.1f" r="%.1f" fill="url(#dot)"/>' % (cx, cy, radius))
+    for cx, cy, radius in dots()[:2]:
+        for (gx, gy, rx, ry), colour, opacity in GLINTS:
+            parts.append('<ellipse cx="%.1f" cy="%.1f" rx="%.1f" ry="%.1f" fill="%s" fill-opacity="%.2f"/>' % (
+                cx + gx * radius, cy + gy * radius, rx * radius, ry * radius, colour, opacity))
     parts.append('</svg>')
     return '\n'.join(parts)
 
