@@ -169,21 +169,14 @@ struct BentoPressStyle: ButtonStyle {
     }
 }
 
-/// The quiet line over a number: a symbol and a title.
+/// The quiet line over a number: its title.
 struct BentoLabel: View {
     let title: String
-    var symbol: String? = nil
-    var tint: Color = .secondary
 
-    init(_ title: String, symbol: String? = nil, tint: Color = .secondary) {
-        self.title = title; self.symbol = symbol; self.tint = tint
-    }
+    init(_ title: String) { self.title = title }
 
     var body: some View {
-        HStack(spacing: BoardStyle.Space.xs) {
-            Text(title).foregroundStyle(.secondary).lineLimit(1)
-        }
-        .font(.caption.weight(.semibold))
+        Text(title).font(.caption.weight(.semibold)).foregroundStyle(.secondary).lineLimit(1)
     }
 }
 
@@ -283,10 +276,8 @@ struct BentoSplit: View {
 /// A tile with one number: the label, the number with an optional unit, one line under it, and an optional small
 /// chart at the trailing edge or at the bottom.
 struct BentoStat: View {
-    enum Trend { case none, trailing, bottom }
+    enum Trend { case trailing, bottom }
     let title: String
-    var symbol: String? = nil
-    var tint: Color = .secondary
     let value: String
     var unit: String? = nil
     var note: String? = nil
@@ -302,7 +293,7 @@ struct BentoStat: View {
         BentoTile(wash: wash) {
             VStack(alignment: .leading, spacing: 0) {
                 HStack(spacing: BoardStyle.Space.xs) {
-                    BentoLabel(title, symbol: symbol, tint: tint)
+                    BentoLabel(title)
                     Spacer(minLength: 0)
                     if chevron { BentoChevron() }
                 }

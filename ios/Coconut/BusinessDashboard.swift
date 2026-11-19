@@ -140,32 +140,32 @@ private struct MoneyDashboard: View {
     var body: some View {
         BentoBoard {
             if accounting {
-                ledgerStat("Revenue", "revenue", symbol: "arrow.down.left.circle", note: revenueNote, tall: true).bento(4, 2, compact: (2, 2))
-                ledgerStat("EBITDA", "ebitda", symbol: "chart.line.uptrend.xyaxis", tall: true).bento(4, 2, compact: (1, 2))
-                ledgerStat("Net income", "net_income", symbol: "equal.circle", tall: true).bento(4, 2, compact: (1, 2))
+                ledgerStat("Revenue", "revenue", note: revenueNote, tall: true).bento(4, 2, compact: (2, 2))
+                ledgerStat("EBITDA", "ebitda", tall: true).bento(4, 2, compact: (1, 2))
+                ledgerStat("Net income", "net_income", tall: true).bento(4, 2, compact: (1, 2))
                 profit.bento(8, 3, compact: (2, 3))
-                BentoStat(title: "EBITDA margin", symbol: "percent", value: percent(money["ebitda_margin_pct"]), size: .medium).bento(2, 1, compact: (1, 1))
-                BentoStat(title: "Net margin", symbol: "percent", value: percent(money["net_margin_pct"]), size: .medium).bento(2, 1, compact: (1, 1))
-                BentoStat(title: "Write-offs", symbol: "minus.circle", value: money["impairment_total"].number.map { BusinessHomePresentation.writeOff($0) } ?? "—", size: .medium).bento(4, 1, compact: (2, 1))
+                BentoStat(title: "EBITDA margin", value: percent(money["ebitda_margin_pct"]), size: .medium).bento(2, 1, compact: (1, 1))
+                BentoStat(title: "Net margin", value: percent(money["net_margin_pct"]), size: .medium).bento(2, 1, compact: (1, 1))
+                BentoStat(title: "Write-offs", value: money["impairment_total"].number.map { BusinessHomePresentation.writeOff($0) } ?? "—", size: .medium).bento(4, 1, compact: (2, 1))
                 books.bento(4, 1, compact: (2, 1))
             } else {
                 sales.bento(8, 3, compact: (2, 3))
-                BentoLink(route: .report("accounting")) { ledgerStat("Revenue", "revenue", symbol: "arrow.down.left.circle", chevron: true) }
+                BentoLink(route: .report("accounting")) { ledgerStat("Revenue", "revenue", chevron: true) }
                     .bento(4, 1, compact: (2, 1))
-                BentoLink(route: .report("accounting")) { ledgerStat("EBITDA", "ebitda", symbol: "chart.bar", chevron: true) }
+                BentoLink(route: .report("accounting")) { ledgerStat("EBITDA", "ebitda", chevron: true) }
                     .bento(4, 1, compact: (2, 1))
-                BentoLink(route: .report("accounting")) { ledgerStat("Net income", "net_income", symbol: "equal.circle", chevron: true) }
+                BentoLink(route: .report("accounting")) { ledgerStat("Net income", "net_income", chevron: true) }
                     .bento(4, 1, compact: (2, 1))
-                queue("Support", value: sum(data["support"]["gumroad"], data["support"]["flexile"]), overdue: sum(data["support"]["gumroad_past_sla"], data["support"]["flexile_past_sla"]), route: .function("support"), symbol: "lifepreserver")
+                queue("Support", value: sum(data["support"]["gumroad"], data["support"]["flexile"]), overdue: sum(data["support"]["gumroad_past_sla"], data["support"]["flexile_past_sla"]), route: .function("support"))
                     .bento(4, 1, compact: (2, 1))
-                queue("Product issues", value: data["issues"]["total"].number, overdue: data["issues"]["past_sla"].number, route: .report("support"), symbol: "wrench.and.screwdriver")
+                queue("Product issues", value: data["issues"]["total"].number, overdue: data["issues"]["past_sla"].number, route: .report("support"))
                     .bento(4, 1, compact: (1, 1))
-                queue("Risk review", value: data["risk"]["total"].number, overdue: data["risk"]["past_sla"].number, route: .report("risk"), symbol: "shield.lefthalf.filled")
+                queue("Risk review", value: data["risk"]["total"].number, overdue: data["risk"]["past_sla"].number, route: .report("risk"))
                     .bento(4, 1, compact: (1, 1))
                 profit.bento(8, 3, compact: (2, 3))
-                BentoStat(title: "Run rate", symbol: "calendar", value: reportNumber(gmv["annualized_gmv"].number, money: true), size: .medium)
+                BentoStat(title: "Run rate", value: reportNumber(gmv["annualized_gmv"].number, money: true), size: .medium)
                     .bento(4, 1, compact: (1, 1))
-                BentoStat(title: "Daily average", symbol: "sum", value: reportNumber(gmv["trailing_avg_gmv"].number, money: true), size: .medium)
+                BentoStat(title: "Daily average", value: reportNumber(gmv["trailing_avg_gmv"].number, money: true), size: .medium)
                     .bento(4, 1, compact: (1, 1))
                 books.bento(4, 1, compact: (2, 1))
             }
@@ -173,15 +173,15 @@ private struct MoneyDashboard: View {
     }
 
     private var sales: some View {
-        ReportChart(title: "GMV · 30 days", symbol: "chart.line.uptrend.xyaxis", points: volume, money: true,
+        ReportChart(title: "GMV · 30 days", points: volume, money: true,
                     headline: reportNumber(gmv["gmv_30d"].number, money: true), change: gmv["change_pct"].number, changeLabel: gmv["change_label"].text, wash: BentoColor.money)
     }
     private var profit: some View {
-        ReportChart(title: "Revenue and profit", symbol: "chart.bar.xaxis", points: financials, money: true, bars: true)
+        ReportChart(title: "Revenue and profit", points: financials, money: true, bars: true)
     }
-    private func ledgerStat(_ title: String, _ series: String, symbol: String, note: String? = nil, tall: Bool = false, chevron: Bool = false) -> some View {
+    private func ledgerStat(_ title: String, _ series: String, note: String? = nil, tall: Bool = false, chevron: Bool = false) -> some View {
         let value = ledger["ltm_" + series].number
-        return BentoStat(title: title, symbol: symbol, tint: BentoColor.money, value: reportNumber(value, money: true), note: value == nil ? "Not published" : note,
+        return BentoStat(title: title, value: reportNumber(value, money: true), note: value == nil ? "Not published" : note,
                          wash: tall && series == "revenue" ? BentoColor.money : nil, chevron: chevron, trend: monthly(series), trendBars: true, trendPlace: tall ? .bottom : .trailing)
     }
     /// The published change of the last three months, when the snapshot has one.
@@ -191,13 +191,13 @@ private struct MoneyDashboard: View {
     }
     private var books: some View {
         BentoLink(route: .ledger) {
-            BentoStat(title: "Books closed through", symbol: "checkmark.seal", tint: BentoColor.money, value: closed, size: .medium, chevron: true)
+            BentoStat(title: "Books closed through", value: closed, size: .medium, chevron: true)
         }.accessibilityLabel("Open Beancount ledger")
     }
-    private func queue(_ title: String, value: Double?, overdue: Double?, route: BusinessRoute, symbol: String) -> some View {
+    private func queue(_ title: String, value: Double?, overdue: Double?, route: BusinessRoute) -> some View {
         let late = (overdue ?? 0) > 0
         return BentoLink(route: route) {
-            BentoStat(title: title, symbol: symbol, tint: late ? BoardStyle.attention : .secondary, value: reportNumber(value), unit: "open",
+            BentoStat(title: title, value: reportNumber(value), unit: "open",
                       note: overdue.map { $0 > 0 ? "\(Int($0)) past SLA" : "Within SLA" } ?? "SLA unavailable",
                       noteTint: late ? BoardStyle.attention : overdue == nil ? .secondary : BoardStyle.positive, wash: late ? BoardStyle.attention : nil, chevron: true)
         }
@@ -236,18 +236,18 @@ private struct SupportDashboard: View {
             Picker("Queue", selection: $queue) { Text("Customer support").tag("support"); Text("Product issues").tag("issues") }
                 .pickerStyle(.segmented).labelsHidden().bentoLeadingControl()
             BentoBoard {
-                BentoStat(title: "Open", symbol: "tray.full", value: reportNumber(counts["all"].number),
+                BentoStat(title: "Open", value: reportNumber(counts["all"].number),
                           note: counts["assigned"].number.map { "\(Int($0)) assigned" } ?? "In this queue", trend: volume.map(\.value))
                     .bento(4, 1, compact: (2, 1))
-                BentoStat(title: "Unassigned", symbol: "person.crop.circle.badge.questionmark", tint: (waiting ?? 0) > 0 ? BoardStyle.attention : .secondary,
+                BentoStat(title: "Unassigned",
                           value: reportNumber(waiting), wash: (waiting ?? 0) > 0 ? BoardStyle.attention : nil)
                     .bento(4, 1, compact: (1, 1))
-                BentoStat(title: "Closed · 24 hours", symbol: "checkmark.circle", tint: BoardStyle.positive, value: reportNumber(selected["closedCount"]["total"].number)).bento(4, 1, compact: (1, 1))
-                ReportChart(title: "Incoming volume", symbol: "tray.and.arrow.down", points: volume, bars: true)
+                BentoStat(title: "Closed · 24 hours", value: reportNumber(selected["closedCount"]["total"].number)).bento(4, 1, compact: (1, 1))
+                ReportChart(title: "Incoming volume", points: volume, bars: true)
                     .bento(8, 2, compact: (2, 2))
-                BentoStat(title: "Median resolution", symbol: "timer", value: SupportFormat.duration(resolution.median))
+                BentoStat(title: "Median resolution", value: SupportFormat.duration(resolution.median))
                     .bento(4, 1, compact: (1, 1))
-                BentoStat(title: "90th percentile", symbol: "gauge.with.dots.needle.67percent", value: SupportFormat.duration(resolution.p90),
+                BentoStat(title: "90th percentile", value: SupportFormat.duration(resolution.p90),
                           note: "\(resolution.minutes.count) resolved in 24 hours").bento(4, 1, compact: (1, 1))
                 histogram.bento(6, 2, compact: (2, 2))
                 team.bento(6, agents.count > 5 ? nil : 2, compact: (2, nil))
@@ -262,7 +262,7 @@ private struct SupportDashboard: View {
         BentoTile {
             VStack(alignment: .leading, spacing: BoardStyle.Space.s) {
                 HStack {
-                    BentoLabel("Time to resolution", symbol: "chart.bar")
+                    BentoLabel("Time to resolution")
                     Spacer(minLength: 0)
                 }
                 Chart(Array(resolution.buckets.enumerated()), id: \.offset) { index, count in
@@ -293,7 +293,7 @@ private struct SupportDashboard: View {
         BentoTile {
             VStack(alignment: .leading, spacing: BoardStyle.Space.m) {
                 HStack {
-                    BentoLabel("Closed by", symbol: "person.2")
+                    BentoLabel("Closed by")
                     Spacer(minLength: 0)
                     Text("24 hours").font(.caption).foregroundStyle(.tertiary)
                 }
@@ -354,7 +354,7 @@ private struct SupportDashboard: View {
     }
     private var conversationsTitle: some View {
         HStack(spacing: BoardStyle.Space.s) {
-            BentoLabel("Conversations", symbol: "bubble.left.and.bubble.right")
+            BentoLabel("Conversations")
             if !items.isEmpty { CountPill(count: items.count) }
         }
     }
@@ -418,31 +418,31 @@ private struct RiskDashboard: View {
         let outcomes = disputes["outcomes90d"]
         let size = data["stats"]["queueSize"].number
         BentoBoard {
-            BentoStat(title: "Review queue", symbol: "shield.lefthalf.filled", tint: (size ?? 0) > 0 ? BoardStyle.attention : .secondary, value: reportNumber(size), wash: (size ?? 0) > 0 ? BoardStyle.attention : nil).bento(4, 1, compact: (2, 1))
-            BentoStat(title: "Disputes · 28 days", symbol: "creditcard.trianglebadge.exclamationmark", value: reportNumber(last["count"].number),
+            BentoStat(title: "Review queue", value: reportNumber(size), wash: (size ?? 0) > 0 ? BoardStyle.attention : nil).bento(4, 1, compact: (2, 1))
+            BentoStat(title: "Disputes · 28 days", value: reportNumber(last["count"].number),
                       note: disputes["rate"]["transactions"].number.map { "of " + Int($0).formatted() + " transactions" } ?? "All payment platforms",
                       trend: disputes["daily"].array.compactMap { $0["count"].number }).bento(4, 1, compact: (2, 1))
-            BentoStat(title: "Disputed amount", symbol: "dollarsign.circle", value: dollars(last["amount_cents"]))
+            BentoStat(title: "Disputed amount", value: dollars(last["amount_cents"]))
                 .bento(4, 1, compact: (2, 1))
-            ReportChart(title: "Chargebacks", symbol: "chart.bar",
+            ReportChart(title: "Chargebacks",
                         points: disputes["daily"].array.compactMap { row in row["count"].number.map { ReportPoint(date: row["day"].text, value: $0, series: "Disputes") } }, bars: true)
                 .bento(8, 2, compact: (2, 2))
-            pair("Outcomes · 90 days", symbol: "scalemass",
+            pair("Outcomes · 90 days",
                  first: ("Won", count(outcomes["won"]), dollars(outcomes["won_cents"]), BoardStyle.positive, outcomes["won"].number),
                  second: ("Lost", count(outcomes["lost"]), dollars(outcomes["lost_cents"]), BoardStyle.attention, outcomes["lost"].number))
                 .bento(4, 1, compact: (2, 1))
-            pair("By platform · 28 days", symbol: "building.columns",
+            pair("By platform · 28 days",
                  first: ("Merchant of record", count(last["mor_count"]), dollars(last["mor_amount_cents"]), BentoColor.second, last["mor_count"].number),
                  second: ("Connect", count(last["connect_count"]), dollars(last["connect_amount_cents"]), BentoColor.third, last["connect_count"].number))
                 .bento(4, 1, compact: (2, 1))
-            BentoStat(title: "Suspended for fraud", symbol: "hand.raised", value: reportNumber(data["stats"]["suspendedFraud"].number), size: .medium)
+            BentoStat(title: "Suspended for fraud", value: reportNumber(data["stats"]["suspendedFraud"].number), size: .medium)
                 .bento(3, 1, compact: (1, 1))
-            BentoStat(title: "Suspended for terms", symbol: "doc.text", value: reportNumber(data["stats"]["suspendedTos"].number), size: .medium)
+            BentoStat(title: "Suspended for terms", value: reportNumber(data["stats"]["suspendedTos"].number), size: .medium)
                 .bento(3, 1, compact: (1, 1))
-            BentoStat(title: "Negative balances", symbol: "minus.circle", value: dollars(data["suspensionAllowance"]["total_negative_cents"]),
+            BentoStat(title: "Negative balances", value: dollars(data["suspensionAllowance"]["total_negative_cents"]),
                       note: data["suspensionAllowance"]["users"].number.map { "\(Int($0)) suspended accounts" } ?? "Suspended accounts", size: .medium)
                 .bento(3, 1, compact: (1, 1))
-            BentoStat(title: "Daily negative", symbol: "calendar", value: dollars(data["suspensionAllowance"]["avg_daily_negative_cents"]), size: .medium)
+            BentoStat(title: "Daily negative", value: dollars(data["suspensionAllowance"]["avg_daily_negative_cents"]), size: .medium)
                 .bento(3, 1, compact: (1, 1))
             accounts.bento(12, nil, compact: (2, nil))
         }
@@ -450,10 +450,10 @@ private struct RiskDashboard: View {
     }
 
     /// Two published counts of one whole, with their amounts. The bar shows the share; no rate is computed.
-    private func pair(_ title: String, symbol: String, first: (String, String, String, Color, Double?), second: (String, String, String, Color, Double?)) -> some View {
+    private func pair(_ title: String, first: (String, String, String, Color, Double?), second: (String, String, String, Color, Double?)) -> some View {
         BentoTile {
             VStack(alignment: .leading, spacing: 0) {
-                BentoLabel(title, symbol: symbol)
+                BentoLabel(title)
                 Spacer(minLength: BoardStyle.Space.xs)
                 HStack(alignment: .top, spacing: BoardStyle.Space.l) {
                     ForEach(Array([first, second].enumerated()), id: \.offset) { _, part in
@@ -506,7 +506,7 @@ private struct RiskDashboard: View {
             }
         }
     }
-    private var accountsTitle: some View { BentoLabel("Risk queue", symbol: "person.crop.rectangle.stack") }
+    private var accountsTitle: some View { BentoLabel("Risk queue") }
     private var picker: some View {
         Picker("Queue", selection: $queue) { ForEach(queues, id: \.0) { Text($0.1).tag($0.0) } }.labelsHidden()
     }
@@ -590,10 +590,10 @@ private struct EngineeringDashboard: View {
     var body: some View {
         let counts = repositories.compactMap { $0.value["pullRequests"]["totalCount"].number }
         BentoBoard {
-            BentoStat(title: "Open pull requests", symbol: "arrow.triangle.pull", value: counts.isEmpty ? "—" : reportNumber(counts.reduce(0, +)),
+            BentoStat(title: "Open pull requests", value: counts.isEmpty ? "—" : reportNumber(counts.reduce(0, +)),
                       note: "\(repositories.count) repositories", wash: BentoColor.second).bento(4, 1, compact: (2, 1))
             ForEach(repositories, id: \.key) { repository in
-                BentoStat(title: Self.name(repository.value, key: repository.key), symbol: "shippingbox", value: reportNumber(repository.value["pullRequests"]["totalCount"].number),
+                BentoStat(title: Self.name(repository.value, key: repository.key), value: reportNumber(repository.value["pullRequests"]["totalCount"].number),
                           unit: "open", size: .medium).bento(2, 1, compact: (1, 1))
             }
             ForEach(repositories.filter { !$0.value["pullRequests"]["nodes"].array.isEmpty }, id: \.key) { repository in
@@ -609,7 +609,7 @@ private struct EngineeringDashboard: View {
         return BentoTile {
             VStack(alignment: .leading, spacing: BoardStyle.Space.s) {
                 HStack {
-                    BentoLabel(repository["nameWithOwner"].text.isEmpty ? key : repository["nameWithOwner"].text, symbol: "arrow.triangle.pull")
+                    BentoLabel(repository["nameWithOwner"].text.isEmpty ? key : repository["nameWithOwner"].text)
                     Spacer(minLength: 0)
                     Text(nodes.count < total ? "\(nodes.count) of \(total)" : "\(total)").font(.caption).monospacedDigit().foregroundStyle(.tertiary)
                 }
@@ -659,7 +659,6 @@ struct ReportPoint: Identifiable {
 /// tile. The value under the pointer shows in the header.
 private struct ReportChart: View {
     let title: String
-    var symbol: String? = nil
     var subtitle: String = ""
     let points: [ReportPoint]
     var money = false
@@ -689,7 +688,7 @@ private struct ReportChart: View {
         BentoTile(wash: wash) {
             VStack(alignment: .leading, spacing: BoardStyle.Space.s) {
                 HStack(spacing: BoardStyle.Space.s) {
-                    BentoLabel(title, symbol: symbol, tint: wash ?? .secondary)
+                    BentoLabel(title)
                     Spacer(minLength: 0)
                     if !subtitle.isEmpty { Text(subtitle).font(.caption).foregroundStyle(.tertiary).lineLimit(1) }
                 }

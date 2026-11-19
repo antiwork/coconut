@@ -29,12 +29,13 @@ struct BusinessHomePresentation {
         let id: String
         let title: String
         let detail: String?
+        /// The symbol of the row in Needs attention (AttentionRules). A tile of Finance draws none.
         let symbol: String
         let route: BusinessRoute
         let unavailable: Bool
         /// The published count of an informational row, when its source is current.
         var value: String? = nil
-        /// The count of a row that breaches, and its short name in Needs attention on To-dos.
+        /// The count of a row that breaches, and its short name in Needs attention on Product.
         var count = 0
         var label = ""
     }
@@ -188,7 +189,7 @@ struct BusinessHomeContent: View {
                 gmv.bento(8, 3, compact: (2, 3))
                 attention.bento(4, 3, compact: (2, nil))
                 if let notice = model.sourceNotice("ledger") {
-                    BentoStat(title: "Money", symbol: "banknote", value: notice, size: .small)
+                    BentoStat(title: "Money", value: notice, size: .small)
                         .accessibilityIdentifier("business-home-money-unavailable").bento(12, 1, compact: (2, 1))
                 } else {
                     ForEach(model.moneyRows) { row in
@@ -196,9 +197,9 @@ struct BusinessHomeContent: View {
                     }
                 }
                 ForEach(model.informational) { row in infoTile(row).bento(3, 1, compact: (1, 1)) }
-                BentoStat(title: "Run rate", symbol: "calendar", value: reportNumber(model.runRate, money: true), size: .medium)
+                BentoStat(title: "Run rate", value: reportNumber(model.runRate, money: true), size: .medium)
                     .accessibilityIdentifier("business-home-run-rate").bento(3, 1, compact: (1, 1))
-                BentoStat(title: "Daily average", symbol: "sum", value: reportNumber(model.dailyAverage, money: true), size: .medium)
+                BentoStat(title: "Daily average", value: reportNumber(model.dailyAverage, money: true), size: .medium)
                     .accessibilityIdentifier("business-home-daily-average").bento(3, 1, compact: (1, 1))
                 ForEach(Self.functions) { function in
                     BentoLink(route: .function(function.key)) {
@@ -224,7 +225,7 @@ struct BusinessHomeContent: View {
         BentoTile(wash: model.attention.isEmpty ? BoardStyle.positive : urgent ? BoardStyle.attention : nil) {
             VStack(alignment: .leading, spacing: BoardStyle.Space.m) {
                 HStack {
-                    BentoLabel("Attention", symbol: "bell", tint: urgent ? BoardStyle.attention : .secondary)
+                    BentoLabel("Attention")
                     Spacer(minLength: 0)
                     if urgent { CountPill(count: model.attention.filter { !$0.unavailable }.count) }
                 }
@@ -263,9 +264,9 @@ struct BusinessHomeContent: View {
     private func infoTile(_ row: BusinessHomePresentation.AttentionRow) -> some View {
         BentoLink(route: row.route) {
             if let value = row.value {
-                BentoStat(title: row.title, symbol: row.symbol, value: value, unit: "open", size: .medium, chevron: true)
+                BentoStat(title: row.title, value: value, unit: "open", size: .medium, chevron: true)
             } else {
-                BentoStat(title: row.title, symbol: row.symbol, value: "—", note: row.detail, size: .medium, chevron: true)
+                BentoStat(title: row.title, value: "—", note: row.detail, size: .medium, chevron: true)
             }
         }.accessibilityIdentifier("business-home-info-" + row.id)
     }
@@ -274,7 +275,7 @@ struct BusinessHomeContent: View {
         BentoTile(wash: model.gmvNotice == nil ? BentoColor.money : nil) {
             VStack(alignment: .leading, spacing: BoardStyle.Space.s) {
                 HStack(spacing: BoardStyle.Space.s) {
-                    BentoLabel("GMV · 30 days", symbol: "chart.line.uptrend.xyaxis", tint: BentoColor.money)
+                    BentoLabel("GMV · 30 days")
                     Spacer(minLength: 0)
                     if let day = model.asOf("gmv") { Text(day).font(.caption).foregroundStyle(.tertiary).lineLimit(1) }
                     NavigationLink(value: BusinessRoute.report("overview")) { BentoChevron().padding(BoardStyle.Space.xs).contentShape(Rectangle()) }
@@ -376,7 +377,7 @@ struct BusinessHomeContent: View {
             BentoTile {
                 VStack(alignment: .leading, spacing: 0) {
                     HStack(spacing: BoardStyle.Space.xs) {
-                        BentoLabel(row.title, symbol: Self.moneySymbol[row.id], tint: BentoColor.money)
+                        BentoLabel(row.title)
                         Text("LTM").font(.caption).foregroundStyle(.tertiary)
                         Spacer(minLength: 0)
                         BentoChevron()
@@ -400,5 +401,4 @@ struct BusinessHomeContent: View {
             }
         }.accessibilityIdentifier("business-home-money-" + row.id.replacingOccurrences(of: "_", with: "-"))
     }
-    private static let moneySymbol = ["revenue": "arrow.down.left.circle", "ebitda": "chart.bar", "net_income": "equal.circle"]
 }
