@@ -17,7 +17,7 @@ enum AgentSection: String, CaseIterable, Identifiable {
     var title: String {
         switch self {
         case .chat: "Chat"
-        case .todos: "Tasks"
+        case .todos: "To-dos"
         case .pages: "Pages"
         case .routines: "Routines"
         case .manage: "Manage"
@@ -141,12 +141,12 @@ struct AgentProject: Identifiable, Equatable {
             .map { AgentProject(bot: $0, input: input, now: now) }
     }
 
-    /// The quiet line of a row of the list: "2 tasks · 3 pages · 1 routine". Nil when the agent has none of them.
+    /// The quiet line of a row of the list: "2 to-dos · 3 pages · 1 routine". Nil when the agent has none of them.
     var summary: String? {
         func part(_ count: Int, _ one: String, _ many: String) -> String? {
             count == 0 ? nil : "\(count) \(count == 1 ? one : many)"
         }
-        let parts = [part(todos.count, "task", "tasks"), part(pages.count, "page", "pages"),
+        let parts = [part(todos.count, "to-do", "to-dos"), part(pages.count, "page", "pages"),
                      part(routines.count + checks.count, "routine", "routines")].compactMap { $0 }
         return parts.isEmpty ? nil : parts.joined(separator: " · ")
     }
@@ -391,7 +391,7 @@ struct AgentProjectView: View {
                 }
             }
             BoardSection(AgentSection.todos.title, count: project.count(.todos)) {
-                if project.todos.isEmpty { BoardEmptyRow(text: "No open tasks.") }
+                if project.todos.isEmpty { BoardEmptyRow(text: "No open to-dos.") }
                 ForEach(project.todos) { item in
                     BoardRow(symbol: AgentTodos.symbol(item.status),
                              tint: item.status == "blocked" ? BoardStyle.destructive
