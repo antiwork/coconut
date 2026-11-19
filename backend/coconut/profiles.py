@@ -11,7 +11,6 @@ import hashlib
 import json
 import os
 from pathlib import Path
-import sqlite3
 import stat
 import tempfile
 from uuid import UUID
@@ -68,10 +67,6 @@ def _write(path: Path, text: str, boundary: Path) -> None:
     finally:
         if temporary and temporary.exists():
             temporary.unlink()
-
-
-def _json(value: dict) -> str:
-    return json.dumps(value, ensure_ascii=False, indent=2) + '\n'
 
 
 def read_regular(path: Path, name: str, limit: int = MAX_PROMPT_FILE_BYTES, kind: str = 'The Hermes profile prompt file') -> bytes:
@@ -198,10 +193,6 @@ class HermesProfiles:
             return None
         return hashlib.sha256(content).hexdigest(), path.stat().st_mtime
 
-    def write_instructions(self, bot: dict, text: str) -> None:
-        home = self.existing_home(bot)
-        _write(home / 'SOUL.md', text, self.boundary(home))
-
     def sync(self, bot: dict) -> dict:
         """Check the profile of this bot. Coconut changes no profile here."""
         status = 'deleted' if bot.get('_deleted') else 'archived' if bot.get('archived') else 'active'
@@ -211,31 +202,3 @@ class HermesProfiles:
         elif status != 'deleted' and not self.home(bot).is_dir():
             status = 'missing'
         return dict(profile_id=profile_id(bot), bot_id=bot['id'], session_id=bot['session_id'], status=status, created=False)
-
-
-def inspect_profiles(data_dir: str | Path, identity: str | None = None, *, include_deleted: bool = False) -> list[dict]:
-    """Read profile identities without loading instructions, memory, or credentials."""
-    profiles = HermesProfiles(data_dir)
-    database = profiles.root / 'coconut.sqlite3'
-    _safe(database, profiles.root)
-    if not database.is_file():
-        raise ProfileError('This data directory does not contain a Coconut database.')
-    if identity is not None and str(UUID(identity)) != identity:
-        raise ProfileError('Use the full profile ID from the profile list.')
-    with sqlite3.connect(database.as_uri() + '?mode=ro', uri=True) as connection:
-        bots = [json.loads(row[0]) for row in connection.execute('SELECT data FROM bots')]
-    result = []
-    for bot in bots:
-        current = profile_id(bot)
-        if (identity is not None and current != identity) or (bot.get('_deleted') and not include_deleted):
-            continue
-        try:
-            home = profiles.home(bot)
-        except ProfileError:
-            continue
-        state = 'deleted' if bot.get('_deleted') else 'archived' if bot.get('archived') else 'active'
-        result.append(dict(profile_id=current, bot_id=bot['id'], session_id=bot['session_id'], name=bot['name'],
-                           status=state, home=str(home), home_exists=home.is_dir()))
-    if identity is not None and not result:
-        raise ProfileError('This profile does not exist in the selected Coconut data directory.')
-    return sorted(result, key=lambda item: (item['name'].casefold(), item['profile_id']))
