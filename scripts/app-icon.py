@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Draw Coconut's app icon: a whole coconut in its hairy husk, seen from its eye end, with its three dots, as vector art.
+"""Draw Coconut's app icon as vector art: a flat coconut (MARK), or a whole coconut in its hairy husk.
+
+The flat mark is Gianfranco's round shell with the three holes of a coconut, in two colours, with or without a fringe
+of fibres around its outline. With MARK set to None, the script draws the hairy coconut, seen from its eye end with its
+three dots.
 
 The husk is drawn as thousands of tapered fibres that grow out of the three dots and spread across a flat square with
 a slight spiral, the way the fibres of a coconut grow from its eyes. That husk is then laid onto a ball on a light mint
@@ -15,6 +19,7 @@ Mac app is built (scripts/mac-icon.swift).
 import math
 import os
 import random
+import re
 import subprocess
 import sys
 import tempfile
@@ -22,6 +27,36 @@ import tempfile
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SIZE = 1024
 SEED = 1977
+# The flat mark, drawn instead of the hairy coconut: Gianfranco's design (#576) without its cut. A round shell,
+# tilted, and the three holes. At icon size the fibres of the hairy coconut blurred into a brown circle, and the
+# star where they met between the holes drew the eye, so the shell is flat. Sahil found its open top too busy: the
+# shape and the three holes say coconut. Gianfranco chose the smooth outline for now. At small sizes the dark round
+# shell can read as a ball, and a fringe of fibres around it (`fringe`) sells the coconut there.
+# The yellow ground stands out more on the Home Screen than white. The outline is a path traced from Gianfranco's
+# 1024 px design, each hole is (x, y, radius), and `scale` shrinks the shell around the middle of the icon. None
+# draws the hairy coconut.
+MARK = dict(
+    ground='#ffc928',
+    shell='#28150f',
+    outline=('M855.1 509.4C853.3 554.8 841.9 599.2 823.3 639.8C804.7 680.3 778.4 716.7 747 747.8'
+             'C715.7 778.8 679.1 804.6 638.7 823.2C598.2 841.7 553.8 852.8 508.7 854.1'
+             'C486.1 854.8 463.4 853 441.2 848.7C419 844.4 397.3 837.6 376.5 828.7C334.9 810.8 297.5 784.2 266 752.1'
+             'C234.6 720 208.9 682.3 191.4 640.9C174 599.4 164.8 554.4 165.6 509.4'
+             'C166.5 464.5 177.2 420.1 195.5 379.7C213.8 339.3 239.5 302.6 270.4 271.1'
+             'C285.8 255.4 302.6 240.9 320.5 227.8C338.5 214.8 357.5 203.1 377.7 193.2'
+             'C418 173.4 462.9 160.6 508.7 159.8C531.6 159.5 554.5 162.2 576.6 168'
+             'C598.7 173.8 619.9 182.5 639.7 193.3C659.5 204 677.9 216.7 695.4 230.1'
+             'C712.9 243.4 729.8 257.3 746.2 272C762.6 286.7 778.4 302.4 792.5 319.8'
+             'C806.6 337.3 818.9 356.4 828.7 376.9C838.4 397.4 845.6 419.2 850 441.5'
+             'C854.4 463.9 856 486.8 855.1 509.4Z'),
+    holes=[(354.5, 532.5, 39.35), (450.5, 627.5, 39.35), (324.5, 657.5, 39.35)],
+    scale=1.0,
+    # The fibres around the outline: their spacing along it, the ranges of their length and width, how far they lie
+    # combed toward the tip of the nut (the upper right, away from the holes) and how much further their ends bend
+    # that way, in degrees, how much longer they get at the tip and shorter at the end of the holes, and the seed of
+    # their layout. None draws a smooth outline.
+    fringe=None,
+)
 # The dots: the three eyes of the coconut, (x, y) or (x, y, radius) on the flat husk, their middle at the middle of the
 # icon. Each is 164 px across, about 150 on the ball, so the holes stay clear at the small sizes of the Home Screen and
 # of Settings: 126 px read too small. Big eyes with a smaller mouth made a creature's face, not a coconut.
@@ -216,7 +251,134 @@ def wisps(random_):
     return ''.join(groups)
 
 
+def outline_points(path, steps=60):
+    """The points of a path of absolute M and C commands, such as the outline of the flat mark."""
+    tokens = re.findall(r'[MCZ]|-?\d+(?:\.\d+)?', path)
+    points, index, current = [], 0, None
+    while index < len(tokens):
+        command = tokens[index]
+        index += 1
+        if command == 'M':
+            current = (float(tokens[index]), float(tokens[index + 1]))
+            points.append(current)
+            index += 2
+        elif command == 'C':
+            while index < len(tokens) and tokens[index] not in 'MCZ':
+                x1, y1, x2, y2, x, y = map(float, tokens[index:index + 6])
+                index += 6
+                x0, y0 = current
+                for step in range(1, steps + 1):
+                    t = step / steps
+                    a, b, c, d = (1 - t) ** 3, 3 * (1 - t) ** 2 * t, 3 * (1 - t) * t ** 2, t ** 3
+                    points.append((a * x0 + b * x1 + c * x2 + d * x, a * y0 + b * y1 + c * y2 + d * y))
+                current = (x, y)
+    if math.dist(points[0], points[-1]) < 1e-6:
+        points.pop()
+    return points
+
+
+def along(points, spacing):
+    """Points at equal distances along a closed outline, with their unit tangents."""
+    closed = points + [points[0]]
+    lengths = [0.0]
+    for a, b in zip(closed, closed[1:]):
+        lengths.append(lengths[-1] + math.dist(a, b))
+    total = lengths[-1]
+    count = max(8, int(total / spacing))
+    out, j = [], 0
+    for k in range(count):
+        s = total * k / count
+        while lengths[j + 1] < s:
+            j += 1
+        u = (s - lengths[j]) / ((lengths[j + 1] - lengths[j]) or 1)
+        a, b = closed[j], closed[j + 1]
+        out.append((a[0] + (b[0] - a[0]) * u, a[1] + (b[1] - a[1]) * u))
+    tangents = []
+    for k in range(count):
+        a, b = out[k - 1], out[(k + 1) % count]
+        tx, ty = b[0] - a[0], b[1] - a[1]
+        norm = math.hypot(tx, ty) or 1
+        tangents.append((tx / norm, ty / norm))
+    return out, tangents
+
+
+def fibre(base, direction, bend, length, width, inset, normal, steps=9):
+    """A tapered fibre: a quadratic curve that starts `inset` inside the shell, leaves it along `direction` and bends
+    toward `bend`."""
+    x, y = base
+    nx, ny = normal
+    start = (x - nx * inset, y - ny * inset)
+    middle = (x + direction[0] * length * 0.55, y + direction[1] * length * 0.55)
+    end = (x + bend[0] * length, y + bend[1] * length)
+    centre = []
+    for step in range(steps + 1):
+        t = step / steps
+        a, b, c = (1 - t) ** 2, 2 * (1 - t) * t, t ** 2
+        centre.append((a * start[0] + b * middle[0] + c * end[0], a * start[1] + b * middle[1] + c * end[1]))
+    left, right = [], []
+    for index, (px, py) in enumerate(centre):
+        ax, ay = centre[max(index - 1, 0)]
+        bx, by = centre[min(index + 1, steps)]
+        tx, ty = bx - ax, by - ay
+        norm = math.hypot(tx, ty) or 1
+        ox, oy = -ty / norm, tx / norm
+        half = 0.5 * width * (1 - index / steps) ** 0.85
+        left.append((px + ox * half, py + oy * half))
+        right.append((px - ox * half, py - oy * half))
+    outline = left + right[::-1]
+    return 'M' + ' L'.join('%.1f %.1f' % point for point in outline) + 'Z'
+
+
+def fringe(outline, seed, spacing, length, width, tip, comb, bend, eye_end, inset=14.0, tip_direction=-math.pi / 4,
+           jitter=0.3):
+    """The fibres around the outline of the flat mark. Each leaves the shell along its outward normal turned toward the
+    tip of the nut, so the fibres lie combed along the surface like coir: a fringe straight out of the outline made a
+    hedgehog. They get longer toward the tip and shorter toward the holes, at the end where a coconut's fibres start."""
+    random_ = random.Random(seed)
+    points = outline_points(outline)
+    cx = sum(x for x, _ in points) / len(points)
+    cy = sum(y for _, y in points) / len(points)
+    axis = (math.cos(tip_direction), math.sin(tip_direction))
+    paths = []
+    for (x, y), (tx, ty) in zip(*along(points, spacing)):
+        x += tx * random_.uniform(-jitter, jitter) * spacing
+        y += ty * random_.uniform(-jitter, jitter) * spacing
+        nx, ny = ty, -tx
+        if nx * (x - cx) + ny * (y - cy) < 0:
+            nx, ny = -nx, -ny
+        # Which way along the outline the tip lies, and how much this point faces the tip or the holes.
+        side = 1.0 if tx * axis[0] + ty * axis[1] >= 0 else -1.0
+        raw = nx * axis[0] + ny * axis[1]
+        facing = max(0.0, raw)
+        # At the tip the fibres stand up more, so they meet in a tuft.
+        angle = math.radians(comb + random_.uniform(-10, 10)) * (1 - 0.65 * facing ** 2)
+        turn = angle + math.radians(bend + random_.uniform(-8, 8)) * (1 - 0.65 * facing ** 2)
+        direction = (nx * math.cos(angle) + side * tx * math.sin(angle), ny * math.cos(angle) + side * ty * math.sin(angle))
+        curve = (nx * math.cos(turn) + side * tx * math.sin(turn), ny * math.cos(turn) + side * ty * math.sin(turn))
+        size = random_.uniform(*length) * (1 + (tip - 1) * facing ** 3) * (1 - eye_end * max(0.0, -raw))
+        paths.append(fibre((x, y), direction, curve, size, random_.uniform(*width), inset, (nx, ny)))
+    return paths
+
+
+def mark():
+    """The flat mark: the ground, the shell with its fringe, and the holes in the colour of the ground."""
+    middle = SIZE // 2
+    parts = ['<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 %d %d" width="%d" height="%d">' % ((SIZE,) * 4),
+             '<rect width="%d" height="%d" fill="%s"/>' % (SIZE, SIZE, MARK['ground']),
+             '<g transform="translate(%d %d) scale(%.4f) translate(-%d -%d)">' % (middle, middle, MARK['scale'], middle, middle),
+             '<g fill="%s">' % MARK['shell']]
+    if MARK['fringe']:
+        parts += ['<path d="%s"/>' % path for path in fringe(MARK['outline'], **MARK['fringe'])]
+    parts.append('<path d="%s"/></g>' % MARK['outline'])
+    parts += ['<circle cx="%.2f" cy="%.2f" r="%.2f" fill="%s"/>' % (x, y, radius, MARK['ground'])
+              for x, y, radius in MARK['holes']]
+    parts.append('</g></svg>')
+    return '\n'.join(parts)
+
+
 def svg():
+    if MARK:
+        return mark()
     random_ = random.Random(SEED)
     ball = '<circle cx="%.1f" cy="%.1f" r="%.1f"' % (BALL['centre'] + (BALL['radius'],)) if BALL else ''
     if BALL:
@@ -326,11 +488,12 @@ def main():
     path = sys.argv[1] if len(sys.argv) > 1 else os.path.join(tempfile.mkdtemp(), 'app-icon.svg')
     with open(path, 'w') as f:
         f.write(svg())
+    background = MARK['ground'] if MARK else GROUND[1]
     for target, pixels in OUTPUTS:
         raster = path + '.%d.png' % pixels
         subprocess.run(['rsvg-convert', '-w', str(pixels), '-h', str(pixels), path, '-o', raster], check=True)
         # An app icon has no alpha channel.
-        subprocess.run(['magick', raster, '-background', GROUND[1], '-alpha', 'remove', '-alpha', 'off',
+        subprocess.run(['magick', raster, '-background', background, '-alpha', 'remove', '-alpha', 'off',
                         'PNG24:' + os.path.join(ROOT, target)], check=True)
         print(target)
 
