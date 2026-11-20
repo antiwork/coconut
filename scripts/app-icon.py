@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
-"""Draw Coconut's app icon: the three dots of a coconut in its hairy husk, as vector art.
+"""Draw Coconut's app icon: a whole coconut in its hairy husk, seen from its eye end, with its three dots, as vector art.
 
-The icon is full-bleed. The husk is drawn as thousands of tapered hairs that grow out of the three dots and spread
-across the whole square with a slight spiral, the way the fibres of a coconut grow from its eyes. The three dots are
-the only features: two eyes with a light in each, and a smaller mouth. A fixed seed makes each run draw the same icon.
+The husk is drawn as thousands of tapered fibres that grow out of the three dots and spread across a flat square with
+a slight spiral, the way the fibres of a coconut grow from its eyes. That husk is then laid onto a ball on a light mint
+ground (BALL), so the fibres wrap around the rim, with a soft edge of fine fibres and a few loose ones. With BALL set
+to None the husk fills the whole icon instead. The three dots are the only features. A fixed seed makes each run draw
+the same icon.
 
 Usage: python3 scripts/app-icon.py [svg path]
 Writes the SVG (default: a temporary file) and, with rsvg-convert and ImageMagick (`brew install librsvg imagemagick`),
@@ -20,40 +22,61 @@ import tempfile
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SIZE = 1024
 SEED = 1977
-# The dots: two eyes and the mouth below them, (x, y) or (x, y, radius). The eyes are 208 px across and the mouth 168,
-# a little below the middle of the icon: big eyes, a small mouth and a high forehead make the face cute, and every hole
-# stays larger than the 126 px that read too small at the sizes of the Home Screen and of Settings.
-DOTS = [(382.0, 462.0, 104.0), (642.0, 462.0, 104.0), (512.0, 672.0, 84.0)]
+# The dots: the three eyes of the coconut, (x, y) or (x, y, radius) on the flat husk, their middle at the middle of the
+# icon. Each is 164 px across, about 150 on the ball, so the holes stay clear at the small sizes of the Home Screen and
+# of Settings: 126 px read too small. Big eyes with a smaller mouth made a creature's face, not a coconut.
+DOTS = [(380.0, 439.0, 82.0), (644.0, 439.0, 82.0), (512.0, 658.0, 82.0)]
 DOT_RADIUS = 96.0
 CENTRE = (512.0, 512.0)
-# How far the hairs bend away from the flow (noise). Lower is calmer.
-WAVE = 0.4
-# The husk, from the shadow between the hairs to the light on their tips: a light, dry husk in creamy tans. The tans
-# stay close together and the light hairs are few, so the texture stays quiet behind the dots: light tips on dark gaps
-# made it too intense. The dark chocolate husk before it read as heavy fur.
-GROUND = ('#ead0a8', '#d2a878')
+# How far the hairs bend away from the flow (noise). Low, so the fibres run from the eyes like the coir of a real
+# coconut: more bend made them swirl like the hair of an animal.
+WAVE = 0.25
+# The husk, from the shell under the fibres to the light on their tips: the rust browns of a real coconut. A cream husk
+# with lights in its eyes read as an animal ("Doesn't look coconut"), and a dark chocolate one as heavy fur.
+GROUND = ('#94522b', '#5e3016')
 LAYERS = [
     # count, length range, width range, colours, opacity
-    (2400, (80, 180), (3.5, 7.0), ['#d0a77a', '#d4ab7e', '#d8b083'], 0.9),
-    (2000, (60, 150), (2.6, 5.0), ['#e0bd93', '#e4c299', '#e7c79f'], 0.6),
-    (900, (45, 120), (2.0, 3.8), ['#eed4b0', '#f1d9b7'], 0.45),
-    (120, (35, 90), (1.2, 2.4), ['#f8e9d0'], 0.35),
+    (1500, (130, 280), (2.0, 4.2), ['#6e3a1c', '#7c4322', '#874a26'], 0.9),
+    (1500, (110, 250), (1.5, 3.2), ['#9e5a30', '#a86234', '#b06a39'], 0.7),
+    (1000, (90, 220), (1.1, 2.4), ['#c07a44', '#cc874f'], 0.65),
+    (700, (70, 200), (0.8, 1.6), ['#e3a96f', '#efc08a'], 0.6),
 ]
 # The hairs in the parting between the dots: how many, how far from the middle, and their colours.
-PARTING = (375, 100.0, ['#d0a77a', '#d6ae82', '#dfbb91', '#e6c59c', '#eed4b0'])
-# The short hairs that grow out of the rim of each dot: how many, and their colours.
-RIM = (137, ['#c29466', '#cc9f72', '#d6ab7f', '#e0b98e'])
-# The vignette at the edge of the icon: its colour and how dark it gets.
-SHADE = ('#9a6a43', 0.22)
+PARTING = (375, 100.0, ['#7c4322', '#91512a', '#a86234', '#c07a44'])
+# The short hairs that grow out of the rim of each dot: how many, and their colours. None: around the holes they read
+# as eyelashes.
+RIM = (0, ['#5e3117', '#6e3a1c', '#874a26', '#9e5a30'])
+# The darkness at the edge: of the icon full-bleed (a vignette), of the ball otherwise. Its colour and opacity.
+SHADE = ('#2a1408', 0.55)
 # The shadow around each dot, which sinks it into the husk: colour, opacity, and its size against the dot.
-SOCKET = ('#7a4e2d', 0.3, 1.3)
+SOCKET = ('#3a1c0c', 0.35, 1.22)
 # The dots, from the middle to the rim: a warm dark brown, not black.
-DOT = ('#3b2213', '#5b3720')
+DOT = ('#22110a', '#45230f')
 # The light on the two eyes, the first two dots: (x, y, radius x, radius y) against the dot's radius, colour, opacity.
-# The mouth, the third dot, has none, so the face reads as two eyes and a mouth. Empty for no light.
-GLINTS = [((-0.30, -0.34, 0.30, 0.26), '#fff8ec', 0.94), ((0.32, 0.30, 0.12, 0.11), '#fff4e4', 0.88)]
+# None: lights in the eyes made the coconut a creature.
+GLINTS = []
 # A soft blush under each eye: colour, opacity, (x, y) of its middle against the eye's centre, and radius. None for none.
 BLUSH = None
+# The nut. None draws the husk full-bleed, across the whole icon. A dict draws a whole coconut seen from its eye end on a
+# light ground: the full-bleed husk is laid onto a ball (an orthographic view of a sphere), so the fibres radiate from
+# the eyes and wrap around the rim instead of sticking out of it. `centre` and `radius` place the ball; a point of the
+# flat husk `reach` from the middle of the dots lies on the rim, and a point further away is behind the ball. A husk
+# with three holes across the whole icon read as a furry face; the round nut on a light ground reads as a coconut.
+BALL = dict(centre=(512.0, 528.0), radius=410.0, reach=700.0)
+# The light ground around the ball, from its upper left to its corners: the mint of the website.
+BACKGROUND = ('#e6f7f4', '#c6e9e2')
+# The shadow of the ball on the ground: colour and opacity.
+DROP = ('#4a3322', 0.30)
+# The light on the upper left of the ball: colour and opacity. SHADE darkens its rim.
+SHINE = ('#fff3e0', 0.20)
+# The loose fibres that lie along the rim of the ball and lift a little off it: how many, and their colours. Light and
+# golden, like the loose coir around the outline of a real coconut.
+WISPS = (110, ['#c07a44', '#d39257', '#e2a96f', '#efc08a'])
+# The short fine fibres that cross the rim of the ball, so its edge is soft and not cut out: how many, their colours.
+FUZZ = (420, ['#6e3a1c', '#7c4322', '#874a26', '#9e5a30'])
+# The light on the lower lip of each dot, which sinks it into the husk instead of laying it on top: colour, opacity.
+# None for none.
+LIP = ('#d8955a', 0.6)
 OUTPUTS = [
     ('ios/Coconut/Assets.xcassets/CoconutAppIcon.appiconset/CoconutAppIcon.png', 1024),
     ('exact/assets/icon-1024.png', 1024),
@@ -109,7 +132,9 @@ def hair(random_, length, width, start=None, centred=False):
         left.append((px + nx * half, py + ny * half))
         right.append((px - nx * half, py - ny * half))
     outline = left + right[::-1]
-    return 'M' + ' L'.join('%.1f %.1f' % point for point in outline) + 'Z'
+    if BALL and all(behind(*point) for point in outline):
+        return None
+    return 'M' + ' L'.join('%.1f %.1f' % project(*point) for point in outline) + 'Z'
 
 
 def dots():
@@ -121,54 +146,158 @@ def near_dot(x, y, margin):
     return any(math.hypot(x - cx, y - cy) < radius + margin for cx, cy, radius in dots())
 
 
+def middle():
+    """The middle of the three dots: the eye end of the coconut, where its fibres start."""
+    points = dots()
+    return sum(x for x, _, _ in points) / 3, sum(y for _, y, _ in points) / 3
+
+
+def angle_on_ball(x, y):
+    """How far round the ball a point of the flat husk lies, from 0 at the eyes to a quarter turn at the rim, and its
+    distance from the eyes."""
+    mx, my = middle()
+    distance = math.hypot(x - mx, y - my)
+    return min(distance / BALL['reach'], 1.0) * math.pi / 2, distance
+
+
+def project(x, y):
+    """Where the icon shows a point of the flat husk: the same point full-bleed, or on the ball."""
+    if not BALL:
+        return x, y
+    (mx, my), (bx, by) = middle(), BALL['centre']
+    angle, distance = angle_on_ball(x, y)
+    scale = BALL['radius'] * math.sin(angle) / distance if distance else BALL['radius'] * math.pi / 2 / BALL['reach']
+    return bx + (x - mx) * scale, by + (y - my) * scale
+
+
+def projected_size(x, y):
+    """How much the ball shrinks a small shape at a point of the flat husk, such as a dot: 1 full-bleed."""
+    if not BALL:
+        return 1.0
+    angle, distance = angle_on_ball(x, y)
+    radial = BALL['radius'] * math.pi / 2 / BALL['reach'] * math.cos(angle)
+    tangential = BALL['radius'] * math.sin(angle) / distance if distance else radial
+    return math.sqrt(max(radial, 1e-6) * tangential)
+
+
+def behind(x, y):
+    """True for a point of the flat husk on the far side of the ball."""
+    return bool(BALL) and math.hypot(x - middle()[0], y - middle()[1]) > BALL['reach']
+
+
+def wisps(random_):
+    """The edge of the ball: short fine fibres that cross its rim, so the nut is not cut out, and loose fibres that
+    lie along it and lift a little off it, curling, as on a real coconut. Fibres that stuck straight out of the rim
+    made the nut a hedgehog."""
+    (bx, by), radius = BALL['centre'], BALL['radius']
+
+    def strand(angle, turn, length, start, rise, curl, steps):
+        points = []
+        for step in range(steps):
+            t = step / (steps - 1)
+            along = angle + turn * t * length / radius
+            lift = radius * (start + rise * t ** 1.5 + curl * math.sin(t * math.pi * 1.5))
+            points.append('%.1f,%.1f' % (bx + math.cos(along) * lift, by + math.sin(along) * lift))
+        return ' '.join(points)
+
+    groups = []
+    count, colours = FUZZ
+    lines = [('<polyline points="%s" fill="none" stroke="%s" stroke-width="%.1f" stroke-linecap="round"/>' % (
+        strand(random_.uniform(0, 2 * math.pi), random_.choice((-1, 1)), random_.uniform(6, 18),
+               random_.uniform(0.975, 0.995), random_.uniform(0.01, 0.03), 0.0, 4),
+        random_.choice(colours), random_.uniform(0.6, 1.0))) for _ in range(count)]
+    groups.append('<g stroke-opacity="0.6">%s</g>' % ''.join(lines))
+    count, colours = WISPS
+    lines = [('<polyline points="%s" fill="none" stroke="%s" stroke-width="%.1f" stroke-linecap="round"/>' % (
+        strand(random_.uniform(0, 2 * math.pi), random_.choice((-1, 1)), random_.uniform(30, 80),
+               random_.uniform(0.95, 0.975), random_.uniform(0.04, 0.08), random_.uniform(-0.012, 0.012), 10),
+        random_.choice(colours), random_.uniform(0.7, 1.3))) for _ in range(count)]
+    groups.append('<g stroke-opacity="0.7">%s</g>' % ''.join(lines))
+    return ''.join(groups)
+
+
 def svg():
     random_ = random.Random(SEED)
+    ball = '<circle cx="%.1f" cy="%.1f" r="%.1f"' % (BALL['centre'] + (BALL['radius'],)) if BALL else ''
+    if BALL:
+        # The light on the upper left of the ball and the shadow at its rim, which make it round.
+        edge = ('<radialGradient id="shade" cx="37%%" cy="30%%" r="74%%"><stop offset="0" stop-color="%s" '
+                'stop-opacity="%.2f"/><stop offset="0.42" stop-color="%s" stop-opacity="0"/><stop offset="0.78" '
+                'stop-color="%s" stop-opacity="%.2f"/><stop offset="1" stop-color="%s" stop-opacity="%.2f"/>'
+                '</radialGradient>' % (SHINE[0], SHINE[1], SHINE[0], SHADE[0], SHADE[1] * 0.2, SHADE[0], SHADE[1]))
+    else:
+        edge = ('<radialGradient id="shade" cx="44%%" cy="42%%" r="78%%"><stop offset="0.45" stop-color="%s" '
+                'stop-opacity="0"/><stop offset="1" stop-color="%s" stop-opacity="%.2f"/></radialGradient>'
+                % (SHADE[0], SHADE[0], SHADE[1]))
     parts = ['<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 %d %d" width="%d" height="%d">' % ((SIZE,) * 4),
              '<defs>',
              '<radialGradient id="ground" cx="46%%" cy="44%%" r="75%%"><stop offset="0" stop-color="%s"/>'
              '<stop offset="1" stop-color="%s"/></radialGradient>' % GROUND,
-             '<radialGradient id="shade" cx="44%%" cy="42%%" r="78%%"><stop offset="0.45" stop-color="%s" '
-             'stop-opacity="0"/><stop offset="1" stop-color="%s" stop-opacity="%.2f"/></radialGradient>'
-             % (SHADE[0], SHADE[0], SHADE[1]),
+             edge,
              '<radialGradient id="socket"><stop offset="0.7" stop-color="%s" stop-opacity="%.2f"/>'
              '<stop offset="1" stop-color="%s" stop-opacity="0"/></radialGradient>' % (SOCKET[0], SOCKET[1], SOCKET[0]),
              '<radialGradient id="dot" cx="42%%" cy="38%%" r="70%%"><stop offset="0" stop-color="%s"/>'
              '<stop offset="1" stop-color="%s"/></radialGradient>' % DOT,
              '<radialGradient id="blush"><stop offset="0" stop-color="%s" stop-opacity="%.2f"/>'
              '<stop offset="1" stop-color="%s" stop-opacity="0"/></radialGradient>'
-             % ((BLUSH[0], BLUSH[1], BLUSH[0]) if BLUSH else ('#000000', 0, '#000000')),
-             '</defs>',
-             '<rect width="%d" height="%d" fill="url(#ground)"/>' % (SIZE, SIZE)]
+             % ((BLUSH[0], BLUSH[1], BLUSH[0]) if BLUSH else ('#000000', 0, '#000000'))]
+    if LIP:
+        parts.append('<linearGradient id="lip" x1="0" y1="0" x2="0" y2="1"><stop offset="0.5" stop-color="%s" '
+                     'stop-opacity="0"/><stop offset="1" stop-color="%s" stop-opacity="%.2f"/></linearGradient>'
+                     % (LIP[0], LIP[0], LIP[1]))
+    if BALL:
+        (bx, by), radius = BALL['centre'], BALL['radius']
+        parts += ['<radialGradient id="background" cx="40%%" cy="30%%" r="85%%"><stop offset="0" stop-color="%s"/>'
+                  '<stop offset="1" stop-color="%s"/></radialGradient>' % BACKGROUND,
+                  '<radialGradient id="drop"><stop offset="0" stop-color="%s" stop-opacity="%.2f"/>'
+                  '<stop offset="1" stop-color="%s" stop-opacity="0"/></radialGradient>' % (DROP[0], DROP[1], DROP[0]),
+                  '<clipPath id="nut">%s/></clipPath>' % ball,
+                  '</defs>',
+                  '<rect width="%d" height="%d" fill="url(#background)"/>' % (SIZE, SIZE),
+                  '<ellipse cx="%.1f" cy="%.1f" rx="%.1f" ry="%.1f" fill="url(#drop)"/>' % (
+                      bx, by + radius * 0.98, radius * 0.9, radius * 0.13),
+                  # The husk stays inside the ball: a fibre that runs over the rim goes round behind it.
+                  '<g clip-path="url(#nut)">',
+                  ball + ' fill="url(#ground)"/>']
+    else:
+        parts += ['</defs>', '<rect width="%d" height="%d" fill="url(#ground)"/>' % (SIZE, SIZE)]
     for count, (shortest, longest), (thinnest, thickest), colours, opacity in LAYERS:
         group = []
         for _ in range(count):
             length = random_.uniform(shortest, longest)
             width = random_.uniform(thinnest, thickest)
             path = hair(random_, length, width)
-            group.append('<path d="%s" fill="%s"/>' % (path, random_.choice(colours)))
+            colour = random_.choice(colours)
+            if path:
+                group.append('<path d="%s" fill="%s"/>' % (path, colour))
         parts.append('<g fill-opacity="%.2f">%s</g>' % (opacity, ''.join(group)))
     # Where the hairs of the three dots part, in the middle, hairs pass only with their thin ends. These have their
     # middle there, so the parting is covered like the rest.
-    middle = (sum(x for x, _, _ in dots()) / 3, sum(y for _, y, _ in dots()) / 3)
+    mx, my = middle()
     count, reach, colours = PARTING
     group = []
     while len(group) < count:
         angle, distance = random_.uniform(0, 2 * math.pi), reach * math.sqrt(random_.random())
-        x, y = middle[0] + math.cos(angle) * distance, middle[1] + math.sin(angle) * distance
+        x, y = mx + math.cos(angle) * distance, my + math.sin(angle) * distance
         if near_dot(x, y, 6):
             continue
-        group.append('<path d="%s" fill="%s"/>' % (
-            hair(random_, random_.uniform(40, 90), random_.uniform(2.5, 5.5), (x, y), centred=True),
-            random_.choice(colours)))
+        path = hair(random_, random_.uniform(40, 90), random_.uniform(2.5, 5.5), (x, y), centred=True)
+        group.append('<path d="%s" fill="%s"/>' % (path, random_.choice(colours)))
     parts.append('<g fill-opacity="0.85">%s</g>' % ''.join(group))
-    parts.append('<rect width="%d" height="%d" fill="url(#shade)"/>' % (SIZE, SIZE))
+    if BALL:
+        parts += ['</g>', ball + ' fill="url(#shade)"/>', wisps(random_)]
+    else:
+        parts.append('<rect width="%d" height="%d" fill="url(#shade)"/>' % (SIZE, SIZE))
     if BLUSH:
         for side, (cx, cy, radius) in zip((-1, 1), dots()[:2]):
             (dx, dy), size = BLUSH[2], BLUSH[3]
+            x, y = cx + side * dx * radius, cy + dy * radius
             parts.append('<circle cx="%.1f" cy="%.1f" r="%.1f" fill="url(#blush)"/>' % (
-                cx + side * dx * radius, cy + dy * radius, size * radius))
+                project(x, y) + (size * radius * projected_size(x, y),)))
     for cx, cy, radius in dots():
-        parts.append('<circle cx="%.1f" cy="%.1f" r="%.1f" fill="url(#socket)"/>' % (cx, cy, radius * SOCKET[2]))
+        shown = project(cx, cy) + (radius * projected_size(cx, cy),)
+        parts.append('<circle cx="%.1f" cy="%.1f" r="%.1f" fill="url(#socket)"/>' % (
+            shown[0], shown[1], shown[2] * SOCKET[2]))
         # A few short hairs that start under the dot and grow out of its rim, at uneven places.
         count, colours = RIM
         group = []
@@ -179,11 +308,16 @@ def svg():
             group.append('<path d="%s" fill="%s"/>' % (
                 hair(random_, random_.uniform(26, 72), random_.uniform(2.5, 5.5), start), colour))
         parts.append('<g fill-opacity="0.9">%s</g>' % ''.join(group))
-        parts.append('<circle cx="%.1f" cy="%.1f" r="%.1f" fill="url(#dot)"/>' % (cx, cy, radius))
+        parts.append('<circle cx="%.1f" cy="%.1f" r="%.1f" fill="url(#dot)"/>' % shown)
+        if LIP:
+            parts.append('<circle cx="%.1f" cy="%.1f" r="%.1f" fill="none" stroke="url(#lip)" stroke-width="%.1f"/>'
+                         % (shown[0], shown[1], shown[2] + 2.0, 4.0))
     for cx, cy, radius in dots()[:2]:
+        size = projected_size(cx, cy)
         for (gx, gy, rx, ry), colour, opacity in GLINTS:
             parts.append('<ellipse cx="%.1f" cy="%.1f" rx="%.1f" ry="%.1f" fill="%s" fill-opacity="%.2f"/>' % (
-                cx + gx * radius, cy + gy * radius, rx * radius, ry * radius, colour, opacity))
+                project(cx + gx * radius, cy + gy * radius) + (rx * radius * size, ry * radius * size, colour,
+                                                                 opacity)))
     parts.append('</svg>')
     return '\n'.join(parts)
 
