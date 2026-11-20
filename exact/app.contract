@@ -51,8 +51,10 @@ component Coconut
   resource home = loadHome(time.epochAtZero, target, mode == "live", live.version) when mode != "pair" as shape Home else empty()
   resource chat = loadChat(time.epochAtZero, openId, mode == "live", live.version) when openId != "" and mode != "pair" as shape Chat else empty()
   // The slash menu over the message box: `/model` and `/effort`, as in the Swift app, where they change the model and
-  // the effort of every chat (ComposerSlash). Options have no other place in the screens.
-  resource slash = suggest(openId, chatDraft, mode == "live", live.version) when openId != "" and mode != "pair" and chatDraft.slice(0, 1) == "/" as shape Suggestion[] else empty()
+  // the effort of every chat (ComposerSlash). Options have no other place in the screens. A resource whose `when` turns
+  // false keeps the rows it had, so the menu and Send read them only while the draft starts with a slash (`slashing`),
+  // and an empty draft asks once more, which empties them: a chosen model or effort empties the box (#575).
+  resource slash = suggest(openId, chatDraft, mode == "live", live.version) when openId != "" and mode != "pair" and (slashing or chatDraft == "") as shape Suggestion[] else empty()
   mutation started as shape Made queue refreshes home then afterStart
   mutation created as shape Made refreshes home then afterCreate
   // A write to the Mac is a queue: a newer send of a mutation that takes the newest reply lets the answer in flight go,
@@ -63,8 +65,9 @@ component Coconut
   mutation sent as shape Ack queue refreshes chat, home
   mutation stopped as shape Ack queue refreshes chat, home
   mutation answered as shape Ack queue refreshes chat, home
-  mutation modelSet as shape Ack queue refreshes chat
-  mutation effortSet as shape Ack queue refreshes chat
+  // The menu asks again once the Mac took a model or an effort, so a `/model` typed before its answer moves the mark.
+  mutation modelSet as shape Ack queue refreshes chat, slash
+  mutation effortSet as shape Ack queue refreshes chat, slash
   derive now = time.epochAtZero + since
   derive mode = demo ? "demo" : saved.paired ? "live" : "pair"
   // What the round connects for: the Mac's state, or the pairing of a setup that came into the box of the code. An
@@ -87,6 +90,7 @@ component Coconut
   derive hasText = draft.trim() != ""
   derive chatHasText = chatDraft.trim() != ""
   derive canSend = chatHasText or attached.length > 0
+  derive slashing = chatDraft.slice(0, 1) == "/"
   derive sending = pending(queued) or pending(sent)
   // ComposerExpansion.isOpen: a draft of more than one line, or an attachment, or the field with focus on a phone.
   derive expanded = chat.toolbar and (composing or chatDraft.length > 80 or chatDraft.includes("\n") or attached.length > 0)
@@ -175,9 +179,10 @@ component Coconut
   action blurChat
     composing = false
   // Send runs the first row of the slash menu when it shows, as Return does in the Swift app. A message shows at once
-  // (`queued`), and its files and words then go to the Mac (`sent`), which can take seconds for a photo.
+  // (`queued`), and its files and words then go to the Mac (`sent`), which can take seconds for a photo. The rows that a
+  // draft without a slash keeps are no menu: Send sends the words.
   action sendChat
-    match slash.at(0)
+    match (slashing ? slash.at(0) : none)
       case some(s)
         pickSlash(s.kind, s.value)
       case none
@@ -300,8 +305,9 @@ component Coconut
                       WorkingLine(turn=chat.turn, now=now)
               column flex-shrink=0 padding="6px 12px 8px" testId="composer-bar"
                 // The slash menu (ComposerSlashMenu) over the box: a row for each command, model or effort, and a mark on
-                // the one that every chat runs with.
-                if slash.length > 0
+                // the one that every chat runs with. It shows only while the draft starts with a slash, so a chosen model
+                // or effort, which empties the box, closes it.
+                if slashing and slash.length > 0
                   column role="menu" aria-label="Commands" margin-bottom=8 border-radius=16 background-color="light-dark(#f4f4f4, #212121)" overflow="hidden" testId="slash-menu"
                     for s in slash key=s.id
                       button role="menuitem" appearance="none" press=pickSlash(s.kind, s.value) retainFocus=true display="flex" flex-direction="row" align-items="center" gap=10 padding="0px 14px" min-height=44 text-align="start" width="100%" box-sizing="border-box" testId=`slash-${s.id}`

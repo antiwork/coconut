@@ -40,7 +40,8 @@ an attachment, or focus opens it, with a row under the text for the plus and Sen
 when there is a draft. Stop shows while the agent works (`sendControls`). A draft that starts with a slash shows the
 slash menu over the box (`ComposerSlash`): `/model` lists the models and `/effort` the efforts of the model, with a
 mark on the one in use, and a row changes the model or the effort of every chat, as in the Swift app, where one Hermes
-profile runs the chats and options have no other place on the screens (#570). Send runs the first row. The model has no
+profile runs the chats and options have no other place on the screens (#570). Send runs the first row. The menu shows
+only while the draft starts with a slash, so a chosen model or effort, which empties the box, closes it. The model has no
 chip under the text: the Swift app removed its chips (e6c152f).
 
 ## Live data
@@ -216,6 +217,17 @@ one of "Answers that Exact stops" under Live data, as far as a check without a p
 the same failures on main), and its fix is the next update of the stream; the frames dropped are the data module's work
 on the main thread (placement `main`, which a worker cannot replace, because a worker has no socket to send on), of
 which the reads of a page now do less.
+
+That fix reached his iPhone as the second update of the stream (seq 2), and on 2026-11-20 a model he chose with
+`/model` took effect on his Mac. The menu then stayed open, with the mark on the old model, until he started the app
+again. A resource whose `when` turns false keeps the answer it showed (Exact's `when`, and its test
+`closing_lets_go_of_the_request_and_keeps_the_value`), and the menu showed whenever `slash` had rows: a chosen model
+empties the box, which closed the gate of `slash` and left its rows on the screen, and Send would then have run their
+first row in place of sending the words. Now the menu and Send read the rows only while the draft starts with a slash,
+an empty draft asks `suggest` once more, which empties them, and a model or an effort that the Mac took asks the menu
+again, so a `/model` typed before the Mac answered moves its mark. That is the next update of the stream. Checked by
+reading, against Exact's rules and tests of `when` and `current`; not checked: the menu itself in Exact, on a phone or
+the web host.
 
 ## What was checked, and what was not
 
