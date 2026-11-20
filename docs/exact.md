@@ -78,6 +78,21 @@ each frame for its own time, 20 seconds, or 45 for a read of updates; one that r
 and an ended socket fails them all. A write no longer asks for a read after it: the change it makes ends the read that
 waits.
 
+Answers that Exact stops. Every answer shares the one session, and Exact can stop an answer on its way: a newer send
+of a mutation that keeps the newest reply, or a resource asked again, lets the answer in flight go, whose pauses then
+fail and whose sends throw, and the runner takes back what a turn sent when that turn went over its 100 ms. Nonces count
+up strictly, and the Mac closes a session at a skipped one. Until build 19's second update, a write let go beside the
+read of updates sealed its CANCEL, which took a nonce and never left, and a reader let go dropped a message it had
+taken: either way the Mac closed the session, and every write until the next round, 15 seconds later, said "Your Mac
+is not connected." That fits #575, where each `/model` and `/effort` on a phone said so and the connection went on and
+off. Now a message is sealed on a copy of the send cipher and the session moves on only once it went, in a turn of its
+own after the work that made it; a reader let go puts its message back for the next one, and only a message that does
+not open ends the session; the writes are `queue` mutations, so a second tap waits for the first; a write waits up to
+25 seconds for the next round instead of failing at once; and a round whose session read the Mac gives way to the next
+after 3 seconds (`live.quick`), not 15. A page of updates no longer sorts every message of the Mac, and `fromSnapshot`
+groups the messages by chat in one pass: a page of 900 messages took 0.8 ms under bun, against 1.6 ms on main, which a
+phone without a JIT pays several times over on its main thread.
+
 What a chat of the Mac does here: its messages, cards and files, the working line, Send with words and files, answers
 to cards, Stop and read marks, and `/model` and `/effort`. Those two send `PUT /v1/settings/model` (model,
 provider and effort, as `ModelOverride`), which changes the model of every chat of the Mac, and take the catalog of its
@@ -93,7 +108,12 @@ idempotency key, as `AppStore.uploadAttachment`), and the message names them in 
 the text `[attachment]`, which the chat does not show (`AttachmentOnly`). A file of the file picker goes as it is, from
 1 byte to 4 MB. A photo goes as `FileFit` sends it in an agent chat: as it is when it fits 2400 pixels and 4 MB and is
 no HEIC or HEIF image, a GIF always, and any other photo as a JPEG of at most 2400 pixels and 4 MB at quality 0.8
-(`storage.fs.compressImage` into `app:/tmp/upload`, removed after its upload). The base64 goes straight into the bytes
+(`storage.fs.compressImage` into `app:/tmp/upload`, removed after its upload). Exact lets one answer send 1 MiB on a
+socket in all its turns (`socket answer exceeds 1 MiB`), and a message and its files go in one answer, so the files of
+a message take about 750 KB in all, as base64 in frames: a photo becomes a JPEG that fits what the message leaves, and
+files that do not fit stop the message before anything goes, with "The files of one message can take about 750 KB in
+this app." Before that limit was known, a larger upload failed in the middle and broke the session. Sending a file in
+parts over more answers would lift it. The base64 goes straight into the bytes
 of the body, part by part with a pause between, so a file of 4 MB makes no string of 5.6 MB. The rows of a message
 stay (`outgoing`) while new states of the Mac come, until a state shows it. The Mac answers a message with its task,
 not the message, so a state shows it when it holds a message of the person with that text and an id that the chat did
@@ -130,6 +150,17 @@ upload of 2.5 MB beside a read, and eight requests at once. The merge of updates
 fixture mode (an empty data folder, no relay): a state, then a new chat and its turn read as updates (one page was a
 `reset`), gave the same messages, bots, cards, files, task statuses and chats as a fresh state. Not checked: the reads
 in Exact itself, on the web host or a phone (the disk had 7.4 GB free), and the socket of the relay.
+
+The answers that Exact stops, under bun against a Mac in memory with real ciphers that closes a session at a message
+that does not open, each request an answer of its own (AsyncLocalStorage keeps whose turn runs after an await, as
+Exact's async helper does), whose pauses reject and whose sends throw once it is let go: a reader let go before the Mac
+answers, a write let go while it waits beside the read of updates, and a message let go while it opens. On main the
+request after each failed ("A message from the Mac did not decrypt.", "The connection to your Mac ended.") and the Mac
+closed the session at a skipped nonce, or the session broke; with the fix each request after them went and the Mac kept
+the session. Also under bun: a page of 900 messages shows the same chats as on main, a write that finds no connection
+goes once the next one opens, and the files of a message stay within 1 MiB (two files of 700 KB in all go, 900 KB stop
+before anything goes, a HEIC photo becomes a JPEG that fits beside a file). Not checked: Exact's runner itself (its
+let-go answers and overruns on a phone), the quick round of `retryingSoon`, and the limit of 1 MiB on a device.
 
 `/model` and `/effort` under bun against the fixture: a slash alone offers both, `/m` completes to `/model `, the models
 and the efforts of the model list with a mark on the one in use, a name filters them, a model brings its own default
@@ -176,6 +207,15 @@ binary with a stream of its own (`e06cea81`), whose first update carries main at
 with those grants and keeps its last update (f434da9: the reads of updates, `/model` and `/effort`). Build 19 is on the
 AppDrop link, and its check on a phone is #575: the install over build 5, a photo and a file, `/model` and `/effort`,
 and a launch in Airplane Mode.
+
+Gianfranco installed build 19 over build 5 on 2026-11-20. A photo and a file with words reached his agent, and a
+launch in Airplane Mode showed his last chats with the reason at the top. `/model` and `/effort` listed his Mac's models
+and efforts with the mark on the one in use, but each choice said "The model did not change: Your Mac is not
+connected.", the connection went on and off, and the app dropped frames while he moved around in it. The cause was the
+one of "Answers that Exact stops" under Live data, as far as a check without a phone shows (a check under bun makes
+the same failures on main), and its fix is the next update of the stream; the frames dropped are the data module's work
+on the main thread (placement `main`, which a worker cannot replace, because a worker has no socket to send on), of
+which the reads of a page now do less.
 
 ## What was checked, and what was not
 

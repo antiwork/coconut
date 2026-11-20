@@ -170,11 +170,12 @@ export class Cipher {
     return out;
   }
 
-  async decrypt(ciphertext: Uint8Array, ad: Uint8Array, pause: Pause = noPause): Promise<Uint8Array> {
+  // The plaintext, or null when the message does not open. The nonce moves only for a message that opened, so a pause
+  // that fails in the middle leaves the cipher as it was.
+  async decrypt(ciphertext: Uint8Array, ad: Uint8Array, pause: Pause = noPause): Promise<Uint8Array | null> {
     if (!this.key) return ciphertext;
     const out = await open(this.key, nonceBytes(this.nonce), ciphertext, ad, pause);
-    if (!out) throw new Error('A message from the Mac did not decrypt.');
-    this.nonce += 1;
+    if (out) this.nonce += 1;
     return out;
   }
 
@@ -221,6 +222,7 @@ class SymmetricState {
 
   async decryptAndHash(ciphertext: Uint8Array): Promise<Uint8Array> {
     const plaintext = await this.cipher.decrypt(ciphertext, this.hash);
+    if (!plaintext) throw new Error('A message from the Mac did not decrypt.');
     this.mixHash(ciphertext);
     return plaintext;
   }
@@ -312,7 +314,25 @@ export const decodeFrame = (data: Uint8Array): Frame => {
 
 const frame = (type: number, stream: number, payload: Uint8Array = new Uint8Array(0)): Frame => ({ type, stream, flags: 0, payload });
 
+// The send side of a session: its key, its nonce, and the messages since its last rekey.
+export interface SendState {
+  key: Uint8Array | null;
+  nonce: number;
+  sent: number;
+}
+// A sealed message, and the send side once it has gone.
+export interface Sealed {
+  bytes: Uint8Array;
+  after: SendState;
+}
+
 // The ciphers of one connection (TunnelSession). The phone rekeys its send key after 65,536 frames.
+//
+// Nonces count up strictly, and the Mac closes the session at a skipped one (docs/relay-transport.md). Exact can stop a
+// message on its way: an answer let go may not send, and the runner takes back what a turn sent when that turn goes
+// over its budget. So `seal` works on a copy of the send cipher, and the send side moves on only when a message went
+// (`went`); and a pause that fails while a message opens leaves the receive side as it was, for the next reader. Only a
+// message that does not open ends the session.
 export class Session {
   private sent = 0;
   broken = false;
@@ -326,22 +346,36 @@ export class Session {
     this.handshakeHash = handshakeHash;
   }
 
-  async seal(f: Frame, pause: Pause = noPause): Promise<Uint8Array[]> {
-    const out: Uint8Array[] = [];
-    if (this.sent >= REKEY_AFTER) {
-      out.push(await this.sender.encrypt(encodeFrame(frame(FRAME.rekey, 0)), new Uint8Array(0)));
-      await this.sender.rekey();
-      this.sent = 0;
+  async seal(f: Frame, pause: Pause = noPause): Promise<Sealed[]> {
+    const cipher = new Cipher(this.sender.key);
+    cipher.nonce = this.sender.nonce;
+    let sent = this.sent;
+    const out: Sealed[] = [];
+    if (sent >= REKEY_AFTER) {
+      const bytes = await cipher.encrypt(encodeFrame(frame(FRAME.rekey, 0)), new Uint8Array(0));
+      await cipher.rekey();
+      sent = 0;
+      out.push({ bytes, after: { key: cipher.key, nonce: cipher.nonce, sent } });
     }
-    out.push(await this.sender.encrypt(encodeFrame(f), new Uint8Array(0), pause));
-    this.sent += 1;
+    const bytes = await cipher.encrypt(encodeFrame(f), new Uint8Array(0), pause);
+    sent += 1;
+    out.push({ bytes, after: { key: cipher.key, nonce: cipher.nonce, sent } });
     return out;
+  }
+
+  // A sealed message went to the socket.
+  went(after: SendState): void {
+    this.sender.key = after.key;
+    this.sender.nonce = after.nonce;
+    this.sent = after.sent;
   }
 
   // The frame of one message from the Mac, or null for a rekey, which only changes the receive key.
   async open(ciphertext: Uint8Array, pause: Pause = noPause): Promise<Frame | null> {
+    const plain = await this.receiver.decrypt(ciphertext, new Uint8Array(0), pause);
     try {
-      const f = decodeFrame(await this.receiver.decrypt(ciphertext, new Uint8Array(0), pause));
+      if (!plain) throw new Error('A message from the Mac did not decrypt.');
+      const f = decodeFrame(plain);
       if (f.type !== FRAME.rekey) return f;
       if (f.stream !== 0 || f.flags !== 0 || f.payload.length > 0) throw new Error('The Mac sent a rekey that is not valid.');
       await this.receiver.rekey();
@@ -356,10 +390,12 @@ export class Session {
 // MARK: Requests
 
 // One socket of the relay. `next` gives the next binary message, and fails when the socket ends or when none comes
-// within `patience` milliseconds. `open` says whether the socket still runs: a timeout leaves it open.
+// within `patience` milliseconds. `open` says whether the socket still runs: a timeout leaves it open. `unread` puts a
+// message back in front, for the next reader, when its reader stopped before it could open it.
 export interface Link {
   send(bytes: Uint8Array): void;
   next(patience: number): Promise<Uint8Array>;
+  unread(bytes: Uint8Array): void;
   open(): boolean;
   pause: Pause;
 }
@@ -433,7 +469,14 @@ export class Tunnel {
     });
     try {
       await previous;
-      for (const message of await this.session.seal(f, this.link.pause)) this.link.send(message);
+      const sealed = await this.session.seal(f, this.link.pause);
+      // The messages go in a turn of their own, after the work that sealed them or came before: the runner takes back
+      // what a turn sent when the turn goes over its budget.
+      await this.link.pause();
+      for (const message of sealed) {
+        this.link.send(message.bytes);
+        this.session.went(message.after);
+      }
     } finally {
       release();
     }
@@ -455,7 +498,15 @@ export class Tunnel {
       if (!this.reading) {
         this.reading = true;
         try {
-          const f = await this.session.open(await this.link.next(patience), this.link.pause);
+          const bytes = await this.link.next(patience);
+          let f: Frame | null;
+          try {
+            f = await this.session.open(bytes, this.link.pause);
+          } catch (error) {
+            // A reader whose answer was let go stops in the middle of the message: the next reader opens it.
+            if (!this.session.broken) this.link.unread(bytes);
+            throw error;
+          }
           if (f && f.type === FRAME.ping) await this.send(frame(FRAME.pong, 0));
           else if (f) this.streams.get(f.stream)?.frames.push(f);
         } catch (error) {
@@ -541,6 +592,9 @@ export class Tunnel {
 // The first message of a handshake, then the session from the Mac's answer.
 export async function connect(link: Link, keys: Keys, macKey: Uint8Array, psk: Uint8Array | null): Promise<Tunnel> {
   const handshake = new Handshake(keys, macKey, psk);
-  link.send(await handshake.first(link.pause));
+  const first = await handshake.first(link.pause);
+  // In a turn of its own, after the work of the keys (see `Tunnel.send`).
+  await link.pause();
+  link.send(first);
   return new Tunnel(await handshake.finish(await link.next(PATIENCE), link.pause), link);
 }

@@ -142,8 +142,10 @@ shape Sock
   status: string
   n: number
 
-// The last sync with the Mac: the version of the state, the pairings made, and the error of the last try.
+// The last sync with the Mac: the version of the state, the pairings made, the error of the last try, and whether the
+// next round may come soon, because this round's session read the Mac before it ended.
 shape Live
   version: number
   pairs: number
   error: string
+  quick: bool

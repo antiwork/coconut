@@ -19,7 +19,7 @@
 import type { Answer, Database, Result, Sources, Storage, StreamEvent, StreamSocket, Store } from './app.contract.d.ts';
 import { noPause, type Pause } from './crypto.ts';
 import {
-  clientToken, connect, fromBase64Url, newBox, newKeys, openBox, pairingPsk, relayTicket, text, toBase64Url, utf8,
+  MAX_PAYLOAD, clientToken, connect, fromBase64Url, newBox, newKeys, openBox, pairingPsk, relayTicket, text, toBase64Url, utf8,
   type Box, type Keys, type Link, type Reply, type Setup, type Tunnel,
 } from './tunnel.ts';
 import preview from './preview.json';
@@ -374,9 +374,10 @@ const applying = (page: Page, snap: Snapshot): Snapshot | null => {
   if (page.bots) next.bots = page.bots;
   if (page.tasks) next.tasks = merge(page.tasks, snap.tasks);
   if (page.messages || page.removed_messages?.length) {
+    // The messages stay in the order they came: `fromSnapshot` orders the messages of each chat, and a sort of every
+    // message of the Mac on each page cost the phone's time.
     const gone = new Set(page.removed_messages ?? []);
-    next.messages = merge(page.messages ?? [], snap.messages).filter((m) => !gone.has(m.id))
-      .sort((a, b) => (a.created_at < b.created_at ? -1 : a.created_at > b.created_at ? 1 : a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+    next.messages = merge(page.messages ?? [], snap.messages).filter((m) => !gone.has(m.id));
   }
   if (page.collection_deltas) {
     const cards = new Set(page.removed_decisions ?? []);
@@ -464,7 +465,13 @@ const fromSnapshot = (snap: Snapshot): State => {
   decisions.clear();
   for (const d of snap.decisions) decisions.set(d.id, d);
   const byBot = new Map<string, LvMessage[]>();
-  for (const m of snap.messages) byBot.set(m.bot_id, [...(byBot.get(m.bot_id) ?? []), m]);
+  for (const m of snap.messages) {
+    const list = byBot.get(m.bot_id);
+    if (list) list.push(m);
+    else byBot.set(m.bot_id, [m]);
+  }
+  const bySent = (a: LvMessage, b: LvMessage): number =>
+    (a.created_at < b.created_at ? -1 : a.created_at > b.created_at ? 1 : a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
   const chats = new Map<string, ChatState>();
   const projects: Project[] = [];
   const waits: Wait[] = [];
@@ -472,7 +479,7 @@ const fromSnapshot = (snap: Snapshot): State => {
     const project = projectOf.get(bot.profile) ?? bot;
     const letter = letterOf(bot.avatar || project.avatar, project.name);
     if (bot.project === true) projects.push({ id: bot.id, name: bot.name, letter, face: faceOf(letter) });
-    const messages = (byBot.get(bot.id) ?? []).sort((a, b) => (a.created_at < b.created_at ? -1 : a.created_at > b.created_at ? 1 : 0)).map((m): Msg => {
+    const messages = (byBot.get(bot.id) ?? []).sort(bySent).map((m): Msg => {
       const at = rel(m.created_at);
       const decision = m.decision_id ? decisions.get(m.decision_id) : undefined;
       if (decision) {
@@ -656,9 +663,18 @@ const linkOf = (c: Conn): Link => ({
       };
       c.waiters.push({ resolve: (b) => { clearTimeout(timer); resolve(b); }, reject: fail });
     });
-    // The mapper woke this answer inside another answer's turn: go on in a turn of its own.
-    await pause();
+    // The mapper woke this answer inside another answer's turn: go on in a turn of its own. An answer that was let go
+    // meanwhile fails there, and the message stays for the next reader.
+    try {
+      await pause();
+    } catch (error) {
+      c.queue.unshift(bytes);
+      throw error;
+    }
     return bytes;
+  },
+  unread(bytes: Uint8Array): void {
+    c.queue.unshift(bytes);
   },
   open: () => c.ended === '',
   pause,
@@ -684,12 +700,24 @@ const failureOf = (reply: Reply): string => {
   return `Your Mac answered ${reply.status}.`;
 };
 
+// Whether the session of the open socket takes requests.
+const connected = (): boolean => tunnel !== null && !tunnel.session.broken && conn !== null && conn.ended === '' && tunnelKey === conn.key;
+// How long a write waits for the connection, and how often it looks.
+const CONNECT_WAIT = 25000;
+const CONNECT_LOOK = 250;
+
 // A write to the Mac on the open connection: a value as JSON, or the bytes of a JSON body made already. It returns the
-// answer's JSON, or throws the Mac's reason.
+// answer's JSON, or throws the Mac's reason. A write that comes while there is no connection (a round ended, and the
+// next one connects) waits for the next one, as the Swift app sends a request again on a new socket (APIClient), and
+// says why the Mac cannot be reached only when none comes.
 const write = async (method: string, path: string, body: unknown): Promise<unknown> => {
-  if (!tunnel || tunnel.session.broken || !conn || conn.ended !== '') throw new Error('Your Mac is not connected.');
+  for (let waited = 0; !connected(); waited += CONNECT_LOOK) {
+    if (waited >= CONNECT_WAIT) throw new Error(lastError || 'Your Mac is not connected.');
+    await new Promise<void>((resolve) => setTimeout(resolve, CONNECT_LOOK));
+  }
+  const t = tunnel as Tunnel;
   const bytes = body instanceof Uint8Array ? body : utf8(JSON.stringify(body ?? {}));
-  const reply = await tunnel.request(method, path, headers(method), bytes);
+  const reply = await t.request(method, path, headers(method), bytes);
   if (reply.status < 200 || reply.status >= 300) throw new Error(failureOf(reply));
   return reply.body.length > 0 ? JSON.parse(text(reply.body)) : {};
 };
@@ -704,6 +732,21 @@ const SIZE_TEXT = 'Choose a file between 1 byte and 4 MB.';
 const CANNOT_SEND = 'This file cannot be sent.';
 // `_validate_attachments`: a message takes at most 20 files.
 const MOST_FILES = 20;
+// What one answer may send on a socket in all its turns: 1 MiB (Exact, LLP 1016.000 D7, `socket answer exceeds 1 MiB`).
+// A message and its files go in one answer (`sendMessage`), so they share it: the files of a message can take about
+// 750 KB, as base64 in frames of the tunnel, and a photo becomes a JPEG that fits what is left. Sending files in parts
+// over more answers would lift this.
+const ANSWER_BYTES = 1024 * 1024;
+// What a request costs besides its body: the head with its headers, the end, and room to spare; and what the answer
+// keeps aside besides.
+const REQUEST_BYTES = 2048;
+const SPARE_BYTES = 16 * 1024;
+// What a body of `size` bytes costs in frames of the tunnel (a header of 6 bytes and a tag of 16 for each).
+const bodyBytes = (size: number): number => size + Math.ceil(size / MAX_PAYLOAD) * 22;
+// What the file of `size` bytes named `name` costs as an upload, and the largest file that `room` takes.
+const uploadBytes = (name: string, size: number): number => REQUEST_BYTES + bodyBytes(utf8(name).length * 2 + 128 + Math.ceil(size / 3) * 4);
+const roomFor = (name: string, room: number): number => Math.floor(((room - uploadBytes(name, 0)) * 3) / 4 * (MAX_PAYLOAD / (MAX_PAYLOAD + 22)));
+const TOO_MUCH = 'The files of one message can take about 750 KB in this app.';
 
 // A file of the pickers, as `change` gives it (`Picked`): `width` and `height` are null when the picker did not read them.
 interface PickedFile { path: string; name: string; type: string; size: number; width: number | null; height: number | null }
@@ -711,30 +754,35 @@ interface PickedFile { path: string; name: string; type: string; size: number; w
 // FileFit.jpegName: a photo that becomes a JPEG takes the extension .jpg.
 const jpegName = (name: string): string => `${name.replace(/\.[^./]*$/, '') || 'Photo'}.jpg`;
 
-// The file as it goes to the Mac (FileFit.outcome of an agent chat, which keeps the metadata of a photo): a file of the
-// file picker as it is, from 1 byte to 4 MB. A photo of the library goes as it is when it fits 2400 pixels and 4 MB and
-// is no HEIC or HEIF image, and a GIF always does, because a JPEG loses its frames; any other photo becomes a JPEG of at
-// most 2400 pixels and 4 MB.
-const fitted = async (storage: Storage, file: PickedFile, photo: boolean, n: number): Promise<{ path: string; name: string; size: number }> => {
+// The file as it goes to the Mac (FileFit.outcome of an agent chat, which keeps the metadata of a photo), within the
+// `room` that the message leaves it: a file of the file picker as it is, from 1 byte to 4 MB. A photo of the library goes
+// as it is when it fits 2400 pixels and the room and is no HEIC or HEIF image, and a GIF always does, because a JPEG
+// loses its frames; any other photo becomes a JPEG of at most 2400 pixels that fits the room.
+const fitted = async (storage: Storage, file: PickedFile, photo: boolean, n: number, room: number): Promise<{ path: string; name: string; size: number }> => {
   const type = file.type.toLowerCase();
   const heif = /^image\/hei[cf]/.test(type) || /\.hei[cf]$/i.test(file.name);
   const longest = Math.max(file.width ?? 0, file.height ?? 0);
-  const keep = !photo || !type.startsWith('image/') || type === 'image/gif' || (!heif && longest <= LONGEST_SIDE && file.size <= LARGEST);
+  const fits = Math.min(LARGEST, roomFor(file.name, room));
+  const keep = !photo || !type.startsWith('image/') || type === 'image/gif' || (!heif && longest <= LONGEST_SIDE && file.size <= fits);
   if (keep) {
     if (file.size < 1 || file.size > LARGEST) throw new Error(SIZE_TEXT);
+    if (file.size > fits) throw new Error(TOO_MUCH);
     return { path: file.path, name: file.name, size: file.size };
   }
+  const name = jpegName(file.name);
+  const most = Math.min(LARGEST, roomFor(name, room));
+  if (most < 16 * 1024) throw new Error(TOO_MUCH);
   try {
     await storage.fs.mkdir(UPLOADS);
   } catch (error) {
     if ((error as { code?: string }).code !== 'EEXIST') throw error;
   }
   try {
-    const out = await storage.fs.compressImage(file.path, `${UPLOADS}/${n}.jpg`, { maxDimension: LONGEST_SIDE, maxBytes: LARGEST, quality: 0.8 });
-    return { path: out.path, name: jpegName(file.name), size: out.size };
+    const out = await storage.fs.compressImage(file.path, `${UPLOADS}/${n}.jpg`, { maxDimension: LONGEST_SIDE, maxBytes: most, quality: 0.8 });
+    return { path: out.path, name, size: out.size };
   } catch (error) {
     const code = (error as { code?: string }).code;
-    throw new Error(code === 'unfit' || code === 'too-large' ? SIZE_TEXT : CANNOT_SEND);
+    throw new Error(code === 'unfit' || code === 'too-large' ? (most < LARGEST ? TOO_MUCH : SIZE_TEXT) : CANNOT_SEND);
   }
 };
 
@@ -774,22 +822,32 @@ const attachmentBody = async (botId: string, filename: string, bytes: Uint8Array
 };
 
 // The files of a message on the Mac, one upload each, in the order of the picks (AppStore.uploadAttachment): the ids of
-// their attachments. A copy that a photo needed goes away after its upload.
-const upload = async (storage: Storage, botId: string, files: PickedFile[], photos: string[]): Promise<string[]> => {
-  const ids: string[] = [];
-  for (const [n, file] of files.entries()) {
-    const fit = await fitted(storage, file, photos.includes(file.path), n);
-    try {
+// their attachments. Each file is fitted into what the message and the files before it leave of the answer's bytes
+// before any goes, so a message whose files do not fit sends none. A copy that a photo needed goes away after the uploads.
+const upload = async (storage: Storage, botId: string, words: string, files: PickedFile[], photos: string[]): Promise<string[]> => {
+  const fits: Array<{ path: string; name: string; size: number }> = [];
+  try {
+    let room = ANSWER_BYTES - SPARE_BYTES - REQUEST_BYTES - bodyBytes(utf8(words).length * 2 + 512);
+    for (const [n, file] of files.entries()) {
+      const fit = await fitted(storage, file, photos.includes(file.path), n, room);
+      fits.push(fit);
+      room -= uploadBytes(fit.name, fit.size);
+      if (room < 0) throw new Error(TOO_MUCH);
+    }
+    const ids: string[] = [];
+    for (const fit of fits) {
       const bytes = new Uint8Array(await storage.fs.readFile(fit.path));
       if (bytes.length < 1 || bytes.length > LARGEST) throw new Error(SIZE_TEXT);
       const made = (await write('POST', '/v1/attachments', await attachmentBody(botId, fit.name, bytes))) as { id?: string };
       if (!made.id) throw new Error('Your Mac did not keep the file.');
       ids.push(made.id);
-    } finally {
-      if (fit.path !== file.path) await storage.fs.rm(fit.path).catch(() => undefined);
+    }
+    return ids;
+  } finally {
+    for (const [n, fit] of fits.entries()) {
+      if (fit.path !== files[n].path) await storage.fs.rm(fit.path).catch(() => undefined);
     }
   }
-  return ids;
 };
 
 // The size of a file as the Mac writes it under the file (`preview` of an attachment).
@@ -913,7 +971,10 @@ const saveCache = async (storage: Storage, route: string, snap: Snapshot): Promi
   }
 };
 
-const status = (): Live => ({ version, pairs, error: lastError });
+// The answer of `sync` for the round of `key`. A round whose session read the Mac and then ended gives way to the next
+// one soon (`quick`), so a connection that drops comes back within seconds; a round that never reached the Mac waits
+// the longer time of `retrying`.
+const status = (key = ''): Live => ({ version, pairs, error: lastError, quick: key !== '' && polled === key });
 
 const none: Project = { id: '', name: '', letter: '', face: 0 };
 const idle: Turn = { running: false, startedAt: 0, phase: '', detail: '', model: '', queued: 0 };
@@ -1083,22 +1144,28 @@ const sources: Sources = {
         // The app's storage did not answer: the next read tries again, three times in all.
       }
     }
-    if (!open || !conn || conn.key !== key || !plan) return status();
+    if (!open || !conn || conn.key !== key || !plan) return status(key);
     try {
       if (!tunnel || tunnelKey !== key || tunnel.session.broken) {
         tunnel = null;
-        tunnel = await connect(linkOf(conn), plan.keys, plan.macKey, plan.psk);
+        const c = conn;
+        const made = await connect(linkOf(c), plan.keys, plan.macKey, plan.psk);
+        // A socket of a newer round took the place of this one meanwhile.
+        if (conn !== c) throw new Error('A new connection replaced this one.');
+        tunnel = made;
         tunnelKey = key;
       }
+      // The tunnel of this round, also when a newer round replaces the module's meanwhile.
+      const mac = tunnel;
       if (plan.kind === 'pair') {
         if (!setup) throw new Error('Ask for a new code.');
-        const reply = await tunnel.request('POST', '/v1/pair', { Accept: 'application/json', 'Content-Type': 'application/json', 'Idempotency-Key': crypto.randomUUID() },
+        const reply = await mac.request('POST', '/v1/pair', { Accept: 'application/json', 'Content-Type': 'application/json', 'Idempotency-Key': crypto.randomUUID() },
           utf8(JSON.stringify({ code: setup.code, device_name: 'Coconut on Exact' })));
         if (reply.status !== 200) throw new Error(reply.status === 401 ? 'This pairing code no longer works. Ask for a new one.' : failureOf(reply));
         const made = JSON.parse(text(reply.body)) as { token: string; device_id: string };
         const kept: Pairing = {
           route: plan.route, macKey: toBase64Url(plan.macKey), macName: setup.name, deviceId: made.device_id, token: made.token,
-          client: clientToken(tunnel.session.handshakeHash), privateKey: toBase64Url(plan.keys.privateKey), publicKey: toBase64Url(plan.keys.publicKey),
+          client: clientToken(mac.session.handshakeHash), privateKey: toBase64Url(plan.keys.privateKey), publicKey: toBase64Url(plan.keys.publicKey),
         };
         store.set(SAVED, JSON.stringify(kept));
         pairing = kept;
@@ -1126,10 +1193,10 @@ const sources: Sources = {
       let next: Snapshot | null;
       let page: Page | null = null;
       if (!base) {
-        next = (await decoded(await tunnel.request('GET', '/v1/state', headers('GET', read)))) as Snapshot;
+        next = (await decoded(await mac.request('GET', '/v1/state', headers('GET', read)))) as Snapshot;
       } else {
         const wait = polled === key ? 20 : 0;
-        page = (await decoded(await tunnel.request('GET', `/v1/updates?after=${base.cursor}&wait=${wait}`, headers('GET', read), undefined, LONG_POLL))) as Page;
+        page = (await decoded(await mac.request('GET', `/v1/updates?after=${base.cursor}&wait=${wait}`, headers('GET', read), undefined, LONG_POLL))) as Page;
         // A page that does not follow the state drops it, and the next read takes the whole state again.
         next = latest === base ? applying(page, base) : null;
       }
@@ -1150,12 +1217,12 @@ const sources: Sources = {
         await saveCache(storage, paired.route, next);
       }
       // The models of the Mac come with the first state, again when they changed, and at most once a minute.
-      if (next && (!macCatalog || page?.settings_changed || page?.reset || at - settingsAt >= MINUTE)) await readSettings(tunnel, at);
+      if (next && (!macCatalog || page?.settings_changed || page?.reset || at - settingsAt >= MINUTE)) await readSettings(mac, at);
       settle('');
-      return status();
+      return status(key);
     } catch (error) {
       settle(failed(error));
-      return status();
+      return status(key);
     }
   },
 
@@ -1321,7 +1388,7 @@ const sources: Sources = {
       const mine = send.send;
       try {
         if (send.files.length > MOST_FILES) throw new Error(`A message takes at most ${MOST_FILES} files.`);
-        const ids = await upload(storage, chatId, send.files, send.photos);
+        const ids = await upload(storage, chatId, send.words, send.files, send.photos);
         await write('POST', `/v1/bots/${chatId}/messages`, { text: send.words || ATTACHMENT_ONLY, mode: 'auto', attachment_ids: ids, recipient_bot_ids: [] });
       } catch (error) {
         if (mine) {

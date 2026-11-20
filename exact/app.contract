@@ -53,16 +53,18 @@ component Coconut
   // The slash menu over the message box: `/model` and `/effort`, as in the Swift app, where they change the model and
   // the effort of every chat (ComposerSlash). Options have no other place in the screens.
   resource slash = suggest(openId, chatDraft, mode == "live", live.version) when openId != "" and mode != "pair" and chatDraft.slice(0, 1) == "/" as shape Suggestion[] else empty()
-  mutation started as shape Made refreshes home then afterStart
+  mutation started as shape Made queue refreshes home then afterStart
   mutation created as shape Made refreshes home then afterCreate
-  mutation read as shape Ack refreshes home
+  // A write to the Mac is a queue: a newer send of a mutation that takes the newest reply lets the answer in flight go,
+  // and an answer let go stops wherever it is on the connection that every answer shares (app.ts, `write`).
+  mutation read as shape Ack queue refreshes home
   // A write needs no read of its own after it: the Mac's change ends the read that waits for one (see `following`).
   mutation queued as shape Made refreshes chat, home then afterQueued
-  mutation sent as shape Ack refreshes chat, home
-  mutation stopped as shape Ack refreshes chat, home
-  mutation answered as shape Ack refreshes chat, home
-  mutation modelSet as shape Ack refreshes chat
-  mutation effortSet as shape Ack refreshes chat
+  mutation sent as shape Ack queue refreshes chat, home
+  mutation stopped as shape Ack queue refreshes chat, home
+  mutation answered as shape Ack queue refreshes chat, home
+  mutation modelSet as shape Ack queue refreshes chat
+  mutation effortSet as shape Ack queue refreshes chat
   derive now = time.epochAtZero + since
   derive mode = demo ? "demo" : saved.paired ? "live" : "pair"
   // What the round connects for: the Mac's state, or the pairing of a setup that came into the box of the code. An
@@ -105,6 +107,10 @@ component Coconut
     refresh = refresh + 1
   task retrying when mode == "live" and not pending(live) and not delivery.staged and (sock.status == "closed" or live.error != "" or (connectKey != "" and ticket == "" and not pending(ticket)))
     every(15000, reconnect)
+  // A round whose session read the Mac and then ended gives way after 3 seconds (`live.quick`): a write waits for the
+  // next round, and the relay takes 60 connections a minute.
+  task retryingSoon when mode == "live" and live.quick and not pending(live) and not delivery.staged and (sock.status == "closed" or live.error != "")
+    after(3000, reconnect)
   action reconnect
     round = round + 1
 
