@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Draw Coconut's app icon as vector art: a flat coconut (MARK), or a whole coconut in its hairy husk.
 
-The flat mark is Gianfranco's round shell with the three holes of a coconut, in two colours, with or without a fringe
-of fibres around its outline. With MARK set to None, the script draws the hairy coconut, seen from its eye end with its
-three dots.
+The flat mark is a coconut seen up close: the brown of its shell fills the icon, and its three eyes are dark circles.
+With an outline, such as Gianfranco's round shell (SHELL), it is a whole shell on a ground instead, with or without a
+fringe of fibres around its outline. With MARK set to None, the script draws the hairy coconut, seen from its eye end
+with its three dots.
 
 The husk is drawn as thousands of tapered fibres that grow out of the three dots and spread across a flat square with
 a slight spiral, the way the fibres of a coconut grow from its eyes. That husk is then laid onto a ball on a light mint
@@ -27,30 +28,33 @@ import tempfile
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SIZE = 1024
 SEED = 1977
-# The flat mark, drawn instead of the hairy coconut: Gianfranco's design (#576) without its cut. A round shell,
-# tilted, and the three holes. At icon size the fibres of the hairy coconut blurred into a brown circle, and the
-# star where they met between the holes drew the eye, so the shell is flat. Sahil found its open top too busy: the
-# shape and the three holes say coconut. Gianfranco chose the smooth outline for now. At small sizes the dark round
-# shell can read as a ball, and a fringe of fibres around it (`fringe`) sells the coconut there.
-# The yellow ground stands out more on the Home Screen than white. The outline is a path traced from Gianfranco's
-# 1024 px design, each hole is (x, y, radius), and `scale` shrinks the shell around the middle of the icon. None
-# draws the hairy coconut.
+# Gianfranco's coconut shell (#576): a round shell, tilted, traced from his 1024 px design, and its three holes as
+# (x, y, radius).
+SHELL = ('M855.1 509.4C853.3 554.8 841.9 599.2 823.3 639.8C804.7 680.3 778.4 716.7 747 747.8'
+         'C715.7 778.8 679.1 804.6 638.7 823.2C598.2 841.7 553.8 852.8 508.7 854.1'
+         'C486.1 854.8 463.4 853 441.2 848.7C419 844.4 397.3 837.6 376.5 828.7C334.9 810.8 297.5 784.2 266 752.1'
+         'C234.6 720 208.9 682.3 191.4 640.9C174 599.4 164.8 554.4 165.6 509.4'
+         'C166.5 464.5 177.2 420.1 195.5 379.7C213.8 339.3 239.5 302.6 270.4 271.1'
+         'C285.8 255.4 302.6 240.9 320.5 227.8C338.5 214.8 357.5 203.1 377.7 193.2'
+         'C418 173.4 462.9 160.6 508.7 159.8C531.6 159.5 554.5 162.2 576.6 168'
+         'C598.7 173.8 619.9 182.5 639.7 193.3C659.5 204 677.9 216.7 695.4 230.1'
+         'C712.9 243.4 729.8 257.3 746.2 272C762.6 286.7 778.4 302.4 792.5 319.8'
+         'C806.6 337.3 818.9 356.4 828.7 376.9C838.4 397.4 845.6 419.2 850 441.5'
+         'C854.4 463.9 856 486.8 855.1 509.4Z')
+SHELL_HOLES = [(354.5, 532.5, 39.35), (450.5, 627.5, 39.35), (324.5, 657.5, 39.35)]
+# The flat mark, drawn instead of the hairy coconut: a coconut seen up close. The warm brown of its shell fills the
+# whole icon, and its three eyes are dark brown circles in the middle. Sahil chose it as the most subtle coconut, and
+# the three circles can read as three coconuts too. He found near-black on yellow too corporate and wanted no blue
+# ground. The circles are Gianfranco's three holes, moved so that their middle is the middle of the icon, and
+# `scale` sizes them around it. Each hole is (x, y, radius). An `outline`, such as SHELL with the holes SHELL_HOLES,
+# draws a whole shell on `ground` instead, sized by `scale`. None draws the hairy coconut.
 MARK = dict(
-    ground='#ffc928',
-    shell='#28150f',
-    outline=('M855.1 509.4C853.3 554.8 841.9 599.2 823.3 639.8C804.7 680.3 778.4 716.7 747 747.8'
-             'C715.7 778.8 679.1 804.6 638.7 823.2C598.2 841.7 553.8 852.8 508.7 854.1'
-             'C486.1 854.8 463.4 853 441.2 848.7C419 844.4 397.3 837.6 376.5 828.7C334.9 810.8 297.5 784.2 266 752.1'
-             'C234.6 720 208.9 682.3 191.4 640.9C174 599.4 164.8 554.4 165.6 509.4'
-             'C166.5 464.5 177.2 420.1 195.5 379.7C213.8 339.3 239.5 302.6 270.4 271.1'
-             'C285.8 255.4 302.6 240.9 320.5 227.8C338.5 214.8 357.5 203.1 377.7 193.2'
-             'C418 173.4 462.9 160.6 508.7 159.8C531.6 159.5 554.5 162.2 576.6 168'
-             'C598.7 173.8 619.9 182.5 639.7 193.3C659.5 204 677.9 216.7 695.4 230.1'
-             'C712.9 243.4 729.8 257.3 746.2 272C762.6 286.7 778.4 302.4 792.5 319.8'
-             'C806.6 337.3 818.9 356.4 828.7 376.9C838.4 397.4 845.6 419.2 850 441.5'
-             'C854.4 463.9 856 486.8 855.1 509.4Z'),
-    holes=[(354.5, 532.5, 39.35), (450.5, 627.5, 39.35), (324.5, 657.5, 39.35)],
-    scale=1.0,
+    shell='#96562c',
+    hole='#3b2013',
+    holes=[(490.00, 438.67, 39.35), (586.00, 533.67, 39.35), (460.00, 563.67, 39.35)],
+    scale=2.0,
+    outline=None,
+    ground=None,
     # The fibres around the outline: their spacing along it, the ranges of their length and width, how far they lie
     # combed toward the tip of the nut (the upper right, away from the holes) and how much further their ends bend
     # that way, in degrees, how much longer they get at the tip and shorter at the end of the holes, and the seed of
@@ -361,19 +365,26 @@ def fringe(outline, seed, spacing, length, width, tip, comb, bend, eye_end, inse
 
 
 def mark():
-    """The flat mark: the ground, the shell with its fringe, and the holes in the colour of the ground."""
+    """The flat mark: the shell across the whole icon, or within its outline (with its fringe) on the ground, and the
+    holes."""
     middle = SIZE // 2
     parts = ['<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 %d %d" width="%d" height="%d">' % ((SIZE,) * 4),
-             '<rect width="%d" height="%d" fill="%s"/>' % (SIZE, SIZE, MARK['ground']),
-             '<g transform="translate(%d %d) scale(%.4f) translate(-%d -%d)">' % (middle, middle, MARK['scale'], middle, middle),
-             '<g fill="%s">' % MARK['shell']]
-    if MARK['fringe']:
-        parts += ['<path d="%s"/>' % path for path in fringe(MARK['outline'], **MARK['fringe'])]
-    parts.append('<path d="%s"/></g>' % MARK['outline'])
-    parts += ['<circle cx="%.2f" cy="%.2f" r="%.2f" fill="%s"/>' % (x, y, radius, MARK['ground'])
+             '<rect width="%d" height="%d" fill="%s"/>' % (SIZE, SIZE, mark_background()),
+             '<g transform="translate(%d %d) scale(%.4f) translate(-%d -%d)">' % (middle, middle, MARK['scale'], middle, middle)]
+    if MARK['outline']:
+        parts.append('<g fill="%s">' % MARK['shell'])
+        if MARK['fringe']:
+            parts += ['<path d="%s"/>' % path for path in fringe(MARK['outline'], **MARK['fringe'])]
+        parts.append('<path d="%s"/></g>' % MARK['outline'])
+    parts += ['<circle cx="%.2f" cy="%.2f" r="%.2f" fill="%s"/>' % (x, y, radius, MARK['hole'])
               for x, y, radius in MARK['holes']]
     parts.append('</g></svg>')
     return '\n'.join(parts)
+
+
+def mark_background():
+    """The colour behind the holes: the shell when it fills the icon, or the ground around its outline."""
+    return MARK['ground'] if MARK['outline'] else MARK['shell']
 
 
 def svg():
@@ -488,7 +499,7 @@ def main():
     path = sys.argv[1] if len(sys.argv) > 1 else os.path.join(tempfile.mkdtemp(), 'app-icon.svg')
     with open(path, 'w') as f:
         f.write(svg())
-    background = MARK['ground'] if MARK else GROUND[1]
+    background = mark_background() if MARK else GROUND[1]
     for target, pixels in OUTPUTS:
         raster = path + '.%d.png' % pixels
         subprocess.run(['rsvg-convert', '-w', str(pixels), '-h', str(pixels), path, '-o', raster], check=True)
