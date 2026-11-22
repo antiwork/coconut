@@ -44,13 +44,13 @@ enum ComposerSlash {
     }
 
     static let commands: [(name: String, detail: String, symbol: String)] = [
-        ("new", "Start a new chat with this agent", "square.and.pencil"),
+        ("new", "Start a new agent in this project", "square.and.pencil"),
         ("model", "Change the model", "cpu"),
         ("effort", "Change the reasoning effort", "brain"),
-        ("compact", "Summarize the chat to free up context", "arrow.down.right.and.arrow.up.left"),
+        ("compact", "Summarize the conversation to free up context", "arrow.down.right.and.arrow.up.left"),
         ("stop", "Stop the running task", "stop.fill"),
-        ("mute", "Stop the notifications of this chat", TeamChatMute.mark),
-        ("unmute", "Get the notifications of this chat again", "bell"),
+        ("mute", "Stop the notifications of this agent", TeamChatMute.mark),
+        ("unmute", "Get the notifications of this agent again", "bell"),
         ("help", "See what you can ask for", "questionmark.circle"),
     ]
 

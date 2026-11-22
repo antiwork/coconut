@@ -103,10 +103,10 @@ struct MacInboxView: View {
                         .toolbar {
                             ToolbarItem(placement: .primaryAction) {
                                 Button { selection = .bot(chosen.botId) } label: {
-                                    Label("Open chat", systemImage: "bubble.left.and.bubble.right")
+                                    Label("Open agent", systemImage: "bubble.left.and.bubble.right")
                                 }
                                 .keyboardShortcut("o", modifiers: .command)
-                                .help("Open the chat of this card")
+                                .help("Open the agent of this card")
                             }
                         }
                     } else {

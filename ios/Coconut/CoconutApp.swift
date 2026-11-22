@@ -69,13 +69,19 @@ struct CoconutApp: App {
     }
 }
 
-/// The five tabs of the iPhone in their order: Finance, Support, Product, Chats and You. Finance is the overview of the
+/// The five tabs of the iPhone in their order: Finance, Support, Product, Agents and You. Finance is the overview of the
 /// business, which opens Accounting and Marketing. Support has the queues of the customers. Product has what asks for
 /// the person (the rules that breach, the cards that wait and the to-dos), then the product issues and the open pull
-/// requests, and its badge counts what asks for the person (TodosCount). Chats is one list of every chat, the projects
-/// and the people, in two tabs, Working and Idle, with the message box under the list. The page of a project opens
-/// from the name of its chat, and the list of all projects from the project chip of the box. The app opens on Chats,
-/// because the person does not want to land in a list of work. The Mac sidebar has its own list.
+/// requests, and its badge counts what asks for the person (TodosCount). Agents (the case `chats`) is one list of the
+/// agents of every project and of the chats with people, in two tabs, Working and Idle, with the message box under the
+/// list. The page of a project opens from the name of its agent, and the list of all projects from the project chip of
+/// the box. The app opens on Agents, because the person does not want to land in a list of work. The Mac sidebar has
+/// its own list.
+///
+/// The person renamed Chats to Agents: a conversation with the agent of a project is an agent, and a group chat is
+/// people with an agent or without one. So every label calls a conversation with an agent an agent (New agent, Archive
+/// agent, the Agents section of the Mac sidebar), and only a conversation with people a chat (Team chats, a direct
+/// chat). Code names such as `chats`, `ChatList` and `NewChatBar` stay.
 ///
 /// The tab bar always has exactly five tabs. With a sixth, iOS puts the last tabs behind a More tab, and the person
 /// does not want More. A new place goes on the page of a tab, or it takes the place of a tab.
@@ -152,7 +158,7 @@ struct CoconutHome: View {
             Tab(value: HomeTab.chats) {
                 root(tab: .chats, path: $chatsPath)
             } label: {
-                Label { Text("Chats") } icon: { Image(systemName: "bubble.left.and.bubble.right.fill") }
+                Label { Text("Agents") } icon: { Image(systemName: "bubble.left.and.bubble.right.fill") }
             // The cards and the notices that wait count on Product, so this badge has the unread chats only.
             }.badge(HomeFeed.chatsBadge(bots: store.bots, rooms: store.shownTeamRooms, local: store.newestLocalMessages))
                 .accessibilityIdentifier("home-chats")
@@ -172,7 +178,7 @@ struct CoconutHome: View {
                 try? await Task.sleep(for: .seconds(300))
             }
         }
-        // A document card in a chat opens the page on the stack of Chats over the page of its agent, so Back leads
+        // A document card in a chat opens the page on the stack of Agents over the page of its agent, so Back leads
         // to the agent that keeps it.
         .environment(\.openDocument) { id in
             selectedTab = .chats
@@ -180,7 +186,7 @@ struct CoconutHome: View {
         }
         // A long press on a chat shows the deck of all chats (ChatDeck).
         .modifier(ChatDeckPresenter())
-        // A New chat, from a page or from the deck, shows Chats with the message box. The box takes the project.
+        // A New agent, from a page or from the deck, shows Agents with the message box. The box takes the project.
         .onChange(of: store.chatStarts) { _, _ in show(.chats) }
         .onChange(of: selectedTab) { _, tab in
             // The preview of a card shows in a chat or on Product. Another place leaves it.
@@ -231,7 +237,7 @@ struct CoconutHome: View {
                 }
             }
                 .toolbar(tabBarVisibility, for: .tabBar)
-                // The message box sits above the tab bar on Chats. Every New chat leads to it.
+                // The message box sits above the tab bar on Agents. Every New agent leads to it.
                 .safeAreaInset(edge: .bottom, spacing: 0) {
                     if tab == .chats { NewChatBar() }
                 }
@@ -348,7 +354,7 @@ struct CoconutHome: View {
         }
     }
 
-    /// Shows a Team chat or a direct chat on the stack of Chats, with the list under it. The sheets close.
+    /// Shows a Team chat or a direct chat on the stack of Agents, with the list under it. The sheets close.
     private func showTeamChat(_ chat: TeamChatKey) {
         notificationDecisionId = nil
         show(.chats, path: NavigationPath([TeamChatRoute(chat: chat)]))
@@ -367,7 +373,7 @@ struct CoconutHome: View {
         show(.product, path: NavigationPath([HomeDestination.inbox]))
     }
 
-    /// Opens the place of a row of Product or Chats on the stack of its tab, so Back leads to that tab.
+    /// Opens the place of a row of Product or Agents on the stack of its tab, so Back leads to that tab.
     private func open(_ target: HomeTarget, on path: Binding<NavigationPath>) {
         switch target {
         case .conversation(let route): path.wrappedValue.append(route)
@@ -397,7 +403,7 @@ struct CoconutHome: View {
             notificationDecisionId = nil
             show(.chats)
         case .notices(let room):
-            // The board of a team is part of the stack of Chats, so Back leads to the chats with people.
+            // The board of a team is part of the stack of Agents, so Back leads to the chats with people.
             notificationDecisionId = nil
             show(.chats, path: NavigationPath([NoticeBoardRoute(roomId: room)]))
         }
@@ -462,8 +468,8 @@ extension CoconutHome {
             show(tab, path: path)
         }
         switch place {
-        // Every chat is on the Chats tab, and a project opens from the name of its chat.
-        // Each way to start a chat, run as the person would: the message box of Chats shows with the project chosen.
+        // Every chat is on the Agents tab, and a project opens from the name of its chat.
+        // Each way to start a chat, run as the person would: the message box of Agents shows with the project chosen.
         case "new-chat": open(.chats); later { store.startChat(in: store.bots.first { $0.id == agent }) }
         case "agent-new-chat": open(.chats, [AgentRoute(botId: agent)]); later { store.startChat(in: store.bots.first { $0.id == agent }) }
         case "chat-new-chat": open(.chats, [ConversationRoute(botId: agent)]); later { store.startChat(in: store.bots.first { $0.id == agent }) }

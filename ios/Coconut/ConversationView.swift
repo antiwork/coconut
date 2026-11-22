@@ -524,7 +524,7 @@ struct ConversationView: View {
                         .accessibilityElement(children: .combine)
                         .accessibilityAddTraits(.isButton)
                         .accessibilityLabel("Open \(bot.name)")
-                        .accessibilityAction(named: "Show all chats") { showDeck(bot) }
+                        .accessibilityAction(named: "Show all agents") { showDeck(bot) }
                         .accessibilityIdentifier("agent-page")
                     }
                     ToolbarItem(placement: .trailingBar) { NewChatHeaderButton(bot: bot) }
@@ -565,7 +565,7 @@ struct ConversationView: View {
                     Text(StopCopy.message)
                 }
             } else {
-                QuietEmptyState(symbol: "bubble.left", title: "Chat unavailable", message: "This agent may have been deleted. Return to your team to continue.")
+                QuietEmptyState(symbol: "bubble.left", title: "Agent unavailable", message: "This agent may have been deleted. Return to your team to continue.")
             }
         }
         .inlineNavigationTitle()
@@ -1649,12 +1649,12 @@ struct ComposerSendButton: View {
         .disabled(!enabled)
         .contextMenu {
             if let newChat {
-                Button("Send in new chat", systemImage: "square.and.pencil", action: newChat)
+                Button("Send to a new agent", systemImage: "square.and.pencil", action: newChat)
                     .accessibilityIdentifier("send-in-new-chat")
             }
         }
         .accessibilityLabel(label)
-        .accessibilityAction(named: "Send in new chat") { newChat?() }
+        .accessibilityAction(named: "Send to a new agent") { newChat?() }
         .accessibilityIdentifier(identifier)
     }
 }

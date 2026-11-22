@@ -171,7 +171,7 @@ struct ChatDeckView: View {
                 .offset(y: layout.card.height / 2 + 44)
                 .opacity(phase == .deck ? 1 : 0)
                 .allowsHitTesting(false)
-                .accessibilityLabel("Chat \(index + 1) of \(cards.count)")
+                .accessibilityLabel("Agent \(index + 1) of \(cards.count)")
         }
     }
 
@@ -329,7 +329,7 @@ struct ChatDeckCard: View {
             .onTapGesture(perform: tap)
             .accessibilityElement(children: .contain)
             .accessibilityLabel(bot.isChat ? "\(bot.name), \(bot.chatLabel)" : bot.name)
-            .accessibilityAction(named: "Open chat") { tap() }
+            .accessibilityAction(named: "Open agent") { tap() }
             .accessibilityIdentifier("chat-deck-card-\(bot.id)")
     }
 
@@ -376,10 +376,10 @@ struct ChatDeckCard: View {
     private var subtitle: String {
         if bot.isChat { return bot.chatLabel }
         let role = bot.role.trimmingCharacters(in: .whitespacesAndNewlines)
-        return role.isEmpty ? "Chat" : role
+        return role.isEmpty ? "Agent" : role
     }
 
-    /// What a row of the Chats list offered on a long press, before the long press showed the deck.
+    /// What a row of the Agents list offered on a long press, before the long press showed the deck.
     private var menu: some View {
         Menu {
             NewChatButton(bot: bot, done: close)
@@ -393,10 +393,10 @@ struct ChatDeckCard: View {
             }
             // A project stays, and so does the Coconut chat (Bot.canRemove).
             if bot.canRemove {
-                item(bot.isChat ? "Archive chat" : "Archive agent", "archivebox") {
+                item("Archive agent", "archivebox") {
                     Task { await store.archiveBot(bot, archived: true) }
                 }
-                item(bot.isChat ? "Delete chat" : "Delete agent", "trash", role: .destructive) { delete(bot) }
+                item("Delete agent", "trash", role: .destructive) { delete(bot) }
             }
         } label: {
             Image(systemName: "ellipsis")

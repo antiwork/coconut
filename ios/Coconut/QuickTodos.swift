@@ -248,7 +248,7 @@ struct TodoCommentsSheet: View {
                         .accessibilityIdentifier("todo-comment-send")
                 }
                 HStack {
-                    Button("Open chat") { dismiss(); pushRoute?(ConversationRoute(botId: chat.id)) }
+                    Button("Open agent") { dismiss(); pushRoute?(ConversationRoute(botId: chat.id)) }
                         .accessibilityIdentifier("todo-open-chat")
                     Spacer()
                     Button("Done", systemImage: "checkmark") { dismiss(); Task { await store.archiveBot(chat, archived: true) } }

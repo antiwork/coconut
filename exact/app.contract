@@ -26,7 +26,7 @@ component Coconut
   state attached: Picked[] = []
   state photos: string[] = []
   state projectName = ""
-  // The tab of Chats that shows, Working or Idle (AgentsFilter of the Swift app). The phone keeps the choice.
+  // The tab of Agents that shows, Working or Idle (AgentsFilter of the Swift app). The phone keeps the choice.
   state chatsTab = "working" persist
   // The time since launch, written once a second: the age of a chat and the seconds of a turn read it.
   state since = 0
@@ -245,11 +245,11 @@ component Coconut
         for e in stack(nav) key=e.id
           if e.name == "home"
             column navigationKey=`${e.id}` navigationScroll="home-scroll" position="absolute" inset=0 display="flex" flex-direction="column" background-color="light-dark(#ffffff, #111111)"
-              // The list is titled Chats, as the Chats tab of the Swift app is.
+              // The list is titled Agents, as the Agents tab of the Swift app is.
               header display="flex" align-items="center" padding="8px 16px"
-                text "Chats" role="heading" aria-level=1 flex=1 testId="home-title"
-              // The two tabs of Chats, with the count of each. They stay under the title while the list scrolls.
-              row role="tablist" aria-label="Chats" margin="8px 16px" testId="chats-tabs"
+                text "Agents" role="heading" aria-level=1 flex=1 testId="home-title"
+              // The two tabs of Agents, with the count of each. They stay under the title while the list scrolls.
+              row role="tablist" aria-label="Agents" margin="8px 16px" testId="chats-tabs"
                 button role="tab" aria-selected=(chatsTab == "working") press=showChats("working") flex=1 testId="chats-working"
                   text `Working ${workingChats.length}`
                 button role="tab" aria-selected=(chatsTab == "idle") press=showChats("idle") flex=1 testId="chats-idle"
@@ -267,7 +267,7 @@ component Coconut
                         AttentionRow(item=a, first=(i == 0), choose=openChat(a.chat))
                 // A tab without chats says so, but only once the list has chats: a list that is still loading shows none.
                 if home.chats.length > 0 and shownChats.length == 0
-                  text (chatsTab == "working" ? "No chat is working." : "No chat is idle.") font="-exact-subheadline" color="-exact-secondary-label" text-align="center" padding="32px 16px" testId="chats-empty"
+                  text (chatsTab == "working" ? "No agent is working." : "No agent is idle.") font="-exact-subheadline" color="-exact-secondary-label" text-align="center" padding="32px 16px" testId="chats-empty"
                 for c in shownChats key=c.id
                   ChatRowView(chat=c, now=now, offset=time.utcOffset, choose=openChat(c.id))
               column flex-shrink=0 padding="6px 12px 8px" testId="home-bar"

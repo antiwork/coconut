@@ -32,7 +32,7 @@ struct MacConnectionSettingsView: View {
                         .font(.subheadline).monospacedDigit()
                 }
                 if store.isDemo {
-                    Text("The demo uses sample projects and chats.").foregroundStyle(.secondary)
+                    Text("The demo uses sample projects and agents.").foregroundStyle(.secondary)
                     PairMacButton()
                 } else if store.hasPairing {
                     LabeledContent("Mac") {
@@ -62,7 +62,7 @@ struct MacConnectionSettingsView: View {
                     .disabled(restartingBots || restartRequested)
                     .accessibilityIdentifier("restart-bots")
                 } footer: {
-                    Text("All agents start fresh after current work finishes. Chats, memory, and routines stay.")
+                    Text("All agents start fresh after current work finishes. Conversations, memory, and routines stay.")
                 }
             }
             if let error = store.syncIssue ?? shownError {

@@ -102,7 +102,7 @@ struct ChatDeckRow: ViewModifier {
                                 onPressingChanged: { pressing in pressed = pressing })
             .accessibilityAddTraits(.isButton)
             // VoiceOver has no long press, so the deck is an action of the row.
-            .accessibilityAction(named: "Show all chats") { show() }
+            .accessibilityAction(named: "Show all agents") { show() }
     }
 
     private func show() {
@@ -131,7 +131,7 @@ extension View {
 struct ChatDeckCommands: Commands {
     var body: some Commands {
         CommandGroup(after: .sidebar) {
-            Button("Show all chats") {
+            Button("Show all agents") {
                 NotificationCenter.default.post(name: .showChatDeck, object: nil)
             }
             .keyboardShortcut("\\", modifiers: [.command, .shift])

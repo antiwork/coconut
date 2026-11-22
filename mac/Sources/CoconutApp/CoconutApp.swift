@@ -85,7 +85,7 @@ struct CoconutApp: App {
     }
 }
 
-/// File > New chat. It brings the main window to the front and asks it for the start (the window
+/// File > New agent. It brings the main window to the front and asks it for the start (the window
 /// knows which chat it shows).
 struct NewChatCommands: View {
     @ObservedObject var model: AppModel
@@ -93,7 +93,7 @@ struct NewChatCommands: View {
 
     var body: some View {
         if model.mode == .full {
-            Button("New chat") {
+            Button("New agent") {
                 model.newChatRequested = true
                 show()
             }

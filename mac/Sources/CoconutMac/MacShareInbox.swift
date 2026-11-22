@@ -38,7 +38,7 @@ enum MacShareInbox {
             return store.sendTeamMessage(chat, text: message.text, replyingTo: nil, files: files)
         }
         guard let bot = store.bots.first(where: { $0.id == destination.bot }) else {
-            store.error = "The agent of this share is gone. Share again and choose a chat."
+            store.error = "The agent of this share is gone. Share again and choose an agent."
             return false
         }
         var attachments: [String] = []

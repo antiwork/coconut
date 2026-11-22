@@ -215,13 +215,13 @@ struct DecisionCard: View {
                     Text(bot.name).font(.subheadline.weight(.semibold)).lineLimit(1)
                 }
                 Spacer(minLength: 12)
-                Text("Open chat").font(.subheadline)
+                Text("Open agent").font(.subheadline)
                 Image(systemName: "chevron.right").font(.subheadline).imageScale(.small)
             }
             .frame(maxWidth: .infinity, minHeight: 44).contentShape(Rectangle())
         }.buttonStyle(.plain)
             .accessibilityIdentifier("inbox-context-\(decision.id)")
-            .accessibilityLabel("Open this card in chat")
+            .accessibilityLabel("Open the agent of this card")
             .simultaneousGesture(TapGesture().onEnded { replyFocus?.wrappedValue = false; onRespond() })
     }
 

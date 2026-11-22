@@ -16,7 +16,7 @@ enum AgentSection: String, CaseIterable, Identifiable {
     var id: String { rawValue }
     var title: String {
         switch self {
-        case .chat: "Chat"
+        case .chat: "Agent"
         case .todos: "To-dos"
         case .pages: "Pages"
         case .routines: "Routines"
@@ -151,7 +151,7 @@ struct AgentProject: Identifiable, Equatable {
         return parts.isEmpty ? nil : parts.joined(separator: " · ")
     }
 
-    /// The count after the title of a section: the number of its rows, so Chats counts the chats. A row has the unread
+    /// The count after the title of a section: the number of its rows, so Agents counts the agents. A row has the unread
     /// messages of its chat. One chat needs no count, and Manage has none.
     func count(_ section: AgentSection) -> Int {
         switch section {
@@ -308,7 +308,7 @@ struct AgentStatusLabel: View {
     }
 }
 
-/// The page of a project: a header with the role and the state, then Chats, To-dos, Queue, Pages, Routines and Usage.
+/// The page of a project: a header with the role and the state, then Agents, To-dos, Queue, Pages, Routines and Usage.
 struct AgentProjectView: View {
     @Environment(AppStore.self) private var store
     @Environment(\.pushRoute) private var pushRoute
@@ -335,7 +335,7 @@ struct AgentProjectView: View {
             #if os(iOS)
             if bot.isProject { chatButton(bot) }
             #endif
-            BoardSection(project.chats.isEmpty ? AgentSection.chat.title : "Chats", count: project.count(.chat)) {
+            BoardSection(project.chats.isEmpty ? AgentSection.chat.title : "Agents", count: project.count(.chat)) {
                 // The newest chats come first. The first chat of the agent, with its name, is the last row.
                 ForEach(project.chats) { extra in
                     BotContactRow(bot: extra, title: extra.chatLabel)
@@ -345,8 +345,8 @@ struct AgentProjectView: View {
                         .chatRowButton("agent-chat-" + extra.id, botId: extra.id) { chat(ConversationRoute(botId: extra.id)) }
                         #if os(macOS)
                         .contextMenu {
-                            Button("Archive chat", systemImage: "archivebox") { Task { await store.archiveBot(extra, archived: true) } }
-                            Button("Delete chat…", systemImage: "trash", role: .destructive) { deleting = extra }
+                            Button("Archive agent", systemImage: "archivebox") { Task { await store.archiveBot(extra, archived: true) } }
+                            Button("Delete agent…", systemImage: "trash", role: .destructive) { deleting = extra }
                         }
                         #endif
                 }
@@ -463,7 +463,7 @@ struct AgentProjectView: View {
     /// no new chat and has no button.
     private func chatButton(_ bot: Bot) -> some View {
         Button { store.startChat(in: bot) } label: {
-            Label("New chat", systemImage: "square.and.pencil")
+            Label("New agent", systemImage: "square.and.pencil")
                 #if os(iOS)
                 .frame(maxWidth: .infinity)
                 #endif

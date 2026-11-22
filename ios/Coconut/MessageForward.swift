@@ -32,7 +32,7 @@ struct ForwardMessageSheet: View {
 
     private var source: String {
         let bot = store.bots.first { $0.id == fromBotId }
-        let agent = bot.map { $0.isChat ? $0.listName : $0.name } ?? "a chat"
+        let agent = bot.map { $0.isChat ? $0.listName : $0.name } ?? "an agent"
         return message.role == "user" ? "my message to \(agent)" : agent
     }
     private var agents: [Bot] { store.bots.filter { !$0.isChat && !$0.archived } }
@@ -45,14 +45,14 @@ struct ForwardMessageSheet: View {
     var body: some View {
         NavigationStack {
             List {
-                Section("New chat") {
+                Section("New agent") {
                     ForEach(agents.filter { !$0.coconut }) { agent in
-                        row(agent, title: agent.name, detail: "New chat") {
+                        row(agent, title: agent.name, detail: "New agent") {
                             if store.startChat(in: agent, text: MessageForward.text(message.text, from: source)) { dismiss() }
                         }
                     }
                 }
-                Section("Chats") {
+                Section("Agents") {
                     ForEach(chats) { chat in
                         row(chat, title: chat.isChat ? chat.chatLabel : chat.name, detail: chat.isChat ? chat.name : nil) {
                             store.forward(MessageForward.text(message.text, from: source), to: chat.id)

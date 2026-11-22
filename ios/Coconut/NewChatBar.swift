@@ -90,7 +90,7 @@ struct NewChatBar: View {
         let shape = RoundedRectangle(cornerRadius: BoardStyle.Radius.large, style: .continuous)
         let canSend = target != nil && !sending && !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         return VStack(alignment: .leading, spacing: 0) {
-            TextField("New chat", text: $text, axis: .vertical)
+            TextField("New agent", text: $text, axis: .vertical)
                 .focused($focused)
                 .modifier(ComposerFieldStyle(send: { if let target { send(to: target) } }, stacked: true))
                 .padding(.horizontal, BoardStyle.Space.m)

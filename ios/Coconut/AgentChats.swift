@@ -16,7 +16,7 @@ extension Bot {
     /// The agent of this bot: the bot itself, or the agent of a chat. The settings and the pages belong to it.
     var agentId: String { chatOf ?? id }
 
-    /// The title of a further chat in a list: its first message, or "New chat" before the person wrote one.
+    /// The title of a further chat in a list: its first message, or "New agent" before the person wrote one.
     var chatLabel: String {
         let title = (chatTitle ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         return title.isEmpty ? AgentChats.untitled : title
@@ -27,7 +27,7 @@ extension Bot {
 }
 
 enum AgentChats {
-    static let untitled = "New chat"
+    static let untitled = "New agent"
     /// A title from the first message of a chat, as the Mac makes it: the first line with text, at most 72 characters.
     static let titleLength = 72
 
@@ -137,11 +137,11 @@ extension AppStore {
                 return false
             }
             guard !agent.archived else {
-                error = "Restore this project before starting a new chat."
+                error = "Restore this project before starting a new agent."
                 return false
             }
             guard agent.isProject else {
-                error = "Start a new chat in Coconut, Gumroad or Personal."
+                error = "Start a new agent in Coconut, Gumroad or Personal."
                 return false
             }
             project = agent.id
@@ -160,7 +160,7 @@ extension AppStore {
             return nil
         }
         guard !agent.archived else {
-            error = "Restore this project before starting a new chat."
+            error = "Restore this project before starting a new agent."
             return nil
         }
         let latest = chatSummaries.newestActivity
@@ -225,9 +225,9 @@ struct NewChatButton: View {
         if !bot.archived && store.takesNewChat(bot) {
             // A Mac menu has titles only, as the other items of these menus. An iPhone menu shows the symbol too.
             #if os(macOS)
-            Button("New chat", action: start).accessibilityIdentifier("new-chat-\(bot.id)")
+            Button("New agent", action: start).accessibilityIdentifier("new-chat-\(bot.id)")
             #else
-            Button("New chat", systemImage: "square.and.pencil", action: start).accessibilityIdentifier("new-chat-\(bot.id)")
+            Button("New agent", systemImage: "square.and.pencil", action: start).accessibilityIdentifier("new-chat-\(bot.id)")
             #endif
         }
     }
@@ -256,9 +256,9 @@ struct NewChatHeaderButton: View {
                 #endif
             }
             #if os(macOS)
-            .help("New chat in \(bot.name) (⌘N)")
+            .help("New agent in \(bot.name) (⌘N)")
             #endif
-            .accessibilityLabel("New chat in \(bot.name)")
+            .accessibilityLabel("New agent in \(bot.name)")
             .accessibilityIdentifier("new-chat")
         }
     }

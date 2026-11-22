@@ -99,7 +99,7 @@ struct SpendSummary: Equatable, Sendable {
 
     private static func chat(_ id: String, agent: String, bots: [Bot]) -> SpendSlice {
         guard !id.isEmpty else { return SpendSlice(id: "", title: "Routines", botId: agent) }
-        guard let bot = bots.first(where: { $0.id == id }) else { return SpendSlice(id: id, title: "Deleted chat", botId: agent) }
+        guard let bot = bots.first(where: { $0.id == id }) else { return SpendSlice(id: id, title: "Deleted agent", botId: agent) }
         return SpendSlice(id: id, title: bot.listName, botId: bot.agentId, chatId: id)
     }
 

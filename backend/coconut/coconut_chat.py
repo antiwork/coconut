@@ -2,7 +2,7 @@
 
 Coconut has no settings screens. The Coconut project (bot_profiles.PROJECTS) carries the mark `coconut_chat`
 (bot_profiles._ensure_projects): it is the Coconut chat. It shows as "Coconut",
-it stays at the top of the sidebar and of the Chats list, and nobody archives or deletes it. It has one tool,
+it stays at the top of the sidebar and of the Agents list, and nobody archives or deletes it. It has one tool,
 `coconut_settings`, that reads every setting and changes one, through the same routes that the app used before
 (Service.mutate), so each rule and each check of a change stays the same.
 

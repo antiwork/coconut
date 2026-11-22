@@ -466,7 +466,7 @@ struct MacSidebar: View {
                 CoconutChatRow(bot: coconut).tag(MacSelection.bot(coconut.id))
                     .contextMenu {
                         NewChatButton(bot: coconut)
-                        Button("Show all chats") { showDeck(from: coconut) }
+                        Button("Show all agents") { showDeck(from: coconut) }
                         Button(BotChatMute.label(coconut)) { Task { await store.muteBot(coconut, muted: coconut.notifications) } }
                     }
                 chatRows(of: coconut)
@@ -520,7 +520,7 @@ struct MacSidebar: View {
                 }
             }
             if !sections.bots.isEmpty {
-                Section("Project chats", isExpanded: $agentsOpen) {
+                Section("Agents", isExpanded: $agentsOpen) {
                     ForEach(sections.bots) { item in itemRow(item) }
                 }
             }
@@ -611,7 +611,7 @@ struct MacSidebar: View {
             .contextMenu {
                 if !bot.archived {
                     NewChatButton(bot: bot)
-                    Button("Show all chats") { showDeck(from: bot) }
+                    Button("Show all agents") { showDeck(from: bot) }
                     Divider()
                     if !bot.isChat {
                         Button(bot.pinned ? "Unstar" : "Star") { Task { await store.pinBot(bot, pinned: !bot.pinned) } }
@@ -625,7 +625,7 @@ struct MacSidebar: View {
                 }
                 if bot.canRemove {
                     Divider()
-                    Button(bot.isChat ? "Delete chat…" : "Delete agent…", role: .destructive) { deleting = bot }
+                    Button("Delete agent…", role: .destructive) { deleting = bot }
                 }
             }
             // A swipe to the left on the trackpad archives a chat, as in the list of the iPhone.

@@ -121,7 +121,7 @@ struct ChatSpendFooter: View {
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .accessibilityLabel("This chat used " + usage.line.replacingOccurrences(of: " · ", with: ", "))
+        .accessibilityLabel("This agent used " + usage.line.replacingOccurrences(of: " · ", with: ", "))
         .accessibilityHint("Shows the tokens and the cost by model and by day")
         .accessibilityIdentifier("chat-spend")
         .sheet(isPresented: $open) { ChatSpendSheet(usage: usage) }

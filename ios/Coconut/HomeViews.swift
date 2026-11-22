@@ -1,14 +1,14 @@
 import SwiftUI
 
 /// Two tabs of the iPhone. Product has what asks for the person, the rules that breach, the cards that wait and the
-/// to-dos, then the product issues and the open pull requests (ProductWork). Chats is one list of every chat, as
-/// Telegram has it: the projects, the teams, their named chats and the direct chats, in two tabs, Working and Idle
+/// to-dos, then the product issues and the open pull requests (ProductWork). Agents is one list, as Telegram has it:
+/// the agents of the projects, the teams, their named chats and the direct chats, in two tabs, Working and Idle
 /// (AgentsFilter), with the message box under the list (NewChatBar).
 struct HomeLaunchView: View {
     enum Part { case product, chats }
     var part = Part.chats
     @Environment(AppStore.self) private var store
-    /// The tab of Chats that shows, Working or Idle. The phone keeps the choice.
+    /// The tab of Agents that shows, Working or Idle. The phone keeps the choice.
     @AppStorage(AgentsFilter.key) private var filter = AgentsFilter.working
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @Environment(\.pushRoute) private var pushRoute
@@ -165,7 +165,7 @@ struct HomeLaunchView: View {
         .homeRow()
     }
 
-    /// The list of Chats, as Telegram has it: the pinned chats first, then every other chat newest activity first
+    /// The list of Agents, as Telegram has it: the pinned chats first, then every other chat newest activity first
     /// (ChatList.all). Every row has the same form: the name, the last message, the age and the badges. A starred row
     /// only adds the star mark. The list shows the chats of one of its two tabs, Working or Idle, in the same order.
     private func chatList(_ rows: [ChatListItem]) -> some View {
@@ -176,7 +176,7 @@ struct HomeLaunchView: View {
         // A list, not a stack, so that a row of a chat has the swipe of the system: swipe left to archive.
         return List {
             if shown.isEmpty {
-                Text(rows.isEmpty ? "No chats yet." : filter == .working ? "No chat is working." : "No chat is idle.")
+                Text(rows.isEmpty ? "No agents yet." : filter == .working ? "No agent is working." : "No agent is idle.")
                     .font(.subheadline).foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity).padding(.vertical, BoardStyle.Space.xxl)
                     .accessibilityIdentifier("chats-empty")
@@ -240,17 +240,17 @@ struct HomeLaunchView: View {
         .contentMargins(.top, BoardStyle.Space.s, for: .scrollContent)
         .contentMargins(.bottom, BoardStyle.Space.xl, for: .scrollContent)
         .background(BoardStyle.paper)
-        // The two tabs of Chats, with the count of each. The control stays under the title while the list scrolls, as
+        // The two tabs of Agents, with the count of each. The control stays under the title while the list scrolls, as
         // Overview and Work of a function (pinnedSegments).
         .safeAreaInset(edge: .top, spacing: 0) {
-            Picker("Chats", selection: $filter) {
+            Picker("Agents", selection: $filter) {
                 Text("Working \(working.count)").tag(AgentsFilter.working)
                 Text("Idle \(rows.count - working.count)").tag(AgentsFilter.idle)
             }
             .pinnedSegments()
             .accessibilityIdentifier("agents-filter")
         }
-        .navigationTitle("Chats")
+        .navigationTitle("Agents")
         .toolbar {
             // One tap reads every chat, as Read All in Telegram. It shows while a chat of the list has an unread
             // count.
@@ -373,8 +373,8 @@ struct HomeLaunchView: View {
 
 }
 
-/// The two tabs of Chats. Working has the chats that work or wait for the person, and Idle has the others, so the
-/// person finds a free chat for the next task in one tap.
+/// The two tabs of Agents. Working has the agents and chats that work or wait for the person, and Idle has the
+/// others, so the person finds a free agent for the next task in one tap.
 enum AgentsFilter: String {
     case working, idle
     static let key = "agents-filter"
@@ -391,7 +391,7 @@ struct ArchivedAgentsView: View {
         let archived = AgentChats.archived(in: store.bots, latest: store.chatSummaries.newestActivity)
         List {
             if archived.isEmpty {
-                Text("No archived chats.")
+                Text("No archived agents.")
                     .font(.subheadline).foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity).padding(.vertical, BoardStyle.Space.xxl)
                     .homeRow()
@@ -406,7 +406,7 @@ struct ArchivedAgentsView: View {
                             Button("Unarchive", systemImage: "tray.and.arrow.up") {
                                 Task { await store.archiveBot(bot, archived: false) }
                             }
-                            Button(bot.isChat ? "Delete chat" : "Delete agent", systemImage: "trash", role: .destructive) { deleting = bot }
+                            Button("Delete agent", systemImage: "trash", role: .destructive) { deleting = bot }
                         }
                 }
                 .buttonStyle(HomePressStyle())
@@ -431,7 +431,7 @@ struct ArchivedAgentsView: View {
 }
 
 extension View {
-    /// A row of the Chats list: the paper behind it, no line under it, and the side space of the page.
+    /// A row of the Agents list: the paper behind it, no line under it, and the side space of the page.
     func homeRow(inset: CGFloat = BoardStyle.Space.l, top: CGFloat = 0) -> some View {
         listRowInsets(EdgeInsets(top: top, leading: inset, bottom: 0, trailing: inset))
             .listRowSeparator(.hidden)
@@ -439,7 +439,7 @@ extension View {
     }
 }
 
-/// A text chip that one of a few choices selects: the filters of the Chats list, and the tabs of the bot details on
+/// A text chip that one of a few choices selects: the filters of the Agents list, and the tabs of the bot details on
 /// a Mac. The selected chip sits on a soft capsule of the text color, so it reads in light and in dark mode.
 struct ChipButton: View {
     let title: String
@@ -602,7 +602,7 @@ struct BotContactRow: View {
     let bot: Bot
     /// The name of the row. A further chat of a project shows its title next to the name of the project.
     var title: String? = nil
-    /// The star mark of a starred project at the top of the Chats list.
+    /// The star mark of a starred project at the top of the Agents list.
     var pinned = false
     /// The row reads the summary of its bot, not the messages, so a streamed word does not redraw it.
     private var summary: BotChatSummary { store.chatSummaries[bot.id] }
@@ -675,7 +675,7 @@ enum ChatRowText {
     }
 }
 
-/// The layout of one row of the Chats list and of the Mac sidebar, for a bot and a team, as the chat list of WhatsApp.
+/// The layout of one row of the Agents list and of the Mac sidebar, for a bot and a team, as the chat list of WhatsApp.
 /// The face comes first. A grid of two lines follows. The name and the age of the newest message share the first line.
 /// The line under the name and the badges share the second line. The badges are the mark of a muted chat
 /// (`bell.slash`), the round "@" mark of a team whose unread message names this person, and then the unread count. WhatsApp and Telegram have the same mark. The age

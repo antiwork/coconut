@@ -48,7 +48,7 @@ struct SpendView: View {
             modelsTile(selected).bento(4, 3, compact: (2, 3))
             // The list of the Projects page, so it has that name.
             ranking("Projects", selected.agents, summary: selected).bento(6, nil, compact: (2, nil))
-            ranking("Chats", Array(selected.chats.prefix(SpendSummary.chatLimit)), summary: selected)
+            ranking("Agents", Array(selected.chats.prefix(SpendSummary.chatLimit)), summary: selected)
                 .bento(6, nil, compact: (2, nil))
         }
     }
