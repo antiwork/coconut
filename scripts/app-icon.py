@@ -45,16 +45,19 @@ SHELL_HOLES = [(354.5, 532.5, 39.35), (450.5, 627.5, 39.35), (324.5, 657.5, 39.3
 # The flat mark, drawn instead of the hairy coconut: a coconut seen up close. The warm brown of its shell fills the
 # whole icon, and its three eyes are dark brown circles in the middle. Sahil chose it as the most subtle coconut, and
 # the three circles can read as three coconuts too. He found near-black on yellow too corporate and wanted no blue
-# ground. The circles stand in an upright triangle with the top one centred, as Sahil asked: an equilateral triangle
-# with the size and spacing of Gianfranco's three holes (sides of 131 px before `scale`). Its centre of mass sits a
-# little below the middle of the icon, halfway to centring the box around the circles, because the triangle looked
-# high when its centre of mass was at the middle and low when its box was. `scale` sizes the circles around the
-# middle. Each hole is (x, y, radius). An `outline`, such as SHELL with the holes SHELL_HOLES, draws a whole shell on
-# `ground` instead, sized by `scale`. None draws the hairy coconut.
+# ground. The circles stand in an upright equilateral triangle with the top one centred, as he asked. He then asked
+# for larger holes to match a coconut's proportions, so the three circles span 48% of the icon's width, as the eyes of
+# a real coconut span 46 to 48% of its face in photos. Each circle is 196 px across at 1024, with gaps of about half
+# that: closer circles merged into one clump at Home Screen sizes. A real eye on its own is only about a tenth of the
+# nut, so the circles are larger than life. The triangle's centre of mass sits a little below the middle of the icon,
+# halfway to centring the box around the circles, because it looked high when its centre of mass was at the middle and
+# low when its box was. `scale` sizes the circles around the middle. Each hole is (x, y, radius). An `outline`, such
+# as SHELL with the holes SHELL_HOLES, draws a whole shell on `ground` instead, sized by `scale`. None draws the hairy
+# coconut.
 MARK = dict(
     shell='#96562c',
     hole='#3b2013',
-    holes=[(512.00, 445.82, 39.35), (577.50, 559.27, 39.35), (446.50, 559.27, 39.35)],
+    holes=[(512.00, 438.24, 49.00), (585.00, 564.68, 49.00), (439.00, 564.68, 49.00)],
     scale=2.0,
     outline=None,
     ground=None,
