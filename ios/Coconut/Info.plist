@@ -66,6 +66,10 @@
 	<string>Coconut uses the camera when you scan a pairing QR code or take a photo to attach to a message.</string>
 	<key>NSPhotoLibraryAddUsageDescription</key>
 	<string>Coconut saves a photo from a chat to your library only when you choose Save Image.</string>
+	<key>NSUserActivityTypes</key>
+	<array>
+		<string>INSendMessageIntent</string>
+	</array>
 	<key>UIApplicationSupportsIndirectInputEvents</key>
 	<true/>
 	<key>UISupportedInterfaceOrientations~ipad</key>

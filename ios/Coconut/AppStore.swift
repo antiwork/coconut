@@ -1043,6 +1043,10 @@ final class AppStore {
         }
         scheduleDelivery()
         askForNotificationsIfNeeded()
+        #if os(iOS)
+        // The project of the chat shows in the row of people of the share sheet (ShareSuggestions).
+        suggestInShareSheet(bot)
+        #endif
         // The draft is saved locally even when the Mac has not confirmed it yet.
         return true
     }
@@ -2669,6 +2673,10 @@ final class AppStore {
             return false
         }
         Task { await deliverTeamMessage(chat, id: pending.id) }
+        #if os(iOS)
+        // The chat shows in the row of people of the share sheet (ShareSuggestions).
+        suggestInShareSheet(chat)
+        #endif
         return true
     }
 

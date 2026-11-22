@@ -1,4 +1,5 @@
 import Foundation
+import Intents
 import SwiftUI
 
 @main
@@ -48,6 +49,13 @@ struct CoconutApp: App {
                 .onContinueUserActivity(NSUserActivityTypeBrowsingWeb) { activity in
                     guard let url = activity.webpageURL, TeamLinkCheck.isLink(url) else { return }
                     store.teamJoin = TeamJoinRequest(link: url.absoluteString)
+                }
+                // iOS suggests the projects that the person writes to outside the share sheet too, for example in
+                // Search (ShareSuggestions). A tap on one opens the message box on that project.
+                .onContinueUserActivity(String(describing: INSendMessageIntent.self)) { activity in
+                    guard let id = (activity.interaction?.intent as? INSendMessageIntent)?.conversationIdentifier,
+                          let project = store.bots.first(where: { "project-" + $0.id == id }) else { return }
+                    store.startChat(in: project)
                 }
                 .onChange(of: store.reconciledBadgeCount, initial: true) { _, _ in
                     if !store.isDemo { store.reconcileBadge() }

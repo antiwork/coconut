@@ -3,14 +3,14 @@ import SwiftUI
 // The share sheet of Coconut: what the share holds, an optional note, and the chat that it goes to. The extensions of
 // the iPhone and the Mac show this one view.
 
-/// The face of a team or a person as the app drew it, or the first letter of its title on a fill of the faces. A chat
-/// with an agent has no face.
+/// The face of a team or a person as the app drew it, or the first letter of its title on a fill of the faces. A
+/// project and a chat with an agent have no face.
 struct ShareFace: View {
     let destination: ShareDestination
     let size: CGFloat
 
     var body: some View {
-        if destination.kind == .agent || destination.peerIsBot == true {
+        if destination.kind == .project || destination.kind == .agent || destination.peerIsBot == true {
             EmptyView()
         } else {
             face
@@ -22,16 +22,29 @@ struct ShareFace: View {
             if let face = destination.face, let image = PlatformImage(data: face) {
                 Image(platformImage: image).resizable().interpolation(.high).scaledToFit()
             } else {
-                let color = BoardStyle.faceColors[Int(destination.id.utf8.reduce(UInt64(5381)) { $0 &* 33 &+ UInt64($1) } % UInt64(BoardStyle.faceColors.count))]
-                Circle().fill(Color(hex: color.fill)).overlay {
-                    Text(String(destination.title.first { $0.isLetter || $0.isNumber } ?? "#").uppercased())
-                        .font(.system(size: size * 0.5, weight: .semibold, design: .rounded))
-                        .foregroundStyle(Color(hex: color.ink))
-                }
+                ShareMonogram(destination: destination, size: size)
             }
         }
         .frame(width: size, height: size)
         .accessibilityHidden(true)
+    }
+}
+
+/// The first letter of the title of a place on one of the fills of the faces, chosen by the ID of the place. With
+/// `husk`, the letter is white on the brown of the app icon (BoardStyle.husk).
+struct ShareMonogram: View {
+    let destination: ShareDestination
+    let size: CGFloat
+    var husk = false
+
+    var body: some View {
+        let color = BoardStyle.faceColors[Int(destination.id.utf8.reduce(UInt64(5381)) { $0 &* 33 &+ UInt64($1) } % UInt64(BoardStyle.faceColors.count))]
+        Circle().fill(husk ? BoardStyle.husk : Color(hex: color.fill)).overlay {
+            Text(String(destination.title.first { $0.isLetter || $0.isNumber } ?? "#").uppercased())
+                .font(.system(size: size * 0.5, weight: .semibold, design: .rounded))
+                .foregroundStyle(husk ? Color.white : Color(hex: color.ink))
+        }
+        .frame(width: size, height: size)
     }
 }
 

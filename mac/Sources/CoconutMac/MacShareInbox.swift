@@ -21,38 +21,51 @@ enum MacShareInbox {
                 store.error = "Coconut could not read the files of a share. Share them again."
                 continue
             }
-            if await send(message, to: handoff.destination, store: store) {
-                show(handoff.destination, model: model)
+            if let sent = await send(message, to: handoff.destination, store: store) {
+                show(sent, model: model)
             }
         }
     }
 
-    /// True when the message is on its way. A failure leaves its text in the banner of the window.
-    static func send(_ message: ShareMessage, to destination: ShareDestination, store: AppStore) async -> Bool {
+    /// The chat that got the message, or nil when it did not go. A share to a project goes to a new chat of the
+    /// project, as the first message of the message box does (chatForFirstMessage). A failure leaves its text in the
+    /// banner of the window.
+    static func send(_ message: ShareMessage, to destination: ShareDestination, store: AppStore) async -> ShareDestination? {
         if let chat = ShareDirectoryBuilder.chatKey(destination) {
             var files: [TeamFile] = []
             for file in message.files {
-                guard let draft = await store.uploadTeamFile(chat, PickedFile(data: file.data, name: file.name)) else { return false }
+                guard let draft = await store.uploadTeamFile(chat, PickedFile(data: file.data, name: file.name)) else { return nil }
                 files.append(draft)
             }
-            return store.sendTeamMessage(chat, text: message.text, replyingTo: nil, files: files)
+            return store.sendTeamMessage(chat, text: message.text, replyingTo: nil, files: files) ? destination : nil
         }
-        guard let bot = store.bots.first(where: { $0.id == destination.bot }) else {
+        guard var bot = store.bots.first(where: { $0.id == destination.bot }) else {
             store.error = "The agent of this share is gone. Share again and choose an agent."
-            return false
+            return nil
         }
-        var attachments: [String] = []
+        // Each file fits before anything goes, so a file that cannot go leaves no new chat behind.
+        var fitted: [FittedFile] = []
         for file in message.files {
             // The Mac of the person gets an image with its metadata, as from the composer of the agent chat.
             let outcome = await FileFit.fitted(PickedFile(data: file.data, name: file.name), removesPosition: false)
-            guard let fitted = outcome.file else {
+            guard let file = outcome.file else {
                 store.error = outcome.text
-                return false
+                return nil
             }
-            guard let artifact = await store.uploadAttachment(bot: bot, data: fitted.data, filename: fitted.name) else { return false }
+            fitted.append(file)
+        }
+        var sent = destination
+        if destination.kind == .project {
+            guard let chat = await store.chatForFirstMessage(in: bot) else { return nil }
+            bot = chat
+            sent = destination.newChat(chat.id)
+        }
+        var attachments: [String] = []
+        for file in fitted {
+            guard let artifact = await store.uploadAttachment(bot: bot, data: file.data, filename: file.name) else { return nil }
             attachments.append(artifact.id)
         }
-        return await store.send(bot: bot, text: message.text, attachments: attachments)
+        return await store.send(bot: bot, text: message.text, attachments: attachments) ? sent : nil
     }
 
     private static func show(_ destination: ShareDestination, model: AppModel) {

@@ -89,6 +89,11 @@ targets:
         UIApplicationSupportsIndirectInputEvents: true
         NSBonjourServices:
           - _coconut._tcp
+        # Each message of the person tells iOS about its project, team chat or person, so they show in the row of
+        # people of the share sheet (ShareShared/ShareSuggestions.swift). iOS refuses such a donation from an app that
+        # does not declare the intent here.
+        NSUserActivityTypes:
+          - INSendMessageIntent
   # The main executable of Coconut.app: the service controls in the menu bar and, later, the chat client. It compiles the
   # views and state of the iPhone app; the iPhone-only views stay out. scripts/mac_app.py builds it and makes the bundle.
   CoconutMac:
@@ -192,6 +197,10 @@ targets:
           NSExtensionPointIdentifier: com.apple.share-services
           NSExtensionPrincipalClass: ShareViewController
           NSExtensionAttributes:
+            # A place of Coconut in the row of people of the share sheet opens the extension with that place chosen
+            # (ShareShared/ShareSuggestions.swift).
+            IntentsSupported:
+              - INSendMessageIntent
             # Text, links, images, PDFs and other files. A message takes at most four files (ShareComposer.fileLimit).
             NSExtensionActivationRule:
               NSExtensionActivationSupportsText: true

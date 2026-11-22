@@ -31,15 +31,20 @@ protocol ShareTransport: Sendable {
 
 enum ShareSender {
     /// Sends a share as one message of the chat, as the composer of the app does: each file goes first (an
-    /// attachment of the agent chat, or a draft of the team chat), then the message names them. Each image fits the
-    /// limit of the Mac first (FileFit), and a file for a team leaves without its GPS position. No request leaves
-    /// before each file fits, so a file that cannot go leaves nothing behind. `progress` gets the number of the
-    /// request that starts and the count of the requests.
+    /// attachment of the agent chat, or a draft of the team chat), then the message names them. A share to a project
+    /// starts a new chat of it first, as the message box of the app does; `newChatKey` stays the same for each try of
+    /// one share, so a try whose answer was lost gets the same chat back (Service.mutate keeps each answer under its
+    /// key). Each image fits the limit of the Mac first (FileFit), and a file for a team leaves without its GPS
+    /// position. No request leaves before each file fits, so a file that cannot go leaves nothing behind. `progress`
+    /// gets the number of the request that starts and the count of the requests.
     static func send(_ message: ShareMessage, to destination: ShareDestination, over transport: ShareTransport,
+                     newChatKey: String = UUID().uuidString,
                      progress: @Sendable (_ step: Int, _ steps: Int) -> Void = { _, _ in }) async throws {
-        guard let messagesPath = destination.messagesPath else { throw ShareFailure(text: "This chat cannot take a share.") }
+        guard destination.messagesPath != nil || destination.newChatPath != nil else {
+            throw ShareFailure(text: "This chat cannot take a share.")
+        }
         guard message.files.isEmpty || destination.takesFiles else { throw ShareFailure(text: ShareProblem.takesNoFiles.text) }
-        let forTeam = destination.kind != .agent
+        let forTeam = destination.kind == .team || destination.kind == .direct
         let files = try await Task.detached(priority: .userInitiated) {
             try message.files.map { file -> FittedFile in
                 let name = ShareFileName.clean(file.name)
@@ -50,18 +55,28 @@ enum ShareSender {
                 return fitted
             }
         }.value
-        let steps = files.count + 1
+        let steps = destination.steps(files: files.count)
+        var step = 0
+        var target = destination
+        if let path = destination.newChatPath {
+            step += 1
+            progress(step, steps)
+            let answer = try await transport.post(path, body: json(["todo": false]), key: newChatKey)
+            target = destination.newChat(try id(in: answer))
+        }
+        guard let messagesPath = target.messagesPath else { throw ShareFailure(text: "This chat cannot take a share.") }
         var ids: [String] = []
-        for (index, file) in files.enumerated() {
-            progress(index + 1, steps)
+        for file in files {
+            step += 1
+            progress(step, steps)
             let content = file.data.base64EncodedString()
-            if destination.kind == .agent {
+            if target.kind == .agent {
                 let answer = try await transport.post("attachments", body: json([
-                    "bot_id": destination.bot ?? "", "filename": file.name, "content_base64": content,
+                    "bot_id": target.bot ?? "", "filename": file.name, "content_base64": content,
                 ]), key: UUID().uuidString)
                 ids.append(try id(in: answer))
             } else {
-                guard let path = destination.filesPath else { throw ShareFailure(text: ShareProblem.takesNoFiles.text) }
+                guard let path = target.filesPath else { throw ShareFailure(text: ShareProblem.takesNoFiles.text) }
                 var body: [String: Any] = ["name": file.name, "content": content]
                 if let type = file.type { body["type"] = type }
                 if let width = file.width, let height = file.height { body["width"] = width; body["height"] = height }
@@ -70,14 +85,14 @@ enum ShareSender {
             }
         }
         progress(steps, steps)
-        _ = try await transport.post(messagesPath, body: json(body(of: message.text, files: ids, for: destination)),
+        _ = try await transport.post(messagesPath, body: json(body(of: message.text, files: ids, for: target)),
                                      key: UUID().uuidString)
     }
 
     /// The body of the message request, as the app sends it (MessageRequest and TeamSendRequest in AppStore.swift).
     static func body(of text: String, files: [String], for destination: ShareDestination) -> [String: Any] {
         switch destination.kind {
-        case .agent:
+        case .agent, .project:
             // The Mac needs a text for each message. Files alone go with the marker of the app (AttachmentOnly).
             return ["text": text.isEmpty ? "[attachment]" : text, "mode": "auto", "attachment_ids": files,
                     "recipient_bot_ids": [String]()]

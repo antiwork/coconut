@@ -97,8 +97,9 @@ final class ShareModel {
         skipped == 0 ? nil : skipped == 1 ? "Coconut cannot send one item of this share." : "Coconut cannot send \(skipped) items of this share."
     }
 
-    /// Shows the share: the list of the app, and the items as the message will hold them.
-    func show(directory: ShareDirectory?, items: [SharedItem], skipped: Int = 0) {
+    /// Shows the share: the list of the app, and the items as the message will hold them. `suggested` is the chat
+    /// that the person tapped in the row of people of the share sheet.
+    func show(directory: ShareDirectory?, items: [SharedItem], skipped: Int = 0, suggested: String? = nil) {
         self.directory = directory
         self.items = ShareComposer.distinct(items)
         self.skipped = skipped
@@ -107,7 +108,7 @@ final class ShareModel {
             if case .file(let file) = item, row.symbol == "photo" { row.thumbnail = downsampledImage(file.data, largestSide: 160) }
             return row
         }
-        destination = directory?.initial(lastUsed: ShareLastUsed.read(defaults), needsFiles: hasFiles)
+        destination = directory?.initial(suggested: suggested, lastUsed: ShareLastUsed.read(defaults), needsFiles: hasFiles)
         phase = .ready
     }
 
@@ -117,7 +118,7 @@ final class ShareModel {
         case .failure(let problem):
             phase = .failed(problem.text)
         case .success(let message):
-            phase = .sending(step: 0, steps: message.files.count + 1)
+            phase = .sending(step: 0, steps: destination.steps(files: message.files.count))
             do {
                 try await deliver(message, destination) { step, steps in
                     Task { @MainActor [weak self] in
