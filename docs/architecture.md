@@ -24,9 +24,9 @@ A future execution provider can move work to another host without changing agent
 | Tool and dispatch receipts | Coconut coordination data |
 | Team rooms, their members and the copy of each team log | Coconut SQLite database (`team_*` tables), copied from the relay. See [team log](team-log.md#mac). |
 | Keys and member tokens of the team rooms | One private file for each room in `<data>/team` |
-| Business functions | Reserved GitHub repositories: `accounting`, `marketing`, `support` |
+| Business functions | Reserved names: `accounting`, `marketing`, `support` (Accounting keeps its ledger in its repository) |
 | Projects | GitHub repositories with the `coconut-project` topic; Gumroad uses `antiwork/gumroad-private` |
-| Business work | Issues in the function repository, scoped by `coconut-project:<repository-key>` labels |
+| To-dos and business work | Issues of `antiwork/gumroad-private` only, in three lists by label: `finance`, `support`, `product` |
 | Accounting | Canonical Beancount files in `antiwork/accounting`; existing ledger calculations own report totals |
 | Business reports | Published JSON snapshots on GitHub, with source paths, blob versions and freshness |
 
@@ -51,8 +51,13 @@ The Business screen and its reports read GitHub through Coconut's connected acco
 SaaS connection. `COCONUT_BUSINESS_OWNER` selects the organization (default `antiwork`). Register a project by adding
 the `coconut-project` topic. The native project picker preserves the repository's other topics.
 
-`GET /v1/business` lists the functions and projects. `/v1/business/work` filters issues by function, project and state.
-Creating work writes only to its function repository. A GitHub receipt in the issue body recovers an accepted write
+`GET /v1/business` lists the functions and projects. Every to-do and all work of the business are issues of one
+repository, `antiwork/gumroad-private` (`COCONUT_TODO_REPOSITORY` selects another), and nothing else holds them. The label
+of an issue names its list, `finance`, `support` or `product`; an issue without one is a to-do of Product. The iPhone
+shows each list on its tab with its own count. `GET /v1/todos` lists the open to-dos with their lists, `POST /v1/todos`
+adds one with the label of its list, and `PATCH /v1/todos` moves one to another list. `/v1/business/work` filters the
+same issues by function (Accounting and Marketing read the list of Finance, Support its own), project and state, and
+creating work writes there with the label of its list. A GitHub receipt in the issue body recovers an accepted write
 after a lost response. Coconut's local request receipts coordinate retries; they do not own business records.
 
 `/v1/business/reports/{overview,accounting,support,risk,engineering}` reads complete published JSON snapshots.

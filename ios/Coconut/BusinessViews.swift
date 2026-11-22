@@ -11,6 +11,8 @@ struct BusinessHomeView: View {
 
     var body: some View {
         BoardPage(width: .wide, spacing: BoardStyle.Space.l) {
+            // The to-dos of Finance come first, which the badge of the tab counts (TodoLists.swift).
+            TodoListSection(area: .finance)
             if let report = shownReport {
                 TimelineView(.periodic(from: .now, by: 60)) { context in
                     BusinessHomeContent(model: BusinessHomePresentation(report: report, now: context.date, refreshFailed: error != nil))
@@ -24,9 +26,13 @@ struct BusinessHomeView: View {
             }
         }
         .navigationTitle("Finance")
+        .newTodoButton(.finance)
         .task(id: "\(store.connection)/\(store.businessChanges)") { await load() }
         .onChange(of: store.businessGeneration) { _, _ in report = nil; error = nil }
-        .refreshable { await load() }
+        .refreshable {
+            await store.loadTodoIssues(fresh: true)
+            await load()
+        }
     }
 
     private func load() async {
@@ -142,10 +148,10 @@ struct BusinessWorkListView: View {
         .sheet(isPresented: $adding) { BusinessWorkEditor(function: function, project: project) }
     }
 
-    /// The issue of a row of work, in the function repository of its organization.
+    /// The issue of a row of work, in the work repository of its organization.
     private func route(_ item: BusinessWork) -> GitHubItemRoute {
         URL(string: item.url).flatMap(InAppLink.route) as? GitHubItemRoute
-            ?? GitHubItemRoute(repository: (store.businessCatalog?.owner ?? "antiwork") + "/" + item.functionKey, number: item.number)
+            ?? GitHubItemRoute(repository: store.todoIssues?.repository ?? "antiwork/gumroad-private", number: item.number)
     }
 
     /// "Support · gumroad · #412": the function or the repository, whichever the page is not already about.
@@ -253,7 +259,8 @@ private struct BusinessWorkEditor: View {
                 TextField("Title", text: $title).accessibilityIdentifier("business-work-title")
                 TextField("Description", text: $bodyText, axis: .vertical).lineLimit(5...12)
                     .accessibilityIdentifier("business-work-description")
-                Section {} footer: { Text("Saved to \(store.businessCatalog?.owner ?? "")/\(function ?? selectedFunction) on GitHub.") }
+                // The work of every function is an issue of the work repository with the label of its list (business.py).
+                Section {} footer: { Text("Saved to \(store.todoIssues?.repository ?? "antiwork/gumroad-private") on GitHub.") }
                 if let error { Text(error).foregroundStyle(BoardStyle.destructive) }
             }
             .navigationTitle("New work").inlineNavigationTitle().settingsBackground()

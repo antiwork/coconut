@@ -272,8 +272,8 @@ struct TodoCommentsSheet: View {
     }
 }
 
-/// The rows of the quick to-dos, on Product of the iPhone and on Home of the Mac. A row opens the chat of the
-/// to-do. Swipe or hold it to comment or to check it off.
+/// The rows of the quick to-dos, on Home of the Mac. A row opens the chat of the to-do. Swipe or hold it to comment or
+/// to check it off. The iPhone keeps its to-dos as issues of gumroad-private instead (TodoLists.swift).
 struct QuickTodoRows: View {
     @Environment(AppStore.self) private var store
     @Environment(\.pushRoute) private var pushRoute
@@ -367,32 +367,5 @@ private struct QuickTodoRowInset: ViewModifier {
     let inList: Bool
     func body(content: Content) -> some View {
         if inList { content.homeRow() } else { content }
-    }
-}
-
-/// The number on the Product tab: each thing on the Product page that asks for the person, once. The cards that wait,
-/// the rows of Needs attention, the quick to-dos with the ones on their way, and the To-dos of the agents. The product
-/// issues and the pull requests are the state of the product, not to-dos, so they add nothing (ProductWork). A late
-/// card is a card that counts already, and stale data is a state of the connection, so neither adds to it. A blocked
-/// To-do of an agent is also a row of "Blocked or failed", so it counts one time. The rows of Finance come from the
-/// overview, which the root of the app loads for every tab and keeps for the next start (CoconutHome,
-/// BusinessReport.overviewCache), so the number stays the same whichever tab shows.
-enum TodosCount {
-    static func count(cards: Int, attention: [AttentionItem], stuck: [ConversationRoute], quick: Int,
-                      agentTodos: [Artifact]) -> Int {
-        let rows = attention.filter { $0.kind != .waiting && $0.kind != .stale }.reduce(0) { $0 + $1.count }
-        let flagged = Set(stuck.compactMap { $0.workContext?.id })
-        return cards + rows + quick + agentTodos.filter { !flagged.contains($0.id) }.count
-    }
-}
-
-extension AppStore {
-    /// The badge of the Product tab (TodosCount).
-    func todosCount(now: Date = Date()) -> Int {
-        let input = attentionInput
-        return TodosCount.count(cards: pendingCardCount, attention: AttentionRules.items(input, now: now),
-                                stuck: AttentionRules.stuckWork(input, now: now),
-                                quick: QuickTodos.list(self).count + PendingTodos.shared.items.count,
-                                agentTodos: AgentTodos.make(artifacts: artifacts, bots: bots))
     }
 }

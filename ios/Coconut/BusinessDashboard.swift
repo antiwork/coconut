@@ -9,13 +9,16 @@ struct BusinessWorkspaceView: View {
 
     var body: some View {
         Group {
-            if tab == "work" || !hasReport { BusinessWorkListView(function: function) }
+            // Support is a tab: its to-dos first, which its badge counts, then the queues of the customers on the same
+            // page (TodoLists.swift). Its to-dos are its work, so it has no Work view.
+            if function == "support" { BusinessReportView(key: function, top: AnyView(TodoListSection(area: .support))) }
+            else if tab == "work" || !hasReport { BusinessWorkListView(function: function) }
             else { BusinessReportView(key: function) }
         }
         // Two views only: the report of the function, and its work. The control stays under the title while the page
         // scrolls. A function without a report has its work only, and a control with one segment is no choice.
         .safeAreaInset(edge: .top, spacing: 0) {
-            if hasReport {
+            if hasReport && function != "support" {
                 Picker("View", selection: $tab) {
                     Text("Overview").tag("overview")
                     Text("Work").tag("work")
@@ -25,21 +28,37 @@ struct BusinessWorkspaceView: View {
         }
         .background(BoardStyle.paper)
         .navigationTitle(BusinessFunction.name(function))
+        .modifier(SupportTodoButton(shown: function == "support"))
+    }
+}
+
+/// The + of Support adds a to-do to the list of Support. The other functions add work in their Work view.
+private struct SupportTodoButton: ViewModifier {
+    let shown: Bool
+    func body(content: Content) -> some View {
+        if shown { content.newTodoButton(.support) } else { content }
     }
 }
 
 struct BusinessReportView: View {
     @Environment(AppStore.self) private var store
     let key: String
+    /// What the page shows above the report: the to-dos of Support.
+    var top: AnyView? = nil
     @State private var report: BusinessReport?
     private var shownReport: BusinessReport? { store.businessReports[key] ?? report }
     @State private var error: String?
     @State private var details = false
 
-    init(key: String, initial: BusinessReport? = nil) { self.key = key; _report = State(initialValue: initial) }
+    init(key: String, initial: BusinessReport? = nil, top: AnyView? = nil) {
+        self.key = key
+        self.top = top
+        _report = State(initialValue: initial)
+    }
 
     var body: some View {
         BoardPage(width: .wide, spacing: BoardStyle.Space.l) {
+            if let top { top }
             if let report = shownReport {
                 BusinessReportContent(key: key, report: report) { details = true }
             } else if error == nil {
@@ -53,7 +72,10 @@ struct BusinessReportView: View {
         .navigationTitle(BusinessReport.titles[key] ?? key)
         .task(id: "\(key)/\(store.connection)/\(store.businessChanges)") { await load() }
         .onChange(of: store.businessGeneration) { _, _ in report = nil }
-        .refreshable { await load() }
+        .refreshable {
+            if top != nil { await store.loadTodoIssues(fresh: true) }
+            await load()
+        }
         .sheet(isPresented: $details) {
             NavigationStack {
                 if let report = shownReport { BusinessDataExplorer(value: report.data).navigationTitle("Report data") }

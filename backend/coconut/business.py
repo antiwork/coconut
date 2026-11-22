@@ -1,7 +1,9 @@
 """Native business screens backed entirely by the organization's GitHub repositories.
 
 Accounting, Marketing and Support are reserved repository keys. Project repositories opt in with the coconut-project topic.
-Work stays in the function repository and carries a project label, so one function serves every project.
+The work of every function is an issue of one repository, antiwork/gumroad-private (work_repository), as every to-do
+is (github_todos): the person keeps all work there and nothing else. The label of its list says whose work it is
+(WORK_AREAS), and a project label scopes it to a project.
 """
 from __future__ import annotations
 
@@ -24,11 +26,19 @@ FUNCTIONS = {'accounting': ('Accounting', 'Ledger, close, taxes and financial op
 PROJECT_TOPIC = 'coconut-project'
 PROJECT_LABEL = 'coconut-project:'
 KEY = re.compile(r'[a-z0-9._-]{1,100}')
+# The to-do list of each function, the label of its work in the work repository. Accounting and Marketing open from
+# Finance, so their work is the work of Finance.
+WORK_AREAS = {'accounting': 'finance', 'marketing': 'finance', 'support': 'support'}
 
 
 def project_label(project_key):
     suffix = project_key if len(PROJECT_LABEL + project_key) <= 50 else '~' + hashlib.sha256(project_key.encode()).hexdigest()[:32]
     return PROJECT_LABEL + suffix
+
+
+def work_repository():
+    """The repository of every to-do and every piece of work of the business. COCONUT_TODO_REPOSITORY names another."""
+    return key(os.environ.get('COCONUT_TODO_REPOSITORY', 'gumroad-private'))
 
 
 def key(value):
@@ -165,10 +175,22 @@ class GitHubBusiness:
         if function_key not in FUNCTIONS:
             raise ServiceError(404, 'Choose Accounting, Marketing or Support.')
         if writable:
-            repository = self._repo(function_key)
+            repository = self._repo(work_repository())
             if repository.get('archived') or not repository.get('has_issues'):
-                raise ServiceError(409, 'Enable issues and restore this function repository on GitHub before adding work.')
+                raise ServiceError(409, 'Enable issues and restore the work repository on GitHub before adding work.')
         return function_key
+
+    def _work_path(self):
+        return self._repo_path(work_repository())
+
+    def ensure_label(self, name, color, description):
+        """Adds a label to the work repository when it lacks it."""
+        try:
+            self._call('GET', self._work_path() + '/labels/' + quote(name, safe=''))
+        except ServiceError as error:
+            if error.status != 404:
+                raise
+            self._call('POST', self._work_path() + '/labels', dict(name=name, color=color, description=description))
 
     def _work(self, function_key, issue):
         labels = [label['name'] if isinstance(label, dict) else label for label in issue.get('labels', [])]
@@ -184,18 +206,19 @@ class GitHubBusiness:
     def work(self, function_key=None, project_key=None, state='open'):
         if state not in ('open', 'closed', 'all'):
             raise ServiceError(400, 'Choose open, closed or all work.')
-        functions = [self._function(function_key)] if function_key else list(FUNCTIONS)
+        function_key = self._function(function_key) if function_key else None
         if project_key:
             project_key = key(project_key)
             self.project(project_key)
+        labels = ([WORK_AREAS[function_key]] if function_key else []) + ([project_label(project_key)] if project_key else [])
         query = dict(state=state, sort='updated', direction='desc')
-        if project_key:
-            query['labels'] = project_label(project_key)
+        if labels:
+            query['labels'] = ','.join(labels)
         items = []
-        for function in functions:
-            for issue in self._pages(self._repo_path(function) + '/issues?' + urlencode(query), size=25):
-                if 'pull_request' not in issue:
-                    items.append(self._work(function, issue))
+        for issue in self._pages(self._work_path() + '/issues?' + urlencode(query), size=25):
+            if 'pull_request' not in issue:
+                names = {label['name'] if isinstance(label, dict) else label for label in issue.get('labels', [])}
+                items.append(self._work(function_key or ('support' if 'support' in names else 'accounting'), issue))
         items.sort(key=lambda item: (item['updated_at'], item['id']), reverse=True)
         return dict(items=items)
 
@@ -210,29 +233,26 @@ class GitHubBusiness:
         if not isinstance(body, str) or len(body) > 60_000 or '<!-- coconut-work:' in body:
             raise ServiceError(400, 'Use a description of up to 60,000 characters.')
         project_key = data.get('project_key')
-        labels = []
+        from .github_todos import LABELS
+        area = WORK_AREAS[function_key]
+        self.ensure_label(area, *LABELS[area])
+        labels = [area]
         if project_key:
             project_key = key(project_key)
             self.project(project_key)
             label = project_label(project_key)
-            try:
-                self._call('GET', self._repo_path(function_key) + '/labels/' + quote(label, safe=''))
-            except ServiceError as error:
-                if error.status != 404:
-                    raise
-                self._call('POST', self._repo_path(function_key) + '/labels',
-                           dict(name=label, color='6f55a5', description=f'Coconut project: {self.owner}/{project_key}'))
-            labels = [label]
+            self.ensure_label(label, '6f55a5', f'Coconut project: {self.owner}/{project_key}')
+            labels.append(label)
         signature = hashlib.sha256(encoded([function_key, title, body, project_key]).encode()).hexdigest()
         prefix = f'<!-- coconut-work:{request_key}:'
         marker = prefix + signature + ' -->'
         # A receipt lost after GitHub accepted the write is recovered from GitHub, without search-index delay.
-        for issue in self._pages(self._repo_path(function_key) + '/issues?state=all&sort=created&direction=desc', size=25):
+        for issue in self._pages(self._work_path() + '/issues?state=all&sort=created&direction=desc', size=25):
             if 'pull_request' not in issue and prefix in (issue.get('body') or ''):
                 if marker not in issue['body']:
                     raise ServiceError(409, 'This request key already created different work.')
                 return self._work(function_key, issue)
-        issue = self._call('POST', self._repo_path(function_key) + '/issues',
+        issue = self._call('POST', self._work_path() + '/issues',
                            dict(title=title, body=body.rstrip() + '\n\n' + marker, labels=labels))
         return self._work(function_key, issue)
 
@@ -240,7 +260,7 @@ class GitHubBusiness:
         function_key = self._function(function_key, writable=True)
         if not re.fullmatch(r'[1-9][0-9]{0,9}', number) or int(number) >= 2**31 or set(data) != {'state'} or data['state'] not in ('open', 'closed'):
             raise ServiceError(400, 'Choose open or closed for this work item.')
-        path = self._repo_path(function_key) + '/issues/' + number
+        path = self._work_path() + '/issues/' + number
         if 'pull_request' in self._call('GET', path):
             raise ServiceError(400, 'This is a pull request, not business work.')
         return self._work(function_key, self._call('PATCH', path, data))

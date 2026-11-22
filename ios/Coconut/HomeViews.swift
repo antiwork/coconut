@@ -1,8 +1,9 @@
 import SwiftUI
 
-/// Two tabs of the iPhone. Product has what asks for the person, the rules that breach, the cards that wait and the
-/// to-dos, then the product issues and the open pull requests (ProductWork). Agents is one list, as Telegram has it:
-/// the agents of the projects, the teams, their named chats and the direct chats, in two tabs, Working and Idle
+/// Two tabs of the iPhone. Product has the rules that breach for the agents and the cards that wait, then its to-dos,
+/// the issues of gumroad-private with the label product (TodoLists.swift), and the open pull requests (ProductWork).
+/// Agents is one list, as Telegram has it: the agents of the projects, the teams, their named chats and the direct
+/// chats, in two tabs, Working and Idle
 /// (AgentsFilter), with the message box under the list (NewChatBar).
 struct HomeLaunchView: View {
     enum Part { case product, chats }
@@ -29,28 +30,16 @@ struct HomeLaunchView: View {
     }
 
     private var productList: some View {
-        let todos = AgentTodos.make(artifacts: store.artifacts, bots: store.bots)
         let cards = store.pendingCardCount
-        let quick = QuickTodos.list(store).count + PendingTodos.shared.items.count
-        let issues = ProductWork.issues(productReport("support")?.data)
         let pulls = ProductWork.pulls(productReport("engineering")?.data)
         return ScrollViewReader { proxy in
             List {
                 attention(cards: cards)
-                QuickTodoRows()
-                ForEach(todos) { item in todoRow(item).homeRow() }
-                if todos.isEmpty && cards == 0 && quick == 0 {
-                    Text("Nothing waits for you. Tap + to add a to-do.")
-                        .font(.subheadline).foregroundStyle(.secondary)
-                        .frame(maxWidth: .infinity).padding(.vertical, BoardStyle.Space.xxl)
-                        .accessibilityIdentifier("todos-empty")
-                        .homeRow()
-                }
-                // The work of the product. A section without rows does not show.
-                if !issues.isEmpty {
-                    productHeader("Product issues", count: issues.count)
-                    ForEach(issues) { productRow($0) }
-                }
+                // The to-dos of Product, which its badge counts (TodoCounts). The cards and the alerts of the agents
+                // above them are no to-dos of gumroad-private, so they add nothing to it.
+                productHeader("To-dos", count: store.todoCount(.product))
+                TodoIssueRows(area: .product)
+                // The pull requests are the state of the product, not to-dos. A section without rows does not show.
                 if !pulls.isEmpty {
                     productHeader("Pull requests", count: pulls.count)
                     ForEach(pulls) { productRow($0) }
@@ -80,18 +69,13 @@ struct HomeLaunchView: View {
         }
         .navigationTitle("Product")
         .task(id: "\(store.connection)/\(store.businessChanges)") { await loadProductWork() }
-        .toolbar {
-            // One tap and one line add a to-do, which an agent starts on at once (QuickTodos).
-            ToolbarItem(placement: .primaryAction) {
-                Button("New to-do", systemImage: "plus") { PendingTodos.shared.adding = true }
-                    .accessibilityIdentifier("new-todo")
-            }
-        }
-        .sheet(isPresented: Binding(get: { PendingTodos.shared.adding }, set: { PendingTodos.shared.adding = $0 })) { NewTodoSheet() }
-        // The root of the app loads the overview of Finance for the count of the tab (CoconutHome), so a pull only
-        // loads it again.
+        // One tap and one line add a to-do to Product, which an agent starts on at once (NewTodoIssueSheet).
+        .newTodoButton(.product)
+        // The root of the app loads the to-dos and the overview for the counts of the tabs (CoconutHome), so a pull only
+        // loads them again.
         .refreshable {
             await store.reconnect()
+            await store.loadTodoIssues(fresh: true)
             await store.loadBusinessAttention()
             await loadProductWork()
         }
@@ -277,12 +261,13 @@ struct HomeLaunchView: View {
     }
 
     /// What asks for the person comes first on Product: the rules that breach now, then the cards that wait. Each row
-    /// draws nothing when there is nothing to show.
+    /// draws nothing when there is nothing to show. The breaches of the business are not here: Support past SLA is a
+    /// row of the list of Support, and the product issues past SLA and of high priority are the to-dos themselves.
     @ViewBuilder
     private func attention(cards: Int) -> some View {
         // The rules read the clock, so the card checks them again each minute.
         TimelineView(.periodic(from: .now, by: 60)) { timeline in
-            let items = store.attentionItems(now: timeline.date)
+            let items = store.attentionItems(now: timeline.date).filter { $0.kind != .business }
             AttentionCard(items: items, open: open)
                 .padding(.bottom, items.isEmpty ? 0 : BoardStyle.Space.m)
         }
@@ -334,35 +319,6 @@ struct HomeLaunchView: View {
         .tint(BoardStyle.husk)
         .disabled(TeamChatMute.waits(mute.chat, store.teamChatMuteChoices))
         .accessibilityIdentifier("chat-row-mute-swipe")
-    }
-
-    private func todoRow(_ item: Artifact) -> some View {
-        let agent = store.bots.first { $0.id == item.botId }?.name ?? ""
-        return Button {
-            pushRoute?(ConversationRoute(botId: item.botId, workContext: WorkReference(id: item.id, title: item.title)))
-        } label: {
-            HStack(spacing: BoardStyle.Space.m) {
-                Image(systemName: AgentTodos.symbol(item.status))
-                    .font(.title3)
-                    .foregroundStyle(item.status == "blocked" ? BoardStyle.destructive : .secondary)
-                    .frame(width: todoIconWidth)
-                    .accessibilityHidden(true)
-                VStack(alignment: .leading, spacing: BoardStyle.Space.xs) {
-                    Text(item.title).font(.body).foregroundStyle(.primary)
-                        .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 2)
-                    Text("\(agent) · \(item.status.capitalized)").font(.subheadline).foregroundStyle(.secondary)
-                }
-                Spacer(minLength: 0)
-            }
-            .frame(minHeight: 44, alignment: .leading)
-            .padding(.vertical, BoardStyle.Space.m)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(BoardStyle.paper)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(HomePressStyle())
-        .accessibilityElement(children: .combine)
-        .accessibilityIdentifier("chats-todo-\(item.id)")
     }
 
     /// "team-chat-<room>" for a team, "team-chat-<room>-<chat>" for a named chat, "direct-chat-<member>" for a direct
@@ -506,13 +462,12 @@ struct HomePressStyle: ButtonStyle {
     }
 }
 
-/// The work of the product on Product: the product issues, which are the issues queue of the support report (the
-/// issues of Gumroad's private repository), and the open pull requests of the engineering report. The dashboards
-/// repository publishes both, as Support and Finance read them. They add nothing to the badge of the tab, which counts
-/// what asks for the person (TodosCount): an issue or a pull request is the state of the product, not a to-do.
+/// The pull requests on Product: the open pull requests of the engineering report, which the dashboards repository
+/// publishes, as Finance reads it. They add nothing to the badge of the tab, which counts the to-dos of Product
+/// (TodoCounts): a pull request is the state of the product, not a to-do. The issues of the product are its to-dos.
 enum ProductWork {
     /// The reports that Product reads.
-    static let reports = ["support", "engineering"]
+    static let reports = ["engineering"]
 
     struct Change: Equatable {
         let additions: String
@@ -530,30 +485,6 @@ enum ProductWork {
         let url: URL?
         /// The lines that a pull request adds and removes.
         var change: Change? = nil
-    }
-
-    /// The open product issues, newest first, as the report lists them. The state comes from the labels: an agent
-    /// works on it, or it waits for someone.
-    static func issues(_ data: BusinessValue?, now: Date = .now) -> [Item] {
-        guard let data else { return [] }
-        return data["issues"]["open"].array.compactMap { issue in
-            let number = issue["slug"].text
-            var title = issue["subject"].text
-            if !number.isEmpty, title.hasPrefix("#" + number + " ") { title.removeFirst(number.count + 2) }
-            guard !title.isEmpty else { return nil }
-            let labels = issue["labels"].array.map(\.text)
-            let working = labels.contains("working")
-            let waiting = labels.first { $0.hasPrefix("awaiting-") }
-            let state = working ? "Working"
-                : waiting.map { "Awaiting " + $0.dropFirst("awaiting-".count).replacingOccurrences(of: "-", with: " ") }
-            let day = issue["createdAt"].text.apiDate.map { BusinessFormat.date($0, now: now) }
-            let detail = [number.isEmpty ? nil : "#" + number, state, issue["assignedToId"].text, day]
-                .compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " · ")
-            return Item(id: "issue-" + (number.isEmpty ? title : number), title: title, detail: detail,
-                        symbol: AgentTodos.symbol(working ? "working" : waiting == nil ? "open" : "waiting"),
-                        tint: working ? BoardStyle.positive : waiting == "awaiting-human" ? BoardStyle.attention : .secondary,
-                        url: SupportFormat.issueURL(issue))
-        }
     }
 
     /// The open pull requests of every repository of the report, newest change first. The symbol is the state of the

@@ -76,7 +76,9 @@ extension AppStore {
     func resetBusiness() {
         businessGeneration = UUID()
         businessItems = [:]; businessReports = [:]; businessCatalog = nil
-        if !isDemo { ProtectedCache.remove(BusinessReport.overviewCache) }
+        // Another Mac or another GitHub account has other to-dos.
+        todoIssues = nil; todoIssuesError = nil
+        if !isDemo { ProtectedCache.remove(BusinessReport.overviewCache); ProtectedCache.remove(TodoIssues.cache) }
         businessChanges += 1
         // Another Mac or another GitHub account reads other repositories.
         githubEmbeds.reset()

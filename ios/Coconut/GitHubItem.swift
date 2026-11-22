@@ -364,6 +364,15 @@ enum GitHubDemo {
                               assignees: [viewer], createdAt: ago(60 * 30), updatedAt: ago(60 * 3), viewer: viewer.login,
                               comments: [.init(id: "c1", kind: "comment", author: gumclaw, body: "Started on it. The ledger through October balances; November waits on two Stripe payouts.", createdAt: ago(60 * 3))])
         }
+        // A to-do of the demo opens with its own words (TodoIssues.preview).
+        if let todo = TodoIssues.preview.items.first(where: { $0.number == route.number }) {
+            return GitHubItem(
+                kind: "issue", repository: route.repository, number: route.number, title: todo.title,
+                body: "Gumclaw filed this to-do while it worked the queue. It needs a person before it can go on.\n\nComment here, or close the issue when it is done.",
+                state: "open", author: gumclaw, labels: todo.labels, assignees: todo.assignees.map { GitHubPerson(login: $0) },
+                createdAt: todo.createdAt, updatedAt: todo.updatedAt, viewer: viewer.login,
+                comments: [.init(id: "c1", kind: "comment", author: gumclaw, body: "Checked it again this morning. Nothing changed since yesterday.", createdAt: ago(60 * 3))])
+        }
         let title = issues[route.number] ?? "Issue \(route.number)"
         return GitHubItem(
             kind: "issue", repository: route.repository, number: route.number, title: title,

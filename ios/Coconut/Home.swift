@@ -78,7 +78,7 @@ enum HomeFeed {
 
     /// The count of the Agents tab of the iPhone: the unread messages of every chat (ChatList.all), which is what its
     /// rows show. A muted chat and an archived chat count none. The cards that wait and the notices that hold work
-    /// count on Product.
+    /// show on Product.
     static func chatsBadge(bots: [Bot], rooms: [TeamRoom], local: [TeamChatKey: TeamLastMessage] = [:]) -> Int {
         let chats = bots.filter { !$0.archived }.map(ChatListItem.bot) + ChatList.pinnedChats(rooms)
             + ChatList.people(rooms, local: local) + ChatList.botDirects(rooms, local: local)

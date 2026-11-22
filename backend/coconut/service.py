@@ -336,6 +336,8 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
         self.github_previews = GitHubPreviews(lambda: self.business)
         from .github_items import GitHubItems
         self.github_items = GitHubItems(lambda: self.business)
+        from .github_todos import GitHubTodos
+        self.todos = GitHubTodos(self.business)
         self.github_requests = threading.Lock()
         try:
             self._recover_workspace_binding()
@@ -1104,12 +1106,21 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
         except (ValueError, TypeError, AttributeError):
             raise ServiceError(400, 'Supply a UUID in Idempotency-Key.')
         fingerprint = digest(encoded([device_id, method, path, data]))
+        if path == '/v1/todos':
+            from .github_todos import mutate_todos
+            return mutate_todos(self, method, data, key, fingerprint)
         if path.startswith('/v1/business/'):
             from .business import mutate_business
-            return mutate_business(self, method, path.split('/')[3:], data, key, fingerprint)
+            result = mutate_business(self, method, path.split('/')[3:], data, key, fingerprint)
+            # Work of a function is a to-do too (business.WORK_AREAS), so the next list reads GitHub again.
+            self.todos.forget()
+            return result
         if path == '/v1/github/item' or path.startswith('/v1/github/item/'):
             from .github_items import mutate_github_item
-            return mutate_github_item(self, method, path.split('/')[4:], data, key, fingerprint)
+            result = mutate_github_item(self, method, path.split('/')[4:], data, key, fingerprint)
+            # A close or a reopen of an issue changes the to-dos.
+            self.todos.forget()
+            return result
         if path.startswith('/v1/support/conversations/'):
             from .support_threads import mutate_support
             return mutate_support(self, method, path.split('/')[4:], data, key, fingerprint)

@@ -33,6 +33,7 @@
 		11259085E6494667E85D3DBD /* TeamLog.swift in Sources */ = {isa = PBXBuildFile; fileRef = B74D821023B1194DE11549AC /* TeamLog.swift */; };
 		114915F29FAFD930A2C7194F /* ShareComposeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B7A950D770C6DD05FA8B289B /* ShareComposeView.swift */; };
 		119FDC82BE8B86027C92B585 /* ModelChoice.swift in Sources */ = {isa = PBXBuildFile; fileRef = C7F0EF7999B010622E889EF1 /* ModelChoice.swift */; };
+		11CFBABC980AEB0344250806 /* TodoLists.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7CD52514DCCAC6BD9C7B6235 /* TodoLists.swift */; };
 		1374C513472E49A360E09502 /* CoconutApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 472D7A7303281C0EF4B4F9C4 /* CoconutApp.swift */; };
 		14BD77FBCA794E39EA10CE7E /* Routes.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA07287D8E8B821C1C945D80 /* Routes.swift */; };
 		15F6F535016BB32F46D514F1 /* OptimisticUpdates.swift in Sources */ = {isa = PBXBuildFile; fileRef = AE9F30F52666D7F17955402F /* OptimisticUpdates.swift */; };
@@ -306,6 +307,7 @@
 		F4438077768DD6AFFC540DBC /* CardSourcesPreview.json in Resources */ = {isa = PBXBuildFile; fileRef = 7ED5A4D198004EB7F33EB977 /* CardSourcesPreview.json */; };
 		F44E98A6DDB9163438280BAD /* SettingsViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = B5C532B556E6AC4611DC4B3F /* SettingsViews.swift */; };
 		F51744F39DE310DA478A8C68 /* ShareItemLoader.swift in Sources */ = {isa = PBXBuildFile; fileRef = 59A0A969FABDB4B7707B081B /* ShareItemLoader.swift */; };
+		F67BF827DF085797976F9E17 /* TodoLists.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7CD52514DCCAC6BD9C7B6235 /* TodoLists.swift */; };
 		F81B2F287511865444AD03F8 /* MessageDraftView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 78004F47AACBEB462A36AA3B /* MessageDraftView.swift */; };
 		FA3273EAC8CD61785B0DA57F /* AppStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = EC0BF5B02794FB407103AA4C /* AppStore.swift */; };
 		FA4D0BC76981528EB21D4C83 /* BusinessReports.swift in Sources */ = {isa = PBXBuildFile; fileRef = FFA30EC67D5486818D86E824 /* BusinessReports.swift */; };
@@ -432,6 +434,7 @@
 		7C477A5B7A98B02989D56026 /* MessageReplay.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MessageReplay.swift; sourceTree = "<group>"; };
 		7C93C22E1E2019B2F523CCF8 /* ConversationRowHold.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationRowHold.swift; sourceTree = "<group>"; };
 		7CA9695EAB2F655862469B6C /* NotificationContent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationContent.swift; sourceTree = "<group>"; };
+		7CD52514DCCAC6BD9C7B6235 /* TodoLists.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TodoLists.swift; sourceTree = "<group>"; };
 		7DBCCB336B2F41DAE298813E /* GitHubPreview.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GitHubPreview.swift; sourceTree = "<group>"; };
 		7ED5A4D198004EB7F33EB977 /* CardSourcesPreview.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = CardSourcesPreview.json; sourceTree = "<group>"; };
 		805A9491257C01754953F04F /* ConversationFooterScroll.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationFooterScroll.swift; sourceTree = "<group>"; };
@@ -726,6 +729,7 @@
 				2336F49F73947060895D6AAD /* TeamNotices.swift */,
 				150449BCD1EA051889FBAC65 /* TeamViews.swift */,
 				B08638DC7DBFF79E2F881694 /* Theme.swift */,
+				7CD52514DCCAC6BD9C7B6235 /* TodoLists.swift */,
 				C77D5CDAA72E7F4867D4E5DA /* TranscriptPresentation.swift */,
 				0C177466512540E1010ADAD1 /* TranscriptWindow.swift */,
 				A8709568F75F99A00D1122C7 /* TunnelConnection.swift */,
@@ -1176,6 +1180,7 @@
 				5BF5A35704DB08507DD8BE49 /* TeamViews.swift in Sources */,
 				8D5D8D51030FD26735E611F5 /* TestIsolation.swift in Sources */,
 				41466C9D92D01AEF376C25A4 /* Theme.swift in Sources */,
+				F67BF827DF085797976F9E17 /* TodoLists.swift in Sources */,
 				23D58AF72A5F6729FA65344B /* TranscriptPresentation.swift in Sources */,
 				47E0B805C6F0533FD94B01A8 /* TranscriptWindow.swift in Sources */,
 				5803CB381031E75D1A7A7934 /* TunnelConnection.swift in Sources */,
@@ -1303,6 +1308,7 @@
 				F078E59879E0B4CD3F8C346E /* TeamViews.swift in Sources */,
 				D064CD6B589C01ABE7F02C1E /* TestIsolation.swift in Sources */,
 				CA614F81435252679031DB1E /* Theme.swift in Sources */,
+				11CFBABC980AEB0344250806 /* TodoLists.swift in Sources */,
 				99BD0D4F77E494CF715A751E /* TranscriptPresentation.swift in Sources */,
 				73ECEBF3AA3D1531AFF6AC40 /* TranscriptWindow.swift in Sources */,
 				E587F728CFD92ECB49066588 /* TunnelConnection.swift in Sources */,

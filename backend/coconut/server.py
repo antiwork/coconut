@@ -361,6 +361,8 @@ class Handler(BaseHTTPRequestHandler):
                     self._json(200, service.updates(after, wait, collection_deltas=self.headers.get('X-Coconut-Updates') in ('2', '3', '4'),
                         native_events=self.headers.get('X-Coconut-Updates') in ('3', '4'),
                         compact_history=self.headers.get('X-Coconut-Updates') == '4', recent_work=self.recent_work))
+                elif url.path == '/v1/todos':
+                    self._json(200, service.todos.list(fresh=parse_qs(url.query).get('fresh') == ['1']))
                 elif url.path == '/v1/business':
                     self._json(200, service.business.catalog(fresh=parse_qs(url.query).get('fresh') == ['1']))
                 elif url.path == '/v1/business/work':
