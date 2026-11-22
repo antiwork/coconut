@@ -1065,8 +1065,6 @@ struct ConversationComposer: View {
     /// The person sends the draft. It comes before the draft clears.
     var onSend: () -> Void = {}
 
-    @Environment(\.openChat) private var openChat
-    @Environment(\.pushRoute) private var pushRoute
     private var connected: Bool { store.hasPairing || store.isDemo }
     /// A chat of an agent can send its draft to a new chat with the same agent. The Coconut chat has one chat.
     private var canSendInNewChat: Bool { canSend && !scheduling && !bot.coconut && !bot.archived }
@@ -1342,9 +1340,10 @@ struct ConversationComposer: View {
         draft.hasPrefix(sent) ? String(draft.dropFirst(sent.count)) : ""
     }
 
-    /// Sends the draft. In a new chat, the draft starts a fresh chat with the same agent, which then opens. The keyboard
-    /// first gives the field all that it holds, so the send has the text that the person sees, and the clear stays
-    /// (KeyboardSettle).
+    /// Sends the draft. Send to a new agent starts a fresh chat of the same project with the draft, as the message box
+    /// does (AppStore.sendNewChat): the chat stays closed, at the top of the Agents list, and the person stays in this
+    /// chat with the keyboard, to send the next one. The keyboard first gives the field all that it holds, so the send
+    /// has the text that the person sees, and the clear stays (KeyboardSettle).
     private func send(inNewChat: Bool = false) {
         KeyboardSettle.run(if: focused) { sendDraft(inNewChat: inNewChat) }
     }
@@ -1382,26 +1381,21 @@ struct ConversationComposer: View {
             // Keys that the person typed after Return stay.
             clearDraft(after: submittedText)
             #endif
-            var target = bot
+            let success: Bool
             if inNewChat {
-                // The same chat as the message box makes: a chat that nobody wrote in comes before a new one. When
-                // the Mac does not make it, the notice says why and the draft comes back.
-                guard let chat = await store.chatForFirstMessage(in: bot) else {
-                    draftSend.failed()
-                    echo.cancel()
-                    if text.isEmpty { text = submittedText; attachments = submittedArtifacts }
-                    return
-                }
-                target = chat
-                // A chat that nobody wrote in can be this chat: the message then goes here.
-                if chat.id != bot.id {
-                    if let openChat { openChat(chat.id) } else { pushRoute?(ConversationRoute(botId: chat.id)) }
-                }
-            }
-            let success = await store.send(bot: target, text: submittedText,
+                // The same chat as the message box makes: a chat that nobody wrote in comes before a new one, and this
+                // chat when nobody wrote in it. Nothing opens the chat (the person's choice): it shows at the top of the
+                // Agents list and under its project in the Mac sidebar. When the Mac does not make it or does not take
+                // the message, the notice says why and the draft comes back.
+                success = await store.sendNewChat(in: bot, text: submittedText, attachments: submittedAttachments,
+                                                  mentionedBotIds: submittedRecipients, replyTo: submittedReply,
+                                                  workContext: submittedWork) != nil
+            } else {
+                success = await store.send(bot: bot, text: submittedText,
                                            attachments: submittedAttachments,
                                            scheduledAt: submittedScheduling ? ISO8601DateFormatter().string(from: submittedDate) : nil,
                                            mentionedBotIds: submittedRecipients, replyTo: submittedReply, workContext: submittedWork)
+            }
             guard !success else { return }
             draftSend.failed()
             echo.cancel()
@@ -1554,7 +1548,7 @@ struct ComposerQuoteBar: View {
 /// Messages.
 struct ComposerFieldStyle: ViewModifier {
     let send: () -> Void
-    /// Option-Return on a Mac: send the draft in a new chat with the same agent.
+    /// Option-Return on a Mac: Send to a new agent, a new chat of the same project that stays closed.
     var sendInNewChat: (() -> Void)? = nil
     /// The field sits above a row of controls in the same box: less space under the text.
     var stacked = false
@@ -1631,7 +1625,8 @@ struct ComposerSendButton: View {
     let enabled: Bool
     let label: String
     let action: () -> Void
-    /// Send in new chat, from the menu of the button: a long press on an iPhone, a secondary click on a Mac.
+    /// Send to a new agent, from the menu of the button: a long press on an iPhone, a secondary click on a Mac. The new
+    /// chat stays closed.
     var newChat: (() -> Void)? = nil
     var identifier = "send-message"
     @ScaledMetric(relativeTo: .body) private var size = 34

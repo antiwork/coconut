@@ -118,7 +118,8 @@ struct NewChatRequest: Equatable {
     var text = ""
 }
 
-/// A Send of the message box: the chat that got the first message. Each Send is a new value, also for the same chat.
+/// A Send that started a chat, from the message box or with Send to a new agent in a chat: the chat that got the first
+/// message. Each Send is a new value, also for the same chat.
 struct NewChatSend: Equatable {
     let chat: String
     let id = UUID()
@@ -176,12 +177,16 @@ extension AppStore {
         return await makeChat(of: agent)
     }
 
-    /// The Send of the message box: the first message of a new chat in `project`. Returns the chat that got the
-    /// message, or nil when none did; the error notice says why. Nothing opens the chat: it shows at the top of the
-    /// Agents list (newChatSend) and under its project in the Mac sidebar, so the person can queue up one chat after
-    /// another from the box.
-    func sendNewChat(in project: Bot, text: String) async -> Bot? {
-        guard let chat = await chatForFirstMessage(in: project), await send(bot: chat, text: text) else { return nil }
+    /// The first message of a new chat in `project`: the Send of the message box, and Send to a new agent in a chat,
+    /// with the files, the mentions, the quote and the work of its draft. Returns the chat that got the message, or nil
+    /// when none did; the error notice says why. Nothing opens the chat: it shows at the top of the Agents list
+    /// (newChatSend) and under its project in the Mac sidebar, so the person stays where they are and can queue up one
+    /// chat after another.
+    func sendNewChat(in project: Bot, text: String, attachments: [String] = [], mentionedBotIds: [String] = [],
+                     replyTo: MessageReference? = nil, workContext: WorkReference? = nil) async -> Bot? {
+        guard let chat = await chatForFirstMessage(in: project),
+              await send(bot: chat, text: text, attachments: attachments, mentionedBotIds: mentionedBotIds,
+                         replyTo: replyTo, workContext: workContext) else { return nil }
         nameChat(chat.id, from: text)
         newChatSend = NewChatSend(chat: chat.id)
         return chat

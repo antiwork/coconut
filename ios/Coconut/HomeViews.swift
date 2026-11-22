@@ -337,9 +337,10 @@ enum AgentsFilter: String {
     static let key = "agents-filter"
 }
 
-/// A Send of the message box leaves its new chat closed (NewChatBar). The Agents list then shows the tab that holds the
-/// chat, Working while it works, and scrolls its row into view: the chat is the newest, so it is the first row under
-/// the starred chats.
+/// A Send that starts a chat leaves the chat closed (sendNewChat): the Send of the message box, and Send to a new agent
+/// in a chat, which keeps the person in that chat. The Agents list then shows the tab that holds the new chat, Working
+/// while it works, and scrolls its row into view: the chat is the newest, so it is the first row under the starred
+/// chats.
 private struct NewChatReveal: ViewModifier {
     @Environment(AppStore.self) private var store
     @Binding var filter: AgentsFilter

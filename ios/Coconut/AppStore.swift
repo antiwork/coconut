@@ -142,8 +142,8 @@ final class AppStore {
     var newChatRequest: NewChatRequest?
     /// Counts the starts of a chat. The window that holds the box shows it when the count changes.
     var chatStarts = 0
-    /// The last Send of the message box (sendNewChat). Agents shows the new chat at the top of the tab that holds it, and
-    /// nothing opens the chat.
+    /// The last Send that started a chat (sendNewChat): the message box, or Send to a new agent in a chat. Agents shows
+    /// the new chat at the top of the tab that holds it, and nothing opens the chat.
     var newChatSend: NewChatSend?
     /// A Library page that a direct chat with a team bot quotes in its composer when it opens: "Chat about this page".
     /// By chat key, so only the chat of that key shows it.
