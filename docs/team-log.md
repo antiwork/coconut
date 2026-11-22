@@ -17,7 +17,7 @@ Status: the relay has the room (`relay/src/room.js`). The Mac backend makes, joi
 
 - **Room:** the object on the relay that holds one log, its members and its tickets. A team has one room.
 - **Member:** one Mac in a room. One person and the agents of that person are behind it.
-- **Admin:** the member that made the room. Only the admin invites and removes members.
+- **Admin:** the member that made the room. Only the admin removes members. Each member invites.
 - **Entry:** one sealed item of the log.
 - **Epoch:** the number of the room key. It starts at 0 and grows by 1 with each key change.
 
@@ -29,7 +29,7 @@ Status: the relay has the room (`relay/src/room.js`). The Mac backend makes, joi
 | Member key | Each Mac, for each room | Ed25519. Signs each entry of the Mac, and the proof of a join. Its public key in lowercase hex is the member ID. |
 | Agreement key | Each Mac, for each room | X25519. Makes the pair key of a key box after a key change, and the pair key of a direct message, with each other member. |
 | Member token | Each Mac, for each room | 32 random bytes in lowercase hex. Authorizes the Mac at the relay. |
-| Invite secret | The admin's Mac, for each invite | 32 random bytes. Gives the relay ticket and the welcome key. |
+| Invite secret | The Mac of the member that invites, for each invite | 32 random bytes. Gives the relay ticket and the welcome key. |
 
 The relay stores only the SHA-256 hash of a token or a ticket, as lowercase hex of the hash of the token string. The tunnel does the same.
 
@@ -112,7 +112,7 @@ A Mac writes the `name` of its own `member` entry by a stricter rule: 1 to 80 co
    - If the Mac has no room key for the epoch, and the epoch is before the first epoch that the Mac has a key for, skip the entry. A member that joins later never gets the keys of earlier epochs.
    - If the epoch is later, keep the bytes until the key comes in a `key` entry. Then open them again.
 3. If the Mac already has this entry ID, accept the entry only from the same member and only with a higher `rev`.
-4. Accept `remove`, `key`, `erase` and `chat` only from the admin. The admin is the member ID that the welcome names.
+4. Accept `remove`, `key`, `erase` and `chat` only from the admin. The admin is the member ID that the welcome names, and the Mac checked it with the relay at the join (see [Invite and join](#invite-and-join)).
 5. If the kind is unknown, keep the payload and show nothing.
 
 ## Relay routes
@@ -122,11 +122,11 @@ The routes of a room start with `/v1/rooms/<room ID>`. The room ID is 32 random 
 | Request | Who | Answer |
 | --- | --- | --- |
 | `PUT /v1/rooms/<id>`, body `{"member": m, "hash": h, "proof": p}` | The first Mac | 201 makes the room, with member `m` as the admin. 200 for a repeat with the same `m` and `h`. 409 for a room of another admin. 401 for a proof that fails. |
-| `POST /v1/rooms/<id>/tickets`, body `{"hash": h, "ttl": s, "uses": n, "welcome": w}` | Admin | 204. 409 when 8 tickets are open. |
+| `POST /v1/rooms/<id>/tickets`, body `{"hash": h, "ttl": s, "uses": n, "welcome": w}` | Member | 204. 409 when 8 tickets are open. |
 | `DELETE /v1/rooms/<id>/tickets/<h>` | Admin | 204 removes the ticket and its welcome. |
 | `POST /v1/rooms/<id>/members`, `Authorization: Ticket <ticket>`, body `{"member": m, "hash": h, "proof": p}` | A new Mac | 200 with `{"welcome": w}`, and the ticket loses one use. 200 without a new use for a repeat with the same `m` and `h`. 401 for a proof that fails, and for a ticket that is unknown, expired or without a use left. 409 when `m` exists with another token, or the room is full. |
 | `GET /v1/rooms/<id>/members` | Member | 200 with `{"members": [{"member": m, "admin": true, "joined": t}]}`. |
-| `DELETE /v1/rooms/<id>/members/<m>` | Admin, or member `m` | 204. The relay removes the token, closes the socket and deletes the kept entries of `m`. 409 when `m` is the admin and the room has other members. When the admin leaves a room without other members, the relay deletes the room. |
+| `DELETE /v1/rooms/<id>/members/<m>` | Admin, or member `m` | 204. The relay removes the token, closes the socket and deletes the kept entries of `m`. When the admin removes another member, the relay also deletes every ticket of the room, also when `m` left already. 409 when `m` is the admin and the room has other members. When the admin leaves a room without other members, the relay deletes the room. |
 | `POST /v1/rooms/<id>/entries`, body `{"id": i, "kept": k, "body": b}` | Member | 200 with `{"seq": n, "first": f}`. 409 when the entry ID belongs to another member. 413 for a body over the limit. 429 over the write limit. 507 when the entries of the member or of the room are full. |
 | `GET /v1/rooms/<id>/entries?after=<seq>` | Member | 200 with `{"entries": [...], "last": n}`: the entries with a higher `seq`, in order. `last` is the highest `seq` that the room has now. Without `after`, the answer starts at the first entry. |
 | `GET /v1/rooms/<id>/socket`, as a WebSocket | Member | 101. See [Socket](#socket). |
@@ -233,7 +233,7 @@ To make a room:
 
 To invite:
 
-1. The admin's Mac makes an invite secret and seals the welcome.
+1. The Mac of a member makes an invite secret and seals the welcome. The welcome names the admin of the room, not the Mac that invites.
 2. The Mac sends the hash of the ticket and the welcome with `POST .../tickets`.
 3. The person shares the link.
 
@@ -243,9 +243,10 @@ To join:
 2. The Mac makes its member key, its agreement key and its member token.
 3. The Mac sends `POST .../members` with the ticket and its proof, and gets the welcome.
 4. The Mac opens the welcome. If the welcome does not open, the Mac leaves the room with `DELETE .../members/<m>`.
-5. The Mac writes its `member` entry, reads the log from `after=0`, and opens the socket.
+5. The Mac reads `GET .../members` and checks that the relay names the `admin` of the welcome as the admin of the room. Else the Mac leaves the room the same way. Each member seals welcomes, so without this check a member could name itself in a welcome and get the rights of the admin on the new Mac. When the relay does not answer, the room stays `joining`, and the same link asks again.
+6. The Mac writes its `member` entry, reads the log from `after=0`, and opens the socket.
 
-The room takes its name from the welcome, because the admin sealed it. The name in the link is only for the screen before the join. The Mac keeps its keys and its token before step 3. When the relay does not answer step 3, the same link asks again with the same member and token. A second join of that room must name the same relay, because the first relay can have taken the join. Else the Mac refuses the join, and the member token goes to no other relay. The person then leaves the room on the Mac and joins again.
+The room takes its name from the welcome, because a member sealed it. The name in the link is only for the screen before the join. The Mac keeps its keys and its token before step 3. When the relay does not answer step 3, the same link asks again with the same member and token. A second join of that room must name the same relay, because the first relay can have taken the join. Else the Mac refuses the join, and the member token goes to no other relay. The person then leaves the room on the Mac and joins again.
 
 To leave:
 
@@ -257,9 +258,9 @@ A member can always leave. When the Mac cannot seal the `delete` entry, for exam
 
 The link passes through the chat service that carries it, for example Telegram. Someone who reads the link while its ticket has a use left can join the room. Each Mac then shows the new member, and the admin can remove it.
 
-After its last use, a ticket admits no new member. The relay keeps the ticket and its welcome until the `ttl` ends. A Mac that lost the answer of its join can then ask again with the same `member` and `hash`. After the `ttl`, the relay deletes both, and the link is useless. The admin can remove a ticket earlier.
+After its last use, a ticket admits no new member. The relay keeps the ticket and its welcome until the `ttl` ends. A Mac that lost the answer of its join can then ask again with the same `member` and `hash`. After the `ttl`, the relay deletes both, and the link is useless. The admin can remove a ticket earlier, and a removal by the admin deletes every ticket of the room.
 
-The admin's Mac keeps a record of each invite that it makes: the hash of the ticket and its end (`team_invites`). It writes the record before it sends the ticket, because the relay can take a ticket without an answer. A member removal removes the ticket of each record on the relay, whatever its saved end is, because the relay starts its count later than the Mac and its clock can differ. The relay answers 204 also for a ticket that it no longer has. The Mac forgets a record after the relay answered for it in a removal, or when its saved end is more than 7 days in the past: the longest life of a ticket. An invite that a version without the record made ends by itself after its time: one day for each invite of the app.
+Each Mac keeps a record of each invite that it makes: the hash of the ticket and its end (`team_invites`). Only the admin's Mac uses its records. It writes the record before it sends the ticket, because the relay can take a ticket without an answer. A member removal removes the ticket of each record on the relay, whatever its saved end is, because the relay starts its count later than the Mac and its clock can differ. The relay answers 204 also for a ticket that it no longer has. The Mac forgets a record after the relay answered for it in a removal, or when its saved end is more than 7 days in the past: the longest life of a ticket. An invite that a version without the record made ends by itself after its time: one day for each invite of the app.
 
 ## Member removal and key change
 
@@ -270,7 +271,7 @@ The admin removes a member: a person who left the company, a Mac that was lost, 
 On the admin's Mac, in this order:
 
 1. The Mac removes the ticket of each record of its invites (see [Invite and join](#invite-and-join)) with `DELETE .../tickets/<h>`, so that a link that is still open cannot bring the member back. A failure stops the removal here, and the record stays.
-2. The Mac sends `DELETE .../members/<m>`. The relay removes the token, closes the socket and deletes the kept entries of the member. A member that the relay no longer has is no error: the relay answers 204.
+2. The Mac sends `DELETE .../members/<m>`. The relay removes the token, closes the socket and deletes the kept entries of the member. It also deletes every ticket of the room, because each member makes tickets and step 1 names only the tickets of the admin. A member that the relay no longer has is no error: the relay answers 204, and it still deletes the tickets, because a member that left can hold a link that it made.
 3. The Mac writes one kept `remove` entry: `{"kind": "remove", "member": "<member ID>", "name": "<last name of the member>"}`.
 
 Each step is safe to repeat. The entry ID of the `remove` entry comes from the room and the member ID: the first 16 bytes of HMAC-SHA256 with the member token of the admin as the key, over `"coconut room remove" | room ID (32 bytes) | member ID (32 bytes)`. So a repeat writes the same entry. The key is a secret of the admin, so another member cannot write an entry with that ID first and block the removal. The admin's Mac keeps the member in its list until it has the `remove` entry, so a removal that stops after step 1 or 2 finishes when the admin asks again. A repeat after step 3 writes nothing.
@@ -357,7 +358,7 @@ A write again changes nothing that a person sees. A reader follows this rule:
 - A real change after a write again, for example a new version of a page, gets a new time and an event, as before.
 - The move of a room to a new epoch adds no event, because the phone shows no epoch.
 
-An invite that the admin makes after the change carries the new epoch and the new key in its welcome.
+An invite that a member makes after its Mac moved to the new epoch carries the new epoch and the new key in its welcome. A Mac that did not read the `key` entry yet seals the old key, and the Mac that joins with it is a member that the `key` entry missed (see above).
 
 #### Limits
 
@@ -421,7 +422,7 @@ Everything else is in `coconut.sqlite3`:
 | `team_direct_waits` | The `direct` entries whose key comes later in the read. The end of the read tries each one again, then removes it. |
 | `team_marks` | The lasting marks of this Mac, for all its rooms. `direct`: an app of the person asked for direct messages. A leave does not remove it. `corrected:<room ID>`: the open of the store corrected a row of the room, and the event for the phone did not go out yet. |
 | `team_removed` | The members that a `remove` entry of the admin took out of the room, each with the entry ID of that entry. See [Removal](#removal). |
-| `team_invites` | On the admin's Mac: the hash of the ticket and the end of each invite that this Mac made. See [Invite and join](#invite-and-join). |
+| `team_invites` | The hash of the ticket and the end of each invite that this Mac made. Only the admin's Mac uses them, at a removal. See [Invite and join](#invite-and-join). |
 | `team_erased` | The entry IDs of the messages that an `erase` entry of the admin took out of the chat. See [The admin deletes a message](#the-admin-deletes-a-message). |
 | `team_reactions` | One row for each entry that says a reaction, from its newest write: the message, the member, the emoji (empty for a reaction that its member took back), the `seq`, and for a reaction of a direct chat the other member of the chat (`peer`) and the `bot` entry of a chat with an agent. An index on the room, the message, `peer`, `bot`, the member, the `seq` and the emoji gives the reactions of a page in one pass over the rows of its chat. See [Reactions](#reactions). |
 
@@ -499,7 +500,7 @@ Who can call what depends on the kind of Mac:
 | `GET /v1/team/rooms` | The rooms with their members, their agents and their sync state, `helper`, and `mac_bots`: the `id` and `name` of each agent of this Mac that is not archived or deleted, so a tool can find an agent by its name. |
 | `POST /v1/team/rooms`, body `{name, member_name, avatar, color, relay}` | Makes a room. This Mac is its admin. |
 | `PATCH /v1/team/rooms/<room>`, body `{member_name, avatar, color}` | Changes what the team sees for this Mac. A field that the body leaves out keeps its value. The Mac first reads back an earlier write without an answer. Then it takes each field that the body leaves out from what the log has for this Mac, and writes its `member` entry again with the next `rev`. A failure changes nothing on this Mac. A room that is not `active` answers 409. |
-| `POST /v1/team/rooms/<room>/invites`, body `{ttl, uses}` | The invite link. Only the admin makes one. The defaults are one day and one use. The Mac keeps the hash of the ticket and its end (see [Invite and join](#invite-and-join)). |
+| `POST /v1/team/rooms/<room>/invites`, body `{ttl, uses}` | The invite link. Each member of an `active` room makes one. The defaults are one day and one use. The Mac keeps the hash of the ticket and its end (see [Invite and join](#invite-and-join)). |
 | `DELETE /v1/team/rooms/<room>/members/<member>` | The admin removes another member (see [Removal](#removal)), and the answer is the room view. 403 on a Mac that is not the admin, 409 for the member of this Mac and for a room that is not `active`, and 404 for a member that the store does not have. A member that a removal took out before is no error: the steps run again and write nothing new. On a person's Mac, only a paired device can call it. |
 | `POST /v1/team/join`, body `{link, member_name, avatar, color}` | Joins a room. |
 | `DELETE /v1/team/rooms/<room>` | Leaves the room, and deletes its copy and its keys. A failure of the relay stops the leave of an `active` room. A `joining` room always goes: see [Leave a join that did not finish](#leave-a-join-that-did-not-finish). |
@@ -516,7 +517,7 @@ A room in an answer has what the Team screen shows, so the app needs no other re
 | Field | Value |
 | --- | --- |
 | `room`, `name`, `state`, `created_at` | The room ID, the name of the team, `joining`, `active`, `removed` or `gone`, and the time that this Mac made or joined the room. |
-| `is_admin`, `can_invite` | True when this Mac is the admin. `can_invite` is true only for the admin of an `active` room. |
+| `is_admin`, `can_invite` | `is_admin` is true when this Mac is the admin. `can_invite` is true for each member of an `active` room. |
 | `can_delete_messages` | True on the admin's Mac of an `active` room: the person can delete a message of another member or of an agent. The app shows the action only with this field, so an older service shows no action. |
 | `members` | In the order of their first `member` entry: `member` (the member ID), `name`, `avatar`, `color`, `admin`, `this_mac`, `bot_only`, and `can_remove`: true on the admin's Mac of an `active` room for each other member. The app shows the action of a removal only for a member with `can_remove`, so an older service shows no action. |
 | `bots` | Each agent of the team, while the room is `active` and the member of the agent is in `members`. `id`, `name`, `avatar`, `color`, `member` (the ID of the Mac that runs the agent), `member_name`, `this_mac` and `open`. An agent of a person's Mac is only the author of the pages that the person shares, and its `open` is false. The app lists and counts only the agents with `open` true: the agents that a teammate can ask. An agent of this Mac also has `bot_id`, its ID on this Mac, and its profile comes from that agent. An archived or deleted agent of this Mac is not in the list. The agents follow the order of the members, then their names. |

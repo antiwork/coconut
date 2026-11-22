@@ -11,7 +11,7 @@ import { close, hash, HEX64, readBytes, send } from './tunnel.js';
 //
 // - `PUT /v1/rooms/<id>` with `{member, hash, proof}` makes the room, and that member is its admin: 201. A repeat
 //   with the same values answers 200, and a room of another admin answers 409.
-// - `POST /v1/rooms/<id>/tickets` with `{hash, ttl, uses, welcome}`, admin only, allows `uses` joins for `ttl`
+// - `POST /v1/rooms/<id>/tickets` with `{hash, ttl, uses, welcome}`, by any member, allows `uses` joins for `ttl`
 //   seconds: 204. `welcome` is the sealed room key in base64. 409 when the room has its limit of open tickets.
 // - `DELETE /v1/rooms/<id>/tickets/<hash>`, admin only: 204.
 // - `POST /v1/rooms/<id>/members` with `Authorization: Ticket <ticket>` and `{member, hash, proof}` adds a member:
@@ -20,8 +20,9 @@ import { close, hash, HEX64, readBytes, send } from './tunnel.js';
 //   expired or without a use left. 409 when the member exists with another token, or the room is full.
 // - `GET /v1/rooms/<id>/members`: 200 with `{members: [{member, admin, joined}]}`.
 // - `DELETE /v1/rooms/<id>/members/<member>`, by the admin or by that member: 204. The token stops, the socket
-//   closes, and the kept entries of the member go. 409 when the member is the admin and the room has other members.
-//   When the admin leaves a room without other members, the room goes.
+//   closes, and the kept entries of the member go. When the admin removes another member, every ticket of the room
+//   goes too. 409 when the member is the admin and the room has other members. When the admin leaves a room without
+//   other members, the room goes.
 // - `POST /v1/rooms/<id>/entries` with `{id, kept, body}` writes an entry: 200 with `{seq, first}`. A write with an
 //   entry ID that exists replaces that entry, and only its own member can do that: 409 for another member. 413 for a
 //   body over the limit, 429 over the write limit of the member, 507 when the entries of the member are full.
@@ -240,7 +241,8 @@ export class Room {
     const member = this.row('SELECT id, admin, minute, writes, kept, kept_bytes, other_bytes FROM members WHERE hash = ?', digest);
     if (!member) return status(401);
     this.seen(now);
-    if (['ticket', 'unticket', 'destroy'].includes(operation) && !member.admin) return status(403);
+    // Each member invites. Only the admin removes a ticket or the room.
+    if (['unticket', 'destroy'].includes(operation) && !member.admin) return status(403);
     switch (operation) {
       case 'ticket': return this.addTicket(values.get('hash'), Number(values.get('ttl')), Number(values.get('uses')), body, now);
       case 'unticket':
@@ -323,6 +325,10 @@ export class Room {
 
   remove(caller, target, now) {
     if (!caller.admin && caller.id !== target) return status(403);
+    // Each member makes tickets, and the admin's Mac knows only its own. So a removal by the admin deletes every
+    // ticket of the room, and a link that is still open cannot bring the member back. This also runs for a member
+    // that left already, because it can hold a link that it made before.
+    if (caller.admin && caller.id !== target) this.sql.exec('DELETE FROM tickets');
     const member = this.row('SELECT admin FROM members WHERE id = ? AND hash IS NOT NULL', target);
     if (!member) return status(204);
     if (member.admin) {

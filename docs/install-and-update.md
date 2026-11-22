@@ -224,7 +224,7 @@ You work in a terminal on that Mac, for example over SSH. In the steps, `coconut
 
 - Install the Python of Homebrew: `brew install python`. Coconut does not use the Python of Hermes.
 - For the team chat, use Hermes 0.22.4 or later. It is the oldest Hermes that Coconut supports (`backend/coconut/hermes_versions.json`).
-- Ask an admin of the team for an invite link. The admin makes it on the Team screen of the app.
+- Ask a member of the team for an invite link. Each member makes one with Invite in the team chat of the app.
 
 ### Install
 

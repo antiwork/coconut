@@ -102,7 +102,7 @@ struct TeamRoom: Decodable, Identifiable, Equatable, Sendable {
         }
     }
 
-    /// Only the admin of an active team can make an invite link. The service says so in `can_invite`.
+    /// Each member of an active team can make an invite link, not only the admin. The service says so in `can_invite`.
     var showsInvite: Bool { status == .active && canInvite == true }
     var memberList: [TeamMember] { members ?? [] }
     var botList: [TeamRoomBot] { bots ?? [] }

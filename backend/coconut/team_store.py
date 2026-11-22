@@ -50,8 +50,8 @@ Each table has the room ID in its key, because a Mac can be in more than one roo
   `member` entry of that key came later in the read. The end of the read tries each one again, then removes it.
 - `team_removed`: the members that a `remove` entry of the admin took out of the room, each with the entry ID of that
   entry. A member here shows in no list, also when the store still has its `member` entry.
-- `team_invites`: on the admin's Mac, the invites that this Mac made: the hash of the ticket and its end. A removal
-  removes the open ones on the relay first.
+- `team_invites`: the invites that this Mac made: the hash of the ticket and its end. A removal by the admin removes
+  the open ones on the relay first. The relay deletes the tickets of the other members at the removal.
 - `team_erased`: the messages that an `erase` entry of the admin took out of the chat. A later write of such a message
   shows nothing.
 - `team_reactions`: the reactions on the messages of the chats: one row for each entry that says a reaction, from its
@@ -1745,7 +1745,7 @@ class TeamStore:
             AND kept=1 AND kind IN ({", ".join("?" * len(WRITTEN_AGAIN))}) AND epoch<? ORDER BY seq LIMIT ?''',
                           (room, member, *WRITTEN_AGAIN, epoch, limit))
 
-    # The invites of the admin
+    # The invites of this Mac
 
     def add_invite(self, room: str, ticket_hash: str, expires: int) -> None:
         """Keep the hash of the ticket of an invite and its end, so a removal can remove the ticket first."""

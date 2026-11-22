@@ -14,7 +14,8 @@ for a person, because the app shows them.
 - `GET /v1/team/rooms`: the rooms with their members, their bots and their sync state, and the bots of this Mac.
 - `POST /v1/team/rooms` with `{name, member_name, avatar, color, relay}`: make a room. This Mac is its admin.
 - `PATCH /v1/team/rooms/<room>` with `{member_name, avatar, color}`: change what the team sees for this Mac.
-- `POST /v1/team/rooms/<room>/invites` with `{ttl, uses}`: make an invite link. Only the admin can do this.
+- `POST /v1/team/rooms/<room>/invites` with `{ttl, uses}`: make an invite link. Each member of an active room can do
+  this.
 - `DELETE /v1/team/rooms/<room>/members/<member>`: the admin removes another member (team_remove).
 - `POST /v1/team/join` with `{link, member_name, avatar, color}`: join a room.
 - `DELETE /v1/team/rooms/<room>`: leave the room, and delete its copy and its keys on this Mac.
@@ -471,7 +472,8 @@ class Team(TeamSync, TeamSocket, TeamPages, TeamMessages, TeamChats, TeamDirects
                    for member in self.team_store.members(room['room'])]
         view = {'room': room['room'], 'name': room['name'], 'relay': room['relay'], 'state': room['state'],
                 'member': room['member'], 'admin': room['admin'], 'is_admin': is_admin,
-                'can_invite': is_admin and room['state'] == ACTIVE, 'epoch': room['epoch'],
+                # Each member of an active room invites (team_invite). The app shows Invite only with this field.
+                'can_invite': room['state'] == ACTIVE, 'epoch': room['epoch'],
                 # The admin of an active room deletes a message of another member or of a bot (team_unsend). An app
                 # reads only this field, so an older service shows no action.
                 'can_delete_messages': removes,
@@ -565,13 +567,15 @@ class Team(TeamSync, TeamSocket, TeamPages, TeamMessages, TeamChats, TeamDirects
         return self._team_answer(room_id)
 
     def team_invite(self, room_id: str, data: dict) -> dict:
-        """Make an invite: a ticket and a sealed welcome on the relay, and the link that the person shares."""
+        """Make an invite: a ticket and a sealed welcome on the relay, and the link that the person shares.
+
+        Each member of an active room invites, not only the admin. The welcome names the admin of the room, and the
+        Mac that joins checks that name with the relay (team_join).
+        """
         from .service_base import ServiceError
         room = self._team_room(room_id)
         if room['state'] != ACTIVE:
             raise ServiceError(409, INACTIVE[room['state']])
-        if room['admin'] != room['member']:
-            raise ServiceError(403, 'Only the admin of the team can invite a person.')
         ttl = whole(data, 'ttl', DEFAULT_INVITE_SECONDS, INVITE_SECONDS,
                     'An invite link lasts from 1 minute to 7 days. Choose a time in that range.')
         uses = whole(data, 'uses', 1, INVITE_USES, 'An invite link admits 1 to 64 Macs. Choose a number in that range.')
@@ -591,7 +595,8 @@ class Team(TeamSync, TeamSocket, TeamPages, TeamMessages, TeamChats, TeamDirects
                 raise ServiceError(409, 'This Mac cannot make an invite link for this team. Update Coconut, then try '
                                         'again.') from None
             # The record comes before the ticket, because the relay can take a ticket without an answer. A removal
-            # then removes a ticket that the relay does not have, and that is no error.
+            # then removes a ticket that the relay does not have, and that is no error. Only the admin's Mac uses its
+            # records: the relay deletes the tickets of the other members at a removal.
             with self.transaction():
                 self.team_store.drop_old_invites(time.time())
                 self.team_store.add_invite(room_id, ticket['hash'], expires)
@@ -600,6 +605,10 @@ class Team(TeamSync, TeamSocket, TeamPages, TeamMessages, TeamChats, TeamDirects
             except TeamRelayError as error:
                 if error.status == 409:
                     raise ServiceError(409, 'The team has 8 open invite links. Wait until one ends, then try again.') from None
+                if error.status == 403:
+                    # A relay from before member invites takes a ticket only from the admin.
+                    raise ServiceError(403, 'The server of this team lets only the admin invite. Ask the admin for a '
+                                            'link.') from None
                 raise
         return {'link': link, 'expires': expires, 'uses': uses}
 
@@ -674,6 +683,23 @@ class Team(TeamSync, TeamSocket, TeamPages, TeamMessages, TeamChats, TeamDirects
                     raise ServiceError(409, 'A newer Coconut made this team. Update Coconut, then join again.') from None
                 raise ServiceError(409, 'This Mac could not open the invite, so it did not join the team. Ask for a '
                                         'new link.') from None
+            # Each member makes invites, so the welcome names the admin that the Mac of the invite knew. The relay made
+            # the first Mac of the room its admin, and the two must agree. A member that names itself in a welcome
+            # would else get the rights of the admin on this Mac: its `remove`, `key`, `erase` and `chat` entries.
+            try:
+                admins = [row['member'] for row in self.team_relay.members(relay, room_id, secrets['token'])
+                          if row.get('admin') is True]
+            except TeamRelayError as error:
+                if not error.temporary:
+                    raise
+                # The room stays `joining`, and the same link asks again with the same member and token.
+                raise ServiceError(503, 'Coconut could not reach its server. Join again with the same link.') from None
+            if admins != [opened['admin']]:
+                log.warning('coconut.team_log room %s: the welcome names another admin than the relay, so this Mac '
+                            'leaves the room.', room_id[:8])
+                self._team_drop_membership(room, secrets)
+                raise ServiceError(409, 'This invite names another admin than the Coconut server, so this Mac did not '
+                                        'join the team. Ask the admin for a new link.')
             team_keys.write(self.root, room_id, member_key=secrets['member_key'], agreement_key=secrets['agreement_key'],
                             token=secrets['token'], keys={opened['epoch']: opened['key']})
             with self.transaction():
@@ -737,6 +763,7 @@ class Team(TeamSync, TeamSocket, TeamPages, TeamMessages, TeamChats, TeamDirects
         1. Remove the open invites of the room on the relay, so that a link that is still open cannot bring the member
            back. The Mac keeps a record of each invite that it made (TeamStore.add_invite).
         2. Remove the member on the relay. The relay removes its token, closes its socket and deletes its kept entries.
+           It also deletes every ticket of the room, also the tickets of the other members, which step 1 cannot name.
            A member that the relay no longer has, for example one that left without its `delete` entry, is no error.
         3. Write one kept `remove` entry with the member ID and the last name of the member. Each other Mac takes the
            member out from it (TeamStore._show_removal). The entry ID comes from the room and the member, so a repeat

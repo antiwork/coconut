@@ -120,7 +120,7 @@ def main() -> None:
         command.add_argument('--member-name', help='The name that the team sees for this Mac.')
         command.add_argument('--avatar')
         command.add_argument('--color')
-    invite = commands.add_parser('invite', help='Print an invite link. Only the admin can make one.')
+    invite = commands.add_parser('invite', help='Print an invite link. Each member of the team can make one.')
     invite.add_argument('room')
     invite.add_argument('--ttl', type=int, help='The life of the invite in seconds. The default is one day.')
     invite.add_argument('--uses', type=int, help='How many Macs can join with the link. The default is 1.')
