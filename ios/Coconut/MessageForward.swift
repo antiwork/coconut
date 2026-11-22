@@ -26,6 +26,9 @@ struct ForwardMessageSheet: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.openChat) private var openChat
     @Environment(\.pushRoute) private var pushRoute
+    /// The section and the detail of a row that starts a new agent. Its identifier ends in -new, because the project
+    /// also has a row of its own agent.
+    private static let newAgent = "New agent"
     let message: Message
     /// The chat that the message is in. It is not offered.
     let fromBotId: String
@@ -45,9 +48,9 @@ struct ForwardMessageSheet: View {
     var body: some View {
         NavigationStack {
             List {
-                Section("New agent") {
+                Section(Self.newAgent) {
                     ForEach(agents.filter { !$0.coconut }) { agent in
-                        row(agent, title: agent.name, detail: "New agent") {
+                        row(agent, title: agent.name, detail: Self.newAgent) {
                             if store.startChat(in: agent, text: MessageForward.text(message.text, from: source)) { dismiss() }
                         }
                     }
@@ -82,6 +85,6 @@ struct ForwardMessageSheet: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .accessibilityIdentifier("forward-to-\(bot.id)\(detail == "New chat" ? "-new" : "")")
+        .accessibilityIdentifier("forward-to-\(bot.id)\(detail == Self.newAgent ? "-new" : "")")
     }
 }

@@ -134,7 +134,7 @@ struct MacInboxView: View {
                     .accessibilityIdentifier("cards-back")
             }
             // The toolbar has the Undo item only while an undo waits. An item without content still took a slot in the
-            // glass capsule of "Open chat", so that capsule was two slots wide with its symbol in the right half.
+            // glass capsule of "Open agent", so that capsule was two slots wide with its symbol in the right half.
             if let undoAction {
                 ToolbarItem(placement: .primaryAction) {
                     switch undoAction {

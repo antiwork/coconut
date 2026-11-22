@@ -214,7 +214,7 @@ extension AppStore {
     }
 }
 
-/// The menu item "New chat" of a project or of one of its chats: the message box with that project chosen.
+/// The menu item "New agent" of a project or of one of its chats: the message box with that project chosen.
 struct NewChatButton: View {
     let bot: Bot
     /// Runs after the chat starts, for example to close the deck that the menu is in.
