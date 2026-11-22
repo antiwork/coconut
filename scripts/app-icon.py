@@ -45,13 +45,16 @@ SHELL_HOLES = [(354.5, 532.5, 39.35), (450.5, 627.5, 39.35), (324.5, 657.5, 39.3
 # The flat mark, drawn instead of the hairy coconut: a coconut seen up close. The warm brown of its shell fills the
 # whole icon, and its three eyes are dark brown circles in the middle. Sahil chose it as the most subtle coconut, and
 # the three circles can read as three coconuts too. He found near-black on yellow too corporate and wanted no blue
-# ground. The circles are Gianfranco's three holes, moved so that their middle is the middle of the icon, and
-# `scale` sizes them around it. Each hole is (x, y, radius). An `outline`, such as SHELL with the holes SHELL_HOLES,
-# draws a whole shell on `ground` instead, sized by `scale`. None draws the hairy coconut.
+# ground. The circles stand in an upright triangle with the top one centred, as Sahil asked: an equilateral triangle
+# with the size and spacing of Gianfranco's three holes (sides of 131 px before `scale`). Its centre of mass sits a
+# little below the middle of the icon, halfway to centring the box around the circles, because the triangle looked
+# high when its centre of mass was at the middle and low when its box was. `scale` sizes the circles around the
+# middle. Each hole is (x, y, radius). An `outline`, such as SHELL with the holes SHELL_HOLES, draws a whole shell on
+# `ground` instead, sized by `scale`. None draws the hairy coconut.
 MARK = dict(
     shell='#96562c',
     hole='#3b2013',
-    holes=[(490.00, 438.67, 39.35), (586.00, 533.67, 39.35), (460.00, 563.67, 39.35)],
+    holes=[(512.00, 445.82, 39.35), (577.50, 559.27, 39.35), (446.50, 559.27, 39.35)],
     scale=2.0,
     outline=None,
     ground=None,
