@@ -24,10 +24,13 @@ enum ChatProject {
 /// The message box of Home, in the iPhone and in the Mac window, as the box of the Codex app: always there, with the
 /// cursor ready. The chip under the text names the project that the message goes to and lists the projects, newest
 /// first, then the Coconut chat. It ends with the list of all projects (on the iPhone). The first message
-/// starts a new chat in that project and opens it. The same box is where every New chat leads (AppStore.startChat).
+/// starts a new chat in that project. The same box is where every New chat leads (AppStore.startChat).
+///
+/// A Send never opens the chat that it makes (the person's request): the chat shows at the top of the Agents list,
+/// under Working while it works, and under its project in the Mac sidebar. The box keeps the keyboard and the cursor,
+/// so the person can queue up many chats in a row and open each one later.
 struct NewChatBar: View {
     @Environment(AppStore.self) private var store
-    @Environment(\.openChat) private var openChat
     @Environment(\.pushRoute) private var pushRoute
     @AppStorage(ChatProject.projectKey) private var chosen = ""
     @State private var text = ComposerDrafts.read(NewChatBar.draftKey)
@@ -153,11 +156,12 @@ struct NewChatBar: View {
         focusRequest = UUID()
     }
 
-    /// Sends the text as the first message of a new chat in the project and opens the chat. When the Mac does not make
-    /// the chat, the notice says why and the text comes back. The keyboard first gives the field all that it holds and
-    /// closes, so the message is the text that the person sees, and the box stays empty (KeyboardSettle).
+    /// Sends the text as the first message of a new chat in the project, and leaves the chat closed (sendNewChat). When
+    /// the Mac does not make the chat, the notice says why and the text comes back. The keyboard first gives the field
+    /// all that it holds and stays up for the next chat, so the message is the text that the person sees, and the box
+    /// stays empty (KeyboardSettle).
     private func send(to project: Bot) {
-        KeyboardSettle.run(if: focused, keepsKeyboard: false) { start(in: project) }
+        KeyboardSettle.run(if: focused) { start(in: project) }
     }
 
     private func start(in project: Bot) {
@@ -166,15 +170,13 @@ struct NewChatBar: View {
         sending = true
         text = ""
         echo.sent(message)
-        focused = false
         Task {
             defer { sending = false }
-            guard let chat = await store.sendNewChat(in: project, text: message) else {
+            guard await store.sendNewChat(in: project, text: message) != nil else {
                 echo.cancel()
                 if text.isEmpty { text = message }
                 return
             }
-            if let openChat { openChat(chat.id) } else { pushRoute?(ConversationRoute(botId: chat.id)) }
         }
     }
 }

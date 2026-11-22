@@ -118,6 +118,12 @@ struct NewChatRequest: Equatable {
     var text = ""
 }
 
+/// A Send of the message box: the chat that got the first message. Each Send is a new value, also for the same chat.
+struct NewChatSend: Equatable {
+    let chat: String
+    let id = UUID()
+}
+
 extension AppStore {
     /// True when a chat can start from `bot`: its project is on the Mac, is not archived and takes new chats. The
     /// Coconut chat of an older Mac and an agent of an earlier release take none, so they show no New chat.
@@ -171,10 +177,14 @@ extension AppStore {
     }
 
     /// The Send of the message box: the first message of a new chat in `project`. Returns the chat that got the
-    /// message, or nil when none did; the error notice says why.
+    /// message, or nil when none did; the error notice says why. Nothing opens the chat: it shows at the top of the
+    /// Agents list (newChatSend) and under its project in the Mac sidebar, so the person can queue up one chat after
+    /// another from the box.
     func sendNewChat(in project: Bot, text: String) async -> Bot? {
-        guard let chat = await chatForFirstMessage(in: project) else { return nil }
-        return await send(bot: chat, text: text) ? chat : nil
+        guard let chat = await chatForFirstMessage(in: project), await send(bot: chat, text: text) else { return nil }
+        nameChat(chat.id, from: text)
+        newChatSend = NewChatSend(chat: chat.id)
+        return chat
     }
 
     /// Asks the Mac for a new chat of an agent: a fresh conversation with the same Hermes profile, a quick to-do with
@@ -206,9 +216,10 @@ extension AppStore {
         return chat
     }
 
-    /// The first message of the person names a chat. The Mac does this for a paired app; the demo does it here.
-    func nameDemoChat(_ botId: String, from text: String) {
-        guard isDemo, let index = bots.firstIndex(where: { $0.id == botId }), bots[index].isChat,
+    /// The first message of the person names a chat, as the Mac names it (agent_chats.chat_title). The demo has no Mac,
+    /// and a paired app shows the name at once, before the update of the Mac brings it.
+    func nameChat(_ botId: String, from text: String) {
+        guard let index = bots.firstIndex(where: { $0.id == botId }), bots[index].isChat,
               (bots[index].chatTitle ?? "").isEmpty else { return }
         bots[index].chatTitle = AgentChats.title(from: text)
     }

@@ -17,12 +17,40 @@ struct BotChatSummary: Equatable, Sendable {
 /// messages. A row reads only its summary, so it redraws only when a summary changes.
 struct ChatSummaries: Equatable, Sendable {
     private var bots: [String: BotChatSummary] = [:]
-    /// The date of the newest message of each bot. A reaction is no activity.
+    /// The date of the newest message of each bot, also of a message on its way to the Mac. A reaction is no activity.
     private(set) var newestActivity: [String: Date] = [:]
+    /// The date of the newest message of each bot that the Mac has.
+    private var savedActivity: [String: Date] = [:]
+    /// The date of the newest message of each bot that is on its way to the Mac (AppStore.outgoingMessages).
+    private var sendingActivity: [String: Date] = [:]
 
     init() {}
 
     subscript(botId: String) -> BotChatSummary { bots[botId] ?? BotChatSummary() }
+
+    /// The summaries with the messages that are on their way to the Mac. Each one is activity of its chat, so a chat
+    /// whose first message is on its way shows in the lists at once, at the top, and the next new chat never takes it
+    /// for a chat that nobody wrote in (AgentChats.isBlank). The Mac's update that holds the message ends its wait.
+    func sending(_ outgoing: [OutgoingMessage]) -> ChatSummaries {
+        var dates: [String: Date] = [:]
+        for message in outgoing {
+            guard let date = message.createdAt.apiDate else { continue }
+            if dates[message.botId].map({ date > $0 }) ?? true { dates[message.botId] = date }
+        }
+        guard dates != sendingActivity else { return self }
+        var result = self
+        let changed = Set(dates.keys).union(sendingActivity.keys)
+        result.sendingActivity = dates
+        for bot in changed { result.newestActivity[bot] = result.newest(bot) }
+        return result
+    }
+
+    private func newest(_ bot: String) -> Date? {
+        switch (savedActivity[bot], sendingActivity[bot]) {
+        case let (saved?, sending?): max(saved, sending)
+        case let (saved, sending): saved ?? sending
+        }
+    }
 
     /// The summaries of `new`, made from the summaries of `old`. Only the bots with a changed message get a new scan,
     /// so a streamed word costs one comparison for each message and one scan of the messages of one bot.
@@ -46,7 +74,8 @@ struct ChatSummaries: Equatable, Sendable {
         for bot in changed {
             let summary = scans[bot]?.summary(in: new)
             result.bots[bot] = summary
-            result.newestActivity[bot] = summary?.newestActivity
+            result.savedActivity[bot] = summary?.newestActivity
+            result.newestActivity[bot] = result.newest(bot)
         }
         return result
     }

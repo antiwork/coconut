@@ -31,7 +31,9 @@ under the title with the count of each, Working and Idle (`AgentsFilter`): Worki
 (a working line or a card that waits), Idle the rest, chats with people too, and the phone keeps the choice (a
 `persist` state). Each row has the layout of `ChatRowLayout`: face, name, age, a line that is the status or the last
 message, the unread badge, the green dot while the agent works. At the bottom a message box that is always open, with
-a picker that names the project the message goes to and ends with New project. Send starts a chat with that project.
+a picker that names the project the message goes to and ends with New project. Send starts a chat with that project
+and leaves it closed: the chat is the first row of Working, and the box keeps the keyboard for the next one (as
+`NewChatBar` of the Swift app).
 
 Chat. Messages with Markdown and the time of each under it (`MessageTimes.label`), activity lines, cards with their options (an answer keeps the option chosen), files,
 the notices of a team, and the working line: the phase, the time of the turn to the second, the model. The composer is

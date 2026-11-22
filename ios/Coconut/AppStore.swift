@@ -23,7 +23,10 @@ final class AppStore {
     @ObservationIgnored private(set) var messageIndex = MessageIndex([])
     /// What the Chats list and the Mac sidebar show of the messages of each bot. They change only when a row changes.
     private(set) var chatSummaries = ChatSummaries()
-    var outgoingMessages: [OutgoingMessage] = []
+    var outgoingMessages: [OutgoingMessage] = [] {
+        // A message on its way is activity of its chat (ChatSummaries.sending).
+        didSet { assign(\.chatSummaries, chatSummaries.sending(outgoingMessages)) }
+    }
     var outgoingAnswers: [OutgoingAnswer] = []
     @ObservationIgnored private var deliveryTasks: [String: Task<Void, Never>] = [:]
     @ObservationIgnored private var deliveryID = UUID()
@@ -134,6 +137,9 @@ final class AppStore {
     var newChatRequest: NewChatRequest?
     /// Counts the starts of a chat. The window that holds the box shows it when the count changes.
     var chatStarts = 0
+    /// The last Send of the message box (sendNewChat). Agents shows the new chat at the top of the tab that holds it, and
+    /// nothing opens the chat.
+    var newChatSend: NewChatSend?
     /// A Library page that a direct chat with a team bot quotes in its composer when it opens: "Chat about this page".
     /// By chat key, so only the chat of that key shows it.
     var teamPageQuotes: [TeamChatKey: TeamAboutPage] = [:]
@@ -1014,7 +1020,7 @@ final class AppStore {
                 }
             }
             else { return false }
-            nameDemoChat(bot.id, from: text)
+            nameChat(bot.id, from: text)
             messages.append(Message(id: UUID().uuidString, botId: bot.id, taskId: target.id, role: "user", kind: "text", text: text,
                                     decisionId: nil, artifactId: nil, createdAt: Self.now, streaming: false, threadId: target.threadId, replyTo: replyTo, workContext: workContext))
             messages.append(Message(id: UUID().uuidString, botId: bot.id, taskId: target.id, role: "system", kind: "text",

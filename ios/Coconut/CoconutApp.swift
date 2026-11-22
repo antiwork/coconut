@@ -473,13 +473,12 @@ extension CoconutHome {
         case "new-chat": open(.chats); later { store.startChat(in: store.bots.first { $0.id == agent }) }
         case "agent-new-chat": open(.chats, [AgentRoute(botId: agent)]); later { store.startChat(in: store.bots.first { $0.id == agent }) }
         case "chat-new-chat": open(.chats, [ConversationRoute(botId: agent)]); later { store.startChat(in: store.bots.first { $0.id == agent }) }
-        // The first message of the box, sent as its Send does: in a new chat of the project.
+        // The first message of the box, sent as its Send does: in a new chat of the project, which stays closed.
         case "new-chat-send":
             open(.chats)
             later {
-                guard let bot = store.bots.first(where: { $0.id == agent }),
-                      let chat = await store.sendNewChat(in: bot, text: "Which sellers had a payout held on Friday?") else { return }
-                chatsPath.append(ConversationRoute(botId: chat.id))
+                guard let bot = store.bots.first(where: { $0.id == agent }) else { return }
+                _ = await store.sendNewChat(in: bot, text: "Which sellers had a payout held on Friday?")
             }
         // Quick to-dos: the sheet of a new one, a to-do added as Add does, and the comments of one.
         case "new-todo": open(.product); later { PendingTodos.shared.adding = true }

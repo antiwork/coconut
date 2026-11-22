@@ -155,10 +155,12 @@ component Coconut
   action sendHome
     if hasText and not pending(started)
       send started = startChat(home.target.id, draft.trim(), performanceNow())
+  // A Send never opens the chat that it makes, as in the Swift app (NewChatBar): the chat is the first row of Working,
+  // and the box keeps the keyboard, so the person can queue up many chats in a row.
   action afterStart
     if startedId != ""
       draft = ""
-      nav = push(nav, path("chat", startedId))
+      chatsTab = "working"
 
   // A new project: a name in a sheet. The box of Home then sends to it.
   action editName(v: string)

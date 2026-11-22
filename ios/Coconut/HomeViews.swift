@@ -263,6 +263,7 @@ struct HomeLaunchView: View {
         .refreshable { await store.reconnect() }
         // The message box under the list gives the keyboard back when the list moves.
         .scrollDismissesKeyboard(.interactively)
+        .modifier(NewChatReveal(filter: $filter) { works(.bot($0), at: .now) })
     }
 
     /// A chat works while its row says so: a working line, or a card that waits for the person. A direct chat with a
@@ -378,6 +379,29 @@ struct HomeLaunchView: View {
 enum AgentsFilter: String {
     case working, idle
     static let key = "agents-filter"
+}
+
+/// A Send of the message box leaves its new chat closed (NewChatBar). The Agents list then shows the tab that holds the
+/// chat, Working while it works, and scrolls its row into view: the chat is the newest, so it is the first row under
+/// the starred chats.
+private struct NewChatReveal: ViewModifier {
+    @Environment(AppStore.self) private var store
+    @Binding var filter: AgentsFilter
+    let works: (Bot) -> Bool
+
+    func body(content: Content) -> some View {
+        ScrollViewReader { proxy in
+            content.onChange(of: store.newChatSend) { _, send in
+                guard let send, let bot = store.bots.first(where: { $0.id == send.chat }) else { return }
+                filter = works(bot) ? .working : .idle
+                Task {
+                    // The row is in the list after the update that the change of tab makes.
+                    try? await Task.sleep(for: .milliseconds(150))
+                    withAnimation { proxy.scrollTo(ChatListItem.bot(bot).id) }
+                }
+            }
+        }
+    }
 }
 
 /// The archived chats, and the archived agents of an earlier release: swipe left or hold a row to bring one back. A row
