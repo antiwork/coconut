@@ -364,7 +364,7 @@ MAX_BOX = 1024
 # The epoch of a body is a 32-bit number.
 MAX_EPOCH = 2 ** 32 - 1
 # The kinds of the kept entries that a Mac writes again with the room key of a new epoch (TeamEpochs).
-WRITTEN_AGAIN = ('member', 'bot', 'page', 'chat', 'notice', 'seen')
+WRITTEN_AGAIN = ('member', 'bot', 'page', 'chat', 'notice', 'seen', 'usage')
 # The most Unicode code points of the name of a chat, and the most chats of a room (docs/team-log.md, "Chats of a team").
 MAX_CHAT_NAME = 50
 MAX_CHATS = 20
@@ -376,6 +376,14 @@ MAX_NOTICES = 50
 MAX_SEEN = 200
 # A time of a notice: UTC text such as 2026-11-20T17:00:00Z, at most this long.
 MAX_NOTICE_TIME = 40
+# The usage that a person's Mac shares for the leaderboard (docs/team-log.md, "Usage"): the most days of one entry, the
+# whole numbers of a day, and the highest spend of a day that a reader takes.
+MAX_USAGE_DAYS = 90
+USAGE_COUNTS = ('turns', 'model_calls', 'tool_calls', 'working_seconds', 'input_tokens', 'output_tokens',
+                'cache_read_tokens', 'cache_write_tokens', 'reasoning_tokens')
+MAX_USAGE_COUNT = 2 ** 53 - 1
+MAX_USAGE_COST = 1e9
+USAGE_DAY = re.compile(r'\d{4}-\d\d-\d\d')
 
 
 def unicode_text(value) -> bool:
@@ -693,6 +701,46 @@ def seen_fields(fields: dict) -> dict | None:
     return dict(notices=list(dict.fromkeys(notices)))
 
 
+def usage_day(value) -> dict | None:
+    """One day of a `usage` payload with each number, or None when it does not fit: `day` is a date as 2026-11-22, each
+    of USAGE_COUNTS is a whole number from 0 to MAX_USAGE_COUNT or absent (0), and `cost_usd` is a number from 0 to
+    MAX_USAGE_COST or absent (0). A reader leaves other fields out."""
+    if not isinstance(value, dict) or not isinstance(value.get('day'), str) or not USAGE_DAY.fullmatch(value['day']):
+        return None
+    try:
+        datetime.strptime(value['day'], '%Y-%m-%d')
+    except ValueError:
+        return None
+    day = {'day': value['day']}
+    for field in USAGE_COUNTS:
+        count = value.get(field, 0)
+        if type(count) is not int or not 0 <= count <= MAX_USAGE_COUNT:
+            return None
+        day[field] = count
+    cost = value.get('cost_usd', 0)
+    if type(cost) not in (int, float) or not 0 <= cost <= MAX_USAGE_COST:
+        return None
+    day['cost_usd'] = float(cost)
+    return day
+
+
+def usage_fields(fields: dict) -> dict | None:
+    """The days of a `usage` payload, the oldest first, or None when they do not fit (docs/team-log.md, "Usage"): a list
+    of at most MAX_USAGE_DAYS days of usage_day, each date once, and `cost_known` true, false or absent."""
+    days, known = fields.get('days'), fields.get('cost_known', False)
+    if not isinstance(days, list) or len(days) > MAX_USAGE_DAYS or type(known) is not bool:
+        return None
+    checked = []
+    for value in days:
+        day = usage_day(value)
+        if day is None:
+            return None
+        checked.append(day)
+    if len({day['day'] for day in checked}) != len(checked):
+        return None
+    return dict(days=sorted(checked, key=lambda day: day['day']), cost_known=known)
+
+
 def chat_fields(fields: dict) -> dict | None:
     """The name of a `chat` payload, or None when it does not fit (docs/team-log.md, "Chats of a team"). A reader takes
     each name of 1 to MAX_CHAT_NAME code points of valid Unicode text. The admin's Mac writes a name by a stricter rule
@@ -860,7 +908,8 @@ def key_fields(fields: dict, epoch) -> dict | None:
 
 SHOWN = {'member': member_fields, 'bot': bot_fields, 'page': page_fields, 'message': message_fields,
          'remove': remove_fields, 'erase': erase_fields, 'typing': typing_fields, 'chat': chat_fields,
-         'reaction': reaction_fields, 'file': piece_fields, 'notice': notice_fields, 'seen': seen_fields}
+         'reaction': reaction_fields, 'file': piece_fields, 'notice': notice_fields, 'seen': seen_fields,
+         'usage': usage_fields}
 
 
 def same_name(first: str, second: str) -> bool:
@@ -1598,6 +1647,18 @@ class TeamStore:
             if fields is not None:
                 seen[member] = set(fields['notices'])
         return seen
+
+    def usages(self, room: str) -> dict[str, dict]:
+        """The usage that each member shares (docs/team-log.md, "Usage"), by member: the days and `cost_known` of its
+        newest `usage` entry that fits, and the time of that write in `updated_at`. The Usage page reads it at each
+        read, so an entry changes no event and no table of its own."""
+        usages: dict[str, dict] = {}
+        for member, at, payload in self.db.execute(
+                "SELECT member, at, payload FROM team_entries WHERE room=? AND kind='usage' ORDER BY seq", (room,)):
+            fields = stored_fields('usage', payload)
+            if fields is not None:
+                usages[member] = dict(fields, updated_at=relay_time(at))
+        return usages
 
     def chats(self, room: str) -> list[dict]:
         """The named chats of the room that this Mac shows, in the order of `first`: `entry`, `first`, `name` and

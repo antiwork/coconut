@@ -92,10 +92,11 @@ Each payload has these fields:
 | `erase` | `false` | The admin, one entry for each deleted message | `entry` (the entry ID of a `message` entry of another member). See [The admin deletes a message](#the-admin-deletes-a-message). |
 | `reaction` | `false` | A person's Mac, one entry for each message that its person reacts to | `message` (the entry ID of a `message` entry), `emoji` (one of six emoji, or empty). See [Reactions](#reactions). |
 | `file` | `false` | A person's Mac, one entry for each piece of a file of a message | `file` (the file ID), `index` (0 to 5), `data` (standard base64 of 1 to 737,280 bytes). See [Files](#files). |
+| `usage` | `true` | A person's Mac, one entry in each room | `days` (at most 90 days, each with its tokens, turns, tool calls, time working and spend), `cost_known` (`true`, `false` or absent). See [Usage](#usage). |
 
 The kinds `member`, `delete`, `bot`, `page`, `message`, `direct`, `remove`, `key` and `erase` are complete. See [Agents and pages](#agents-and-pages) for the rules of `bot` and `page`, [Team chat](#team-chat) for `message`, and [Direct messages](#direct-messages) for `direct`. Each other kind gets its fields in the pull request that builds it. A new kind needs no change of the relay and no change of the body.
 
-The kinds `typing`, `chat`, `reaction`, `file`, `notice` and `seen` are complete too. See [Typing](#typing), [Chats of a team](#chats-of-a-team), [Notices](#notices), [Reactions](#reactions) and [Files](#files).
+The kinds `typing`, `chat`, `reaction`, `file`, `notice`, `seen` and `usage` are complete too. See [Typing](#typing), [Chats of a team](#chats-of-a-team), [Notices](#notices), [Usage](#usage), [Reactions](#reactions) and [Files](#files).
 
 A key in a payload is unpadded base64url, as in a pairing setup.
 
@@ -868,6 +869,21 @@ A new notice of another member notifies each paired phone of a person's Mac, und
 (`TRIGGER_SECONDS`, and nothing from the history that a Mac reads after a join), also in a quiet team: a notice is what
 the whole team must know. The Mac sends it only while the notice is active and the person has not seen it. Its payload
 has `kind` `notice`, the room in `team` and the entry ID in `notice`, and a tap opens the notice board of the team.
+
+#### Usage
+
+Each person of a team sees how many tokens each other person's agents use: the leaderboard of the Usage page. A person's Mac writes one `usage` entry in each team with the numbers of its agents by day. `backend/coconut/team_usage.py` writes and reads it.
+
+The payload of a `usage` entry: `{"kind": "usage", "rev": n, "at": "...", "days": [{"day": "2026-11-22", "turns": 41, "input_tokens": 52000, "output_tokens": 79000, "cache_read_tokens": 4100000, "cache_write_tokens": 210000, "cost_usd": 17.22}, ...], "cost_known": true}`. The entry is kept: one for each person's Mac and room. The entry ID is the first 16 bytes of HMAC-SHA256 with the member token as the key, over `"coconut room usage" | room ID (32 bytes)`, as for a `seen` entry.
+
+- `days` has at most 90 days, each date (`YYYY-MM-DD`, in the time of the writer's Mac) once. A day can have `turns`, `model_calls`, `tool_calls`, `working_seconds`, `input_tokens`, `output_tokens`, `cache_read_tokens`, `cache_write_tokens` and `reasoning_tokens`, each a whole number from 0 to 2^53 - 1, and `cost_usd`, a number from 0 to 10^9. An absent number is 0. A reader leaves other fields out.
+- `cost_known` is true when Hermes knows a price for a model of the writer's agents. Absent is false.
+- The numbers are those of the Usage page of the writer: the sum of its agents (`usage.py`). The entry has no chat, no project, no model and no text.
+- The writer sends the last 84 days, the longest range of the page, and only the days with work, each with its numbers that are not 0. It checks the entry at most every 30 minutes, the first time a minute after its start, and writes only when the days changed.
+- A reader takes the newest `usage` entry of each member that fits. An entry that does not fit shows no usage for its member.
+- A Mac for a team only writes none: it opens no Hermes store, and no person is at it.
+
+`GET /v1/usage` has `teams`: each active team with its `people` in the order of the Team screen, a Mac for a team only left out. Each person has `member`, `name`, `avatar`, `color`, `this_mac`, `days` (the days of the report, each day with each number, or null before the Mac of that person writes an entry), `cost_known` and `updated_at` (the time of the relay of the newest entry, or null for this Mac). The person of this Mac has the numbers of the report itself, so they are never older than its entry. A `usage` entry adds no event and notifies no phone: the page reads the store each time it opens.
 
 #### Chats of a team
 

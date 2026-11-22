@@ -67,7 +67,9 @@ struct ProfileView: View {
                 BoardRow(symbol: "dollarsign.circle", title: "Spend", value: store.spendTodayTotal)
                     .boardButton("profile-spend") { pushRoute?(SpendRoute()) }
                 #endif
-                BoardRow(symbol: "chart.bar", title: "Usage")
+                // The place of this person on the leaderboard of the first team, so the row leads to it.
+                BoardRow(symbol: "chart.bar", title: "Usage",
+                         value: store.usage.flatMap { UsageLeaderboard.myPlace($0) }.map { "#\($0.rank) of \($0.of)" })
                     .boardButton("profile-usage") { pushRoute?(UsageRoute()) }
             }
             BoardSection("Coconut") {
@@ -91,12 +93,10 @@ struct ProfileView: View {
         #if os(iOS)
         .navigationTitle("You").inlineNavigationTitle()
         #endif
-        // The Spend row of the iPhone has the cost of today, so You reads the usage there. The Team row names the team,
-        // so You reads the teams of a connected Mac.
+        // The Spend row of the iPhone has the cost of today, and the Usage row has the place of the person on the
+        // leaderboard, so You reads the usage. The Team row names the team, so You reads the teams of a connected Mac.
         .task(id: store.connection) {
-            #if os(iOS)
             await store.loadUsage()
-            #endif
             if store.connection == .connected { await store.loadTeam() }
         }
     }

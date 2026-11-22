@@ -51,6 +51,7 @@ These rules came out of the audits of the screens (the information architecture,
 - A form edits and a board reads: a form (Your Mac) is a grouped system form, and a board is sections on paper.
 - The business screens compute nothing: no total, change or margin in the client (`BusinessHomePresentation`). A missing value shows as "—" or "Not published", never as zero. A failed or stale source never reads as "All clear".
 - The rules of "Needs attention" live in one type, `AttentionRules` (`ios/Coconut/Attention.swift`), with named thresholds. The service counts the same rules for the number on the app icon (`backend/coconut/app_badge.py`): change both together.
+- The Usage page is a token leaderboard by person first: the person asked for usage by person, with the leaderboard as the crux to optimize use. The people of each team rank by tokens at the top (`UsageBoard`, from the `usage` entries of the team log, `backend/coconut/team_usage.py`), and the usage of this person comes under them. Without a team the projects are the leaderboard.
 
 ## Check by hand
 

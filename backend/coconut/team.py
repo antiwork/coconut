@@ -85,6 +85,7 @@ from .team_socket import TeamSocket
 from .team_store import ACTIVE, JOINING, MAX_TICKET_SECONDS, MEMBER_LIMITS, SCHEMA, TeamStore, unicode_text
 from .team_sync import INACTIVE, ROOM_ERRORS, TEAM_EVENT, TeamSync, room_error, utc_now
 from .team_typing import TeamTyping
+from .team_usage import TeamUsage
 
 __all__ = ['SCHEMA', 'Team']
 
@@ -231,7 +232,7 @@ def team_errors():
 
 
 class Team(TeamSync, TeamSocket, TeamPages, TeamMessages, TeamChats, TeamDirects, TeamEpochs, TeamTyping,
-           TeamReactions, TeamFiles, TeamNotices):
+           TeamReactions, TeamFiles, TeamNotices, TeamUsage):
     """The team rooms of this Mac: the routes of the tools, and the thread that copies each log."""
 
     def _init_team(self):
@@ -255,6 +256,7 @@ class Team(TeamSync, TeamSocket, TeamPages, TeamMessages, TeamChats, TeamDirects
         self._init_team_pages()
         self._init_team_epochs()
         self._init_team_typing()
+        self._init_team_usage()
 
     def _start_team(self):
         self._team_tell_corrected()

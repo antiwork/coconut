@@ -15,6 +15,7 @@ import threading
 import time
 
 from .profiles import ProfileError
+from .team_usage import person_days
 
 DEFAULT_DAYS = 30
 MAX_DAYS = 90
@@ -290,9 +291,18 @@ def _report(result, models, cost_known, cost_exact):
 
 
 class Usage:
-    """`GET /v1/usage`: the usage of each agent of this Mac."""
+    """`GET /v1/usage`: the usage of each agent of this Mac, and of each person of its teams."""
 
     def usage(self, days=DEFAULT_DAYS, now=None) -> dict:
+        """The report of the agents (usage_report), and `teams`: the people of each team of this Mac with their days,
+        for the leaderboard of the Usage page (team_usage.py). The person of this Mac has the sum of the agents. The
+        part of the teams reads the team store at each call, so a new entry of another member shows at once."""
+        report = self.usage_report(days, now)
+        own, known = person_days(report)
+        teams = self.team_usage_view(own, known, report['days'], report['today']) if hasattr(self, 'team_store') else []
+        return dict(report, teams=teams)
+
+    def usage_report(self, days=DEFAULT_DAYS, now=None) -> dict:
         days = max(1, min(int(days), MAX_DAYS))
         current = time.time() if now is None else now
         guard = self.__dict__.setdefault('_usage_guard', threading.Lock())

@@ -175,9 +175,9 @@ struct AgentUsageCard: View {
     }
 }
 
-/// The usage page: the numbers of a range, a chart by day or by week, each agent, and each model. Data only: the bar
-/// has the title, a number has its name, the chart has its axis values, and a note shows only for a number that did
-/// not load.
+/// The usage page of one project: the numbers of a range, a chart by day or by week, and each model. Without an ID it
+/// is the leaderboard page (UsageBoard). Data only: the bar has the title, a number has its name, the chart has its
+/// axis values, and a note shows only for a number that did not load.
 struct UsageView: View {
     @Environment(AppStore.self) private var store
     @Environment(\.pushRoute) private var pushRoute
@@ -188,6 +188,14 @@ struct UsageView: View {
     private var bot: Bot? { store.bots.first { $0.id == botId } }
 
     var body: some View {
+        if botId == nil {
+            UsageBoard()
+        } else {
+            projectPage
+        }
+    }
+
+    private var projectPage: some View {
         BoardPage {
             if let report = store.usage {
                 let agents = store.usageOf(botId)
@@ -202,7 +210,6 @@ struct UsageView: View {
                 }
                 .padding(BoardStyle.Space.m)
                 .background(BoardStyle.surface, in: RoundedRectangle(cornerRadius: BoardStyle.Radius.small))
-                if botId == nil { agentRows(report) }
                 let models = UsageMath.models(agents)
                 if !models.isEmpty {
                     // The Mac has one total of each model for the whole report, so the title names its length, in the
@@ -253,38 +260,15 @@ struct UsageView: View {
         .accessibilityIdentifier("usage-stats")
     }
 
-    /// Each agent with its usage in the range, the largest value of the chosen number first.
-    @ViewBuilder private func agentRows(_ report: UsageReport) -> some View {
-        let rows = store.bots.compactMap { bot -> (Bot, UsageSummary)? in
+    /// Each project with its usage in the range, the most tokens first, as places of a leaderboard. A tap opens the
+    /// usage page of the project.
+    static func projectStandings(_ store: AppStore, _ report: UsageReport, range: UsageRange) -> [UsageStanding] {
+        UsageLeaderboard.ranked(store.bots.compactMap { bot -> UsageStanding? in
             guard let usage = report.agents[bot.id] else { return nil }
             let summary = UsageSummary(agents: [usage], range: range, today: report.today)
-            return summary.total.isEmpty ? nil : (bot, summary)
-        }.sorted { (metric.value($0.1.total), $1.0.name) > (metric.value($1.1.total), $0.0.name) }
-        // The list of the Projects page, so it has that name.
-        BoardSection("Projects", count: rows.count) {
-            if rows.isEmpty { BoardEmptyRow(text: "No work in this range.") }
-            ForEach(rows, id: \.0.id) { bot, summary in
-                HStack(spacing: BoardStyle.Space.m) {
-                    VStack(alignment: .leading, spacing: BoardStyle.Space.line) {
-                        Text(bot.name).lineLimit(1)
-                        // The whole line where it fits. A narrow row leaves the time out, so no number is cut.
-                        let counts = "\(UsageMath.count(summary.total.turns)) turns · \(UsageMath.count(summary.total.tokens)) tokens"
-                        ViewThatFits(in: .horizontal) {
-                            Text(counts + " · " + UsageMath.duration(summary.total.workingSeconds))
-                            Text(counts)
-                        }
-                        .font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
-                    }
-                    Spacer(minLength: BoardStyle.Space.s)
-                    Text(metric == .cost || metric == .tokens ? summary.cost : metric.text(metric.value(summary.total)))
-                        .font(.subheadline.monospacedDigit()).foregroundStyle(.secondary)
-                    Image(systemName: "chevron.right").font(.footnote.weight(.semibold)).foregroundStyle(.tertiary)
-                }
-                .padding(.horizontal, BoardStyle.Space.m).padding(.vertical, BoardStyle.Space.s)
-                .contentShape(Rectangle())
-                .boardButton("usage-agent-" + bot.id) { pushRoute?(UsageRoute(botId: bot.id)) }
-            }
-        }
+            return summary.total.isEmpty ? nil : UsageStanding(id: bot.id, name: bot.name, total: summary.total,
+                                                               costKnown: usage.costKnown)
+        })
     }
 
     private func chips<Value: Identifiable & Equatable>(_ values: [Value], selected: Value, title: KeyPath<Value, String>,
@@ -296,5 +280,318 @@ struct UsageView: View {
                 }
             }
         }
+    }
+}
+
+/// The usage page of all agents: the leaderboard of the people of each team by tokens and their tokens by day, then
+/// where the tokens of this person go: the numbers of the range, the projects and the models. The person asked for a
+/// leaderboard by person as the crux of the page, so it comes first. Without a team the projects of this Mac are the
+/// leaderboard. Data only: names, numbers, bars and charts.
+struct UsageBoard: View {
+    @Environment(AppStore.self) private var store
+    @Environment(\.pushRoute) private var pushRoute
+    @State private var range = UsageRange.opening
+
+    var body: some View {
+        BoardPage(width: .wide, spacing: BoardStyle.Space.l) {
+            if let report = store.usage {
+                content(report)
+            } else if let issue = store.usageIssue {
+                BoardLoadNotice(title: "Usage unavailable", message: issue) { Task { await store.loadUsage(force: true) } }
+            } else {
+                BoardLoading(title: "Loading usage")
+            }
+        }
+        .navigationTitle("Usage").inlineNavigationTitle()
+        .task(id: store.connection == .connected) { await store.loadUsage() }
+        .refreshable { await store.loadUsage(force: true) }
+        .accessibilityIdentifier("usage-page")
+    }
+
+    @ViewBuilder private func content(_ report: UsageReport) -> some View {
+        // A team of one person ranks nobody, so it shows as no team.
+        let teams = (report.teams ?? []).filter { $0.people.count > 1 }
+        let summary = UsageSummary(agents: store.usageOf(nil), range: range, today: report.today)
+        let projects = UsageView.projectStandings(store, report, range: range)
+        Picker("Range", selection: $range) {
+            ForEach(UsageRange.allCases) { Text($0.title).tag($0) }
+        }
+        .pickerStyle(.segmented).labelsHidden().bentoLeadingControl()
+        .accessibilityIdentifier("usage-range")
+        if teams.isEmpty {
+            BentoBoard {
+                UsageLeaderboardTile(title: "Projects", rows: projects) { pushRoute?(UsageRoute(botId: $0.id)) }
+                    .bento(12, nil, compact: (2, nil))
+                UsageStackChart(title: "Tokens by day", series: projectSeries(report, projects), range: range,
+                                today: report.today)
+                    .bento(12, 2, compact: (2, 2))
+                mine(summary, report, modelsWidth: 12)
+            }
+        } else {
+            BentoBoard {
+                ForEach(teams) { team in
+                    let rows = UsageLeaderboard.people(team, range: range, today: report.today)
+                    UsageLeaderboardTile(title: teams.count > 1 ? team.name : "Leaderboard", rows: rows)
+                        .bento(12, nil, compact: (2, nil))
+                    UsageStackChart(title: "Tokens by day", series: personSeries(team, rows), range: range,
+                                    today: report.today)
+                        .bento(12, 2, compact: (2, 2))
+                }
+            }
+            // The rest of the page is the person of this Mac, so it has that name over it.
+            Text("You").font(.subheadline.weight(.semibold)).foregroundStyle(.secondary)
+                .accessibilityAddTraits(.isHeader).padding(.top, BoardStyle.Space.s)
+            BentoBoard {
+                mine(summary, report)
+                UsageLeaderboardTile(title: "Projects", rows: projects) { pushRoute?(UsageRoute(botId: $0.id)) }
+                    .bento(6, nil, compact: (2, nil))
+            }
+        }
+    }
+
+    /// The numbers of this person in the range, then the models. The Mac has one total of each model for the whole
+    /// report, so its title names that length. On a Mac the models share a row with the projects, or take the row alone
+    /// when the projects are the leaderboard above.
+    @ViewBuilder private func mine(_ summary: UsageSummary, _ report: UsageReport, modelsWidth: Int = 6) -> some View {
+        let total = summary.total
+        BentoStat(title: "Tokens", value: UsageMath.count(total.tokens),
+                  trend: summary.buckets.map { Double($0.total.tokens) }, trendBars: true)
+            .bento(4, 1, compact: (2, 1))
+        BentoStat(title: "Spend", value: summary.cost, size: .medium).bento(2, 1, compact: (1, 1))
+        BentoStat(title: "Turns", value: UsageMath.count(total.turns), size: .medium).bento(2, 1, compact: (1, 1))
+        BentoStat(title: "Tool calls", value: UsageMath.count(total.toolCalls), size: .medium).bento(2, 1, compact: (1, 1))
+        BentoStat(title: "Time working", value: UsageMath.duration(total.workingSeconds), size: .medium)
+            .bento(2, 1, compact: (1, 1))
+        let models = UsageMath.models(store.usageOf(nil))
+        if !models.isEmpty {
+            let length = UsageRange.allCases.first { $0.days == report.days }?.title ?? "\(report.days) days"
+            modelsTile(models, title: "Models · " + length, costKnown: summary.costKnown)
+                .bento(modelsWidth, nil, compact: (2, nil))
+        }
+    }
+
+    private func modelsTile(_ models: [UsageModel], title: String, costKnown: Bool) -> some View {
+        BentoTile(padding: BoardStyle.Space.m) {
+            VStack(alignment: .leading, spacing: BoardStyle.Space.s) {
+                BentoLabel(title).padding(.horizontal, BoardStyle.Space.xs).padding(.top, BoardStyle.Space.xs)
+                ForEach(models) { model in
+                    HStack(alignment: .firstTextBaseline, spacing: BoardStyle.Space.s) {
+                        VStack(alignment: .leading, spacing: BoardStyle.Space.line) {
+                            Text(store.modelCatalog?.models.first { $0.id == model.model }?.name ?? model.model)
+                                .font(.subheadline.weight(.medium)).lineLimit(1).truncationMode(.middle)
+                            if !model.provider.isEmpty {
+                                Text(model.provider).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                            }
+                        }
+                        Spacer(minLength: BoardStyle.Space.s)
+                        Text(UsageMath.count(model.tokens)).font(.subheadline.monospacedDigit())
+                        if costKnown {
+                            Text(UsageMath.cost(model.costUsd)).font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                                .frame(minWidth: 52, alignment: .trailing)
+                        }
+                    }
+                    .padding(.horizontal, BoardStyle.Space.xs)
+                    .accessibilityElement(children: .combine)
+                }
+            }
+        }
+        .accessibilityIdentifier("usage-models")
+    }
+
+    /// The parts of the chart of a team: each person with usage, in the order of the leaderboard.
+    private func personSeries(_ team: UsageTeam, _ rows: [UsageStanding]) -> [UsageSeries] {
+        let days = Dictionary(team.people.map { ($0.member, $0.days) }) { first, _ in first }
+        return rows.compactMap { row in
+            guard let list = days[row.id] ?? nil else { return nil }
+            return UsageSeries(id: row.id, name: row.name, days: list)
+        }
+    }
+
+    /// The parts of the chart without a team: each project, in the order of the Projects list.
+    private func projectSeries(_ report: UsageReport, _ rows: [UsageStanding]) -> [UsageSeries] {
+        rows.compactMap { row in report.agents[row.id].map { UsageSeries(id: row.id, name: row.name, days: $0.days) } }
+    }
+}
+
+/// A leaderboard: each place with its number, the face of a person, its name, its tokens, a bar against the first
+/// place, and its turns and spend. The person of this Mac has a soft wash of green. A person whose Mac shares no usage
+/// yet has a dash and no bar. The tokens of all places are over the list.
+struct UsageLeaderboardTile: View {
+    let title: String
+    let rows: [UsageStanding]
+    /// A tap on a place, for a project: its usage page. People open nothing.
+    var open: ((UsageStanding) -> Void)? = nil
+
+    var body: some View {
+        let top = rows.compactMap(\.tokens).max() ?? 0
+        let total = rows.compactMap(\.tokens).reduce(0, +)
+        BentoTile(padding: BoardStyle.Space.m) {
+            VStack(alignment: .leading, spacing: BoardStyle.Space.xs) {
+                HStack(alignment: .firstTextBaseline, spacing: BoardStyle.Space.s) {
+                    BentoLabel(title)
+                    Spacer(minLength: BoardStyle.Space.s)
+                    if total > 0 {
+                        Text(UsageMath.count(total) + " tokens").font(.caption.weight(.semibold).monospacedDigit())
+                            .foregroundStyle(.secondary).lineLimit(1)
+                    }
+                }
+                .padding(.horizontal, BoardStyle.Space.s).padding(.top, BoardStyle.Space.xs).padding(.bottom, BoardStyle.Space.xs)
+                if rows.isEmpty {
+                    Text("\u{2014}").font(.title3).foregroundStyle(.tertiary).padding(.horizontal, BoardStyle.Space.s)
+                }
+                ForEach(rows) { row in
+                    if let open {
+                        Button { open(row) } label: { place(row, top: top) }
+                            .buttonStyle(HomePressStyle())
+                            .accessibilityIdentifier("usage-place-" + row.id)
+                    } else {
+                        place(row, top: top).accessibilityIdentifier("usage-place-" + row.id)
+                    }
+                }
+            }
+        }
+        .accessibilityIdentifier("usage-leaderboard")
+    }
+
+    private func place(_ row: UsageStanding, top: Int) -> some View {
+        HStack(alignment: .center, spacing: BoardStyle.Space.m) {
+            Text(verbatim: row.rank.map { String($0) } ?? "\u{2013}")
+                .font(.system(.title3, design: .rounded).weight(.bold)).monospacedDigit()
+                .foregroundStyle(row.rank == 1 ? AnyShapeStyle(BoardStyle.green) : AnyShapeStyle(.secondary))
+                .frame(minWidth: 22)
+            if let member = row.member {
+                PersonFace(member: nil, memberId: member, name: row.name, size: 34)
+            }
+            VStack(alignment: .leading, spacing: BoardStyle.Space.xs) {
+                HStack(alignment: .firstTextBaseline, spacing: BoardStyle.Space.s) {
+                    Text(row.name).font(.body.weight(.semibold)).lineLimit(1)
+                    if row.isMe {
+                        Text("You").font(.caption.weight(.semibold)).foregroundStyle(BoardStyle.green)
+                    }
+                    Spacer(minLength: BoardStyle.Space.s)
+                    Text(row.tokens.map(UsageMath.count) ?? "\u{2014}")
+                        .font(.system(.title3, design: .rounded).weight(.semibold)).monospacedDigit()
+                        .foregroundStyle(row.tokens == nil ? AnyShapeStyle(.tertiary) : AnyShapeStyle(.primary))
+                        .lineLimit(1)
+                }
+                if let total = row.total {
+                    GeometryReader { proxy in
+                        Capsule().fill(Color.primary.opacity(0.08))
+                            .overlay(alignment: .leading) {
+                                Capsule().fill(BentoColor.money)
+                                    .frame(width: max(3, proxy.size.width * (top > 0 ? Double(total.tokens) / Double(top) : 0)))
+                            }
+                    }
+                    .frame(height: 6)
+                    .accessibilityHidden(true)
+                    Text(detail(total, costKnown: row.costKnown)).font(.caption.monospacedDigit())
+                        .foregroundStyle(.secondary).lineLimit(1)
+                }
+            }
+        }
+        .padding(.horizontal, BoardStyle.Space.s).padding(.vertical, BoardStyle.Space.s)
+        .background {
+            if row.isMe {
+                RoundedRectangle(cornerRadius: BoardStyle.Radius.small, style: .continuous).fill(BoardStyle.green.opacity(0.1))
+            }
+        }
+        .contentShape(Rectangle())
+        .accessibilityElement(children: .combine)
+    }
+
+    /// "412 turns · $1,284". A Mac without a price for its models has no spend.
+    private func detail(_ total: UsageDay, costKnown: Bool) -> String {
+        UsageMath.count(total.turns) + (total.turns == 1 ? " turn" : " turns") + (costKnown ? " · " + UsageMath.cost(total.costUsd) : "")
+    }
+}
+
+/// One part of a stacked usage chart: a person of a team, or a project.
+struct UsageSeries: Identifiable {
+    let id: String
+    let name: String
+    let days: [UsageDay]
+}
+
+/// The tokens of a range by day, or by week in the long range, with a part of each bar for each series in its order.
+/// The first four have a color each, and the rest share one part.
+struct UsageStackChart: View {
+    let title: String
+    let series: [UsageSeries]
+    let range: UsageRange
+    let today: String
+
+    static let palette: [Color] = SpendView.palette
+    static let other = "Others"
+
+    private struct Point: Identifiable {
+        let id: String
+        let start: Date
+        let series: String
+        let tokens: Double
+    }
+
+    var body: some View {
+        let (points, names, dates) = layout()
+        // The fifth color is the gray of the rest: a fifth person alone has it, as "Others" does.
+        let colors = names.enumerated().map { index, name in
+            name == Self.other || index >= Self.palette.count ? SpendView.rest : Self.palette[index]
+        }
+        BentoTile {
+            VStack(alignment: .leading, spacing: BoardStyle.Space.s) {
+                BentoLabel(title)
+                Chart(points) { point in
+                    BarMark(x: .value(range.byWeek ? "Week" : "Day", point.start, unit: range.byWeek ? .weekOfYear : .day),
+                            y: .value("Tokens", point.tokens), width: .ratio(0.72))
+                        .foregroundStyle(by: .value("Series", point.series))
+                        .cornerRadius(2)
+                }
+                .chartForegroundStyleScale(domain: names, range: colors)
+                .chartLegend(position: .bottom, alignment: .leading, spacing: BoardStyle.Space.s)
+                .chartXAxis {
+                    AxisMarks(values: dates) { _ in
+                        AxisValueLabel(format: .dateTime.month(.abbreviated).day(), anchor: .top)
+                    }
+                }
+                .chartYAxis {
+                    AxisMarks(position: .trailing, values: .automatic(desiredCount: 3)) { value in
+                        AxisGridLine().foregroundStyle(BoardStyle.line)
+                        AxisValueLabel { if let number = value.as(Double.self) { Text(UsageMath.count(Int(number))) } }
+                    }
+                }
+                .frame(maxHeight: .infinity)
+                .accessibilityLabel(title + ", by " + (range.byWeek ? "week" : "day"))
+            }
+        }
+        .accessibilityIdentifier("usage-chart")
+    }
+
+    /// The points of the bars in the order of the series, so the first series is at the base of each bar; the names
+    /// of the parts; and the dates that get a label: each fifth part of the range from its start, as UsageChart has.
+    /// A fifth series alone keeps its name; more share the part "Others".
+    private func layout() -> ([Point], [String], [Date]) {
+        let shown = series.count == Self.palette.count + 1 ? series[...] : series.prefix(Self.palette.count)
+        let rest = series.dropFirst(shown.count)
+        var parts: [(name: String, days: [UsageDay])] = []
+        var used = Set<String>()
+        for item in shown {
+            // Two people with one name keep two parts.
+            var name = item.name
+            var number = 2
+            while used.contains(name) { name = item.name + " \(number)"; number += 1 }
+            used.insert(name)
+            parts.append((name, item.days))
+        }
+        if !rest.isEmpty { parts.append((Self.other, rest.flatMap(\.days))) }
+        var points: [Point] = []
+        var starts: [Date] = []
+        for part in parts {
+            let buckets = UsageMath.buckets(UsageMath.combined([AgentUsage(days: part.days)]), range: range, today: today)
+            if starts.isEmpty { starts = buckets.map(\.start) }
+            points += buckets.map { Point(id: part.name + "\u{1f}" + $0.total.day, start: $0.start, series: part.name,
+                                          tokens: Double($0.total.tokens)) }
+        }
+        let step = max(1, (starts.count + 4) / 5)
+        let dates = starts.indices.filter { $0 % step == 0 && starts.count - $0 >= step }.map { starts[$0] }
+        return (points, parts.map(\.name), dates)
     }
 }

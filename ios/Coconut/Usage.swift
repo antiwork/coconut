@@ -74,6 +74,95 @@ struct UsageReport: Codable, Equatable, Sendable {
     /// The current day of the Mac.
     var today: String
     var agents: [String: AgentUsage]
+    /// The people of each team of the Mac with their usage, for the leaderboard. A Mac before this field sends none,
+    /// and a Mac without a team an empty list.
+    var teams: [UsageTeam]? = nil
+}
+
+/// The people of one team with the usage that each shares (`teams` of GET /v1/usage, backend/coconut/team_usage.py).
+/// A Mac for a team only is no person, so it is not in the list.
+struct UsageTeam: Codable, Equatable, Sendable, Identifiable {
+    var room: String
+    var name: String
+    var people: [UsagePerson]
+
+    var id: String { room }
+}
+
+/// One person of a team: the agents of their Mac summed by day. Each Mac shares its days in the team log at most every
+/// 30 minutes; the person of this Mac has the numbers of now.
+struct UsagePerson: Codable, Equatable, Sendable, Identifiable {
+    var member: String
+    var name: String
+    var avatar: String? = nil
+    var color: String? = nil
+    var thisMac: Bool? = nil
+    /// Nil until the Mac of the person shares its usage: an older Coconut.
+    var days: [UsageDay]? = nil
+    var costKnown: Bool? = nil
+    var updatedAt: String? = nil
+
+    var id: String { member }
+    var isMe: Bool { thisMac == true }
+}
+
+/// One place of a leaderboard: a person of a team, or a project of this Mac, with its sum for a range.
+struct UsageStanding: Identifiable, Equatable, Sendable {
+    let id: String
+    let name: String
+    /// The member of a person, for the face. A project has none: an agent has no face.
+    var member: String? = nil
+    var isMe = false
+    /// The sum of the range. Nil while the person shares no usage.
+    let total: UsageDay?
+    var costKnown = false
+    /// 1 for the most tokens. Equal tokens share a place. Nil without usage.
+    var rank: Int? = nil
+
+    var tokens: Int? { total?.tokens }
+}
+
+/// The leaderboard of the Usage page: the people of a team ranked by tokens, the measure that the team optimizes.
+enum UsageLeaderboard {
+    /// The places of the people of a team in a range, the most tokens first.
+    static func people(_ team: UsageTeam, range: UsageRange, today: String, calendar: Calendar = .current) -> [UsageStanding] {
+        ranked(team.people.map { person in
+            UsageStanding(id: person.member, name: person.name, member: person.member, isMe: person.isMe,
+                          total: person.days.map { UsageMath.sum(UsageMath.window($0, range: range, today: today, calendar: calendar)) },
+                          costKnown: person.costKnown == true)
+        })
+    }
+
+    /// The most tokens first, then by name. A place without usage comes last and has no number. Equal tokens share the
+    /// place of the first of them, so the next place skips: 1, 1, 3.
+    static func ranked(_ rows: [UsageStanding]) -> [UsageStanding] {
+        let sorted = rows.sorted { first, second in
+            switch (first.tokens, second.tokens) {
+            case let (one?, two?) where one != two: return one > two
+            case (nil, .some): return false
+            case (.some, nil): return true
+            default: return first.name.localizedStandardCompare(second.name) == .orderedAscending
+            }
+        }
+        var result: [UsageStanding] = []
+        for (index, row) in sorted.enumerated() {
+            var row = row
+            if let tokens = row.tokens {
+                row.rank = result.last.flatMap { $0.tokens == tokens ? $0.rank : nil } ?? index + 1
+            }
+            result.append(row)
+        }
+        return result
+    }
+
+    /// The place of the person of this Mac in its first team for a range, and how many people have one there. Nil
+    /// without a team, or while the Mac shares nothing.
+    static func myPlace(_ report: UsageReport, range: UsageRange = .opening) -> (rank: Int, of: Int)? {
+        guard let team = report.teams?.first(where: { $0.people.count > 1 }) else { return nil }
+        let rows = people(team, range: range, today: report.today)
+        guard let rank = rows.first(where: \.isMe)?.rank else { return nil }
+        return (rank, rows.filter { $0.rank != nil }.count)
+    }
 }
 
 /// The days that a usage page shows, and the size of one bar.
@@ -278,6 +367,28 @@ extension UsageReport {
             }.filter { $0.costUsd > 0 }
             agents[bot.id] = AgentUsage(days: list, models: models, costKnown: true, costEstimated: true, rows: rows)
         }
-        return UsageReport(days: days, today: UsageMath.day(now, calendar: calendar), agents: agents)
+        // The team of the preview (AppStore.applyTeamPreview): Ada is the person of this Mac, with the sum of the agents
+        // above, and each other person has the same weeks at another size, so the leaderboard has a clear order.
+        let mine = UsageMath.combined(Array(agents.values))
+        func scaled(_ factor: Double, weeks: Int) -> [UsageDay] {
+            mine.indices.map { index in
+                let source = mine[(index + weeks * 7) % mine.count]
+                func times(_ value: Int) -> Int { Int((Double(value) * factor).rounded()) }
+                return UsageDay(day: mine[index].day, turns: times(source.turns), modelCalls: times(source.modelCalls),
+                                toolCalls: times(source.toolCalls), workingSeconds: times(source.workingSeconds),
+                                inputTokens: times(source.inputTokens), outputTokens: times(source.outputTokens),
+                                cacheReadTokens: times(source.cacheReadTokens), cacheWriteTokens: times(source.cacheWriteTokens),
+                                reasoningTokens: 0, costUsd: source.costUsd * factor)
+            }
+        }
+        let people = [
+            UsagePerson(member: "m2", name: "Grace", days: scaled(1.38, weeks: 1), costKnown: true),
+            UsagePerson(member: "m1", name: "Ada", thisMac: true, days: mine, costKnown: true),
+            UsagePerson(member: "m3", name: "Lin", days: scaled(0.64, weeks: 2), costKnown: true),
+            UsagePerson(member: "m4", name: "Omar", days: scaled(0.41, weeks: 3), costKnown: true),
+            UsagePerson(member: "m5", name: "Priya", days: scaled(0.23, weeks: 4), costKnown: true),
+        ]
+        return UsageReport(days: days, today: UsageMath.day(now, calendar: calendar), agents: agents,
+                           teams: [UsageTeam(room: "gumroad", name: "Gumroad", people: people)])
     }
 }
