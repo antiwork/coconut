@@ -53,7 +53,7 @@ def turn_on(home, *, base_url, model, token):
     config = raw_config(home)
     saved = home / SAVED
     if not saved.exists() and (config.get('model') or {}).get('provider') != PROVIDER:
-        # The first sign-in keeps the profile's own model, so a sign-out restores it. A second sign-in keeps the first.
+        # The first turn-on keeps the profile's own model, so turning it off restores it. A second turn-on keeps the first.
         temporary = saved.with_name(saved.name + '.tmp')
         descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         with os.fdopen(descriptor, 'w') as handle:

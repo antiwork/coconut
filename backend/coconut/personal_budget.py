@@ -1,17 +1,19 @@
 """The Personal budget: Antiwork pays for the model use of Personal, up to a monthly limit (docs/personal-budget.md).
 
-The iPhone signs in with Apple and sends the identity token here. The Mac exchanges it at the relay for a budget token
-of that Apple ID's account (relay/src/budget.js), and points only the Personal project's Hermes profile at the relay's
-budget proxy (budget_native.py). The relay keeps the ledger. This Mac keeps the token in `<data>/personal-budget.json`
-and the public state, without the token, in the setting `personal_budget`, which the snapshot shows and a poller keeps
-current. Signing out puts the profile's own model back and revokes the token.
+Antiwork trusts people, so the budget has no sign-in. A tap on Use the Antiwork budget in a Personal chat asks this
+Mac to turn it on. The Mac asks the relay for a new account and its budget token (relay/src/budget.js), and points only
+the Personal project's Hermes profile at the relay's budget proxy (budget_native.py). The relay keeps the ledger. This
+Mac keeps the token in `<data>/personal-budget.json` and the public state, without the token, in the setting
+`personal_budget`, which the snapshot shows and a poller keeps current. Turning it off puts the profile's own model
+back and revokes the token. The state keeps the names of the sign-in it once had (`signed_in`, `needs_sign_in`),
+because the apps that are out read them.
 
 While Personal runs on the Hermes home (a fresh Mac without a `personal` profile), the person picks no other model for
-the home in the Coconut chat: the budget holds its model until they sign out.
+the home in the Coconut chat: the budget holds its model until they turn it off.
 
 The relay offers the budget only once it holds Antiwork's key. Until then the apps show no line and no button: the
 poller asks the relay every five minutes, keeps the answer in the setting `personal_budget_offered`, and the state
-names no Personal project for a person who is not signed in.
+names no Personal project for a person who has not turned it on.
 """
 from __future__ import annotations
 
@@ -34,8 +36,8 @@ HTTP_SECONDS = 20
 HEADERS = {'accept': 'application/json', 'user-agent': 'Coconut'}
 NOT_AVAILABLE = 'The Personal budget needs Hermes on this Mac.'
 NO_PERSONAL = 'This Coconut has no Personal project yet.'
-HOLDS_MODEL = ('Personal uses the Antiwork budget, which sets its model. Sign out of the budget in Personal to choose '
-               'another model.')
+HOLDS_MODEL = ('Personal uses the Antiwork budget, which sets its model. Turn off the Antiwork budget in Personal to '
+               'choose another model.')
 
 
 class BudgetError(Exception):
@@ -73,8 +75,9 @@ class BudgetRelay:
         except (urllib.error.URLError, TimeoutError, OSError):
             raise BudgetError(503, 'The Mac could not reach the Personal budget. Try again.') from None
 
-    def sign_in(self, identity_token):
-        return self._request('POST', '/v1/budget/accounts', body={'identity_token': identity_token})
+    def sign_in(self):
+        """Open a new account. The relay asks for no proof of who asks."""
+        return self._request('POST', '/v1/budget/accounts', body={})
 
     def usage(self, token):
         return self._request('GET', '/v1/budget/usage', token=token)
@@ -137,8 +140,8 @@ class PersonalBudget:
         """The public state, with the Personal project that the apps show it on.
 
         The apps show the line and the button only in the chats of that project (PersonalBudget.shows). While the relay
-        does not offer the budget, the state names no project for a person who is not signed in, so every app hides
-        both, also the builds that came out before this rule. A signed-in person keeps the line and its sign-out."""
+        does not offer the budget, the state names no project for a person who has not turned it on, so every app hides
+        both, also the builds that came out before this rule. A person who turned it on keeps the line and its menu."""
         personal = self._personal_bot()
         saved = self._budget_saved_state()
         shown = saved.get('signed_in') or self._setting(OFFERED) is True
@@ -176,17 +179,20 @@ class PersonalBudget:
             try:
                 if method == 'DELETE':
                     return self._budget_sign_out(bot)
-                if not isinstance(data, dict) or not isinstance(data.get('identity_token'), str):
-                    raise ServiceError(400, 'Sign in with Apple to use the Personal budget.')
-                return self._budget_sign_in(bot, data['identity_token'])
+                # The iPhone builds with Sign in with Apple still send an identity token, which nothing reads now.
+                return self._budget_sign_in(bot)
             except BudgetError as error:
                 raise ServiceError(error.status if error.status in (401, 403, 409, 429) else 503, str(error)) from None
 
-    def _budget_sign_in(self, bot, identity_token):
+    def _budget_sign_in(self, bot):
         from .service_base import now
-        account = self.budget_relay.sign_in(identity_token)
+        state = self.personal_budget_state()
+        # A budget that is on stays on: a second tap or a retry opens no second account.
+        if self._budget_token() and state.get('signed_in') and not state.get('needs_sign_in'):
+            return state
+        account = self.budget_relay.sign_in()
         token = account['token']
-        # The Mac keeps the token before it changes the profile, so a sign-out can always revoke it.
+        # The Mac keeps the token before it changes the profile, so turning it off can always revoke it.
         self._save_budget_token(token, bot['id'])
         self.provider.native_settings('budget_on', bots=[bot], token=token, base_url=self.budget_relay.proxy_url,
                                       model=account['model'])
@@ -207,7 +213,7 @@ class PersonalBudget:
         return self._publish_budget({'signed_in': False})
 
     def refresh_personal_budget(self):
-        """Read the month's use from the relay. A refused token means the person signs in again."""
+        """Read the month's use from the relay. A refused token means the person turns it on again."""
         from .service_base import now
         token = self._budget_token()
         state = self.personal_budget_state()

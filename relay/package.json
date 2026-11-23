@@ -3,7 +3,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "check": "node --check src/worker.js && node --check src/device.js && node --check src/apns.js && node --check src/attest.js && node --check src/tunnel.js && node --check src/rendezvous.js && node --check src/room.js && node --check src/budget.js && node --check src/apple.js",
+    "check": "node --check src/worker.js && node --check src/device.js && node --check src/apns.js && node --check src/attest.js && node --check src/tunnel.js && node --check src/rendezvous.js && node --check src/room.js && node --check src/budget.js",
     "deploy": "wrangler deploy"
   },
   "dependencies": {

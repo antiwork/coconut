@@ -1,15 +1,14 @@
 // The Personal budget: Antiwork pays for the model use of each person's Personal project, up to a monthly limit.
 //
-// A person signs in with Apple on the iPhone. The relay checks the identity token (apple.js) and gives the Mac a budget
-// token for the account of that Apple ID. One BudgetAccount Durable Object holds each account: the hashes of its tokens
-// and the cost of each calendar month (UTC). The Mac points only the Personal profile of Hermes at
-// /v1/budget/anthropic with the token, so other projects never reach this proxy.
+// Antiwork trusts people, so the budget has no sign-in (docs/personal-budget.md). A Mac asks for an account, and the
+// relay opens a new one with its own budget and gives the Mac its token. One BudgetAccount Durable Object holds each
+// account: the hashes of its tokens and the cost of each calendar month (UTC). The Mac points only the Personal profile
+// of Hermes at /v1/budget/anthropic with the token, so other projects never reach this proxy.
 //
 // The proxy forwards Anthropic Messages calls with Antiwork's key and adds the cost of each call from the `usage` that
 // Anthropic returns. When the month's cost reaches the limit, it refuses calls until the 1st of the next month. A call
 // that starts below the limit finishes, and at most MAX_INFLIGHT calls run at once, so the overshoot stays small.
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
-import { verifyAppleToken } from './apple.js';
 
 const UPSTREAM = 'https://api.anthropic.com';
 const MAX_TOKENS = 10;
@@ -89,29 +88,25 @@ export function parseToken(request) {
   return match ? { account: match[1], secret: match[2] } : null;
 }
 
-export async function handleBudget(request, env, verify = verifyAppleToken) {
+export async function handleBudget(request, env) {
   const path = new URL(request.url).pathname;
   if (!path.startsWith('/v1/budget/')) return null;
   if (!env.ANTHROPIC_API_KEY || !limitMicros(env)) {
     return refuse(503, 'api_error', 'The Personal budget is not available yet.');
   }
   if (path === '/v1/budget/accounts' && request.method === 'POST') {
+    // Anyone may open an account: Antiwork chose to trust people over a sign-in. Each request opens a new account with
+    // its own budget, and this limit of sign-ups per address is the only brake. An older Mac still sends an identity
+    // token of Apple, which the relay no longer reads.
     const rate = await env.REGISTRATION_LIMIT.limit({ key: request.headers.get('cf-connecting-ip') || 'unknown' });
     if (!rate.success) return new Response(null, { status: 429, headers: { 'Retry-After': '60' } });
-    const input = await request.json();
-    let subject;
-    try {
-      subject = await verify(input?.identity_token, env);
-    } catch {
-      return refuse(401, 'authentication_error', 'Sign in with Apple again.');
-    }
-    const account = hash(`coconut-budget:${env.APPLE_TEAM_ID}:${subject}`);
+    const account = randomBytes(32).toString('hex');
     return env.BUDGETS.get(env.BUDGETS.idFromName(account)).fetch(new Request('https://budget/issue', {
       method: 'POST', headers: { 'x-account': account }, body: '{}',
     }));
   }
   const token = parseToken(request);
-  if (!token) return refuse(401, 'authentication_error', 'Sign in to the Personal budget again.');
+  if (!token) return refuse(401, 'authentication_error', 'Use the Antiwork budget again in a Personal chat.');
   const stub = env.BUDGETS.get(env.BUDGETS.idFromName(token.account));
   const headers = new Headers(request.headers);
   headers.set('x-token-hash', hash(token.secret));
@@ -168,7 +163,7 @@ export class BudgetAccount {
     if (path === '/issue') {
       const secret = randomBytes(32).toString('hex');
       tokens[hash(secret)] = { created: Date.now() };
-      // A person can sign in on a few Macs. The oldest token goes when there are too many.
+      // An account gets its token when it opens. The oldest token goes when there are too many.
       const kept = Object.entries(tokens).sort((a, b) => b[1].created - a[1].created).slice(0, MAX_TOKENS);
       await store.put('tokens', Object.fromEntries(kept));
       return reply({ token: `cb1.${request.headers.get('x-account')}.${secret}`, ...(await this.usage()) });
@@ -176,7 +171,7 @@ export class BudgetAccount {
     const presented = request.headers.get('x-token-hash') || '';
     const known = Object.keys(tokens).some(item => item.length === presented.length
       && timingSafeEqual(Buffer.from(item), Buffer.from(presented)));
-    if (!known) return refuse(401, 'authentication_error', 'Sign in to the Personal budget again.');
+    if (!known) return refuse(401, 'authentication_error', 'Use the Antiwork budget again in a Personal chat.');
     if (path === '/usage') return reply(await this.usage());
     if (path === '/token' && request.method === 'DELETE') {
       delete tokens[presented];

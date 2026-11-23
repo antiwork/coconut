@@ -1649,19 +1649,18 @@ final class AppStore {
         return response
     }
 
-    /// Sign in to the Antiwork budget of Personal with the identity token of Sign in with Apple, or sign out with nil.
-    /// The Mac exchanges the token at the relay and points Personal's Hermes profile at the budget.
-    func personalBudget(signIn identityToken: String?) async throws {
+    /// Turn the Antiwork budget of Personal on or off. Antiwork trusts people, so turning it on asks for no sign-in:
+    /// the Mac opens an account at the relay and points Personal's Hermes profile at the budget.
+    func personalBudget(on: Bool) async throws {
         if isDemo {
-            personalBudget = identityToken == nil ? PersonalBudget(signedIn: false, botId: personalBudget?.botId)
-                : PersonalBudget(signedIn: true, botId: personalBudget?.botId, spentUsd: 0, limitUsd: 200, paused: false)
+            personalBudget = on ? PersonalBudget(signedIn: true, botId: personalBudget?.botId, spentUsd: 0, limitUsd: 200, paused: false)
+                : PersonalBudget(signedIn: false, botId: personalBudget?.botId)
             return
         }
         guard let client else { throw ServiceError.configuration("Connect your Mac to continue.") }
         let generation = connectionGeneration
-        let body = try identityToken.map { try JSONSerialization.data(withJSONObject: ["identity_token": $0]) }
         let response: PersonalBudget = try await client.request("settings/personal-budget",
-            method: identityToken == nil ? "DELETE" : "POST", body: body ?? Data("{}".utf8),
+            method: on ? "POST" : "DELETE", body: Data("{}".utf8),
             idempotencyKey: UUID().uuidString, retryTransient: false)
         guard generation == connectionGeneration else { throw CancellationError() }
         personalBudget = response

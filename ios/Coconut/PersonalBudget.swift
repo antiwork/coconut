@@ -1,10 +1,8 @@
 import SwiftUI
-#if os(iOS)
-import AuthenticationServices
-#endif
 
 /// The Personal budget: Antiwork pays for the model use of Personal up to a monthly limit (docs/personal-budget.md).
-/// The Mac sends it in the state as `personal_budget`. An older Mac sends nothing.
+/// The Mac sends it in the state as `personal_budget`. An older Mac sends nothing. The fields keep the names of the
+/// sign-in that the budget once had: `signedIn` means the budget is on.
 struct PersonalBudget: Codable, Equatable, Sendable {
     var signedIn: Bool? = nil
     /// The Personal project. Its chats show the budget.
@@ -14,12 +12,12 @@ struct PersonalBudget: Codable, Equatable, Sendable {
     var limitUsd: Double? = nil
     var paused: Bool? = nil
     var resetsAt: String? = nil
-    /// The relay refused the token: the person signs in again.
+    /// The relay refused the token: the person turns the budget on again.
     var needsSignIn: Bool? = nil
 
     var isSignedIn: Bool { signedIn == true }
     var isPaused: Bool { isSignedIn && paused == true }
-    var wantsSignIn: Bool { !isSignedIn || needsSignIn == true }
+    var wantsTurnOn: Bool { !isSignedIn || needsSignIn == true }
 
     func shows(in bot: Bot) -> Bool {
         guard let botId else { return false }
@@ -40,7 +38,7 @@ struct PersonalBudget: Codable, Equatable, Sendable {
 
     var line: String {
         guard isSignedIn else { return "Antiwork pays for the model use of Personal each month." }
-        if needsSignIn == true { return "Sign in again to keep using the Antiwork budget." }
+        if needsSignIn == true { return "The Antiwork budget stopped on this Mac." }
         let limit = Self.dollars(limitUsd ?? 0, cents: false)
         if isPaused {
             return "Paused: \(limit) used this month." + (resetDay.map { " It starts again on \($0)." } ?? "")
@@ -50,15 +48,11 @@ struct PersonalBudget: Codable, Equatable, Sendable {
     }
 }
 
-/// The line of the budget at the end of a Personal chat, with Sign in with Apple when the person has not signed in.
-/// The Mac app shows the line only: Sign in with Apple belongs to the iPhone app.
+/// The line of the budget at the end of a Personal chat, with a button that turns the budget on. Antiwork trusts
+/// people, so the button asks for no sign-in, and the iPhone app and the Mac app both show it.
 struct PersonalBudgetFooter: View {
     let budget: PersonalBudget
     @Environment(AppStore.self) private var store
-    @Environment(\.colorScheme) private var colorScheme
-    #if os(iOS)
-    @Environment(\.authorizationController) private var authorizationController
-    #endif
     @State private var working = false
     @State private var failure: String?
 
@@ -68,27 +62,12 @@ struct PersonalBudgetFooter: View {
                 .font(.caption2).monospacedDigit()
                 .foregroundStyle(budget.isPaused ? .secondary : .tertiary)
                 .multilineTextAlignment(.center)
-            if budget.wantsSignIn {
-                #if os(iOS)
-                // A SwiftUI button takes the tap and starts the request itself. SwiftUI's SignInWithAppleButton is a
-                // UIKit control, and the tap of the chat that drops the keyboard cancels its touch, so a tap did nothing.
-                Button { Task { await signIn() } } label: {
-                    AppleIDButtonLabel(dark: colorScheme == .dark)
-                        // Apple's button takes its style only when it is made.
-                        .id(colorScheme)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .frame(maxWidth: 240, minHeight: 36, maxHeight: 36)
-                .opacity(working ? 0.5 : 1)
-                .disabled(working)
-                // VoiceOver reads one button, without Apple's button inside it.
-                .accessibilityRepresentation { Button("Sign in with Apple") { Task { await signIn() } } }
-                .accessibilityIdentifier("personal-budget-sign-in")
-                #else
-                Text("Sign in with Apple in Coconut on your iPhone.")
-                    .font(.caption2).foregroundStyle(.tertiary)
-                #endif
+            if budget.wantsTurnOn {
+                // A SwiftUI button: the tap of the chat that drops the keyboard cancels the touch of a UIKit control.
+                Button("Use the Antiwork budget") { Task { await turn(on: true) } }
+                    .buttonStyle(CoconutButtonStyle())
+                    .disabled(working)
+                    .accessibilityIdentifier("personal-budget-sign-in")
             }
             if let failure {
                 Text(failure).font(.caption2).foregroundStyle(.red).multilineTextAlignment(.center)
@@ -99,58 +78,18 @@ struct PersonalBudgetFooter: View {
         .contentShape(Rectangle())
         .contextMenu {
             if budget.isSignedIn {
-                Button("Sign out of the Antiwork budget", role: .destructive) { Task { await signOut() } }
+                Button("Stop using the Antiwork budget", role: .destructive) { Task { await turn(on: false) } }
             }
         }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("personal-budget")
     }
 
-    #if os(iOS)
-    private func signIn() async {
-        failure = nil
-        let request = ASAuthorizationAppleIDProvider().createRequest()
-        request.requestedScopes = []
-        let result: ASAuthorizationResult
-        do { result = try await authorizationController.performRequest(request) }
-        catch {
-            // Closing the Apple sheet is no failure.
-            if (error as? ASAuthorizationError)?.code != .canceled { failure = error.localizedDescription }
-            return
-        }
-        guard case .appleID(let credential) = result, let data = credential.identityToken,
-              let token = String(data: data, encoding: .utf8) else {
-            failure = "Apple did not confirm the sign-in. Try again."
-            return
-        }
-        working = true
-        defer { working = false }
-        do { try await store.personalBudget(signIn: token) }
-        catch { failure = error.localizedDescription }
-    }
-    #endif
-
-    private func signOut() async {
+    private func turn(on: Bool) async {
         failure = nil
         working = true
         defer { working = false }
-        do { try await store.personalBudget(signIn: nil) }
+        do { try await store.personalBudget(on: on) }
         catch { failure = error.localizedDescription }
     }
 }
-
-#if os(iOS)
-/// Apple's own Sign in with Apple button as the label of a SwiftUI button. It takes no touches.
-private struct AppleIDButtonLabel: UIViewRepresentable {
-    let dark: Bool
-
-    func makeUIView(context: Context) -> ASAuthorizationAppleIDButton {
-        let button = ASAuthorizationAppleIDButton(authorizationButtonType: .signIn,
-                                                  authorizationButtonStyle: dark ? .white : .black)
-        button.isUserInteractionEnabled = false
-        return button
-    }
-
-    func updateUIView(_ button: ASAuthorizationAppleIDButton, context: Context) {}
-}
-#endif

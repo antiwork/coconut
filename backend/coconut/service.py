@@ -1160,7 +1160,7 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
         if method == 'POST' and path == '/v1/settings/mcp':
             return self.mutate_mcp(data, key, fingerprint)
         if method in ('POST', 'DELETE') and path == '/v1/settings/personal-budget':
-            # Signing in again gives a new token of the same account, so a retry needs no saved response.
+            # Turning on a budget that is on returns its state, so a retry needs no saved response.
             return self.mutate_personal_budget(method, data)
         if method == 'PUT' and path == '/v1/settings/model' and hasattr(self.provider, 'set_model_default'):
             if self.personal_budget_holds_default_model():

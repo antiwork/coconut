@@ -1,8 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { generateKeyPairSync, createSign } from 'node:crypto';
 import { BudgetAccount, handleBudget, costMicros, streamUsage, monthOf, resetsAt } from '../src/budget.js';
-import { verifyAppleToken, resetAppleKeys } from '../src/apple.js';
 
 const env = {
   ANTHROPIC_API_KEY: 'antiwork-key', BUDGET_LIMIT_USD: '200', BUDGET_MODEL: 'claude-opus-5-5',
@@ -30,13 +28,12 @@ function harness(upstream) {
     },
   };
   const fullEnv = { ...env, BUDGETS: budgets };
-  const call = (path, init = {}, verify) => handleBudget(new Request(`https://relay${path}`, init), fullEnv, verify);
+  const call = (path, init = {}) => handleBudget(new Request(`https://relay${path}`, init), fullEnv);
   return { call, objects, calls };
 }
 
-const signIn = async (h, sub = 'apple-user-1') => {
-  const response = await h.call('/v1/budget/accounts', { method: 'POST', body: JSON.stringify({ identity_token: 't' }) },
-    async () => sub);
+const signIn = async h => {
+  const response = await h.call('/v1/budget/accounts', { method: 'POST', body: '{}' });
   assert.equal(response.status, 200);
   return (await response.json()).token;
 };
@@ -70,20 +67,19 @@ test('months are UTC calendar months', () => {
   assert.equal(resetsAt(Date.parse('2026-12-05T00:00:00Z')), '2027-01-01T00:00:00.000Z');
 });
 
-test('one Apple ID is one account: signing in again shares the ledger', async () => {
+test('each sign-up opens its own account with its own ledger', async () => {
   const h = harness(async () => Response.json({ usage: { input_tokens: 1000, output_tokens: 1000 } }));
   const first = await signIn(h);
   const second = await signIn(h);
-  assert.notEqual(first, second);
-  assert.equal(first.split('.')[1], second.split('.')[1]);
+  assert.notEqual(first.split('.')[1], second.split('.')[1]);
   assert.equal((await h.call('/v1/budget/anthropic/v1/messages', message(first))).status, 200);
   await [...h.objects.values()][0].metering;
-  const usage = await (await h.call('/v1/budget/usage', { headers: { authorization: `Bearer ${second}` } })).json();
+  const usage = await (await h.call('/v1/budget/usage', { headers: { 'x-api-key': first } })).json();
   assert.equal(usage.spent_usd, 0.024);
   assert.equal(usage.limit_usd, 200);
   assert.equal(usage.paused, false);
-  const other = await signIn(h, 'apple-user-2');
-  assert.notEqual(other.split('.')[1], first.split('.')[1]);
+  const other = await (await h.call('/v1/budget/usage', { headers: { 'x-api-key': second } })).json();
+  assert.equal(other.spent_usd, 0);
 });
 
 test('the proxy sends Antiwork key upstream and never the account token', async () => {
@@ -160,28 +156,4 @@ test('signing out revokes only that token', async () => {
 test('without Antiwork key the budget is off', async () => {
   const response = await handleBudget(new Request('https://relay/v1/budget/usage'), { ...env, ANTHROPIC_API_KEY: '' });
   assert.equal(response.status, 503);
-});
-
-test('Sign in with Apple tokens are checked against Apple keys', async () => {
-  const { privateKey, publicKey } = generateKeyPairSync('rsa', { modulusLength: 2048 });
-  const jwk = { ...publicKey.export({ format: 'jwk' }), kid: 'k1', alg: 'RS256', use: 'sig' };
-  const keys = async () => Response.json({ keys: [jwk] });
-  const now = Date.parse('2026-11-17T16:00:00Z');
-  const sign = (claims, kid = 'k1') => {
-    const head = Buffer.from(JSON.stringify({ alg: 'RS256', kid })).toString('base64url');
-    const body = Buffer.from(JSON.stringify(claims)).toString('base64url');
-    const signature = createSign('RSA-SHA256').update(`${head}.${body}`).sign(privateKey).toString('base64url');
-    return `${head}.${body}.${signature}`;
-  };
-  const good = { iss: 'https://appleid.apple.com', aud: 'com.gumroad.coconut', sub: '001.abc', exp: now / 1000 + 600, iat: now / 1000 };
-  resetAppleKeys();
-  assert.equal(await verifyAppleToken(sign(good), env, keys, now), '001.abc');
-  await assert.rejects(verifyAppleToken(sign({ ...good, aud: 'com.other.app' }), env, keys, now));
-  await assert.rejects(verifyAppleToken(sign({ ...good, iss: 'https://evil' }), env, keys, now));
-  await assert.rejects(verifyAppleToken(sign({ ...good, exp: now / 1000 - 1 }), env, keys, now));
-  await assert.rejects(verifyAppleToken(sign(good, 'k2'), env, keys, now));
-  const [h, b] = sign(good).split('.');
-  const forged = Buffer.from(JSON.stringify({ ...good, sub: '001.other' })).toString('base64url');
-  await assert.rejects(verifyAppleToken(`${h}.${forged}.${sign(good).split('.')[2]}`, env, keys, now));
-  assert.ok(b);
 });

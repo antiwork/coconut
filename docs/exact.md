@@ -273,8 +273,8 @@ The budget is 15 minutes of worker time an hour, 60 a day, 4 hours a week and 4 
 says takes about 4 seconds. Fix what `diagnostics` lists and build again.
 
 AppDrop signs each copy with the Apple ID of the person and gives it a bundle id with a suffix. A copy gets no push from
-the Coconut server, no app extensions (share, notification service, widgets) and no Sign in with Apple. TestFlight stays
-for the real app; AppDrop is for previews.
+the Coconut server and no app extensions (share, notification service, widgets). TestFlight stays for the real app;
+AppDrop is for previews.
 
 ## Hot reload
 

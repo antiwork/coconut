@@ -8,11 +8,6 @@
     <string>$(APS_ENVIRONMENT)</string>
     <!-- An invite link in its web form, https://coconut.gumroad.com/i/<token>, opens this app. The page of that
          domain is the Worker in links/. -->
-    <!-- Sign in with Apple proves one person for the Antiwork budget of Personal (docs/personal-budget.md). -->
-    <key>com.apple.developer.applesignin</key>
-    <array>
-        <string>Default</string>
-    </array>
     <key>com.apple.developer.associated-domains</key>
     <array>
         <string>applinks:coconut.gumroad.com</string>
