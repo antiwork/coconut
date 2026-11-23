@@ -24,6 +24,8 @@ enum BotPhase: String, CaseIterable, Sendable {
 
 struct ConversationActivity: Equatable {
     var phase: BotPhase
+    /// When the newest step of the turn started: the last action, which the label names. Its time shows next to the
+    /// label, so a web search that began 23 seconds ago says 23s, however long the turn has run.
     var startedAt: Date?
     var reconnecting: Bool
     /// The command, file or query of the phase, as Codex and Claude Code show it.
@@ -33,13 +35,25 @@ struct ConversationActivity: Equatable {
     /// How many messages of the person wait for the next turn.
     var queued = 0
 
-    /// The time of a turn to the second: 9s, 4m 05s, 1h 02m 05s.
+    /// A time to the second: 9s, 4m 05s, 1h 02m 05s.
     static func elapsed(_ seconds: TimeInterval) -> String {
         let total = max(0, Int(seconds))
         let (hours, minutes, rest) = (total / 3600, total / 60 % 60, total % 60)
         if hours > 0 { return String(format: "%dh %02dm %02ds", hours, minutes, rest) }
         if minutes > 0 { return String(format: "%dm %02ds", minutes, rest) }
         return "\(rest)s"
+    }
+}
+
+/// The time since the step that an agent does now started, to the second and live: the age of a working chat in the
+/// chat list. It matches the time on the working line of the chat.
+struct StepTimeLabel: View {
+    let start: Date
+
+    var body: some View {
+        TimelineView(.periodic(from: .now, by: 1)) { context in
+            Text(ConversationActivity.elapsed(context.date.timeIntervalSince(start)))
+        }
     }
 }
 

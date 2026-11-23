@@ -193,7 +193,7 @@ struct LiveAgentTile: View {
         .font(.subheadline).lineLimit(1)
     }
 
-    /// "· 4m 05s · Claude Opus 5.5": the time of the turn to the second, and its model.
+    /// "· 23s · Claude Opus 5.5": the time of the newest step to the second, and the model of the turn.
     static func meta(_ working: ConversationActivity, at date: Date, model: Bool = true) -> String {
         var parts: [String] = []
         if let start = working.startedAt { parts.append(ConversationActivity.elapsed(date.timeIntervalSince(start))) }

@@ -580,8 +580,11 @@ struct BotContactRow: View {
 
     var body: some View {
         let subtitle = BotRowSubtitle(needsYou: store.botNeedsYou(bot), phase: phase, health: bot.health)
+        // A working chat dates its row by its last action, which the line under the name names, not by its newest
+        // message: a web search that began 23 seconds ago shows 23s, as the working line of the chat does.
+        let step: Date? = if case .phase = subtitle { store.botStepStart(bot) } else { nil }
         // A project has no face: its name and its state are the row.
-        ChatRowLayout(name: title ?? bot.name, unread: BotChatMute.unread(bot), date: lastMessageDate,
+        ChatRowLayout(name: title ?? bot.name, unread: BotChatMute.unread(bot), date: lastMessageDate, step: step,
                       muted: !bot.notifications, pinned: pinned) {
             EmptyView()
         } subtitle: {
@@ -633,6 +636,7 @@ enum ChatRowText {
 
 /// The layout of one row of the Agents list and of the Mac sidebar, for a bot and a team, as the chat list of WhatsApp.
 /// The face comes first. A grid of two lines follows. The name and the age of the newest message share the first line.
+/// A working chat shows the time of its newest step there instead, to the second and live (`step`).
 /// The line under the name and the badges share the second line. The badges are the mark of a muted chat
 /// (`bell.slash`), the round "@" mark of a team whose unread message names this person, and then the unread count. WhatsApp and Telegram have the same mark. The age
 /// and the badges end at one right edge. No line is empty, so a row of one line has its text centered on the face.
@@ -643,6 +647,9 @@ struct ChatRowLayout<Face: View, Subtitle: View>: View {
     let name: String
     let unread: Int
     let date: Date?
+    /// The start of the step that a working chat does now, which the line under the name names. The row then shows the
+    /// time since it started (23s, 4m 05s), as the working line of the chat does.
+    var step: Date? = nil
     var mentioned = false
     /// The person muted the chat (TeamChatMute).
     var muted = false
@@ -658,9 +665,9 @@ struct ChatRowLayout<Face: View, Subtitle: View>: View {
                 // The badge grows with the text and stands on its own line, so it covers no name.
                 VStack(alignment: .leading, spacing: BoardStyle.Space.line) {
                     nameText
-                    if date != nil || hasBadges {
+                    if hasAge || hasBadges {
                         HStack(spacing: BoardStyle.Space.s) {
-                            if let date { ageText(date) }
+                            if hasAge { ageText }
                             badges
                         }
                     }
@@ -674,8 +681,8 @@ struct ChatRowLayout<Face: View, Subtitle: View>: View {
                      verticalSpacing: BoardStyle.Space.line) {
                     GridRow {
                         nameText.frame(maxWidth: .infinity, alignment: .leading)
-                        if let date {
-                            ageText(date).fixedSize().gridColumnAlignment(.trailing)
+                        if hasAge {
+                            ageText.fixedSize().gridColumnAlignment(.trailing)
                         }
                     }
                     GridRow(alignment: .center) {
@@ -693,13 +700,21 @@ struct ChatRowLayout<Face: View, Subtitle: View>: View {
     }
 
     private var hasBadges: Bool { unread > 0 || mentioned || muted || pinned }
+    private var hasAge: Bool { step != nil || date != nil }
 
     private var nameText: some View {
         Text(name).font(.body.weight(unread > 0 ? .semibold : .regular)).lineLimit(1)
     }
 
-    private func ageText(_ date: Date) -> some View {
-        CompactAgeLabel(date: date).font(.footnote.monospacedDigit()).foregroundStyle(.secondary)
+    private var ageText: some View {
+        Group {
+            if let step {
+                StepTimeLabel(start: step)
+            } else if let date {
+                CompactAgeLabel(date: date)
+            }
+        }
+        .font(.footnote.monospacedDigit()).foregroundStyle(.secondary)
     }
 
     /// The mark of a muted chat, the "@" mark, then the unread count.

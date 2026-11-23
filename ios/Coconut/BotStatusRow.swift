@@ -8,13 +8,17 @@ struct BotStatusRow: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var shown: BotPhase?
     @State private var shownAt = Date.distantPast
+    /// The start of the step that the row shows. A newer step that still waits for its dwell keeps its own time.
+    @State private var shownStart: Date?
 
     private var phase: BotPhase { shown ?? activity.phase }
     private var writing: Bool { phase == .writing && !reduceMotion && !activity.reconnecting }
     private var fade: Animation? { BoardStyle.fade(reduceMotion: reduceMotion) }
 
-    // The detail belongs to the phase that the row shows, not to a newer one that still waits for its dwell.
-    private var detail: String? { shown == nil || shown == activity.phase ? activity.detail : nil }
+    // The detail and the time belong to the phase that the row shows, not to a newer one that still waits for its dwell.
+    private var current: Bool { shown == nil || shown == activity.phase }
+    private var detail: String? { current ? activity.detail : nil }
+    private var start: Date? { current ? activity.startedAt : shownStart }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 3) {
@@ -26,17 +30,20 @@ struct BotStatusRow: View {
                             .id(label)
                             .transition(.opacity)
                     }
-                    // The time of the turn to the second, and the model, as a professional tool shows them.
+                    // The time of the newest step to the second, and the model, as a professional tool shows them.
                     if !activity.reconnecting {
+                        // Read the start here, not in the timeline: state read inside it left a stale copy of the
+                        // line, which faded in and out over the live one.
+                        let start = start
                         TimelineView(.periodic(from: .now, by: 1)) { timeline in
-                            Text(meta(at: timeline.date))
+                            Text(meta(at: timeline.date, from: start))
                                 .monospacedDigit()
                                 .foregroundStyle(.secondary)
                         }
                     }
                 }
                 .accessibilityElement(children: .ignore)
-                .accessibilityLabel(([bot.name + ": " + label, detail, meta(at: .now)].compactMap { $0 }).joined(separator: ", "))
+                .accessibilityLabel(([bot.name + ": " + label, detail, meta(at: .now, from: start)].compactMap { $0 }).joined(separator: ", "))
                 .accessibilityIdentifier("bot-working-\(bot.id)")
             }
             .font(.subheadline)
@@ -64,16 +71,21 @@ struct BotStatusRow: View {
             guard !Task.isCancelled, shown != activity.phase else { return }
             withAnimation(fade) { shown = activity.phase }
             shownAt = .now
+            shownStart = activity.startedAt
+        }
+        // A new search, file or command within the same phase starts a new step: its time starts again.
+        .onChange(of: activity.startedAt) { _, start in
+            if shown == activity.phase { shownStart = start }
         }
     }
 
     private var label: String { activity.reconnecting ? "Reconnecting…" : phase.label }
 
-    /// "· 4m 05s · Claude Opus 5.5 · 2 queued": the time since the turn started, the model of the turn, and the
-    /// messages that wait for the next turn.
-    func meta(at date: Date) -> String {
+    /// "· 23s · Claude Opus 5.5 · 2 queued": the time since the newest step started, which matches the step that the
+    /// label names, the model of the turn, and the messages that wait for the next turn.
+    func meta(at date: Date, from start: Date?) -> String {
         var parts: [String] = []
-        if let startedAt = activity.startedAt { parts.append(ConversationActivity.elapsed(date.timeIntervalSince(startedAt))) }
+        if let start { parts.append(ConversationActivity.elapsed(date.timeIntervalSince(start))) }
         if let model = activity.model, !model.isEmpty { parts.append(model) }
         if let queued = MessageQueue.label(activity.queued) { parts.append(queued) }
         return parts.map { "· " + $0 }.joined(separator: " ")

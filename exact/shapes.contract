@@ -30,7 +30,8 @@ shape Attention
   symbol: string
 
 // One row of the list of chats. `status` is needs_you, working, health or idle: it picks what the line under the name
-// is, and the line holds its words.
+// is, and the line holds its words. `step` is the start of the step that a working chat does now, or 0: the row then
+// shows the time since that step started in place of the age of its newest message (ChatRowLayout.step).
 shape ChatRow
   id: string
   kind: string
@@ -43,6 +44,7 @@ shape ChatRow
   active: bool
   unread: number
   at: number
+  step: number
 
 // `live` is true when the chats come from the Mac, and `banner` says why they may be old (a connection that failed).
 shape Home

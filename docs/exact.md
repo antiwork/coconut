@@ -29,14 +29,15 @@ cannot run, blocked work, an unseen notice of the team); the fixture alone breac
 `AppStore.applyAttentionPreview` applies for the UI test of Home. Then one flat list of chats, newest first, in two tabs
 under the title with the count of each, Working and Idle (`AgentsFilter`): Working has the chats whose row shows work
 (a working line or a card that waits), Idle the rest, chats with people too, and the phone keeps the choice (a
-`persist` state). Each row has the layout of `ChatRowLayout`: face, name, age, a line that is the status or the last
+`persist` state). Each row has the layout of `ChatRowLayout`: face, name, age (for a chat that shows its step, the time
+of that step to the second), a line that is the status or the last
 message, the unread badge, the green dot while the agent works. At the bottom a message box that is always open, with
 a picker that names the project the message goes to and ends with New project. Send starts a chat with that project
 and leaves it closed: the chat is the first row of Working, and the box keeps the keyboard for the next one (as
 `NewChatBar` of the Swift app).
 
 Chat. Messages with Markdown and the time of each under it (`MessageTimes.label`), activity lines, cards with their options (an answer keeps the option chosen), files,
-the notices of a team, and the working line: the phase, the time of the turn to the second, the model. The composer is
+the notices of a team, and the working line: the phase, the time of its newest step to the second, the model. The composer is
 one box: a short draft is one line with the plus inside it and Send beside it. A draft over 80 characters, a newline,
 an attachment, or focus opens it, with a row under the text for the plus and Send (`ComposerExpansion`). Send shows
 when there is a draft. Stop shows while the agent works (`sendControls`). A draft that starts with a slash shows the
@@ -335,8 +336,8 @@ Not yet measured: the time from save to screen on the web host, and a `push --wa
   `circle.inset.filled`, and `hourglass`, `bolt.slash.fill`, `exclamationmark.octagon.fill`, `megaphone.fill` for the
   rows of Needs attention.
 - `preview.json` is a copy. An app folder cannot read outside itself, so it must be copied again when the fixture
-  changes. The data module reads the fixture's `task_id` links, `updated_at` of a working task (there is no
-  `turn_started_at`) and the bots with `chat_of`.
+  changes. The data module reads the fixture's `task_id` links, the phase, detail and `phase_started_at` of a working
+  task (else its `updated_at`) and the bots with `chat_of`.
 - The picker of the Swift message box (`NewChatBar`) starts with All projects and ends with Open and All agents. This one
   lists the projects and ends with New project, as asked. A message from Home always starts a new chat with the project.
 - Not ported: the slash commands other than `/model` and `/effort` (new, compact, stop, mute, help), mentions, the access menu, editing a queued message, link and GitHub previews, photos,

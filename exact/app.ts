@@ -55,7 +55,7 @@ interface FxOption { id: string; label: string; explanation: string }
 interface FxDecision { id: string; bot_id: string; task_id: string; title: string; explanation: string; consequences: string; proposal_preview: string; status: string; created_at: string; options: FxOption[] }
 interface FxArtifact { id: string; task_id: string; title: string; preview: string }
 interface FxMessage { id: string; bot_id: string; task_id: string | null; kind: string; role: string; text: string; created_at: string }
-interface FxTask { id: string; bot_id: string; status: string; updated_at: string }
+interface FxTask { id: string; bot_id: string; status: string; updated_at: string; phase?: string; phase_detail?: string; phase_started_at?: string }
 interface FxBot { id: string; name: string; avatar: string; archived: boolean; unread_count: number; chat_of: string | null; chat_title: string | null }
 // What a chat runs with: a model of a provider and its reasoning effort (null: the model's own default).
 interface Selection { model: string; provider: string; reasoning_effort: string | null }
@@ -108,6 +108,8 @@ const PHASES: Record<string, string> = {
 };
 
 interface Msg { id: string; kind: string; mine: boolean; author: string; at: number; title: string; body: string; detail: string; ref: string; status: string; receipt: string; options: FxOption[] }
+// A turn that runs: `startedAt` is the start of its newest step (the Mac's `phase_started_at`), which the working line
+// and the row of the chat time.
 interface Run { startedAt: number; phase: string; detail: string; queued: number }
 interface ChatState {
   id: string;
@@ -190,12 +192,15 @@ const build = (): State => {
     }
   }
 
-  // A task that works is the running turn of its agent. The fixture has no turn_started_at and no phase, so the turn
-  // starts at the last update of the task and the phase is the one the app shows first, as AppStore.runningPhase does.
+  // A task that works is the running turn of its agent, with its newest step: the phase, its detail and its start, as
+  // AppStore.runningPhase reads them. A task without a step yet starts at its last update and thinks.
   for (const task of fx.tasks) {
     const chat = chats.get(task.bot_id);
     if (!chat || task.status !== 'working') continue;
-    chat.run = { startedAt: rel(task.updated_at), phase: PHASES.thinking, detail: '', queued: 0 };
+    chat.run = {
+      startedAt: rel(task.phase_started_at ?? task.updated_at), phase: (task.phase && PHASES[task.phase]) || PHASES.thinking,
+      detail: task.phase_detail ?? '', queued: 0,
+    };
   }
 
   // What AppStore.applyAttentionPreview does for the UI test of Home: a card that waits for 5 hours, an agent with a
@@ -273,7 +278,8 @@ const lastLine = (chat: ChatState): string => {
   return 'No messages yet';
 };
 
-// BotRowSubtitle: a card that waits first, then the phase of the work, then a health, then the last message.
+// BotRowSubtitle: a card that waits first, then the phase of the work, then a health, then the last message. A row
+// that shows the phase times its newest step (`step`), as BotContactRow does.
 const rowOf = (chat: ChatState, zero: number): Row => {
   const status = waitingCard(chat) ? 'needs_you' : chat.run ? 'working' : chat.health !== '' ? 'health' : 'idle';
   const line = status === 'needs_you' ? 'Needs you' : status === 'working' && chat.run ? chat.run.phase : status === 'health' ? chat.health : lastLine(chat);
@@ -281,6 +287,7 @@ const rowOf = (chat: ChatState, zero: number): Row => {
   return {
     id: chat.id, kind: chat.kind, title: chat.title, letter: chat.letter, face: chat.face, circle: chat.circle, line, status,
     active: chat.run !== null, unread: chat.unread, at: Number.isFinite(at) ? zero + at : zero,
+    step: status === 'working' && chat.run ? zero + chat.run.startedAt : 0,
   };
 };
 
@@ -326,7 +333,7 @@ const ordered = (s: State): Project[] => {
 interface LvOption { id: string; label: string; explanation: string; answer: string }
 interface LvBot { id: string; name: string; avatar: string; archived: boolean; pinned: boolean; project?: boolean; profile: string; status: string; unread_count: number }
 interface LvMessage { id: string; bot_id: string; task_id: string | null; kind: string; role: string; text: string; created_at: string; decision_id: string | null; artifact_id: string | null }
-interface LvTask { id: string; bot_id: string; status: string; title: string | null; created_at: string; updated_at: string }
+interface LvTask { id: string; bot_id: string; status: string; title: string | null; created_at: string; updated_at: string; phase?: string | null; phase_detail?: string | null; phase_started_at?: string | null }
 interface LvDecision { id: string; bot_id: string; title: string; context: string | null; explanation: string | null; consequences: string | null; risk: string | null; uncertainty: string | null; status: string; created_at: string; revision: number; options: LvOption[]; selected_option_label: string | null }
 interface LvArtifact { id: string; title: string; preview: string }
 interface Snapshot { server_time: string; cursor: number; model: string | null; bots: LvBot[]; messages: LvMessage[]; tasks: LvTask[]; decisions: LvDecision[]; artifacts: LvArtifact[] }
@@ -518,7 +525,11 @@ const fromSnapshot = (snap: Snapshot): State => {
     if (!chat) continue;
     if (task.status === 'working') {
       running.set(chat.id, task.id);
-      chat.run = { startedAt: rel(task.created_at), phase: PHASES.working, detail: '', queued: 0 };
+      // The newest step that the Mac reported: what the agent does now, and since when (AppStore.runningPhase).
+      chat.run = {
+        startedAt: rel(task.phase_started_at ?? task.created_at), phase: (task.phase && PHASES[task.phase]) || PHASES.working,
+        detail: task.phase_detail ?? '', queued: 0,
+      };
     }
     if (task.status === 'failed' && -rel(task.updated_at) <= DAY) stuck.push({ title: task.title || 'A task failed', chat: chat.id, at: rel(task.updated_at) });
   }

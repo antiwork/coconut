@@ -322,11 +322,13 @@ final class AppStore {
         return ["working", "running"].contains(bot.status)
             || tasks.contains { $0.botId == bot.id && $0.isRunning }
     }
-    // The newest running task describes what the bot does now.
+    // The newest running task describes what the bot does now, and since when: the start of its newest step, which the
+    // Mac sets with each new step. The time of a step matches the last action, not the start of the turn.
     private func runningPhase(where matches: (AgentTask) -> Bool) -> (phase: BotPhase, startedAt: Date?, detail: String?)? {
         guard let task = tasks.last(where: { $0.isRunning && matches($0) }) else { return nil }
         let detail = task.phaseDetail.flatMap { $0.isEmpty ? nil : $0 }
-        return (task.phase.flatMap(BotPhase.init(rawValue:)) ?? .thinking, task.turnStartedAt?.apiDate, detail)
+        let start = task.phaseStartedAt?.apiDate ?? task.turnStartedAt?.apiDate
+        return (task.phase.flatMap(BotPhase.init(rawValue:)) ?? .thinking, start, detail)
     }
     /// The name of the model of an agent, as its settings show it.
     func modelName(_ botId: String) -> String? {
@@ -336,6 +338,11 @@ final class AppStore {
     func botPhase(_ bot: Bot) -> BotPhase? {
         guard isBotActive(bot) else { return nil }
         return runningPhase { $0.botId == bot.id }?.phase ?? .thinking
+    }
+    /// When the step of `botPhase` started. Nil while the Mac has reported no step of the turn yet.
+    func botStepStart(_ bot: Bot) -> Date? {
+        guard isBotActive(bot) else { return nil }
+        return runningPhase { $0.botId == bot.id }?.startedAt
     }
     // The status row stays during a lost connection, so work in progress does not seem to stop.
     func conversationActivity(_ botId: String) -> ConversationActivity? {

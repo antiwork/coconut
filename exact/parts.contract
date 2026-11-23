@@ -37,7 +37,8 @@ component CountBadge
     text badgeText(count) font="-exact-caption2" font-weight=600 font-variant-numeric="tabular-nums" color="-exact-background" background-color="light-dark(#456d52, #8fbf99)" border-radius=9 min-width=18 height=18 padding="0px 6px" text-align="center" line-height="18px" flex-shrink=0 box-sizing="border-box" aria-label=`${count} unread` testId="unread-badge"
 
 // One row of the list of chats (ChatRowLayout): the face, the name with the age of the newest message, and under it the
-// line with the unread count. The line is the status of the chat in words, or its last message.
+// line with the unread count. The line is the status of the chat in words, or its last message. A working chat shows
+// the time of its newest step in place of the age, to the second, as its working line does.
 component ChatRowView
   props
     chat: ChatRow
@@ -45,7 +46,7 @@ component ChatRowView
     offset: number
     choose: action
   derive since = max(now - chat.at, 0)
-  derive age = since < 60000 ? "Now" : since < 3600000 ? `${floor(since / 60000)} min` : since < 86400000 ? `${floor(since / 3600000)} hr` : formatDate(chat.at, offset, "month-day")
+  derive age = chat.step > 0 ? elapsed(now - chat.step) : since < 60000 ? "Now" : since < 3600000 ? `${floor(since / 60000)} min` : since < 86400000 ? `${floor(since / 3600000)} hr` : formatDate(chat.at, offset, "month-day")
   view
     button press=choose appearance="none" display="flex" flex-direction="row" align-items="center" gap=12 text-align="start" box-sizing="border-box" padding="8px 16px" min-height=52 width="100%" testId=`chat-${chat.id}`
       column position="relative" width=46 height=46 flex-shrink=0
@@ -150,8 +151,8 @@ component OptionButton
         text label
       text explanation font="-exact-footnote" color="-exact-secondary-label"
 
-// What the agent does now, as BotStatusRow shows it under the newest message: the phase, then the time of the turn to
-// the second, the model and the messages that wait, and the command in monospace under them.
+// What the agent does now, as BotStatusRow shows it under the newest message: the phase, then the time of its newest
+// step to the second, the model and the messages that wait, and the command in monospace under them.
 component WorkingLine
   props
     turn: Turn
