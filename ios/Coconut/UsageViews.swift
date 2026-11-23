@@ -75,7 +75,7 @@ struct UsageChart: View {
         .chartYAxis {
             AxisMarks(values: .automatic(desiredCount: 4)) { value in
                 AxisGridLine().foregroundStyle(BoardStyle.line)
-                AxisValueLabel { if let number = value.as(Double.self) { Text(metric.text(number)) } }
+                AxisValueLabel { if let number = value.as(Double.self) { Text(metric.axis(number)) } }
             }
         }
         .accessibilityLabel(metric.title + (byWeek ? " by week" : " by day"))
@@ -95,8 +95,9 @@ struct UsageChart: View {
     }
 }
 
-/// The usage of a project on its page: today, then the last 30 days in four numbers and as small bars of tokens over
-/// their dates, so the bars say which days they are. A tap opens the usage page of the project on the same range.
+/// The usage of a project on its page: today, then the last 30 days in four numbers and as small bars of spend over
+/// their dates, so the bars say which days they are. The cost comes first and the tokens second; the bars are tokens
+/// only when Hermes has no price for the models. A tap opens the usage page of the project on the same range.
 struct AgentUsageCard: View {
     @Environment(AppStore.self) private var store
     @Environment(\.pushRoute) private var pushRoute
@@ -116,9 +117,9 @@ struct AgentUsageCard: View {
                             #if os(macOS)
                             GridRow {
                                 today(usage, report.today)
-                                turns(range)
-                                tokens(range)
                                 cost(range)
+                                tokens(range)
+                                turns(range)
                                 time(range)
                             }
                             #else
@@ -127,8 +128,8 @@ struct AgentUsageCard: View {
                                 cost(range)
                             }
                             GridRow {
-                                turns(range)
                                 tokens(range)
+                                turns(range)
                             }
                             GridRow {
                                 time(range)
@@ -137,7 +138,8 @@ struct AgentUsageCard: View {
                             #endif
                         }
                         HStack(alignment: .center, spacing: BoardStyle.Space.m) {
-                            UsageChart(buckets: range.buckets, metric: .tokens, byWeek: false, compact: true).frame(height: 60)
+                            UsageChart(buckets: range.buckets, metric: range.costKnown ? .cost : .tokens, byWeek: false,
+                                       compact: true).frame(height: 60)
                             Image(systemName: "chevron.right").font(.footnote.weight(.semibold)).foregroundStyle(.tertiary)
                         }
                     }
@@ -183,7 +185,8 @@ struct UsageView: View {
     @Environment(\.pushRoute) private var pushRoute
     var botId: String? = nil
     @State private var range = UsageRange.opening
-    @State private var metric = UsageMetric.tokens
+    /// The chosen chart. Nil shows the spend, or the tokens when Hermes has no price for the models.
+    @State private var metric: UsageMetric? = nil
 
     private var bot: Bot? { store.bots.first { $0.id == botId } }
 
@@ -200,13 +203,14 @@ struct UsageView: View {
             if let report = store.usage {
                 let agents = store.usageOf(botId)
                 let summary = UsageSummary(agents: agents, range: range, today: report.today)
+                let shown = metric ?? (summary.costKnown ? .cost : .tokens)
                 chips(UsageRange.allCases, selected: range, title: \.title) { range = $0 }
                     .accessibilityIdentifier("usage-range")
                 stats(summary)
                 VStack(alignment: .leading, spacing: BoardStyle.Space.m) {
-                    chips(UsageMetric.allCases, selected: metric, title: \.title) { metric = $0 }
+                    chips(UsageMetric.allCases, selected: shown, title: \.title) { metric = $0 }
                         .accessibilityIdentifier("usage-metric")
-                    UsageChart(buckets: summary.buckets, metric: metric, byWeek: range.byWeek).frame(height: 220)
+                    UsageChart(buckets: summary.buckets, metric: shown, byWeek: range.byWeek).frame(height: 220)
                 }
                 .padding(BoardStyle.Space.m)
                 .background(BoardStyle.surface, in: RoundedRectangle(cornerRadius: BoardStyle.Radius.small))
@@ -219,7 +223,7 @@ struct UsageView: View {
                         ForEach(models) { model in
                             BoardRow(title: store.modelCatalog?.models.first { $0.id == model.model }?.name ?? model.model,
                                      detail: model.provider.isEmpty ? nil : model.provider,
-                                     value: UsageMath.count(model.tokens) + " tokens" + (summary.costKnown ? " · " + UsageMath.cost(model.costUsd) : ""),
+                                     value: (summary.costKnown ? UsageMath.cost(model.costUsd) + " · " : "") + UsageMath.count(model.tokens) + " tokens",
                                      chevron: false)
                         }
                     }
@@ -237,13 +241,14 @@ struct UsageView: View {
 
     private func stats(_ summary: UsageSummary) -> some View {
         let total = summary.total
+        // The spend first, then the tokens.
         let tiles = [
-            UsageStat(title: "Turns", value: UsageMath.count(total.turns)),
+            UsageStat(title: "Spend", value: summary.cost, detail: summary.costNote),
             UsageStat(title: "Tokens in", value: UsageMath.count(total.tokensIn)),
             UsageStat(title: "Tokens out", value: UsageMath.count(total.outputTokens)),
-            UsageStat(title: "Spend", value: summary.cost, detail: summary.costNote),
-            UsageStat(title: "Time working", value: UsageMath.duration(total.workingSeconds)),
+            UsageStat(title: "Turns", value: UsageMath.count(total.turns)),
             UsageStat(title: "Tool calls", value: UsageMath.count(total.toolCalls)),
+            UsageStat(title: "Time working", value: UsageMath.duration(total.workingSeconds)),
         ]
         // Three numbers in a row of a Mac window, two on an iPhone, so each row is full.
         #if os(macOS)
@@ -260,7 +265,7 @@ struct UsageView: View {
         .accessibilityIdentifier("usage-stats")
     }
 
-    /// Each project with its usage in the range, the most tokens first, as places of a leaderboard. A tap opens the
+    /// Each project with its usage in the range, the largest cost first, as places of a leaderboard. A tap opens the
     /// usage page of the project.
     static func projectStandings(_ store: AppStore, _ report: UsageReport, range: UsageRange) -> [UsageStanding] {
         UsageLeaderboard.ranked(store.bots.compactMap { bot -> UsageStanding? in
@@ -283,10 +288,11 @@ struct UsageView: View {
     }
 }
 
-/// The usage page of all agents: the leaderboard of the people of each team by tokens and their tokens by day, then
-/// where the tokens of this person go: the numbers of the range, the projects and the models. The person asked for a
-/// leaderboard by person as the crux of the page, so it comes first. Without a team the projects of this Mac are the
-/// leaderboard. Data only: names, numbers, bars and charts.
+/// The usage page of all agents: the leaderboard of the people of each team by cost and their spend by day, then
+/// where the spend of this person goes: the numbers of the range, the projects and the models. The person asked for a
+/// leaderboard by person as the crux of the page, so it comes first, and for cost first and tokens second, so each place
+/// leads with its cost and the tokens follow. Without a team the projects of this Mac are the leaderboard. Data only:
+/// names, numbers, bars and charts.
 struct UsageBoard: View {
     @Environment(AppStore.self) private var store
     @Environment(\.pushRoute) private var pushRoute
@@ -322,8 +328,8 @@ struct UsageBoard: View {
             BentoBoard {
                 UsageLeaderboardTile(title: "Projects", rows: projects) { pushRoute?(UsageRoute(botId: $0.id)) }
                     .bento(12, nil, compact: (2, nil))
-                UsageStackChart(title: "Tokens by day", series: projectSeries(report, projects), range: range,
-                                today: report.today)
+                UsageStackChart(series: projectSeries(report, projects), metric: UsageLeaderboard.metric(projects),
+                                range: range, today: report.today)
                     .bento(12, 2, compact: (2, 2))
                 mine(summary, report, modelsWidth: 12)
             }
@@ -333,7 +339,7 @@ struct UsageBoard: View {
                     let rows = UsageLeaderboard.people(team, range: range, today: report.today)
                     UsageLeaderboardTile(title: teams.count > 1 ? team.name : "Leaderboard", rows: rows)
                         .bento(12, nil, compact: (2, nil))
-                    UsageStackChart(title: "Tokens by day", series: personSeries(team, rows), range: range,
+                    UsageStackChart(series: personSeries(team, rows), metric: UsageLeaderboard.metric(rows), range: range,
                                     today: report.today)
                         .bento(12, 2, compact: (2, 2))
                 }
@@ -349,15 +355,22 @@ struct UsageBoard: View {
         }
     }
 
-    /// The numbers of this person in the range, then the models. The Mac has one total of each model for the whole
-    /// report, so its title names that length. On a Mac the models share a row with the projects, or take the row alone
-    /// when the projects are the leaderboard above.
+    /// The numbers of this person in the range, then the models. The spend leads with its bars, and the tokens follow;
+    /// without a price for the models the tokens lead. The Mac has one total of each model for the whole report, so its
+    /// title names that length. On a Mac the models share a row with the projects, or take the row alone when the
+    /// projects are the leaderboard above.
     @ViewBuilder private func mine(_ summary: UsageSummary, _ report: UsageReport, modelsWidth: Int = 6) -> some View {
         let total = summary.total
-        BentoStat(title: "Tokens", value: UsageMath.count(total.tokens),
-                  trend: summary.buckets.map { Double($0.total.tokens) }, trendBars: true)
-            .bento(4, 1, compact: (2, 1))
-        BentoStat(title: "Spend", value: summary.cost, size: .medium).bento(2, 1, compact: (1, 1))
+        if summary.costKnown {
+            BentoStat(title: "Spend", value: summary.cost, trend: summary.buckets.map(\.total.costUsd), trendBars: true)
+                .bento(4, 1, compact: (2, 1))
+            BentoStat(title: "Tokens", value: UsageMath.count(total.tokens), size: .medium).bento(2, 1, compact: (1, 1))
+        } else {
+            BentoStat(title: "Tokens", value: UsageMath.count(total.tokens),
+                      trend: summary.buckets.map { Double($0.total.tokens) }, trendBars: true)
+                .bento(4, 1, compact: (2, 1))
+            BentoStat(title: "Spend", value: summary.cost, size: .medium).bento(2, 1, compact: (1, 1))
+        }
         BentoStat(title: "Turns", value: UsageMath.count(total.turns), size: .medium).bento(2, 1, compact: (1, 1))
         BentoStat(title: "Tool calls", value: UsageMath.count(total.toolCalls), size: .medium).bento(2, 1, compact: (1, 1))
         BentoStat(title: "Time working", value: UsageMath.duration(total.workingSeconds), size: .medium)
@@ -370,6 +383,7 @@ struct UsageBoard: View {
         }
     }
 
+    /// Each model with its cost, and its tokens after it. A list without a price has its tokens alone.
     private func modelsTile(_ models: [UsageModel], title: String, costKnown: Bool) -> some View {
         BentoTile(padding: BoardStyle.Space.m) {
             VStack(alignment: .leading, spacing: BoardStyle.Space.s) {
@@ -384,10 +398,12 @@ struct UsageBoard: View {
                             }
                         }
                         Spacer(minLength: BoardStyle.Space.s)
-                        Text(UsageMath.count(model.tokens)).font(.subheadline.monospacedDigit())
                         if costKnown {
-                            Text(UsageMath.cost(model.costUsd)).font(.caption.monospacedDigit()).foregroundStyle(.secondary)
-                                .frame(minWidth: 52, alignment: .trailing)
+                            Text(UsageMath.cost(model.costUsd)).font(.subheadline.monospacedDigit())
+                            Text(UsageMath.count(model.tokens)).font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                                .frame(minWidth: 44, alignment: .trailing)
+                        } else {
+                            Text(UsageMath.count(model.tokens)).font(.subheadline.monospacedDigit())
                         }
                     }
                     .padding(.horizontal, BoardStyle.Space.xs)
@@ -413,9 +429,11 @@ struct UsageBoard: View {
     }
 }
 
-/// A leaderboard: each place with its number, the face of a person, its name, its tokens, a bar against the first
-/// place, and its turns and spend. The person of this Mac has a soft wash of green. A person whose Mac shares no usage
-/// yet has a dash and no bar. The tokens of all places are over the list.
+/// A leaderboard: each place with its number, the face of a person, its name, its cost, a bar against the first place,
+/// and its tokens and turns. Cost comes first and tokens second; a leaderboard where no place has a price ranks and
+/// shows tokens. The person of this Mac has a soft wash of green. A person whose Mac shares no usage yet, or a place
+/// without a price on a leaderboard of cost, has a dash and no bar. The cost and the tokens of all places are over the
+/// list.
 struct UsageLeaderboardTile: View {
     let title: String
     let rows: [UsageStanding]
@@ -423,15 +441,15 @@ struct UsageLeaderboardTile: View {
     var open: ((UsageStanding) -> Void)? = nil
 
     var body: some View {
-        let top = rows.compactMap(\.tokens).max() ?? 0
-        let total = rows.compactMap(\.tokens).reduce(0, +)
+        let metric = UsageLeaderboard.metric(rows)
+        let top = rows.compactMap(\.score).max() ?? 0
         BentoTile(padding: BoardStyle.Space.m) {
             VStack(alignment: .leading, spacing: BoardStyle.Space.xs) {
                 HStack(alignment: .firstTextBaseline, spacing: BoardStyle.Space.s) {
                     BentoLabel(title)
                     Spacer(minLength: BoardStyle.Space.s)
-                    if total > 0 {
-                        Text(UsageMath.count(total) + " tokens").font(.caption.weight(.semibold).monospacedDigit())
+                    if let line = totalLine(metric) {
+                        Text(line).font(.caption.weight(.semibold).monospacedDigit())
                             .foregroundStyle(.secondary).lineLimit(1)
                     }
                 }
@@ -441,11 +459,11 @@ struct UsageLeaderboardTile: View {
                 }
                 ForEach(rows) { row in
                     if let open {
-                        Button { open(row) } label: { place(row, top: top) }
+                        Button { open(row) } label: { place(row, metric: metric, top: top) }
                             .buttonStyle(HomePressStyle())
                             .accessibilityIdentifier("usage-place-" + row.id)
                     } else {
-                        place(row, top: top).accessibilityIdentifier("usage-place-" + row.id)
+                        place(row, metric: metric, top: top).accessibilityIdentifier("usage-place-" + row.id)
                     }
                 }
             }
@@ -453,7 +471,16 @@ struct UsageLeaderboardTile: View {
         .accessibilityIdentifier("usage-leaderboard")
     }
 
-    private func place(_ row: UsageStanding, top: Int) -> some View {
+    /// "$2,383 · 9.9B tokens": the cost of the places with a price, then the tokens of all. Nil without usage.
+    private func totalLine(_ metric: UsageMetric) -> String? {
+        let tokens = rows.compactMap(\.tokens).reduce(0, +)
+        guard tokens > 0 else { return nil }
+        let count = UsageMath.count(tokens) + " tokens"
+        guard metric == .cost else { return count }
+        return UsageMath.cost(rows.compactMap(\.score).reduce(0, +)) + " · " + count
+    }
+
+    private func place(_ row: UsageStanding, metric: UsageMetric, top: Double) -> some View {
         HStack(alignment: .center, spacing: BoardStyle.Space.m) {
             Text(verbatim: row.rank.map { String($0) } ?? "\u{2013}")
                 .font(.system(.title3, design: .rounded).weight(.bold)).monospacedDigit()
@@ -469,22 +496,24 @@ struct UsageLeaderboardTile: View {
                         Text("You").font(.caption.weight(.semibold)).foregroundStyle(BoardStyle.green)
                     }
                     Spacer(minLength: BoardStyle.Space.s)
-                    Text(row.tokens.map(UsageMath.count) ?? "\u{2014}")
+                    Text(row.score.map(metric.text) ?? "\u{2014}")
                         .font(.system(.title3, design: .rounded).weight(.semibold)).monospacedDigit()
-                        .foregroundStyle(row.tokens == nil ? AnyShapeStyle(.tertiary) : AnyShapeStyle(.primary))
+                        .foregroundStyle(row.score == nil ? AnyShapeStyle(.tertiary) : AnyShapeStyle(.primary))
                         .lineLimit(1)
                 }
                 if let total = row.total {
-                    GeometryReader { proxy in
-                        Capsule().fill(Color.primary.opacity(0.08))
-                            .overlay(alignment: .leading) {
-                                Capsule().fill(BentoColor.money)
-                                    .frame(width: max(3, proxy.size.width * (top > 0 ? Double(total.tokens) / Double(top) : 0)))
-                            }
+                    if let score = row.score {
+                        GeometryReader { proxy in
+                            Capsule().fill(Color.primary.opacity(0.08))
+                                .overlay(alignment: .leading) {
+                                    Capsule().fill(BentoColor.money)
+                                        .frame(width: max(3, proxy.size.width * (top > 0 ? score / top : 0)))
+                                }
+                        }
+                        .frame(height: 6)
+                        .accessibilityHidden(true)
                     }
-                    .frame(height: 6)
-                    .accessibilityHidden(true)
-                    Text(detail(total, costKnown: row.costKnown)).font(.caption.monospacedDigit())
+                    Text(detail(total, metric: metric)).font(.caption.monospacedDigit())
                         .foregroundStyle(.secondary).lineLimit(1)
                 }
             }
@@ -499,9 +528,10 @@ struct UsageLeaderboardTile: View {
         .accessibilityElement(children: .combine)
     }
 
-    /// "412 turns · $1,284". A Mac without a price for its models has no spend.
-    private func detail(_ total: UsageDay, costKnown: Bool) -> String {
-        UsageMath.count(total.turns) + (total.turns == 1 ? " turn" : " turns") + (costKnown ? " · " + UsageMath.cost(total.costUsd) : "")
+    /// "18.2M tokens · 412 turns" under the cost. A leaderboard of tokens has the turns alone.
+    private func detail(_ total: UsageDay, metric: UsageMetric) -> String {
+        let turns = UsageMath.count(total.turns) + (total.turns == 1 ? " turn" : " turns")
+        return metric == .cost ? UsageMath.count(total.tokens) + " tokens · " + turns : turns
     }
 }
 
@@ -512,13 +542,17 @@ struct UsageSeries: Identifiable {
     let days: [UsageDay]
 }
 
-/// The tokens of a range by day, or by week in the long range, with a part of each bar for each series in its order.
-/// The first four have a color each, and the rest share one part.
+/// The spend of a range by day, or by week in the long range, with a part of each bar for each series in its order:
+/// the tokens only when no series has a price for its models (UsageLeaderboard.metric). The first four have a color
+/// each, and the rest share one part.
 struct UsageStackChart: View {
-    let title: String
     let series: [UsageSeries]
+    let metric: UsageMetric
     let range: UsageRange
     let today: String
+
+    /// "Spend by day", as on the Spend page.
+    private var title: String { metric.title + " by day" }
 
     static let palette: [Color] = SpendView.palette
     static let other = "Others"
@@ -527,7 +561,7 @@ struct UsageStackChart: View {
         let id: String
         let start: Date
         let series: String
-        let tokens: Double
+        let value: Double
     }
 
     var body: some View {
@@ -541,7 +575,7 @@ struct UsageStackChart: View {
                 BentoLabel(title)
                 Chart(points) { point in
                     BarMark(x: .value(range.byWeek ? "Week" : "Day", point.start, unit: range.byWeek ? .weekOfYear : .day),
-                            y: .value("Tokens", point.tokens), width: .ratio(0.72))
+                            y: .value(metric.title, point.value), width: .ratio(0.72))
                         .foregroundStyle(by: .value("Series", point.series))
                         .cornerRadius(2)
                 }
@@ -555,11 +589,11 @@ struct UsageStackChart: View {
                 .chartYAxis {
                     AxisMarks(position: .trailing, values: .automatic(desiredCount: 3)) { value in
                         AxisGridLine().foregroundStyle(BoardStyle.line)
-                        AxisValueLabel { if let number = value.as(Double.self) { Text(UsageMath.count(Int(number))) } }
+                        AxisValueLabel { if let number = value.as(Double.self) { Text(metric.axis(number)) } }
                     }
                 }
                 .frame(maxHeight: .infinity)
-                .accessibilityLabel(title + ", by " + (range.byWeek ? "week" : "day"))
+                .accessibilityLabel(metric.title + ", by " + (range.byWeek ? "week" : "day"))
             }
         }
         .accessibilityIdentifier("usage-chart")
@@ -588,7 +622,7 @@ struct UsageStackChart: View {
             let buckets = UsageMath.buckets(UsageMath.combined([AgentUsage(days: part.days)]), range: range, today: today)
             if starts.isEmpty { starts = buckets.map(\.start) }
             points += buckets.map { Point(id: part.name + "\u{1f}" + $0.total.day, start: $0.start, series: part.name,
-                                          tokens: Double($0.total.tokens)) }
+                                          value: metric.value($0.total)) }
         }
         let step = max(1, (starts.count + 4) / 5)
         let dates = starts.indices.filter { $0 % step == 0 && starts.count - $0 >= step }.map { starts[$0] }

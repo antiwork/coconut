@@ -116,15 +116,21 @@ struct UsageStanding: Identifiable, Equatable, Sendable {
     /// The sum of the range. Nil while the person shares no usage.
     let total: UsageDay?
     var costKnown = false
-    /// 1 for the most tokens. Equal tokens share a place. Nil without usage.
+    /// What the place ranks by (UsageLeaderboard.ranked): its cost, or its tokens on a leaderboard where no place has a
+    /// price. Nil without usage, and for a place without a price on a leaderboard of cost.
+    var score: Double? = nil
+    /// 1 for the largest cost. Equal scores share a place. Nil without a score.
     var rank: Int? = nil
 
     var tokens: Int? { total?.tokens }
 }
 
-/// The leaderboard of the Usage page: the people of a team ranked by tokens, the measure that the team optimizes.
+/// The leaderboard of the Usage page: the people of a team ranked by cost, the measure that the team optimizes, with
+/// their tokens second. Usage is about cost first and tokens second (the person's rule, also in the repo's
+/// app-changes.md): each place that shows usage leads with what it cost, and leads with tokens only when Hermes has no
+/// price for the models.
 enum UsageLeaderboard {
-    /// The places of the people of a team in a range, the most tokens first.
+    /// The places of the people of a team in a range, the largest cost first.
     static func people(_ team: UsageTeam, range: UsageRange, today: String, calendar: Calendar = .current) -> [UsageStanding] {
         ranked(team.people.map { person in
             UsageStanding(id: person.member, name: person.name, member: person.member, isMe: person.isMe,
@@ -133,22 +139,40 @@ enum UsageLeaderboard {
         })
     }
 
-    /// The most tokens first, then by name. A place without usage comes last and has no number. Equal tokens share the
-    /// place of the first of them, so the next place skips: 1, 1, 3.
+    /// What a leaderboard ranks by: the cost, or the tokens when no place with usage has a price for its models.
+    static func metric(_ rows: [UsageStanding]) -> UsageMetric {
+        rows.contains { $0.total != nil && $0.costKnown } ? .cost : .tokens
+    }
+
+    /// The largest cost first, then the most tokens, then by name. On a leaderboard of cost, a place without a price
+    /// for its models comes after the places with one and has no number, as a place without usage, which comes last.
+    /// Equal scores share the place of the first of them, so the next place skips: 1, 1, 3. A cost counts to the cent.
     static func ranked(_ rows: [UsageStanding]) -> [UsageStanding] {
-        let sorted = rows.sorted { first, second in
-            switch (first.tokens, second.tokens) {
+        let metric = Self.metric(rows)
+        func measure(_ row: UsageStanding) -> Double? {
+            guard let total = row.total else { return nil }
+            if metric == .tokens { return Double(total.tokens) }
+            return row.costKnown ? (total.costUsd * 100).rounded() / 100 : nil
+        }
+        let sorted = rows.map { row -> UsageStanding in
+            var row = row
+            row.score = measure(row)
+            return row
+        }.sorted { first, second in
+            switch (first.score, second.score) {
             case let (one?, two?) where one != two: return one > two
             case (nil, .some): return false
             case (.some, nil): return true
-            default: return first.name.localizedStandardCompare(second.name) == .orderedAscending
+            default:
+                if first.tokens != second.tokens { return (first.tokens ?? -1) > (second.tokens ?? -1) }
+                return first.name.localizedStandardCompare(second.name) == .orderedAscending
             }
         }
         var result: [UsageStanding] = []
         for (index, row) in sorted.enumerated() {
             var row = row
-            if let tokens = row.tokens {
-                row.rank = result.last.flatMap { $0.tokens == tokens ? $0.rank : nil } ?? index + 1
+            if let score = row.score {
+                row.rank = result.last.flatMap { $0.score == score ? $0.rank : nil } ?? index + 1
             }
             result.append(row)
         }
@@ -192,8 +216,10 @@ enum UsageRange: String, CaseIterable, Identifiable, Sendable {
     var byWeek: Bool { self == .quarter }
 }
 
+/// What a usage chart or a leaderboard measures. Cost comes first and tokens second, so the chips of a usage page start
+/// with Spend.
 enum UsageMetric: String, CaseIterable, Identifiable, Sendable {
-    case tokens, cost, turns, tools, time
+    case cost, tokens, turns, tools, time
 
     var id: String { rawValue }
     var title: String {
@@ -223,6 +249,12 @@ enum UsageMetric: String, CaseIterable, Identifiable, Sendable {
         case .turns, .tools: UsageMath.count(Int(value.rounded()))
         case .time: UsageMath.duration(Int(value.rounded()))
         }
+    }
+
+    /// A value on the axis of a chart: a whole number of dollars reads "$200", not "$200.00".
+    func axis(_ value: Double) -> String {
+        guard self == .cost, value >= 0, value == value.rounded() else { return text(value) }
+        return "$" + Int(value).formatted(.number.locale(Locale(identifier: "en_US")))
     }
 }
 

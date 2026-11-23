@@ -872,7 +872,7 @@ has `kind` `notice`, the room in `team` and the entry ID in `notice`, and a tap 
 
 #### Usage
 
-Each person of a team sees how many tokens each other person's agents use: the leaderboard of the Usage page. A person's Mac writes one `usage` entry in each team with the numbers of its agents by day. `backend/coconut/team_usage.py` writes and reads it.
+Each person of a team sees what each other person's agents cost, and how many tokens they use: the leaderboard of the Usage page, which ranks by cost. A person's Mac writes one `usage` entry in each team with the numbers of its agents by day. `backend/coconut/team_usage.py` writes and reads it.
 
 The payload of a `usage` entry: `{"kind": "usage", "rev": n, "at": "...", "days": [{"day": "2026-11-22", "turns": 41, "input_tokens": 52000, "output_tokens": 79000, "cache_read_tokens": 4100000, "cache_write_tokens": 210000, "cost_usd": 17.22}, ...], "cost_known": true}`. The entry is kept: one for each person's Mac and room. The entry ID is the first 16 bytes of HMAC-SHA256 with the member token as the key, over `"coconut room usage" | room ID (32 bytes)`, as for a `seen` entry.
 

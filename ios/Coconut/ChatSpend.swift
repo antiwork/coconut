@@ -39,11 +39,12 @@ struct ChatUsage: Codable, Equatable, Sendable {
     /// The newest turns of the chat, oldest first. A Mac before this field sends none.
     var turns: [ChatTurnSpend]? = nil
 
-    /// "184k tokens · $2.41". The cost is left out when Hermes has no price for the model.
+    /// "$2.41 · 184k tokens": the cost first and the tokens second, as on the Usage page. The cost is left out when
+    /// Hermes has no price for the model.
     var line: String {
-        var text = UsageMath.count(total.tokens) + " tokens"
-        if total.costKnown { text += " · " + (total.costEstimated ? "~" : "") + UsageMath.cost(total.costUsd) }
-        return text
+        let tokens = UsageMath.count(total.tokens) + " tokens"
+        guard total.costKnown else { return tokens }
+        return (total.costEstimated ? "~" : "") + UsageMath.cost(total.costUsd) + " · " + tokens
     }
 
     func day(_ day: String) -> UsageDay { days.first { $0.day == day } ?? UsageDay(day: day) }
@@ -107,7 +108,7 @@ extension EnvironmentValues {
     }
 }
 
-/// The last row of a chat: its tokens and its cost. A tap opens where they went.
+/// The last row of a chat: its cost and its tokens. A tap opens where they went.
 struct ChatSpendFooter: View {
     let usage: ChatUsage
     @State private var open = false
@@ -122,13 +123,14 @@ struct ChatSpendFooter: View {
         }
         .buttonStyle(.plain)
         .accessibilityLabel("This agent used " + usage.line.replacingOccurrences(of: " · ", with: ", "))
-        .accessibilityHint("Shows the tokens and the cost by model and by day")
+        .accessibilityHint("Shows the cost and the tokens by model and by day")
         .accessibilityIdentifier("chat-spend")
         .sheet(isPresented: $open) { ChatSpendSheet(usage: usage) }
     }
 }
 
-/// Where the tokens and the cost of a chat went: by period, by kind of token, and by model.
+/// Where the cost and the tokens of a chat went: by period, by kind of token, and by model. Each value has the cost
+/// first and the tokens second.
 struct ChatSpendSheet: View {
     let usage: ChatUsage
     @Environment(\.dismiss) private var dismiss
@@ -141,7 +143,7 @@ struct ChatSpendSheet: View {
                 Section {
                     LabeledContent("Today", value: period(usage.day(usage.today)))
                     LabeledContent("7 days", value: period(usage.week))
-                    LabeledContent("All", value: UsageMath.count(total.tokens) + (cost(total.costUsd).map { " · " + $0 } ?? ""))
+                    LabeledContent("All", value: spend(total.costUsd, total.tokens))
                 }
                 Section("Tokens") {
                     row("Input", total.inputTokens)
@@ -154,7 +156,7 @@ struct ChatSpendSheet: View {
                     Section("Models") {
                         ForEach(total.models) { model in
                             LabeledContent(model.model) {
-                                Text(UsageMath.count(model.tokens) + (cost(model.costUsd).map { " · " + $0 } ?? ""))
+                                Text(spend(model.costUsd, model.tokens))
                                     .monospacedDigit()
                             }
                         }
@@ -179,8 +181,11 @@ struct ChatSpendSheet: View {
         total.costKnown ? (total.costEstimated ? "~" : "") + UsageMath.cost(value) : nil
     }
 
-    private func period(_ day: UsageDay) -> String {
-        UsageMath.count(day.tokens) + (cost(day.costUsd).map { " · " + $0 } ?? "")
+    private func period(_ day: UsageDay) -> String { spend(day.costUsd, day.tokens) }
+
+    /// "$2.41 · 184k tokens", or the tokens alone without a price.
+    private func spend(_ value: Double, _ tokens: Int) -> String {
+        (cost(value).map { $0 + " · " } ?? "") + UsageMath.count(tokens) + " tokens"
     }
 
     private func row(_ label: String, _ value: Int) -> some View {
