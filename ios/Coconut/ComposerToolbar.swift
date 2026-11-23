@@ -28,6 +28,8 @@ enum ComposerSlash {
         case newChat, compact, stop, help
         /// Mutes the chat (true) or unmutes it (false), as `/mute` in Slack (BotChatMute).
         case mute(Bool)
+        /// Archives the chat (true) or brings it back (false), as `/archive` in Slack (AppStore.archiveBot).
+        case archive(Bool)
         /// Fills the field with this text and keeps the menu open for the next step.
         case complete(String)
         /// The key of the model (ModelCatalogEntry.selectionKey).
@@ -51,13 +53,16 @@ enum ComposerSlash {
         ("stop", "Stop the running task", "stop.fill"),
         ("mute", "Stop the notifications of this agent", TeamChatMute.mark),
         ("unmute", "Get the notifications of this agent again", "bell"),
+        ("archive", "Archive this agent", "archivebox"),
+        ("unarchive", "Bring this agent back", "tray.and.arrow.up"),
         ("help", "See what you can ask for", "questionmark.circle"),
     ]
 
     /// The suggestions for the text of the field. Empty when the text is not a command in the making. `muted` is
-    /// whether the chat is muted now, so the menu offers the other choice. Nil leaves both out.
+    /// whether the chat is muted now, so the menu offers the other choice. Nil leaves both out. `archived` works the
+    /// same way for the archive; nil for a chat that the Mac keeps out of the archive (Bot.canRemove).
     static func suggestions(for text: String, models: [ModelCatalogEntry], efforts: [String], running: Bool,
-                            canStartChat: Bool, muted: Bool? = nil) -> [Suggestion] {
+                            canStartChat: Bool, muted: Bool? = nil, archived: Bool? = nil) -> [Suggestion] {
         guard text.hasPrefix("/"), !text.contains(where: \.isNewline) else { return [] }
         let body = String(text.dropFirst())
         guard let space = body.firstIndex(of: " ") else {
@@ -68,6 +73,8 @@ enum ComposerSlash {
                 if command.name == "new" && !canStartChat { return nil }
                 if command.name == "mute" && muted != false { return nil }
                 if command.name == "unmute" && muted != true { return nil }
+                if command.name == "archive" && archived != false { return nil }
+                if command.name == "unarchive" && archived != true { return nil }
                 let action: Action
                 switch command.name {
                 case "new": action = .newChat
@@ -76,6 +83,8 @@ enum ComposerSlash {
                 case "help": action = .help
                 case "mute": action = .mute(true)
                 case "unmute": action = .mute(false)
+                case "archive": action = .archive(true)
+                case "unarchive": action = .archive(false)
                 default: action = .complete("/" + command.name + " ")
                 }
                 return Suggestion(id: command.name, title: "/" + command.name, detail: command.detail,

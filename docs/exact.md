@@ -341,7 +341,7 @@ Not yet measured: the time from save to screen on the web host, and a `push --wa
   task (else its `updated_at`) and the bots with `chat_of`.
 - The picker of the Swift message box (`NewChatBar`) starts with All projects and ends with Open and All agents. This one
   lists the projects and ends with New project, as asked. A message from Home always starts a new chat with the project.
-- Not ported: the slash commands other than `/model` and `/effort` (new, compact, stop, mute, help), mentions, the access menu, editing a queued message, link and GitHub previews, photos,
+- Not ported: the slash commands other than `/model` and `/effort` (new, compact, stop, mute, archive, help), mentions, the access menu, editing a queued message, link and GitHub previews, photos,
   the schedule of a message, the fifth rule of Needs attention (stale data, which a preview has none of).
 - The pairing code lives in the memory of the data module. An update that applies while a phone pairs reloads the app,
   which then shows a new code, and the Mac seals its setup for the old one; send the new code. Keeping the code in the

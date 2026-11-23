@@ -1041,6 +1041,10 @@ private struct RejectedMessageEditor: View {
 
 struct ConversationComposer: View {
     @Environment(AppStore.self) private var store
+    #if os(iOS)
+    /// Closes the chat after `/archive`.
+    @Environment(\.dismiss) private var dismiss
+    #endif
     let bot: Bot
     let task: AgentTask?
     @Binding var text: String
@@ -1198,7 +1202,10 @@ struct ConversationComposer: View {
         return ComposerSlash.suggestions(for: text, models: choice.catalog?.models ?? [], efforts: choice.entry?.reasoningEfforts ?? [],
                                          running: task?.isRunning == true && connected,
                                          canStartChat: !bot.coconut && !bot.archived && connected,
-                                         muted: connected ? !bot.notifications : nil)
+                                         muted: connected ? !bot.notifications : nil,
+                                         // The Mac keeps a project and the Coconut chat out of the archive, and an
+                                         // archived chat can always come back (Bot.canRemove).
+                                         archived: connected && (bot.archived || bot.canRemove) ? bot.archived : nil)
     }
 
     /// The row of the slash menu that Return runs.
@@ -1244,6 +1251,19 @@ struct ConversationComposer: View {
         case .mute(let muted):
             text = ""
             Task { await store.muteBot(bot, muted: muted) }
+        case .archive(let archived):
+            text = ""
+            Task { await store.archiveBot(bot, archived: archived) }
+            #if os(iOS)
+            // The person is done with the chat, so it closes, as an archive in Mail does, after the send gave the
+            // keyboard back (KeyboardSettle). A Mac keeps the chat open: its sidebar moves the row to Archived.
+            if archived {
+                Task { @MainActor in
+                    focused = false
+                    dismiss()
+                }
+            }
+            #endif
         case .model(let key):
             text = ""
             if let model = choice.catalog?.models.first(where: { $0.selectionKey == key }) { choice.choose(model) }
