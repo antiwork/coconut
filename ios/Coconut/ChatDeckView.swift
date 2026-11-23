@@ -391,10 +391,11 @@ struct ChatDeckCard: View {
             item(BotChatMute.label(bot), BotChatMute.symbol(bot)) {
                 Task { await store.muteBot(bot, muted: bot.notifications) }
             }
-            // A project stays, and so does the Coconut chat (Bot.canRemove).
+            // A project stays, and so does the Coconut chat (Bot.canRemove). The card of an archived chat, which a long
+            // press on its row in Idle shows, brings it back.
             if bot.canRemove {
-                item("Archive agent", "archivebox") {
-                    Task { await store.archiveBot(bot, archived: true) }
+                item(bot.archived ? "Unarchive agent" : "Archive agent", bot.archived ? "tray.and.arrow.up" : "archivebox") {
+                    Task { await store.archiveBot(bot, archived: !bot.archived) }
                 }
                 item("Delete agent", "trash", role: .destructive) { delete(bot) }
             }

@@ -150,10 +150,10 @@ struct HomeLaunchView: View {
     }
 
     /// The list of Agents, as Telegram has it: the pinned chats first, then every other chat newest activity first
-    /// (ChatList.all). Every row has the same form: the name, the last message, the age and the badges. A starred row
-    /// only adds the star mark. The list shows the chats of one of its two tabs, Working or Idle, in the same order.
+    /// (ChatList.all), the archived chats too. Every row has the same form: the name, the last message, the age and the
+    /// badges. A starred row only adds the star mark. The list shows the chats of one of its two tabs, Working or Idle,
+    /// in the same order. An archived chat does not work, so Idle has it among the others.
     private func chatList(_ rows: [ChatListItem]) -> some View {
-        let archivedCount = store.bots.filter(\.archived).count
         let now = Date.now
         let working = Set(rows.filter { works($0, at: now) }.map(\.id))
         let shown = rows.filter { working.contains($0.id) == (filter == .working) }
@@ -175,7 +175,8 @@ struct HomeLaunchView: View {
                         .modifier(ChatDeckRow(botId: bot.id) { pushRoute?(ConversationRoute(botId: bot.id)) })
                         .accessibilityIdentifier(ChatList.isCoconut(bot) ? "coconut-chat" : "bot-conversation-\(bot.id)")
                         .swipeActions(edge: .trailing, allowsFullSwipe: true) {
-                            // A project stays, and so does the Coconut chat (Bot.canRemove).
+                            // A project stays, and so does the Coconut chat (Bot.canRemove). An archived chat offers
+                            // Unarchive in the same place.
                             if bot.canRemove { archiveButton(bot) }
                             muteButton(bot)
                         }
@@ -199,23 +200,6 @@ struct HomeLaunchView: View {
                             .homeRow()
                     }
                 }
-            }
-            // The archived chats wait behind one row at the end of Idle, as the archived chats of WhatsApp, because an
-            // archived chat does not work.
-            if archivedCount > 0 && filter == .idle {
-                Button { pushRoute?(ArchivedAgentsRoute()) } label: {
-                    HStack(spacing: BoardStyle.Space.m) {
-                        Image(systemName: "archivebox").foregroundStyle(.secondary)
-                        Text("Archived").foregroundStyle(.primary)
-                        Spacer(minLength: 0)
-                        Text("\(archivedCount)").font(.subheadline.monospacedDigit()).foregroundStyle(.secondary)
-                    }
-                    .padding(.vertical, BoardStyle.Space.m)
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(HomePressStyle())
-                .accessibilityIdentifier("chats-archived")
-                .homeRow()
             }
         }
         .listStyle(.plain)
@@ -291,12 +275,14 @@ struct HomeLaunchView: View {
         }
     }
 
+    /// Archive, or Unarchive for a chat that is archived. The row stays in Idle either way: an archived chat runs no
+    /// routine and sends no notification until a message of the person brings it back (agent_chats.py).
     private func archiveButton(_ bot: Bot) -> some View {
-        Button { Task { await store.archiveBot(bot, archived: true) } } label: {
-            Label("Archive", systemImage: "archivebox")
+        Button { Task { await store.archiveBot(bot, archived: !bot.archived) } } label: {
+            Label(bot.archived ? "Unarchive" : "Archive", systemImage: bot.archived ? "tray.and.arrow.up" : "archivebox")
         }
-        .tint(.gray)
-        .accessibilityIdentifier("archive-bot-\(bot.id)")
+        .tint(bot.archived ? BoardStyle.husk : .gray)
+        .accessibilityIdentifier((bot.archived ? "unarchive-bot-" : "archive-bot-") + bot.id)
     }
 
     /// Mute or Unmute, beside Archive, as "Hide Alerts" in Messages and Mute in Telegram (BotChatMute).
@@ -331,7 +317,7 @@ struct HomeLaunchView: View {
 }
 
 /// The two tabs of Agents. Working has the agents and chats that work or wait for the person, and Idle has the
-/// others, so the person finds a free agent for the next task in one tap.
+/// others, the archived chats among them, so the person finds a free agent for the next task in one tap.
 enum AgentsFilter: String {
     case working, idle
     static let key = "agents-filter"
@@ -361,8 +347,9 @@ private struct NewChatReveal: ViewModifier {
     }
 }
 
-/// The archived chats, and the archived agents of an earlier release: swipe left or hold a row to bring one back. A row
-/// opens the conversation, which keeps its history.
+/// The archived chats, and the archived agents of an earlier release, on the Projects page: swipe left or hold a row to
+/// bring one back. A row opens the conversation, which keeps its history. The Agents list of the iPhone has them in
+/// Idle, with the other chats (ChatList.all).
 struct ArchivedAgentsView: View {
     @Environment(AppStore.self) private var store
     @Environment(\.pushRoute) private var pushRoute

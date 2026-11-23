@@ -1588,10 +1588,12 @@ enum ChatList {
     /// The Chats list of the iPhone, as Telegram has it: one list of every chat, and every row has the same form. The
     /// Coconut chat and the starred projects come first, in the order they were made, then the pinned chats of the
     /// teams in a fixed order (pinnedChats). Then every other chat, newest activity first: the chats of the projects,
-    /// the teams, their named chats, and the direct chats with a person or with a bot of a team. A chat that is
-    /// archived, a chat of an archived project, and a chat that nobody wrote in (AgentChats.isListed) are not in the
-    /// list. `latest` is the date of the newest message of each bot. Chats shows this list in two tabs, Working and
-    /// Idle (AgentsFilter).
+    /// the archived chats and agents, the teams, their named chats, and the direct chats with a person or with a bot of
+    /// a team. The person merged Idle and Archived, so an archived chat has its place by its newest activity like any
+    /// other, with no Archived row of its own. A chat of an archived project that is not archived itself, and a chat
+    /// that nobody wrote in (AgentChats.isBlank), are not in the list; the Archived page of Projects still lists an
+    /// archived one. `latest` is the date of the newest message of each bot. Chats shows this list in two tabs, Working
+    /// and Idle (AgentsFilter).
     static func all(bots: [Bot], latest: [String: Date], rooms: [TeamRoom],
                     local: [TeamChatKey: TeamLastMessage] = [:]) -> [ChatListItem] {
         func activity(_ bot: Bot) -> Date { latest[bot.id] ?? bot.createdAt.apiDate ?? .distantPast }
@@ -1608,7 +1610,10 @@ enum ChatList {
             return first == second ? $0.id < $1.id : first < second
         }
         let top = Set((coconut + starred).map(\.id))
-        let others = shown.filter { !top.contains($0.id) }.sorted { (activity($0), $0.id) > (activity($1), $1.id) }
+        // `shown` has no archived chat (isListed), so the archived chats join the others once each.
+        let archived = bots.filter { $0.archived && !AgentChats.isBlank($0, latest: latest) }
+        let others = (shown.filter { !top.contains($0.id) } + archived)
+            .sorted { (activity($0), $0.id) > (activity($1), $1.id) }
         return (coconut + starred).map(ChatListItem.bot) + pinnedChats(rooms)
             + merge(bots: others, latest: latest,
                     chats: sorted(peopleItems(rooms, local: local) + botDirectItems(rooms, local: local)))

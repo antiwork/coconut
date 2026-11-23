@@ -125,6 +125,8 @@ interface ChatState {
   unread: number;
   // BotHealth.label of an agent that cannot run, or an empty string.
   health: string;
+  // An archived chat of the Mac. It shows in Idle with the others, but gives its project no place in the picker.
+  archived?: boolean;
 }
 interface Notice { id: string; type: string; text: string; at: number; author: string; seen: boolean; active: boolean }
 // A card that waits for the person, with the chat that holds it and the time it was made.
@@ -322,8 +324,9 @@ const attention = (s: State): Attention[] => {
 };
 
 // The projects with the newest chat first: the picker lists them so, and the first is where a message goes by default.
+// An archived chat does not count, as in AgentChats.activity.
 const ordered = (s: State): Project[] => {
-  const latest = (p: Project): number => Array.from(s.chats.values()).filter((c) => c.project === p.id).reduce((t, c) => Math.max(t, newest(c)), -Infinity);
+  const latest = (p: Project): number => Array.from(s.chats.values()).filter((c) => c.project === p.id && !c.archived).reduce((t, c) => Math.max(t, newest(c)), -Infinity);
   return [...s.projects].sort((a, b) => latest(b) - latest(a) || (a.name < b.name ? -1 : 1));
 };
 
@@ -465,9 +468,11 @@ const unsent = new Map<string, { words: string; files: PickedFile[]; photos: str
 const fromSnapshot = (snap: Snapshot): State => {
   const server = parse(snap.server_time);
   const rel = (iso: string): number => parse(iso) - server;
-  const bots = snap.bots.filter((b) => !b.archived);
-  // A project is a bot with `project`; its chats are the bots of its Hermes profile.
-  const projectOf = new Map(bots.filter((b) => b.project === true).map((b) => [b.profile, b]));
+  // An archived chat shows too: Idle has it among the others, as ChatList.all of the Swift app has it since the person
+  // merged Idle and Archived. A message of the person brings it back on the Mac.
+  const bots = snap.bots;
+  // A project is a bot with `project`; its chats are the bots of its Hermes profile. The Mac never archives a project.
+  const projectOf = new Map(bots.filter((b) => b.project === true && !b.archived).map((b) => [b.profile, b]));
   const artifacts = new Map(snap.artifacts.map((a) => [a.id, a]));
   decisions.clear();
   for (const d of snap.decisions) decisions.set(d.id, d);
@@ -485,7 +490,7 @@ const fromSnapshot = (snap: Snapshot): State => {
   for (const bot of bots) {
     const project = projectOf.get(bot.profile) ?? bot;
     const letter = letterOf(bot.avatar || project.avatar, project.name);
-    if (bot.project === true) projects.push({ id: bot.id, name: bot.name, letter, face: faceOf(letter) });
+    if (bot.project === true && !bot.archived) projects.push({ id: bot.id, name: bot.name, letter, face: faceOf(letter) });
     const messages = (byBot.get(bot.id) ?? []).sort(bySent).map((m): Msg => {
       const at = rel(m.created_at);
       const decision = m.decision_id ? decisions.get(m.decision_id) : undefined;
@@ -512,7 +517,7 @@ const fromSnapshot = (snap: Snapshot): State => {
     if (messages.length === 0 && bot.unread_count === 0 && bot.status === 'idle' && !bot.pinned && bot.project !== true) continue;
     chats.set(bot.id, {
       id: bot.id, kind: 'agent', project: project.id, projectName: project.name, title: bot.name, letter, face: faceOf(letter),
-      circle: false, messages, run: null, unread: bot.unread_count, health: '',
+      circle: false, messages, run: null, unread: bot.unread_count, health: '', archived: bot.archived,
     });
   }
   for (const d of snap.decisions) {
@@ -531,7 +536,8 @@ const fromSnapshot = (snap: Snapshot): State => {
         detail: task.phase_detail ?? '', queued: 0,
       };
     }
-    if (task.status === 'failed' && -rel(task.updated_at) <= DAY) stuck.push({ title: task.title || 'A task failed', chat: chat.id, at: rel(task.updated_at) });
+    // The work of an archived chat does not count, as in AttentionRules.stuckWork.
+    if (task.status === 'failed' && !chat.archived && -rel(task.updated_at) <= DAY) stuck.push({ title: task.title || 'A task failed', chat: chat.id, at: rel(task.updated_at) });
   }
   return { zero: server, chats, projects, notices: [], waits, stuck, teamId: '', counter: 0 };
 };

@@ -28,9 +28,10 @@ Home. Needs attention at the top, with the four rules of `Attention.swift` (a ca
 cannot run, blocked work, an unseen notice of the team); the fixture alone breaches none, so `app.ts` applies what
 `AppStore.applyAttentionPreview` applies for the UI test of Home. Then one flat list of chats, newest first, in two tabs
 under the title with the count of each, Working and Idle (`AgentsFilter`): Working has the chats whose row shows work
-(a working line or a card that waits), Idle the rest, chats with people too, and the phone keeps the choice (a
-`persist` state). Each row has the layout of `ChatRowLayout`: face, name, age (for a chat that shows its step, the time
-of that step to the second), a line that is the status or the last
+(a working line or a card that waits), Idle the rest, chats with people too and the archived chats of the Mac (the
+person merged Idle and Archived, so an archived chat sits among the others by its newest message and Idle has no
+Archived row), and the phone keeps the choice (a `persist` state). Each row has the layout of `ChatRowLayout`: face,
+name, age (for a chat that shows its step, the time of that step to the second), a line that is the status or the last
 message, the unread badge, the green dot while the agent works. At the bottom a message box that is always open, with
 a picker that names the project the message goes to and ends with New project. Send starts a chat with that project
 and leaves it closed: the chat is the first row of Working, and the box keeps the keyboard for the next one (as

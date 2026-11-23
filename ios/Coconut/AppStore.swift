@@ -900,8 +900,8 @@ final class AppStore {
                        save: { let _: Bot? = await self.write("bots/\(bot.id)", method: "PATCH", payload: PinRequest(pinned: pinned), as: Bot.self) })
     }
 
-    /// Archives an agent, or brings it back. An archived agent leaves the Chats list and the sidebar, and its routines
-    /// stop. The section "Archived" lists it, with its conversation.
+    /// Archives an agent, or brings it back. An archived agent leaves the sidebar of the Mac for its section "Archived",
+    /// and its routines stop. The Agents list of the iPhone keeps it in Idle, with its conversation (ChatList.all).
     func archiveBot(_ bot: Bot, archived: Bool) async {
         if isDemo {
             if let index = bots.firstIndex(where: { $0.id == bot.id }) { bots[index].archived = archived }
