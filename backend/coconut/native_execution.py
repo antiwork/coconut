@@ -161,6 +161,9 @@ class NativeExecution:
                 merged = self._merge_decision_artifact(decision['merge_pr_url'], task)
                 decision['_merge_pr_head'] = merged.get('head_sha')
                 decision['merge_pr_diff'] = merged.get('diff')
+                fulfilled = self._fulfilled_wait(decision, task, payload)
+                if fulfilled:
+                    decision['_fulfilled_wait'] = fulfilled
                 decision['_merge_request_at'] = self._validate_merge_decision(decision, task)
                 from .decision_inbox import require_merge_risk
                 require_merge_risk(decision)
