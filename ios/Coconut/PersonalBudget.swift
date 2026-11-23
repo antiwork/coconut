@@ -56,6 +56,9 @@ struct PersonalBudgetFooter: View {
     let budget: PersonalBudget
     @Environment(AppStore.self) private var store
     @Environment(\.colorScheme) private var colorScheme
+    #if os(iOS)
+    @Environment(\.authorizationController) private var authorizationController
+    #endif
     @State private var working = false
     @State private var failure: String?
 
@@ -67,14 +70,20 @@ struct PersonalBudgetFooter: View {
                 .multilineTextAlignment(.center)
             if budget.wantsSignIn {
                 #if os(iOS)
-                SignInWithAppleButton(.signIn) { request in
-                    request.requestedScopes = []
-                } onCompletion: { result in
-                    Task { await signIn(result) }
+                // A SwiftUI button takes the tap and starts the request itself. SwiftUI's SignInWithAppleButton is a
+                // UIKit control, and the tap of the chat that drops the keyboard cancels its touch, so a tap did nothing.
+                Button { Task { await signIn() } } label: {
+                    AppleIDButtonLabel(dark: colorScheme == .dark)
+                        // Apple's button takes its style only when it is made.
+                        .id(colorScheme)
+                        .contentShape(Rectangle())
                 }
-                .signInWithAppleButtonStyle(colorScheme == .dark ? .white : .black)
+                .buttonStyle(.plain)
                 .frame(maxWidth: 240, minHeight: 36, maxHeight: 36)
+                .opacity(working ? 0.5 : 1)
                 .disabled(working)
+                // VoiceOver reads one button, without Apple's button inside it.
+                .accessibilityRepresentation { Button("Sign in with Apple") { Task { await signIn() } } }
                 .accessibilityIdentifier("personal-budget-sign-in")
                 #else
                 Text("Sign in with Apple in Coconut on your iPhone.")
@@ -98,23 +107,26 @@ struct PersonalBudgetFooter: View {
     }
 
     #if os(iOS)
-    private func signIn(_ result: Result<ASAuthorization, Error>) async {
+    private func signIn() async {
         failure = nil
-        switch result {
-        case .success(let authorization):
-            guard let credential = authorization.credential as? ASAuthorizationAppleIDCredential,
-                  let data = credential.identityToken, let token = String(data: data, encoding: .utf8) else {
-                failure = "Apple did not confirm the sign-in. Try again."
-                return
-            }
-            working = true
-            defer { working = false }
-            do { try await store.personalBudget(signIn: token) }
-            catch { failure = error.localizedDescription }
-        case .failure(let error):
+        let request = ASAuthorizationAppleIDProvider().createRequest()
+        request.requestedScopes = []
+        let result: ASAuthorizationResult
+        do { result = try await authorizationController.performRequest(request) }
+        catch {
             // Closing the Apple sheet is no failure.
             if (error as? ASAuthorizationError)?.code != .canceled { failure = error.localizedDescription }
+            return
         }
+        guard case .appleID(let credential) = result, let data = credential.identityToken,
+              let token = String(data: data, encoding: .utf8) else {
+            failure = "Apple did not confirm the sign-in. Try again."
+            return
+        }
+        working = true
+        defer { working = false }
+        do { try await store.personalBudget(signIn: token) }
+        catch { failure = error.localizedDescription }
     }
     #endif
 
@@ -126,3 +138,19 @@ struct PersonalBudgetFooter: View {
         catch { failure = error.localizedDescription }
     }
 }
+
+#if os(iOS)
+/// Apple's own Sign in with Apple button as the label of a SwiftUI button. It takes no touches.
+private struct AppleIDButtonLabel: UIViewRepresentable {
+    let dark: Bool
+
+    func makeUIView(context: Context) -> ASAuthorizationAppleIDButton {
+        let button = ASAuthorizationAppleIDButton(authorizationButtonType: .signIn,
+                                                  authorizationButtonStyle: dark ? .white : .black)
+        button.isUserInteractionEnabled = false
+        return button
+    }
+
+    func updateUIView(_ button: ASAuthorizationAppleIDButton, context: Context) {}
+}
+#endif

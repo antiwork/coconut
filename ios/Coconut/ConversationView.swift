@@ -289,6 +289,8 @@ struct ConversationView: View {
                     .defaultScrollAnchor(focusTarget == nil ? .bottom : .top, for: .alignment)
                     .scrollDismissesKeyboard(.interactively)
                     .contentShape(Rectangle())
+                    // This tap cancels the touch of a UIKit control in the list, so such a control never fires. Put its
+                    // action in a SwiftUI button (PersonalBudgetFooter).
                     .simultaneousGesture(TapGesture().onEnded { focusAfterPush = nil; composerFocused = false })
                     .onScrollGeometryChange(for: Bool.self) { geometry in
                         geometry.contentOffset.y + geometry.containerSize.height >= geometry.contentSize.height - 100
