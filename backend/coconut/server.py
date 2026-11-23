@@ -532,7 +532,7 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description='Run Coconut on this Mac.')
     parser.add_argument('--data-dir', type=Path, required=True)
     parser.add_argument('--port', type=int, default=8960, help='The port of the main listener on 127.0.0.1.')
-    parser.add_argument('--provider', choices=('fixture', 'hermes'), default='fixture')
+    parser.add_argument('--provider', choices=('fixture', 'hermes', 'agent-sdk'), default='fixture')
     parser.add_argument('--tunnel-port', type=int, default=0,
                         help='Also listen with plain HTTP on 127.0.0.1 at this port for the tunnel sidecar. 0 turns it off.')
     parser.add_argument('--pair', action='store_true')
@@ -566,6 +566,11 @@ def main(argv=None):
             from .providers import FixtureProvider
             from .service import Service
             service = Service(args.data_dir, FixtureProvider(args.data_dir), start_workers=False)
+        elif args.provider == 'agent-sdk':
+            # Opt-in, off by default: Claude's Agent SDK runs each turn, without Hermes (docs/cloud.md).
+            from .agent_sdk_provider import AgentSDKProvider
+            from .service import Service
+            service = Service(args.data_dir, AgentSDKProvider(args.data_dir), start_workers=False)
         else:
             from . import hermes_runtime
             from .hermes_unavailable import UnavailableService
@@ -620,6 +625,8 @@ def main(argv=None):
             print(f'The tunnel sidecar connects to 127.0.0.1:{args.tunnel_port}.', flush=True)
         if args.provider == 'fixture':
             print('Fixture mode uses scripted responses. It does not execute Hermes.', flush=True)
+        elif args.provider == 'agent-sdk':
+            print('Claude\'s Agent SDK runs each turn. Hermes is not used.', flush=True)
         elif isinstance(service, UnavailableService):
             print(f'Coconut runs no agents, because Hermes is {hermes["status"]}: {hermes["reason"]}', flush=True)
         else:

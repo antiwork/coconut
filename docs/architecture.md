@@ -584,3 +584,5 @@ The host owns scheduling and pending decisions. Cloud workers can implement the 
 The mini encrypts notification previews and sends them through Coconut's shared Cloudflare Worker.
 The iPhone decrypts previews locally. The relay owns the app's Apple credentials and requires verified app registration.
 Agent execution and conversation storage stay on the user's Mac. Secure cloud artifacts remain a future service.
+A host without Hermes can run each turn with Claude's Agent SDK instead (`--provider agent-sdk`). Nothing starts it by
+default. See [Coconut in the cloud](cloud.md).
