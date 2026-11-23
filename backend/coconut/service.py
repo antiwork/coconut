@@ -2967,8 +2967,8 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
         self.source_poller.start()
         self._start_hermes_entries()
         self._start_gateway_supervisor()
-        if self.personal_budget_state().get('signed_in'):
-            self._start_budget_poller()
+        # The poller also asks the relay whether it offers the budget, so it runs before anyone signs in.
+        self._start_budget_poller()
         self._start_team()
         self.push.start()
 

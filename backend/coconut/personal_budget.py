@@ -8,6 +8,10 @@ current. Signing out puts the profile's own model back and revokes the token.
 
 While Personal runs on the Hermes home (a fresh Mac without a `personal` profile), the person picks no other model for
 the home in the Coconut chat: the budget holds its model until they sign out.
+
+The relay offers the budget only once it holds Antiwork's key. Until then the apps show no line and no button: the
+poller asks the relay every five minutes, keeps the answer in the setting `personal_budget_offered`, and the state
+names no Personal project for a person who is not signed in.
 """
 from __future__ import annotations
 
@@ -21,8 +25,13 @@ import urllib.request
 
 LOG = logging.getLogger(__name__)
 SETTING = 'personal_budget'
+# The last answer of the relay to whether it offers the budget: true, false, or no row before the first answer.
+OFFERED = 'personal_budget_offered'
 POLL_SECONDS = 300
 HTTP_SECONDS = 20
+# Cloudflare refuses Python's own user agent with 403 (Error 1010), so each call to the relay names Coconut, as the
+# GitHub calls do.
+HEADERS = {'accept': 'application/json', 'user-agent': 'Coconut'}
 NOT_AVAILABLE = 'The Personal budget needs Hermes on this Mac.'
 NO_PERSONAL = 'This Coconut has no Personal project yet.'
 HOLDS_MODEL = ('Personal uses the Antiwork budget, which sets its model. Sign out of the budget in Personal to choose '
@@ -46,7 +55,7 @@ class BudgetRelay:
         return self.origin + '/v1/budget/anthropic'
 
     def _request(self, method, path, *, token=None, body=None):
-        headers = {'content-type': 'application/json', 'accept': 'application/json'}
+        headers = {'content-type': 'application/json', **HEADERS}
         if token:
             headers['x-api-key'] = token
         request = urllib.request.Request(self.origin + path, method=method, headers=headers,
@@ -72,6 +81,20 @@ class BudgetRelay:
 
     def revoke(self, token):
         return self._request('DELETE', '/v1/budget/token', token=token)
+
+    def offered(self):
+        """Whether the relay offers the budget, or None when it gave no clear answer.
+
+        The relay answers every budget route with 503 until it holds Antiwork's key, and a request without a token with
+        401 after that. This request carries no token and changes nothing at the relay."""
+        request = urllib.request.Request(self.origin + '/v1/budget/usage', headers=HEADERS)
+        try:
+            with urllib.request.urlopen(request, timeout=HTTP_SECONDS):
+                return None
+        except urllib.error.HTTPError as error:
+            return {401: True, 503: False}.get(error.code)
+        except (urllib.error.URLError, TimeoutError, OSError):
+            return None
 
 
 def public_usage(usage):
@@ -111,9 +134,15 @@ class PersonalBudget:
         return self._setting(SETTING, None) or {'signed_in': False}
 
     def personal_budget_state(self):
-        """The public state, with the Personal project that the apps show it on."""
+        """The public state, with the Personal project that the apps show it on.
+
+        The apps show the line and the button only in the chats of that project (PersonalBudget.shows). While the relay
+        does not offer the budget, the state names no project for a person who is not signed in, so every app hides
+        both, also the builds that came out before this rule. A signed-in person keeps the line and its sign-out."""
         personal = self._personal_bot()
-        return dict(self._budget_saved_state(), bot_id=personal['id'] if personal else None)
+        saved = self._budget_saved_state()
+        shown = saved.get('signed_in') or self._setting(OFFERED) is True
+        return dict(saved, bot_id=personal['id'] if personal and shown else None)
 
     def _publish_budget(self, state):
         from .service_base import encoded
@@ -192,6 +221,25 @@ class PersonalBudget:
             return self._publish_budget(dict(state, signed_in=True, needs_sign_in=True, checked_at=now()))
         return self._publish_budget(dict(state, **public_usage(usage), needs_sign_in=False, checked_at=now()))
 
+    def refresh_budget_offer(self):
+        """Ask the relay whether it offers the budget. When the answer changed, the apps read the whole state again."""
+        from .service_base import encoded
+        # Without Hermes the budget cannot work (NOT_AVAILABLE), so the apps keep it hidden and the relay is not asked.
+        if not hasattr(self.provider, 'native_settings'):
+            return
+        offered = self.budget_relay.offered()
+        if offered is None:
+            return
+        with self.transaction():
+            current = self.db.execute('SELECT value FROM settings WHERE key=?', (OFFERED,)).fetchone()
+            if current and json.loads(current[0]) == offered:
+                return
+            self.db.execute('INSERT INTO settings(key,value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value',
+                            (OFFERED, encoded(offered)))
+            # The updates of the apps carry the budget only in a whole state. An event type that the updates do not
+            # know (state_sync.py) sends the next update as a whole state, so the line shows or hides at once.
+            self._event('personal_budget.updated', {SETTING: self.personal_budget_state()})
+
     def _start_budget_poller(self):
         if self.budget_poller is not None or not getattr(self, 'dispatcher', None):
             return
@@ -200,8 +248,9 @@ class PersonalBudget:
 
     def _poll_personal_budget(self):
         while not self.stopping.is_set():
-            try:
-                self.refresh_personal_budget()
-            except Exception:
-                LOG.exception('Could not read the Personal budget.')
+            for step in (self.refresh_budget_offer, self.refresh_personal_budget):
+                try:
+                    step()
+                except Exception:
+                    LOG.exception('Could not read the Personal budget.')
             self.stopping.wait(POLL_SECONDS)

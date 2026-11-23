@@ -5,7 +5,8 @@ person's own keys are not part of it.
 
 ## How it works
 
-1. In a Personal chat, the iPhone app shows **Sign in with Apple** under the last turn (`PersonalBudget.swift`).
+1. In a Personal chat, the iPhone app shows **Sign in with Apple** under the last turn (`PersonalBudget.swift`), once the
+   relay offers the budget (Turning it on).
 2. The app sends Apple's identity token to the Mac: `POST /v1/settings/personal-budget {identity_token}`.
 3. The Mac sends it to the relay: `POST /v1/budget/accounts` (`relay/src/budget.js`). The relay checks the token
    against Apple's keys, with the app's bundle ID as audience (`relay/src/apple.js`). The account is the SHA-256 of
@@ -48,9 +49,15 @@ the provider and the `.env` key, and revokes the token at the relay.
 
 ## Turning it on
 
-The budget routes answer 503 until the relay has the secret `ANTHROPIC_API_KEY` (Antiwork's key). Sign in with Apple
-needs the capability on the App ID `com.gumroad.coconut`. The TestFlight workflow signs automatically with
-`-allowProvisioningUpdates`, which adds it when the App Store Connect key may change identifiers.
+The budget routes answer 503 until the relay has the secret `ANTHROPIC_API_KEY` (Antiwork's key). Until then the apps
+show no line and no button. Every five minutes the Mac asks the relay `GET /v1/budget/usage` without a token (503
+means off, 401 on), keeps the answer in the setting `personal_budget_offered`, and leaves the Personal project out of
+`personal_budget` for a person who is not signed in. Every iPhone build hides the budget when that project is missing,
+so no phone needs a new build. When the answer changes, the Mac adds the event `personal_budget.updated`, which the
+updates of the apps do not know, so their next update is a whole state and the line shows or hides at once.
+
+Sign in with Apple needs the capability on the App ID `com.gumroad.coconut`. The TestFlight workflow signs automatically
+with `-allowProvisioningUpdates`, which adds it when the App Store Connect key may change identifiers.
 
 ## Checks
 
