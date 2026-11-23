@@ -1,5 +1,6 @@
 """Continue PR review through the bot that owns its work."""
 import json
+import re
 import threading
 
 # How to review a PR, and when to merge without a card, is the person's workflow. It lives in the bot's own Hermes skills.
@@ -19,6 +20,10 @@ PR_ARTIFACTS = "SELECT data FROM artifacts WHERE json_extract(data,'$.kind')='pr
 PR_URL_INDEX = """
 CREATE INDEX IF NOT EXISTS artifacts_pr_url ON artifacts (lower(json_extract(data,'$.url'))) WHERE json_extract(data,'$.kind')='pr';
 """
+
+# The label of a merge card choice that defers the decision until named work ends: "Wait for <work>, then decide".
+# No other choice defers. Leave open, a decline, or any other label keeps the PR head closed.
+WAIT_THEN_DECIDE = re.compile(r'wait for \S.*?,? then decide\.?', re.IGNORECASE)
 
 PR_REVIEW_INSTRUCTIONS = (
     'Coconut observed new check or review results for a tracked pull request. This is a request to assess merge readiness, not permission to merge. '
@@ -91,9 +96,18 @@ class PullRequestReviews:
             except ServiceError:
                 continue
             requested_at = max(requested_at, source['created_at'])
+        # The executed cards of a chain of waits: each wait choice asked for the next card when its work ended.
+        # Coconut checked each link when it made the card that records it (_fulfilled_wait).
+        waited, link = set(), decision.get('_fulfilled_wait')
+        while link and link['previous_decision_id'] not in waited:
+            waited.add(link['previous_decision_id'])
+            row = self.db.execute('SELECT data FROM decisions WHERE id=?', (link['previous_decision_id'],)).fetchone()
+            link = json.loads(row[0]).get('_fulfilled_wait') if row else None
         for existing in self._all('decisions'):
             if (existing['id'] == decision['id'] or not existing.get('merge_pr_url')
                     or existing['merge_pr_url'].lower() != url.lower()):
+                continue
+            if existing['id'] in waited and existing['status'] == 'executed':
                 continue
             if existing['status'] == 'pending':
                 owner = self._get('tasks', existing['task_id'])
@@ -119,6 +133,67 @@ class PullRequestReviews:
         # skills. The card's context says that a review still runs. Coconut keeps the rails above: one card for each PR
         # and head, and the answer of the person before any merge.
         return requested_at
+
+    def _fulfilled_wait(self, decision, task, payload):
+        """The previous merge card whose wait choice has ended, for its one follow-up card of the same PR head.
+
+        A person who chose "Wait for <work>, then decide" asked to decide again when that work ends. The owner of the card
+        names the choice and the result that the work delivered to it. Coconut checks both against the record and
+        changes neither. Without this, the recorded choice keeps the head closed (_validate_merge_decision)."""
+        from .service import ServiceError
+        claim = payload.get('fulfilled_wait')
+        if claim is None:
+            return None
+        if (not isinstance(claim, dict) or set(claim) != {'option_id', 'result_message_id'}
+                or not all(isinstance(value, str) and value.strip() for value in claim.values())):
+            raise ServiceError(400, 'fulfilled_wait needs option_id and result_message_id.')
+        url, head = decision.get('merge_pr_url'), decision.get('_merge_pr_head')
+        row = self.db.execute('SELECT data FROM decisions WHERE id=?', (decision.get('previous_decision_id'),)).fetchone()
+        previous = json.loads(row[0]) if row else {}
+        option = next((o for o in previous.get('options', []) if o['id'] == claim['option_id']), None)
+        # Revisions of the card before its answer (_revise_question) are not answers. The person's answer is the last entry.
+        answers = previous.get('_answers') or [{}]
+        answer = answers[-1]
+        # Only the answer of a person on a paired device: not a cancellation, an archive, or another system answer.
+        human = bool(previous.get('decided_by')) and self.db.execute(
+            'SELECT 1 FROM devices WHERE id=?', (previous['decided_by'],)).fetchone() is not None
+        if not (decision['action_type'] == 'question' and decision.get('inbox_kind') == 'decision'
+                and url and head and previous.get('action_type') == 'question' and previous['status'] == 'executed'
+                and previous['bot_id'] == task['bot_id']
+                and previous['task_id'] in (task['id'], task.get('_assignment_task_id'), task.get('_execution_session_id'))
+                and (previous.get('merge_pr_url') or '').lower() == url.lower() and previous.get('_merge_pr_head') == head
+                and option and 'merge' not in option['label'].lower()
+                and WAIT_THEN_DECIDE.fullmatch(option['label'].strip())
+                and previous.get('selected_option_id') == option['id'] and not previous.get('correction')
+                and all(a.get('choice') == 'revise' for a in answers[:-1]) and answer.get('choice') == 'approve'
+                and answer.get('option_id') == option['id'] and not answer.get('correction')
+                and answer.get('decided_by') == previous['decided_by'] and human):
+            raise ServiceError(400, 'fulfilled_wait must name the Wait for ..., then decide choice that the person '
+                                    'selected on the linked merge card of this task, for this PR and head.')
+        row = self.db.execute('SELECT data FROM messages WHERE id=?', (claim['result_message_id'],)).fetchone()
+        message = json.loads(row[0]) if row else {}
+        row = self.db.execute('SELECT data FROM tasks WHERE id=?', (message.get('task_id'),)).fetchone()
+        work = json.loads(row[0]) if row else {}
+        # The waited work: a task that the card's agent requested from another agent, started before the answer and
+        # finished since. It delivered this result to the card's agent after the answer, and it tracks this PR at this head.
+        if not (work and message.get('role') == 'assistant' and message.get('kind') == 'text'
+                and not message.get('_interim') and not message.get('streaming')
+                and message.get('sender_bot_id') == work['bot_id'] != previous['bot_id']
+                and previous['bot_id'] in (message.get('exchange_recipient_bot_ids') or [])
+                and work.get('source_bot_id') == work.get('conversation_bot_id') == previous['bot_id']
+                and work['status'] == 'completed'
+                and work['created_at'] < previous['decided_at'] < message['created_at']
+                and any(a['kind'] == 'pr' and a['url'].lower() == url.lower() and a.get('head_sha') == head
+                        and work['id'] in (a.get('task_id'), a.get('_review_task_id')) for a in self._all('artifacts'))):
+            raise ServiceError(400, 'fulfilled_wait must name the result that the waited work delivered to this agent '
+                                    'after the answer. That work must be finished and track this PR at this head.')
+        for other in self._all('decisions'):
+            recorded = other.get('_fulfilled_wait') or {}
+            if other['id'] != decision['id'] and (recorded.get('previous_decision_id') == previous['id']
+                                                  or recorded.get('result_message_id') == message['id']):
+                raise ServiceError(400, f"Decision {other['id']} already follows this wait. Reuse it and its owner.")
+        return dict(previous_decision_id=previous['id'], option_id=option['id'], result_message_id=message['id'],
+                    work_task_id=work['id'])
 
     def _resolve_merged_pr_decisions(self):
         with self.transaction():

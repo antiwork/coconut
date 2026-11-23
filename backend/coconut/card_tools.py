@@ -96,6 +96,15 @@ REPLY_SCHEMA = {
         'quote': {'type': 'string', 'description': 'Exact words from this human reply that give the instruction.'},
     }, 'required': ['choice', 'quote']},
 }
+# Only a new merge card declares that a wait ended. A proposal or a revision cannot (refresh_schema).
+QUESTION_SCHEMA['parameters']['properties']['fulfilled_wait'] = {
+    'type': 'object', 'additionalProperties': False, 'required': ['option_id', 'result_message_id'],
+    'description': ('Only for a merge card that follows previous_decision_id, a merge card of this task for the same PR '
+                    'head where the person chose a "Wait for <work>, then decide" option. Supply that option_id and '
+                    'the ID of the result message that the waited work, another agent in this conversation, '
+                    'delivered after the answer. Coconut checks both and then allows this one follow-up card. '
+                    'Omit it otherwise: Leave open and every other answer keep the head closed.'),
+    'properties': {'option_id': {'type': 'string'}, 'result_message_id': {'type': 'string'}}}
 
 # coconut_wait. Hermes starts and watches the background processes of a gateway turn, and Coconut has no record of
 # them. The turn waits for a process with Hermes's own process tool, and Hermes delivers the result of a process started
@@ -154,7 +163,8 @@ def refresh_schema(action_type=None):
     The worker names the action type of the card that it checks. The plugin of the gateway registers one tool for each
     card, so it passes None: `revision` is then a revised question or a revised draft assessment."""
     # The fields of a revised question follow the rules of the same fields of coconut_ask.
-    question = bare(QUESTION_SCHEMA['parameters'])
+    question = bare(dict(QUESTION_SCHEMA['parameters'], properties={
+        key: value for key, value in QUESTION_SCHEMA['parameters']['properties'].items() if key != 'fulfilled_wait'}))
     draft = {'type': 'object', 'additionalProperties': False, 'minProperties': 1,
              'description': ('Update risk_level and risk together, or uncertainty, or all three. Omitted fields are '
                              'preserved. Never change draft content.'),
@@ -368,6 +378,8 @@ PR_MERGE_INSTRUCTIONS = (
     'Coconut preserves the recorded conversation route. Do not wait for the requesting agent to present the card. '
     'Reuse an existing pending merge decision for this PR. Do not bypass its unanswered choice or duplicate its action. '
     'Include a Leave open option. Identify the PR and merge scope in each choice. '
+    'To decide after other work ends, offer a choice labeled Wait for <work>, then decide. When that work delivers its '
+    'result, link the card and set fulfilled_wait. Leave open keeps the head closed. '
     'Set risk_level low, medium, or high and one risk sentence for the merge. '
     'Set merge_pr_url to the tracked PR URL so an external merge retires the card. '
     'Before an authorized merge, recheck the exact head and use a merge operation that rejects a changed head. '
