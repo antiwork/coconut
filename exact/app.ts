@@ -46,13 +46,20 @@ type Project = Home['projects'][number];
 type Row = Home['chats'][number];
 type Attention = Home['attention'][number];
 type Message = Chat['messages'][number];
+type Card = Message['card'][number];
+type Photo = Message['photos'][number];
+type Draft = Card['drafts'][number];
 type Turn = Chat['turn'];
 type Live = Result<'sync'>;
 type Sock = Result<'socket'>;
 
 // The parts of the fixture that are read here.
-interface FxOption { id: string; label: string; explanation: string }
-interface FxDecision { id: string; bot_id: string; task_id: string; title: string; explanation: string; consequences: string; proposal_preview: string; status: string; created_at: string; options: FxOption[] }
+interface FxOption { id: string; label: string; explanation: string; answer?: string; risk?: string | null; risk_level?: string | null }
+interface FxDecision {
+  id: string; bot_id: string; task_id: string; title: string; explanation: string; consequences: string; proposal_preview: string;
+  status: string; created_at: string; options: FxOption[]; action_type?: string; resource?: string; context?: string; risk?: string;
+  risk_level?: string; uncertainty?: string; recommended_option_id?: string; sources?: Source[]; draft?: RawDraft; previews?: RawPreview[];
+}
 interface FxArtifact { id: string; task_id: string; title: string; preview: string }
 interface FxMessage { id: string; bot_id: string; task_id: string | null; kind: string; role: string; text: string; created_at: string }
 interface FxTask { id: string; bot_id: string; status: string; updated_at: string; phase?: string; phase_detail?: string; phase_started_at?: string }
@@ -92,6 +99,8 @@ const parse = (iso: string): number => {
 };
 
 const LETTERS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+// AgentChats.untitled: a further chat of an agent that has no title yet.
+const UNTITLED = 'New agent';
 // AgentLetter.colors: the face of a letter is its place in the alphabet, modulo the eight faces.
 const faceOf = (letter: string): number => Math.max(0, LETTERS.indexOf(letter)) % 8;
 // AgentLetter.letter: the letter of an avatar (`letter.R`), else the initial of the name.
@@ -107,7 +116,25 @@ const PHASES: Record<string, string> = {
   memory: 'Checking memory', github: 'Working in GitHub', helpers: 'Working with helpers', writing: 'Writing…',
 };
 
-interface Msg { id: string; kind: string; mine: boolean; author: string; at: number; title: string; body: string; detail: string; ref: string; status: string; receipt: string; options: FxOption[] }
+// A photo as the data module keeps it: a file of the Mac by its artifact id (`file`), or an address that the view loads
+// itself (`url`: a web address, or a picture of the app's assets in the demo).
+interface PhotoRef { key: string; file: string; url: string; caption: string; width: number; height: number }
+// The parts of a card that the Mac's state and the fixture both give.
+interface Source { kind: string; title: string; url?: string | null }
+interface RawDraft { channel: string; recipient: string; body: string; sender?: string | null; subject?: string | null; reply_to?: string | null }
+interface RawPreview { artifact_id: string; caption: string; width: number; height: number }
+interface Opt { id: string; label: string; explanation: string; recommended: boolean; risk: string; reason: string; answer: string }
+// A card as a chat shows it, before the answer that the phone holds for it (`answers`).
+interface CardData {
+  ref: string; title: string; sources: string[]; diff: string; context: string[]; risk: string; reason: string; stale: boolean;
+  previews: PhotoRef[]; draft: Draft | null; options: Opt[]; status: string; refreshing: boolean; decidedBy: string; selected: string;
+  outcome: string; earlier: string; revised: boolean; revision: number; draftHash: string; previewsHash: string;
+}
+// A row of a chat. `from` joins the photos that one agent sent one after another into one row (Message.photoSender).
+interface Msg {
+  id: string; kind: string; mine: boolean; author: string; at: number; title: string; body: string; detail: string; failed: boolean;
+  sender: string; quote: string; quoteAuthor: string; photos: PhotoRef[]; card: CardData | null; from: string;
+}
 // A turn that runs: `startedAt` is the start of its newest step (the Mac's `phase_started_at`), which the working line
 // and the row of the chat time.
 interface Run { startedAt: number; phase: string; detail: string; queued: number }
@@ -117,16 +144,21 @@ interface ChatState {
   project: string;
   projectName: string;
   title: string;
+  // The title of the chat itself (Bot.chatLabel), which its header shows; the list names the project before it.
+  label: string;
   letter: string;
   face: number;
   circle: boolean;
   messages: Msg[];
   run: Run | null;
   unread: number;
+  // The newest message that the person read (`last_read_message_id`): the New line goes under it.
+  readMark: string;
   // BotHealth.label of an agent that cannot run, or an empty string.
   health: string;
   // An archived chat of the Mac. It shows in Idle with the others, but gives its project no place in the picker.
   archived?: boolean;
+  muted?: boolean;
 }
 interface Notice { id: string; type: string; text: string; at: number; author: string; seen: boolean; active: boolean }
 // A card that waits for the person, with the chat that holds it and the time it was made.
@@ -146,8 +178,192 @@ interface State {
 }
 
 const message = (id: string, kind: string, mine: boolean, at: number, body: string, extra: Partial<Msg> = {}): Msg => ({
-  id, kind, mine, author: '', at, title: '', body, detail: '', ref: '', status: '', receipt: '', options: [], ...extra,
+  id, kind, mine, author: '', at, title: '', body, detail: '', failed: false, sender: '', quote: '', quoteAuthor: '', photos: [],
+  card: null, from: '', ...extra,
 });
+
+// MARK: Cards
+
+// A decision of the Mac's state or of the fixture, as far as a card reads it.
+interface RawDecision {
+  id: string; title: string; status: string; options: FxOption[]; revision?: number; explanation?: string | null;
+  context?: string | null; uncertainty?: string | null; risk?: string | null; risk_level?: string | null; assessment_stale?: boolean | null;
+  action_type?: string; resource?: string | null; recommended_option_id?: string | null; sources?: Source[] | null;
+  merge_pr_url?: string | null; merge_pr_diff?: { additions: number; deletions: number; changed_files: number } | null;
+  draft?: RawDraft | null; draft_hash?: string | null; previews?: RawPreview[] | null; previews_hash?: string | null;
+  selected_option_id?: string | null; selected_option_label?: string | null; outcome?: string | null; decided_by?: string | null;
+  previous_decision_id?: string | null; replaced_by_decision_id?: string | null; source_refreshing?: boolean | null;
+}
+
+// DecisionRisk.label.
+const riskLabel = (level: string | null | undefined): string => (level === 'low' ? 'Low risk' : level === 'medium' ? 'Medium risk'
+  : level === 'high' ? 'High risk' : level === 'not_assessed' ? 'Risk not assessed' : 'Risk');
+const SOURCE_LABELS: Record<string, string> = { email: 'Email', issue: 'Issue', pull_request: 'PR' };
+const thousands = (n: number): string => String(n).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+const said = (text: string | null | undefined): string => (text ?? '').trim();
+
+// Decision.cardSources: each source once, with a title, and the pull request of a merge card when no source names it.
+// A line names its kind and title (DecisionSources); the app opens no link yet.
+const sourceLines = (d: RawDecision): string[] => {
+  const sources = [...(d.sources ?? [])];
+  const pr = /^https:\/\/github\.com\/[^/]+\/([^/]+)\/pull\/(\d+)$/.exec(d.merge_pr_url ?? '');
+  if (pr && !sources.some((s) => s.url === d.merge_pr_url)) sources.push({ kind: 'pull_request', title: `${pr[1]} #${pr[2]}`, url: d.merge_pr_url });
+  const lines: string[] = [];
+  for (const s of sources) {
+    const line = `${SOURCE_LABELS[s.kind] ?? 'Source'} · ${s.title.trim()}`;
+    if (s.title.trim() !== '' && !lines.includes(line)) lines.push(line);
+  }
+  return lines;
+};
+
+// Decision.cardContext in paragraphs: the context, else the explanation unless it repeats the title, then an unknown
+// that the context does not name, and the resource of a native approval.
+const contextOf = (d: RawDecision): string[] => {
+  const recap = said(d.context);
+  const text = recap === '' ? said(d.explanation) : recap;
+  let summary = text === d.title ? '' : text;
+  const unknown = said(d.uncertainty);
+  if (d.assessment_stale !== true && unknown !== '' && !summary.toLowerCase().includes(unknown.toLowerCase())) {
+    summary = [summary, unknown].filter((part) => part !== '').join('\n\n');
+  }
+  const resource = said(d.resource);
+  if (d.action_type === 'native_approval' && resource !== '' && !summary.includes(resource)) {
+    summary = [summary, resource].filter((part) => part !== '').join('\n');
+  }
+  return summary === '' ? [] : summary.split('\n\n').map((part) => part.trim()).filter((part) => part !== '');
+};
+
+// Decision.cardOptions: the recommended option first. A file card without options takes Save file and Do not save, and
+// a draft card takes Send and Discard (MessageDraftActions), whatever options it names.
+const optionsOf = (d: RawDecision): Opt[] => {
+  const stale = d.assessment_stale === true;
+  if (d.draft) {
+    return [
+      { id: 'send', label: 'Send', explanation: '', recommended: false, risk: '', reason: '', answer: 'approve' },
+      { id: 'discard', label: 'Discard', explanation: '', recommended: false, risk: '', reason: '', answer: 'reject' },
+    ];
+  }
+  const raw: FxOption[] = d.options.length === 0 && d.action_type === 'create_file'
+    ? [{ id: 'save-file', label: 'Save file', explanation: `Create ${said(d.resource)} on the Mac.`, answer: 'approve' },
+      { id: 'do-not-save', label: 'Do not save', explanation: 'Create no file.', answer: 'reject' }]
+    : d.options;
+  const options = raw.map((o): Opt => ({
+    id: o.id, label: o.label, explanation: o.explanation ?? '', recommended: o.id === d.recommended_option_id,
+    risk: !stale && said(o.risk) !== '' ? riskLabel(o.risk_level) : '', reason: stale ? '' : said(o.risk), answer: o.answer ?? 'approve',
+  }));
+  const first = options.findIndex((o) => o.recommended);
+  return first > 0 ? [options[first], ...options.slice(0, first), ...options.slice(first + 1)] : options;
+};
+
+// A card from a decision. `all` names the cards of the state, for the earlier choice of a follow-up.
+const cardOf = (d: RawDecision, all: Map<string, RawDecision>): CardData => {
+  const stale = d.assessment_stale === true;
+  const diff = d.merge_pr_url && d.merge_pr_diff
+    ? `+${thousands(d.merge_pr_diff.additions)} −${thousands(d.merge_pr_diff.deletions)} · ${thousands(d.merge_pr_diff.changed_files)} ${d.merge_pr_diff.changed_files === 1 ? 'file' : 'files'}`
+    : '';
+  const previous = d.previous_decision_id ? all.get(d.previous_decision_id) : undefined;
+  const draft = d.draft ? {
+    via: d.draft.channel ?? '', from: said(d.draft.sender), to: d.draft.recipient ?? '', replyTo: said(d.draft.reply_to),
+    subject: said(d.draft.subject), body: d.draft.body ?? '',
+  } : null;
+  return {
+    ref: d.id, title: d.title, sources: sourceLines(d), diff, context: contextOf(d), stale,
+    risk: !stale && said(d.risk) !== '' ? riskLabel(d.risk_level) : '', reason: stale ? '' : said(d.risk),
+    previews: (d.previews ?? []).map((p) => ({ key: `file:${p.artifact_id}`, file: p.artifact_id, url: '', caption: p.caption ?? '', width: p.width ?? 0, height: p.height ?? 0 })),
+    draft, options: optionsOf(d), status: d.status, refreshing: d.status === 'refreshing' || (d.status === 'pending' && d.source_refreshing === true),
+    decidedBy: d.decided_by ?? '', selected: d.selected_option_label ?? '', outcome: said(d.outcome),
+    earlier: previous && previous.status !== 'replied' && previous.selected_option_label ? `Earlier choice: ${previous.selected_option_label}` : '',
+    revised: !!d.replaced_by_decision_id, revision: d.revision ?? 0, draftHash: d.draft_hash ?? '', previewsHash: d.previews_hash ?? '',
+  };
+};
+
+// The answers that the phone holds for cards, by card (OutgoingAnswer): the option, its label, and whether it still
+// waits for its Undo or goes to the Mac. `failures` say why the last answer to a card did not go, and `dismissed` are
+// the cards that the person dismissed until the Mac says so.
+interface Answering { id: string; option: string; label: string; sending: boolean; undone: boolean }
+const answers = new Map<string, Answering>();
+let choices = 0;
+const failures = new Map<string, string>();
+const dismissed = new Set<string>();
+// How long an answer waits for its Undo before it goes (AppStore.answerUndoSeconds).
+const UNDO_WAIT = 10000;
+
+// DecisionSelection: the receipt of a card that is not pending, its mark, and whether it is dimmed.
+const SERVICE_DECIDERS = new Set(['cancellation', 'archive', 'workflow_permission']);
+const CHOICES = new Set(['approved', 'executed', 'rejected', 'modified', 'replied']);
+const receiptOf = (c: CardData, gone: boolean, choosing: string): { label: string; mark: string; dim: boolean } => {
+  const byService = SERVICE_DECIDERS.has(c.decidedBy);
+  const pending = c.status === 'pending' && !c.refreshing;
+  const check = CHOICES.has(c.status) && !byService;
+  const told = c.outcome === '' ? '' : c.outcome.length <= 80 && !c.outcome.includes('\n') ? c.outcome : 'Closed';
+  let label: string;
+  if (gone) label = 'Dismissed';
+  else if (byService) label = told || 'Closed';
+  else if (c.draft) {
+    label = ['pending', 'approved', 'executed'].includes(c.status) ? 'Approved for sending' : c.status === 'rejected' ? 'Discarded'
+      : c.status === 'failed' ? 'Could not finish' : told || 'Closed';
+  } else if (choosing !== '') label = choosing;
+  else if (c.selected !== '') label = c.selected;
+  else if (c.status === 'resolved' && told !== '') label = told;
+  else label = c.status.slice(0, 1).toUpperCase() + c.status.slice(1);
+  const mark = gone ? 'symbol:close' : c.status === 'failed' ? 'symbol:alert' : pending ? 'symbol:sf/arrow.up' : check ? 'symbol:checkmark' : '';
+  return { label, mark, dim: !gone && c.status !== 'pending' && c.status !== 'failed' && !check };
+};
+
+// MARK: Photos
+
+// The files of photos that the phone keeps (a tile and a larger copy of each), by artifact id, and the ones that did not
+// load this launch. The copies live in the scratch folder of uploads, which the grants of build 19 name.
+const PHOTOS = 'app:/tmp/upload/photos';
+interface KeptPhoto { tile: string; full: string }
+const kept = new Map<string, KeptPhoto>();
+const unloadable = new Set<string>();
+// How large a tile and the viewer's copy are: a tile of 280 points on a phone of 3 pixels a point, and a photo that
+// fills a screen.
+const TILE_SIDE = 840;
+const FULL_SIDE = 2400;
+
+// FileRules.isImageName: the files that the chat shows as photos.
+const IMAGE_NAME = /\.(png|jpe?g|gif|webp|heic)$/i;
+// TranscriptPresentation.photo: a message that is one Markdown image line, `![caption](address)`, with a web address or
+// a file of the Mac (`coconut-file://<id>`); or the older form, an image address with an optional caption line above.
+const photoIn = (text: string): { address: string; caption: string } | null => {
+  if (text.length > 2048) return null;
+  const lines = text.split(/\r?\n/).map((line) => line.trim()).filter((line) => line !== '');
+  if (lines.length === 1) {
+    const m = /^!\[((?:\\.|[^\]\\])*)\]\((?:<([^<>]+)>|([^\s<>()]+))\)$/.exec(lines[0]);
+    const address = m ? (m[2] ?? m[3]).replace(/ /g, '%20') : '';
+    if (m && /^(https|coconut-file):\/\/[^/\s]+/i.test(address)) return { address, caption: m[1].replace(/\\(.)/g, '$1') };
+  }
+  if (lines.length < 1 || lines.length > 2) return null;
+  const address = lines[lines.length - 1];
+  if (address.includes(' ') || !/^https:\/\/[^/\s]+/i.test(address) || !IMAGE_NAME.test(address.split(/[?#]/)[0])) return null;
+  return { address, caption: lines.length === 2 ? lines[0] : '' };
+};
+const photoRef = (address: string, caption: string): PhotoRef => {
+  const file = /^coconut-file:\/\/([0-9a-f-]{36})/i.exec(address);
+  return file
+    ? { key: `file:${file[1].toLowerCase()}`, file: file[1].toLowerCase(), url: '', caption, width: 0, height: 0 }
+    : { key: `url:${address}`, file: '', url: address, caption, width: 0, height: 0 };
+};
+// The photo as a tile shows it: a file of the Mac once the phone keeps it, an address at once.
+const photoOf = (p: PhotoRef): Photo => {
+  if (p.file === '') return { key: p.key, src: p.url, full: p.url, caption: p.caption, state: 'ready', width: p.width, height: p.height };
+  const have = kept.get(p.file);
+  const state = have ? 'ready' : unloadable.has(p.file) ? 'failed' : 'loading';
+  return { key: p.key, src: have?.tile ?? '', full: have?.full ?? '', caption: p.caption, state, width: p.width, height: p.height };
+};
+
+// MARK: Messages
+
+// TranscriptPresentation.visibleMessages: what a chat leaves out. A reply still streaming without words, a card that the
+// person answered in words (the answer shows in its place), reactions, the silence marker, settings notices, a generic
+// "Working" or "Done" beside a real result, empty texts, the marker of a message of files alone, and the second copy of
+// an answer that older workers kept as a file.
+const GENERIC_PROGRESS = new Set(['working', 'working on your request', 'preparing an answer']);
+const GENERIC_DONE = new Set(['ready to review', 'done', 'complete', 'completed', 'task complete', 'task completed', 'work complete', 'work completed']);
+const isLabel = (text: string, labels: Set<string>): boolean => text.length <= 40 && labels.has(text.trim().replace(/^[.!…]+|[.!…]+$/g, '').toLowerCase());
+const LEGACY_SETTINGS = 'New actions use this permission mode. An action already executing may finish.';
 
 const kindName = (kind: string): string => kind.slice(0, 1).toUpperCase() + kind.slice(1);
 
@@ -164,6 +380,7 @@ const build = (): State => {
   const projects: Project[] = [];
   const waits: Wait[] = [];
   const bySent = (a: FxMessage, b: FxMessage): number => (a.created_at < b.created_at ? -1 : a.created_at > b.created_at ? 1 : 0);
+  const all = new Map<string, RawDecision>(fx.decisions.map((d) => [d.id, d]));
 
   for (const bot of fx.bots) {
     const letter = letterOf(bot.avatar, bot.name);
@@ -172,27 +389,23 @@ const build = (): State => {
       // A card and a file are messages with no words: the task they belong to names them.
       const decision = m.kind === 'decision' ? fx.decisions.find((d) => d.task_id === m.task_id) : undefined;
       const artifact = m.kind === 'artifact' ? fx.artifacts.find((a) => a.task_id === m.task_id) : undefined;
-      if (decision) {
-        return message(m.id, 'decision', false, at, decision.explanation, {
-          title: decision.title,
-          detail: '```diff\n' + decision.proposal_preview.trimEnd() + '\n```\n\n' + decision.consequences,
-          ref: decision.id,
-          status: decision.status === 'pending' ? 'pending' : 'replied',
-          options: decision.options.map((o) => ({ id: o.id, label: o.label, explanation: o.explanation })),
-        });
-      }
+      if (decision) return message(m.id, 'decision', false, at, '', { card: cardOf(decision, all) });
       if (artifact) return message(m.id, 'artifact', false, at, artifact.preview, { title: artifact.title });
       return message(m.id, m.kind === 'activity' ? 'activity' : 'text', m.role === 'user', at, m.text);
     });
     if (!bot.chat_of) projects.push({ id: bot.id, name: bot.name, letter, face: faceOf(letter) });
+    const label = bot.chat_of ? said(bot.chat_title) || UNTITLED : bot.name;
+    // The New line goes under the newest message that the person read: the fixture counts the unread ones.
+    const read = bot.unread_count > 0 ? messages[messages.length - 1 - bot.unread_count] : undefined;
     chats.set(bot.id, {
-      id: bot.id, kind: 'agent', project: bot.chat_of ?? bot.id, projectName: bot.name, title: bot.chat_title ?? bot.name,
-      letter, face: faceOf(letter), circle: false, messages, run: null, unread: bot.unread_count, health: '',
+      id: bot.id, kind: 'agent', project: bot.chat_of ?? bot.id, projectName: bot.name, title: bot.chat_of ? `${bot.name} · ${label}` : bot.name,
+      label, letter, face: faceOf(letter), circle: false, messages, run: null, unread: bot.unread_count, readMark: read?.id ?? '', health: '',
     });
     for (const d of fx.decisions) {
       if (d.bot_id === bot.id && d.status === 'pending') waits.push({ ref: d.id, chat: bot.id, at: rel(d.created_at) });
     }
   }
+  demoExtras(chats, rel, waits);
 
   // A task that works is the running turn of its agent, with its newest step: the phase, its detail and its start, as
   // AppStore.runningPhase reads them. A task without a step yet starts at its last update and thinks.
@@ -222,8 +435,8 @@ const build = (): State => {
     id: n.id, type: n.type, text: n.text, at: -n.minutes_ago * MINUTE, author: n.author, seen: n.seen, active: n.active,
   }));
   chats.set(teamId, {
-    id: teamId, kind: 'team', project: '', projectName: team.name, title: team.name, letter: team.name.slice(0, 1).toUpperCase(),
-    face: faceOf(team.name.slice(0, 1).toUpperCase()), circle: true, run: null, unread: 0, health: '',
+    id: teamId, kind: 'team', project: '', projectName: team.name, title: team.name, label: team.name, letter: team.name.slice(0, 1).toUpperCase(),
+    face: faceOf(team.name.slice(0, 1).toUpperCase()), circle: true, run: null, unread: 0, readMark: '', health: '',
     messages: [
       message(`${teamId}-last`, 'text', false, -team.last.minutes_ago * MINUTE, team.last.text, { author: team.last.name }),
       ...notices.map((n) => message(`notice-${n.id}`, 'notice', false, n.at, n.text, { author: n.author, title: kindName(n.type) })),
@@ -232,12 +445,67 @@ const build = (): State => {
   for (const direct of team.directs) {
     const letter = direct.name.slice(0, 1).toUpperCase();
     chats.set(`direct-${direct.member}`, {
-      id: `direct-${direct.member}`, kind: 'direct', project: '', projectName: direct.name, title: direct.name, letter, face: faceOf(letter),
-      circle: true, run: null, unread: direct.unread, health: '',
+      id: `direct-${direct.member}`, kind: 'direct', project: '', projectName: direct.name, title: direct.name, label: direct.name, letter,
+      face: faceOf(letter), circle: true, run: null, unread: direct.unread, readMark: '', health: '',
       messages: [message(`direct-${direct.member}-1`, 'text', false, -direct.minutes_ago * MINUTE, direct.text, { author: direct.name })],
     });
   }
   return { zero: null, chats, projects, notices, waits, stuck, teamId, counter: 0 };
+};
+
+// What the demo shows besides the fixture, so its chats have the parts that the fixture lacks: a photo and a draft card
+// in Payouts, and a background process that finished and a card with a source, a risk, a recommended option and a
+// preview in a chat of Releases. The pictures are in the app's assets (assets/demo), charts of the numbers that the
+// fixture's messages give.
+const demoExtras = (chats: Map<string, ChatState>, rel: (iso: string) => number, waits: Wait[]): void => {
+  const add = (chatId: string, row: Msg): void => {
+    const chat = chats.get(chatId);
+    if (!chat) return;
+    chat.messages = [...chat.messages, row].sort((a, b) => a.at - b.at);
+    if (row.card?.status === 'pending') waits.push({ ref: row.card.ref, chat: chatId, at: row.at });
+  };
+  const card = (ref: string, extra: Partial<CardData>): CardData => ({
+    ref, title: '', sources: [], diff: '', context: [], risk: '', reason: '', stale: false, previews: [], draft: null, options: [],
+    status: 'pending', refreshing: false, decidedBy: '', selected: '', outcome: '', earlier: '', revised: false, revision: 1, draftHash: '',
+    previewsHash: '', ...extra,
+  });
+  const payouts = '00000000-0000-4000-8000-000000000003';
+  add(payouts, message('demo-photo-payouts', 'photos', false, rel('2026-09-08T11:21:00Z'), '', {
+    photos: [{ key: 'url:assets/demo/failed-payouts.png', file: '', url: 'assets/demo/failed-payouts.png', caption: 'Failed payouts by reason', width: 1260, height: 810 }],
+    from: `assistant:${payouts}`,
+  }));
+  add(payouts, message('demo-card-payouts', 'decision', false, rel('2026-09-08T11:26:00Z'), '', {
+    card: card('demo-draft-payouts', {
+      title: 'Reply to Jordan about the missing payout?',
+      context: ['Jordan Lee asked Support why today\'s payout did not arrive. Their bank rejected the account number on file, so the reply says how to fix it before the next run.'],
+      draft: {
+        via: 'Gmail', from: 'payouts@gumroad.com', to: 'jordan@leestudio.co', replyTo: '', subject: 'Re: Where is my payout?',
+        body: 'Hi Jordan,\n\nYour bank rejected the account number on file, so today\'s payout did not reach you. Update it in Settings → Payments, and the next payout run will send the money.\n\nThe Gumroad team',
+      },
+      options: [
+        { id: 'send', label: 'Send', explanation: 'Send this exact message.', recommended: false, risk: '', reason: '', answer: 'approve' },
+        { id: 'discard', label: 'Discard', explanation: 'Send nothing.', recommended: false, risk: '', reason: '', answer: 'reject' },
+      ],
+    }),
+  }));
+  const sidekiq = '00000000-0000-4000-8000-000000000004';
+  add(sidekiq, message('demo-process-queues', 'process', false, rel('2026-09-08T09:00:00Z'), 'Finished in gumroad · 4s', {
+    title: 'bin/rails runner Sidekiq::Queue.all', detail: 'cd ~/gumroad && bin/rails runner \'Sidekiq::Queue.all.each { |q| puts "#{q.name} #{q.size}" }\'',
+    from: `assistant:${sidekiq}`,
+  }));
+  add(sidekiq, message('demo-card-webhooks', 'decision', false, rel('2026-09-08T09:07:00Z'), '', {
+    card: card('demo-webhooks', {
+      title: 'Turn off webhooks for the seller\'s endpoint?',
+      sources: ['Issue · Webhook retries fill the low queue'],
+      context: ['The paused retries go to one seller\'s endpoint, which answers 502. Turning off its webhooks drops the 41 retries for good, and Gumroad emails the seller how to turn them back on.'],
+      risk: 'Medium risk', reason: 'The seller gets no sale webhooks until they turn them back on.',
+      previews: [{ key: 'url:assets/demo/webhook-answers.png', file: '', url: 'assets/demo/webhook-answers.png', caption: 'Answers of the endpoint, last 24 hours', width: 1260, height: 810 }],
+      options: [
+        { id: 'off', label: 'Turn off webhooks', explanation: 'Drops the 41 retries and emails the seller.', recommended: true, risk: '', reason: '', answer: 'approve' },
+        { id: 'keep', label: 'Keep them paused', explanation: 'The retries start again once the endpoint answers 200.', recommended: false, risk: 'Low risk', reason: 'The low queue keeps the 41 jobs until then.', answer: 'approve' },
+      ],
+    }),
+  }));
 };
 
 // The fixture's state is built once, when the first source asks, and not at the top of the module: the top of a data
@@ -267,15 +535,18 @@ const showOutgoing = (chatId: string): void => {
 
 // The newest message that is no notice: the age and the place of the row of a chat.
 const newest = (chat: ChatState): number => chat.messages.reduce((t, m) => (m.kind === 'notice' ? t : Math.max(t, m.at)), -Infinity);
-const waitingCard = (chat: ChatState): boolean => chat.messages.some((m) => m.kind === 'decision' && m.status === 'pending');
+const waitingCard = (chat: ChatState): boolean => chat.messages.some((m) => m.card !== null && m.card.status === 'pending' && !m.card.refreshing && !dismissed.has(m.card.ref));
 
-// The line under the name of a chat: the newest text, with who wrote it (ChatRowText).
+// The line under the name of a chat: the newest text, with who wrote it (ChatRowText). A photo reads as Photo, with its
+// caption (MessagePhoto.preview).
 const lastLine = (chat: ChatState): string => {
   for (let i = chat.messages.length - 1; i >= 0; i--) {
     const m = chat.messages[i];
-    if (m.kind !== 'text' || m.body.trim() === '') continue;
+    const photo = m.kind === 'photos' ? m.photos[m.photos.length - 1] : undefined;
+    const text = photo ? (photo.caption === '' ? 'Photo' : `Photo: ${photo.caption}`) : m.kind === 'text' ? m.body.trim() : '';
+    if (text === '') continue;
     const who = m.mine ? 'You: ' : chat.kind === 'team' && m.author !== '' ? `${m.author}: ` : '';
-    return who + m.body.replace(/\s+/g, ' ').trim();
+    return who + text.replace(/\s+/g, ' ');
   }
   return 'No messages yet';
 };
@@ -333,12 +604,22 @@ const ordered = (s: State): Project[] => {
 // MARK: The Mac's state
 
 // The parts of the Mac's state (`GET /v1/state` with recent content) that are read here.
-interface LvOption { id: string; label: string; explanation: string; answer: string }
-interface LvBot { id: string; name: string; avatar: string; archived: boolean; pinned: boolean; project?: boolean; profile: string; status: string; unread_count: number }
-interface LvMessage { id: string; bot_id: string; task_id: string | null; kind: string; role: string; text: string; created_at: string; decision_id: string | null; artifact_id: string | null }
+interface LvOption { id: string; label: string; explanation: string; answer: string; risk?: string | null; risk_level?: string | null }
+interface LvBot {
+  id: string; name: string; avatar: string; archived: boolean; pinned: boolean; project?: boolean; profile: string; status: string;
+  unread_count: number; chat_of?: string | null; chat_title?: string | null; last_read_message_id?: string | null; notifications?: boolean;
+}
+interface LvReference { message_id: string; text: string; author: string; role: string; document_id?: string | null }
+interface LvNotice { ok: boolean; command?: string | null; label?: string | null; place?: string | null; duration?: string | null; exit_code?: number | null; output?: string | null }
+interface LvMessage {
+  id: string; bot_id: string; task_id: string | null; kind: string; role: string; text: string; created_at: string; decision_id: string | null;
+  artifact_id: string | null; streaming?: boolean; sender_bot_id?: string | null; recipient_bot_ids?: string[] | null; thread_id?: string | null;
+  reply_to?: LvReference | null; work_context?: { id: string; title: string } | null; reaction_event?: unknown; process_notice?: LvNotice | null;
+  document_id?: string | null;
+}
 interface LvTask { id: string; bot_id: string; status: string; title: string | null; created_at: string; updated_at: string; phase?: string | null; phase_detail?: string | null; phase_started_at?: string | null }
-interface LvDecision { id: string; bot_id: string; title: string; context: string | null; explanation: string | null; consequences: string | null; risk: string | null; uncertainty: string | null; status: string; created_at: string; revision: number; options: LvOption[]; selected_option_label: string | null }
-interface LvArtifact { id: string; title: string; preview: string }
+interface LvDecision extends RawDecision { bot_id: string; created_at: string; revision: number; options: LvOption[] }
+interface LvArtifact { id: string; title: string; preview: string; kind?: string; status?: string; url?: string | null }
 interface Snapshot { server_time: string; cursor: number; model: string | null; bots: LvBot[]; messages: LvMessage[]; tasks: LvTask[]; decisions: LvDecision[]; artifacts: LvArtifact[] }
 // An answer of `GET /v1/updates` (X-Coconut-Updates 4, StateUpdates.swift): the changes after `after` up to `cursor`, or
 // a whole state in `reset` when the Mac cannot list them.
@@ -465,6 +746,89 @@ const shows = (snap: Snapshot, chatId: string, send: Outgoing): boolean => snap.
 // chat of the Mac. `at` is from the launch.
 const unsent = new Map<string, { words: string; files: PickedFile[]; photos: string[]; at: number; send: Outgoing | null }>();
 
+// The messages of a chat that it shows (TranscriptPresentation.visibleMessages, see GENERIC_PROGRESS).
+const visible = (messages: LvMessage[], artifacts: Map<string, LvArtifact>): LvMessage[] => {
+  // The tasks whose agent gave a real result: a generic "Done" of theirs says nothing more.
+  const answered = new Set<string>();
+  for (const o of messages) {
+    if (o.task_id && o.role === 'assistant' && ['text', 'artifact', 'decision'].includes(o.kind) && o.text !== '' && !isLabel(o.text, GENERIC_DONE)) {
+      answered.add(`${o.task_id} ${o.sender_bot_id ?? o.bot_id}`);
+    }
+  }
+  return messages.filter((m) => {
+    const text = m.text.trim();
+    if (m.streaming && (text === '' || '[SILENT]'.startsWith(text))) return false;
+    if (m.kind === 'decision' && m.decision_id && decisions.get(m.decision_id)?.status === 'replied') return false;
+    if (m.reaction_event) return false;
+    if (['text', 'bot_exchange'].includes(m.kind) && (m.role === 'assistant' || !!m.sender_bot_id) && !m.decision_id && !m.artifact_id && text === '[SILENT]') return false;
+    if (m.role === 'system' && !m.decision_id && !m.artifact_id && !(m.recipient_bot_ids ?? []).length && !m.streaming
+      && (['policy.updated', 'settings.updated'].includes(m.kind) || (m.kind === 'activity' && !m.task_id && !m.thread_id && text === LEGACY_SETTINGS))) return false;
+    const completion = m.kind === 'activity' || (m.kind === 'text' && m.role === 'assistant' && !m.decision_id && !(m.recipient_bot_ids ?? []).length && !m.streaming);
+    if (completion && m.task_id && isLabel(m.text, GENERIC_DONE) && answered.has(`${m.task_id} ${m.sender_bot_id ?? m.bot_id}`)) return false;
+    if (m.kind === 'activity') return !isLabel(m.text, GENERIC_PROGRESS);
+    if (m.kind === 'text' && text === '') return false;
+    if (m.kind === 'text' && m.role === 'user' && text === ATTACHMENT_ONLY) return false;
+    // Older workers saved the answer of a task twice: as its result and as a message.
+    const artifact = m.kind === 'artifact' && m.artifact_id ? artifacts.get(m.artifact_id) : undefined;
+    if (!artifact || artifact.kind !== 'task' || artifact.status !== 'completed' || artifact.url || !artifact.preview || !m.task_id) return true;
+    return !messages.some((a) => a.task_id === m.task_id && a.kind === 'text' && a.role === 'assistant' && !a.streaming
+      && !(a.recipient_bot_ids ?? []).length && (a.sender_bot_id ?? a.bot_id) === (m.sender_bot_id ?? m.bot_id) && a.text.startsWith(artifact.preview));
+  });
+};
+
+// A message of the Mac as a row of its chat (TranscriptMessageRow): a photo, a card, a file, a page of the Library, a
+// background process that ended, an activity line or a bubble. `names` are the names of the Mac's agents.
+const rowOfMessage = (m: LvMessage, at: number, artifacts: Map<string, LvArtifact>, names: Map<string, string>): Msg => {
+  const mine = m.role === 'user';
+  // Who wrote a message to another agent, and to whom: the sender, an arrow and the others.
+  const recipients = m.recipient_bot_ids ?? [];
+  const to = recipients.length === 1 && recipients[0] === m.bot_id ? [] : recipients;
+  const toNames = to.map((id) => names.get(id) ?? 'Deleted agent').join(', ');
+  const from = m.sender_bot_id ?? '';
+  const sender = from !== '' && names.has(from) && (from !== m.bot_id || recipients.length > 0)
+    ? `${names.get(from)}${toNames === '' ? '' : ` → ${toNames}`}`
+    : from !== '' && from !== m.bot_id ? 'Deleted agent' : mine && toNames !== '' ? `To ${toNames}` : '';
+  // The message that this one answers: a card that the person answered in words, or a quoted message or page.
+  let quote = '';
+  let quoteAuthor = '';
+  const card = m.decision_id ? decisions.get(m.decision_id) : undefined;
+  if (mine && m.decision_id && m.reply_to?.message_id === m.decision_id) {
+    quote = m.reply_to.text;
+    quoteAuthor = m.reply_to.author;
+  } else if (mine && card?.status === 'replied') {
+    quote = card.title;
+    quoteAuthor = names.get(card.bot_id) ?? 'Agent';
+  } else if (m.reply_to) {
+    quote = m.reply_to.text;
+    quoteAuthor = m.reply_to.role === 'document' ? 'Library page' : m.reply_to.author;
+  }
+  const base = { sender, quote, quoteAuthor, from: `${m.role} ${[m.sender_bot_id ?? m.bot_id, ...recipients].join(' ')}` };
+  // An image that the person attached shows as the image, and so does a reply of an agent that is one image.
+  const artifact = m.artifact_id ? artifacts.get(m.artifact_id) : undefined;
+  if (mine && m.kind === 'artifact' && m.artifact_id && IMAGE_NAME.test(m.text)) {
+    return message(m.id, 'photos', true, at, '', { ...base, photos: [photoRef(`coconut-file://${m.artifact_id}`, '')] });
+  }
+  const photo = !mine && m.role === 'assistant' && m.kind === 'text' && !m.streaming && !m.decision_id && !m.artifact_id && !m.reply_to && !m.work_context
+    ? photoIn(m.text) : null;
+  if (photo) return message(m.id, 'photos', false, at, '', { ...base, photos: [photoRef(photo.address, photo.caption)] });
+  if (m.kind === 'decision' && card) return message(m.id, 'decision', false, at, '', { ...base, card: cardOf(card, decisions) });
+  if (artifact) return message(m.id, 'artifact', mine, at, artifact.preview, { ...base, title: artifact.title });
+  if (m.kind === 'document') return message(m.id, 'document', false, at, '', { ...base, title: m.text.trim() || 'Library page' });
+  const notice = m.role === 'assistant' ? m.process_notice : null;
+  if (notice) {
+    // ProcessNoticeRow: "Finished in coconut" or "Failed · exit 2", with the run time. A failure shows the last lines
+    // of its output at once; the command shows on a tap.
+    const status = (notice.ok ? 'Finished' : 'Failed') + (notice.place ? ` in ${notice.place}` : '');
+    const caption = [status, !notice.ok && notice.exit_code != null ? `exit ${notice.exit_code}` : '', notice.duration ?? ''].filter((part) => part !== '').join(' · ');
+    return message(m.id, 'process', false, at, caption, {
+      ...base, title: notice.label || notice.command || 'Background task', detail: notice.ok ? said(notice.command) : said(notice.output) || said(notice.command),
+      failed: !notice.ok,
+    });
+  }
+  if (m.kind === 'activity') return message(m.id, 'activity', false, at, m.text, base);
+  return message(m.id, 'text', mine, at, m.text, base);
+};
+
 const fromSnapshot = (snap: Snapshot): State => {
   const server = parse(snap.server_time);
   const rel = (iso: string): number => parse(iso) - server;
@@ -476,6 +840,10 @@ const fromSnapshot = (snap: Snapshot): State => {
   const artifacts = new Map(snap.artifacts.map((a) => [a.id, a]));
   decisions.clear();
   for (const d of snap.decisions) decisions.set(d.id, d);
+  // An answer that went, a dismissal and a failure end once the Mac no longer has the card pending.
+  for (const [ref, holding] of answers) if (holding.sending && decisions.get(ref)?.status !== 'pending') answers.delete(ref);
+  for (const ref of dismissed) if (decisions.get(ref)?.status !== 'pending') dismissed.delete(ref);
+  for (const ref of failures.keys()) if (decisions.get(ref)?.status !== 'pending') failures.delete(ref);
   const byBot = new Map<string, LvMessage[]>();
   for (const m of snap.messages) {
     const list = byBot.get(m.bot_id);
@@ -487,27 +855,12 @@ const fromSnapshot = (snap: Snapshot): State => {
   const chats = new Map<string, ChatState>();
   const projects: Project[] = [];
   const waits: Wait[] = [];
+  const names = new Map(bots.map((b) => [b.id, b.name]));
   for (const bot of bots) {
     const project = projectOf.get(bot.profile) ?? bot;
     const letter = letterOf(bot.avatar || project.avatar, project.name);
     if (bot.project === true && !bot.archived) projects.push({ id: bot.id, name: bot.name, letter, face: faceOf(letter) });
-    const messages = (byBot.get(bot.id) ?? []).sort(bySent).map((m): Msg => {
-      const at = rel(m.created_at);
-      const decision = m.decision_id ? decisions.get(m.decision_id) : undefined;
-      if (decision) {
-        return message(m.id, 'decision', false, at, decision.context || decision.explanation || '', {
-          title: decision.title,
-          detail: [decision.consequences, decision.risk, decision.uncertainty].filter((part): part is string => !!part && part.trim() !== '').join('\n\n'),
-          ref: decision.id,
-          status: decision.status === 'pending' ? 'pending' : 'replied',
-          receipt: decision.selected_option_label ?? '',
-          options: decision.options.map((o) => ({ id: o.id, label: o.label, explanation: o.explanation })),
-        });
-      }
-      const artifact = m.artifact_id ? artifacts.get(m.artifact_id) : undefined;
-      if (artifact) return message(m.id, 'artifact', m.role === 'user', at, artifact.preview, { title: artifact.title });
-      return message(m.id, m.kind === 'text' ? 'text' : 'activity', m.role === 'user', at, m.text);
-    }).filter((m) => !(m.mine && m.kind === 'text' && m.body.trim() === ATTACHMENT_ONLY));
+    const messages = visible((byBot.get(bot.id) ?? []).sort(bySent), artifacts).map((m) => rowOfMessage(m, rel(m.created_at), artifacts, names));
     // What this phone sends to the chat and the Mac does not show yet.
     const sends = (outgoing.get(bot.id) ?? []).filter((send) => !shows(snap, bot.id, send) && !(send.went && ++send.states > 2));
     if (sends.length > 0) outgoing.set(bot.id, sends);
@@ -515,13 +868,16 @@ const fromSnapshot = (snap: Snapshot): State => {
     for (const send of sends) for (const row of send.rows) messages.push({ ...row, at: row.at - server });
     // A chat that nobody wrote in shows nowhere (AgentChats.isBlank), but a project and a starred chat always show.
     if (messages.length === 0 && bot.unread_count === 0 && bot.status === 'idle' && !bot.pinned && bot.project !== true) continue;
+    // A further chat of a project has a title of its own, which the list names after the project (Bot.listName).
+    const label = bot.chat_of ? said(bot.chat_title) || UNTITLED : bot.name;
     chats.set(bot.id, {
-      id: bot.id, kind: 'agent', project: project.id, projectName: project.name, title: bot.name, letter, face: faceOf(letter),
-      circle: false, messages, run: null, unread: bot.unread_count, health: '', archived: bot.archived,
+      id: bot.id, kind: 'agent', project: project.id, projectName: project.name, title: bot.chat_of ? `${bot.name} · ${label}` : bot.name, label,
+      letter, face: faceOf(letter), circle: false, messages, run: null, unread: bot.unread_count, readMark: bot.last_read_message_id ?? '',
+      health: '', archived: bot.archived, muted: bot.notifications === false,
     });
   }
   for (const d of snap.decisions) {
-    if (d.status === 'pending' && chats.has(d.bot_id)) waits.push({ ref: d.id, chat: d.bot_id, at: rel(d.created_at) });
+    if (d.status === 'pending' && !dismissed.has(d.id) && chats.has(d.bot_id)) waits.push({ ref: d.id, chat: d.bot_id, at: rel(d.created_at) });
   }
   running.clear();
   const stuck: Stuck[] = [];
@@ -858,6 +1214,8 @@ const upload = async (storage: Storage, botId: string, words: string, files: Pic
       const made = (await write('POST', '/v1/attachments', await attachmentBody(botId, fit.name, bytes))) as { id?: string };
       if (!made.id) throw new Error('Your Mac did not keep the file.');
       ids.push(made.id);
+      // A photo that goes keeps its copies for the Mac's file it becomes, so the chat does not load it back.
+      if (IMAGE_NAME.test(fit.name)) await keepPhoto(storage, made.id.toLowerCase(), fit.path).catch(() => undefined);
     }
     return ids;
   } finally {
@@ -995,7 +1353,11 @@ const status = (key = ''): Live => ({ version, pairs, error: lastError, quick: k
 
 const none: Project = { id: '', name: '', letter: '', face: 0 };
 const idle: Turn = { running: false, startedAt: 0, phase: '', detail: '', model: '', queued: 0 };
-const emptyChat: Chat = { id: '', kind: 'agent', title: '', project: '', letter: '', face: 0, circle: false, messages: [], turn: idle, toolbar: false, live: false };
+const emptyChat: Chat = { id: '', kind: 'agent', title: '', project: '', letter: '', face: 0, circle: false, messages: [], turn: idle, toolbar: false, live: false, missing: 0, muted: false };
+const rowDefaults: Message = {
+  id: '', kind: 'text', mine: false, author: '', at: 0, title: '', body: '', detail: '', failed: false, startsDay: false, newLine: false, sender: '',
+  quote: '', quoteAuthor: '', photos: [], card: [],
+};
 
 const failed = (error: unknown): string => (error instanceof Error ? error.message : String(error));
 
@@ -1020,6 +1382,122 @@ const choose = async (catalog: Catalog, chatId: string, selection: Selection): P
       chat.messages = [...chat.messages, message(`${chat.id}-f${s.counter}`, 'activity', false, Number.isFinite(at) ? at : 0, `The model did not change: ${failed(error)}`)];
     }
     return { ok: false };
+  }
+};
+
+// MARK: The chat's cards and photos
+
+// The read mark that each chat opened with (UnreadMark): the view counts its openings, and the first source that a new
+// opening asks (the chat or its read) takes the mark before the read clears the count.
+const newLines = new Map<string, string>();
+const opening = new Map<string, number>();
+const markOf = (chat: ChatState, opened: number): void => {
+  if (opening.get(chat.id) === opened) return;
+  opening.set(chat.id, opened);
+  newLines.set(chat.id, chat.unread > 0 ? chat.readMark : '');
+};
+
+// A card as the chat shows it, with the answer that the phone holds for it.
+const cardView = (c: CardData): Card => {
+  const holding = answers.get(c.ref);
+  const gone = dismissed.has(c.ref) || c.status === 'dismissed';
+  const open = c.status === 'pending' && !c.refreshing && !gone;
+  const receipt = receiptOf(c, gone, holding?.sending ? holding.label : '');
+  const previews = c.previews.map(photoOf);
+  return {
+    ref: c.ref, title: c.title, sources: c.sources, diff: c.diff, context: c.context, risk: c.risk, reason: c.reason, stale: c.stale, previews,
+    previewsReady: previews.every((p) => p.state === 'ready'), drafts: c.draft ? [c.draft] : [],
+    options: c.options.map((o) => ({ id: o.id, label: o.label, explanation: o.explanation, recommended: o.recommended, risk: o.risk, reason: o.reason, approve: o.answer === 'approve' })),
+    pending: open, refreshing: c.refreshing && !gone, dismissible: open && !holding, chosen: holding?.option ?? '', chosenLabel: holding?.label ?? '',
+    waiting: !!holding && !holding.sending, sending: !!holding?.sending, receipt: receipt.label, mark: receipt.mark, dim: receipt.dim,
+    outcome: c.status === 'failed' ? c.outcome : '', earlier: c.earlier, revised: c.revised, error: failures.get(c.ref) ?? '',
+  };
+};
+
+// The card of `ref` in the state that the screens read, and its chat.
+const cardIn = (s: State, ref: string): { chat: ChatState; card: CardData } | null => {
+  for (const chat of s.chats.values()) {
+    for (const m of chat.messages) if (m.card?.ref === ref) return { chat, card: m.card };
+  }
+  return null;
+};
+
+// The files of the Mac that the photos of a chat and the previews of its cards show, the newest first.
+const filesOf = (chat: ChatState): string[] => {
+  const files: string[] = [];
+  for (let i = chat.messages.length - 1; i >= 0; i--) {
+    const m = chat.messages[i];
+    for (const p of [...m.photos, ...(m.card?.previews ?? [])]) if (p.file !== '' && !files.includes(p.file)) files.push(p.file);
+  }
+  return files;
+};
+// The files whose copies this launch looked for, and the photos that it loaded, which the view counts.
+const looked = new Set<string>();
+let mediaCount = 0;
+let tidied = false;
+
+const makeFolder = async (storage: Storage, path: string): Promise<void> => {
+  try {
+    await storage.fs.mkdir(path);
+  } catch (error) {
+    if ((error as { code?: string }).code !== 'EEXIST') throw error;
+  }
+};
+
+// The tile and the viewer's copy of a picture, kept for the file of the Mac that it is.
+const keepPhoto = async (storage: Storage, file: string, source: string): Promise<void> => {
+  await makeFolder(storage, UPLOADS);
+  await makeFolder(storage, PHOTOS);
+  const tile = await storage.fs.compressImage(source, `${PHOTOS}/${file}-tile.jpg`, { maxDimension: TILE_SIDE, quality: 0.8 });
+  const full = await storage.fs.compressImage(source, `${PHOTOS}/${file}.jpg`, { maxDimension: FULL_SIDE, quality: 0.85 });
+  kept.set(file, { tile: tile.path, full: full.path });
+};
+
+// The bytes of a file of the Mac (GET /v1/artifacts/<id>/content), which come as they are, not as JSON.
+const download = async (path: string): Promise<Uint8Array> => {
+  if (!connected()) throw new Error(lastError || 'Your Mac is not connected.');
+  const reply = await (tunnel as Tunnel).request('GET', path, headers('GET'));
+  if (reply.status !== 200) throw new Error(failureOf(reply));
+  return reply.body;
+};
+
+// One photo from the Mac into the phone's copies. A connection that ends leaves it missing, so a later answer tries
+// again; a file that the Mac refuses or that is no image the phone reads shows that it did not load.
+const fetchPhoto = async (storage: Storage, file: string): Promise<void> => {
+  let bytes: Uint8Array;
+  try {
+    bytes = await download(`/v1/artifacts/${file}/content`);
+  } catch {
+    if (connected()) unloadable.add(file);
+    return;
+  }
+  const source = `${PHOTOS}/${file}.download`;
+  try {
+    await makeFolder(storage, UPLOADS);
+    await makeFolder(storage, PHOTOS);
+    await storage.fs.atomicWriteFile(source, bytes);
+    await keepPhoto(storage, file, source);
+  } catch {
+    unloadable.add(file);
+  } finally {
+    await storage.fs.rm(source).catch(() => undefined);
+  }
+};
+
+// The copies of photos stay in the scratch folder, which iOS may empty; past 400 files, the first look of a launch
+// keeps only the ones of the open chat.
+const tidyPhotos = async (storage: Storage, chat: ChatState): Promise<void> => {
+  if (tidied) return;
+  tidied = true;
+  try {
+    const names = await storage.fs.readdir(PHOTOS);
+    if (names.length <= 400) return;
+    const keep = new Set(filesOf(chat));
+    for (const name of names) {
+      if (!keep.has(name.replace(/(-tile)?\.jpg$/, ''))) await storage.fs.rm(`${PHOTOS}/${name}`).catch(() => undefined);
+    }
+  } catch {
+    // No folder yet.
   }
 };
 
@@ -1261,24 +1739,83 @@ const sources: Sources = {
     };
   },
 
-  loadChat: ([zero, id, live]): Chat => {
+  loadChat: ([zero, id, live, _version, offset, opened, _media]): Chat => {
     useLive = live;
     launchAt = zero;
     const s = ensure();
     const chat = s.chats.get(id);
     if (!chat) return emptyChat;
+    markOf(chat, opened);
     const at = zeroOf(s, zero);
     const agent = chat.kind === 'agent';
-    const lines: Message[] = chat.messages.map((m) => ({ ...m, at: at + m.at }));
+    // The day of a time in the zone of the person: a row of a new day shows the day above it (DaySeparatorRow).
+    const dayOf = (ms: number): number => Math.floor((ms + offset * MINUTE) / DAY);
+    const mark = newLines.get(chat.id) ?? '';
+    const lines: Message[] = [];
+    let missing = 0;
+    let lastDay = Number.NaN;
+    let read = false;
+    let previous: Msg | null = null;
+    for (const m of chat.messages) {
+      const time = at + m.at;
+      const day = dayOf(time);
+      const photos = m.photos.map(photoOf);
+      const card = m.card ? [cardView(m.card)] : [];
+      missing += photos.filter((p) => p.state === 'loading').length + card.reduce((n, c) => n + c.previews.filter((p) => p.state === 'loading').length, 0);
+      // Photos that one agent sent one after another on one day are one row (TranscriptEntry.grouped).
+      const last = lines[lines.length - 1];
+      if (m.kind === 'photos' && previous?.kind === 'photos' && previous.from === m.from && last && dayOf(last.at) === day) {
+        lines[lines.length - 1] = { ...last, photos: [...last.photos, ...photos] };
+      } else {
+        lines.push({
+          id: m.id, kind: m.kind, mine: m.mine, author: m.author, at: time, title: m.title, body: m.body, detail: m.detail, failed: m.failed,
+          startsDay: day !== lastDay, newLine: read, sender: m.sender, quote: m.quote, quoteAuthor: m.quoteAuthor, photos, card,
+        });
+        read = false;
+      }
+      // The New line goes above the first row after the message that the person read last (UnreadMark.firstNewRow).
+      if (m.id === mark) read = true;
+      lastDay = day;
+      previous = m;
+    }
     // The working line is the last row of a chat whose agent works, with the model the chat runs with.
-    if (chat.run) lines.push(message('working', 'status', false, 0, ''));
+    if (chat.run) lines.push({ ...rowDefaults, id: 'working', kind: 'status' });
     const turn: Turn = chat.run
       ? { running: true, startedAt: at + chat.run.startedAt, phase: chat.run.phase, detail: chat.run.detail, model: modelOfChat(chat.id), queued: chat.run.queued }
       : idle;
     return {
-      id: chat.id, kind: chat.kind, title: chat.title, project: chat.projectName, letter: chat.letter, face: chat.face, circle: chat.circle,
-      messages: lines, turn, toolbar: agent, live,
+      id: chat.id, kind: chat.kind, title: chat.label, project: chat.projectName, letter: chat.letter, face: chat.face, circle: chat.circle,
+      messages: lines, turn, toolbar: agent, live, missing, muted: chat.muted === true,
     };
+  },
+
+  // The photos of the open chat that the phone has yet to keep, one from the Mac in each answer, the newest first, as
+  // the chat opens at its newest row. A copy that the phone kept on an earlier launch counts without a download. A file
+  // that is no image the phone can read, or that the Mac does not send, shows that it did not load. The view asks again
+  // while photos are missing and the Mac is connected.
+  loadMedia: async ([id, live], _store, storage) => {
+    useLive = live;
+    const chat = ensure().chats.get(id);
+    if (!chat || !useLive || !connected()) return { n: mediaCount, missing: 0 };
+    await tidyPhotos(storage, chat);
+    const wanted = filesOf(chat).filter((file) => !kept.has(file) && !unloadable.has(file));
+    for (const file of wanted) {
+      if (looked.has(file)) continue;
+      looked.add(file);
+      const tile = `${PHOTOS}/${file}-tile.jpg`;
+      const full = `${PHOTOS}/${file}.jpg`;
+      try {
+        await storage.fs.stat(tile);
+        await storage.fs.stat(full);
+        kept.set(file, { tile, full });
+      } catch {
+        // Not kept yet.
+      }
+    }
+    const next = wanted.find((file) => !kept.has(file));
+    if (next) await fetchPhoto(storage, next);
+    mediaCount += 1;
+    return { n: mediaCount, missing: filesOf(chat).filter((file) => !kept.has(file) && !unloadable.has(file)).length };
   },
 
   // The slash menu over the message box (ComposerSlash.suggestions): the commands that start with what follows the
@@ -1316,11 +1853,15 @@ const sources: Sources = {
     return [];
   },
 
-  // Opening a chat reads it: its unread count goes, and the notices of a team are seen.
-  markRead: async ([id]) => {
+  // Opening a chat reads it: its unread count goes, and the notices of a team are seen. The New line keeps the read mark
+  // that the chat opened with.
+  markRead: async ([id, opened]) => {
     const s = ensure();
     const chat = s.chats.get(id);
     if (!chat) return { ok: false };
+    markOf(chat, opened);
+    // A photo that did not load gets another try.
+    unloadable.clear();
     chat.unread = 0;
     if (chat.kind === 'team') for (const n of s.notices) n.seen = true;
     if (!useLive) return { ok: true };
@@ -1351,27 +1892,34 @@ const sources: Sources = {
       }
     }
     const firstAt = localAt(s, at);
+    const title = words.length > 48 ? `${words.slice(0, 47).trimEnd()}…` : words;
     s.chats.set(id, {
-      id, kind: 'agent', project: project.id, projectName: project.name, title: words.length > 48 ? `${words.slice(0, 47).trimEnd()}…` : words,
+      id, kind: 'agent', project: project.id, projectName: project.name, title: `${project.name} · ${title}`, label: title,
       letter: project.letter, face: project.face, circle: false, messages: [message(`${id}-1`, 'text', true, firstAt, words)],
-      run: { startedAt: firstAt, phase: PHASES.thinking, detail: '', queued: 0 }, unread: 0, health: '',
+      run: { startedAt: firstAt, phase: PHASES.thinking, detail: '', queued: 0 }, unread: 0, readMark: '', health: '',
     });
     return { id };
   },
 
-  // A message of a chat shows at once, with the files that were attached, and `sendMessage` then sends it. In the demo
-  // the names of the files close it as a line of code. A chat of the Mac shows a row for each file, and its rows stay in
-  // `outgoing` until the Mac's state has them.
+  // A message of a chat shows at once, with the files that were attached, and `sendMessage` then sends it: the words, a
+  // row of the photos, which show from the phone's copies, and a row for each other file (in the demo their names close
+  // the words as a line of code). A chat of the Mac keeps its rows in `outgoing` until the Mac's state has them.
   queueMessage: ([chatId, words, files, photos, at]) => {
     const s = ensure();
     const chat = s.chats.get(chatId);
     if (!chat || (words === '' && files.length === 0) || unsent.has(chatId)) return { id: '' };
+    const pictures = files.filter((f) => f.type.toLowerCase().startsWith('image/') || IMAGE_NAME.test(f.name));
+    const others = files.filter((f) => !pictures.includes(f));
+    const photoRow = (id: string, time: number): Msg[] => (pictures.length === 0 ? [] : [message(id, 'photos', true, time, '', {
+      photos: pictures.map((f) => ({ key: `url:${f.path}`, file: '', url: f.path, caption: '', width: f.width ?? 0, height: f.height ?? 0 })),
+      from: 'user',
+    })]);
     if (!useLive) {
       s.counter += 1;
       unsent.set(chatId, { words, files, photos, at, send: null });
-      const names = files.map((f) => f.name).join(', ');
+      const names = others.map((f) => f.name).join(', ');
       const body = [words, names === '' ? '' : '`' + names + '`'].filter((part) => part !== '').join('\n\n');
-      chat.messages = [...chat.messages, message(`${chat.id}-m${s.counter}`, 'text', true, at, body)];
+      chat.messages = [...chat.messages, ...(body === '' ? [] : [message(`${chat.id}-m${s.counter}`, 'text', true, at, body)]), ...photoRow(`${chat.id}-p${s.counter}`, at)];
       return { id: chatId };
     }
     sends += 1;
@@ -1381,7 +1929,8 @@ const sources: Sources = {
     const send: Outgoing = {
       rows: [
         ...(words === '' ? [] : [message(`out-${n}`, 'text', true, sentAt, words)]),
-        ...files.map((f, i) => message(`out-${n}-${i}`, 'artifact', true, sentAt, bytesText(f.size), { title: f.name })),
+        ...photoRow(`out-${n}-p`, sentAt),
+        ...others.map((f, i) => message(`out-${n}-${i}`, 'artifact', true, sentAt, bytesText(f.size), { title: f.name })),
       ],
       text: textOf,
       before: new Set((latest?.messages ?? []).filter((m) => m.bot_id === chatId && m.role === 'user' && m.text.trim() === textOf).map((m) => m.id)),
@@ -1448,29 +1997,88 @@ const sources: Sources = {
     return { ok: true };
   },
 
-  // The answer to a card: it keeps the label of the option, and the chat no longer waits on the person.
-  answerCard: async ([chatId, ref, optionId]) => {
+  // A choice on a card shows at once, with Undo, and `answerCard` sends it after the wait (AnswerUndoRow): the person
+  // can take back a choice made by mistake, and nothing reaches the Mac before then. The reply names this one choice, so
+  // a choice made again after an Undo goes once. The demo answers at once, as AppStore.answer does in the preview.
+  chooseOption: ([chatId, ref, optionId]) => {
     const s = ensure();
-    const chat = s.chats.get(chatId);
-    if (!chat) return { ok: false };
+    const found = cardIn(s, ref);
+    const option = found?.card.options.find((o) => o.id === optionId);
+    if (!found || !option || found.chat.id !== chatId || answers.has(ref) || found.card.status !== 'pending') return { id: '' };
+    failures.delete(ref);
+    if (!useLive) {
+      found.card.status = option.answer === 'reject' ? 'rejected' : found.card.draft ? 'approved' : 'executed';
+      found.card.selected = option.label;
+      s.waits = s.waits.filter((w) => w.ref !== ref);
+      return { id: '' };
+    }
+    choices += 1;
+    const id = `${choices} ${ref}`;
+    answers.set(ref, { id, option: option.id, label: option.label, sending: false, undone: false });
+    return { id };
+  },
+
+  undoAnswer: ([ref]) => {
+    const holding = answers.get(ref);
+    if (!holding || holding.sending) return { ok: false };
+    holding.undone = true;
+    answers.delete(ref);
+    return { ok: true };
+  },
+
+  // The answer that `chooseOption` holds goes once its Undo has passed: on the Mac with the card's revision, and for a
+  // card with a draft or previews the hash of what the person saw (AnswerRequest), which the Mac compares before it
+  // approves. The chat says why an answer did not go.
+  answerCard: async ([_chat, choice]) => {
+    const ref = choice.slice(choice.indexOf(' ') + 1);
+    const holding = answers.get(ref);
+    if (!holding || holding.id !== choice || holding.sending) return { ok: false };
+    for (let waited = 0; waited < UNDO_WAIT; waited += 250) {
+      await new Promise<void>((resolve) => setTimeout(resolve, 250));
+      if (holding.undone || answers.get(ref) !== holding) return { ok: false };
+    }
+    holding.sending = true;
+    const found = cardIn(ensure(), ref);
+    const option = found?.card.options.find((o) => o.id === holding.option);
+    const decision = decisions.get(ref);
+    if (!useLive || !found || !option || !decision) {
+      answers.delete(ref);
+      return { ok: false };
+    }
+    const body: Record<string, unknown> = { choice: option.answer, revision: decision.revision, option_id: decision.options.length > 0 ? option.id : null };
+    if (decision.draft_hash) body.draft_hash = decision.draft_hash;
+    if (decision.previews_hash) body.previews_hash = decision.previews_hash;
+    try {
+      await write('POST', `/v1/decisions/${ref}/answer`, body);
+    } catch (error) {
+      answers.delete(ref);
+      failures.set(ref, failed(error));
+      return { ok: false };
+    }
+    // The answer stays until a state of the Mac shows the card answered.
+    return { ok: true };
+  },
+
+  // A dismissal is no answer: the card closes, and the agent goes on without one (the X of DecisionCard).
+  dismissCard: async ([chatId, ref]) => {
+    const s = ensure();
+    const found = cardIn(s, ref);
+    if (!found || found.chat.id !== chatId || answers.has(ref)) return { ok: false };
+    failures.delete(ref);
     if (useLive) {
       const decision = decisions.get(ref);
-      const option = decision?.options.find((o) => o.id === optionId);
-      if (!decision || !option) return { ok: false };
+      if (!decision) return { ok: false };
       try {
-        await write('POST', `/v1/decisions/${ref}/answer`, { choice: option.answer, revision: decision.revision, option_id: option.id });
-      } catch (error) {
-        lastError = failed(error);
+        await write('POST', `/v1/decisions/${ref}/inbox`, { action: 'dismiss', revision: decision.revision });
+      } catch {
+        failures.set(ref, 'Dismissal not confirmed. Try again.');
         return { ok: false };
       }
+      dismissed.add(ref);
+      return { ok: true };
     }
-    chat.messages = chat.messages.map((m) => {
-      if (m.kind !== 'decision' || m.ref !== ref) return m;
-      const option = m.options.find((o) => o.id === optionId);
-      return { ...m, status: 'replied', receipt: option ? option.label : '' };
-    });
+    found.card.status = 'dismissed';
     s.waits = s.waits.filter((w) => w.ref !== ref);
-    chat.unread = 0;
     return { ok: true };
   },
 

@@ -16,13 +16,13 @@ TestFlight and Sparkle. The Python service in `backend/` is unchanged.
 | File | What |
 |---|---|
 | `app.contract` | The root: Home, a chat, the New project sheet, the composer and the menus |
-| `parts.contract` | Parts that only draw: face, unread badge, chat row, Needs attention row, bubble, cards, working line |
+| `parts.contract` | Parts that only draw: face, unread badge, chat row, Needs attention row, the rows of a chat (bubble, quote, sender, day, New line, time, photo tile, file, Library page, background process, notice), the card with its options, draft, Undo and receipt, and the working line |
 | `shapes.contract` | The records `app.ts` answers |
 | `app.ts` | The data module: the pairing, the connection to the Mac, the Mac's state and its cache, attachments, and the fixture for the demo |
 | `tunnel.ts` | The phone's end of the tunnel (`docs/relay-transport.md`): pairing setups and the rendezvous box, Noise IK and IKpsk2 as the initiator, frames, requests as streams side by side |
 | `crypto.ts` | X25519 and Poly1305 of TweetNaCl, and SHA-256, HMAC, HKDF and ChaCha20 from their specs, in TypeScript: Exact's `crypto.subtle` has no X25519 and no ChaCha20-Poly1305 |
 | `app.forma` | The palette of `Theme.swift`: page, card, user bubble, warm accent, green, the red tints, the eight faces |
-| `app.json`, `assets/` | Manifest (iOS and web hosts, the update channel and its signing key) and the icon of the Swift app |
+| `app.json`, `assets/` | Manifest (iOS and web hosts, the update channel and its signing key), the icon of the Swift app, and the two charts of the demo (`assets/demo`) |
 
 Home. Needs attention at the top, with the four rules of `Attention.swift` (a card waiting over 4 hours, an agent that
 cannot run, blocked work, an unseen notice of the team); the fixture alone breaches none, so `app.ts` applies what
@@ -36,8 +36,15 @@ a picker that names the project the message goes to and ends with New project. S
 and leaves it closed: the chat is the newest row of the list, and the box keeps the keyboard for the next one (as
 `NewChatBar` of the Swift app).
 
-Chat. Messages with Markdown and the time of each under it (`MessageTimes.label`), activity lines, cards with their options (an answer keeps the option chosen), files,
-the notices of a team, and the working line: the phase, the time of its newest step to the second, the model. The composer is
+Chat. The rows of `TranscriptMessageRow`, in the order and with the rules of `TranscriptPresentation`: a message with
+Markdown, a photo, a card, a file, a page of the Library, a background process of Hermes that ended, an activity line
+and the notices of a team, each with its time under it (`MessageTimes.label`), and the working line: the phase, the
+time of its newest step to the second, the model. The header names the chat itself (`Bot.chatLabel`). The day shows
+in a pill above the first row of each day (`DayPill`), and Slack's green New line goes above the first row that came
+since the person last read the chat, at the read mark that the chat opened with (`UnreadMark`). A message between
+agents names its sender and the others (`Gumclaw → Coconut`), a message of the person names the agents it went to, and
+an answer quotes the message or the page that it answers (`MessageQuote`). Photos and cards are described below
+(Photos and cards). The composer is
 one box: a short draft is one line with the plus inside it and Send beside it. A draft over 80 characters, a newline,
 an attachment, or focus opens it, with a row under the text for the plus and Send (`ComposerExpansion`). Send shows
 when there is a draft. Stop shows while the agent works (`sendControls`). A draft that starts with a slash shows the
@@ -46,6 +53,36 @@ mark on the one in use, and a row changes the model or the effort of every chat,
 profile runs the chats and options have no other place on the screens (#570). Send runs the first row. The menu shows
 only while the draft starts with a slash, so a chosen model or effort, which empties the box, closes it. The model has no
 chip under the text: the Swift app removed its chips (e6c152f).
+
+## Photos and cards
+
+Photos (`MessagePhotos.swift`). A message of an agent that is one Markdown image, `![caption](address)`, with a web
+address or a file of the Mac (`coconut-file://<artifact id>`), shows the photo, as does the older form (an image
+address with a caption line above it) and an image that the person attached. Photos that one agent sent one after
+another on one day are one row. One photo is a tile of 280 by 180 points on its side of the chat; more are tiles of
+236 that scroll sideways, each with its caption under it and a hairline around it, so a white picture keeps its edge
+on the white page (the Swift tile has none). A tap opens the photos full screen on black, with Close, the
+caption, which one is in view and the next and the last one (`PhotoViewer`, without its zoom and swipe). The row of
+Home reads "Photo: caption". A file of the Mac comes through the tunnel (`GET /v1/artifacts/<id>/content`), one in
+each answer of `loadMedia`, the newest first, while the chat misses some and the socket is open. The phone keeps a
+tile of 840 pixels and a copy of 2400 for the viewer in `app:/tmp/upload/photos`, which the grants of build 19 name,
+and finds them there after a launch without a download; past 400 files the first look of a launch keeps only the open
+chat's. A photo shows the spinner while it loads, and "The photo did not load." when the Mac refuses the file or it is
+no image the phone reads; the next opening of the chat tries again. A photo that the phone sends keeps its copies for
+the file it becomes on the Mac, so it never loads back. In the demo the photos are the charts in `assets/demo`.
+
+Cards (`Cards.swift`). A card has the earlier choice of a follow-up, its title, its sources (kind and title, no link
+yet), the size of a pull request to merge, and an X that dismisses it without an answer. While it waits it shows its
+context in paragraphs, its risk (or "Assessment needs updating"), its previews as photos, a draft's Via, From, To,
+Reply to, Subject and body (`MessageDraftContent`) with Send and Discard, or its options with the recommended one first
+and marked, each with what it does and its risk. An option that approves waits until the previews have loaded. A
+choice shows at once with Undo for 10 seconds (`AnswerUndoRow`, `answerUndoSeconds`), and only then goes to the Mac
+with the card's revision and the hashes of the draft and the previews that the person saw (`AnswerRequest`); while it
+goes the receipt has an arrow, and the receipt of an answered card has the choice with a check
+(`DecisionSelection`): "Approved for sending" or "Discarded" for a draft, "Could not finish" with the reason for one
+that failed, Dismissed, or what the Mac closed it with. Why a choice or a dismissal did not go shows under the card.
+The demo answers at once, as the preview of the Swift app does. A card that the person answered in words leaves the
+chat, and the answer quotes it.
 
 ## Live data
 
@@ -249,10 +286,23 @@ Built. Exact Build compiled the app on 2026-11-17 (build `166a3e29`): a 19.4 MB 
 Mac that holds the update key (`npx appdrop links` there prints it). The first upload failed in the bake with 19
 errors, because Exact Build compiles with the newest snapshot of its catalog, not the commit sent as `exact`. See Gaps.
 
+Phase 2, 2026-11-24. `app.ts` under bun (scratch scripts again): the demo's chats, and a hand-made state of the Mac
+with each kind of row (photos of one agent grouped, a new day and the New line, a draft card with its earlier choice,
+a merge card, a failed card, background processes, a Library page, an attached image, a message from another agent,
+quotes) and the rows a chat leaves out; a choice with Undo, a second choice refused, and a choice that cannot reach the
+Mac, which says why after the Undo and the 25 seconds that a write waits for a connection; and the photos of a chat
+from a stand-in tunnel and file system (the newest first, one per answer, a refused file, a copy kept from an earlier
+launch found without a download). The Contract compiles with the pinned Exact, and `app.ts` passes `tsc --strict`.
+The local web host showed the demo at 390 by 844 points, light and dark: the day pill, the New line, a photo row and the
+viewer, the draft card with Send and Discard, a card with its source, risk, preview and recommended option, its receipt
+after a choice, a background process opened, and, with a temporary edit of the demo, the Undo row, a photo that loads
+and options that wait for a preview.
+
 Not done:
 
-- No screenshots, and no run on a phone by an agent.
-- The local web host was not run: the disk had 3.6 to 7.7 GB free (the rule is 10 GB).
+- No run on a phone by an agent. A photo from a file of the Mac and an answer to a card on the Mac are checked with
+  stand-ins only, until a phone takes the update.
+- The web host ran once, for phase 2, with 17 GB free; its toolchain was deleted afterwards.
 
 ## Build
 
@@ -335,20 +385,23 @@ Not yet measured: the time from save to screen on the web host, and a `push --wa
   shared Mac use Exact Build. Edits to that file need approval, which did not come, so the note is here.
 - `exact/exact.mjs` names the bun of this Mac (`/opt/homebrew/Cellar/bun/1.4.4`) in its fallback. `bun exact.mjs <verb>`
   works anywhere bun is on the path. The Exact checkout is found at `../../exact` (beside the repository) or by `EXACT`.
-- `symbol:sf/<name>` draws blank on the web host (a warning). Eight are used: `cpu`, `brain`, `paperclip`,
-  `circle.inset.filled`, and `hourglass`, `bolt.slash.fill`, `exclamationmark.octagon.fill`, `megaphone.fill` for the
-  rows of Needs attention.
+- `symbol:sf/<name>` draws blank on the web host (a warning). Twelve are used: `cpu`, `brain`, `paperclip`,
+  `circle.inset.filled`, `hourglass`, `bolt.slash.fill`, `exclamationmark.octagon.fill`, `megaphone.fill` for the
+  rows of Needs attention, and `checkmark.circle.fill`, `xmark.circle.fill`, `chevron.down` and `arrow.up` for a
+  background process, an Undo and a choice on its way. The rest are roles, which every host draws.
 - `preview.json` is a copy. An app folder cannot read outside itself, so it must be copied again when the fixture
   changes. The data module reads the fixture's `task_id` links, the phase, detail and `phase_started_at` of a working
   task (else its `updated_at`) and the bots with `chat_of`.
 - The picker of the Swift message box (`NewChatBar`) starts with All projects and ends with Open and All agents. This one
   lists the projects and ends with New project, as asked. A message from Home always starts a new chat with the project.
-- Not ported: the slash commands other than `/model` and `/effort` (new, compact, stop, mute, archive, help), mentions, the access menu, editing a queued message, link and GitHub previews, photos,
-  the schedule of a message, the fifth rule of Needs attention (stale data, which a preview has none of). Also the tree
+- Not ported: the slash commands other than `/model` and `/effort` (new, compact, stop, mute, archive, help), mentions, the access menu, editing a queued message, link and GitHub previews,
+  the schedule of a message, the fifth rule of Needs attention (stale data, which a preview has none of). Of the chat:
+  Edit of a draft card (`MessageDraftEditor`), a reply to a card in words (`DecisionReplyComposer`), the links of a
+  card's sources and its GitHub embeds, View revised proposal, opening a page of the Library, the zoom, swipe and
+  share of the photo viewer, and the hold of a message or a photo (copy, reply, reactions). Also the tree
   of the Swift app's Chats tab (`ChatTree`, 4a20dfb), where three or more idle agents of one project fold
-  under the project's name, and its title Chats in place of Agents. A port needs the chat titles first: the live rows
-  take `name` and the project from the bot's profile, so every chat of a project reads as the project, while the Mac
-  sends `chat_of` and `chat_title` for each chat.
+  under the project's name, and its title Chats in place of Agents. The rows now name a further chat of a project after
+  the project and its own title (`Bot.listName`, from the Mac's `chat_of` and `chat_title`), which that tree needs.
 - The pairing code lives in the memory of the data module. An update that applies while a phone pairs reloads the app,
   which then shows a new code, and the Mac seals its setup for the old one; send the new code. Keeping the code in the
   Keychain until the phone pairs would end this.
@@ -361,7 +414,7 @@ Keep it shipping until each phase reaches parity, and keep the bundle id of the 
 | Phase | Swift to port | Exact |
 |---|---|---|
 | 1 Live data | `APIClient`, `AppStore` (4,102), `Models`, `TunnelConnection`, `Onboarding`, pairing | Done: the pairing, the tunnel, the state and its updates, the model and effort (`/model`, `/effort`), attachments and the SQLite cache for a launch without the Mac are in `app.ts`, `tunnel.ts` and `crypto.ts` (see Live data). Attachments and the cache need the binary of their grants |
-| 2 Conversation | `ConversationView` (1,642), `Cards`, `MessagePhotos`, `MessageQueue`, `BotMentions`, `ModelSettingsView`, `LiveView`, previews | More parts and routes in `parts.contract`; photos by the file picker and `image`; a virtualized list for long chats |
+| 2 Conversation | `ConversationView` (1,642), `Cards`, `MessagePhotos`, `MessageQueue`, `BotMentions`, `ModelSettingsView`, `LiveView`, previews | Rows and cards done: days, the New line, senders and quotes, photos with their viewer, cards with sources, risk, previews, drafts, Undo and receipts, background processes and Library pages (see Photos and cards). Left: the editing and holding in Not ported, `MessageQueue`, `BotMentions`, `LiveView` |
 | 3 Team | `TeamChat` (2,093), `TeamChatView` (1,710), `TeamViews`, `Team`, `PeopleView` | A second family of chats and a notice board, over the same list |
 | 4 Business and library | `BusinessDashboard` and the other Business files, `Library`, `DocumentPage`, `UsageViews`, `DecisionInboxView`, `AgentProject`, `Bento`, `ChatDeckView` | Routes and tabs (`select(nav, name)`); Markdown for documents; charts as `svg` |
 | 5 Release | Bundle id, signing, TestFlight | Name the app `com.gumroad.coconut` so it replaces the Swift app; sign the IPA on CI as `testflight.yml` does (Exact has an EAS and a CI recipe); keys and a channel for updates |

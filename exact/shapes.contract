@@ -55,14 +55,79 @@ shape Home
   live: bool
   banner: string
 
+// A photo of a chat or of a card (MessagePhoto, DecisionPreview). `src` is what a tile shows: a small copy that the
+// phone keeps of a file of the Mac (app:/tmp/upload/photos), a web address, or a picture of the app's assets; empty
+// while it loads. `full` is the picture that the viewer shows. `state` is loading, ready or failed. `width` and
+// `height` are the size that a card names for its preview, else 0.
+shape Photo
+  key: string
+  src: string
+  full: string
+  caption: string
+  state: string
+  width: number
+  height: number
+
+// An option of a card (DecisionChoiceContent): the label, what it does, whether the agent recommends it, and its risk
+// (`risk` the label, such as Low risk, and `reason` why). `approve` options wait for the previews of the card.
 shape Choice
   id: string
   label: string
   explanation: string
+  recommended: bool
+  risk: string
+  reason: string
+  approve: bool
 
-// A line of a chat. `kind` is text, activity, decision, artifact, notice or status; the working line is the last row
-// of a chat whose agent works. A decision has its `ref`, its `status` (pending or replied) and the `receipt` of the
-// option that was chosen.
+// The message that a draft card sends once the person chooses Send (MessageDraftContent). An empty field shows no row.
+shape Draft
+  via: string
+  from: string
+  to: string
+  replyTo: string
+  subject: string
+  body: string
+
+// A card of a chat (DecisionCard). `context` holds its paragraphs, `sources` a line for each source, `risk` and `reason`
+// its assessment, and `drafts` the message of a draft card (none or one). `pending` shows the options, else the
+// receipt: its words, its mark (a symbol, or empty) and whether it is dimmed, for a card that closed without a choice.
+// `chosen` is the option that the person picked: while `waiting` the answer waits for its Undo, while `sending` it goes
+// to the Mac. `error` says why the last answer did not go.
+shape Card
+  ref: string
+  title: string
+  sources: string[]
+  diff: string
+  context: string[]
+  risk: string
+  reason: string
+  stale: bool
+  previews: Photo[]
+  previewsReady: bool
+  drafts: Draft[]
+  options: Choice[]
+  pending: bool
+  refreshing: bool
+  dismissible: bool
+  chosen: string
+  chosenLabel: string
+  waiting: bool
+  sending: bool
+  receipt: string
+  mark: string
+  dim: bool
+  outcome: string
+  earlier: string
+  revised: bool
+  error: string
+
+// A row of a chat. `kind` is text, photos, activity, decision, artifact, document, process, notice or status; the
+// working line is the last row of a chat whose agent works. `startsDay` puts the day above the row, and `newLine` the
+// New line of the messages that came since the person last read the chat. `sender` names who wrote a message of an
+// agent to another agent, `quote` and `quoteAuthor` the message that it answers. `photos` are the photos of a row of
+// photos, and `card` the card of a decision row (none or one). A process row is a background process of Hermes that
+// ended: `title` its name, `body` how it ended with its run time, `detail` the command, or the last output of a
+// failure, and `failed` whether it failed.
 shape Message
   id: string
   kind: string
@@ -72,10 +137,14 @@ shape Message
   title: string
   body: string
   detail: string
-  ref: string
-  status: string
-  receipt: string
-  options: Choice[]
+  failed: bool
+  startsDay: bool
+  newLine: bool
+  sender: string
+  quote: string
+  quoteAuthor: string
+  photos: Photo[]
+  card: Card[]
 
 // What the agent of a chat does now. `startedAt` is the start of the turn, `queued` the messages that wait for the next.
 shape Turn
@@ -86,7 +155,9 @@ shape Turn
   model: string
   queued: number
 
-// `live` is a chat of the Mac. `toolbar` opens the box of the composer under a long draft (ComposerExpansion).
+// `live` is a chat of the Mac. `toolbar` opens the box of the composer under a long draft (ComposerExpansion). `missing`
+// counts the photos of the chat that the phone has yet to load from the Mac (`loadMedia`). `muted` is a chat that sends
+// no push (BotChatMute).
 shape Chat
   id: string
   kind: string
@@ -99,6 +170,13 @@ shape Chat
   turn: Turn
   toolbar: bool
   live: bool
+  missing: number
+  muted: bool
+
+// The photos that the phone loaded from the Mac for the open chat: `n` moves with each, so the chat reads them.
+shape Media
+  n: number
+  missing: number
 
 // A row of the slash menu over the message box (ComposerSlash): a command to complete (`kind` complete, `value` the
 // text it completes to), or a model or an effort to choose (`value` the model's key or the effort). `chosen` marks the

@@ -1,6 +1,7 @@
-// Coconut on Exact. Home: Needs attention, one flat list of chats (newest first) in two tabs, Working and Idle, and a
+// Coconut on Exact. Home: Needs attention, one flat list of chats (newest first), and a
 // message box that is always open, with a project picker that names the project the message goes to. A chat: its
-// messages with Markdown, the working line, and the composer. Paired with a Mac, app.ts answers it from the Mac's
+// messages with Markdown under the day they came, the New line, photos and their viewer, cards with their previews,
+// drafts and options, the working line, and the composer. Paired with a Mac, app.ts answers it from the Mac's
 // Coconut through the relay, and a round is one connection: `prepare` gets a socket ticket, `sock` is the socket,
 // `deliver` lets the answers that wait for it go on, and `live` is the handshake and the sync. Before a pairing the app
 // shows a pairing code; "Look around with demo data" answers from the preview fixture of the Swift app
@@ -8,13 +9,14 @@
 // snapshot that Exact Build compiles with (2026-11-14) refuses a token name as a colour; name the tokens again once its
 // catalog is newer.
 // Colours, fonts, sizes and the safe area are the platform's unless a row says otherwise.
-use Ack, Chat, DeliveryState, Home, Live, Made, PairCode, PairState, Saved, Sock, Suggestion, Time from "./shapes.contract"
-use ArtifactCard, AttentionRow, Bubble, ChatRowView, DecisionCard, Face, NoticeCard, OptionButton, WorkingLine from "./parts.contract"
+use Ack, Chat, DeliveryState, Home, Live, Made, Media, PairCode, PairState, Photo, Saved, Sock, Suggestion, Time from "./shapes.contract"
+use ArtifactCard, AttentionRow, Bubble, CardView, ChatRowView, ChoiceButton, DayPill, DocumentCard, DraftBox, DraftButton, Face, NewLine, NoticeCard, PhotoTile, ProcessRow, RowTime, SenderLine, WorkingLine from "./parts.contract"
 
 routes nav
   home "/"
     chat "/chat/:id"
     new "/new"
+    photo "/photo"
 
 component Coconut
   // The project the box of Home sends to. Empty is the project of the newest chat; app.ts names it in `home.target`.
@@ -36,6 +38,12 @@ component Coconut
   state poll = 0
   // The pairings that the screens have read from the Keychain: a pairing or an unpairing in `live` moves it.
   state pairsRead = 0
+  // Each opening of a chat: the New line keeps the read mark that the chat opened with (UnreadMark).
+  state opened = 0
+  // The next photo of the open chat to keep from the Mac, and the photos that the viewer shows, with the one in view.
+  state mediaRound = 0
+  state viewed: Photo[] = []
+  state viewAt = 0
   resource time = exactTime() as shape Time
   // The update that runs, and whether a newer one waits to apply.
   resource delivery = exactDelivery() as shape DeliveryState
@@ -47,7 +55,10 @@ component Coconut
   resource pump = deliver(sock.n) when sock.n > 0 as shape number else empty()
   resource live = sync(connectKey, sock.status == "open" and sock.key == connectKey, refresh) when connectKey != "" as shape Live else empty()
   resource home = loadHome(time.epochAtZero, target, mode == "live", live.version) when mode != "pair" as shape Home else empty()
-  resource chat = loadChat(time.epochAtZero, openId, mode == "live", live.version) when openId != "" and mode != "pair" as shape Chat else empty()
+  // A chat reads its rows again for each photo that the phone kept (`media.n`), and its days in the zone of the person.
+  resource chat = loadChat(time.epochAtZero, openId, mode == "live", live.version, time.utcOffset, opened, media.n) when openId != "" and mode != "pair" as shape Chat else empty()
+  // The photos of the open chat come from the Mac one in each answer (`mediaRound`, see `fetchingMedia`).
+  resource media = loadMedia(openId, mode == "live", mediaRound) when openId != "" and mode == "live" as shape Media else empty()
   // The slash menu over the message box: `/model` and `/effort`, as in the Swift app, where they change the model and
   // the effort of every chat (ComposerSlash). Options have no other place in the screens. A resource whose `when` turns
   // false keeps the rows it had, so the menu and Send read them only while the draft starts with a slash (`slashing`),
@@ -62,7 +73,12 @@ component Coconut
   mutation queued as shape Made refreshes chat, home then afterQueued
   mutation sent as shape Ack queue refreshes chat, home
   mutation stopped as shape Ack queue refreshes chat, home
+  // A choice on a card shows at once with Undo (`chosen`), and `answered` sends it once the Undo has passed. Both are
+  // queues, so a choice on a second card waits for the first instead of letting it go.
+  mutation chosen as shape Made queue refreshes chat, home then afterChoose
   mutation answered as shape Ack queue refreshes chat, home
+  mutation undone as shape Ack refreshes chat, home
+  mutation dismissed as shape Ack queue refreshes chat, home
   // The menu asks again once the Mac took a model or an effort, so a `/model` typed before its answer moves the mark.
   mutation modelSet as shape Ack queue refreshes chat, slash
   mutation effortSet as shape Ack queue refreshes chat, slash
@@ -79,6 +95,7 @@ component Coconut
   derive startedId = match started { case some(s) => s.id, case none => "" }
   derive createdId = match created { case some(c) => c.id, case none => "" }
   derive queuedId = match queued { case some(q) => q.id, case none => "" }
+  derive chosenId = match chosen { case some(c) => c.id, case none => "" }
   derive attentionTotal = sum(home.attention.map(a => a.count))
   derive hasText = draft.trim() != ""
   derive chatHasText = chatDraft.trim() != ""
@@ -122,6 +139,13 @@ component Coconut
   action readPairing
     pairsRead = live.pairs
 
+  // The open chat asks the Mac for its next photo once the last answer is in, while it misses some and the socket is
+  // open. A photo that did not load counts no more, and an update waits for no photo.
+  task fetchingMedia when mode == "live" and openId != "" and chat.missing > 0 and sock.status == "open" and not pending(media) and not delivery.staged
+    every(500, nextMedia)
+  action nextMedia
+    mediaRound = mediaRound + 1
+
   action copyCode
     copyText(pairText)
   action newCode
@@ -133,7 +157,8 @@ component Coconut
     nav = back(nav)
   action openChat(id: string)
     nav = push(nav, path("chat", id))
-    send read = markRead(id)
+    send read = markRead(id, opened + 1)
+    opened = opened + 1
   action openNew
     projectName = ""
     nav = push(nav, "/new")
@@ -188,8 +213,23 @@ component Coconut
       send sent = sendMessage(queuedId)
   action stopChat
     send stopped = stopTurn(chat.id)
-  action answerCard(chatId: string, ref: string, option: string)
-    send answered = answerCard(chatId, ref, option)
+  // A card: a choice, its Undo, and the X that dismisses the card without an answer.
+  action pickOption(ref: string, option: string)
+    send chosen = chooseOption(chat.id, ref, option)
+  action afterChoose
+    if chosenId != ""
+      send answered = answerCard(chat.id, chosenId)
+  action takeBack(ref: string)
+    send undone = undoAnswer(ref)
+  action closeCard(ref: string)
+    send dismissed = dismissCard(chat.id, ref)
+  // The photos of a row or of a card, full screen, from the one that was tapped (PhotoViewer).
+  action openPhotos(list: Photo[], at: number)
+    viewed = list
+    viewAt = at
+    nav = push(nav, "/photo")
+  action showPhoto(at: number)
+    viewAt = at
   // A row of the slash menu: a command fills the box with itself and keeps the menu open for its choices; a model or
   // an effort is chosen, and the box empties.
   action pickSlash(kind: string, value: string)
@@ -272,19 +312,69 @@ component Coconut
               list id="transcript" appearance="none" virtualized=true scroll-start="end" scrollFollowEnd=true keyboardDismissMode="interactive" flex=1 min-height=0 testId="transcript"
                 for m in chat.messages key=m.id
                   column padding="3px 12px"
+                    if m.startsDay
+                      DayPill(at=m.at, now=now, offset=time.utcOffset)
+                    if m.newLine
+                      NewLine()
                     if m.kind == "text"
                       Bubble(m=m, now=now, offset=time.utcOffset)
+                    else if m.kind == "photos"
+                      // One photo stands on its side of the chat; more scroll sideways (PhotoTileRow).
+                      column gap=2 align-items=(m.mine ? "flex-end" : "flex-start") testId=`entry-${m.id}`
+                        if m.sender != ""
+                          SenderLine(sender=m.sender, mine=m.mine)
+                        if m.photos.length == 1
+                          for p in m.photos key=p.key
+                            PhotoTile(photo=p, wide=true, open=openPhotos(m.photos, 0))
+                        else
+                          scroll width="100%" overflow-x="auto" overflow-y="hidden" scrollbar-width="none" testId=`photos-${m.id}`
+                            row gap=8
+                              for p, i in m.photos key=p.key
+                                PhotoTile(photo=p, wide=false, open=openPhotos(m.photos, i))
+                        RowTime(id=m.id, at=m.at, now=now, offset=time.utcOffset, mine=m.mine)
                     else if m.kind == "activity"
                       text m.body font="-exact-footnote" color="-exact-secondary-label" padding="2px 12px" testId=`activity-${m.id}`
                     else if m.kind == "notice"
                       NoticeCard(m=m, now=now, offset=time.utcOffset)
-                    else if m.kind == "artifact"
-                      ArtifactCard(m=m)
+                    else if m.kind == "artifact" or m.kind == "document" or m.kind == "process"
+                      column gap=2 testId=`entry-${m.id}`
+                        if m.sender != ""
+                          SenderLine(sender=m.sender, mine=m.mine)
+                        if m.kind == "artifact"
+                          ArtifactCard(m=m)
+                        else if m.kind == "document"
+                          DocumentCard(m=m)
+                        else
+                          ProcessRow(m=m)
+                        RowTime(id=m.id, at=m.at, now=now, offset=time.utcOffset, mine=m.mine)
                     else if m.kind == "decision"
-                      DecisionCard(m=m)
-                        if m.status == "pending"
-                          for o in m.options key=o.id
-                            OptionButton(label=o.label, explanation=o.explanation, pick=answerCard(chat.id, m.ref, o.id))
+                      // A card: its previews, its draft, then Send and Discard of a draft or the options of the rest.
+                      // The options show while the card waits and no choice is held for it.
+                      column gap=2 testId=`entry-${m.id}`
+                        if m.sender != ""
+                          SenderLine(sender=m.sender, mine=m.mine)
+                        for c in m.card key=c.ref
+                          CardView(card=c, dismiss=closeCard(c.ref), undo=takeBack(c.ref))
+                            if c.previews.length == 1
+                              for p in c.previews key=p.key
+                                PhotoTile(photo=p, wide=true, open=openPhotos(c.previews, 0))
+                            else if c.previews.length > 1
+                              scroll width="100%" overflow-x="auto" overflow-y="hidden" scrollbar-width="none" testId=`previews-${c.ref}`
+                                row gap=8
+                                  for p, i in c.previews key=p.key
+                                    PhotoTile(photo=p, wide=false, open=openPhotos(c.previews, i))
+                            for d in c.drafts key=d.to
+                              DraftBox(draft=d)
+                            if c.pending and c.chosen == ""
+                              if c.drafts.length > 0
+                                row gap=8 align-items="center" flex-wrap="wrap"
+                                  for o, i in c.options key=o.id
+                                    DraftButton(label=o.label, primary=(i == 0), pick=pickOption(c.ref, o.id))
+                              else
+                                column gap=8
+                                  for o in c.options key=o.id
+                                    ChoiceButton(option=o, disabled=(o.approve and not c.previewsReady), pick=pickOption(c.ref, o.id))
+                        RowTime(id=m.id, at=m.at, now=now, offset=time.utcOffset, mine=false)
                     else
                       WorkingLine(turn=chat.turn, now=now)
               column flex-shrink=0 padding="6px 12px 8px" testId="composer-bar"
@@ -336,6 +426,28 @@ component Coconut
                 section
                   row
                     input value=projectName input=editName placeholder="Name" aria-label="Name" autofocus=true submit=saveProject testId="new-name" flex=1 min-width=0
+          // The photos full screen on black (PhotoViewer): Close, which of them is in view, the photo whole, its caption,
+          // and the next and the last one.
+          if e.name == "photo"
+            column navigationKey=`${e.id}` navigationPresentation="fullscreen" position="absolute" inset=0 display="flex" flex-direction="column" color-scheme="dark" background-color="-exact-background" testId="photo-viewer"
+              row align-items="center" gap=8 padding-top="env(safe-area-inset-top)" padding-left=8 padding-right=8 flex-shrink=0
+                button press=back appearance="none" aria-label="Close" width=44 height=44 display="flex" align-items="center" justify-content="center" testId="viewer-close"
+                  image "symbol:close" width=18 height=18 color="-exact-label"
+                text (viewed.length > 1 ? `${viewAt + 1} of ${viewed.length}` : "") flex=1 text-align="center" font="-exact-subheadline" font-weight=600 font-variant-numeric="tabular-nums" color="-exact-label" testId="viewer-count"
+                view width=44 height=44
+              match viewed.at(viewAt)
+                case some(p)
+                  image p.full aria-label=(p.caption != "" ? p.caption : "Photo") flex=1 min-height=0 width="100%" object-fit="contain" testId="viewer-image"
+                  if p.caption != ""
+                    text p.caption font="-exact-subheadline" color="-exact-label" padding="12px 16px" testId="viewer-caption"
+                case none
+                  view flex=1
+              row justify-content="space-between" padding-left=16 padding-right=16 padding-bottom="env(safe-area-inset-bottom)" min-height=44 flex-shrink=0
+                if viewed.length > 1
+                  button press=showPhoto(viewAt - 1) disabled=(viewAt == 0) appearance="none" aria-label="Previous photo" width=44 height=44 display="flex" align-items="center" justify-content="center" opacity=(viewAt == 0 ? 0.3 : 1) testId="viewer-previous"
+                    image "symbol:back" width=18 height=18 color="-exact-label"
+                  button press=showPhoto(viewAt + 1) disabled=(viewAt >= viewed.length - 1) appearance="none" aria-label="Next photo" width=44 height=44 display="flex" align-items="center" justify-content="center" opacity=(viewAt >= viewed.length - 1 ? 0.3 : 1) testId="viewer-next"
+                    image "symbol:forward-chevron" width=18 height=18 color="-exact-label"
       // The picker of Home ends with New project.
       column id="project-menu" popover="auto" role="menu" aria-label="Project"
         for p in home.projects key=p.id

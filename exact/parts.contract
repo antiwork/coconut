@@ -1,7 +1,8 @@
-// The parts of Coconut's screens: a face, a count, a row of the list of chats, a row of Needs attention, the lines of a
-// chat and the working line. A part draws what it is given. An action is the caller's: a part takes one as a prop,
-// already bound to its item (`choose=openChat(c.id)`), as ItemSections does in the list-detail pattern.
-use Attention, ChatRow, Message, Turn from "./shapes.contract"
+// The parts of Coconut's screens: a face, a count, a row of the list of chats, a row of Needs attention, the rows of a
+// chat (a message, a photo, a card and its options, a file, a page of the Library, a background process, a notice, the
+// day and the New line) and the working line. A part draws what it is given. An action is the caller's: a part takes
+// one as a prop, already bound to its item (`choose=openChat(c.id)`), as ItemSections does in the list-detail pattern.
+use Attention, Card, ChatRow, Choice, Draft, Message, Photo, Turn from "./shapes.contract"
 
 fn two(n: number): string = n < 10 ? `0${n}` : `${n}`
 // The time of a turn to the second: 9s, 4m 05s, 1h 02m 05s (ConversationActivity.elapsed).
@@ -16,6 +17,13 @@ fn dayKey(ms: number, offset: number): string = formatDate(ms, offset, "iso")
 // The time of a message, as MessageTimes.label shows it: 4:02 PM today, Yesterday 4:02 PM, Mon 4:02 PM within six days,
 // else Nov 3, 4:02 PM.
 fn messageTime(at: number, now: number, offset: number): string = dayKey(at, offset) == dayKey(now, offset) ? formatTime(at, offset, "short") : dayKey(at, offset) == dayKey(now - 86400000, offset) ? `Yesterday ${formatTime(at, offset, "short")}` : now - at < 518400000 ? `${formatDay(at, now, offset, "day").slice(0, 3)} ${formatTime(at, offset, "short")}` : `${formatDate(at, offset, "month-day")}, ${formatTime(at, offset, "short")}`
+// BoardStyle: the surface of a card and of an agent's bubble, the page under an option, the green of a finished step
+// and of the New line, the warm accent of an error, and the line around an option.
+fn surface(): string = "light-dark(#f4f4f4, #212121)"
+fn page(): string = "light-dark(#ffffff, #111111)"
+fn positive(): string = "light-dark(#456d52, #8fbf99)"
+fn attention(): string = "light-dark(#b84524, #fc855c)"
+fn line(): string = "light-dark(rgb(60 60 67 / 0.18), rgb(84 84 88 / 0.6))"
 
 // The face of an agent is a rounded square, the face of a person or a team a circle; its letter is bold at 56% of the
 // size (LetterTile).
@@ -85,8 +93,60 @@ component AttentionRow
         text item.value font="-exact-title2" font-weight=600 font-variant-numeric="tabular-nums" color="-exact-system-red" flex-shrink=0
         image "symbol:forward-chevron" color="-exact-system-red" opacity=0.6 aria-hidden=true
 
+// The day above the first row of each day (DayPill): a small capsule in the fill of an agent's bubble, in the middle.
+component DayPill
+  props
+    at: number
+    now: number
+    offset: number
+  view
+    row justify-content="center" padding="16px 0px 12px" testId="day"
+      text formatDay(at, now, offset, "section") role="heading" aria-level=3 font="-exact-footnote" font-weight=600 padding="4px 12px" border-radius=12 background-color=surface()
+
+// Slack's line above the first message that came since the person last read the chat: a thin green rule and New
+// (NewMessagesLine).
+component NewLine
+  view
+    row align-items="center" gap=8 padding="8px 0px" aria-label="New messages" testId="new-line"
+      view flex=1 height=1 background-color=positive() aria-hidden=true
+      text "New" font="-exact-caption1" font-weight=600 color=positive() aria-hidden=true
+
+// The time under a row (MessageTimestamp), at the right edge under a message of the person.
+component RowTime
+  props
+    id: string
+    at: number
+    now: number
+    offset: number
+    mine: bool
+  view
+    text messageTime(at, now, offset) font="-exact-caption2" font-variant-numeric="tabular-nums" color="-exact-tertiary-label" padding="0px 12px" align-self=(mine ? "flex-end" : "flex-start") testId=`time-${id}`
+
+// Who wrote a message to another agent and to whom, or the agents that a message of the person went to
+// (TranscriptMessageRow).
+component SenderLine
+  props
+    sender: string
+    mine: bool
+  view
+    text sender font="-exact-footnote" color="-exact-secondary-label" line-clamp=1 padding="0px 12px" align-self=(mine ? "flex-end" : "flex-start") testId="sender"
+
+// The message that a message answers (MessageQuote): a bar, who wrote it, and two lines of it.
+component Quote
+  props
+    author: string
+    words: string
+  view
+    row gap=8 padding="4px 0px" testId="quote"
+      view width=3 border-radius=2 align-self="stretch" background-color="-exact-secondary-label" aria-hidden=true
+      column flex=1 min-width=0 gap=2
+        if author != ""
+          text author font="-exact-footnote" font-weight=600
+        text words font="-exact-subheadline" color="-exact-secondary-label" line-clamp=2
+
 // A message: on the right in the bubble of the person, on the left in the surface of a card (ChatBubbleBackground), with
-// its time under it (MessageTimestamp). A team's message names who wrote it.
+// its time under it (MessageTimestamp). A team's message names who wrote it, a message between agents its sender, and
+// an answer the message that it answers.
 component Bubble
   props
     m: Message
@@ -96,8 +156,83 @@ component Bubble
     column gap=2 align-items=(m.mine ? "flex-end" : "flex-start") testId=`entry-${m.id}`
       if m.author != ""
         text m.author font="-exact-footnote" color="-exact-secondary-label" padding-left=12
-      text m.body markup="markdown" padding=12 border-radius=24 max-width="82%" overflow-wrap="break-word" background-color=(m.mine ? "light-dark(#e0c4a6, #63422e)" : "light-dark(#f4f4f4, #212121)") testId=`message-${m.id}`
+      if m.sender != ""
+        SenderLine(sender=m.sender, mine=m.mine)
+      column gap=4 padding=12 border-radius=24 max-width="82%" box-sizing="border-box" background-color=(m.mine ? "light-dark(#e0c4a6, #63422e)" : "light-dark(#f4f4f4, #212121)") testId=`message-${m.id}`
+        if m.quote != ""
+          Quote(author=m.quoteAuthor, words=m.quote)
+        text m.body markup="markdown" overflow-wrap="break-word"
       text messageTime(m.at, now, offset) font="-exact-caption2" font-variant-numeric="tabular-nums" color="-exact-tertiary-label" padding="0px 12px" testId=`time-${m.id}`
+
+// One photo (PhotoTileRow.tile): a tile of 280 by 180 points alone, 236 by 180 beside others, with its caption under it.
+// A hairline keeps the edge of a white picture on the white page. A photo that loads shows the spinner and one that did
+// not load says so; a tap opens a photo that has loaded.
+component PhotoTile
+  props
+    photo: Photo
+    wide: bool
+    open: action
+  derive w = wide ? 280 : 236
+  view
+    button press=open disabled=(photo.state != "ready") appearance="none" display="flex" flex-direction="column" gap=4 padding=0 width=w flex-shrink=0 text-align="start" aria-label=(photo.caption != "" ? `Photo, ${photo.caption}` : "Photo") testId=`photo-${photo.key}`
+      column width=w height=180 box-sizing="border-box" border-radius=12 border-width=1 border-style="solid" border-color=line() overflow="hidden" background-color=surface() align-items="center" justify-content="center"
+        if photo.state == "ready"
+          image photo.src width=w height=180 object-fit="cover" aria-hidden=true testId="photo-image"
+        else if photo.state == "failed"
+          column align-items="center" gap=6 padding=12
+            image "symbol:photo" width=22 height=22 color="-exact-secondary-label" aria-hidden=true
+            text "The photo did not load." font="-exact-footnote" color="-exact-secondary-label" text-align="center"
+        else
+          progress aria-label="Loading the photo"
+      if photo.caption != ""
+        text photo.caption font="-exact-footnote" color="-exact-secondary-label" line-clamp=2 width=w
+
+// A file an agent made: its name and the first lines of it.
+component ArtifactCard
+  props
+    m: Message
+  view
+    column gap=6 padding=12 border-radius=16 background-color=surface() width="100%" box-sizing="border-box" testId=`artifact-${m.id}`
+      row gap=8 align-items="center"
+        image "symbol:document" aria-hidden=true
+        text m.title font-weight=600 flex=1 min-width=0 line-clamp=1
+      text m.body font="-exact-subheadline" color="-exact-secondary-label"
+
+// A page of the Library that an agent made (DocumentCard): its symbol, its title and the words Library page.
+component DocumentCard
+  props
+    m: Message
+  view
+    row gap=12 align-items="center" padding=12 border-radius=16 background-color=surface() width="100%" box-sizing="border-box" testId=`document-${m.id}`
+      column width=36 height=36 border-radius=12 background-color=page() align-items="center" justify-content="center" flex-shrink=0
+        image "symbol:document" width=18 height=18 color="-exact-secondary-label" aria-hidden=true
+      column flex=1 min-width=0 gap=2
+        text m.title font="-exact-subheadline" font-weight=600 line-clamp=2
+        text "Library page" font="-exact-subheadline" color="-exact-secondary-label" line-clamp=1
+
+// A background process of Hermes that ended (ProcessNoticeRow): a check or a cross, its name, how it ended with its run
+// time, and an edge in the colour of the outcome. A tap shows the command; a failure shows its last output at once.
+component ProcessRow
+  props
+    m: Message
+  state open = false
+  derive tint = m.failed ? "-exact-system-red" : positive()
+  derive shows = m.detail != "" and (m.failed or open)
+  action toggle
+    open = not open
+  view
+    row border-radius=12 overflow="hidden" background-color="light-dark(rgb(244 244 244 / 0.6), rgb(33 33 33 / 0.6))" width="100%" box-sizing="border-box" testId=`process-${m.id}`
+      view width=3 align-self="stretch" background-color=tint aria-hidden=true
+      column flex=1 min-width=0 gap=8 padding="4px 12px"
+        button press=toggle disabled=(m.failed or m.detail == "") appearance="none" display="flex" flex-direction="row" align-items="center" gap=8 min-height=44 padding=0 width="100%" text-align="start" aria-label=`Background task ${m.failed ? "failed" : "finished"}: ${m.title}` aria-expanded=shows testId=`process-toggle-${m.id}`
+          image (m.failed ? "symbol:sf/xmark.circle.fill" : "symbol:select-fill") width=20 height=20 color=tint aria-hidden=true
+          column flex=1 min-width=0 gap=1
+            text m.title font="-exact-subheadline" font-weight=500 line-clamp=1
+            text m.body font="-exact-caption1" font-variant-numeric="tabular-nums" color="-exact-secondary-label" line-clamp=1
+          if not m.failed and m.detail != ""
+            image (open ? "symbol:sf/chevron.down" : "symbol:forward-chevron") width=12 height=12 color="-exact-tertiary-label" aria-hidden=true
+        if shows
+          text m.detail font="-exact-caption1" font-family="monospace" padding=8 margin-bottom=4 border-radius=8 background-color=page() overflow-wrap="anywhere" testId=`process-detail-${m.id}`
 
 // A notice of a team: its kind, its words, who posted it and when.
 component NoticeCard
@@ -106,50 +241,141 @@ component NoticeCard
     now: number
     offset: number
   view
-    column gap=2 padding=12 border-radius=16 background-color="light-dark(#f4f4f4, #212121)" testId=`notice-${m.id}`
+    column gap=2 padding=12 border-radius=16 background-color=surface() testId=`notice-${m.id}`
       text m.title font="-exact-footnote" font-weight=600 color="light-dark(#b84524, #fc855c)"
       text m.body markup="markdown"
       text `${m.author} · ${messageTime(m.at, now, offset)}` font="-exact-caption2" font-variant-numeric="tabular-nums" color="-exact-secondary-label"
 
-// A file an agent made: its name and the first lines of it.
-component ArtifactCard
+// A card of an agent (DecisionCard): the earlier choice of a follow-up, the title with its sources and the size of a
+// pull request, and the X that dismisses it. While it waits, the context and the risk; then what the caller puts in it
+// (its previews, its draft and its options); then a choice that waits for its Undo, why the last answer did not go, and
+// once answered the receipt.
+component CardView
   props
-    m: Message
-  view
-    column gap=6 padding=12 border-radius=16 background-color="light-dark(#f4f4f4, #212121)" testId=`artifact-${m.id}`
-      row gap=8 align-items="center"
-        image "symbol:document" aria-hidden=true
-        text m.title font-weight=600 flex=1 min-width=0 line-clamp=1
-      text m.body font="-exact-subheadline" color="-exact-secondary-label"
-
-// A card that waits for an answer, with the options the caller indents under it. Once it has an answer it shows the
-// option that was chosen.
-component DecisionCard
-  props
-    m: Message
+    card: Card
+    dismiss: action
+    undo: action
   slot
+  derive closed = not card.pending and not card.refreshing
+  derive markTint = card.sending or card.mark == "symbol:close" ? "-exact-secondary-label" : card.mark == "symbol:alert" ? attention() : positive()
+  derive markLabel = card.sending ? "Sending choice" : card.mark == "symbol:close" ? "Dismissed" : card.mark == "symbol:alert" ? "Action failed" : "Choice recorded"
   view
-    column gap=12 padding=16 border-radius=16 background-color="light-dark(#f4f4f4, #212121)" testId=`decision-${m.id}`
-      text m.title font="-exact-headline"
-      text m.body markup="markdown"
-      text m.detail markup="markdown"
+    column gap=16 padding=16 border-radius=24 background-color=surface() width="100%" box-sizing="border-box" testId=`card-${card.ref}`
+      if card.earlier != ""
+        row gap=6 align-items="center" testId=`earlier-${card.ref}`
+          image "symbol:reply" width=14 height=14 color="-exact-secondary-label" aria-hidden=true
+          text card.earlier font="-exact-footnote" color="-exact-secondary-label"
+      row align-items="flex-start" gap=8
+        // DecisionIntroduction: the title, its sources and the size of a pull request, then while it waits the context
+        // and the risk, all beside the X.
+        column flex=1 min-width=0 gap=16
+          column gap=8
+            text card.title font="-exact-body" font-weight=600 role="heading" aria-level=3 testId=`card-title-${card.ref}`
+            if card.sources.length > 0
+              column gap=4
+                for s in card.sources key=s
+                  text s font="-exact-footnote" color="-exact-secondary-label"
+            if card.diff != ""
+              text card.diff font="-exact-footnote" font-variant-numeric="tabular-nums" color="-exact-secondary-label" testId=`card-diff-${card.ref}`
+          if card.pending and card.context.length > 0
+            column gap=8
+              for p in card.context key=p
+                text p font="-exact-subheadline" color="-exact-secondary-label"
+          if card.pending and card.stale
+            text "Assessment needs updating" font="-exact-subheadline" color="-exact-secondary-label"
+          else if card.pending and card.reason != ""
+            column gap=4 testId=`card-risk-${card.ref}`
+              text card.risk font="-exact-subheadline" font-weight=500
+              text card.reason font="-exact-subheadline" color="-exact-secondary-label"
+        if card.dismissible
+          button press=dismiss appearance="none" aria-label="Dismiss card" width=44 height=44 margin="-10px -10px 0px 0px" display="flex" align-items="center" justify-content="center" flex-shrink=0 testId=`dismiss-${card.ref}`
+            image "symbol:close" width=16 height=16 color="-exact-secondary-label"
+      if card.waiting
+        UndoRow(label=card.chosenLabel, undo=undo)
       children
-      if m.status != "pending"
-        row gap=6 align-items="center"
-          image "symbol:checkmark" aria-hidden=true
-          text m.receipt testId=`receipt-${m.id}`
+      if card.error != ""
+        text card.error font="-exact-footnote" color=attention() testId=`card-error-${card.ref}`
+      if card.refreshing
+        text "Updating this card…" font="-exact-subheadline" color="-exact-secondary-label"
+      else if card.sending or closed
+        row gap=12 align-items="center" padding=12 min-height=44 box-sizing="border-box" border-radius=12 border-width=1 border-style="solid" border-color=line() background-color=page() testId=`receipt-${card.ref}`
+          text card.receipt font="-exact-subheadline" color=(card.dim ? "-exact-secondary-label" : "-exact-label") flex=1 min-width=0
+          if card.mark != ""
+            image card.mark width=16 height=16 color=markTint aria-label=markLabel
+        if closed and card.outcome != ""
+          text card.outcome font="-exact-footnote" color=attention()
+        if closed and card.revised
+          text "A newer card replaced this one." font="-exact-footnote" color="-exact-secondary-label"
 
-// One option of a card: the button, and under it what it does.
-component OptionButton
+// One option of a card (DecisionChoiceContent): the label with Recommended, what it does and its risk, on the page's
+// colour with a thin line around it. An option that approves waits for the previews of its card.
+component ChoiceButton
   props
-    label: string
-    explanation: string
+    option: Choice
+    disabled: bool
     pick: action
   view
-    column gap=4
-      button press=pick buttonStyle="bordered" testId=`option-${label}`
-        text label
-      text explanation font="-exact-footnote" color="-exact-secondary-label"
+    button press=pick disabled=disabled appearance="none" display="flex" flex-direction="column" align-items="stretch" gap=5 padding=12 min-height=44 width="100%" box-sizing="border-box" text-align="start" border-radius=12 border-width=1 border-style="solid" border-color=line() background-color=page() opacity=(disabled ? 0.5 : 1) aria-label=(option.recommended ? `${option.label}, Recommended` : option.label) testId=`option-${option.id}`
+      row align-items="baseline" gap=8 flex-wrap="wrap"
+        text option.label font="-exact-body"
+        if option.recommended
+          text "Recommended" font="-exact-footnote" color="-exact-secondary-label"
+      if option.explanation != ""
+        text option.explanation font="-exact-subheadline" color="-exact-secondary-label"
+      if option.reason != ""
+        column gap=4
+          text option.risk font="-exact-subheadline" font-weight=500
+          text option.reason font="-exact-subheadline" color="-exact-secondary-label"
+
+// The message of a draft card (MessageDraftContent): Via, From, To, Reply to and Subject, a rule, and the body.
+component DraftBox
+  props
+    draft: Draft
+  view
+    column gap=12 padding=12 border-radius=12 background-color=page() width="100%" box-sizing="border-box" testId="draft"
+      column gap=8
+        DraftField(label="Via", value=draft.via)
+        if draft.from != ""
+          DraftField(label="From", value=draft.from)
+        DraftField(label="To", value=draft.to)
+        if draft.replyTo != ""
+          DraftField(label="Reply to", value=draft.replyTo)
+        if draft.subject != ""
+          DraftField(label="Subject", value=draft.subject)
+      view height=1 background-color=line() aria-hidden=true
+      text draft.body font="-exact-body" white-space="pre-wrap" overflow-wrap="break-word" testId="draft-body"
+
+component DraftField
+  props
+    label: string
+    value: string
+  view
+    row gap=12 align-items="baseline"
+      text label font="-exact-subheadline" color="-exact-secondary-label" width="3.7rem" flex-shrink=0
+      text value font="-exact-subheadline" flex=1 min-width=0 overflow-wrap="anywhere"
+
+// Send and Discard of a draft card (MessageDraftActions): Send fills the coconut brown, Discard is quiet.
+component DraftButton
+  props
+    label: string
+    primary: bool
+    pick: action
+  view
+    button press=pick appearance="none" display="flex" align-items="center" justify-content="center" min-height=44 padding="0px 16px" border-radius=22 background-color=(primary ? "light-dark(#7a4e2d, #d4a574)" : "transparent") testId=`draft-${label}`
+      text label font="-exact-body" font-weight=(primary ? 600 : 400) color=(primary ? "-exact-background" : "-exact-secondary-label")
+
+// The choice that waits for its Undo (AnswerUndoRow): it shows as sent, and Undo takes it back before it reaches the Mac.
+component UndoRow
+  props
+    label: string
+    undo: action
+  view
+    row gap=12 align-items="center" testId="undo-row"
+      row gap=6 align-items="center" flex=1 min-width=0
+        image "symbol:select-fill" width=18 height=18 color=positive() aria-hidden=true
+        text label font="-exact-subheadline" font-weight=600 line-clamp=2
+      button press=undo buttonStyle="bordered" testId="undo-answer"
+        text "Undo"
 
 // What the agent does now, as BotStatusRow shows it under the newest message: the phase, then the time of its newest
 // step to the second, the model and the messages that wait, and the command in monospace under them.
