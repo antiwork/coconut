@@ -156,7 +156,7 @@ class GoogleProfile:
         with self.locked():
             saved = read_json(self.root / 'connection.json')
             if not saved.get('email'):
-                raise GoogleError('Connect Google in Coconut Settings → Connections.')
+                raise GoogleError('Connect Google in Coconut, under You → Connections.')
             tokens = self.tokens(saved['email'])
             expires = tokens.get('access_token_expires_at', '')
             deadline = datetime.fromisoformat(expires.replace('Z', '+00:00')).timestamp() if expires else 0
@@ -306,7 +306,7 @@ def main():
         access, email = profile.access()
     except Exception:
         print('false')
-        print('Google access needs attention. Open Coconut Settings → Connections.', file=sys.stderr)
+        print('Google access needs attention. Open Coconut, then You → Connections.', file=sys.stderr)
         return 1
     if profile.executable:
         print('export PATH=' + shlex.quote(str(Path(profile.executable).parent)) + ':"$PATH"')

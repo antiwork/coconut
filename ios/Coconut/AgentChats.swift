@@ -179,7 +179,7 @@ extension AppStore {
 
     /// The first message of a new chat in `project`: the Send of the message box, and Send to a new agent in a chat,
     /// with the files, the mentions, the quote and the work of its draft. Returns the chat that got the message, or nil
-    /// when none did; the error notice says why. Nothing opens the chat: it shows at the top of the Agents list
+    /// when none did; the error notice says why. Nothing opens the chat: it shows at the top of the Chats list
     /// (newChatSend) and under its project in the Mac sidebar, so the person stays where they are and can queue up one
     /// chat after another.
     func sendNewChat(in project: Bot, text: String, attachments: [String] = [], mentionedBotIds: [String] = [],

@@ -69,7 +69,7 @@ def github_request(method, path, token, body=None):
             return json.loads(content) if content else {}
     except HTTPError as error:
         if error.code == 401:
-            raise ServiceError(409, 'Reconnect GitHub in Settings → Connections → GitHub.') from None
+            raise ServiceError(409, 'Reconnect GitHub in You → Connections → GitHub.') from None
         if error.code == 404:
             raise ServiceError(404, 'This repository or work item is unavailable to the connected GitHub account.') from None
         if error.code in (403, 429):
@@ -96,7 +96,7 @@ class GitHubBusiness:
         self.connection.refresh()
         token = self.connection.token()
         if not token:
-            raise ServiceError(409, 'Connect GitHub in Settings → Connections → GitHub to open your business.')
+            raise ServiceError(409, 'Connect GitHub in You → Connections → GitHub to open your business.')
         return token
 
     def _call(self, method, path, body=None):

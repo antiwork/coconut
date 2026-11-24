@@ -76,7 +76,7 @@ enum HomeFeed {
         }
     }
 
-    /// The count of the Agents tab of the iPhone: the unread messages of every chat (ChatList.all), which is what its
+    /// The count of the Chats tab of the iPhone: the unread messages of every chat (ChatList.all), which is what its
     /// rows show. A muted chat and an archived chat count none. The cards that wait and the notices that hold work
     /// show on Product.
     static func chatsBadge(bots: [Bot], rooms: [TeamRoom], local: [TeamChatKey: TeamLastMessage] = [:]) -> Int {
@@ -103,7 +103,7 @@ enum HomeFeed {
     }
 }
 
-/// Mark all as read (AppStore.markAllRead): one action and one label for Home, the Mac sidebar and the Agents list.
+/// Mark all as read (AppStore.markAllRead): one action and one label for Home, the Mac sidebar and the Chats list.
 struct MarkAllReadButton: View {
     @Environment(AppStore.self) private var store
 

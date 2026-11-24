@@ -26,7 +26,7 @@ enum ChatProject {
 /// first, then the Coconut chat. It ends with the list of all projects (on the iPhone). The first message
 /// starts a new chat in that project. The same box is where every New chat leads (AppStore.startChat).
 ///
-/// A Send never opens the chat that it makes (the person's request): the chat shows at the top of the Agents list,
+/// A Send never opens the chat that it makes (the person's request): the chat shows at the top of the Chats list,
 /// under Working while it works, and under its project in the Mac sidebar. The box keeps the keyboard and the cursor,
 /// so the person can queue up many chats in a row and open each one later.
 struct NewChatBar: View {

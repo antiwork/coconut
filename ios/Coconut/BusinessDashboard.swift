@@ -1,7 +1,7 @@
 import SwiftUI
 import Charts
 
-/// The place of one function: its report and its work. Support is a place of its own. Finance opens the others.
+/// The place of one function: its report and its work. Support is a place of its own. Business opens the others.
 struct BusinessWorkspaceView: View {
     let function: String
     @State private var tab = "overview"
@@ -239,8 +239,13 @@ private struct SupportDashboard: View {
         let counts = selected["counts"]
         let waiting = counts["unassigned"].number
         VStack(alignment: .leading, spacing: BoardStyle.Space.l) {
+            // The queue "issues" of the report is every open issue of gumroad-private, so its rows are the to-dos of
+            // Product, Support and Business, each on its own tab. The iPhone's Support shows the customers only. The Mac
+            // has no Product page, so its Support keeps the queue of the issues.
+            #if os(macOS)
             Picker("Queue", selection: $queue) { Text("Customer support").tag("support"); Text("Product issues").tag("issues") }
                 .pickerStyle(.segmented).labelsHidden().bentoLeadingControl()
+            #endif
             BentoBoard {
                 BentoStat(title: "Open", value: reportNumber(counts["all"].number),
                           note: counts["assigned"].number.map { "\(Int($0)) assigned" } ?? "In this queue", trend: volume.map(\.value))

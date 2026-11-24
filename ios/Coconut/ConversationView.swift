@@ -1363,7 +1363,7 @@ struct ConversationComposer: View {
     }
 
     /// Sends the draft. Send to a new agent starts a fresh chat of the same project with the draft, as the message box
-    /// does (AppStore.sendNewChat): the chat stays closed, at the top of the Agents list, and the person stays in this
+    /// does (AppStore.sendNewChat): the chat stays closed, at the top of the Chats list, and the person stays in this
     /// chat with the keyboard, to send the next one. The keyboard first gives the field all that it holds, so the send
     /// has the text that the person sees, and the clear stays (KeyboardSettle).
     private func send(inNewChat: Bool = false) {
@@ -1407,7 +1407,7 @@ struct ConversationComposer: View {
             if inNewChat {
                 // The same chat as the message box makes: a chat that nobody wrote in comes before a new one, and this
                 // chat when nobody wrote in it. Nothing opens the chat (the person's choice): it shows at the top of the
-                // Agents list and under its project in the Mac sidebar. When the Mac does not make it or does not take
+                // Chats list and under its project in the Mac sidebar. When the Mac does not make it or does not take
                 // the message, the notice says why and the draft comes back.
                 success = await store.sendNewChat(in: bot, text: submittedText, attachments: submittedAttachments,
                                                   mentionedBotIds: submittedRecipients, replyTo: submittedReply,

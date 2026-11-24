@@ -11,21 +11,21 @@ struct BusinessHomeView: View {
 
     var body: some View {
         BoardPage(width: .wide, spacing: BoardStyle.Space.l) {
-            // The to-dos of Finance come first, which the badge of the tab counts (TodoLists.swift).
+            // The to-dos of Business come first, which the badge of the tab counts (TodoLists.swift).
             TodoListSection(area: .finance)
             if let report = shownReport {
                 TimelineView(.periodic(from: .now, by: 60)) { context in
                     BusinessHomeContent(model: BusinessHomePresentation(report: report, now: context.date, refreshFailed: error != nil))
                 }
             } else if error == nil {
-                BoardLoading(title: "Loading finance")
+                BoardLoading(title: "Loading business")
             }
             if let error {
                 BoardLoadNotice(message: error) { Task { await load() } }
                     .accessibilityIdentifier("business-home-refresh-error")
             }
         }
-        .navigationTitle("Finance")
+        .navigationTitle("Business")
         .newTodoButton(.finance)
         .task(id: "\(store.connection)/\(store.businessChanges)") { await load() }
         .onChange(of: store.businessGeneration) { _, _ in report = nil; error = nil }

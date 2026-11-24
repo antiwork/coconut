@@ -16,7 +16,7 @@ enum HomeTarget: Equatable {
     case connection
     /// The notice board of a team, by its room ID.
     case notices(String)
-    /// A place of Finance: the Support function or a report.
+    /// A place of Business: the Support function or a report.
     case business(BusinessRoute)
 }
 
@@ -35,7 +35,7 @@ struct AttentionItem: Identifiable, Equatable {
     let detail: String
     let symbol: String
     let target: HomeTarget
-    /// Names one of several rows of the same kind: the rows of Finance each have their own.
+    /// Names one of several rows of the same kind: the rows of Business each have their own.
     var key: String? = nil
 
     var id: String { key.map { kind.rawValue + "-" + $0 } ?? kind.rawValue }
@@ -66,7 +66,7 @@ enum AttentionRules {
         var connection: ConnectionState = .connected
         var lastSync: Date? = nil
         var rooms: [TeamRoom] = []
-        /// The overview of Finance, when the app loaded it. Its breaches of Needs attention show here too.
+        /// The overview of Business, when the app loaded it. Its breaches of Needs attention show here too.
         var business: BusinessReport? = nil
     }
 
@@ -80,7 +80,7 @@ enum AttentionRules {
     static func total(_ items: [AttentionItem]) -> Int { items.reduce(0) { $0 + $1.count } }
 
     /// The part of "Needs attention" that the badge of the app icon adds. A late card is a pending card already, and
-    /// stale data and the breaches of Finance are something only the app can see, so none of them counts here.
+    /// stale data and the breaches of Business are something only the app can see, so none of them counts here.
     static func badgeCount(_ items: [AttentionItem]) -> Int {
         items.filter { $0.kind != .waiting && $0.kind != .stale && $0.kind != .business }.reduce(0) { $0 + $1.count }
     }
@@ -153,8 +153,10 @@ enum AttentionRules {
                              detail: "Past 4h · oldest \(age)", symbol: "hourglass", target: .cards(oldest.id))
     }
 
-    /// The rows of Needs attention on Finance that breach now. A source that is stale or unavailable shows on Finance
-    /// only: a To-do must be a breach that the current numbers prove.
+    /// The breaches of the overview of Business that breach now: Support past SLA counts on Support and the risk
+    /// reviews past SLA on Business (TodoCounts), and the Mac's Home shows them all (BusinessHomePresentation.attention).
+    /// A source that is stale or unavailable proves no breach, so it adds no row: a To-do must be a breach that the
+    /// current numbers prove, and the page of Business says when its report is old.
     private static func business(_ input: Input, _ now: Date) -> [AttentionItem] {
         guard let report = input.business else { return [] }
         return BusinessHomePresentation(report: report, now: now).attention.compactMap { row in
@@ -232,8 +234,8 @@ extension AppStore {
         AttentionRules.items(attentionInput, now: now)
     }
 
-    /// Loads the overview of Finance, so its breaches show in Needs attention before the person opens Finance. A Mac
-    /// without Finance fails here, and then the rows stay empty.
+    /// Loads the overview of Business, so its breaches show before the person opens Business. A Mac without the
+    /// reports fails here, and then the rows stay empty.
     func loadBusinessAttention() async {
         // The demo returns its report without keeping it, so this keeps it for both.
         if let report = try? await businessReport("overview") { businessReports["overview"] = report }

@@ -379,7 +379,7 @@ struct ChatDeckCard: View {
         return role.isEmpty ? "Agent" : role
     }
 
-    /// What a row of the Agents list offered on a long press, before the long press showed the deck.
+    /// What a row of the Chats list offered on a long press, before the long press showed the deck.
     private var menu: some View {
         Menu {
             NewChatButton(bot: bot, done: close)

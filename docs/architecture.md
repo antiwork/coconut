@@ -146,7 +146,7 @@ A project is a name and its chats (`backend/coconut/bot_profiles.py`, `PROJECTS`
 `HOME` remains the Mac account home so macOS Keychain works.
 `USER` identifies the Mac account so Claude Code selects its saved Keychain login.
 Coconut scopes Codex, GitHub CLI, and XDG settings through their native environment variables.
-Settings → Connections → GitHub connects one account for all agents through the Antiwork-owned Coconut OAuth app.
+You → Connections → GitHub connects one account for all agents through the Antiwork-owned Coconut OAuth app.
 Device sign-in uses its public client ID, without a client secret. Coconut keeps access and refresh tokens in private
 files under `<data-dir>/connections/github`, refreshes expiring tokens before they expire, and stops refresh on shutdown
 or disconnect. PR tracking, the Business pages, the GitHub previews and the command of a work source use the current token.

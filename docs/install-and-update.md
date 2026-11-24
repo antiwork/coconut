@@ -129,7 +129,7 @@ The tool calls the team routes of the service with the token of `<data>/gateway/
 
 ## GitHub access for agents
 
-Open **Settings → Connections → GitHub** in Coconut, choose **Connect GitHub**, copy the code, and approve Coconut
+Open **You → Connections → GitHub** in Coconut, choose **Connect GitHub**, copy the code, and approve Coconut
 on GitHub. The Antiwork organization owns the Coconut OAuth app. One connection serves all Coconut agents.
 
 Coconut stores its own access and refresh tokens on the Mac with owner-only permissions. Expiring tokens refresh

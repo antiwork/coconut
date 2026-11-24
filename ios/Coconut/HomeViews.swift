@@ -2,15 +2,20 @@ import SwiftUI
 
 /// Two tabs of the iPhone. Product has the rules that breach for the agents and the cards that wait, then its to-dos,
 /// the issues of gumroad-private with the label product (TodoLists.swift), and the open pull requests (ProductWork).
-/// Agents is one list, as Telegram has it: the agents of the projects, the teams, their named chats and the direct
-/// chats, in two tabs, Working and Idle
-/// (AgentsFilter), with the message box under the list (NewChatBar).
+/// Chats is one list, as Telegram has it: the agents of the projects, the teams, their named chats and the direct
+/// chats, in two tabs, Working and Idle (AgentsFilter), with the message box under the list (NewChatBar). Many agents
+/// of one project fold into a tree under its name (ChatTree).
 struct HomeLaunchView: View {
     enum Part { case product, chats }
     var part = Part.chats
     @Environment(AppStore.self) private var store
-    /// The tab of Agents that shows, Working or Idle. The phone keeps the choice.
+    /// The tab of Chats that shows, Working or Idle. The phone keeps the choice.
     @AppStorage(AgentsFilter.key) private var filter = AgentsFilter.working
+    /// The projects whose tree is open in each tab of Chats (ChatTree). The phone keeps them.
+    @AppStorage(ChatTree.key) private var openTrees = ""
+    /// A chat in the tree of its project starts where the name of the project starts, after the chevron (ChatTreeRow).
+    @ScaledMetric(relativeTo: .body) private var treeChevron = ChatTreeRow.chevronWidth
+    private var treeIndent: CGFloat { treeChevron + BoardStyle.Space.m }
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @Environment(\.pushRoute) private var pushRoute
     @Environment(\.openURL) private var openURL
@@ -149,56 +154,34 @@ struct HomeLaunchView: View {
         .homeRow()
     }
 
-    /// The list of Agents, as Telegram has it: the pinned chats first, then every other chat newest activity first
+    /// The list of Chats, as Telegram has it: the pinned chats first, then every other chat newest activity first
     /// (ChatList.all), the archived chats too. Every row has the same form: the name, the last message, the age and the
     /// badges. A starred row only adds the star mark. The list shows the chats of one of its two tabs, Working or Idle,
-    /// in the same order. An archived chat does not work, so Idle has it among the others.
+    /// in the same order. An archived chat does not work, so Idle has it among the others. Many agents of one project
+    /// fold into one row with its name, which opens into a tree of them (ChatTree).
     private func chatList(_ rows: [ChatListItem]) -> some View {
         let now = Date.now
         let working = Set(rows.filter { works($0, at: now) }.map(\.id))
         let shown = rows.filter { working.contains($0.id) == (filter == .working) }
+        let entries = ChatTree.entries(shown, open: ChatTree.open(openTrees, in: filter))
         // A list, not a stack, so that a row of a chat has the swipe of the system: swipe left to archive.
         return List {
             if shown.isEmpty {
-                Text(rows.isEmpty ? "No agents yet." : filter == .working ? "No agent is working." : "No agent is idle.")
+                Text(rows.isEmpty ? "No chats yet." : filter == .working ? "No agent is working." : "No agent is idle.")
                     .font(.subheadline).foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity).padding(.vertical, BoardStyle.Space.xxl)
                     .accessibilityIdentifier("chats-empty")
                     .homeRow()
             }
-            ForEach(shown) { item in
-                switch item {
-                case .bot(let bot):
-                    BotContactRow(bot: bot, title: bot.isChat ? bot.listName : nil, pinned: ChatList.isStarred(bot))
-                        .padding(.vertical, BoardStyle.Space.m)
-                        .background(BoardStyle.paper)
-                        .modifier(ChatDeckRow(botId: bot.id) { pushRoute?(ConversationRoute(botId: bot.id)) })
-                        .accessibilityIdentifier(ChatList.isCoconut(bot) ? "coconut-chat" : "bot-conversation-\(bot.id)")
-                        .swipeActions(edge: .trailing, allowsFullSwipe: true) {
-                            // A project stays, and so does the Coconut chat (Bot.canRemove). An archived chat offers
-                            // Unarchive in the same place.
-                            if bot.canRemove { archiveButton(bot) }
-                            muteButton(bot)
-                        }
-                        .homeRow()
-                case .team, .direct, .botDirect:
-                    // A team chat has Star and Mute in its menu, and a named chat has Mute in its swipe too. The Team
-                    // screen has the leave action.
-                    if let chat = item.chat {
-                        Button { pushRoute?(TeamChatRoute(chat: chat)) } label: {
-                            PeopleRow(item: item, pinMark: item.isPinnedChat)
-                                .padding(.vertical, BoardStyle.Space.m)
-                                .background(BoardStyle.paper)
-                                .contentShape(Rectangle())
-                                .modifier(TeamChatMuteMenu(item: item))
-                        }
-                            .buttonStyle(HomePressStyle())
-                            .accessibilityIdentifier(Self.identifier(chat))
-                            .swipeActions(edge: .trailing, allowsFullSwipe: true) {
-                                if let mute = TeamChatMute.listAction(item) { teamMuteButton(mute) }
-                            }
-                            .homeRow()
+            ForEach(entries) { entry in
+                switch entry {
+                case .group(let group):
+                    ChatTreeRow(group: group) {
+                        withAnimation(.snappy) { openTrees = ChatTree.toggle(group.agentId, in: filter, openTrees) }
                     }
+                    .homeRow()
+                case .chat(let item, let nested):
+                    chatRow(item, nested: nested)
                 }
             }
         }
@@ -208,17 +191,17 @@ struct HomeLaunchView: View {
         .contentMargins(.top, BoardStyle.Space.s, for: .scrollContent)
         .contentMargins(.bottom, BoardStyle.Space.xl, for: .scrollContent)
         .background(BoardStyle.paper)
-        // The two tabs of Agents, with the count of each. The control stays under the title while the list scrolls, as
+        // The two tabs of Chats, with the count of each. The control stays under the title while the list scrolls, as
         // Overview and Work of a function (pinnedSegments).
         .safeAreaInset(edge: .top, spacing: 0) {
-            Picker("Agents", selection: $filter) {
+            Picker("Chats", selection: $filter) {
                 Text("Working \(working.count)").tag(AgentsFilter.working)
                 Text("Idle \(rows.count - working.count)").tag(AgentsFilter.idle)
             }
             .pinnedSegments()
             .accessibilityIdentifier("agents-filter")
         }
-        .navigationTitle("Agents")
+        .navigationTitle("Chats")
         .toolbar {
             // One tap reads every chat, as Read All in Telegram. It shows while a chat of the list has an unread
             // count.
@@ -231,7 +214,51 @@ struct HomeLaunchView: View {
         .refreshable { await store.reconnect() }
         // The message box under the list gives the keyboard back when the list moves.
         .scrollDismissesKeyboard(.interactively)
-        .modifier(NewChatReveal(filter: $filter) { works(.bot($0), at: .now) })
+        // A new chat shows in the tab that holds it, with the tree of its project open.
+        .modifier(NewChatReveal(filter: $filter) { works(.bot($0), at: .now) } open: { bot, tab in
+            openTrees = ChatTree.opening(bot.agentId, in: tab, openTrees)
+        })
+    }
+
+    /// One chat of the list. A chat in the tree of its project is set in under the name of the project and shows its own
+    /// title, because the row above names the project.
+    @ViewBuilder
+    private func chatRow(_ item: ChatListItem, nested: Bool) -> some View {
+        switch item {
+        case .bot(let bot):
+            BotContactRow(bot: bot, title: nested ? ChatTree.title(bot) : bot.isChat ? bot.listName : nil,
+                          pinned: !nested && ChatList.isStarred(bot))
+                .padding(.vertical, BoardStyle.Space.m)
+                .padding(.leading, nested ? treeIndent : 0)
+                .background(BoardStyle.paper)
+                .modifier(ChatDeckRow(botId: bot.id) { pushRoute?(ConversationRoute(botId: bot.id)) })
+                .accessibilityIdentifier(ChatList.isCoconut(bot) ? "coconut-chat" : "bot-conversation-\(bot.id)")
+                .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+                    // A project stays, and so does the Coconut chat (Bot.canRemove). An archived chat offers
+                    // Unarchive in the same place.
+                    if bot.canRemove { archiveButton(bot) }
+                    muteButton(bot)
+                }
+                .homeRow()
+        case .team, .direct, .botDirect:
+            // A team chat has Star and Mute in its menu, and a named chat has Mute in its swipe too. The Team
+            // screen has the leave action.
+            if let chat = item.chat {
+                Button { pushRoute?(TeamChatRoute(chat: chat)) } label: {
+                    PeopleRow(item: item, pinMark: item.isPinnedChat)
+                        .padding(.vertical, BoardStyle.Space.m)
+                        .background(BoardStyle.paper)
+                        .contentShape(Rectangle())
+                        .modifier(TeamChatMuteMenu(item: item))
+                }
+                    .buttonStyle(HomePressStyle())
+                    .accessibilityIdentifier(Self.identifier(chat))
+                    .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+                        if let mute = TeamChatMute.listAction(item) { teamMuteButton(mute) }
+                    }
+                    .homeRow()
+            }
+        }
     }
 
     /// A chat works while its row says so: a working line, or a card that waits for the person. A direct chat with a
@@ -316,27 +343,157 @@ struct HomeLaunchView: View {
 
 }
 
-/// The two tabs of Agents. Working has the agents and chats that work or wait for the person, and Idle has the
+/// The two tabs of Chats. Working has the agents and chats that work or wait for the person, and Idle has the
 /// others, the archived chats among them, so the person finds a free agent for the next task in one tap.
 enum AgentsFilter: String {
     case working, idle
     static let key = "agents-filter"
 }
 
+/// The tree of Chats: many agents of one project fold into one row with the name of the project (the person: "tree to
+/// group if many with one type of agent"). A project with `minimum` agents or more in the tab that shows, Working or
+/// Idle, has that row at the place of the first of them, and its agents show under it, in the order of the list,
+/// while the row is open. A project with fewer keeps its agents as rows of their own, and the chats with people never
+/// fold. Each tab keeps its own open rows, so a tree that a new chat opens in Working leaves Idle folded.
+enum ChatTree {
+    /// "Many": the fewest agents of one project that fold. Two rows read fine without a tree.
+    static let minimum = 3
+    static let key = "chat-tree-open"
+
+    /// The row of a project and the agents under it, in the order of the list.
+    struct Group: Identifiable, Equatable {
+        let agentId: String
+        let name: String
+        let bots: [Bot]
+        let open: Bool
+        var id: String { "tree-" + agentId }
+    }
+
+    /// One row of the list: a chat, set in when it is in an open tree, or the row of a project.
+    enum Entry: Identifiable, Equatable {
+        case chat(ChatListItem, nested: Bool)
+        case group(Group)
+
+        var id: String {
+            switch self {
+            case .chat(let item, _): item.id
+            case .group(let group): group.id
+            }
+        }
+    }
+
+    /// The rows of the chats of one tab, `items` in the order of the list. `open` has the projects whose tree is open.
+    static func entries(_ items: [ChatListItem], open: Set<String>) -> [Entry] {
+        var members: [String: [Bot]] = [:]
+        for case .bot(let bot) in items { members[bot.agentId, default: []].append(bot) }
+        var placed = Set<String>()
+        var entries: [Entry] = []
+        for item in items {
+            guard case .bot(let bot) = item, let bots = members[bot.agentId], bots.count >= minimum else {
+                entries.append(.chat(item, nested: false))
+                continue
+            }
+            guard placed.insert(bot.agentId).inserted else { continue }
+            let isOpen = open.contains(bot.agentId)
+            // Each chat has the name of its project, also a chat whose project is gone (AgentChats.orphans).
+            let name = bots.first { $0.id == bot.agentId }?.name ?? bots[0].name
+            entries.append(.group(Group(agentId: bot.agentId, name: name, bots: bots, open: isOpen)))
+            if isOpen { entries += bots.map { .chat(.bot($0), nested: true) } }
+        }
+        return entries
+    }
+
+    /// The name of an agent in the tree of its project: the title of a further chat. The first chat of the project
+    /// has the name of the project.
+    static func title(_ bot: Bot) -> String { bot.isChat ? bot.chatLabel : bot.name }
+
+    /// The projects whose tree is open in `tab`, from the kept value: one "tab/project" on each line.
+    static func open(_ kept: String, in tab: AgentsFilter) -> Set<String> {
+        let prefix = tab.rawValue + "/"
+        return Set(kept.split(separator: "\n").filter { $0.hasPrefix(prefix) }.map { String($0.dropFirst(prefix.count)) })
+    }
+
+    /// The kept value with the tree of `agentId` in `tab` opened or closed.
+    static func toggle(_ agentId: String, in tab: AgentsFilter, _ kept: String) -> String {
+        setting(agentId, in: tab, open: !open(kept, in: tab).contains(agentId), kept)
+    }
+
+    /// The kept value with the tree of `agentId` in `tab` open.
+    static func opening(_ agentId: String, in tab: AgentsFilter, _ kept: String) -> String {
+        setting(agentId, in: tab, open: true, kept)
+    }
+
+    private static func setting(_ agentId: String, in tab: AgentsFilter, open: Bool, _ kept: String) -> String {
+        let line = tab.rawValue + "/" + agentId
+        var lines = kept.split(separator: "\n").map(String.init).filter { $0 != line }
+        if open { lines.append(line) }
+        return lines.joined(separator: "\n")
+    }
+}
+
+/// The row of a project whose agents fold on Chats (ChatTree), in the form of every other row: a chevron where a face
+/// would be, the name of the project, how many of its agents the tab has, and the age of the newest with their unread
+/// messages. A tap opens or closes the tree. A starred project keeps its star mark.
+struct ChatTreeRow: View {
+    @Environment(AppStore.self) private var store
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    /// The width of the chevron. A chat in the tree starts after it.
+    static let chevronWidth: CGFloat = 16
+    @ScaledMetric(relativeTo: .body) private var chevron = ChatTreeRow.chevronWidth
+    let group: ChatTree.Group
+    let toggle: () -> Void
+
+    var body: some View {
+        let unread = group.bots.reduce(0) { $0 + BotChatMute.unread($1) }
+        let newest = group.bots.compactMap { store.chatSummaries[$0.id].newestDate ?? $0.createdAt.apiDate }.max()
+        let waiting = group.bots.filter { store.botNeedsYou($0) }.count
+        let starred = store.bots.first { $0.id == group.agentId }.map(ChatList.isStarred) ?? false
+        let count = group.bots.count == 1 ? "1 agent" : "\(group.bots.count) agents"
+        Button(action: toggle) {
+            ChatRowLayout(name: group.name, unread: unread, date: newest, pinned: starred) {
+                Image(systemName: "chevron.right")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .rotationEffect(.degrees(group.open ? 90 : 0))
+                    .animation(BoardStyle.fade(reduceMotion: reduceMotion), value: group.open)
+                    .frame(width: chevron)
+            } subtitle: {
+                // A card that waits in the tree says so, as the row of the chat would.
+                (Text(count) + Text(waiting > 0 ? " · " + (waiting == 1 ? "1 needs you" : "\(waiting) need you") : "")
+                    .foregroundStyle(BoardStyle.attention))
+                    .font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
+            }
+            .padding(.vertical, BoardStyle.Space.m)
+            .background(BoardStyle.paper)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(HomePressStyle())
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel([group.name, count, waiting > 0 ? "\(waiting) need you" : nil,
+                             unread > 0 ? UnreadBadge.spoken(unread) : nil].compactMap { $0 }.joined(separator: ", "))
+        .accessibilityValue(group.open ? "Expanded" : "Collapsed")
+        .accessibilityIdentifier("chat-tree-" + group.agentId)
+    }
+}
+
 /// A Send that starts a chat leaves the chat closed (sendNewChat): the Send of the message box, and Send to a new agent
-/// in a chat, which keeps the person in that chat. The Agents list then shows the tab that holds the new chat, Working
-/// while it works, and scrolls its row into view: the chat is the newest, so it is the first row under the starred
-/// chats.
+/// in a chat, which keeps the person in that chat. The Chats list then shows the tab that holds the new chat, Working
+/// while it works, opens the tree of its project there (ChatTree), and scrolls its row into view: the chat is the
+/// newest, so it is the first row under the starred chats or the first row of its tree.
 private struct NewChatReveal: ViewModifier {
     @Environment(AppStore.self) private var store
     @Binding var filter: AgentsFilter
     let works: (Bot) -> Bool
+    /// Opens the tree of the project of the chat in a tab.
+    let open: (Bot, AgentsFilter) -> Void
 
     func body(content: Content) -> some View {
         ScrollViewReader { proxy in
             content.onChange(of: store.newChatSend) { _, send in
                 guard let send, let bot = store.bots.first(where: { $0.id == send.chat }) else { return }
-                filter = works(bot) ? .working : .idle
+                let tab: AgentsFilter = works(bot) ? .working : .idle
+                filter = tab
+                open(bot, tab)
                 Task {
                     // The row is in the list after the update that the change of tab makes.
                     try? await Task.sleep(for: .milliseconds(150))
@@ -348,7 +505,7 @@ private struct NewChatReveal: ViewModifier {
 }
 
 /// The archived chats, and the archived agents of an earlier release, on the Projects page: swipe left or hold a row to
-/// bring one back. A row opens the conversation, which keeps its history. The Agents list of the iPhone has them in
+/// bring one back. A row opens the conversation, which keeps its history. The Chats list of the iPhone has them in
 /// Idle, with the other chats (ChatList.all).
 struct ArchivedAgentsView: View {
     @Environment(AppStore.self) private var store
@@ -399,7 +556,7 @@ struct ArchivedAgentsView: View {
 }
 
 extension View {
-    /// A row of the Agents list: the paper behind it, no line under it, and the side space of the page.
+    /// A row of the Chats list: the paper behind it, no line under it, and the side space of the page.
     func homeRow(inset: CGFloat = BoardStyle.Space.l, top: CGFloat = 0) -> some View {
         listRowInsets(EdgeInsets(top: top, leading: inset, bottom: 0, trailing: inset))
             .listRowSeparator(.hidden)
@@ -407,7 +564,7 @@ extension View {
     }
 }
 
-/// A text chip that one of a few choices selects: the filters of the Agents list, and the tabs of the bot details on
+/// A text chip that one of a few choices selects: the filters of the Chats list, and the tabs of the bot details on
 /// a Mac. The selected chip sits on a soft capsule of the text color, so it reads in light and in dark mode.
 struct ChipButton: View {
     let title: String
@@ -451,7 +608,7 @@ struct HomePressStyle: ButtonStyle {
 }
 
 /// The pull requests on Product: the open pull requests of the engineering report, which the dashboards repository
-/// publishes, as Finance reads it. They add nothing to the badge of the tab, which counts the to-dos of Product
+/// publishes. Product is their one tab. They add nothing to the badge of the tab, which counts the to-dos of Product
 /// (TodoCounts): a pull request is the state of the product, not a to-do. The issues of the product are its to-dos.
 enum ProductWork {
     /// The reports that Product reads.
@@ -545,7 +702,7 @@ struct BotContactRow: View {
     let bot: Bot
     /// The name of the row. A further chat of a project shows its title next to the name of the project.
     var title: String? = nil
-    /// The star mark of a starred project at the top of the Agents list.
+    /// The star mark of a starred project at the top of the Chats list.
     var pinned = false
     /// The row reads the summary of its bot, not the messages, so a streamed word does not redraw it.
     private var summary: BotChatSummary { store.chatSummaries[bot.id] }
@@ -621,7 +778,7 @@ enum ChatRowText {
     }
 }
 
-/// The layout of one row of the Agents list and of the Mac sidebar, for a bot and a team, as the chat list of WhatsApp.
+/// The layout of one row of the Chats list and of the Mac sidebar, for a bot and a team, as the chat list of WhatsApp.
 /// The face comes first. A grid of two lines follows. The name and the age of the newest message share the first line.
 /// A working chat shows the time of its newest step there instead, to the second and live (`step`).
 /// The line under the name and the badges share the second line. The badges are the mark of a muted chat

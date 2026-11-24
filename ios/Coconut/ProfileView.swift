@@ -28,7 +28,8 @@ struct ProfileSummary: Equatable {
 }
 
 /// You, the place of the person: the person, this device, the settings of every chat, and Coconut itself. Coconut
-/// has no Settings screen: the few things that need this device are here, and the Coconut chat changes the rest.
+/// has no Settings screen: the few things that need this device are here, with the connections and the repositories
+/// that Coconut follows, and the Coconut chat changes the rest.
 struct ProfileView: View {
     @Environment(AppStore.self) private var store
     @Environment(\.pushRoute) private var pushRoute
@@ -57,6 +58,10 @@ struct ProfileView: View {
                 // The row has the name of the page that it opens.
                 BoardRow(symbol: "link", title: "Connections", detail: "Google, GitHub and other tools")
                     .boardButton("mcp-settings") { pushRoute?(ProfileRoute.connections) }
+                // The repositories of GitHub that Coconut follows for the work of the business: a setting, so it is
+                // here and not on Business.
+                BoardRow(symbol: "shippingbox", title: "Repositories", value: repositorySummary)
+                    .boardButton("profile-repositories") { pushRoute?(BusinessRoute.projects) }
             }
             // What the agents do now, what they cost and what they use. The Mac has Live and Spend in its sidebar.
             BoardSection("Agents") {
@@ -98,6 +103,8 @@ struct ProfileView: View {
         .task(id: store.connection) {
             await store.loadUsage()
             if store.connection == .connected { await store.loadTeam() }
+            // The Repositories row names them.
+            if store.connection == .connected || store.isDemo { try? await store.loadBusinessCatalog() }
         }
     }
 
@@ -125,6 +132,12 @@ struct ProfileView: View {
         .accessibilityElement(children: .combine)
         .accessibilityAddTraits(.isHeader)
         .accessibilityIdentifier("profile-header")
+    }
+
+    /// The one repository by its name, else how many there are. Nothing before the Mac answers.
+    private var repositorySummary: String? {
+        guard let projects = store.businessCatalog?.projects else { return nil }
+        return projects.count == 1 ? projects[0].name : "\(projects.count)"
     }
 
     private var teamSummary: String {

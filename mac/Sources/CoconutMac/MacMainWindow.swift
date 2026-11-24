@@ -271,7 +271,7 @@ struct MacMainWindow: View {
         case .people:
             placeStack { PeopleView(openTeamChat: { selection = .team($0) }).navigationTitle("People") }
         case .business:
-            placeStack { BusinessHomeView().navigationTitle("Finance") }
+            placeStack { BusinessHomeView().navigationTitle("Business") }
         case .support:
             placeStack { BusinessWorkspaceView(function: "support") }
         case .profile:
@@ -427,7 +427,7 @@ struct DetailColumnBottomInset: NSViewRepresentable {
     }
 }
 
-/// The sidebar: the Coconut chat, then the places (Home, Live, Spend, Finance, Support, Projects and You), then the
+/// The sidebar: the Coconut chat, then the places (Home, Live, Spend, Business, Support, Projects and You), then the
 /// chats in sections: Starred, Unread, Team chats, Project chats and Archived.
 struct MacSidebar: View {
     @Environment(AppStore.self) private var store
@@ -483,7 +483,7 @@ struct MacSidebar: View {
             MacSidebarLabel(title: "Spend", symbol: "dollarsign.circle")
                 .tag(MacSelection.spend)
                 .accessibilityIdentifier("sidebar-spend")
-            MacSidebarLabel(title: "Finance", symbol: "chart.xyaxis.line")
+            MacSidebarLabel(title: "Business", symbol: "chart.xyaxis.line")
                 .tag(MacSelection.business)
                 .accessibilityIdentifier("sidebar-business")
             MacSidebarLabel(title: "Support", symbol: "lifepreserver")

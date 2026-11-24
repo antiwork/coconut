@@ -77,24 +77,30 @@ struct CoconutApp: App {
     }
 }
 
-/// The five tabs of the iPhone in their order: Finance, Support, Product, Agents and You. Finance, Support and Product
-/// each start with their own list of to-dos, the issues of gumroad-private with their label, and each badge counts its
-/// own list (TodoLists.swift, TodoCounts): the person asked for three lists and three counts in place of one. Finance
-/// then has the overview of the business, which opens Accounting and Marketing. Support has the queues of the
-/// customers. Product has the rules that breach for the agents and the cards that wait, then its to-dos and the open
-/// pull requests. Agents (the case `chats`) is one list of the agents of every project and of the chats with people, in
-/// two tabs, Working and Idle, with the message box under the list. The page of a project opens from the name of its
-/// agent, and the list of all projects from the project chip of the box. The app opens on Agents, because the person
-/// does not want to land in a list of work. The Mac sidebar has its own list.
+/// The five tabs of the iPhone in their order: Product, Support, Business, Chats and You, as the person listed them.
+/// Each tab holds only its own things:
+/// - Product: the rules that breach for the agents and the cards that wait, then its to-dos and the open pull requests.
+/// - Support: its to-dos, with the conversations past their service level first, then the queue of the customers.
+/// - Business (the case `finance`): its to-dos, the issues labelled `finance`, then the overview of the business with
+///   the risk reviews, which opens Accounting, Marketing and History.
+/// - Chats: every agent and every chat with people, in two tabs, Working and Idle, with the message box under the list.
+///   Many agents of one project fold into a tree under its name (ChatTree).
+/// - You: the person, this device and the settings: the Mac, notifications, connections, usage, the team and the
+///   repositories that Coconut follows.
+/// Product, Support and Business each start with their own list of to-dos, the issues of gumroad-private with their
+/// label, and each badge counts its own list (TodoLists.swift, TodoCounts): the person asked for three lists and three
+/// counts in place of one. An issue is a to-do of one list, so no other tab lists it again. The page of a project opens
+/// from the name of its agent, and the list of all projects from the project chip of the box. The app opens on Chats,
+/// because the person does not want to land in a list of work. The Mac sidebar has its own list.
 ///
-/// The person renamed Chats to Agents: a conversation with the agent of a project is an agent, and a group chat is
-/// people with an agent or without one. So every label calls a conversation with an agent an agent (New agent, Archive
-/// agent, the Agents section of the Mac sidebar), and only a conversation with people a chat (Team chats, a direct
-/// chat). Code names such as `chats`, `ChatList` and `NewChatBar` stay.
+/// A conversation with the agent of a project is an agent in every label (New agent, Archive agent, "24 agents" in a
+/// tree, the Agents section of the Mac sidebar), because the person sees a group chat as people with an agent or
+/// without one. The tab is Chats, because it holds the agents and the chats with people. Code names such as `chats`,
+/// `finance`, `ChatList` and `NewChatBar` stay.
 ///
 /// The tab bar always has exactly five tabs. With a sixth, iOS puts the last tabs behind a More tab, and the person
 /// does not want More. A new place goes on the page of a tab, or it takes the place of a tab.
-enum HomeTab: Hashable { case finance, support, product, chats, profile }
+enum HomeTab: Hashable { case product, support, finance, chats, profile }
 
 struct CoconutHome: View {
     @Environment(AppStore.self) private var store
@@ -149,28 +155,28 @@ struct CoconutHome: View {
         // The tab bar shows filled symbols, as the system tab bars do.
         TabView(selection: $selectedTab) {
             // Each of the three tabs of work counts its own to-dos (TodoCounts).
-            Tab(value: HomeTab.finance) {
-                root(tab: .finance, path: $financePath)
-            } label: {
-                Label { Text("Finance") } icon: { Image(systemName: "chart.xyaxis.line") }
-            }.badge(store.todoCount(.finance))
-                .accessibilityIdentifier("home-finance")
-            Tab(value: HomeTab.support) {
-                root(tab: .support, path: $supportPath)
-            } label: {
-                Label { Text("Support") } icon: { Image(systemName: "lifepreserver.fill") }
-            }.badge(store.todoCount(.support))
-                .accessibilityIdentifier("home-support")
             Tab(value: HomeTab.product) {
                 root(tab: .product, path: $productPath)
             } label: {
                 Label { Text("Product") } icon: { Image(systemName: "hammer.fill") }
             }.badge(store.todoCount(.product))
                 .accessibilityIdentifier("home-product")
+            Tab(value: HomeTab.support) {
+                root(tab: .support, path: $supportPath)
+            } label: {
+                Label { Text("Support") } icon: { Image(systemName: "lifepreserver.fill") }
+            }.badge(store.todoCount(.support))
+                .accessibilityIdentifier("home-support")
+            Tab(value: HomeTab.finance) {
+                root(tab: .finance, path: $financePath)
+            } label: {
+                Label { Text("Business") } icon: { Image(systemName: "chart.xyaxis.line") }
+            }.badge(store.todoCount(.finance))
+                .accessibilityIdentifier("home-finance")
             Tab(value: HomeTab.chats) {
                 root(tab: .chats, path: $chatsPath)
             } label: {
-                Label { Text("Agents") } icon: { Image(systemName: "bubble.left.and.bubble.right.fill") }
+                Label { Text("Chats") } icon: { Image(systemName: "bubble.left.and.bubble.right.fill") }
             // The cards and the notices that wait show on Product, so this badge has the unread chats only.
             }.badge(HomeFeed.chatsBadge(bots: store.bots, rooms: store.shownTeamRooms, local: store.newestLocalMessages))
                 .accessibilityIdentifier("home-chats")
@@ -180,7 +186,7 @@ struct CoconutHome: View {
                 Label { Text("You") } icon: { Image(systemName: "person.crop.circle.fill") }
             }.accessibilityIdentifier("home-profile")
         }
-        // The count of Support has the breach of Finance's overview (TodoCounts), so the overview loads here for every
+        // The count of Support has the breach of Business's overview (TodoCounts), so the overview loads here for every
         // tab, not only while Support shows: at each connection, then every 5 minutes. The publisher writes it every 15
         // minutes, and a report older than an hour proves no breach, so an overview that loaded once dropped from the count.
         .task(id: "\(store.connection)/\(store.businessChanges)") {
@@ -200,7 +206,7 @@ struct CoconutHome: View {
                 try? await Task.sleep(for: .seconds(120))
             }
         }
-        // A document card in a chat opens the page on the stack of Agents over the page of its agent, so Back leads
+        // A document card in a chat opens the page on the stack of Chats over the page of its agent, so Back leads
         // to the agent that keeps it.
         .environment(\.openDocument) { id in
             selectedTab = .chats
@@ -208,7 +214,7 @@ struct CoconutHome: View {
         }
         // A long press on a chat shows the deck of all chats (ChatDeck).
         .modifier(ChatDeckPresenter())
-        // A New agent, from a page or from the deck, shows Agents with the message box. The box takes the project.
+        // A New agent, from a page or from the deck, shows Chats with the message box. The box takes the project.
         .onChange(of: store.chatStarts) { _, _ in show(.chats) }
         .onChange(of: selectedTab) { _, tab in
             // The preview of a card shows in a chat or on Product. Another place leaves it.
@@ -259,7 +265,7 @@ struct CoconutHome: View {
                 }
             }
                 .toolbar(tabBarVisibility, for: .tabBar)
-                // The message box sits above the tab bar on Agents. Every New agent leads to it.
+                // The message box sits above the tab bar on Chats. Every New agent leads to it.
                 .safeAreaInset(edge: .bottom, spacing: 0) {
                     if tab == .chats { NewChatBar() }
                 }
@@ -376,7 +382,7 @@ struct CoconutHome: View {
         }
     }
 
-    /// Shows a Team chat or a direct chat on the stack of Agents, with the list under it. The sheets close.
+    /// Shows a Team chat or a direct chat on the stack of Chats, with the list under it. The sheets close.
     private func showTeamChat(_ chat: TeamChatKey) {
         notificationDecisionId = nil
         show(.chats, path: NavigationPath([TeamChatRoute(chat: chat)]))
@@ -395,7 +401,7 @@ struct CoconutHome: View {
         show(.product, path: NavigationPath([HomeDestination.inbox]))
     }
 
-    /// Opens the place of a row of Product or Agents on the stack of its tab, so Back leads to that tab.
+    /// Opens the place of a row of Product or Chats on the stack of its tab, so Back leads to that tab.
     private func open(_ target: HomeTarget, on path: Binding<NavigationPath>) {
         switch target {
         case .conversation(let route): path.wrappedValue.append(route)
@@ -425,7 +431,7 @@ struct CoconutHome: View {
             notificationDecisionId = nil
             show(.chats)
         case .notices(let room):
-            // The board of a team is part of the stack of Agents, so Back leads to the chats with people.
+            // The board of a team is part of the stack of Chats, so Back leads to the chats with people.
             notificationDecisionId = nil
             show(.chats, path: NavigationPath([NoticeBoardRoute(roomId: room)]))
         }
@@ -490,8 +496,8 @@ extension CoconutHome {
             show(tab, path: path)
         }
         switch place {
-        // Every chat is on the Agents tab, and a project opens from the name of its chat.
-        // Each way to start a chat, run as the person would: the message box of Agents shows with the project chosen.
+        // Every chat is on the Chats tab, and a project opens from the name of its chat.
+        // Each way to start a chat, run as the person would: the message box of Chats shows with the project chosen.
         case "new-chat": open(.chats); later { store.startChat(in: store.bots.first { $0.id == agent }) }
         case "agent-new-chat": open(.chats, [AgentRoute(botId: agent)]); later { store.startChat(in: store.bots.first { $0.id == agent }) }
         case "chat-new-chat": open(.chats, [ConversationRoute(botId: agent)]); later { store.startChat(in: store.bots.first { $0.id == agent }) }
@@ -502,7 +508,7 @@ extension CoconutHome {
                 guard let bot = store.bots.first(where: { $0.id == agent }) else { return }
                 _ = await store.sendNewChat(in: bot, text: "Which sellers had a payout held on Friday?")
             }
-        // To-dos (TodoLists.swift): the sheet of a new one on Product and on Finance, and a to-do added as Add does.
+        // To-dos (TodoLists.swift): the sheet of a new one on Product and on Business, and a to-do added as Add does.
         case "new-todo": open(.product); later { PendingTodoIssues.shared.adding = .product }
         case "new-todo-finance": open(.finance); later { PendingTodoIssues.shared.adding = .finance }
         case "todo-add":

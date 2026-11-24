@@ -57,7 +57,7 @@ final class AppStore {
     var businessCatalog: BusinessCatalog?
     var businessChanges = 0
     var demoBusinessWork = BusinessWork.previews
-    /// The open to-dos of the three lists, Finance, Support and Product (TodoLists.swift), from the Mac or from the last
+    /// The open to-dos of the three lists, Product, Support and Business (TodoLists.swift), from the Mac or from the last
     /// start. Nil until the first.
     var todoIssues: TodoIssues?
     /// The last failed load of the to-dos. A list shows it only while it has no to-dos.
@@ -449,13 +449,13 @@ final class AppStore {
             apply(cache.snapshotForRestore, persist: false)
             lastSync = cache.syncedAt
         }
-        // The overview of Finance from the last start, so the count of Support has its breach at once. The rules
+        // The overview of Business from the last start, so the count of Support has its breach at once. The rules
         // count a breach only while the overview is under an hour old (BusinessHomePresentation).
         if businessReports["overview"] == nil,
            let overview: BusinessReport = ProtectedCache.read(BusinessReport.overviewCache) {
             businessReports["overview"] = overview
         }
-        // The to-dos from the last start, so the counts of Finance, Support and Product show before the Mac answers.
+        // The to-dos from the last start, so the counts of Product, Support and Business show before the Mac answers.
         if todoIssues == nil, let todos: TodoIssues = ProtectedCache.read(TodoIssues.cache) {
             todoIssues = todos
         }
@@ -803,7 +803,7 @@ final class AppStore {
     /// Acceptance is local. The shared error banner reports a failed save and the projection restores confirmed data.
     @discardableResult
     func optimistically(_ resource: String, change: (UUID) -> Void, save: @escaping @MainActor () async -> Void) -> Bool {
-        guard isDemo || pairing != nil else { error = "Pair with your Mac in Settings to continue."; return false }
+        guard isDemo || pairing != nil else { error = "Pair with your Mac in You to continue."; return false }
         let pairing = pairing
         error = nil
         let parts = resource.split(separator: "/")
@@ -901,7 +901,7 @@ final class AppStore {
     }
 
     /// Archives an agent, or brings it back. An archived agent leaves the sidebar of the Mac for its section "Archived",
-    /// and its routines stop. The Agents list of the iPhone keeps it in Idle, with its conversation (ChatList.all).
+    /// and its routines stop. The Chats list of the iPhone keeps it in Idle, with its conversation (ChatList.all).
     func archiveBot(_ bot: Bot, archived: Bool) async {
         if isDemo {
             if let index = bots.firstIndex(where: { $0.id == bot.id }) { bots[index].archived = archived }
@@ -3028,7 +3028,7 @@ final class AppStore {
         guard let pairing, let token = storedToken else {
             if !quiet {
                 error = savedPairingLocked ? "Coconut cannot read its pairing right now. Try again in a moment."
-                    : "Pair with your Mac in Settings to continue."
+                    : "Pair with your Mac in You to continue."
             }
             return nil
         }

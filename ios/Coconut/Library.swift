@@ -121,8 +121,8 @@ struct DocumentRoute: Hashable {
 }
 
 /// All pages: the pinned documents, then the other documents of the bots, grouped by bot. The bot with the latest
-/// update comes first, and a pin does not move a bot. The reports of the business are on Finance and in the Mac
-/// sidebar (Finance, Support), not here.
+/// update comes first, and a pin does not move a bot. The reports of the business are on Business and in the Mac
+/// sidebar (Business, Support), not here.
 struct LibraryView: View {
     @Environment(AppStore.self) private var store
     /// Shows the documents of this bot only, as the inspector of a Mac chat does.

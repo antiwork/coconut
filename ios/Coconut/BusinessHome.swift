@@ -27,11 +27,11 @@ struct BusinessHomePresentation {
 
     struct AttentionRow: Identifiable {
         let id: String
-        /// The name of the row. A breach has one name on Finance and in Needs attention on Product ("Support past
+        /// The name of the row. A breach has one name atop the to-dos of its tab and on the Mac's Home ("Support past
         /// SLA"), and a row without a current source says so ("Support · Unknown").
         let title: String
         let detail: String?
-        /// The symbol of the row in Needs attention (AttentionRules). A tile of Finance draws none.
+        /// The symbol of the row atop a list of to-dos and in Needs attention (AttentionRules).
         let symbol: String
         let route: BusinessRoute
         let unavailable: Bool
@@ -40,6 +40,10 @@ struct BusinessHomePresentation {
         /// The count of a row that breaches.
         var count = 0
     }
+    /// The breaches of the overview that AttentionRules reads. Support past SLA counts on Support and the risk reviews
+    /// past SLA on Business, each as the first row of the to-dos of its tab (TodoCounts), as the person asked for the
+    /// needs attention of the business to show as to-dos. The issues past SLA and of high priority are open issues of
+    /// gumroad-private, so they are to-dos of their own lists already: only the Mac's Home shows them as breaches.
     var attention: [AttentionRow] {
         [attentionRow("support", source: "support", name: "Support", count: data["support"]["gumroad_past_sla"].number,
                       breach: "Support past SLA", detail: supportDetail, symbol: "lifepreserver", route: .function("support")),
@@ -48,7 +52,10 @@ struct BusinessHomePresentation {
                       breach: "Product issues past SLA", detail: nil, symbol: "hammer", route: .report("support")),
          attentionRow("high-priority", source: "issues", name: "High priority", count: data["high_priority"]["count"].number,
                       breach: "High-priority issues", detail: highPriorityDetail, symbol: "exclamationmark.circle",
-                      route: .report("support"))].compactMap { $0 }
+                      route: .report("support")),
+         attentionRow("risk", source: "risk", name: "Risk review", count: data["risk"]["past_sla"].number,
+                      breach: "Risk review past SLA", detail: nil, symbol: "shield.lefthalf.filled",
+                      route: .report("risk"))].compactMap { $0 }
     }
     private var supportDetail: String? {
         let first = data["support"]["top"][0]
@@ -61,12 +68,6 @@ struct BusinessHomePresentation {
         if let title = nonempty(high["top"][0]["title"].text) { return title }
         guard let number = high["numbers"][0].number else { return nil }
         return nonempty(high["titles"][String(Int(number))].text)
-    }
-    /// The open pull requests. The snapshot publishes one count per repository; an older snapshot published a total.
-    var pullRequests: Double? {
-        if let total = data["prs"]["total"].number { return total }
-        let counts = data["prs"]["data"].object.values.compactMap { $0["pullRequests"]["totalCount"].number }
-        return counts.isEmpty ? nil : counts.reduce(0, +)
     }
     /// `name` is the source of the row, and `breach` what the row is named while its count is over zero.
     private func attentionRow(_ id: String, source: String, name: String, count: Double?, breach: String,
@@ -82,11 +83,12 @@ struct BusinessHomePresentation {
         return AttentionRow(id: id, title: breach, detail: detail, symbol: symbol, route: route, unavailable: false,
                             count: Int(count.rounded(.up)))
     }
+    /// The queues that Business shows as tiles: the risk reviews. The open pull requests are the state of the product,
+    /// so Product lists them (ProductWork) and Business does not.
     var informational: [AttentionRow] {
-        [("risk", "Risk review", "shield.lefthalf.filled", BusinessRoute.report("risk")),
-         ("prs", "Pull requests", "arrow.triangle.pull", BusinessRoute.report("engineering"))].map { key, title, symbol, route in
+        [("risk", "Risk review", "shield.lefthalf.filled", BusinessRoute.report("risk"))].map { key, title, symbol, route in
             let notice = sourceNotice(key) ?? (currentStatusUnknown ? "Current status unknown" : nil)
-            let count = key == "prs" ? pullRequests : data[key]["total"].number
+            let count = data[key]["total"].number
             return AttentionRow(id: key, title: title, detail: notice ?? count.map { Self.decimal($0) + " open" } ?? "Not published",
                                 symbol: symbol, route: route, unavailable: notice != nil || count == nil,
                                 value: notice == nil ? count.map { Self.decimal($0) } : nil)
@@ -189,8 +191,9 @@ struct BusinessHomeContent: View {
                 }.font(.caption)
             }
             BentoBoard {
+                // The breaches of the business are the first rows of the to-dos above (TodoCounts), so the page has
+                // no tile of them.
                 gmv.bento(8, 3, compact: (2, 3))
-                attention.bento(4, 3, compact: (2, nil))
                 if let notice = model.sourceNotice("ledger") {
                     BentoStat(title: "Money", value: notice, size: .small)
                         .accessibilityIdentifier("business-home-money-unavailable").bento(12, 1, compact: (2, 1))
@@ -199,20 +202,21 @@ struct BusinessHomeContent: View {
                         moneyTile(row).bento(4, 2, compact: (row.id == "revenue" ? 2 : 1, 2))
                     }
                 }
-                ForEach(model.informational) { row in infoTile(row).bento(3, 1, compact: (1, 1)) }
+                ForEach(model.informational) { row in infoTile(row).bento(4, 1, compact: (2, 1)) }
                 BentoStat(title: "Run rate", value: reportNumber(model.runRate, money: true), size: .medium)
-                    .accessibilityIdentifier("business-home-run-rate").bento(3, 1, compact: (1, 1))
+                    .accessibilityIdentifier("business-home-run-rate").bento(4, 1, compact: (1, 1))
                 BentoStat(title: "Daily average", value: reportNumber(model.dailyAverage, money: true), size: .medium)
-                    .accessibilityIdentifier("business-home-daily-average").bento(3, 1, compact: (1, 1))
+                    .accessibilityIdentifier("business-home-daily-average").bento(4, 1, compact: (1, 1))
                 places.bento(12, nil, compact: (2, nil))
             }
         }.foregroundStyle(BoardStyle.ink)
     }
 
-    /// The places that Finance opens, as the rows of one tile: a name needs no tile of its own.
+    /// The places that Business opens, as the rows of one tile: a name needs no tile of its own. The repositories that
+    /// Coconut follows are a setting, so You has them.
     private var places: some View {
         let rows = Self.functions.map { (title: $0.name, route: BusinessRoute.function($0.key), id: "function-" + $0.key) }
-            + [(title: "Repositories", route: .projects, id: "projects"), (title: "History", route: .reports, id: "history")]
+            + [(title: "History", route: .reports, id: "history")]
         return BentoTile(padding: 0) {
             VStack(spacing: 0) {
                 ForEach(Array(rows.enumerated()), id: \.element.id) { index, row in
@@ -233,52 +237,10 @@ struct BusinessHomeContent: View {
         }
     }
 
-    /// Support is a place of its own, a tab of the iPhone and a row of the Mac sidebar, so Finance opens the other
+    /// Support is a place of its own, a tab of the iPhone and a row of the Mac sidebar, so Business opens the other
     /// functions.
     private static let functions = BusinessFunction.builtIns.filter { $0.key != "support" }
 
-    private var urgent: Bool { model.attention.contains { !$0.unavailable } }
-    private var attention: some View {
-        BentoTile(wash: model.attention.isEmpty ? BoardStyle.positive : urgent ? BoardStyle.attention : nil) {
-            VStack(alignment: .leading, spacing: BoardStyle.Space.m) {
-                HStack {
-                    BentoLabel("Needs attention")
-                    Spacer(minLength: 0)
-                    if urgent { CountPill(count: model.attention.filter { !$0.unavailable }.count) }
-                }
-                if model.attention.isEmpty {
-                    VStack(alignment: .leading, spacing: BoardStyle.Space.xs) {
-                        Image(systemName: "checkmark.circle.fill").font(.system(size: 30)).foregroundStyle(BoardStyle.positive)
-                            .accessibilityHidden(true)
-                        Text("All clear").font(.system(.title2, design: .rounded, weight: .semibold))
-                    }
-                    .padding(.vertical, BoardStyle.Space.s)
-                    .accessibilityElement(children: .combine).accessibilityIdentifier("business-home-all-clear")
-                }
-                ForEach(model.attention) { row in
-                    attentionLink(row)
-                    if row.id != model.attention.last?.id { Divider() }
-                }
-                Spacer(minLength: 0)
-            }
-        }.accessibilityIdentifier("business-home-attention")
-    }
-    private func attentionLink(_ row: BusinessHomePresentation.AttentionRow) -> some View {
-        NavigationLink(value: row.route) {
-            HStack(alignment: .top, spacing: BoardStyle.Space.m) {
-                VStack(alignment: .leading, spacing: BoardStyle.Space.line) {
-                    Text(row.title).font(.subheadline.weight(.semibold)).fixedSize(horizontal: false, vertical: true)
-                    if let detail = row.detail {
-                        Text(detail).font(.caption).foregroundStyle(.secondary).lineLimit(2).fixedSize(horizontal: false, vertical: true)
-                    }
-                }
-                Spacer(minLength: BoardStyle.Space.xs)
-                if row.count > 0 { Text("\(row.count)").font(.subheadline.weight(.semibold).monospacedDigit()) }
-                BentoChevron().padding(.top, BoardStyle.Space.xs)
-            }.frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
-        }.buttonStyle(.plain).accessibilityElement(children: .combine)
-            .accessibilityIdentifier("business-home-attention-" + row.id)
-    }
     private func infoTile(_ row: BusinessHomePresentation.AttentionRow) -> some View {
         BentoLink(route: row.route) {
             if let value = row.value {
