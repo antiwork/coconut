@@ -372,16 +372,15 @@ private struct TodoRowInset: ViewModifier {
     }
 }
 
-/// The list of one tab on a page of tiles: Business and Support. Its count is the count of the tab (TodoCounts), with the
-/// breach of the tab as the first row. Product is a List and shows TodoIssueRows itself.
+/// The list of one tab on a page of tiles: Business and Support, with the breach of the tab as the first row. It has no
+/// title and no count: its rows say what they are, and the badge of the tab counts them (TodoCounts). The person: "Don't
+/// have to say todos in the ui the table itself is self descriptive". Product is a List and shows TodoIssueRows itself.
 struct TodoListSection: View {
     @Environment(AppStore.self) private var store
     let area: TodoArea
 
     var body: some View {
-        BoardSection("To-dos", count: store.todoCount(area)) {
-            EmptyView()
-        } rows: {
+        BoardSection {
             TodoIssueRows(area: area, inList: false)
         }
         .accessibilityIdentifier("todos-\(area.rawValue)")

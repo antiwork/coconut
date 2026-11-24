@@ -40,9 +40,9 @@ struct HomeLaunchView: View {
         return ScrollViewReader { proxy in
             List {
                 attention(cards: cards)
-                // The to-dos of Product, which its badge counts (TodoCounts). The cards and the alerts of the agents
-                // above them are no to-dos of gumroad-private, so they add nothing to it.
-                productHeader("To-dos", count: store.todoCount(.product))
+                // The to-dos of Product, which its badge counts (TodoCounts). They have no title, as on Business and
+                // Support: the rows say what they are (TodoListSection). The cards and the alerts of the agents above
+                // them are no to-dos of gumroad-private, so they add nothing to the count.
                 TodoIssueRows(area: .product)
                 // The pull requests are the state of the product, not to-dos. A section without rows does not show.
                 if !pulls.isEmpty {
