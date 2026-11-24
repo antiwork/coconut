@@ -42,21 +42,22 @@ SHELL = ('M855.1 509.4C853.3 554.8 841.9 599.2 823.3 639.8C804.7 680.3 778.4 716
          'C806.6 337.3 818.9 356.4 828.7 376.9C838.4 397.4 845.6 419.2 850 441.5'
          'C854.4 463.9 856 486.8 855.1 509.4Z')
 SHELL_HOLES = [(354.5, 532.5, 39.35), (450.5, 627.5, 39.35), (324.5, 657.5, 39.35)]
-# The flat mark, drawn instead of the hairy coconut: a coconut seen up close. The warm brown of its shell fills the
-# whole icon, and its three eyes are dark brown circles in the middle. Sahil chose it as the most subtle coconut, and
-# the three circles can read as three coconuts too. He found near-black on yellow too corporate and wanted no blue
-# ground. The circles stand in an equilateral triangle with two in the top row and one centred below them, as he
-# asked. He also asked for larger holes to match a coconut's proportions, so the three circles span 48% of the icon's
-# width, as the eyes of a real coconut span 46 to 48% of its face in photos. Each circle is 196 px across at 1024,
-# with gaps of about half that: closer circles merged into one clump at Home Screen sizes. A real eye on its own is
-# only about a tenth of the nut, so the circles are larger than life. The triangle's centre of mass sits a little
+# The flat mark, drawn instead of the hairy coconut: the three eyes of a coconut, seen up close. Three black circles
+# stand on white, which fills the whole icon: Sahil asked for black on white, three circles in effect. Before that he
+# chose three dark circles on a brown fill as the most subtle coconut, which can also read as three coconuts, after he
+# found near-black on yellow too corporate and wanted no blue ground. `shell` fills the icon and `hole` is the colour
+# of the circles. The circles stand in an equilateral triangle with two in the top row and one centred below them, as
+# he asked. He also asked for larger holes to match a coconut's proportions, so the three circles span 48% of the
+# icon's width, as the eyes of a real coconut span 46 to 48% of its face in photos. Each circle is 196 px across at
+# 1024, with gaps of about half that: closer circles merged into one clump at Home Screen sizes. A real eye on its own
+# is only about a tenth of the nut, so the circles are larger than life. The triangle's centre of mass sits a little
 # above the middle of the icon, halfway to centring the box around the circles, because it looked low when its centre
 # of mass was at the middle and high when its box was. `scale` sizes the circles around the middle. Each hole is
 # (x, y, radius). An `outline`, such as SHELL with the holes SHELL_HOLES, draws a whole shell on `ground` instead,
 # sized by `scale`. None draws the hairy coconut.
 MARK = dict(
-    shell='#96562c',
-    hole='#3b2013',
+    shell='#ffffff',
+    hole='#000000',
     holes=[(439.00, 459.32, 49.00), (585.00, 459.32, 49.00), (512.00, 585.76, 49.00)],
     scale=2.0,
     outline=None,
