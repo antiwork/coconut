@@ -1072,8 +1072,9 @@ struct ConversationComposer: View {
     var onSend: () -> Void = {}
 
     private var connected: Bool { store.hasPairing || store.isDemo }
-    /// A chat of an agent can send its draft to a new chat with the same agent. The Coconut chat has one chat.
-    private var canSendInNewChat: Bool { canSend && !scheduling && !bot.coconut && !bot.archived }
+    /// A chat of an agent can send its draft to a new chat with the same agent, also a chat that archived itself: it
+    /// shows in Chats with the others, and the person starts new work from it. The Coconut chat has one chat.
+    private var canSendInNewChat: Bool { canSend && !scheduling && !bot.coconut }
     private var recipients: [SelectedBotMention] { BotMentions.recipients(in: text, selected: mentions, bots: store.bots.withoutChats) }
     private var executorName: String { store.bots.first { $0.id == task?.botId }?.name ?? bot.name }
 

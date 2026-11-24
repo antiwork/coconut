@@ -70,6 +70,17 @@ class AgentChats:
         """The agent of a bot: the bot itself, or the agent of a chat."""
         return self._get('bots', bot_id).get('chat_of') or bot_id
 
+    def _same_agent(self, first: str, second: str) -> bool:
+        """Whether two bots are one agent: the same bot, two chats of one agent, or an agent and one of its chats. A
+        bot that is not on the Mac is no agent."""
+        from .service_base import ServiceError
+        if first == second:
+            return True
+        try:
+            return self._agent_id(first) == self._agent_id(second)
+        except ServiceError:
+            return False
+
     def _agent_chats(self, agent_id: str) -> list[dict]:
         return [bot for bot in self._all('bots') if bot.get('chat_of') == agent_id and not bot.get('_deleted')]
 

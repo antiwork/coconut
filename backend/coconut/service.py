@@ -2564,7 +2564,9 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
             raise ServiceError(400, 'attachment_ids must contain at most 20 artifact IDs.')
         for artifact_id in artifact_ids:
             attachment = self._get('artifacts', artifact_id)
-            if attachment['bot_id'] != bot_id or not attachment.get('_attachment'):
+            # A file belongs to the chat where the person attached it. Another chat of the same agent takes it too:
+            # Send to a new agent starts a chat with the files of a draft or of a queued message.
+            if not self._same_agent(attachment['bot_id'], bot_id) or not attachment.get('_attachment'):
                 raise ServiceError(400, 'This attachment does not belong to this agent.')
         return list(dict.fromkeys(artifact_ids))
 

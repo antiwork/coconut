@@ -50,6 +50,13 @@ struct QueueItem: Identifiable, Equatable {
     /// The person can change, move and remove the message.
     var canChange: Bool { state == .queued && taskId != nil }
 
+    /// The row while the message goes to a new agent: Sending, without actions.
+    var sending: QueueItem {
+        var row = self
+        row.state = .sending
+        return row
+    }
+
     /// One line of the message for its row.
     var preview: String { MessageQueue.preview(text, attachments: attachments) }
 }
@@ -120,6 +127,8 @@ struct MessageQueueStack: View {
     @State private var editing: String?
     @State private var draft = ""
     @State private var dropTarget: String?
+    /// The messages on their way to a new agent. Their rows show Sending until the queue lets them go.
+    @State private var moving: Set<String> = []
     @FocusState private var editorFocused: Bool
 
     /// More rows than this scroll, so the queue never covers the chat.
@@ -131,6 +140,9 @@ struct MessageQueueStack: View {
     #endif
 
     private var items: [QueueItem] { store.messageQueue(botId) }
+    /// A queued message can go to a new agent of the same project, as a draft can (Send to a new agent). The Coconut
+    /// chat has one chat.
+    private var canSendToNewAgent: Bool { store.bots.first { $0.id == botId }.map { !$0.coconut } ?? false }
 
     var body: some View {
         let items = items
@@ -178,15 +190,18 @@ struct MessageQueueStack: View {
     @ViewBuilder
     private func row(_ item: QueueItem, position: Int, items: [QueueItem]) -> some View {
         let movable = items.filter(\.canChange).map(\.id)
+        // A message on its way to a new agent shows Sending, without actions, and does not move.
+        let shown = moving.contains(item.id) ? item.sending : item
         if editing == item.id {
             editor(item, position: position)
         } else {
-            QueueRow(item: item, position: position, targeted: dropTarget == item.id,
-                     canMoveUp: item.canChange && movable.first != item.id,
-                     canMoveDown: item.canChange && movable.last != item.id) { action in
+            QueueRow(item: shown, position: position, targeted: dropTarget == item.id,
+                     canMoveUp: shown.canChange && movable.first != item.id,
+                     canMoveDown: shown.canChange && movable.last != item.id,
+                     canSendToNewAgent: canSendToNewAgent) { action in
                 perform(action, on: item, movable: movable)
             }
-            .modifier(QueueRowDrag(item: item, target: $dropTarget) { dragged in
+            .modifier(QueueRowDrag(item: shown, target: $dropTarget) { dragged in
                 guard item.canChange, movable.contains(dragged) else { return false }
                 order(MessageQueue.moved(movable, id: dragged, onto: item.id), of: item)
                 return true
@@ -231,8 +246,14 @@ struct MessageQueueStack: View {
     }
 
     private func perform(_ action: QueueRow.Action, on item: QueueItem, movable: [String]) {
-        guard let task = item.taskId else { return }
+        guard let task = item.taskId, !moving.contains(item.id) else { return }
         switch action {
+        case .newAgent:
+            moving.insert(item.id)
+            Task {
+                await store.sendQueuedToNewAgent(item.id, task: task, chat: botId)
+                moving.remove(item.id)
+            }
         case .edit:
             draft = AttachmentOnly.isMarker(item.text) ? "" : item.text
             editing = item.id
@@ -259,12 +280,13 @@ private struct QueuePosition: View {
 /// One message of the queue. A Mac shows the actions when the pointer is over the row; an iPhone has them in a menu.
 /// Both have them in the menu of a secondary click or a hold.
 private struct QueueRow: View {
-    enum Action { case edit, remove, steer, moveUp, moveDown }
+    enum Action { case edit, remove, steer, newAgent, moveUp, moveDown }
     let item: QueueItem
     let position: Int
     let targeted: Bool
     let canMoveUp: Bool
     let canMoveDown: Bool
+    let canSendToNewAgent: Bool
     let perform: (Action) -> Void
     @State private var hovered = false
 
@@ -333,6 +355,11 @@ private struct QueueRow: View {
     @ViewBuilder
     private var menuItems: some View {
         if item.canSteer { Button("Send now", systemImage: "arrow.turn.down.right") { perform(.steer) } }
+        // The message leaves the queue for a new agent of the same project, with its files (sendQueuedToNewAgent).
+        if canSendToNewAgent {
+            Button("Send to a new agent", systemImage: "square.and.pencil") { perform(.newAgent) }
+                .accessibilityIdentifier("queue-new-agent")
+        }
         Button("Edit", systemImage: "pencil") { perform(.edit) }
         if canMoveUp { Button("Move up", systemImage: "arrow.up") { perform(.moveUp) } }
         if canMoveDown { Button("Move down", systemImage: "arrow.down") { perform(.moveDown) } }

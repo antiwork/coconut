@@ -1346,6 +1346,17 @@ final class AppStore {
         }
     }
 
+    /// Sends a queued message with its files as the first message of a new agent of the same project (sendNewChat),
+    /// and takes it out of this queue once the new chat has it. A send that fails leaves the message in the queue, with
+    /// the reason in the error notice. Nothing opens the new chat: it shows at the top of the Chats list.
+    func sendQueuedToNewAgent(_ id: String, task: String, chat botId: String) async {
+        guard let bot = bots.first(where: { $0.id == botId }),
+              let message = tasks.first(where: { $0.id == task })?.queuedMessages?.first(where: { $0.id == id }) else { return }
+        let text = AttachmentOnly.isMarker(message.text) ? "" : message.text
+        guard await sendNewChat(in: bot, text: text, attachments: message.attachmentIds) != nil else { return }
+        await removeQueued(id, task: task)
+    }
+
     /// Gives a queued message to the running turn at once, where the Mac can do that.
     func steerQueued(_ id: String, task: String) async {
         await changeQueue(task, path: "\(id)/steer", method: "POST", payload: EmptyRequest()) { queue in
