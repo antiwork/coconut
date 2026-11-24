@@ -239,7 +239,7 @@ main() {
   fi
   say "The relay is connected."
 
-  # A Mac that runs Coconut for Hermes often has nobody who watches it, so it updates by itself.
+  # A Mac that runs Coconut often has nobody who watches it, so it updates by itself.
   if "$TOOL" settings automatic-updates on </dev/null >/dev/null 2>&1; then
     automatic=yes
     say "Automatic updates are on."

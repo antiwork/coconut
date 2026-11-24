@@ -33,7 +33,7 @@ import urllib.request
 ROOT = Path(__file__).resolve().parents[1]
 TEAM = '66LJACJ2U7'
 BUNDLE_ID = 'com.gumroad.coconut'
-# The App Store Connect app "Coconut for Hermes".
+# The App Store Connect app "Coconut Work".
 APP_ID = '6810507745'
 API = 'https://api.appstoreconnect.apple.com/v1'
 # The entitlements of each signed bundle in the archive, relative to the app. Each comes from ios/project.yml.

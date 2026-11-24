@@ -62,7 +62,8 @@ TestFlight supports automatic updates when the iPhone is away from the developme
 It does not require Developer Mode. See [Apple’s TestFlight instructions](https://testflight.apple.com/).
 
 Coconut uses Gumroad's team, `66LJACJ2U7`, and bundle ID `com.gumroad.coconut`.
-Its App Store Connect name is **Coconut for Hermes**. The installed app displays **Coconut**.
+Its App Store Connect name is **Coconut Work**, because Apple refuses plain Coconut, the name of another developer's app.
+TestFlight and the App Store show that name. The installed app displays **Coconut**.
 The [private group](https://appstoreconnect.apple.com/teams/69a6de79-1356-47e3-e053-5b8c7c11a4d1/apps/6810507745/testflight/groups/3c816f8d-3acf-49fd-b6dd-68e59ecc7069) has automatic distribution enabled.
 
 Keep this group limited to Gianfranco. Do not add other testers or create a public link.
