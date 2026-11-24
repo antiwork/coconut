@@ -6,6 +6,7 @@
   appstore.py submit            --key AuthKey.p8 --key-id KEY --issuer ISSUER [--build 315]
   appstore.py submit-when-ready --key AuthKey.p8 --key-id KEY --issuer ISSUER [--build 315]
   appstore.py public-testflight --key AuthKey.p8 --key-id KEY --issuer ISSUER [--build 315]
+  appstore.py rename            --key AuthKey.p8 --key-id KEY --issuer ISSUER --name Coconut
 
 status only reads App Store Connect: the listing, the build, the age rating, the price, the availability, the review
 details, the TestFlight groups with their public link and beta review, and the submissions. screenshots puts the
@@ -16,6 +17,7 @@ of the listing (text, review notes, age rating) lives in App Store Connect. subm
 without an error while the App Privacy answers are unpublished, so a routine can run it until they are.
 public-testflight waits until Apple has processed the build, puts it into the public TestFlight group, and sends it
 to TestFlight App Review. The TestFlight workflow runs it after each public upload.
+rename gives the app a new name in each language of its listing. TestFlight shows the same name.
 
 The logs of this repository are public, so the script never prints personal data such as the review contact.
 The script uses only the standard library and the openssl command, like testflight.py.
@@ -577,14 +579,47 @@ def screenshots(api: Api) -> None:
         print(f'{display}: {len(new)} screenshots from app-store/screenshots/{folder}, in place of {len(old)}.')
 
 
+# The states of the app info of a live version. Its name changes only with the next version, which has an app info of
+# its own.
+LIVE_INFO = ('READY_FOR_DISTRIBUTION', 'REPLACED_WITH_NEW_INFO')
+
+
+def rename(api: Api, name: str) -> None:
+    """Gives the app a new name in each language of its listing, which TestFlight shows too. App Store Connect refuses
+    a name that another app has, also an app that is not released, and the log then shows its reason."""
+    name = name.strip()
+    if not name or len(name) > 30:
+        sys.exit('An App Store name has 1 to 30 characters.')
+    for info in api.all(f'/apps/{APP_ID}/appInfos'):
+        state = info['attributes'].get('state') or info['attributes'].get('appStoreState')
+        if state in LIVE_INFO:
+            print(f'  The live version keeps its name until the next version ({state}).')
+            continue
+        for localization in api.all(f"/appInfos/{info['id']}/appInfoLocalizations"):
+            values = localization['attributes']
+            before = values.get('name')
+            if before == name:
+                print(f"  {values.get('locale')}: the name is {name!r} already.")
+                continue
+            status, document = api.call('PATCH', f"/appInfoLocalizations/{localization['id']}", {'data': {
+                'type': 'appInfoLocalizations', 'id': localization['id'], 'attributes': {'name': name}}})
+            if status != 200:
+                sys.exit(f"{values.get('locale')}: App Store Connect kept the name {before!r}.")
+            print(f"  {values.get('locale')}: {before!r} is now {document['data']['attributes'].get('name')!r}.")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument('action', choices=['status', 'screenshots', 'submit', 'submit-when-ready', 'public-testflight'])
+    parser.add_argument('action', choices=['status', 'screenshots', 'submit', 'submit-when-ready', 'public-testflight',
+                                           'rename'])
     parser.add_argument('--key', type=Path, required=True)
     parser.add_argument('--key-id', required=True)
     parser.add_argument('--issuer', required=True)
     parser.add_argument('--build', type=int, help='The build number. Without it: the newest build App Review takes.')
+    parser.add_argument('--name', help='For rename: the new name of the app, at most 30 characters.')
     args = parser.parse_args()
+    if args.action == 'rename' and not args.name:
+        parser.error('rename needs --name.')
     api = Api(args.key, args.key_id, args.issuer)
     if args.action == 'status':
         status(api)
@@ -594,6 +629,8 @@ def main() -> None:
         submit(api, args.build, wait=args.action == 'submit-when-ready')
     elif args.action == 'public-testflight':
         public_testflight(api, args.build)
+    elif args.action == 'rename':
+        rename(api, args.name)
 
 
 if __name__ == '__main__':

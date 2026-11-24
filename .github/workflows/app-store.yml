@@ -8,7 +8,8 @@ name: App Store
 # rest of the listing (text, review notes, age rating) lives in App Store Connect. `submit-when-ready` ends a run that
 # only waits for the App Privacy answers without a failure, so a routine can start it until a person publishes them.
 # `public-testflight` puts a build into the public TestFlight group and sends it to TestFlight App Review, as each
-# public TestFlight run does, for a build that a run left without a review.
+# public TestFlight run does, for a build that a run left without a review. `rename` gives the app the name of the input
+# `app_name` on the App Store and in TestFlight.
 #
 # The build must come from a TestFlight run with `public`: App Review does not take an internal-only build.
 # The logs of this repository are public, so scripts/appstore.py prints no personal data.
@@ -19,12 +20,16 @@ on:
   workflow_dispatch:
     inputs:
       action:
-        description: status reads App Store Connect, screenshots replaces the images, submit sends the version to App Review, submit-when-ready also waits quietly for App Privacy, public-testflight sends a build to the public TestFlight link and its review.
+        description: status reads App Store Connect, screenshots replaces the images, submit sends the version to App Review, submit-when-ready also waits quietly for App Privacy, public-testflight sends a build to the public TestFlight link and its review, rename gives the app a new name.
         type: choice
-        options: [status, screenshots, submit, submit-when-ready, public-testflight]
+        options: [status, screenshots, submit, submit-when-ready, public-testflight, rename]
         default: status
       build:
         description: The build number. Empty picks the newest valid build that App Review takes.
+        type: string
+        default: ''
+      app_name:
+        description: For rename, the new name of the app on the App Store and in TestFlight, at most 30 characters.
         type: string
         default: ''
 
@@ -64,10 +69,12 @@ jobs:
         env:
           ACTION: ${{ inputs.action }}
           BUILD_NUMBER: ${{ inputs.build }}
+          APP_NAME: ${{ inputs.app_name }}
         run: |
           set -euo pipefail
           arguments=("$ACTION" --key "$ASC_KEY" --key-id "$ASC_KEY_ID" --issuer "$ASC_ISSUER_ID")
           if [ -n "$BUILD_NUMBER" ]; then arguments+=(--build "$BUILD_NUMBER"); fi
+          if [ -n "$APP_NAME" ]; then arguments+=(--name "$APP_NAME"); fi
           python3 scripts/appstore.py "${arguments[@]}"
       - name: Remove the API key
         if: always()
