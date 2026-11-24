@@ -12,9 +12,10 @@ newest first. A chat can be archived or removed by itself. The settings belong t
 A quick to-do of the apps is such a chat with `todo: true`: the apps start it with the to-do as its first message, list
 it on To-dos, and follow its state through the tasks of the chat. Archiving the chat checks the to-do off.
 
-A chat goes to Archived by itself after 48 hours without activity, as the person asked, so the lists keep the chats of
-the last two days (archive_idle_chats). A chat that still has something to do or to show stays. A message of the person
-brings an archived chat back (_bring_back), so an old chat continues where it was.
+A chat goes to Archived by itself after a time without activity, as the person asked (archive_idle_chats). The time
+is the setting auto_archive_hours: 48 hours until the person picks another time, or 0 for never, on You in the apps or
+in the Coconut chat. A chat that still has something to do or to show stays. A message of the person brings an archived
+chat back (_bring_back), so an old chat continues where it was.
 """
 from __future__ import annotations
 
@@ -29,8 +30,12 @@ SHARED = ('name', 'role')
 # The fields that the person changes on one chat.
 OWN = frozenset({'archived', 'pinned', 'notifications', 'chat_title'})
 TITLE_LENGTH = 72
-# A chat without activity for this long goes to Archived (archive_idle_chats).
-ARCHIVE_AFTER = timedelta(hours=48)
+# A chat without activity for this many hours goes to Archived (archive_idle_chats). The person changes the time, or
+# turns it off with 0, on You in the apps or in the Coconut chat (PUT /v1/settings/auto-archive).
+AUTO_ARCHIVE = 'auto_archive_hours'
+AUTO_ARCHIVE_HOURS = 48
+# The longest time that the setting takes: a year.
+AUTO_ARCHIVE_MAX_HOURS = 24 * 365
 # How often the dispatcher looks for such chats (Service._dispatch).
 ARCHIVE_PASS_SECONDS = 600
 # A routine in this state never runs again, so it keeps no chat out of Archived. A scheduled or paused one does.
@@ -124,8 +129,28 @@ class AgentChats:
                 self._event('bot.updated', self._public(chat), chat['id'])
                 self._note_published(chat['id'], encoded(self._public(chat)))
 
+    def auto_archive_hours(self) -> int:
+        """The hours without activity after which a chat archives itself. 0 means never."""
+        value = self._setting(AUTO_ARCHIVE, AUTO_ARCHIVE_HOURS)
+        if isinstance(value, int) and not isinstance(value, bool) and 0 <= value <= AUTO_ARCHIVE_MAX_HOURS:
+            return value
+        return AUTO_ARCHIVE_HOURS
+
+    def set_auto_archive(self, data) -> dict:
+        """PUT /v1/settings/auto-archive: the hours without activity after which a chat archives itself, 0 for never.
+        The apps re-read the settings on the event, so You shows the new time on every device."""
+        from .service_base import ServiceError
+        hours = data.get('hours') if isinstance(data, dict) and set(data) == {'hours'} else None
+        if not isinstance(hours, int) or isinstance(hours, bool) or not 0 <= hours <= AUTO_ARCHIVE_MAX_HOURS:
+            raise ServiceError(400, f'Choose a number of hours from 1 to {AUTO_ARCHIVE_MAX_HOURS}, or 0 for never.')
+        self.db.execute('INSERT INTO settings(key,value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value',
+                        (AUTO_ARCHIVE, json.dumps(hours)))
+        self._event('settings.updated', {AUTO_ARCHIVE: hours})
+        return {AUTO_ARCHIVE: hours}
+
     def archive_idle_chats(self, current: datetime | None = None) -> list[str]:
-        """Archive each chat without activity for ARCHIVE_AFTER, as Archive in the apps does, and return their IDs.
+        """Archive each chat without activity for the time of the setting, as Archive in the apps does, and return their
+        IDs. A setting of 0 archives nothing.
 
         Activity is a visible message, a change of the chat's newest task, a read of a new reply (unread.READ_AT), the
         start of the chat, and a restore from Archived. Only a further chat of a project is a candidate, so a project
@@ -133,21 +158,25 @@ class AgentChats:
         """
         from .service_base import now
         current = current or datetime.now(timezone.utc)
+        hours = self.auto_archive_hours()
+        if hours == 0:
+            return []
+        after = timedelta(hours=hours)
         archived = []
         with self.transaction():
             candidates = [bot for bot in self._all('bots') if self._may_archive(bot)]
             busy = self._busy_chats() if candidates else set()
             for bot in candidates:
                 last = None if bot['id'] in busy else self._last_activity(bot)
-                if last is None or current - last < ARCHIVE_AFTER:
+                if last is None or current - last < after:
                     continue
                 bot['archived'] = True
                 bot['_auto_archived_at'] = now()
                 self._publish_archive(bot)
                 archived.append(bot['id'])
         if archived:
-            logging.getLogger(__name__).info('Archived %d chats without activity for 48 hours: %s',
-                                             len(archived), ', '.join(archived))
+            logging.getLogger(__name__).info('Archived %d chats without activity for %d hours: %s',
+                                             len(archived), hours, ', '.join(archived))
         return archived
 
     @staticmethod

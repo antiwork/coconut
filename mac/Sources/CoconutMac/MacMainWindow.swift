@@ -31,11 +31,6 @@ enum MacSelection: Hashable {
     case team(TeamChatKey)
 }
 
-/// The tabs of the details next to a chat: the routines of the agent and its pages.
-enum InspectorTab: Hashable {
-    case details, pages
-}
-
 /// The main window of the Mac client: the bots in a sidebar, the chat or the Inbox in the middle, and the details of the
 /// bot in a column on the right. It shows the pairing page until this Mac has a pairing. A Mac that runs Coconut for a
 /// team only shows its own page instead, and never the pairing page.
@@ -46,7 +41,6 @@ struct MacMainWindow: View {
     // The card that the Inbox shows first: the card of the row of Home that opened it.
     @State private var inboxCard: String?
     @State private var inspectorShown = true
-    @State private var inspectorTab = InspectorTab.details
     @State private var pairingOpen = false
     // The pages that a chat opened. A row of the chat list pushes onto it (pushRoute); another bot starts at its chat.
     @State private var chatPath = NavigationPath()
@@ -205,7 +199,6 @@ struct MacMainWindow: View {
                 .navigationDestination(for: BotSettingsRoute.self) { BotSettingsView(botId: $0.botId) }
                 .navigationDestination(for: DocumentRoute.self) { DocumentView(documentId: $0.id) }
                 .navigationDestination(for: BusinessRoute.self) { BusinessDestinationView(route: $0) }
-                .navigationDestination(for: ArchivedAgentsRoute.self) { _ in ArchivedAgentsView() }
                 .navigationDestination(for: NoticeBoardRoute.self) { NoticeBoardView(roomId: $0.roomId) }
                 .navigationDestination(for: TeamScreenRoute.self) { TeamRoomView(roomId: $0.roomId, pushed: true) }
                 .modifier(InAppDestinations())
@@ -321,12 +314,12 @@ struct MacMainWindow: View {
                 if inspectorShown {
                     Divider()
                     // The settings and the pages are those of the agent, also next to one of its further chats.
-                    MacBotDetails(botId: AgentChats.agentId(of: botId, in: store.bots), tab: $inspectorTab)
+                    MacBotDetails(botId: AgentChats.agentId(of: botId, in: store.bots))
                         .frame(width: 320)
                         .transition(.move(edge: .trailing))
                 }
             }
-            // The chat and the details run up into the toolbar, so the bot's title and the tabs sit in its row, next to the
+            // The chat and the details run up into the toolbar, so the bot's title and the title of the details sit in its row, next to the
             // window buttons. The toolbar draws no band of its own there.
             .ignoresSafeArea(.container, edges: .top)
             .toolbarBackgroundVisibility(.hidden, for: .windowToolbar)
@@ -747,42 +740,33 @@ private struct MacConnectionFooter: View {
     }
 }
 
-/// The details of an agent next to its chat: its routines or its pages.
+/// The details of an agent next to its chat: its routines and its pages in one list. The person found that nobody taps
+/// tabs (2026-11-24), so the column has none.
 struct MacBotDetails: View {
     let botId: String
-    @Binding var tab: InspectorTab
 
     var body: some View {
         VStack(spacing: 0) {
-            // Text tabs. The current one sits on a soft capsule. The same height and top space as the bot's title over
-            // the chat, so both sit in one row.
-            HStack(spacing: BoardStyle.Space.xs) {
-                tabButton("Routines", .details)
-                tabButton("Pages", .pages)
-            }
-            .frame(height: 34)
-            .padding(.horizontal, 12).padding(.top, 8)
-            // The background of the form below reaches up into the toolbar area. The tabs stay in front of it.
-            .zIndex(1)
+            // The title of the column has the height and the top space of the bot's title over the chat, so both sit
+            // in one row next to the window buttons.
+            Text("Routines and pages")
+                .font(.headline)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .frame(height: 34)
+                .padding(.horizontal, 16).padding(.top, 8)
+                // The background of the form below reaches up into the toolbar area. The title stays in front of it.
+                .zIndex(1)
             NavigationStack {
                 // Each bot gets its own view, so an open routine never moves to the next bot.
-                switch tab {
-                case .details: BotSettingsView(botId: botId).id(botId)
-                case .pages:
-                    LibraryView(botId: botId)
-                        .navigationDestination(for: DocumentRoute.self) { DocumentView(documentId: $0.id) }
+                BotSettingsView(botId: botId, showsPages: true).id(botId)
+                    .navigationDestination(for: DocumentRoute.self) { DocumentView(documentId: $0.id) }
                     .navigationDestination(for: BusinessRoute.self) { BusinessDestinationView(route: $0) }
                     .modifier(InAppDestinations())
-                }
             }
         }
         // A grouped Mac form keeps each section in a box, as the iPhone settings show them.
         .formStyle(.grouped)
         .background(BoardStyle.paper)
-    }
-
-    private func tabButton(_ title: String, _ value: InspectorTab) -> some View {
-        ChipButton(title: title, selected: tab == value) { tab = value }
     }
 }
 

@@ -90,7 +90,8 @@ struct TeamChatView: View {
     private var chat: TeamChat { store.teamChats[chatKey] ?? TeamChat() }
     /// The other side of a direct chat: a person or a bot. Nil for the Team chat and a named chat.
     private func peer(_ room: TeamRoom) -> TeamDirectPeer? { room.peer(of: chatKey) }
-    /// The choice of the person in the filter of the alerts of this chat. "All" in a chat without an alert.
+    /// The filter of the alerts of this chat. No control chooses one since the person asked for no tabs or toggles on
+    /// any page (2026-11-24): the chat shows each message, and each alert keeps its type and level (TeamAlertLabel).
     private var alertFilter: TeamAlertFilter { store.teamAlertFilter(chatKey) }
     /// The chat that the list shows: each message, or the alerts of the choice of the filter.
     private var listedChat: TeamChat {
@@ -99,15 +100,8 @@ struct TeamChatView: View {
         return TeamAlertFilters.listed(store.teamAlertChats[chatKey] ?? TeamChat(), over: chat, filter: filter)
     }
     private func currentRows() -> [TeamChatRow] { rows.current(listedChat, calendar: .current) }
-    /// The height of the title of the Mac window with the filter of the alerts under it. On an iPhone the bar has its
-    /// own space above the chat.
-    private func topHeight(_ chat: TeamChat) -> CGFloat {
-        #if os(macOS)
-        Self.titleHeight + (TeamAlertFilters.shows(chat.alerts) ? TeamAlertFilterBar.macHeight : 0)
-        #else
-        Self.titleHeight
-        #endif
-    }
+    /// The height of the title of the Mac window. On an iPhone the bar has its own space above the chat.
+    private func topHeight(_ chat: TeamChat) -> CGFloat { Self.titleHeight }
     /// A sent message waits for the layout of its row, and the other scroll rules wait too (SentMessageScroll). Only on
     /// a Mac.
     private var sentWaits: Bool {
@@ -291,17 +285,6 @@ struct TeamChatView: View {
             }
         }
         #if os(iOS)
-        // The filter of the alerts stays above the messages, under the title. Only a chat with an alert has it.
-        .safeAreaInset(edge: .top, spacing: 0) {
-            if TeamAlertFilters.shows(chat.alerts) {
-                alertFilterBar(chat, filter)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, BoardStyle.Space.s)
-                    .background(BoardStyle.paper)
-            }
-        }
-        #endif
-        #if os(iOS)
         // The notice stays below the header at each scroll position, over the messages only.
         .modifier(ChatErrorNotice())
         #endif
@@ -404,18 +387,6 @@ struct TeamChatView: View {
         #else
         // The window moves with a drag in the band above the chat, under the title.
         .overlay(alignment: .top) { WindowDragStrip() }
-        // The filter of the alerts floats under the title. Only a chat with an alert has it.
-        .overlay(alignment: .top) {
-            if TeamAlertFilters.shows(chat.alerts) {
-                alertFilterBar(chat, filter)
-                    .frame(height: TeamAlertFilterBar.macHeight - BoardStyle.Space.xs)
-                    .modifier(FloatingCapsule())
-                    .clipShape(Capsule())
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, 12)
-                    .padding(.top, Self.titleHeight - BoardStyle.Space.xs)
-            }
-        }
         // The title floats over the top of the chat, as the title of a bot does. It opens the Team screen of the
         // team in the main window.
         .overlay(alignment: .top) {
@@ -477,13 +448,6 @@ struct TeamChatView: View {
     private func header(_ room: TeamRoom, chat: TeamChat, empty: Bool, filtered: Bool = false) -> some View {
         VStack(spacing: 0) { headerContent(room, chat: chat, empty: empty, filtered: filtered) }
             .frame(maxWidth: .infinity)
-    }
-
-    /// The bar of the filter of the alerts. A tap chooses for this chat on this device only.
-    private func alertFilterBar(_ chat: TeamChat, _ filter: TeamAlertFilter) -> some View {
-        TeamAlertFilterBar(chips: TeamAlertFilters.chips(chat.alerts, filter: filter)) { choice in
-            store.setTeamAlertFilter(chatKey, choice)
-        }
     }
 
     @ViewBuilder

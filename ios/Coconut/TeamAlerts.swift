@@ -131,38 +131,6 @@ struct TeamAlertFilter: Hashable, Sendable {
     var togglingCritical: TeamAlertFilter { TeamAlertFilter(type: type, criticalOnly: !criticalOnly) }
 }
 
-/// One choice of the filter bar.
-struct TeamAlertChip: Identifiable, Equatable, Sendable {
-    enum Kind: Equatable, Sendable { case all, type(String), critical }
-
-    let kind: Kind
-    let title: String
-    /// The count next to the title. Nil for "All": the Mac counts alerts, not messages.
-    let count: Int?
-    let selected: Bool
-    /// The filter that a tap on the chip chooses.
-    let filter: TeamAlertFilter
-
-    var id: String {
-        switch kind {
-        case .all: "all"
-        case .type(let type): "type-" + type
-        case .critical: "critical"
-        }
-    }
-
-    /// The count as the chip shows it.
-    var countText: String? { count.map { $0 > 999 ? "999+" : String($0) } }
-
-    var spoken: String {
-        switch kind {
-        case .all: "All messages"
-        case .type(let type): "\(type), \(count ?? 0) " + ((count ?? 0) == 1 ? "alert" : "alerts")
-        case .critical: "Critical only, \(count ?? 0) " + ((count ?? 0) == 1 ? "alert" : "alerts")
-        }
-    }
-}
-
 /// The rules of the filter of a chat.
 enum TeamAlertFilters {
     /// The bar shows only in a chat with at least one alert. A chat without one, and a Mac without alerts, show none.
@@ -174,27 +142,6 @@ enum TeamAlertFilters {
         guard shows(summary), let summary else { return .all }
         return TeamAlertFilter(type: chosen.type.flatMap { type in summary.types.contains { $0.type == type } ? type : nil },
                                criticalOnly: chosen.criticalOnly && summary.critical > 0)
-    }
-
-    /// The chips of the bar: "All", "Critical" when the chat has a critical alert, and one for each type with its
-    /// count. "Critical" stands next to "All", so it stays in view when the types need a scroll. With "Critical" on,
-    /// the count of a type is the count of its critical alerts, and a type without a critical alert has no chip,
-    /// unless it is the chosen type.
-    static func chips(_ summary: TeamAlertSummary?, filter: TeamAlertFilter) -> [TeamAlertChip] {
-        guard shows(summary), let summary else { return [] }
-        var chips = [TeamAlertChip(kind: .all, title: "All", count: nil, selected: filter.isAll, filter: .all)]
-        if summary.critical > 0 {
-            let count = filter.type.flatMap { type in summary.types.first { $0.type == type }?.critical } ?? summary.critical
-            chips.append(TeamAlertChip(kind: .critical, title: TeamAlertLevel.critical.title, count: count,
-                                       selected: filter.criticalOnly, filter: filter.togglingCritical))
-        }
-        chips += summary.types.compactMap { item in
-            let count = filter.criticalOnly ? item.critical : item.count
-            guard count > 0 || filter.type == item.type else { return nil }
-            return TeamAlertChip(kind: .type(item.type), title: item.type, count: count,
-                                 selected: filter.type == item.type, filter: filter.choosing(item.type))
-        }
-        return chips
     }
 
     /// The chat of a new choice before its first page arrives: the alerts of the choice that the app already has, so

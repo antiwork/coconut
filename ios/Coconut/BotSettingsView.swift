@@ -1,12 +1,21 @@
 import SwiftUI
 
-// The routines of an agent, and its scheduled checks. The page has the title "Routines", and the Mac shows it under a
-// tab of that name, so the first section needs no header.
+// The routines of an agent, and its scheduled checks. The page has the title "Routines", so its first section needs no
+// header. Next to a chat on the Mac (MacBotDetails) it lists the pages of the agent too, in the same list with no tabs
+// between them, because the person found that nobody taps such tabs (2026-11-24); the routines then get a header.
 struct BotSettingsView: View {
     @Environment(AppStore.self) private var store
     @ShownError private var shownError
     let botId: String
+    /// Lists the pages of the agent under its routines. A row opens the page (DocumentRoute).
+    var showsPages = false
     @State private var routineOpen = false
+
+    /// The pages of the agent, the starred first, then the newest update first, as on the page of the agent.
+    private var pages: [BotDocument] {
+        (store.documents ?? []).filter { $0.botId == botId }
+            .sorted { ($0.isPinned ? 1 : 0, $0.updatedAt, $1.id) > ($1.isPinned ? 1 : 0, $1.updatedAt, $0.id) }
+    }
 
     var body: some View {
         Form {
@@ -16,6 +25,8 @@ struct BotSettingsView: View {
                     routineLink(routine, detail: routine.error ?? routineLabel(routine))
                 }
                 Button("Add routine", systemImage: "plus") { routineOpen = true }.accessibilityIdentifier("add-routine")
+            } header: {
+                if showsPages { Text("Routines") }
             }
             if !groups.scheduledChecks.isEmpty {
                 Section("Scheduled checks") {
@@ -24,10 +35,25 @@ struct BotSettingsView: View {
                     }
                 }
             }
+            if showsPages {
+                Section("Pages") {
+                    if pages.isEmpty { Text("No pages.").foregroundStyle(.secondary) }
+                    ForEach(pages) { page in
+                        NavigationLink(value: DocumentRoute(id: page.id)) {
+                            Label(page.title, systemImage: page.isPinned ? "star.fill" : page.symbol).lineLimit(1)
+                        }
+                        .accessibilityIdentifier("bot-page-" + page.id)
+                    }
+                }
+            }
             if let error = shownError { Section { InlineError(error) } }
         }
         .settingsBackground()
         .navigationTitle("Routines").inlineNavigationTitle()
+        // The pages need the list of the pages, also before any page opens.
+        .task(id: showsPages && store.connection == .connected) {
+            if showsPages, store.documents == nil { await store.loadDocuments(quiet: true) }
+        }
         // A sheet has no notice over it, so it shows the error itself.
         .sheet(isPresented: $routineOpen) {
             NavigationStack { RoutineEditorView(botId: botId) }.sheetShowsError()

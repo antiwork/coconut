@@ -181,8 +181,6 @@ struct AgentsView: View {
 
     var body: some View {
         let projects = AgentProject.list(store.agentProjectInput)
-        // Everything that the Archived page lists: a project stays, so these are chats and agents of an earlier release.
-        let archived = store.bots.filter(\.archived).count
         BoardPage {
             // The Mac window shows the title of this place in the page, with the counts. An iPhone has the title in the
             // bar, as each pushed page.
@@ -202,15 +200,13 @@ struct AgentsView: View {
                     }
                 }
             }
-            // What the projects keep: their pages, and the chats that the person put away.
+            // What the projects keep: their pages. The archived chats have no page of their own: the person merged
+            // Archived into the list of Chats, where they sit among the idle chats (on the Mac, in Archived of the
+            // sidebar).
             BoardSection {
                 BoardRow(symbol: "rectangle.3.group", title: "All pages",
                          value: store.documents.map { "\($0.count)" })
                     .boardButton("agents-all-pages") { pushRoute?(AllPagesRoute()) }
-                if archived > 0 {
-                    BoardRow(symbol: "archivebox", title: "Archived", value: "\(archived)")
-                        .boardButton("agents-archived") { pushRoute?(ArchivedAgentsRoute()) }
-                }
             }
         }
         #if os(iOS)

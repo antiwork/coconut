@@ -83,8 +83,8 @@ struct CoconutApp: App {
 /// - Support: its to-dos, with the conversations past their service level first, then the queue of the customers.
 /// - Business (the case `finance`): its to-dos, the issues labelled `finance`, then the overview of the business with
 ///   the risk reviews, which opens Accounting, Marketing and History.
-/// - Chats: every agent and every chat with people, in two tabs, Working and Idle, with the message box under the list.
-///   Many agents of one project fold into a tree under its name (ChatTree).
+/// - Chats: every agent and every chat with people in one list, working, idle and archived, with the message box under
+///   the list. Many idle agents of one project fold into a tree under its name (ChatTree).
 /// - You: the person, this device and the settings: the Mac, notifications, connections, usage, the team and the
 ///   repositories that Coconut follows.
 /// Product, Support and Business each start with their own list of to-dos, the issues of gumroad-private with their
@@ -297,7 +297,6 @@ struct CoconutHome: View {
                 .navigationDestination(for: BotExchangeRoute.self) { route in
                     BotExchangeView(route: route).inlineNavigationTitle()
                 }
-                .navigationDestination(for: ArchivedAgentsRoute.self) { _ in ArchivedAgentsView().inlineNavigationTitle() }
                 .navigationDestination(for: AgentListRoute.self) { _ in AgentsView() }
                 .navigationDestination(for: BusinessRoute.self) { BusinessDestinationView(route: $0).inlineNavigationTitle() }
                 .navigationDestination(for: BotSettingsRoute.self) { route in
@@ -525,7 +524,8 @@ extension CoconutHome {
         case "chat-personal":
             open(.chats, [ConversationRoute(botId: store.bots.first { $0.name == "Personal" && $0.chatOf == nil }?.id ?? agent)])
         case "coconut": open(.chats, [ConversationRoute(botId: store.bots.coconutChat?.id ?? agent)])
-        case "archived": open(.chats, [ArchivedAgentsRoute()])
+        // Archived chats are in the Chats list among the others, so the old place opens it.
+        case "archived": open(.chats, [])
         case "team-chat": open(.chats, [TeamChatRoute(chat: TeamChatKey(room: room))])
         case "agent": open(.chats, [AgentRoute(botId: agent)])
         case "agent-routines": open(.chats, [AgentRoute(botId: agent), BotSettingsRoute(botId: agent)])

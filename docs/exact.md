@@ -26,15 +26,14 @@ TestFlight and Sparkle. The Python service in `backend/` is unchanged.
 
 Home. Needs attention at the top, with the four rules of `Attention.swift` (a card waiting over 4 hours, an agent that
 cannot run, blocked work, an unseen notice of the team); the fixture alone breaches none, so `app.ts` applies what
-`AppStore.applyAttentionPreview` applies for the UI test of Home. Then one flat list of chats, newest first, in two tabs
-under the title with the count of each, Working and Idle (`AgentsFilter`): Working has the chats whose row shows work
-(a working line or a card that waits), Idle the rest, chats with people too and the archived chats of the Mac (the
-person merged Idle and Archived, so an archived chat sits among the others by its newest message and Idle has no
-Archived row), and the phone keeps the choice (a `persist` state). Each row has the layout of `ChatRowLayout`: face,
+`AppStore.applyAttentionPreview` applies for the UI test of Home. Then one flat list of chats, newest first, with no
+tabs (the person found that nobody taps them, 2026-11-24): working and idle chats, chats with people too, and the
+archived chats of the Mac (the person merged Idle and Archived, so an archived chat sits among the others by its newest
+message, with no Archived row). Each row has the layout of `ChatRowLayout`: face,
 name, age (for a chat that shows its step, the time of that step to the second), a line that is the status or the last
 message, the unread badge, the green dot while the agent works. At the bottom a message box that is always open, with
 a picker that names the project the message goes to and ends with New project. Send starts a chat with that project
-and leaves it closed: the chat is the first row of Working, and the box keeps the keyboard for the next one (as
+and leaves it closed: the chat is the newest row of the list, and the box keeps the keyboard for the next one (as
 `NewChatBar` of the Swift app).
 
 Chat. Messages with Markdown and the time of each under it (`MessageTimes.label`), activity lines, cards with their options (an answer keeps the option chosen), files,
@@ -346,7 +345,7 @@ Not yet measured: the time from save to screen on the web host, and a `push --wa
   lists the projects and ends with New project, as asked. A message from Home always starts a new chat with the project.
 - Not ported: the slash commands other than `/model` and `/effort` (new, compact, stop, mute, archive, help), mentions, the access menu, editing a queued message, link and GitHub previews, photos,
   the schedule of a message, the fifth rule of Needs attention (stale data, which a preview has none of). Also the tree
-  of the Swift app's Chats tab (`ChatTree`, 4a20dfb), where three or more agents of one project in Working or Idle fold
+  of the Swift app's Chats tab (`ChatTree`, 4a20dfb), where three or more idle agents of one project fold
   under the project's name, and its title Chats in place of Agents. A port needs the chat titles first: the live rows
   take `name` and the project from the bot's profile, so every chat of a project reads as the project, while the Mac
   sends `chat_of` and `chat_title` for each chat.

@@ -1042,7 +1042,8 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
                     if not decision.get('request_text') and decision.get('task_id'):
                         task = self._get('tasks', decision['task_id'])
                         decision.update(self.decision_origin(task))
-                state.update(cursor=self._cursor(), server_time=now(), provider=getattr(self.provider, 'name', 'unknown'), push_configured=self.push.configured)
+                state.update(cursor=self._cursor(), server_time=now(), provider=getattr(self.provider, 'name', 'unknown'), push_configured=self.push.configured,
+                             auto_archive_hours=self.auto_archive_hours())
                 state['personal_budget'] = self.personal_budget_state()
                 if catalog is not None:
                     default = catalog.get('default', {})
@@ -1579,6 +1580,8 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
                 if decision.get('_native'):
                     return self.answer_native(decision, task, data, device, callbacks)
                 return self._answer(decision, task, data, device)
+        if parts == ['v1', 'settings', 'auto-archive'] and method == 'PUT':
+            return self.set_auto_archive(data)
         if parts == ['v1', 'settings', 'approvals'] and method == 'PUT':
             if not hasattr(self.provider, 'native_settings'):
                 raise ServiceError(503, 'Hermes is not available.')

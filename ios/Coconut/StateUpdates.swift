@@ -177,4 +177,5 @@ struct NativeSnapshot: Decodable, Sendable {
     let mcpServers: [MCPServer]?
     let routines: [Routine]?
     let pushConfigured: Bool?
+    let autoArchiveHours: Int?
 }

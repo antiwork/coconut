@@ -205,18 +205,6 @@ struct BoardEmptyRow: View {
 }
 
 extension View {
-    /// The segments of a page that stay under its title while the page scrolls: Working and Idle of Chats, Overview
-    /// and Work of a function. They take the width of the page on an iPhone, and 360 points at most in a Mac window.
-    func pinnedSegments() -> some View {
-        pickerStyle(.segmented).labelsHidden()
-            #if os(macOS)
-            .frame(maxWidth: 360)
-            #endif
-            .padding(.horizontal, BoardStyle.Space.l).padding(.vertical, BoardStyle.Space.s)
-            // The paper ends at the control and leaves the bar of the page to the system.
-            .frame(maxWidth: .infinity).background(BoardStyle.paper, ignoresSafeAreaEdges: [])
-    }
-
     /// A row of a section that opens something on a tap.
     func boardButton(_ identifier: String, action: @escaping () -> Void) -> some View {
         Button(action: action) { self }

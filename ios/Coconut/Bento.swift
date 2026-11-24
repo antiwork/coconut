@@ -321,14 +321,3 @@ struct BentoStat: View {
         .accessibilityElement(children: .combine)
     }
 }
-
-extension View {
-    /// A segmented control over a grid: its own width at the leading edge on the Mac, the whole width on an iPhone.
-    func bentoLeadingControl() -> some View {
-        #if os(macOS)
-        fixedSize().frame(maxWidth: .infinity, alignment: .leading)
-        #else
-        self
-        #endif
-    }
-}

@@ -1,22 +1,15 @@
 import SwiftUI
 
-/// Where this Coconut runs. Local runs on the Mac of the person. Cloud, the hosted upstream Coconut, is not built yet.
-enum CoconutMode: String, CaseIterable, Identifiable {
-    case local, cloud
-    var id: String { rawValue }
-    var label: String { self == .local ? "Local" : "Cloud" }
-}
-
 extension Array where Element == Bot {
     /// The Coconut chat, when the Mac has one.
     var coconutChat: Bot? { first { $0.coconut && !$0.archived } }
 }
 
 /// The bar at the top of the Coconut chat: where Coconut runs, and the few things that need this device itself.
-/// Everything else changes when the person asks in the chat (coconut_settings).
+/// Everything else changes when the person asks in the chat (coconut_settings). The bar has no Local and Cloud control:
+/// Cloud is not built yet, and the person found that nobody taps such toggles (2026-11-24). The chat answers that
+/// Cloud is coming soon.
 struct CoconutChatBar: View {
-    @State private var mode = CoconutMode.local
-    @State private var cloudNote = false
     @State private var sheet: Sheet?
 
     enum Sheet: String, Identifiable {
@@ -26,18 +19,7 @@ struct CoconutChatBar: View {
 
     var body: some View {
         HStack(spacing: BoardStyle.Space.m) {
-            Picker("Runs", selection: $mode) {
-                ForEach(CoconutMode.allCases) { mode in Text(mode.label).tag(mode) }
-            }
-            // The line next to the segments says where Coconut runs, so a Mac window does not draw the label too.
-            .pickerStyle(.segmented).labelsHidden()
-            .fixedSize()
-            .accessibilityIdentifier("coconut-mode")
-            .onChange(of: mode) { _, new in
-                // Cloud is not built yet: the switch says so and stays on Local.
-                if new == .cloud { cloudNote = true; mode = .local }
-            }
-            Text(cloudNote ? "Cloud is coming soon. Coconut runs on your Mac." : "Runs on your Mac")
+            Text("Runs on your Mac")
                 .font(.caption).foregroundStyle(.secondary).lineLimit(1)
             Spacer(minLength: 0)
             Menu {

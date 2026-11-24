@@ -184,9 +184,9 @@ struct UsageView: View {
     @Environment(AppStore.self) private var store
     @Environment(\.pushRoute) private var pushRoute
     var botId: String? = nil
-    @State private var range = UsageRange.opening
-    /// The chosen chart. Nil shows the spend, or the tokens when Hermes has no price for the models.
-    @State private var metric: UsageMetric? = nil
+    /// The last 30 days, with no control for another range or another chart: the person found that nobody taps such
+    /// tabs (2026-11-24). The chart shows the spend, or the tokens when Hermes has no price for the models.
+    private let range = UsageRange.opening
 
     private var bot: Bot? { store.bots.first { $0.id == botId } }
 
@@ -203,13 +203,9 @@ struct UsageView: View {
             if let report = store.usage {
                 let agents = store.usageOf(botId)
                 let summary = UsageSummary(agents: agents, range: range, today: report.today)
-                let shown = metric ?? (summary.costKnown ? .cost : .tokens)
-                chips(UsageRange.allCases, selected: range, title: \.title) { range = $0 }
-                    .accessibilityIdentifier("usage-range")
+                let shown: UsageMetric = summary.costKnown ? .cost : .tokens
                 stats(summary)
                 VStack(alignment: .leading, spacing: BoardStyle.Space.m) {
-                    chips(UsageMetric.allCases, selected: shown, title: \.title) { metric = $0 }
-                        .accessibilityIdentifier("usage-metric")
                     UsageChart(buckets: summary.buckets, metric: shown, byWeek: range.byWeek).frame(height: 220)
                 }
                 .padding(BoardStyle.Space.m)
@@ -275,17 +271,6 @@ struct UsageView: View {
                                                                costKnown: usage.costKnown)
         })
     }
-
-    private func chips<Value: Identifiable & Equatable>(_ values: [Value], selected: Value, title: KeyPath<Value, String>,
-                                                        choose: @escaping (Value) -> Void) -> some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: BoardStyle.Space.xs) {
-                ForEach(values) { value in
-                    ChipButton(title: value[keyPath: title], selected: value == selected) { choose(value) }
-                }
-            }
-        }
-    }
 }
 
 /// The usage page of all agents: the leaderboard of the people of each team by cost and their spend by day, then
@@ -296,7 +281,8 @@ struct UsageView: View {
 struct UsageBoard: View {
     @Environment(AppStore.self) private var store
     @Environment(\.pushRoute) private var pushRoute
-    @State private var range = UsageRange.opening
+    /// The last 30 days, with no control for another range: the person found that nobody taps such tabs (2026-11-24).
+    private let range = UsageRange.opening
 
     var body: some View {
         BoardPage(width: .wide, spacing: BoardStyle.Space.l) {
@@ -319,11 +305,6 @@ struct UsageBoard: View {
         let teams = (report.teams ?? []).filter { $0.people.count > 1 }
         let summary = UsageSummary(agents: store.usageOf(nil), range: range, today: report.today)
         let projects = UsageView.projectStandings(store, report, range: range)
-        Picker("Range", selection: $range) {
-            ForEach(UsageRange.allCases) { Text($0.title).tag($0) }
-        }
-        .pickerStyle(.segmented).labelsHidden().bentoLeadingControl()
-        .accessibilityIdentifier("usage-range")
         if teams.isEmpty {
             BentoBoard {
                 UsageLeaderboardTile(title: "Projects", rows: projects) { pushRoute?(UsageRoute(botId: $0.id)) }

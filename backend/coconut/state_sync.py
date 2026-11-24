@@ -285,7 +285,7 @@ class StateSync:
                         view._pause_unserved_routines(native['routines'])
                         native['routines'] = [dict(view._public(r), last_task_id=previous.get(r['id']))
                                               for r in native['routines']]
-                    return dict(cursor=view._cursor(), push_configured=self.push.configured, bots=[view._bot_view(dict(b, **observed.get(b['id'], {})), catalog) for b in bots],
+                    return dict(cursor=view._cursor(), push_configured=self.push.configured, auto_archive_hours=view.auto_archive_hours(), bots=[view._bot_view(dict(b, **observed.get(b['id'], {})), catalog) for b in bots],
                                 model_catalog=catalog, model_configured=bool(catalog and catalog.get('default_configured')), **{k: native.get(k) for k in ('approvals', 'parallel_work', 'fallback', 'mcp_servers', 'routines')})
         from .service import ServiceError
         raise ServiceError(503, 'Settings changed during this request. Try again.')

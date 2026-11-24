@@ -4,7 +4,6 @@ import Charts
 /// The place of one function: its report and its work. Support is a place of its own. Business opens the others.
 struct BusinessWorkspaceView: View {
     let function: String
-    @State private var tab = "overview"
     private var hasReport: Bool { function == "accounting" || function == "support" }
 
     var body: some View {
@@ -12,19 +11,11 @@ struct BusinessWorkspaceView: View {
             // Support is a tab: its to-dos first, which its badge counts, then the queues of the customers on the same
             // page (TodoLists.swift). Its to-dos are its work, so it has no Work view.
             if function == "support" { BusinessReportView(key: function, top: AnyView(TodoListSection(area: .support))) }
-            else if tab == "work" || !hasReport { BusinessWorkListView(function: function) }
-            else { BusinessReportView(key: function) }
-        }
-        // Two views only: the report of the function, and its work. The control stays under the title while the page
-        // scrolls. A function without a report has its work only, and a control with one segment is no choice.
-        .safeAreaInset(edge: .top, spacing: 0) {
-            if hasReport && function != "support" {
-                Picker("View", selection: $tab) {
-                    Text("Overview").tag("overview")
-                    Text("Work").tag("work")
-                }
-                .pinnedSegments()
-            }
+            // One view, with no control between the report and the work: the person found that nobody taps such
+            // tabs (2026-11-24). The work of Accounting is the issues labelled finance, which are the to-dos of the
+            // Business tab, so its page is its report. A function without a report has its work only.
+            else if hasReport { BusinessReportView(key: function) }
+            else { BusinessWorkListView(function: function) }
         }
         .background(BoardStyle.paper)
         .navigationTitle(BusinessFunction.name(function))
@@ -109,7 +100,14 @@ struct BusinessReportContent: View {
                     .background(BoardStyle.attention.opacity(0.1), in: RoundedRectangle(cornerRadius: BoardStyle.Radius.small, style: .continuous))
             }
             switch key {
-            case "support": SupportDashboard(data: report.data)
+            case "support":
+                SupportDashboard(data: report.data)
+                // The Mac has no Product page, because the person chose to leave its sidebar as it is (MacSidebar), so
+                // its Support shows the queue of the product issues too, under the customers. The iPhone has them as the
+                // to-dos of its Product tab.
+                #if os(macOS)
+                SupportDashboard(data: report.data, queue: "issues")
+                #endif
             case "risk": RiskDashboard(data: report.data)
             case "engineering": EngineeringDashboard(data: report.data)
             default: MoneyDashboard(data: report.data, accounting: key == "accounting")
@@ -214,8 +212,8 @@ private struct MoneyDashboard: View {
 
 private struct SupportDashboard: View {
     let data: BusinessValue
-    @State private var queue = "support"
-    @State private var status = "open"
+    /// The queue of the report: the customers ("support"), or every open issue of gumroad-private ("issues").
+    var queue = "support"
     @State private var search = ""
     @State private var shown = 25
     private var selected: BusinessValue { data[queue] }
@@ -226,7 +224,7 @@ private struct SupportDashboard: View {
             .sorted { $0.count > $1.count }
     }
     private var items: [BusinessValue] {
-        selected[status].array.filter { search.isEmpty || $0["subject"].text.localizedCaseInsensitiveContains(search) }
+        selected["open"].array.filter { search.isEmpty || $0["subject"].text.localizedCaseInsensitiveContains(search) }
     }
     private var resolution: SupportResolution {
         SupportResolution(closed: selected["closed"].array, reference: data["generatedAt"].text.apiDate)
@@ -241,11 +239,12 @@ private struct SupportDashboard: View {
         VStack(alignment: .leading, spacing: BoardStyle.Space.l) {
             // The queue "issues" of the report is every open issue of gumroad-private, so its rows are the to-dos of
             // Product, Support and Business, each on its own tab. The iPhone's Support shows the customers only. The Mac
-            // has no Product page, because the person chose to leave its sidebar as it is (MacSidebar), so its Support
-            // keeps the queue of the issues.
+            // shows both queues, one under the other with its name, and no control between them: the person found that
+            // nobody taps such tabs (2026-11-24).
             #if os(macOS)
-            Picker("Queue", selection: $queue) { Text("Customer support").tag("support"); Text("Product issues").tag("issues") }
-                .pickerStyle(.segmented).labelsHidden().bentoLeadingControl()
+            Text(queue == "issues" ? "Product issues" : "Customer support")
+                .font(.title3.weight(.semibold))
+                .accessibilityAddTraits(.isHeader)
             #endif
             BentoBoard {
                 BentoStat(title: "Open", value: reportNumber(counts["all"].number),
@@ -266,8 +265,6 @@ private struct SupportDashboard: View {
                 conversations.bento(12, nil, compact: (2, nil))
             }
         }
-        .onChange(of: queue) { _, _ in shown = 25 }
-        .onChange(of: status) { _, _ in shown = 25 }
     }
 
     private var histogram: some View {
@@ -330,11 +327,8 @@ private struct SupportDashboard: View {
         BentoTile {
             VStack(alignment: .leading, spacing: BoardStyle.Space.m) {
                 ViewThatFits(in: .horizontal) {
-                    HStack(spacing: BoardStyle.Space.m) { conversationsTitle; Spacer(minLength: 0); searchField.frame(width: 240); statusPicker }
-                    VStack(alignment: .leading, spacing: BoardStyle.Space.s) {
-                        HStack { conversationsTitle; Spacer(minLength: 0); statusPicker }
-                        searchField
-                    }
+                    HStack(spacing: BoardStyle.Space.m) { conversationsTitle; Spacer(minLength: 0); searchField.frame(width: 240) }
+                    VStack(alignment: .leading, spacing: BoardStyle.Space.s) { conversationsTitle; searchField }
                 }
                 if items.isEmpty { Text("No conversations in this snapshot.").font(.subheadline).foregroundStyle(.secondary).padding(.vertical, BoardStyle.Space.s) }
                 VStack(alignment: .leading, spacing: 0) {
@@ -373,7 +367,7 @@ private struct SupportDashboard: View {
     /// A row of the queue. A row that opens its conversation has a chevron and no text selection, so a tap opens it.
     @ViewBuilder private func conversationRow(_ item: BusinessValue, opens: Bool) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: BoardStyle.Space.m) {
-            Circle().fill(status == "open" ? BoardStyle.attention : BoardStyle.positive).frame(width: 7, height: 7)
+            Circle().fill(BoardStyle.attention).frame(width: 7, height: 7)
                 .alignmentGuide(.firstTextBaseline) { $0[.bottom] + 1 }.accessibilityHidden(true)
             if opens {
                 Text(item["subject"].text).font(.subheadline).lineLimit(2).multilineTextAlignment(.leading)
@@ -389,9 +383,6 @@ private struct SupportDashboard: View {
         }
         .padding(.vertical, BoardStyle.Space.s)
         .contentShape(Rectangle())
-    }
-    private var statusPicker: some View {
-        Picker("Status", selection: $status) { Text("Open").tag("open"); Text("Closed").tag("closed") }.pickerStyle(.segmented).labelsHidden().fixedSize()
     }
     private var searchField: some View {
         HStack(spacing: BoardStyle.Space.s) {
@@ -418,7 +409,6 @@ enum SupportFormat {
 
 private struct RiskDashboard: View {
     let data: BusinessValue
-    @State private var queue = "notReviewed"
     @State private var shown = 25
     private let queues = [("notReviewed", "Unreviewed"), ("flagged", "Flagged"), ("probated", "Probated"), ("softSuspended", "Suspended"), ("watching", "Watching")]
     private func dollars(_ cents: BusinessValue) -> String { reportNumber(cents.number.map { $0 / 100 }, money: true) }
@@ -458,7 +448,6 @@ private struct RiskDashboard: View {
                 .bento(3, 1, compact: (1, 1))
             accounts.bento(12, nil, compact: (2, nil))
         }
-        .onChange(of: queue) { _, _ in shown = 25 }
     }
 
     /// Two published counts of one whole, with their amounts. The bar shows the share; no rate is computed.
@@ -486,23 +475,24 @@ private struct RiskDashboard: View {
         }.accessibilityElement(children: .combine)
     }
 
+    /// The accounts of every review queue in one list, in the order of the queues, so the unreviewed come first. The
+    /// person found that nobody taps a control between them (2026-11-24), so each row names its queue instead.
     private var accounts: some View {
-        let users = data[queue]["users"].array
+        let users = queues.flatMap { key, name in data[key]["users"].array.map { (queue: name, user: $0) } }
+        let counts = queues.compactMap { key, name in data[key]["count"].number.map { "\(Int($0).formatted()) \(name.lowercased())" } }
         return BentoTile {
             VStack(alignment: .leading, spacing: BoardStyle.Space.m) {
-                ViewThatFits(in: .horizontal) {
-                    HStack(spacing: BoardStyle.Space.m) { accountsTitle; Spacer(minLength: 0); picker.pickerStyle(.segmented).fixedSize() }
-                    HStack(spacing: BoardStyle.Space.m) { accountsTitle; Spacer(minLength: 0); picker.pickerStyle(.menu).fixedSize() }
-                }
-                Text("\(count(data[queue]["count"])) accounts · \(users.count) published records").font(.caption).foregroundStyle(.secondary)
+                accountsTitle
+                Text(counts.joined(separator: " · ")).font(.caption).foregroundStyle(.secondary)
                 VStack(alignment: .leading, spacing: 0) {
-                    ForEach(Array(users.prefix(shown).enumerated()), id: \.offset) { index, user in
+                    ForEach(Array(users.prefix(shown).enumerated()), id: \.offset) { index, row in
                         if index > 0 { Divider() }
-                        let account = RiskAccount(user)
+                        let account = RiskAccount(row.user)
                         HStack(spacing: BoardStyle.Space.m) {
                             VStack(alignment: .leading, spacing: BoardStyle.Space.line) {
                                 Text(account.title).font(.subheadline.weight(.medium)).lineLimit(1)
-                                if let detail = account.detail { Text(detail).font(.caption).foregroundStyle(.secondary).lineLimit(1) }
+                                Text(([row.queue] + [account.detail].compactMap { $0 }).joined(separator: " · "))
+                                    .font(.caption).foregroundStyle(.secondary).lineLimit(1)
                             }
                             Spacer(minLength: BoardStyle.Space.s)
                             VStack(alignment: .trailing, spacing: BoardStyle.Space.line) {
@@ -519,9 +509,6 @@ private struct RiskDashboard: View {
         }
     }
     private var accountsTitle: some View { BentoLabel("Review queue") }
-    private var picker: some View {
-        Picker("Queue", selection: $queue) { ForEach(queues, id: \.0) { Text($0.1).tag($0.0) } }.labelsHidden()
-    }
 }
 
 /// One account of a risk queue. A watched account has no name and no balance; it has an email, its revenue and a note.

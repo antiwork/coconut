@@ -102,7 +102,9 @@ struct BusinessWorkListView: View {
     @Environment(AppStore.self) private var store
     var function: String? = nil
     var project: String? = nil
-    @State private var state = "open"
+    /// The open work only. The person found that nobody taps a control for the closed work (2026-11-24), and a closed
+    /// issue is done.
+    private let state = "open"
     @State private var error: String?
     @State private var loading = false
     @State private var adding = false
@@ -115,11 +117,6 @@ struct BusinessWorkListView: View {
 
     var body: some View {
         BoardPage {
-            // The states of an issue, as GitHub and Support name them.
-            Picker("Work", selection: $state) {
-                Text("Open").tag("open")
-                Text("Closed").tag("closed")
-            }.pickerStyle(.segmented)
             if loading && shownItems.isEmpty { BoardLoading(title: "Loading work", height: 200) }
             BoardSection("Work", count: shownItems.count) {
                 // A row opens its issue in Coconut: its comments, a box to answer, and Close or Reopen (GitHubItemView).
@@ -131,7 +128,7 @@ struct BusinessWorkListView: View {
                     .accessibilityIdentifier("business-work-" + item.id)
                 }
                 if !loading && shownItems.isEmpty && error == nil {
-                    BoardEmptyRow(text: state == "open" ? "No open work." : "No closed work.")
+                    BoardEmptyRow(text: "No open work.")
                 }
             }
             if let error { BusinessConnectionNotice(message: error) }

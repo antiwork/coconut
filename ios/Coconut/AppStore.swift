@@ -173,6 +173,9 @@ final class AppStore {
     /// The Antiwork budget of Personal (PersonalBudget.swift). An older Mac sends none.
     var personalBudget: PersonalBudget?
     var pushConfigured = false
+    /// The hours without activity after which a chat archives itself on the Mac, 0 for never (You, AutoArchiveMenu).
+    /// Nil until the Mac says, and with a Mac older than the setting, which has no route to change it.
+    var autoArchiveHours: Int?
     var pushRegistrationError: String?
     var pushStatus: PushStatus?
     @ObservationIgnored private var registeredPushSignature: String?
@@ -745,6 +748,7 @@ final class AppStore {
         pushStatus = nil
         pushConfigured = false
         personalBudget = nil
+        autoArchiveHours = nil
         PushNotifications.shared.target = nil
         stopPolling()
         cacheTask?.cancel()
@@ -1606,6 +1610,16 @@ final class AppStore {
         let reply = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !reply.isEmpty else { return false }
         return await answer(decision, choice: "reply", correction: reply)
+    }
+
+    /// Changes the time after which a chat without activity archives itself on the Mac, 0 for never. You shows the new
+    /// time at once, and every device reads it with the settings.
+    @discardableResult
+    func setAutoArchive(hours: Int) -> Bool {
+        if isDemo { autoArchiveHours = hours; return true }
+        return optimistically("settings/auto-archive", change: { transaction in
+            optimisticValue(\.autoArchiveHours, Optional(hours), in: transaction)
+        }, save: { let _: AutoArchiveResponse? = await self.write("settings/auto-archive", method: "PUT", payload: ["hours": hours], as: AutoArchiveResponse.self) })
     }
 
     func setModel(_ selection: ModelOverride) async -> Bool {
@@ -3339,6 +3353,8 @@ final class AppStore {
             assign(\.modelConfigured, snapshot.modelConfigured)
             assign(\.modelCatalog, snapshot.modelCatalog)
             assign(\.pushConfigured, snapshot.pushConfigured ?? false)
+            // The demo has the time that a Mac starts with, so You shows the row.
+            assign(\.autoArchiveHours, snapshot.autoArchiveHours ?? (isDemo ? 48 : nil))
             assign(\.personalBudget, snapshot.personalBudget ?? (isDemo ? PersonalBudget(signedIn: true,
                 botId: snapshot.bots.first { $0.name == "Personal" && $0.chatOf == nil }?.id, month: "2026-11",
                 spentUsd: 41.2, limitUsd: 200, paused: false, resetsAt: "2026-12-01T00:00:00Z") : nil))
@@ -3557,10 +3573,12 @@ final class AppStore {
                     self.assign(\.mcpServers, native.mcpServers ?? [])
                     self.assign(\.routines, native.routines ?? [])
                     if let configured = native.pushConfigured { self.assign(\.pushConfigured, configured) }
+                    if let hours = native.autoArchiveHours { self.assign(\.autoArchiveHours, hours) }
                     self.nativeSettingsReadAt = Date()
                     if var state = self.cachedState {
                         state.bots = self.bots
                         state.pushConfigured = self.pushConfigured
+                        state.autoArchiveHours = self.autoArchiveHours
                         self.apply(state, persist: true)
                         Task { await self.syncPushRegistration() }
                 }
@@ -3928,6 +3946,7 @@ struct AnswerRequest: Codable, Equatable { let choice: String; let revision: Int
 private struct DraftEditRequest: Encodable { let revision: Int; let draft: MessageDraft }
 private struct InboxRequest: Encodable { let action: String; let revision: Int; let swipeId: String? }
 
+private struct AutoArchiveResponse: Decodable, Sendable { let autoArchiveHours: Int }
 private struct ModelResponse: Decodable, Sendable { let model: String; let modelConfigured: Bool; let baseUrl: String?; let modelCatalog: ModelCatalog? }
 private struct AttachmentRequest: Encodable { let botId: String; let filename: String; let contentBase64: String }
 

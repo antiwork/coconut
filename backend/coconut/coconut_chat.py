@@ -31,7 +31,7 @@ SETTINGS_SCHEMA = {
         'Read or change the settings of this Coconut. Only a turn of Coconut has it: the Coconut chat, and the change '
         'that another agent hands to it with coconut_message_bot. Coconut has no settings screens, '
         'so the person changes everything here, in plain words: "use Opus", "let chats run commands '
-        'without asking", "mute Desk", "let each agent run 4 work sessions", "fall back to Sonnet". When the person sends "/help", call "read" '
+        'without asking", "mute Desk", "let each agent run 4 work sessions", "fall back to Sonnet", "archive chats after a week". When the person sends "/help", call "read" '
         'and list in short lines what they can ask you to change, with the current values. First call with action "read" to see the current values and the choices. '
         'Then call action "change" with one setting. Say in one line what changed, from what to what, and that '
         'the person can ask to undo it. A change that deletes something or costs money needs a card first '
@@ -42,14 +42,16 @@ SETTINGS_SCHEMA = {
             'action': {'type': 'string', 'enum': ['read', 'change']},
             'setting': {'type': 'string', 'enum': [
                 'default_model', 'fallback_models', 'default_access', 'agent_notifications', 'agent_name', 'work_sessions_per_agent',
-                'helpers_per_task', 'mode']},
+                'helpers_per_task', 'auto_archive_hours', 'mode']},
             'agent': {'type': 'string', 'description': 'The name or ID of the project, for an agent_* setting.'},
             'model': {'type': 'string', 'description': 'A model ID from the catalog that "read" lists.'},
             'provider': {'type': 'string', 'description': 'The provider of that model, from the catalog.'},
             'reasoning_effort': {'type': 'string'},
             'value': {'description': 'The new value: an access mode (off, smart, manual), true or false for '
                                      'notifications, a name, local or cloud for mode, a number from 1 to 64 (null for '
-                                     'Automatic) for work_sessions_per_agent and helpers_per_task, or for '
+                                     'Automatic) for work_sessions_per_agent and helpers_per_task, the hours '
+                                     'without activity after which a chat archives itself for auto_archive_hours '
+                                     '(0 for never), or for '
                                      'fallback_models the whole list in order, each item with a model and a provider '
                                      'from the catalog (an empty list for no fallback).'},
         },
@@ -126,6 +128,8 @@ def read(service) -> dict:
             'fallback_models': _fallback(service), 'models': models, 'default_access': approvals.get('defaults'),
             'access_modes': {mode: ACCESS_TEXT[mode] for mode in ACCESS}, 'agents': agents,
             'parallel_work': {**_limits(service), 'total': 'No limit: every agent works at once.'},
+            'auto_archive_hours': service.auto_archive_hours(),
+            'auto_archive': 'A chat without activity for this many hours archives itself. 0 means never.',
             'not_here': ('Pairing a device, phone notifications and their work hours, and signing in to GitHub or '
                          'Google need the device itself: the header of this chat has them.')}
 
@@ -180,6 +184,11 @@ def change(service, arguments: dict) -> dict:
         before = read(service)['default_access']
         service.mutate('PUT', '/v1/settings/approvals', {'mode': arguments['value']}, key, device)
         return {'setting': setting, 'before': before, 'after': arguments['value'], 'changed': True}
+    if setting == 'auto_archive_hours':
+        before = service.auto_archive_hours()
+        after = service.mutate('PUT', '/v1/settings/auto-archive', {'hours': arguments.get('value')}, key, device)
+        return {'setting': setting, 'before': before, 'after': after['auto_archive_hours'],
+                'changed': after['auto_archive_hours'] != before}
     if setting in LIMIT_ROUTES:
         value = arguments.get('value')
         before = _limits(service).get(setting)

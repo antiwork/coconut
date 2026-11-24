@@ -3,15 +3,13 @@ import SwiftUI
 /// Two tabs of the iPhone. Product has the rules that breach for the agents and the cards that wait, then its to-dos,
 /// the issues of gumroad-private with the label product (TodoLists.swift), and the open pull requests (ProductWork).
 /// Chats is one list, as Telegram has it: the agents of the projects, the teams, their named chats and the direct
-/// chats, in two tabs, Working and Idle (AgentsFilter), with the message box under the list (NewChatBar). Many agents
-/// of one project fold into a tree under its name (ChatTree).
+/// chats, working, idle and archived together, with the message box under the list (NewChatBar). Many idle agents of
+/// one project fold into a tree under its name (ChatTree).
 struct HomeLaunchView: View {
     enum Part { case product, chats }
     var part = Part.chats
     @Environment(AppStore.self) private var store
-    /// The tab of Chats that shows, Working or Idle. The phone keeps the choice.
-    @AppStorage(AgentsFilter.key) private var filter = AgentsFilter.working
-    /// The projects whose tree is open in each tab of Chats (ChatTree). The phone keeps them.
+    /// The projects whose tree is open on Chats (ChatTree). The phone keeps them.
     @AppStorage(ChatTree.key) private var openTrees = ""
     /// A chat in the tree of its project starts where the name of the project starts, after the chevron (ChatTreeRow).
     @ScaledMetric(relativeTo: .body) private var treeChevron = ChatTreeRow.chevronWidth
@@ -156,18 +154,18 @@ struct HomeLaunchView: View {
 
     /// The list of Chats, as Telegram has it: the pinned chats first, then every other chat newest activity first
     /// (ChatList.all), the archived chats too. Every row has the same form: the name, the last message, the age and the
-    /// badges. A starred row only adds the star mark. The list shows the chats of one of its two tabs, Working or Idle,
-    /// in the same order. An archived chat does not work, so Idle has it among the others. Many agents of one project
-    /// fold into one row with its name, which opens into a tree of them (ChatTree).
+    /// badges. A starred row only adds the star mark. The list has no tabs or toggles, because the person found that
+    /// nobody taps them (2026-11-24): working, idle and archived chats share the one list, and a chat archives itself
+    /// after the time that You sets (AutoArchiveMenu). Many idle agents of one project fold into one row with its name,
+    /// which opens into a tree of them (ChatTree). A chat whose row shows work never folds, so each one stays in sight.
     private func chatList(_ rows: [ChatListItem]) -> some View {
         let now = Date.now
         let working = Set(rows.filter { works($0, at: now) }.map(\.id))
-        let shown = rows.filter { working.contains($0.id) == (filter == .working) }
-        let entries = ChatTree.entries(shown, open: ChatTree.open(openTrees, in: filter))
+        let entries = ChatTree.entries(rows, open: ChatTree.open(openTrees), loose: working)
         // A list, not a stack, so that a row of a chat has the swipe of the system: swipe left to archive.
         return List {
-            if shown.isEmpty {
-                Text(rows.isEmpty ? "No chats yet." : filter == .working ? "No agent is working." : "No agent is idle.")
+            if rows.isEmpty {
+                Text("No chats yet.")
                     .font(.subheadline).foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity).padding(.vertical, BoardStyle.Space.xxl)
                     .accessibilityIdentifier("chats-empty")
@@ -177,7 +175,7 @@ struct HomeLaunchView: View {
                 switch entry {
                 case .group(let group):
                     ChatTreeRow(group: group) {
-                        withAnimation(.snappy) { openTrees = ChatTree.toggle(group.agentId, in: filter, openTrees) }
+                        withAnimation(.snappy) { openTrees = ChatTree.toggle(group.agentId, openTrees) }
                     }
                     .homeRow()
                 case .chat(let item, let nested):
@@ -191,16 +189,6 @@ struct HomeLaunchView: View {
         .contentMargins(.top, BoardStyle.Space.s, for: .scrollContent)
         .contentMargins(.bottom, BoardStyle.Space.xl, for: .scrollContent)
         .background(BoardStyle.paper)
-        // The two tabs of Chats, with the count of each. The control stays under the title while the list scrolls, as
-        // Overview and Work of a function (pinnedSegments).
-        .safeAreaInset(edge: .top, spacing: 0) {
-            Picker("Chats", selection: $filter) {
-                Text("Working \(working.count)").tag(AgentsFilter.working)
-                Text("Idle \(rows.count - working.count)").tag(AgentsFilter.idle)
-            }
-            .pinnedSegments()
-            .accessibilityIdentifier("agents-filter")
-        }
         .navigationTitle("Chats")
         .toolbar {
             // One tap reads every chat, as Read All in Telegram. It shows while a chat of the list has an unread
@@ -214,10 +202,8 @@ struct HomeLaunchView: View {
         .refreshable { await store.reconnect() }
         // The message box under the list gives the keyboard back when the list moves.
         .scrollDismissesKeyboard(.interactively)
-        // A new chat shows in the tab that holds it, with the tree of its project open.
-        .modifier(NewChatReveal(filter: $filter) { works(.bot($0), at: .now) } open: { bot, tab in
-            openTrees = ChatTree.opening(bot.agentId, in: tab, openTrees)
-        })
+        // A new chat shows at its place in the list, with the tree of its project open.
+        .modifier(NewChatReveal { bot in openTrees = ChatTree.opening(bot.agentId, openTrees) })
     }
 
     /// One chat of the list. A chat in the tree of its project is set in under the name of the project and shows its own
@@ -345,16 +331,11 @@ struct HomeLaunchView: View {
 
 /// The two tabs of Chats. Working has the agents and chats that work or wait for the person, and Idle has the
 /// others, the archived chats among them, so the person finds a free agent for the next task in one tap.
-enum AgentsFilter: String {
-    case working, idle
-    static let key = "agents-filter"
-}
-
 /// The tree of Chats: many agents of one project fold into one row with the name of the project (the person: "tree to
-/// group if many with one type of agent"). A project with `minimum` agents or more in the tab that shows, Working or
-/// Idle, has that row at the place of the first of them, and its agents show under it, in the order of the list,
-/// while the row is open. A project with fewer keeps its agents as rows of their own, and the chats with people never
-/// fold. Each tab keeps its own open rows, so a tree that a new chat opens in Working leaves Idle folded.
+/// group if many with one type of agent"). A project with `minimum` idle agents or more has that row at the place of
+/// the first of them, and they show under it, in the order of the list, while the row is open. A project with fewer
+/// keeps its agents as rows of their own. A working agent and the chats with people never fold, so a tree never hides
+/// a chat that works.
 enum ChatTree {
     /// "Many": the fewest agents of one project that fold. Two rows read fine without a tree.
     static let minimum = 3
@@ -382,14 +363,18 @@ enum ChatTree {
         }
     }
 
-    /// The rows of the chats of one tab, `items` in the order of the list. `open` has the projects whose tree is open.
-    static func entries(_ items: [ChatListItem], open: Set<String>) -> [Entry] {
+    /// The rows of the list, `items` in its order. `open` has the projects whose tree is open, and `loose` the chats
+    /// that never fold: the chats that work.
+    static func entries(_ items: [ChatListItem], open: Set<String>, loose: Set<String> = []) -> [Entry] {
         var members: [String: [Bot]] = [:]
-        for case .bot(let bot) in items { members[bot.agentId, default: []].append(bot) }
+        for item in items where !loose.contains(item.id) {
+            if case .bot(let bot) = item { members[bot.agentId, default: []].append(bot) }
+        }
         var placed = Set<String>()
         var entries: [Entry] = []
         for item in items {
-            guard case .bot(let bot) = item, let bots = members[bot.agentId], bots.count >= minimum else {
+            guard !loose.contains(item.id), case .bot(let bot) = item, let bots = members[bot.agentId],
+                  bots.count >= minimum else {
                 entries.append(.chat(item, nested: false))
                 continue
             }
@@ -407,32 +392,36 @@ enum ChatTree {
     /// has the name of the project.
     static func title(_ bot: Bot) -> String { bot.isChat ? bot.chatLabel : bot.name }
 
-    /// The projects whose tree is open in `tab`, from the kept value: one "tab/project" on each line.
-    static func open(_ kept: String, in tab: AgentsFilter) -> Set<String> {
-        let prefix = tab.rawValue + "/"
-        return Set(kept.split(separator: "\n").filter { $0.hasPrefix(prefix) }.map { String($0.dropFirst(prefix.count)) })
+    /// The projects whose tree is open, from the kept value: one project on each line. A line of an older build names
+    /// its tab first ("idle/<project>"), and a tree that was open in either tab stays open.
+    static func open(_ kept: String) -> Set<String> {
+        Set(kept.split(separator: "\n").map { project($0) })
     }
 
-    /// The kept value with the tree of `agentId` in `tab` opened or closed.
-    static func toggle(_ agentId: String, in tab: AgentsFilter, _ kept: String) -> String {
-        setting(agentId, in: tab, open: !open(kept, in: tab).contains(agentId), kept)
+    /// The kept value with the tree of `agentId` opened or closed.
+    static func toggle(_ agentId: String, _ kept: String) -> String {
+        setting(agentId, open: !open(kept).contains(agentId), kept)
     }
 
-    /// The kept value with the tree of `agentId` in `tab` open.
-    static func opening(_ agentId: String, in tab: AgentsFilter, _ kept: String) -> String {
-        setting(agentId, in: tab, open: true, kept)
+    /// The kept value with the tree of `agentId` open.
+    static func opening(_ agentId: String, _ kept: String) -> String {
+        setting(agentId, open: true, kept)
     }
 
-    private static func setting(_ agentId: String, in tab: AgentsFilter, open: Bool, _ kept: String) -> String {
-        let line = tab.rawValue + "/" + agentId
-        var lines = kept.split(separator: "\n").map(String.init).filter { $0 != line }
-        if open { lines.append(line) }
+    private static func setting(_ agentId: String, open: Bool, _ kept: String) -> String {
+        var lines = kept.split(separator: "\n").filter { project($0) != agentId }.map(String.init)
+        if open { lines.append(agentId) }
         return lines.joined(separator: "\n")
+    }
+
+    /// The project of a kept line, without the tab of an older build.
+    private static func project(_ line: Substring) -> String {
+        String(line.split(separator: "/").last ?? line)
     }
 }
 
 /// The row of a project whose agents fold on Chats (ChatTree), in the form of every other row: a chevron where a face
-/// would be, the name of the project, how many of its agents the tab has, and the age of the newest with their unread
+/// would be, the name of the project, how many of its agents fold, and the age of the newest with their unread
 /// messages. A tap opens or closes the tree. A starred project keeps its star mark.
 struct ChatTreeRow: View {
     @Environment(AppStore.self) private var store
@@ -477,81 +466,26 @@ struct ChatTreeRow: View {
 }
 
 /// A Send that starts a chat leaves the chat closed (sendNewChat): the Send of the message box, and Send to a new agent
-/// in a chat, which keeps the person in that chat. The Chats list then shows the tab that holds the new chat, Working
-/// while it works, opens the tree of its project there (ChatTree), and scrolls its row into view: the chat is the
-/// newest, so it is the first row under the starred chats or the first row of its tree.
+/// in a chat, which keeps the person in that chat. The Chats list then opens the tree of its project (ChatTree), for a
+/// chat that does not work yet, and scrolls its row into view: the chat is the newest, so it is the first row under the
+/// starred chats or the first row of its tree.
 private struct NewChatReveal: ViewModifier {
     @Environment(AppStore.self) private var store
-    @Binding var filter: AgentsFilter
-    let works: (Bot) -> Bool
-    /// Opens the tree of the project of the chat in a tab.
-    let open: (Bot, AgentsFilter) -> Void
+    /// Opens the tree of the project of the chat.
+    let open: (Bot) -> Void
 
     func body(content: Content) -> some View {
         ScrollViewReader { proxy in
             content.onChange(of: store.newChatSend) { _, send in
                 guard let send, let bot = store.bots.first(where: { $0.id == send.chat }) else { return }
-                let tab: AgentsFilter = works(bot) ? .working : .idle
-                filter = tab
-                open(bot, tab)
+                open(bot)
                 Task {
-                    // The row is in the list after the update that the change of tab makes.
+                    // The row is in the list after the update that the open tree makes.
                     try? await Task.sleep(for: .milliseconds(150))
                     withAnimation { proxy.scrollTo(ChatListItem.bot(bot).id) }
                 }
             }
         }
-    }
-}
-
-/// The archived chats, and the archived agents of an earlier release, on the Projects page: swipe left or hold a row to
-/// bring one back. A row opens the conversation, which keeps its history. The Chats list of the iPhone has them in
-/// Idle, with the other chats (ChatList.all).
-struct ArchivedAgentsView: View {
-    @Environment(AppStore.self) private var store
-    @Environment(\.pushRoute) private var pushRoute
-    @State private var deleting: Bot?
-
-    var body: some View {
-        let archived = AgentChats.archived(in: store.bots, latest: store.chatSummaries.newestActivity)
-        List {
-            if archived.isEmpty {
-                Text("No archived agents.")
-                    .font(.subheadline).foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity).padding(.vertical, BoardStyle.Space.xxl)
-                    .homeRow()
-            }
-            ForEach(archived) { bot in
-                Button { pushRoute?(ConversationRoute(botId: bot.id)) } label: {
-                    BotContactRow(bot: bot, title: bot.isChat ? bot.listName : nil)
-                        .padding(.vertical, BoardStyle.Space.m)
-                        .background(BoardStyle.paper)
-                        .contentShape(Rectangle())
-                        .contextMenu {
-                            Button("Unarchive", systemImage: "tray.and.arrow.up") {
-                                Task { await store.archiveBot(bot, archived: false) }
-                            }
-                            Button("Delete agent", systemImage: "trash", role: .destructive) { deleting = bot }
-                        }
-                }
-                .buttonStyle(HomePressStyle())
-                .accessibilityIdentifier("archived-bot-\(bot.id)")
-                .swipeActions(edge: .trailing, allowsFullSwipe: true) {
-                    Button { Task { await store.archiveBot(bot, archived: false) } } label: {
-                        Label("Unarchive", systemImage: "tray.and.arrow.up")
-                    }
-                    .tint(BoardStyle.husk)
-                    .accessibilityIdentifier("unarchive-bot-\(bot.id)")
-                }
-                .homeRow()
-            }
-        }
-        .listStyle(.plain)
-        .scrollContentBackground(.hidden)
-        .environment(\.defaultMinListRowHeight, 0)
-        .background(BoardStyle.paper)
-        .navigationTitle("Archived")
-        .modifier(DeleteBotDialog(bot: $deleting))
     }
 }
 
@@ -561,43 +495,6 @@ extension View {
         listRowInsets(EdgeInsets(top: top, leading: inset, bottom: 0, trailing: inset))
             .listRowSeparator(.hidden)
             .listRowBackground(BoardStyle.paper)
-    }
-}
-
-/// A text chip that one of a few choices selects: the filters of the Chats list, and the tabs of the bot details on
-/// a Mac. The selected chip sits on a soft capsule of the text color, so it reads in light and in dark mode.
-struct ChipButton: View {
-    let title: String
-    let selected: Bool
-    /// A count after the title, for a chip of the filter of the alerts. Nil for a chip without one.
-    var count: String? = nil
-    /// A symbol before the title. Nil for a chip without one.
-    var symbol: String? = nil
-    let action: () -> Void
-
-    var body: some View {
-        Button(action: action) {
-            HStack(spacing: BoardStyle.Space.xs) {
-                if let symbol { Image(systemName: symbol).imageScale(.small) }
-                Text(title)
-                if let count { Text(count).monospacedDigit().fontWeight(.regular).foregroundStyle(.secondary) }
-            }
-                .font(.body.weight(selected ? .semibold : .regular))
-                .foregroundStyle(selected ? .primary : .secondary)
-                .lineLimit(1)
-                .padding(.horizontal, BoardStyle.Space.m).padding(.vertical, BoardStyle.Space.xs)
-                .frame(minHeight: 30)
-                .background(selected ? Color.primary.opacity(0.1) : .clear, in: Capsule())
-                #if os(iOS)
-                // A finger needs 44 points. The capsule stays small.
-                .frame(minWidth: 44, minHeight: 44)
-                .contentShape(Rectangle())
-                #else
-                .contentShape(Capsule())
-                #endif
-        }
-        .buttonStyle(.plain)
-        .accessibilityAddTraits(selected ? .isSelected : [])
     }
 }
 

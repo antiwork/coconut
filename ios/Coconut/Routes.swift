@@ -53,8 +53,5 @@ struct NoticeBoardRoute: Hashable {
     let roomId: String
 }
 
-/// The archived agents of the Chats list.
-struct ArchivedAgentsRoute: Hashable {}
-
-/// The list of all agents, with the pages, the live work, the spend and the archive. The project menu of Home opens it.
+/// The list of all agents, with the pages, the live work and the spend. The project menu of Home opens it.
 struct AgentListRoute: Hashable {}

@@ -73,18 +73,6 @@ struct BusinessPeriods: Sendable {
     }
 }
 
-enum BusinessReportPeriod: String, CaseIterable, Identifiable {
-    case daily, monthly, yearly
-    var id: String { rawValue }
-    var title: String {
-        switch self {
-        case .daily: "Daily"
-        case .monthly: "Monthly"
-        case .yearly: "Yearly"
-        }
-    }
-}
-
 /// Formatting only: the numbers below the labels are the published ones, untouched.
 enum BusinessPeriodFormat {
     static func money(_ value: Double?, compact: Bool = true) -> String { BusinessFormat.money(value, compact: compact) }
@@ -98,38 +86,18 @@ struct BusinessReportsView: View {
     @Environment(AppStore.self) private var store
     @State private var report: BusinessReport?
     @State private var error: String?
-    @State private var period: BusinessReportPeriod = BusinessReportsView.startPeriod
 
     private var shownReport: BusinessReport? { store.businessReports["periods"] ?? report }
 
-    /// A screenshot of the daily or the yearly cut starts the app with `--period daily`. Only a debug build on a
-    /// simulator reads it.
-    private static var startPeriod: BusinessReportPeriod {
-        #if DEBUG && targetEnvironment(simulator)
-        let arguments = ProcessInfo.processInfo.arguments
-        if let index = arguments.firstIndex(of: "--period"), index + 1 < arguments.count,
-           let period = BusinessReportPeriod(rawValue: arguments[index + 1]) { return period }
-        #endif
-        return .monthly
-    }
-
     var body: some View {
-        BoardPage(width: .wide, spacing: BoardStyle.Space.l) {
-            Picker("Period", selection: $period) {
-                ForEach(BusinessReportPeriod.allCases) { value in
-                    Text(value.title).tag(value)
-                }
-            }
-            .pickerStyle(.segmented)
-            .accessibilityIdentifier("business-reports-period")
-
+        BoardPage(width: .wide, spacing: BoardStyle.Space.xl) {
+            // The three cuts one under the other, with no control between them: the person found that nobody taps
+            // such tabs (2026-11-24). The long list of the months comes last, so it hides no other cut.
             if let shownReport {
                 let periods = BusinessPeriods(report: shownReport)
-                switch period {
-                case .daily: daily(periods)
-                case .monthly: monthly(periods)
-                case .yearly: yearly(periods)
-                }
+                daily(periods)
+                yearly(periods)
+                monthly(periods)
             } else if error == nil {
                 BoardLoading(title: "Loading reports", height: 280)
             }

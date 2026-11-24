@@ -1591,9 +1591,8 @@ enum ChatList {
     /// the archived chats and agents, the teams, their named chats, and the direct chats with a person or with a bot of
     /// a team. The person merged Idle and Archived, so an archived chat has its place by its newest activity like any
     /// other, with no Archived row of its own. A chat of an archived project that is not archived itself, and a chat
-    /// that nobody wrote in (AgentChats.isBlank), are not in the list; the Archived page of Projects still lists an
-    /// archived one. `latest` is the date of the newest message of each bot. Chats shows this list in two tabs, Working
-    /// and Idle (AgentsFilter).
+    /// that nobody wrote in (AgentChats.isBlank), are not in the list. `latest` is the date of the newest message of
+    /// each bot. Chats shows this list whole, with no tabs (the person: nobody taps them, 2026-11-24).
     static func all(bots: [Bot], latest: [String: Date], rooms: [TeamRoom],
                     local: [TeamChatKey: TeamLastMessage] = [:]) -> [ChatListItem] {
         func activity(_ bot: Bot) -> Date { latest[bot.id] ?? bot.createdAt.apiDate ?? .distantPast }

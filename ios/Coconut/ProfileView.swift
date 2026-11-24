@@ -76,6 +76,8 @@ struct ProfileView: View {
                 BoardRow(symbol: "chart.bar", title: "Usage",
                          value: store.usage.flatMap { UsageLeaderboard.myPlace($0) }.map { "#\($0.rank) of \($0.of)" })
                     .boardButton("profile-usage") { pushRoute?(UsageRoute()) }
+                // A Mac older than the setting has no route to change it, so the row waits for a Mac that has one.
+                if let hours = store.autoArchiveHours { AutoArchiveMenu(hours: hours) }
             }
             BoardSection("Coconut") {
                 if let coconut = store.bots.coconutChat {
@@ -163,6 +165,51 @@ struct ProfileDestinations: ViewModifier {
             case .connections: MCPSettingsView()
             case .team: TeamView()
             }
+        }
+    }
+}
+
+/// When a chat without activity archives itself on the Mac (AgentChats.archive_idle_chats), as a row of You. The person
+/// asked for a place that changes it in one tap, so a tap opens the choices in place, with no page in between. The
+/// Coconut chat changes it too ("archive chats after a week"), also to a time that the menu does not list.
+struct AutoArchiveMenu: View {
+    @Environment(AppStore.self) private var store
+    let hours: Int
+
+    var body: some View {
+        Menu {
+            Picker("Auto-archive", selection: Binding(get: { hours }, set: { store.setAutoArchive(hours: $0) })) {
+                ForEach(AutoArchive.choices(with: hours), id: \.self) { Text(AutoArchive.label($0)).tag($0) }
+            }
+            .pickerStyle(.inline).labelsHidden()
+        } label: {
+            BoardRow(symbol: "archivebox", title: "Auto-archive", value: AutoArchive.label(hours), chevron: false, menu: true)
+        }
+        .menuStyle(.button).buttonStyle(.plain).menuIndicator(.hidden)
+        .accessibilityLabel("Auto-archive, " + AutoArchive.label(hours))
+        .accessibilityIdentifier("profile-auto-archive")
+    }
+}
+
+/// The times of the auto-archive menu, in hours. 0 means never.
+enum AutoArchive {
+    static let choices = [24, 48, 168, 720, 0]
+
+    /// The choices, with a time that the Coconut chat set in its place among them.
+    static func choices(with current: Int) -> [Int] {
+        guard !choices.contains(current) else { return choices }
+        return (choices.filter { $0 != 0 } + [current]).sorted() + [0]
+    }
+
+    static func label(_ hours: Int) -> String {
+        switch hours {
+        case 0: "Never"
+        case 1: "After 1 hour"
+        case 24: "After 1 day"
+        case 168: "After 1 week"
+        case let value where value % 168 == 0: "After \(value / 168) weeks"
+        case let value where value % 24 == 0: "After \(value / 24) days"
+        default: "After \(hours) hours"
         }
     }
 }

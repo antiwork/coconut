@@ -565,6 +565,8 @@ struct StateSnapshot: Codable, Sendable {
     var mcpServers: [MCPServer]? = nil
     var pushConfigured: Bool? = nil
     var personalBudget: PersonalBudget? = nil
+    /// The hours without activity after which a chat archives itself, 0 for never. A Mac older than the setting sends none.
+    var autoArchiveHours: Int? = nil
 }
 
 struct ServerEvent: Decodable, Sendable {
