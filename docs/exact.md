@@ -229,9 +229,12 @@ again. A resource whose `when` turns false keeps the answer it showed (Exact's `
 empties the box, which closed the gate of `slash` and left its rows on the screen, and Send would then have run their
 first row in place of sending the words. Now the menu and Send read the rows only while the draft starts with a slash,
 an empty draft asks `suggest` once more, which empties them, and a model or an effort that the Mac took asks the menu
-again, so a `/model` typed before the Mac answered moves its mark. That is the next update of the stream. Checked by
+again, so a `/model` typed before the Mac answered moves its mark. It went out the same day as seq 3. Checked by
 reading, against Exact's rules and tests of `when` and `current`; not checked: the menu itself in Exact, on a phone or
 the web host.
+
+Gianfranco did not report on seq 3 before #575 closed on 2026-11-24, which ended the check of build 19 on a phone. Not
+checked there: the menu after a pick, and whether the app still drops frames.
 
 ## What was checked, and what was not
 
