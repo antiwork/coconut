@@ -428,7 +428,9 @@ struct DetailColumnBottomInset: NSViewRepresentable {
 }
 
 /// The sidebar: the Coconut chat, then the places (Home, Live, Spend, Business, Support, Projects and You), then the
-/// chats in sections: Starred, Unread, Team chats, Project chats and Archived.
+/// chats in sections: Starred, Unread, Team chats, Project chats and Archived. The iPhone's Product tab has no row
+/// here: the person chose on a card to leave the sidebar as it is (2026-11-24), so Home keeps the cards and Support
+/// keeps the queue of the product issues. Do not add the row or offer it again.
 struct MacSidebar: View {
     @Environment(AppStore.self) private var store
     @Environment(\.showChatDeck) private var showChatDeck
