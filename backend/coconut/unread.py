@@ -13,7 +13,7 @@ UNREAD = ("json_extract(data,'$.bot_id')=? AND json_extract(data,'$.role')='assi
           "AND COALESCE(json_extract(data,'$._hidden'),0)=0 AND COALESCE(json_extract(data,'$._deleted'),0)=0 "
           "AND COALESCE(json_extract(data,'$._interim'),0)=0 AND json_extract(data,'$.reaction_event') IS NULL")
 MARK = 'last_read_message_id'
-# The time when the mark last moved. A chat goes to Archived a time after its newest activity (48 hours unless the person
+# The time when the mark last moved. A chat goes to Archived a time after its newest activity (14 hours unless the person
 # changed the setting), and a read of a new reply is activity (agent_chats.archive_idle_chats), so a chat that the person
 # reads late stays that long again.
 READ_AT = '_read_at'

@@ -126,8 +126,8 @@ extension AppStore {
 
     #if os(iOS)
     /// The person sent a message to a chat of an agent: its project shows in the row of people of the share sheet
-    /// (ShareSuggestions). A chat of a project counts for the project, because a chat goes to Archived after two days
-    /// and a share to the project starts a new chat.
+    /// (ShareSuggestions). A chat of a project counts for the project, because a chat goes to Archived after a time
+    /// without activity (14 hours unless the person picks another) and a share to the project starts a new chat.
     func suggestInShareSheet(_ bot: Bot) {
         suggestInShareSheet { destinations in
             ShareDirectoryBuilder.placeId(of: bot.id, bots: bots, among: Set(destinations.map(\.id)))

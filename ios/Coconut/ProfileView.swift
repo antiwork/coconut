@@ -191,9 +191,10 @@ struct AutoArchiveMenu: View {
     }
 }
 
-/// The times of the auto-archive menu, in hours. 0 means never.
+/// The times of the auto-archive menu, in hours. 0 means never. The Mac starts with 14 hours (agent_chats.py), so the
+/// first choice is the default.
 enum AutoArchive {
-    static let choices = [24, 48, 168, 720, 0]
+    static let choices = [14, 24, 48, 168, 720, 0]
 
     /// The choices, with a time that the Coconut chat set in its place among them.
     static func choices(with current: Int) -> [Int] {

@@ -67,8 +67,8 @@ enum AgentChats {
             .max { ($0.createdAt.apiDate ?? .distantPast, $0.id) < ($1.createdAt.apiDate ?? .distantPast, $1.id) }
     }
 
-    /// The archived chats and agents, newest activity first. The Mac archives each chat after 48 hours without activity
-    /// (agent_chats.archive_idle_chats), so the chats that went last are on top.
+    /// The archived chats and agents, newest activity first. The Mac archives each chat after 14 hours without activity
+    /// unless the person picked another time (agent_chats.archive_idle_chats), so the chats that went last are on top.
     static func archived(in bots: [Bot], latest: [String: Date]) -> [Bot] {
         func activity(_ bot: Bot) -> Date { latest[bot.id] ?? bot.createdAt.apiDate ?? .distantPast }
         return bots.filter(\.archived).sorted { (activity($0), $0.id) > (activity($1), $1.id) }

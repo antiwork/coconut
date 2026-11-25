@@ -163,9 +163,10 @@ struct HomeLaunchView: View {
     /// the phone keeps the sections that the person opened, so every section starts folded. A folded section still shows
     /// its real work: a chat that works or whose card waits, an unread chat, a starred project, a pinned chat of a team,
     /// the Coconut chat and the chat that the person opened last (stays). An idle chat is one tap away, and Archived
-    /// shows nothing while it is folded. Every row has the form of a chat row: the name, the last message or the step,
-    /// the age and the badges. The list has no tabs or toggles inside it, because the person found that nobody taps
-    /// them (2026-11-24), and a chat archives itself after the time that You sets (AutoArchiveMenu). The top right has
+    /// shows nothing while it is folded, only the number of its chats on the right of its title. Every row has the form
+    /// of a chat row: the name, the last message or the step, the age and the badges. The list has no tabs or toggles
+    /// inside it, because the person found that nobody taps them (2026-11-24), and a chat archives itself after the time
+    /// that You sets (AutoArchiveMenu, 14 hours unless the person picks another). The top right has
     /// the two buttons that the person asked for that evening: Working, which lists only the chats that work in one
     /// list without section titles (WorkingFilterButton), and the grid of the agents that work (ChatGridButton).
     private func chatList(_ sections: [ChatListSection]) -> some View {
@@ -387,6 +388,11 @@ struct ChatListSection: Identifiable, Equatable {
     /// The section holds the chats that the person chose, so it shows them without a tap, as the Starred of Slack.
     var alwaysOpen: Bool { kind == .starred }
 
+    /// The number on the right of the title: Archived counts its chats (the person: "Archived chats show at bottom even
+    /// below personal and count on right"), because it shows none of them while it is folded. Other sections show their
+    /// real work while folded, so their titles have no number.
+    var count: Int? { kind == .archived ? items.count : nil }
+
     var id: String {
         switch kind {
         case .starred: "starred"
@@ -426,8 +432,9 @@ struct ChatListSection: Identifiable, Equatable {
 
 /// The title of a section of Chats, as in the sidebar of Slack: a chevron that turns down while the section is open,
 /// and the name in the quiet color of a title. A tap opens or folds the section. A folded section says nothing about
-/// what it holds: its unread and working chats show under it all the same. A section that holds the chats the person
-/// chose (ChatListSection.alwaysOpen) keeps its rows in sight and has nothing to fold.
+/// what it holds: its unread and working chats show under it all the same. Archived shows none of its chats while it is
+/// folded, so its title has their number on the right (ChatListSection.count), as a folder of Mail. A section that
+/// holds the chats the person chose (ChatListSection.alwaysOpen) keeps its rows in sight and has nothing to fold.
 struct ChatSectionHeader: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @ScaledMetric(relativeTo: .subheadline) private var chevron: CGFloat = 14
@@ -466,12 +473,22 @@ struct ChatSectionHeader: View {
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
             Spacer(minLength: 0)
+            if let count = section.count {
+                Text(count, format: .number)
+                    .font(.subheadline)
+                    .monospacedDigit()
+                    .foregroundStyle(.secondary)
+                    .accessibilityLabel(Self.chats(count))
+            }
         }
         .padding(.top, first ? BoardStyle.Space.s : BoardStyle.Space.l)
         .padding(.bottom, BoardStyle.Space.s)
         .background(BoardStyle.paper)
         .contentShape(Rectangle())
     }
+
+    /// What VoiceOver reads for the number of Archived, for example "12 chats".
+    static func chats(_ count: Int) -> String { count == 1 ? "1 chat" : "\(count) chats" }
 }
 
 /// A Send that starts a chat leaves the chat closed (sendNewChat): the Send of the message box, and Send to a new agent

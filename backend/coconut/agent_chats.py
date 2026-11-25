@@ -13,7 +13,7 @@ A quick to-do of the apps is such a chat with `todo: true`: the apps start it wi
 it on To-dos, and follow its state through the tasks of the chat. Archiving the chat checks the to-do off.
 
 A chat goes to Archived by itself after a time without activity, as the person asked (archive_idle_chats). The time
-is the setting auto_archive_hours: 48 hours until the person picks another time, or 0 for never, on You in the apps or
+is the setting auto_archive_hours: 14 hours until the person picks another time, or 0 for never, on You in the apps or
 in the Coconut chat. A chat that still has something to do or to show stays. A message of the person brings an archived
 chat back (_bring_back), so an old chat continues where it was.
 """
@@ -31,9 +31,11 @@ SHARED = ('name', 'role')
 OWN = frozenset({'archived', 'pinned', 'notifications', 'chat_title'})
 TITLE_LENGTH = 72
 # A chat without activity for this many hours goes to Archived (archive_idle_chats). The person changes the time, or
-# turns it off with 0, on You in the apps or in the Coconut chat (PUT /v1/settings/auto-archive).
+# turns it off with 0, on You in the apps or in the Coconut chat (PUT /v1/settings/auto-archive). The time is 14 hours
+# until the person picks another (the person: "everything goes into there after n time (settings default 14h)"), so the
+# lists keep the chats of the day. It was 48 hours before.
 AUTO_ARCHIVE = 'auto_archive_hours'
-AUTO_ARCHIVE_HOURS = 48
+AUTO_ARCHIVE_HOURS = 14
 # The longest time that the setting takes: a year.
 AUTO_ARCHIVE_MAX_HOURS = 24 * 365
 # How often the dispatcher looks for such chats (Service._dispatch).

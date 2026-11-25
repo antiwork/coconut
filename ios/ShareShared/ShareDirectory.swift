@@ -123,7 +123,7 @@ struct ShareDirectory: Codable, Equatable, Sendable {
 
     /// The place that a share to `destination` counts for in the row of people of the share sheet: the project of an
     /// agent chat, else the first chat of its agent, else the place itself. A chat of a project goes to Archived after
-    /// two days, and its project stays.
+    /// a time without activity (14 hours unless the person picks another), and its project stays.
     func suggestion(for destination: ShareDestination) -> ShareDestination {
         guard destination.kind == .agent, let agent = destination.project else { return destination }
         return destinations.first { $0.kind == .project && $0.bot == agent }

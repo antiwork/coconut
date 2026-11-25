@@ -3379,8 +3379,8 @@ final class AppStore {
             assign(\.modelConfigured, snapshot.modelConfigured)
             assign(\.modelCatalog, snapshot.modelCatalog)
             assign(\.pushConfigured, snapshot.pushConfigured ?? false)
-            // The demo has the time that a Mac starts with, so You shows the row.
-            assign(\.autoArchiveHours, snapshot.autoArchiveHours ?? (isDemo ? 48 : nil))
+            // The demo has the time that a Mac starts with (14 hours, agent_chats.py), so You shows the row.
+            assign(\.autoArchiveHours, snapshot.autoArchiveHours ?? (isDemo ? 14 : nil))
             assign(\.personalBudget, snapshot.personalBudget ?? (isDemo ? PersonalBudget(signedIn: true,
                 botId: snapshot.bots.first { $0.name == "Personal" && $0.chatOf == nil }?.id, month: "2026-11",
                 spentUsd: 41.2, limitUsd: 200, paused: false, resetsAt: "2026-12-01T00:00:00Z") : nil))

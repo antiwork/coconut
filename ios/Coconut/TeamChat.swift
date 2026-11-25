@@ -1711,8 +1711,8 @@ enum ChatList {
 
 /// The sections of the Mac sidebar: the sections of Chats on the iPhone (ChatList.sections), with Unread after Starred.
 /// The person chose on a card to split the sidebar by project as Chats is (2026-11-25): Starred, Unread, a section for
-/// each project, Coconut first, then Team chats, Other agents, and Personal at the bottom. The Coconut chat has its own
-/// row at the top of the sidebar, and the sidebar lists the archived chats itself.
+/// each project, Coconut first, then Team chats, Other agents, Personal at the bottom, and Archived. The Coconut chat has
+/// its own row at the top of the sidebar, and Archived has the archived chats of Chats (archived).
 struct ChatSections: Equatable {
     /// The chats with an unread message, as "Unreads" of Slack: every chat that is not starred, the further chats of
     /// the projects too, newest activity first. A chat shows here and not in its own section, so it moves back when
@@ -1725,6 +1725,9 @@ struct ChatSections: Equatable {
     /// The sections of the projects, Team chats and Other agents, in the order of Chats on the iPhone, without the
     /// unread chats and the Coconut chat. A section without rows does not show.
     var groups: [ChatListSection] = []
+    /// The archived chats and agents, newest activity first: the rows of Archived on the iPhone, so both count the same
+    /// chats on the right of the title (ChatListSection.count).
+    var archived: [Bot] = []
 
     /// A starred chat stays in "Starred", also with an unread message, as in Slack. `bots` are all the bots of the
     /// store, and `latest` is the date of the newest message of each bot (ChatSummaries). The chat `keeping` (a
@@ -1753,9 +1756,11 @@ struct ChatSections: Equatable {
             ChatListSection(kind: section.kind, title: section.title, items: section.items.filter { !isUnread($0) })
         }
         let pinned = starred.compactMap { item -> Bot? in if case .bot(let bot) = item { bot } else { nil } }
+        let archived = (sections.first { $0.kind == .archived }?.items ?? [])
+            .compactMap { item -> Bot? in if case .bot(let bot) = item { bot } else { nil } }
         return ChatSections(unread: unread, pinned: pinned,
                             pinnedChats: starred.filter { if case .bot = $0 { false } else { true } },
-                            groups: groups.filter { !$0.items.isEmpty })
+                            groups: groups.filter { !$0.items.isEmpty }, archived: archived)
     }
 }
 
