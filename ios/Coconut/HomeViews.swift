@@ -4,12 +4,15 @@ import SwiftUI
 /// the issues of gumroad-private with the label product (TodoLists.swift), and the open pull requests (ProductWork).
 /// Chats has the sections of Slack: one for each project, the chats with people, Personal at the bottom and Archived
 /// (ChatList.sections), with the message box under the list (NewChatBar). A folded section shows only the real work.
+/// Its top right has Working, which lists only the chats that work, and the grid of the agents that work (ChatGrid).
 struct HomeLaunchView: View {
     enum Part { case product, chats }
     var part = Part.chats
     @Environment(AppStore.self) private var store
     /// The sections of Chats that the person opened (ChatListSection). The phone keeps them.
     @AppStorage(ChatListSection.key) private var openSections = ""
+    /// The Working filter at the top right of Chats (WorkingFilterButton). The phone keeps it.
+    @AppStorage(WorkingFilterButton.key) private var workingOnly = false
     /// The row of Chats that the person opened last, or the chat that a Send just made. A folded section keeps it, so
     /// the row is still there when the person comes back from the chat, as "Unread" keeps the open chat on the Mac.
     @State private var keptChat: String?
@@ -159,28 +162,43 @@ struct HomeLaunchView: View {
     /// its real work: a chat that works or whose card waits, an unread chat, a starred project, a pinned chat of a team,
     /// the Coconut chat and the chat that the person opened last (stays). An idle chat is one tap away, and Archived
     /// shows nothing while it is folded. Every row has the form of a chat row: the name, the last message or the step,
-    /// the age and the badges. The list has no tabs or toggles, because the person found that nobody taps them
-    /// (2026-11-24), and a chat archives itself after the time that You sets (AutoArchiveMenu).
+    /// the age and the badges. The list has no tabs or toggles inside it, because the person found that nobody taps
+    /// them (2026-11-24), and a chat archives itself after the time that You sets (AutoArchiveMenu). The top right has
+    /// the two buttons that the person asked for that evening: Working, which lists only the chats that work in one
+    /// list without section titles (WorkingFilterButton), and the grid of the agents that work (ChatGridButton).
     private func chatList(_ sections: [ChatListSection]) -> some View {
         let now = Date.now
         let open = ChatListSection.open(openSections)
+        // The chats that work, in the order of the sections, for the Working filter.
+        let working = workingOnly ? sections.flatMap(\.items).filter { works($0, at: now) } : []
         // A list, not a stack, so that a row of a chat has the swipe of the system: swipe left to archive.
         return List {
-            if sections.isEmpty {
-                Text("No chats yet.")
-                    .font(.subheadline).foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity).padding(.vertical, BoardStyle.Space.xxl)
-                    .accessibilityIdentifier("chats-empty")
-                    .homeRow()
-            }
-            ForEach(sections) { section in
-                let isOpen = section.alwaysOpen || open.contains(section.id)
-                ChatSectionHeader(section: section, open: isOpen, first: section.id == sections.first?.id) {
-                    withAnimation(.snappy) { openSections = ChatListSection.toggle(section.id, openSections) }
+            if workingOnly {
+                if working.isEmpty {
+                    Text("No agent is working.")
+                        .font(.subheadline).foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity).padding(.vertical, BoardStyle.Space.xxl)
+                        .accessibilityIdentifier("chats-working-empty")
+                        .homeRow()
                 }
-                .homeRow()
-                ForEach(section.shown(open: isOpen) { stays($0, at: now) }) { item in
-                    chatRow(item, in: section)
+                ForEach(working) { item in chatRow(item, in: nil) }
+            } else {
+                if sections.isEmpty {
+                    Text("No chats yet.")
+                        .font(.subheadline).foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity).padding(.vertical, BoardStyle.Space.xxl)
+                        .accessibilityIdentifier("chats-empty")
+                        .homeRow()
+                }
+                ForEach(sections) { section in
+                    let isOpen = section.alwaysOpen || open.contains(section.id)
+                    ChatSectionHeader(section: section, open: isOpen, first: section.id == sections.first?.id) {
+                        withAnimation(.snappy) { openSections = ChatListSection.toggle(section.id, openSections) }
+                    }
+                    .homeRow()
+                    ForEach(section.shown(open: isOpen) { stays($0, at: now) }) { item in
+                        chatRow(item, in: section)
+                    }
                 }
             }
         }
@@ -190,7 +208,7 @@ struct HomeLaunchView: View {
         .contentMargins(.top, BoardStyle.Space.s, for: .scrollContent)
         .contentMargins(.bottom, BoardStyle.Space.xl, for: .scrollContent)
         .background(BoardStyle.paper)
-        .navigationTitle("Chats")
+        .navigationTitle(workingOnly ? "Working" : "Chats")
         .toolbar {
             // One tap reads every chat, as Read All in Telegram. It shows while a chat of the list has an unread
             // count. A folded section shows its unread chats, so each one has a row.
@@ -199,6 +217,8 @@ struct HomeLaunchView: View {
                     MarkAllReadButton().accessibilityIdentifier("chats-mark-all-read")
                 }
             }
+            ToolbarItem(placement: .primaryAction) { WorkingFilterButton(on: $workingOnly) }
+            ToolbarItem(placement: .primaryAction) { ChatGridButton() }
         }
         .refreshable { await store.reconnect() }
         // The message box under the list gives the keyboard back when the list moves.
@@ -215,12 +235,13 @@ struct HomeLaunchView: View {
     }
 
     /// One chat of the list. The title of a project's section names the project, so a further chat of the project
-    /// shows its own title (ChatListSection.title). A tap opens the chat, and the folded section keeps its row.
+    /// shows its own title (ChatListSection.title). The Working list has no section titles, so there a chat names its
+    /// agent too (Bot.listName). A tap opens the chat, and the folded section keeps its row.
     @ViewBuilder
-    private func chatRow(_ item: ChatListItem, in section: ChatListSection) -> some View {
+    private func chatRow(_ item: ChatListItem, in section: ChatListSection?) -> some View {
         switch item {
         case .bot(let bot):
-            BotContactRow(bot: bot, title: section.title(of: bot), pinned: ChatList.isStarred(bot))
+            BotContactRow(bot: bot, title: section?.title(of: bot) ?? bot.listName, pinned: ChatList.isStarred(bot))
                 .padding(.vertical, BoardStyle.Space.m)
                 .background(BoardStyle.paper)
                 .modifier(ChatDeckRow(botId: bot.id) {
@@ -259,11 +280,12 @@ struct HomeLaunchView: View {
         }
     }
 
-    /// A chat works while its row says so: a working line, or a card that waits for the person. A direct chat with a
-    /// bot of a team works while the bot types in it. Every other chat is idle, also a chat with people.
+    /// A chat works while its row says so: a working line, or a card that waits for the person (AppStore.botWorks). A
+    /// direct chat with a bot of a team works while the bot types in it. Every other chat is idle, also a chat with
+    /// people.
     private func works(_ item: ChatListItem, at date: Date) -> Bool {
         switch item {
-        case .bot(let bot): store.botPhase(bot) != nil || store.botNeedsYou(bot)
+        case .bot(let bot): store.botWorks(bot)
         case .botDirect(_, let direct): !(direct.typing?.active(at: date).isEmpty ?? true)
         case .team, .direct: false
         }
@@ -597,18 +619,21 @@ struct BotContactRow: View {
     var pinned = false
     /// The row reads the summary of its bot, not the messages, so a streamed word does not redraw it.
     private var summary: BotChatSummary { store.chatSummaries[bot.id] }
-    private var latestMessage: Message? { summary.latestMessage }
     /// The line under the name: never empty.
-    private var preview: String { ChatRowText.line(newestText) }
-    private var newestText: String {
-        guard let message = latestMessage else {
-            return TranscriptPresentation.previewText(
-                TranscriptPresentation.previewFallback(bot.lastMessage, streaming: summary.streaming))
+    private var preview: String { Self.preview(of: bot, in: store) }
+
+    /// The newest message of a chat in one line, with "You: " or the name of another project that wrote it. A card of
+    /// the grid of the working agents (ChatGridLabel) shows it too, once its agent stops.
+    static func preview(of bot: Bot, in store: AppStore) -> String {
+        let summary = store.chatSummaries[bot.id]
+        guard let message = summary.latestMessage else {
+            return ChatRowText.line(TranscriptPresentation.previewText(
+                TranscriptPresentation.previewFallback(bot.lastMessage, streaming: summary.streaming)))
         }
         let sender = message.senderBotId.flatMap { id in id == bot.id ? nil : store.bots.first { $0.id == id }?.name ?? "Deleted project" }
         let prefix = message.role == "user" ? "You: " : sender.map { $0 + ": " } ?? ""
         let body = AttachmentOnly.isMarker(message.text) ? "Photo" : TranscriptPresentation.previewText(message.text)
-        return prefix + (message.photo?.preview ?? body)
+        return ChatRowText.line(prefix + (message.photo?.preview ?? body))
     }
     private var lastMessageDate: Date? { summary.newestDate }
     private var phase: BotPhase? { store.botPhase(bot) }

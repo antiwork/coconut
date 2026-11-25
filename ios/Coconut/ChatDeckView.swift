@@ -556,9 +556,10 @@ struct ChatDeckTranscript: View {
     }
 }
 
-/// The rows of a chat as the chat itself builds them. A redraw reuses them until the store changes what they read.
+/// The rows of a chat as the chat itself builds them. A redraw reuses them until the store changes what they read. The
+/// cards of the deck and of the grid (ChatGridTranscript) keep one each.
 @MainActor
-private final class DeckTranscriptCache {
+final class DeckTranscriptCache {
     private struct Inputs: Equatable {
         let botId: String
         let messages: [Message]

@@ -21,7 +21,11 @@ struct ChatDeckPresenter: ViewModifier {
             .environment(\.showChatDeck) { present($0) }
             // A cover with no color of its own, so the screen shows blurred under the deck.
             .fullScreenCover(item: $request) { shown in
-                ChatDeckView(request: shown) { dismiss() }
+                if shown.grid {
+                    ChatGridView(request: shown) { dismiss() }
+                } else {
+                    ChatDeckView(request: shown) { dismiss() }
+                }
             }
             .sensoryFeedback(trigger: request?.id, feedback)
             #if DEBUG && targetEnvironment(simulator)
@@ -32,8 +36,14 @@ struct ChatDeckPresenter: ViewModifier {
             .environment(\.showChatDeck) { present($0) }
             .overlay {
                 if let request {
-                    ChatDeckView(request: request) { dismiss() }
-                        .id(request.id)
+                    Group {
+                        if request.grid {
+                            ChatGridView(request: request) { dismiss() }
+                        } else {
+                            ChatDeckView(request: request) { dismiss() }
+                        }
+                    }
+                    .id(request.id)
                 }
             }
             .onReceive(NotificationCenter.default.publisher(for: .showChatDeck)) { _ in
@@ -68,15 +78,21 @@ struct ChatDeckPresenter: ViewModifier {
 
     #if DEBUG && targetEnvironment(simulator)
     /// `--demo --open deck` shows the deck at launch with the first card in the middle, and `--open deck-2` with the
-    /// third. A simulator takes no taps from a terminal, so the hand check of the deck starts the app on it.
+    /// third. `--open grid` shows the grid of the agents that work (ChatGridView). A simulator takes no taps from a
+    /// terminal, so the hand check of the deck starts the app on it.
     private func openForPreview() async {
         let arguments = ProcessInfo.processInfo.arguments
-        guard store.isDemo, let index = arguments.firstIndex(of: "--open"), index + 1 < arguments.count,
-              arguments[index + 1].hasPrefix("deck") else { return }
+        guard store.isDemo, let index = arguments.firstIndex(of: "--open"), index + 1 < arguments.count else { return }
+        let place = arguments[index + 1]
+        guard place.hasPrefix("deck") || place == "grid" else { return }
         try? await Task.sleep(for: .seconds(1))
+        if place == "grid" {
+            present(ChatDeckRequest(start: nil, opened: nil, grid: true) { _ in })
+            return
+        }
         let ids = store.chatDeckCards().map(\.id)
-        let place = Int(arguments[index + 1].dropFirst(5)) ?? 0
-        present(ChatDeckRequest(start: ids.indices.contains(place) ? ids[place] : ids.first, opened: nil) { _ in })
+        let card = Int(place.dropFirst(5)) ?? 0
+        present(ChatDeckRequest(start: ids.indices.contains(card) ? ids[card] : ids.first, opened: nil) { _ in })
     }
     #endif
 }

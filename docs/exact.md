@@ -407,7 +407,9 @@ Not yet measured: the time from save to screen on the web host, and a `push --wa
   The Exact app still lists every chat in one list, archived chats among the others, and its title Agents in place of
   Chats. The rows name a further chat of a project after the project and its own title (`Bot.listName`, from the Mac's
   `chat_of` and `chat_title`), which a section of a project names by its title alone; the Mac sends `project_key`
-  (coconut, gumroad, personal) for the order of the sections.
+  (coconut, gumroad, personal) for the order of the sections. Also the two buttons at the top right of the Swift app's
+  Chats: Working (`WorkingFilterButton`), which lists only the chats that work or wait for the person, and the grid of
+  the agents that work (`ChatGridView`), which the Exact app has no deck for.
 - The pairing code lives in the memory of the data module. An update that applies while a phone pairs reloads the app,
   which then shows a new code, and the Mac seals its setup for the old one; send the new code. Keeping the code in the
   Keychain until the phone pairs would end this.

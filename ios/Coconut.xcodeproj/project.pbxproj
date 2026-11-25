@@ -123,6 +123,7 @@
 		57631029437FDE37A71F3830 /* MacMainWindow.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0DBFEB0208E202DBB84B0F8A /* MacMainWindow.swift */; };
 		57871722E33D5F78BCC3E468 /* ShareDirectory.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1BCCBD2348AD6BFA9CD627F6 /* ShareDirectory.swift */; };
 		5803CB381031E75D1A7A7934 /* TunnelConnection.swift in Sources */ = {isa = PBXBuildFile; fileRef = A8709568F75F99A00D1122C7 /* TunnelConnection.swift */; };
+		5837CA4B8CF6D059E509D0B8 /* ChatGrid.swift in Sources */ = {isa = PBXBuildFile; fileRef = 68B2017E4372462B892B381C /* ChatGrid.swift */; };
 		58C83514BD1765506A7A600E /* GitHubItem.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8098CFE25D01BB8FE35DC392 /* GitHubItem.swift */; };
 		58E22456C4D0CEDD0BFC4145 /* ConversationView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 86E50B95FC8F9D964C273561 /* ConversationView.swift */; };
 		59103B50D4CF5FB5C97A47B8 /* Home.swift in Sources */ = {isa = PBXBuildFile; fileRef = DA3E57857A5BE776F16DA660 /* Home.swift */; };
@@ -186,6 +187,7 @@
 		87B2987ECFCB328F38AB8F60 /* CoconutShare.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = 192C514F4386030356307039 /* CoconutShare.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		87BF58BB5BDFF0F7A5AD7C45 /* DecisionReplyComposer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 980EB12D70F1EC36BEAD57F7 /* DecisionReplyComposer.swift */; };
 		892508CB15D25F6809E95AAE /* ShareDirectoryPublisher.swift in Sources */ = {isa = PBXBuildFile; fileRef = E68AE00964A5386E8D56E69D /* ShareDirectoryPublisher.swift */; };
+		89F5889E269B5D63167088AF /* ChatGrid.swift in Sources */ = {isa = PBXBuildFile; fileRef = 68B2017E4372462B892B381C /* ChatGrid.swift */; };
 		8A07D811CC110F560AF8F0A0 /* AgentProject.swift in Sources */ = {isa = PBXBuildFile; fileRef = E965675846C512EBE08ADB77 /* AgentProject.swift */; };
 		8A095FC145ABE017F701C8B2 /* ChatSpend.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5137DA013C0219DD57B22602 /* ChatSpend.swift */; };
 		8A1ADA6D0A6D11643ED8301B /* GitHubEmbedViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = F651A9C93CDD66940CB67BA1 /* GitHubEmbedViews.swift */; };
@@ -425,6 +427,7 @@
 		66C01B452AF6DE7CA34E741B /* BotPhase.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BotPhase.swift; sourceTree = "<group>"; };
 		66C75106310254DAF919E136 /* NotificationKeys.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationKeys.swift; sourceTree = "<group>"; };
 		68629CEC6C869677D8EA1CE0 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		68B2017E4372462B892B381C /* ChatGrid.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatGrid.swift; sourceTree = "<group>"; };
 		69409F2D054CB7924336C9A0 /* Business.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Business.swift; sourceTree = "<group>"; };
 		6AA2396057CD5325BD54D0A7 /* DecisionPreviews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DecisionPreviews.swift; sourceTree = "<group>"; };
 		6B414E7E9F968575DD28C6A2 /* CoconutMac.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = CoconutMac.app; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -654,6 +657,7 @@
 				37B9A08B967CAA143246D1B6 /* ChatDeck.swift */,
 				5DC5E5DD482E6432698F08ED /* ChatDeckPresenter.swift */,
 				3B252C8D2FF7AC9EFF6227FD /* ChatDeckView.swift */,
+				68B2017E4372462B892B381C /* ChatGrid.swift */,
 				5137DA013C0219DD57B22602 /* ChatSpend.swift */,
 				C5F99DD733E95E46E48B7BE0 /* ChatSummaries.swift */,
 				F10A7B1CED0436FAEEF28D16 /* Coconut.entitlements */,
@@ -1088,6 +1092,7 @@
 				E6438EC60483FACD70DD0DBB /* ChatDeck.swift in Sources */,
 				942C032DF6A9FFE32FA843FE /* ChatDeckPresenter.swift in Sources */,
 				DAC489E385355FED3C0E5B2D /* ChatDeckView.swift in Sources */,
+				89F5889E269B5D63167088AF /* ChatGrid.swift in Sources */,
 				97A292E173CDCE711D939F8B /* ChatSpend.swift in Sources */,
 				32BB73B8DFBCA8470F8DCE54 /* ChatSummaries.swift in Sources */,
 				1374C513472E49A360E09502 /* CoconutApp.swift in Sources */,
@@ -1223,6 +1228,7 @@
 				9FAC6A6D812E4E4D6D03E834 /* ChatDeck.swift in Sources */,
 				79EFF53289BD7BF37A147BFD /* ChatDeckPresenter.swift in Sources */,
 				EE1579BAB4FDDA8811EBD45A /* ChatDeckView.swift in Sources */,
+				5837CA4B8CF6D059E509D0B8 /* ChatGrid.swift in Sources */,
 				8A095FC145ABE017F701C8B2 /* ChatSpend.swift in Sources */,
 				492D67EE9F463A1E80C0AA2D /* ChatSummaries.swift in Sources */,
 				A8E1E20FB19C388ACD17CA87 /* CoconutApp.swift in Sources */,

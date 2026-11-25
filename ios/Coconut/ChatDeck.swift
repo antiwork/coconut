@@ -26,6 +26,13 @@ extension AppStore {
         let working = Set(bots.filter { isBotActive($0) }.map(\.id))
         return ChatDeck.cards(bots, latest: chatSummaries.newestActivity, working: working, keeping: keeping)
     }
+
+    /// A chat works while its row says so: a working line, or a card that waits for the person. The Working filter of
+    /// Chats and the grid of the working agents (ChatGridView) read it.
+    func botWorks(_ bot: Bot) -> Bool { botPhase(bot) != nil || botNeedsYou(bot) }
+
+    /// The cards of the grid now: the chats of the deck that work, the chats with a working line first.
+    func chatGridCards() -> [Bot] { chatDeckCards().filter(botWorks) }
 }
 
 /// A request to show the deck.
@@ -35,6 +42,8 @@ struct ChatDeckRequest: Identifiable {
     var start: String?
     /// The chat that is open under the deck. Its card closes the deck and opens nothing again.
     var opened: String?
+    /// Shows the agents that work in a grid, all at once (ChatGridView), in place of the row of every chat.
+    var grid = false
     /// Shows a chat that the person chose.
     let open: (String) -> Void
 }
