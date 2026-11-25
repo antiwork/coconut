@@ -10,19 +10,12 @@ struct BusinessHomeView: View {
     init(initial: BusinessReport? = nil) { _report = State(initialValue: initial) }
 
     var body: some View {
-        BoardPage(width: .wide, spacing: BoardStyle.Space.l) {
-            // The to-dos of Finance come first, which the badge of the tab counts (TodoLists.swift).
-            TodoListSection(area: .finance)
-            if let report = shownReport {
-                TimelineView(.periodic(from: .now, by: 60)) { context in
-                    BusinessHomeContent(model: BusinessHomePresentation(report: report, now: context.date, refreshFailed: error != nil))
-                }
-            } else if error == nil {
-                BoardLoading(title: "Loading business")
-            }
-            if let error {
-                BoardLoadNotice(message: error) { Task { await load() } }
-                    .accessibilityIdentifier("business-home-refresh-error")
+        // One page with no scrolling (DashboardPage): the to-dos of Finance first, which the badge of the tab counts
+        // (TodoLists.swift), then the tiles of the business. Each tile opens its detail.
+        TimelineView(.periodic(from: .now, by: 60)) { context in
+            DashboardPage {
+                FinanceTiles(model: shownReport.map { BusinessHomePresentation(report: $0, now: context.date, refreshFailed: error != nil) },
+                             error: error) { Task { await load() } }
             }
         }
         .navigationTitle("Finance")
@@ -61,6 +54,9 @@ struct BusinessDestinationView: View {
         case .project(let key): BusinessWorkListView(project: key)
         case .report(let key): BusinessReportView(key: key)
         case .ledger: BusinessLedgerView()
+        case .todos(let area): TodoListPage(area: area)
+        case .conversations(let queue): SupportDetailView(queue: queue, part: .conversations)
+        case .resolution(let queue): SupportDetailView(queue: queue, part: .resolution)
         }
         }.id(store.businessGeneration)
     }

@@ -2,6 +2,9 @@ import Foundation
 
 enum BusinessRoute: Hashable {
     case home, projects, reports, function(String), project(String), report(String), ledger
+    /// The details that the tiles of a dashboard open (DashboardPage): every to-do of a tab, the open conversations of
+    /// a support queue ("support" or "issues"), and the times to resolution of a queue with who closed them.
+    case todos(TodoArea), conversations(String), resolution(String)
 }
 
 struct BusinessRepository: Decodable, Identifiable, Hashable, Sendable {

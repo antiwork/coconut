@@ -280,30 +280,45 @@ struct TodoIssueRows: View {
 }
 
 /// A breach of the business that counts on a list (TodoCounts): the conversations of Support or the risk reviews of
-/// Finance past their service level. The page shows their queue under the list, so the row leads nowhere.
+/// Finance past their service level. A tap opens what breaches: the open conversations of Support, or the report of
+/// Risk, because the dashboard of the tab shows a tile of the queue and no longer its rows (DashboardPage).
 private struct TodoBreachRow: View {
     let item: AttentionItem
     let inList: Bool
+    @Environment(\.pushRoute) private var pushRoute
     @ScaledMetric(relativeTo: .title3) private var iconWidth = 24
 
     var body: some View {
-        HStack(spacing: BoardStyle.Space.m) {
-            Image(systemName: item.symbol).font(.title3).foregroundStyle(BoardStyle.destructive).frame(width: iconWidth)
-                .accessibilityHidden(true)
-            VStack(alignment: .leading, spacing: BoardStyle.Space.xs) {
-                Text(item.label).font(.body.weight(.semibold)).foregroundStyle(BoardStyle.destructive)
-                if !item.detail.isEmpty { Text(item.detail).font(.subheadline).foregroundStyle(.secondary).lineLimit(1) }
+        Button { item.businessRoute.map { pushRoute?($0) } } label: {
+            HStack(spacing: BoardStyle.Space.m) {
+                Image(systemName: item.symbol).font(.title3).foregroundStyle(BoardStyle.destructive).frame(width: iconWidth)
+                    .accessibilityHidden(true)
+                VStack(alignment: .leading, spacing: BoardStyle.Space.xs) {
+                    Text(item.label).font(.body.weight(.semibold)).foregroundStyle(BoardStyle.destructive)
+                    if !item.detail.isEmpty { Text(item.detail).font(.subheadline).foregroundStyle(.secondary).lineLimit(1) }
+                }
+                Spacer(minLength: 0)
+                Text(item.value).font(.title3.weight(.semibold).monospacedDigit()).foregroundStyle(BoardStyle.destructive)
             }
-            Spacer(minLength: 0)
-            Text(item.value).font(.title3.weight(.semibold).monospacedDigit()).foregroundStyle(BoardStyle.destructive)
+            .frame(minHeight: 44, alignment: .leading)
+            .padding(.vertical, inList ? BoardStyle.Space.m : BoardStyle.Space.s)
+            .padding(.horizontal, inList ? 0 : BoardStyle.Space.m)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(inList ? BoardStyle.paper : .clear)
+            .contentShape(Rectangle())
         }
-        .frame(minHeight: 44, alignment: .leading)
-        .padding(.vertical, inList ? BoardStyle.Space.m : BoardStyle.Space.s)
-        .padding(.horizontal, inList ? 0 : BoardStyle.Space.m)
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .buttonStyle(HomePressStyle())
         .accessibilityElement(children: .combine)
         .accessibilityIdentifier("todo-breach-\(item.id)")
         .modifier(TodoRowInset(inList: inList))
+    }
+}
+
+extension AttentionItem {
+    /// The page of the business that a breach opens: the conversations of Support, or the report of Risk.
+    var businessRoute: BusinessRoute? {
+        guard case .business(let route) = target else { return nil }
+        return route
     }
 }
 
@@ -318,6 +333,8 @@ private struct TodoRowInset: ViewModifier {
 /// The list of one tab on a page of tiles: Finance and Support, with the breach of the tab as the first row. It has no
 /// title and no count: its rows say what they are, and the badge of the tab counts them (TodoCounts). The person: "Don't
 /// have to say todos in the ui the table itself is self descriptive". Product is a List and shows TodoIssueRows itself.
+/// The dashboards of Finance and Support show it as a tile of the rows that fit (TodoTile), and its last line opens
+/// this list on a page of its own (TodoListPage).
 struct TodoListSection: View {
     @Environment(AppStore.self) private var store
     let area: TodoArea
@@ -333,6 +350,182 @@ struct TodoListSection: View {
             await store.loadTodoIssues()
             if area == .finance { await store.loadRiskReviews() }
         }
+    }
+}
+
+/// Every to-do of a tab, which the last line of its tile opens (TodoTile). Like the list, the page has no title: its
+/// rows say what they are, and Back leads to the dashboard.
+struct TodoListPage: View {
+    @Environment(AppStore.self) private var store
+    let area: TodoArea
+
+    var body: some View {
+        BoardPage { TodoListSection(area: area) }
+            .refreshable {
+                await store.loadTodoIssues(fresh: true)
+                if area == .finance { await store.loadRiskReviews(fresh: true) }
+            }
+    }
+}
+
+/// One row of a tile of to-dos (TodoTile): a risk review of Finance, the breach of a tab, or a to-do.
+struct TodoTileRow: Identifiable {
+    let id: String
+    let symbol: String
+    let tint: Color
+    let title: String
+    let detail: String
+    /// The count of a breach, which the row shows in its color.
+    var value: String? = nil
+    /// The page that a tap opens: the issue, the review, or the queue of the breach.
+    let route: any Hashable
+    /// The to-do of the row, which its menu moves to another list.
+    var todo: TodoIssue? = nil
+    var identifier: String
+}
+
+extension AppStore {
+    /// The rows of a list in the order of its page (TodoIssueRows): the risk reviews of Finance, or the breach of the
+    /// tab, then the to-dos. A breach opens what breaches: the conversations of Support, or the report of Risk.
+    func todoTileRows(_ area: TodoArea) -> [TodoTileRow] {
+        let reviews = area == .finance ? shownRiskReviews : nil
+        let hidden = TodoCounts.reviewIssues(reviews)
+        let repository = todoIssues?.repository ?? "antiwork/gumroad-private"
+        var rows: [TodoTileRow]
+        if let reviews {
+            rows = reviews.map { review in
+                TodoTileRow(id: "review-" + review.user, symbol: review.symbol, tint: review.tint, title: review.title,
+                            detail: review.detail(), route: RiskReviewRoute(user: review.user),
+                            identifier: "risk-review-\(review.user)")
+            }
+        } else {
+            rows = TodoCounts.breaches(area, attentionItems()).map { item in
+                TodoTileRow(id: "breach-" + item.id, symbol: item.symbol, tint: BoardStyle.destructive, title: item.label,
+                            detail: item.detail, value: item.value, route: item.businessRoute ?? BusinessRoute.home,
+                            identifier: "todo-breach-\(item.id)")
+            }
+        }
+        rows += (todoIssues?.items(in: area) ?? []).filter { !hidden.contains($0.number) }.map { todo in
+            TodoTileRow(id: "todo-\(todo.number)", symbol: todo.symbol, tint: todo.tint, title: todo.title,
+                        detail: todo.detail(), route: todo.route(in: repository), todo: todo, identifier: "todo-\(todo.number)")
+        }
+        return rows
+    }
+}
+
+/// The to-dos of a tab on its dashboard of one page (DashboardPage): the rows that fit the tile, in the order of the
+/// list, and a last line with the number of the others, which opens the whole list (TodoListPage). A row opens its
+/// issue, its review or the queue of its breach, and a hold moves a to-do to another list, as in the list. Like the
+/// list, the tile has no title: its rows say what they are, and the badge of the tab counts them.
+struct TodoTile: View {
+    @Environment(AppStore.self) private var store
+    @Environment(\.pushRoute) private var pushRoute
+    @Environment(\.bentoCompact) private var compact
+    @ScaledMetric(relativeTo: .subheadline) private var rowHeight: CGFloat = 52
+    @ScaledMetric(relativeTo: .subheadline) private var moreHeight: CGFloat = 38
+    @ScaledMetric(relativeTo: .body) private var iconWidth: CGFloat = 22
+    let area: TodoArea
+
+    private var inset: CGFloat { compact ? BoardStyle.Space.m : BoardStyle.Space.l }
+
+    var body: some View {
+        let rows = store.todoTileRows(area)
+        BentoTile(padding: 0) {
+            GeometryReader { proxy in
+                let shown = Self.shown(rows.count, height: proxy.size.height, row: rowHeight, more: moreHeight)
+                // The rows of a cut list share the height above its last line, so the tile ends on that line.
+                let height = shown > 0 && shown < rows.count ? (proxy.size.height - moreHeight) / CGFloat(shown) : rowHeight
+                VStack(alignment: .leading, spacing: 0) {
+                    ForEach(Array(rows.prefix(shown).enumerated()), id: \.element.id) { index, row in
+                        line(row, height: height).overlay(alignment: .top) {
+                            if index > 0 { Divider().padding(.leading, inset + iconWidth + BoardStyle.Space.m) }
+                        }
+                    }
+                    if shown < rows.count { more(rows.count - shown) }
+                    if rows.isEmpty { empty }
+                }
+            }
+        }
+        // A container of its own, so each row keeps its identifier under the identifier of the tile.
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("todos-\(area.rawValue)")
+        // The root of the iPhone loads the list for the counts of the tabs (CoconutHome). The Mac has no counts, so its
+        // dashboards load it here, and Finance its risk reviews.
+        .task(id: "\(store.connection)/\(store.businessChanges)") {
+            await store.loadTodoIssues()
+            if area == .finance { await store.loadRiskReviews() }
+        }
+    }
+
+    /// How many rows fit a height: all of them, or as many as leave room for the line that opens the rest.
+    static func shown(_ count: Int, height: CGFloat, row: CGFloat, more: CGFloat) -> Int {
+        guard row > 0, height > 0 else { return 0 }
+        if CGFloat(count) * row <= height { return count }
+        return max(0, min(count, Int((height - more) / row)))
+    }
+
+    private func line(_ row: TodoTileRow, height: CGFloat) -> some View {
+        Button { pushRoute?(row.route) } label: {
+            HStack(spacing: BoardStyle.Space.m) {
+                Image(systemName: row.symbol).font(.body).foregroundStyle(row.tint).frame(width: iconWidth)
+                    .accessibilityHidden(true)
+                VStack(alignment: .leading, spacing: BoardStyle.Space.line) {
+                    Text(row.title).font(.subheadline.weight(row.value == nil ? .regular : .semibold))
+                        .foregroundStyle(row.value == nil ? AnyShapeStyle(.primary) : AnyShapeStyle(row.tint))
+                    if !row.detail.isEmpty { Text(row.detail).font(.caption).foregroundStyle(.secondary) }
+                }
+                .lineLimit(1)
+                Spacer(minLength: 0)
+                if let value = row.value {
+                    Text(value).font(.headline.monospacedDigit()).foregroundStyle(row.tint)
+                }
+            }
+            .padding(.horizontal, inset)
+            .frame(maxWidth: .infinity, minHeight: height, maxHeight: height, alignment: .leading)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(HomePressStyle())
+        .contextMenu {
+            if let todo = row.todo {
+                ForEach(TodoArea.allCases.filter { todo.areas != [$0.rawValue] }, id: \.self) { other in
+                    Button("Move to \(other.title)", systemImage: other.symbol) { Task { await store.moveTodoIssue(todo, to: other) } }
+                }
+            }
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier(row.identifier)
+    }
+
+    /// The line under the rows that fit: how many others the list has. It opens the whole list.
+    private func more(_ count: Int) -> some View {
+        Button { pushRoute?(BusinessRoute.todos(area)) } label: {
+            HStack(spacing: BoardStyle.Space.xs) {
+                Text("\(count) more").font(.subheadline.weight(.medium)).foregroundStyle(BoardStyle.control)
+                Spacer(minLength: 0)
+                BentoChevron()
+            }
+            .padding(.horizontal, inset)
+            .frame(maxWidth: .infinity, minHeight: moreHeight, maxHeight: moreHeight, alignment: .leading)
+            .overlay(alignment: .top) { Divider().padding(.leading, inset) }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(HomePressStyle())
+        .accessibilityIdentifier("todos-more-\(area.rawValue)")
+    }
+
+    /// The tile of a list without rows: its load failed, it loads, or it is empty.
+    @ViewBuilder private var empty: some View {
+        Group {
+            if store.todoIssues == nil, let message = store.todoIssuesError {
+                BoardLoadNotice(title: "To-dos unavailable", message: message) { Task { await store.loadTodoIssues(fresh: true) } }
+            } else {
+                // No list has a + (the person removed them), so an empty list names none.
+                Text(store.todoIssues == nil ? "Loading to-dos" : "No to-dos.").font(.subheadline).foregroundStyle(.secondary)
+            }
+        }
+        .padding(inset)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityIdentifier("todos-empty-\(area.rawValue)")
     }
 }
 

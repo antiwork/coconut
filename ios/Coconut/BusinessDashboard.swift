@@ -8,9 +8,9 @@ struct BusinessWorkspaceView: View {
 
     var body: some View {
         Group {
-            // Support is a tab: its to-dos first, which its badge counts, then the queues of the customers on the same
-            // page (TodoLists.swift). Its to-dos are its work, so it has no Work view.
-            if function == "support" { BusinessReportView(key: function, top: AnyView(TodoListSection(area: .support))) }
+            // Support is a tab: one page with its to-dos, which its badge counts, and the tiles of the customers
+            // (SupportHomeView). Its to-dos are its work, so it has no Work view.
+            if function == "support" { SupportHomeView() }
             // One view, with no control between the report and the work: the person found that nobody taps such
             // tabs (2026-11-24). The work of Accounting is the issues labelled finance, which are the to-dos of the
             // Finance tab, so its page is its report. A function without a report has its work only.
@@ -27,22 +27,18 @@ struct BusinessWorkspaceView: View {
 struct BusinessReportView: View {
     @Environment(AppStore.self) private var store
     let key: String
-    /// What the page shows above the report: the to-dos of Support.
-    var top: AnyView? = nil
     @State private var report: BusinessReport?
     private var shownReport: BusinessReport? { store.businessReports[key] ?? report }
     @State private var error: String?
     @State private var details = false
 
-    init(key: String, initial: BusinessReport? = nil, top: AnyView? = nil) {
+    init(key: String, initial: BusinessReport? = nil) {
         self.key = key
-        self.top = top
         _report = State(initialValue: initial)
     }
 
     var body: some View {
         BoardPage(width: .wide, spacing: BoardStyle.Space.l) {
-            if let top { top }
             if let report = shownReport {
                 BusinessReportContent(key: key, report: report) { details = true }
             } else if error == nil {
@@ -56,10 +52,7 @@ struct BusinessReportView: View {
         .navigationTitle(BusinessReport.titles[key] ?? key)
         .task(id: "\(key)/\(store.connection)/\(store.businessChanges)") { await load() }
         .onChange(of: store.businessGeneration) { _, _ in report = nil }
-        .refreshable {
-            if top != nil { await store.loadTodoIssues(fresh: true) }
-            await load()
-        }
+        .refreshable { await load() }
         .sheet(isPresented: $details) {
             NavigationStack {
                 if let report = shownReport { BusinessDataExplorer(value: report.data).navigationTitle("Report data") }
@@ -153,9 +146,9 @@ private struct MoneyDashboard: View {
                     .bento(4, 1, compact: (2, 1))
                 BentoLink(route: .report("accounting")) { ledgerStat("Net income", "net_income", chevron: true) }
                     .bento(4, 1, compact: (2, 1))
-                queue("Support", value: sum(data["support"]["gumroad"], data["support"]["flexile"]), overdue: sum(data["support"]["gumroad_past_sla"], data["support"]["flexile_past_sla"]), route: .function("support"))
+                queue("Support", value: sum(data["support"]["gumroad"], data["support"]["flexile"]), overdue: sum(data["support"]["gumroad_past_sla"], data["support"]["flexile_past_sla"]), route: .conversations("support"))
                     .bento(4, 1, compact: (2, 1))
-                queue("Product issues", value: data["issues"]["total"].number, overdue: data["issues"]["past_sla"].number, route: .report("support"))
+                queue("Product issues", value: data["issues"]["total"].number, overdue: data["issues"]["past_sla"].number, route: .conversations("issues"))
                     .bento(4, 1, compact: (1, 1))
                 queue("Risk review", value: data["risk"]["total"].number, overdue: data["risk"]["past_sla"].number, route: .report("risk"))
                     .bento(4, 1, compact: (1, 1))
@@ -203,64 +196,277 @@ private struct MoneyDashboard: View {
     private func sum(_ a: BusinessValue, _ b: BusinessValue) -> Double? { guard let a = a.number, let b = b.number else { return nil }; return a + b }
 }
 
-private struct SupportDashboard: View {
+/// The numbers of one queue of the support report: the customers ("support"), or every open issue of gumroad-private
+/// ("issues"). Presentation only: the counts are the publisher's.
+struct SupportQueue {
     let data: BusinessValue
-    /// The queue of the report: the customers ("support"), or every open issue of gumroad-private ("issues").
     var queue = "support"
-    @State private var search = ""
-    @State private var shown = 25
-    private var selected: BusinessValue { data[queue] }
-    private var agents: [(name: String, count: Double)] {
+    var selected: BusinessValue { data[queue] }
+    var counts: BusinessValue { selected["counts"] }
+    var closed: Double? { selected["closedCount"]["total"].number }
+    var agents: [(name: String, count: Double)] {
         let value = selected["closedCount"]["byAgent"]
         let rows = value.array.isEmpty ? value.object.sorted(by: { $0.key < $1.key }).map(\.value) : value.array
         return rows.compactMap { row in row["count"].number.map { (row["displayName"].text.isEmpty ? "Unknown closer" : row["displayName"].text, $0) } }
             .sorted { $0.count > $1.count }
     }
-    private var items: [BusinessValue] {
-        selected["open"].array.filter { search.isEmpty || $0["subject"].text.localizedCaseInsensitiveContains(search) }
-    }
-    private var resolution: SupportResolution {
+    var resolution: SupportResolution {
         SupportResolution(closed: selected["closed"].array, reference: data["generatedAt"].text.apiDate)
     }
-    private var volume: [ReportPoint] {
+    var volume: [ReportPoint] {
         selected["dailyVolume"].array.compactMap { row in row["count"].number.map { ReportPoint(date: row["date"].text, value: $0, series: "Conversations") } }
+    }
+    /// The last published day of the volume: "Nov 24 · 17".
+    var lastDay: String? {
+        volume.last.map { BusinessFormat.day($0.date) + " · " + reportNumber($0.value) }
+    }
+}
+
+/// Support on one page (DashboardPage): its to-dos, which its badge counts, with the conversations past SLA first, then
+/// the tiles of the customer queue. A tap on a tile opens its detail (SupportDetailView).
+struct SupportHomeView: View {
+    @Environment(AppStore.self) private var store
+    @State private var report: BusinessReport?
+    @State private var error: String?
+    private var shownReport: BusinessReport? { store.businessReports["support"] ?? report }
+
+    var body: some View {
+        DashboardPage {
+            SupportTiles(data: shownReport?.data, stale: shownReport?.stale == true, error: error) { Task { await load() } }
+        }
+        .task(id: "\(store.connection)/\(store.businessChanges)") { await load() }
+        .onChange(of: store.businessGeneration) { _, _ in report = nil; error = nil }
+        .refreshable {
+            await store.loadTodoIssues(fresh: true)
+            await load()
+        }
+    }
+
+    private func load() async {
+        do {
+            let loaded = try await store.businessReport("support")
+            guard !Task.isCancelled else { return }
+            report = loaded; error = nil
+        } catch is CancellationError { }
+        catch { self.error = error.localizedDescription }
+    }
+}
+
+/// The tiles of Support on its one page, which the person reads at once without scrolling: the to-dos, the incoming
+/// volume, and the open, unassigned and closed conversations with the median time to resolution. The volume, the open
+/// and the unassigned open the conversations of the queue, and the closed and the resolution open how fast and by whom
+/// they closed. Until the report loads, each tile keeps its place with a dash, so the page keeps its shape.
+///
+/// The Mac has no Product page, because the person chose to leave its sidebar as it is (MacSidebar), so its Support
+/// has a tile of the product issues too, which opens their list. The iPhone has them as the to-dos of its Product tab.
+struct SupportTiles: View {
+    /// Nil while the report loads, or when it could not load.
+    let data: BusinessValue?
+    var stale = false
+    var error: String? = nil
+    var retry: () -> Void = {}
+    @Environment(\.bentoCompact) private var compact
+
+    private var customers: SupportQueue? { data.map { SupportQueue(data: $0) } }
+
+    var body: some View {
+        let counts = customers?.counts
+        let waiting = counts?["unassigned"].number
+        let resolution = customers?.resolution
+        #if os(macOS)
+        TodoTile(area: .support).bento(4, 3, compact: (2, 3))
+        volume.bento(5, 3, compact: (2, 1))
+        productIssues.bento(3, 3, compact: (2, 1))
+        #else
+        TodoTile(area: .support).bento(5, 3, compact: (2, 3))
+        volume.bento(7, 3, compact: (2, 1))
+        #endif
+        BentoLink(route: .conversations("support")) {
+            BentoStat(title: "Open", value: reportNumber(counts?["all"].number),
+                      note: compact ? nil : counts?["assigned"].number.map { "\(Int($0)) assigned" },
+                      size: compact ? .medium : .large, chevron: true)
+        }
+        .accessibilityIdentifier("support-open").bento(3, 1, compact: (1, 1))
+        BentoLink(route: .conversations("support")) {
+            BentoStat(title: "Unassigned", value: reportNumber(waiting), size: compact ? .medium : .large,
+                      wash: (waiting ?? 0) > 0 ? BoardStyle.attention : nil, chevron: true)
+        }
+        .accessibilityIdentifier("support-unassigned").bento(3, 1, compact: (1, 1))
+        BentoLink(route: .resolution("support")) {
+            BentoStat(title: "Closed · 24 hours", value: reportNumber(customers?.closed),
+                      note: compact ? nil : customers?.agents.first.map { "\($0.name) closed \(reportNumber($0.count))" },
+                      size: compact ? .medium : .large, chevron: true)
+        }
+        .accessibilityIdentifier("support-closed").bento(3, 1, compact: (1, 1))
+        BentoLink(route: .resolution("support")) {
+            BentoStat(title: "Median resolution", value: SupportFormat.duration(resolution?.median),
+                      note: compact ? nil : resolution?.p90.map { "90th percentile " + SupportFormat.duration($0) },
+                      size: compact ? .medium : .large, chevron: true)
+        }
+        .accessibilityIdentifier("support-resolution").bento(3, 1, compact: (1, 1))
+    }
+
+    /// The conversations that came in each day. A tap opens the open conversations, under the same chart with its axes.
+    @ViewBuilder private var volume: some View {
+        if let customers, !customers.volume.isEmpty {
+            BentoLink(route: .conversations("support")) {
+                BentoTile {
+                    VStack(alignment: .leading, spacing: BoardStyle.Space.s) {
+                        header
+                        if compact {
+                            HStack(alignment: .bottom, spacing: BoardStyle.Space.m) {
+                                if let day = customers.lastDay { Text(day).font(.subheadline.weight(.semibold)).monospacedDigit().lineLimit(1) }
+                                BentoSparkline(values: customers.volume.map(\.value), bars: true).frame(maxHeight: .infinity)
+                            }
+                        } else {
+                            BentoSparkline(values: customers.volume.map(\.value), bars: true).frame(maxHeight: .infinity)
+                            if let day = customers.lastDay { Text(day).font(.caption.weight(.semibold)).monospacedDigit().lineLimit(1) }
+                        }
+                    }
+                }
+            }
+            .accessibilityIdentifier("support-volume")
+        } else {
+            BentoTile {
+                VStack(alignment: .leading, spacing: BoardStyle.Space.s) {
+                    header
+                    if let error {
+                        BoardLoadNotice(title: "Report unavailable", message: error, retry: retry)
+                    } else if data == nil {
+                        ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
+                    } else {
+                        Text("Not published").font(.subheadline).foregroundStyle(.secondary)
+                    }
+                    Spacer(minLength: 0)
+                }
+            }
+            .accessibilityIdentifier("support-volume")
+        }
+    }
+
+    /// The name of the volume, and the age of a snapshot that is over an hour old. Fresh numbers need no word.
+    private var header: some View {
+        HStack(spacing: BoardStyle.Space.s) {
+            BentoLabel("Incoming volume")
+            Spacer(minLength: 0)
+            if stale { Text("Stale").font(.caption).foregroundStyle(BoardStyle.attention).accessibilityIdentifier("support-stale") }
+            if customers.map({ !$0.volume.isEmpty }) == true { BentoChevron() }
+        }
+    }
+
+    #if os(macOS)
+    /// Every open issue of gumroad-private, the to-dos of the three lists. A tap opens their list.
+    private var productIssues: some View {
+        let issues = data.map { SupportQueue(data: $0, queue: "issues") }
+        let waiting = issues?.counts["unassigned"].number
+        return BentoLink(route: .conversations("issues")) {
+            BentoStat(title: "Product issues", value: reportNumber(issues?.counts["all"].number), unit: "open",
+                      note: waiting.map { "\(Int($0)) unassigned" }, chevron: true,
+                      trend: issues?.volume.map(\.value) ?? [], trendBars: true, trendPlace: .bottom)
+        }
+        .accessibilityIdentifier("support-product-issues")
+    }
+    #endif
+}
+
+/// The detail that a tile of Support opens: the open conversations of a queue under the volume of each day, or the
+/// conversations that closed in the last 24 hours, how fast and by whom. The page scrolls, as each detail does.
+struct SupportDetailView: View {
+    enum Part: Hashable { case conversations, resolution }
+    @Environment(AppStore.self) private var store
+    let queue: String
+    let part: Part
+    @State private var report: BusinessReport?
+    @State private var error: String?
+    private var shownReport: BusinessReport? { store.businessReports["support"] ?? report }
+
+    var body: some View {
+        BoardPage(width: .wide, spacing: BoardStyle.Space.l) {
+            if let report = shownReport {
+                SupportDashboard(data: report.data, queue: queue, part: part)
+            } else if error == nil {
+                BoardLoading(title: "Loading report", height: 360)
+            }
+            if let error { BoardLoadNotice(title: "Report unavailable", message: error) { Task { await load() } } }
+        }
+        .navigationTitle(title)
+        .task(id: "\(store.connection)/\(store.businessChanges)") { await load() }
+        .refreshable { await load() }
+    }
+
+    private var title: String {
+        switch part {
+        case .conversations: queue == "issues" ? "Product issues" : "Conversations"
+        case .resolution: "Resolution"
+        }
+    }
+
+    private func load() async {
+        do {
+            let loaded = try await store.businessReport("support")
+            guard !Task.isCancelled else { return }
+            report = loaded; error = nil
+        } catch is CancellationError { }
+        catch { self.error = error.localizedDescription }
+    }
+}
+
+/// The tiles of one queue of the support report. A part shows the tiles of one detail of Support (SupportDetailView);
+/// without one it shows the whole report (BusinessReportContent).
+private struct SupportDashboard: View {
+    let data: BusinessValue
+    /// The queue of the report: the customers ("support"), or every open issue of gumroad-private ("issues").
+    var queue = "support"
+    var part: SupportDetailView.Part? = nil
+    @State private var search = ""
+    @State private var shown = 25
+    private var model: SupportQueue { SupportQueue(data: data, queue: queue) }
+    private var items: [BusinessValue] {
+        model.selected["open"].array.filter { search.isEmpty || $0["subject"].text.localizedCaseInsensitiveContains(search) }
     }
 
     var body: some View {
-        let counts = selected["counts"]
+        let counts = model.counts
         let waiting = counts["unassigned"].number
+        let resolution = model.resolution
         VStack(alignment: .leading, spacing: BoardStyle.Space.l) {
             // The queue "issues" of the report is every open issue of gumroad-private, so its rows are the to-dos of
-            // Product, Support and Finance, each on its own tab. The iPhone's Support shows the customers only. The Mac
-            // shows both queues, one under the other with its name, and no control between them: the person found that
-            // nobody taps such tabs (2026-11-24).
+            // Product, Support and Finance, each on its own tab. The whole report on the Mac shows both queues, one
+            // under the other with its name, and no control between them: the person found that nobody taps such tabs
+            // (2026-11-24).
             #if os(macOS)
-            Text(queue == "issues" ? "Product issues" : "Customer support")
-                .font(.title3.weight(.semibold))
-                .accessibilityAddTraits(.isHeader)
+            if part == nil {
+                Text(queue == "issues" ? "Product issues" : "Customer support")
+                    .font(.title3.weight(.semibold))
+                    .accessibilityAddTraits(.isHeader)
+            }
             #endif
             BentoBoard {
-                BentoStat(title: "Open", value: reportNumber(counts["all"].number),
-                          note: counts["assigned"].number.map { "\(Int($0)) assigned" } ?? "In this queue", trend: volume.map(\.value))
-                    .bento(4, 1, compact: (2, 1))
-                BentoStat(title: "Unassigned",
-                          value: reportNumber(waiting), wash: (waiting ?? 0) > 0 ? BoardStyle.attention : nil)
-                    .bento(4, 1, compact: (1, 1))
-                BentoStat(title: "Closed · 24 hours", value: reportNumber(selected["closedCount"]["total"].number)).bento(4, 1, compact: (1, 1))
-                ReportChart(title: "Incoming volume", points: volume, bars: true)
-                    .bento(8, 2, compact: (2, 2))
-                BentoStat(title: "Median resolution", value: SupportFormat.duration(resolution.median))
-                    .bento(4, 1, compact: (1, 1))
-                BentoStat(title: "90th percentile", value: SupportFormat.duration(resolution.p90),
-                          note: "\(resolution.minutes.count) resolved in 24 hours").bento(4, 1, compact: (1, 1))
-                histogram.bento(6, 2, compact: (2, 2))
-                team.bento(6, agents.count > 5 ? nil : 2, compact: (2, nil))
-                conversations.bento(12, nil, compact: (2, nil))
+                if part != .resolution {
+                    ReportChart(title: "Incoming volume", points: model.volume, bars: true)
+                        .bento(8, 2, compact: (2, 2))
+                    BentoStat(title: "Open", value: reportNumber(counts["all"].number),
+                              note: counts["assigned"].number.map { "\(Int($0)) assigned" } ?? "In this queue")
+                        .bento(4, 1, compact: (1, 1))
+                    BentoStat(title: "Unassigned",
+                              value: reportNumber(waiting), wash: (waiting ?? 0) > 0 ? BoardStyle.attention : nil)
+                        .bento(4, 1, compact: (1, 1))
+                }
+                if part != .conversations {
+                    BentoStat(title: "Closed · 24 hours", value: reportNumber(model.closed)).bento(4, 1, compact: (2, 1))
+                    BentoStat(title: "Median resolution", value: SupportFormat.duration(resolution.median))
+                        .bento(4, 1, compact: (1, 1))
+                    BentoStat(title: "90th percentile", value: SupportFormat.duration(resolution.p90),
+                              note: "\(resolution.minutes.count) resolved in 24 hours").bento(4, 1, compact: (1, 1))
+                    histogram(resolution).bento(6, 2, compact: (2, 2))
+                    team.bento(6, model.agents.count > 5 ? nil : 2, compact: (2, nil))
+                }
+                if part != .resolution { conversations.bento(12, nil, compact: (2, nil)) }
             }
         }
     }
 
-    private var histogram: some View {
+    private func histogram(_ resolution: SupportResolution) -> some View {
         BentoTile {
             VStack(alignment: .leading, spacing: BoardStyle.Space.s) {
                 HStack {
@@ -299,9 +505,9 @@ private struct SupportDashboard: View {
                     Spacer(minLength: 0)
                     Text("24 hours").font(.caption).foregroundStyle(.tertiary)
                 }
-                if agents.isEmpty { Text("No closures published.").font(.subheadline).foregroundStyle(.secondary) }
-                let most = agents.map(\.count).max() ?? 1
-                ForEach(Array(agents.enumerated()), id: \.offset) { _, agent in
+                if model.agents.isEmpty { Text("No closures published.").font(.subheadline).foregroundStyle(.secondary) }
+                let most = model.agents.map(\.count).max() ?? 1
+                ForEach(Array(model.agents.enumerated()), id: \.offset) { _, agent in
                     VStack(alignment: .leading, spacing: BoardStyle.Space.xs) {
                         HStack {
                             Text(agent.name).font(.subheadline).lineLimit(1)

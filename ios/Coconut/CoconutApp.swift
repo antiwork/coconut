@@ -549,6 +549,12 @@ extension CoconutHome {
         case "projects": open(.finance, [BusinessRoute.projects])
         case "accounting": open(.finance, [BusinessRoute.function("accounting")])
         case "support-work": open(.support)
+        // The details that the tiles of Finance and Support open (DashboardPage): every to-do of a tab, the open
+        // conversations of the customers, and the times to resolution with who closed them.
+        case "todos-finance": open(.finance, [BusinessRoute.todos(.finance)])
+        case "todos-support": open(.support, [BusinessRoute.todos(.support)])
+        case "support-conversations": open(.support, [BusinessRoute.conversations("support")])
+        case "support-resolution": open(.support, [BusinessRoute.resolution("support")])
         case "support-conversation":
             open(.support, [SupportThreadRoute(id: "sample-0", subject: "Payout timing question")])
         // A risk review past SLA of Finance (RiskReviews.swift): one that Gumclaw has, and one that waits for a choice.

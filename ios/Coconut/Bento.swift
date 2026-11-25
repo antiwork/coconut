@@ -21,9 +21,18 @@ extension View {
 /// A grid of tiles of several sizes. The rows have one height, so the edges of the tiles line up. A tile goes into
 /// the first free place, from the top and from the leading edge. A tile over the whole width that has no rows takes
 /// the height of its content, for a list.
+///
+/// On a dashboard of one page (DashboardPage) the grid fills a height: its rows share it, so every tile shows at once
+/// and the page needs no scrolling. Each tile then has its rows. A row is never lower than `minimumRow`, so text too
+/// large for the screen lets the page scroll instead of cutting the tiles, and never higher than `maximumRow`, so a
+/// tall Mac window leaves space under the grid instead of stretching its tiles.
 struct BentoGrid: Layout {
     var row: CGFloat = 112
     var gap: CGFloat = 12
+    /// The height that the rows share, on a page of one screen.
+    var fill: CGFloat? = nil
+    var minimumRow: CGFloat = 56
+    var maximumRow: CGFloat = .infinity
 
     static let regularColumns = 12
     static let compactColumns = 2
@@ -79,7 +88,13 @@ struct BentoGrid: Layout {
 
     private func placement(_ subviews: Subviews, width: CGFloat) -> (frames: [CGRect], height: CGFloat) {
         let columns = Self.columns(for: width)
-        let spans = subviews.map { columns == Self.compactColumns ? $0[BentoCompactSpanKey.self] : $0[BentoSpanKey.self] }
+        var spans = subviews.map { columns == Self.compactColumns ? $0[BentoCompactSpanKey.self] : $0[BentoSpanKey.self] }
+        var row = self.row
+        if let fill {
+            spans = spans.map { BentoSpan(columns: $0.columns, rows: $0.rows ?? 1) }
+            let rows = Self.place(spans, columns: columns, width: width, row: 1, gap: 0) { _, _ in 1 }.height
+            row = min(maximumRow, max(minimumRow, (fill - gap * max(rows - 1, 0)) / max(rows, 1)))
+        }
         return Self.place(spans, columns: columns, width: width, row: row, gap: gap) { index, tileWidth in
             subviews[index].sizeThatFits(ProposedViewSize(width: tileWidth, height: nil)).height
         }
@@ -106,6 +121,45 @@ struct BentoBoard<Content: View>: View {
     var body: some View { BentoGrid(row: row) { content() } }
 }
 
+/// A dashboard on one page (the person: "Simplify dashboards to one page with no scrolling and tapping a box/card /
+/// row shows more detail"). Every tile of Finance and of Support shows at once: the rows of the grid share the height
+/// of the screen between the title and the message box, and a tap on a tile or on a row opens its detail on a page of
+/// its own (BusinessRoute). A list on such a page is a tile that shows the rows that fit it, and its last line opens
+/// the whole list (TodoTile). The page scrolls only when the text is too large for the screen, because a row of the
+/// grid never gets lower than its text (BentoGrid.minimumRow). A pull still refreshes it.
+struct DashboardPage<Content: View>: View {
+    @ScaledMetric(relativeTo: .body) private var minimumRow: CGFloat = 60
+    @ScaledMetric(relativeTo: .body) private var maximumRow: CGFloat = 190
+    @ViewBuilder let content: () -> Content
+
+    /// The width of the grid in a wide Mac window, as a page of tiles (BoardPage).
+    private static var widest: CGFloat { 1160 }
+
+    var body: some View {
+        GeometryReader { proxy in
+            let inset = BoardStyle.Space.l
+            let width = min(proxy.size.width, Self.widest) - 2 * inset
+            let compact = BentoGrid.columns(for: width) == BentoGrid.compactColumns
+            // An iPhone keeps the space of the screen for the tiles: less space under the title of the tab.
+            let top = compact ? BoardStyle.Space.s : inset
+            ScrollView {
+                BentoGrid(fill: max(0, proxy.size.height - top - inset), minimumRow: minimumRow, maximumRow: maximumRow) { content() }
+                    .environment(\.bentoCompact, compact)
+                    .padding(.horizontal, inset).padding(.top, top).padding(.bottom, inset)
+                    .frame(maxWidth: Self.widest)
+                    .frame(maxWidth: .infinity)
+            }
+        }
+        .background(BoardStyle.paper)
+    }
+}
+
+extension EnvironmentValues {
+    /// The tiles of a dashboard of one page at an iPhone width (DashboardPage): less padding and smaller numbers, so
+    /// the whole dashboard fits the screen.
+    @Entry var bentoCompact = false
+}
+
 /// The colors of the dashboards. They are colors of Coconut: the green, the accent, and two fills of the letter faces
 /// for a second and a third series.
 enum BentoColor {
@@ -120,14 +174,16 @@ enum BentoShape {
 }
 
 /// One tile: a surface with a continuous corner and a hairline. A tile with a meaning has a soft wash of its color.
+/// A tile of a dashboard of one page on an iPhone has less padding (bentoCompact).
 struct BentoTile<Content: View>: View {
     var wash: Color? = nil
-    var padding: CGFloat = BoardStyle.Space.l
+    var padding: CGFloat? = nil
     @ViewBuilder let content: () -> Content
+    @Environment(\.bentoCompact) private var compact
 
     var body: some View {
         content()
-            .padding(padding)
+            .padding(padding ?? (compact ? BoardStyle.Space.m : BoardStyle.Space.l))
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             .background {
                 ZStack {

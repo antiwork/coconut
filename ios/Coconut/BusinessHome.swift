@@ -43,16 +43,17 @@ struct BusinessHomePresentation {
     /// The breaches of the overview that AttentionRules reads. Support past SLA counts on Support and the risk reviews
     /// past SLA on Finance, each as the first row of the to-dos of its tab (TodoCounts), as the person asked for the
     /// needs attention of the business to show as to-dos. The issues past SLA and of high priority are open issues of
-    /// gumroad-private, so they are to-dos of their own lists already: only the Mac's Home shows them as breaches.
+    /// gumroad-private, so they are to-dos of their own lists already: only the Mac's Home shows them as breaches. Each
+    /// row opens the detail of what breaches: the open conversations of its queue, or the report of Risk.
     var attention: [AttentionRow] {
         [attentionRow("support", source: "support", name: "Support", count: data["support"]["gumroad_past_sla"].number,
-                      breach: "Support past SLA", detail: supportDetail, symbol: "lifepreserver", route: .function("support")),
+                      breach: "Support past SLA", detail: supportDetail, symbol: "lifepreserver", route: .conversations("support")),
          // The hammer of the Product tab.
          attentionRow("issues", source: "issues", name: "Product issues", count: data["issues"]["past_sla"].number,
-                      breach: "Product issues past SLA", detail: nil, symbol: "hammer", route: .report("support")),
+                      breach: "Product issues past SLA", detail: nil, symbol: "hammer", route: .conversations("issues")),
          attentionRow("high-priority", source: "issues", name: "High priority", count: data["high_priority"]["count"].number,
                       breach: "High-priority issues", detail: highPriorityDetail, symbol: "exclamationmark.circle",
-                      route: .report("support")),
+                      route: .conversations("issues")),
          attentionRow("risk", source: "risk", name: "Risk review", count: data["risk"]["past_sla"].number,
                       breach: "Risk review past SLA", detail: nil, symbol: "shield.lefthalf.filled",
                       route: .report("risk"))].compactMap { $0 }
@@ -99,7 +100,6 @@ struct BusinessHomePresentation {
         let id: Int
         let date: String
         let value: Double
-        var label: String { BusinessHomePresentation.day(date) + " · " + reportNumber(value, money: true) }
     }
     private func points(_ field: String) -> [Point] {
         guard sourceNotice("gmv") == nil else { return [] }
@@ -123,19 +123,6 @@ struct BusinessHomePresentation {
         let text = data["sections"][key]["as_of"].text
         guard text.count == 10, ReportPoint(date: text, value: 0, series: "").day != .distantPast else { return nil }
         return Self.day(text)
-    }
-    var latest: String? {
-        guard sourceNotice("gmv") == nil, let value = data["gmv"]["last_day_gmv"].number,
-              let day = nonempty(data["gmv"]["last_day"].text) else { return nil }
-        return Self.day(day) + " · " + reportNumber(value, money: true)
-    }
-    var weekdayComparison: String? {
-        guard sourceNotice("gmv") == nil else { return nil }
-        return data["gmv"]["same_weekday_pct"].number.map { Self.percent($0, signed: true) + " vs weekday" }
-    }
-    func selectedPoint(at position: Double?) -> Point? {
-        guard let position else { return nil }
-        return volume.min { abs(Double($0.id) - position) < abs(Double($1.id) - position) }
     }
 
     struct MoneyRow: Identifiable {
@@ -172,137 +159,118 @@ struct BusinessHomePresentation {
     static func writeOff(_ value: Double) -> String { BusinessFormat.writeOff(value) }
 }
 
-struct BusinessHomeContent: View {
-    let model: BusinessHomePresentation
-    @State private var selected: Double?
+/// The tiles of Finance on its one page (DashboardPage), which the person reads at once without scrolling: the to-dos,
+/// GMV, the money of the ledger and the risk reviews. A tap on a tile opens its detail: GMV its history by day, month and
+/// year (History), the money Accounting, which opens the ledger, and the risk reviews the report of Risk. A row of the
+/// to-dos opens its issue or its review, and the last line of the tile the whole list. The work of Marketing is the
+/// to-dos of Finance (business.WORK_AREAS), so it has no tile of its own.
+struct FinanceTiles: View {
+    /// Nil while the overview loads, or when it could not load.
+    let model: BusinessHomePresentation?
+    var error: String? = nil
+    var retry: () -> Void = {}
+    @Environment(\.bentoCompact) private var compact
 
     var body: some View {
-        VStack(alignment: .leading, spacing: BoardStyle.Space.l) {
-            // Fresh numbers need no line. An old snapshot, or one that a refresh could not replace, says its age.
-            if model.freshnessWarning || model.currentStatusUnknown {
-                VStack(alignment: .leading, spacing: BoardStyle.Space.xs) {
-                    Text(model.freshness)
-                        .foregroundStyle(model.freshnessWarning ? AnyShapeStyle(BoardStyle.attention) : AnyShapeStyle(.secondary))
-                        .accessibilityIdentifier("business-home-freshness")
-                    if model.currentStatusUnknown {
-                        Text("Unknown")
-                            .foregroundStyle(.secondary).accessibilityIdentifier("business-home-stale")
-                    }
-                }.font(.caption)
-            }
-            BentoBoard {
-                // The breaches of the business are the first rows of the to-dos above (TodoCounts), so the page has
-                // no tile of them.
-                gmv.bento(8, 3, compact: (2, 3))
-                if let notice = model.sourceNotice("ledger") {
-                    BentoStat(title: "Money", value: notice, size: .small)
-                        .accessibilityIdentifier("business-home-money-unavailable").bento(12, 1, compact: (2, 1))
-                } else {
-                    ForEach(model.moneyRows) { row in
-                        moneyTile(row).bento(4, 2, compact: (row.id == "revenue" ? 2 : 1, 2))
-                    }
-                }
-                ForEach(model.informational) { row in infoTile(row).bento(4, 1, compact: (2, 1)) }
-                BentoStat(title: "Run rate", value: reportNumber(model.runRate, money: true), size: .medium)
-                    .accessibilityIdentifier("business-home-run-rate").bento(4, 1, compact: (1, 1))
-                BentoStat(title: "Daily average", value: reportNumber(model.dailyAverage, money: true), size: .medium)
-                    .accessibilityIdentifier("business-home-daily-average").bento(4, 1, compact: (1, 1))
-                places.bento(12, nil, compact: (2, nil))
-            }
-        }.foregroundStyle(BoardStyle.ink)
+        TodoTile(area: .finance).bento(5, 3, compact: (2, 2))
+        gmv.bento(7, 3, compact: (2, 2))
+        ForEach(moneyRows) { row in moneyTile(row).bento(3, 2, compact: (1, 1)) }
+        risk.bento(3, 2, compact: (1, 1))
     }
 
-    /// The places that Finance opens, as the rows of one tile: a name needs no tile of its own. The repositories that
-    /// Coconut follows are a setting, so You has them.
-    private var places: some View {
-        let rows = Self.functions.map { (title: $0.name, route: BusinessRoute.function($0.key), id: "function-" + $0.key) }
-            + [(title: "History", route: .reports, id: "history")]
-        return BentoTile(padding: 0) {
-            VStack(spacing: 0) {
-                ForEach(Array(rows.enumerated()), id: \.element.id) { index, row in
-                    if index > 0 { Divider().padding(.leading, BoardStyle.Space.l) }
-                    NavigationLink(value: row.route) {
-                        HStack(spacing: BoardStyle.Space.s) {
-                            Text(row.title)
-                            Spacer(minLength: 0)
-                            BentoChevron()
-                        }
-                        .padding(.horizontal, BoardStyle.Space.l).padding(.vertical, BoardStyle.Space.m)
-                        .contentShape(Rectangle())
+    // MARK: - GMV
+
+    /// The volume of the last 30 days with its trend. A tap opens History, the volume of each day, month and year.
+    @ViewBuilder private var gmv: some View {
+        if let model, model.gmvNotice == nil {
+            BentoLink(route: .reports) { gmvTile(model) }
+                .accessibilityIdentifier("business-home-gmv")
+        } else {
+            BentoTile {
+                VStack(alignment: .leading, spacing: BoardStyle.Space.s) {
+                    gmvHeader(model)
+                    if let notice = model?.gmvNotice {
+                        Text(notice).font(.system(.title2, design: .rounded, weight: .semibold)).foregroundStyle(.secondary)
+                            .accessibilityIdentifier("business-home-gmv-unavailable")
+                    } else if let error {
+                        BoardLoadNotice(message: error, retry: retry).accessibilityIdentifier("business-home-refresh-error")
+                    } else {
+                        ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
                     }
-                    .buttonStyle(HomePressStyle())
-                    .accessibilityIdentifier("business-home-" + row.id)
+                    Spacer(minLength: 0)
                 }
+            }
+            .accessibilityIdentifier("business-home-gmv")
+        }
+    }
+
+    private func gmvTile(_ model: BusinessHomePresentation) -> some View {
+        BentoTile(wash: BentoColor.money) {
+            VStack(alignment: .leading, spacing: compact ? BoardStyle.Space.xs : BoardStyle.Space.s) {
+                gmvHeader(model)
+                ViewThatFits(in: .horizontal) {
+                    HStack(alignment: .firstTextBaseline, spacing: BoardStyle.Space.m) { total(model); delta(model, label: true) }
+                    HStack(alignment: .firstTextBaseline, spacing: BoardStyle.Space.m) { total(model); delta(model, label: false) }
+                    total(model)
+                }
+                volumeChart(model)
+                figures(model)
             }
         }
     }
 
-    /// Support is a place of its own, a tab of the iPhone and a row of the Mac sidebar, so Finance opens the other
-    /// functions.
-    private static let functions = BusinessFunction.builtIns.filter { $0.key != "support" }
-
-    private func infoTile(_ row: BusinessHomePresentation.AttentionRow) -> some View {
-        BentoLink(route: row.route) {
-            if let value = row.value {
-                BentoStat(title: row.title, value: value, unit: "open", size: .medium, chevron: true)
-            } else {
-                BentoStat(title: row.title, value: "—", note: row.detail, size: .medium, chevron: true)
+    /// The name of the tile, the day of its numbers, and its chevron. An old snapshot, or one that a refresh could not
+    /// replace, says its age in the place of the day. Fresh numbers need no word.
+    private func gmvHeader(_ model: BusinessHomePresentation?) -> some View {
+        HStack(spacing: BoardStyle.Space.s) {
+            BentoLabel("GMV · 30 days")
+            Spacer(minLength: 0)
+            if let model, model.freshnessWarning || model.currentStatusUnknown {
+                Text(model.currentStatusUnknown ? model.freshness + " · Unknown" : model.freshness)
+                    .font(.caption)
+                    .foregroundStyle(model.freshnessWarning ? AnyShapeStyle(BoardStyle.attention) : AnyShapeStyle(.secondary))
+                    .lineLimit(1)
+                    .accessibilityIdentifier("business-home-freshness")
+            } else if let day = model?.asOf("gmv") {
+                Text(day).font(.caption).foregroundStyle(.tertiary).lineLimit(1)
             }
-        }.accessibilityIdentifier("business-home-info-" + row.id)
+            if model?.gmvNotice == nil && model != nil { BentoChevron() }
+        }
     }
 
-    private var gmv: some View {
-        BentoTile(wash: model.gmvNotice == nil ? BentoColor.money : nil) {
-            VStack(alignment: .leading, spacing: BoardStyle.Space.s) {
-                HStack(spacing: BoardStyle.Space.s) {
-                    BentoLabel("GMV · 30 days")
-                    Spacer(minLength: 0)
-                    if let day = model.asOf("gmv") { Text(day).font(.caption).foregroundStyle(.tertiary).lineLimit(1) }
-                    NavigationLink(value: BusinessRoute.report("overview")) { BentoChevron().padding(BoardStyle.Space.xs).contentShape(Rectangle()) }
-                        .buttonStyle(.plain).accessibilityLabel("Open GMV report")
-                }
-                if let notice = model.gmvNotice {
-                    Text(notice).font(.system(.title2, design: .rounded, weight: .semibold)).foregroundStyle(.secondary)
-                        .accessibilityIdentifier("business-home-gmv-unavailable")
-                    Spacer(minLength: 0)
-                } else {
-                    ViewThatFits(in: .horizontal) {
-                        HStack(alignment: .firstTextBaseline, spacing: BoardStyle.Space.m) { total; delta }
-                        VStack(alignment: .leading, spacing: BoardStyle.Space.xs) { total; delta }
-                    }
-                    volumeChart
-                    ViewThatFits(in: .horizontal) {
-                        HStack(spacing: BoardStyle.Space.l) { Spacer(minLength: 0); reading }
-                        VStack(alignment: .leading, spacing: BoardStyle.Space.xs) { reading }
-                    }
-                }
-            }
-        }.accessibilityIdentifier("business-home-gmv")
+    @ViewBuilder private func total(_ model: BusinessHomePresentation) -> some View {
+        if let total = model.total {
+            BentoNumber(reportNumber(total, money: true), size: compact ? .large : .hero).accessibilityIdentifier("business-home-gmv-total")
+        }
     }
-    @ViewBuilder private var total: some View {
-        if let total = model.total { BentoNumber(reportNumber(total, money: true), size: .hero).accessibilityIdentifier("business-home-gmv-total") }
-    }
-    @ViewBuilder private var delta: some View {
+
+    @ViewBuilder private func delta(_ model: BusinessHomePresentation, label: Bool) -> some View {
         if let change = model.change {
-            BentoDelta(percent: change, label: model.changeLabel).accessibilityIdentifier("business-home-gmv-delta")
+            BentoDelta(percent: change, label: label ? model.changeLabel : nil).accessibilityIdentifier("business-home-gmv-delta")
         }
     }
-    /// The day under the pointer, or the last published day with its published comparison.
-    @ViewBuilder private var reading: some View {
-        HStack(alignment: .firstTextBaseline, spacing: BoardStyle.Space.s) {
-            if let point = model.selectedPoint(at: selected) {
-                Text(point.label).font(.subheadline.weight(.semibold)).monospacedDigit().accessibilityIdentifier("business-home-gmv-selection")
-            } else {
-                if let latest = model.latest {
-                    Text(latest).font(.subheadline.weight(.semibold)).monospacedDigit().accessibilityIdentifier("business-home-gmv-latest")
-                }
-                if let comparison = model.weekdayComparison {
-                    Text(comparison).font(.caption).foregroundStyle(.secondary).accessibilityIdentifier("business-home-gmv-weekday")
-                }
-            }
-        }.lineLimit(1)
+
+    /// The run rate and the daily average of the volume, under its chart.
+    private func figures(_ model: BusinessHomePresentation) -> some View {
+        HStack(spacing: BoardStyle.Space.l) {
+            figure("Run rate", model.runRate).accessibilityIdentifier("business-home-run-rate")
+            figure("Daily average", model.dailyAverage).accessibilityIdentifier("business-home-daily-average")
+            Spacer(minLength: 0)
+        }
+        .font(.caption).lineLimit(1)
     }
-    private var volumeChart: some View {
+
+    private func figure(_ title: String, _ value: Double?) -> some View {
+        HStack(spacing: BoardStyle.Space.xs) {
+            Text(title).foregroundStyle(.secondary)
+            Text(reportNumber(value, money: true)).fontWeight(.semibold).monospacedDigit()
+        }
+        .accessibilityElement(children: .combine)
+    }
+
+    /// The 30 days over the 30 before them, both on one scale. The tile is a link, so the chart takes no touch: History
+    /// shows the value of each day.
+    private func volumeChart(_ model: BusinessHomePresentation) -> some View {
         let floor = (model.volume + model.previousVolume).map(\.value).min() ?? 0
         let ceiling = (model.volume + model.previousVolume).map(\.value).max() ?? 1
         // The fill starts under the lowest day, so a small change of a large volume still shows as a shape.
@@ -327,12 +295,7 @@ struct BusinessHomeContent: View {
                     .interpolationMethod(.monotone)
                     .accessibilityLabel(BusinessHomePresentation.day(point.date)).accessibilityValue(reportNumber(point.value, money: true))
             }
-            if let point = model.selectedPoint(at: selected) {
-                RuleMark(x: .value("Selected day", point.id)).foregroundStyle(BoardStyle.ink.opacity(0.2)).lineStyle(StrokeStyle(lineWidth: 1))
-                PointMark(x: .value("Day", point.id), y: .value("GMV", point.value)).foregroundStyle(BentoColor.money).symbolSize(70)
-            }
         }
-        .chartXSelection(value: $selected)
         .chartYScale(domain: base...(ceiling + (ceiling - floor) * 0.1 + 1))
         .chartXAxis {
             AxisMarks(values: .automatic(desiredCount: 4)) { value in
@@ -349,9 +312,25 @@ struct BusinessHomeContent: View {
                 AxisValueLabel { if let n = value.as(Double.self) { Text(reportNumber(n, money: true)) } }
             }
         }
-        .frame(minHeight: 96, maxHeight: .infinity).accessibilityIdentifier("business-home-gmv-chart")
+        // A low tile of an iPhone has no room for the axes: the line is the shape of the month.
+        .chartXAxis(compact ? .hidden : .automatic)
+        .chartYAxis(compact ? .hidden : .automatic)
+        .frame(minHeight: 24, maxHeight: .infinity).accessibilityIdentifier("business-home-gmv-chart")
     }
 
+    // MARK: - Money
+
+    /// Revenue, EBITDA and net income of the last twelve months. Until the overview loads, or while the ledger is
+    /// unavailable, each keeps its tile with a dash, so the page keeps its shape.
+    private var moneyRows: [BusinessHomePresentation.MoneyRow] {
+        if let rows = model?.moneyRows, !rows.isEmpty { return rows }
+        let notice = model?.sourceNotice("ledger")
+        return [("revenue", "Revenue"), ("ebitda", "EBITDA"), ("net_income", "Net income")].map { key, title in
+            BusinessHomePresentation.MoneyRow(id: key, title: title, value: nil, subtitle: notice, months: [])
+        }
+    }
+
+    /// A tap opens Accounting: the months of the ledger, the margins and the books.
     private func moneyTile(_ row: BusinessHomePresentation.MoneyRow) -> some View {
         BentoLink(route: .report("accounting")) {
             BentoTile {
@@ -362,23 +341,46 @@ struct BusinessHomeContent: View {
                         Spacer(minLength: 0)
                         BentoChevron()
                     }
-                    BentoNumber(row.formattedValue, size: row.value == nil ? .small : .large).padding(.top, BoardStyle.Space.s)
-                    if let subtitle = row.subtitle {
-                        Text(subtitle).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                            .accessibilityIdentifier("business-home-money-" + row.id + "-subtitle")
-                    }
-                    if row.months.isEmpty { Spacer(minLength: 0) } else {
-                        Chart(row.months) { month in
-                            BarMark(x: .value("Month", month.date), y: .value(row.title, month.value), width: .ratio(0.72))
-                                .foregroundStyle(month.value < 0 ? BoardStyle.attention : BentoColor.money.opacity(month.id == row.months.last?.id ? 1 : 0.55))
-                                .cornerRadius(3)
-                                .accessibilityLabel(BusinessHomePresentation.month(month.date) + ", " + row.title)
-                                .accessibilityValue(reportNumber(month.value, money: true))
-                        }.chartXAxis(.hidden).chartYAxis(.hidden).frame(minHeight: 40, maxHeight: .infinity).padding(.top, BoardStyle.Space.m)
+                    Spacer(minLength: BoardStyle.Space.xs)
+                    BentoNumber(row.value == nil ? "—" : row.formattedValue, size: compact ? .medium : .large)
+                    // A tile of an iPhone holds the number. A Mac's has room for its margin and its months.
+                    if !compact {
+                        if let subtitle = row.subtitle {
+                            Text(subtitle).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                                .accessibilityIdentifier("business-home-money-" + row.id + "-subtitle")
+                        }
+                        if !row.months.isEmpty {
+                            Chart(row.months) { month in
+                                BarMark(x: .value("Month", month.date), y: .value(row.title, month.value), width: .ratio(0.72))
+                                    .foregroundStyle(month.value < 0 ? BoardStyle.attention : BentoColor.money.opacity(month.id == row.months.last?.id ? 1 : 0.55))
+                                    .cornerRadius(3)
+                                    .accessibilityLabel(BusinessHomePresentation.month(month.date) + ", " + row.title)
+                                    .accessibilityValue(reportNumber(month.value, money: true))
+                            }
+                            .chartXAxis(.hidden).chartYAxis(.hidden).frame(minHeight: 32, maxHeight: .infinity).padding(.top, BoardStyle.Space.m)
                             .accessibilityIdentifier("business-home-money-" + row.id + "-chart")
+                        }
                     }
                 }
             }
-        }.accessibilityIdentifier("business-home-money-" + row.id.replacingOccurrences(of: "_", with: "-"))
+        }
+        .accessibilityIdentifier("business-home-money-" + row.id.replacingOccurrences(of: "_", with: "-"))
+    }
+
+    // MARK: - Risk
+
+    /// The accounts in the queues of the risk review. The reviews past SLA are rows of the to-dos, so an iPhone shows
+    /// the number only, with the wash of the accent while one is late. A tap opens the report of Risk.
+    private var risk: some View {
+        let row = model?.informational.first
+        let late = model.flatMap { $0.sourceNotice("risk") == nil ? $0.data["risk"]["past_sla"].number : nil }
+        let note: String? = row?.value == nil ? row?.detail : late.map { $0 > 0 ? "\(Int($0)) past SLA" : "Within SLA" }
+        return BentoLink(route: .report("risk")) {
+            BentoStat(title: "Risk review", value: row?.value ?? "—", unit: row?.value == nil ? nil : "open",
+                      note: compact ? nil : note,
+                      noteTint: (late ?? 0) > 0 ? BoardStyle.attention : late == nil ? .secondary : BoardStyle.positive,
+                      size: compact ? .medium : .large, wash: (late ?? 0) > 0 ? BoardStyle.attention : nil, chevron: true)
+        }
+        .accessibilityIdentifier("business-home-info-risk")
     }
 }
