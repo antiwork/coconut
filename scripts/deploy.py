@@ -59,6 +59,10 @@ SKILL_FOLDER_MODE = 0o500
 # host.stop_for_update waits up to host.STOP_GRACE_SECONDS for a clean exit of the service. Then it sends SIGKILL and
 # stops the child processes. The helper gets this long for all of it.
 STOP_HELPER_SECONDS = 300
+# A deployment that finds another one running waits this long for it, and asks the lock again every LOCK_POLL_SECONDS.
+# The other one can drain its turns (DRAIN_WAIT_SECONDS), wait for health (HEALTH_WAIT_SECONDS) and set Hermes up.
+LOCK_WAIT_SECONDS = 30 * 60
+LOCK_POLL_SECONDS = 2
 # deploy.py adds the full output of each run to this file in the data folder, with the traceback of a failure. A file
 # that grows past LOG_LIMIT_BYTES moves to LOG_PATH.1, so at most two files remain.
 LOG_PATH = Path('.runtime/host/logs/install-source.log')
@@ -71,6 +75,10 @@ TRANSCRIPT = []
 
 class DeployError(Exception):
     pass
+
+
+class DeploymentRunning(DeployError):
+    """Another deployment holds the lock of the install folder."""
 
 
 @dataclass
@@ -806,13 +814,72 @@ def recover(directory, *, home=None, operations=None):
     return True
 
 
-def receive(directory, stream, *, home=None, operations=None, team_only=None):
-    """Install or update the package. `team_only` defaults to the mode that Coconut.app gives (team_only_mode)."""
+def receive(directory, stream, *, home=None, operations=None, team_only=None, wait=LOCK_WAIT_SECONDS):
+    """Install or update the package. `team_only` defaults to the mode that Coconut.app gives (team_only_mode).
+
+    A deployment that finds another one running waits for it, for up to `wait` seconds, then installs. When the other
+    one installed this package, it changes nothing. Sparkle relaunches the app while the install of the earlier app
+    still lets running turns finish, and the install of the new app failed at once and ran again only at the next
+    launch of the app, so a Mac kept an old service for a day.
+    """
     os.umask(0o077)
     team_only = team_only_mode() if team_only is None else team_only
     home = Path(home or Path.home()).resolve()
     root = destination(directory, home)
     package = validate_package(stream)
+    deadline = time.monotonic() + wait
+    while True:
+        if wait_for_deployment(root, deadline):
+            installed = installed_result(root, package)
+            if installed is not None:
+                return installed
+        try:
+            return install_package(root, package, operations=operations, team_only=team_only)
+        except DeploymentRunning:
+            # Another deployment took the lock between the wait and this one.
+            if time.monotonic() >= deadline:
+                raise
+
+
+def wait_for_deployment(root, deadline):
+    """Wait while another deployment holds the lock of `root`, until `deadline` of time.monotonic(). Return whether
+    this one waited."""
+    path = root / '.runtime/deploy/deploy.lock'
+    try:
+        descriptor = os.open(safe_path(path, root), os.O_RDWR | os.O_NOFOLLOW)
+    except (FileNotFoundError, NotADirectoryError):
+        # A folder without a lock has had no deployment yet.
+        return False
+    waited = False
+    with os.fdopen(descriptor, 'a') as lock:
+        while True:
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                if time.monotonic() >= deadline:
+                    raise DeploymentRunning('Another Coconut deployment is still running. Retry the update when it '
+                                            'ends.') from None
+                if not waited:
+                    log('Another Coconut deployment is running. This one waits for it.')
+                    waited = True
+                time.sleep(LOCK_POLL_SECONDS)
+                continue
+            fcntl.flock(lock, fcntl.LOCK_UN)
+            return waited
+
+
+def installed_result(root, package):
+    """The result for a package that the deployment before this one installed already, else None."""
+    marker = read_marker(root)
+    if marker is None or marker.get('state') != 'installed' or marker.get('package_id') != package.package_id:
+        return None
+    log('The deployment before this one installed this package. Nothing changes.')
+    return {'version': 1, 'installation_id': marker['installation_id'], 'package_id': package.package_id,
+            'updated': False, 'installed_already': True}
+
+
+def install_package(root, package, *, operations=None, team_only=False):
+    """The install of receive(), which holds the deploy lock for it."""
     refusal = None if team_only else team_folder_refusal(root, package)
     if refusal:
         raise DeployError(refusal)
@@ -831,7 +898,7 @@ def receive(directory, stream, *, home=None, operations=None, team_only=None):
         try:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
-            raise DeployError('Another Coconut deployment is already running.') from None
+            raise DeploymentRunning('Another Coconut deployment is already running.') from None
         helper = write_helper(deployment, package)
         cleanup.callback(helper.unlink, missing_ok=True)
         if marker is not None:

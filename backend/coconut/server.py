@@ -27,6 +27,7 @@ from urllib.parse import parse_qs, urlsplit
 
 # The modules of the full service load in main, so a team-only service (team_only.py) never imports them.
 from .service_base import ServiceError
+from .app_updates import AppUpdates
 from .team_files import FileContent
 
 PEER_KEY = re.compile(r'[0-9a-f]{64}')
@@ -616,6 +617,9 @@ def main(argv=None):
         # launchd starts the service again after it exits, so it can restart for a new Hermes.
         service.watch_hermes(hermes)
     service.start()
+    if service.restart_enabled:
+        # Sparkle runs only inside Coconut.app, so the service opens the app when it misses a build (app_updates.py).
+        AppUpdates(service.root).start()
     if team_only:
         print(f'Coconut is listening on 127.0.0.1:{args.port} for a team only. It runs no agent and changes no Hermes.',
               flush=True)

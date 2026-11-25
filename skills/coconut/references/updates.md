@@ -7,7 +7,7 @@ Coconut and Hermes update separately. A Coconut update never changes Hermes. A H
 Coconut.app updates itself with Sparkle from the Coconut update feed. The app carries the Coconut source. An update has two parts:
 
 1. Sparkle replaces Coconut.app and opens the new app. The service keeps running during this part.
-2. The new app installs its source in the install folder (default `~/Coconut`) with `coconut install-source --if-needed`.
+2. The new app installs its source in the install folder (default `~/Coconut`) with `coconut install-source --if-needed`. If another install still runs, for example the install of the earlier app, it waits for it, for up to 30 minutes. When that install put in the same source, it changes nothing.
 
 The second part is safe for running work:
 
@@ -20,6 +20,8 @@ The second part is safe for running work:
 If the installed Hermes worked with the earlier Coconut and fails the check of the new one, the update restores the earlier Coconut.
 
 To find why an update failed, read `.runtime/host/logs/install-source.log` in the install folder. It has the output of each step and the traceback of the failure.
+
+Sparkle runs only inside the app. While the app does not run, for example after the person quit it, the service reads the update feed every 30 minutes. When a newer build is out, it opens the app in the background, once for each build and only while automatic updates are on, and the app updates at once.
 
 ## Update Coconut now
 

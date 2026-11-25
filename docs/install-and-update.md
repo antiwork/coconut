@@ -337,6 +337,15 @@ The app reads `--set-up`, `--team-only` and `--remove` only when it starts, so a
 No GitHub workflow builds or publishes Coconut. A person publishes each release by hand. Sparkle in Coconut.app installs
 a published Mac build on each Mac. See [the iPhone setup](iphone-install.md#testflight-releases) for TestFlight.
 
+Sparkle runs only inside the app, and the service keeps running when the person quits the app. So while the app does not
+run, the service reads the update feed every 30 minutes, and when a newer build is out it opens the app in the background
+with `open -g`, once for each build and only while automatic updates are on (`backend/coconut/app_updates.py`).
+Sparkle's check is then overdue, so the app updates at once.
+
+An install of the source waits for another one that runs, for up to 30 minutes, then installs. Sparkle opens the new app
+while the install of the earlier app still waits for running turns, and the second install used to fail at once and ran
+again only when the app was opened again. When the earlier install put in the same source, the second changes nothing.
+
 ## Update the backend
 
 After code changes, open **Update Mac mini.command**. The terminal command is:
