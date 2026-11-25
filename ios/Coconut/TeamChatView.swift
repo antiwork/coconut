@@ -597,8 +597,8 @@ struct TeamChatView: View {
         } else {
             // The store saves the message first. When the save fails, the composer keeps the text.
             // The mentions count in the draft before the trim: their places are places in the draft.
-            let named = BotMentions.recipients(in: composer.draft, selected: mentions, bots: mentionTargets(room))
-                .map(\.id)
+            let named = BotMentions.recipients(in: composer.draft, selected: mentions, bots: mentionTargets(room),
+                                               skipping: composer.unnamed).map(\.id)
             guard store.sendTeamMessage(chatKey, from: composer, mentions: named) else { return }
             // A message of a person is no alert. The chat shows each message again, so the person sees it.
             store.setTeamAlertFilter(chatKey, .all)
@@ -1169,8 +1169,9 @@ struct TeamComposerFiles {
 
 /// The composer of the Team chat: the text, and up to four files where the Mac takes them. A reply or an edit shows its
 /// message above the field, with a way to cancel. In a direct chat with a bot, a Library page shows there in the same
-/// form. `@` opens the list of the team bots and the people, as in the composer of a bot chat. An edit changes only the
-/// text, so it has no list and no plus control.
+/// form. `@` opens the list of the team bots and the people, as in the composer of a bot chat, and the name of a person
+/// names the person also without `@` (BotMentions.namedPeople). An edit changes only the text, so it has no list and
+/// no plus control.
 struct TeamChatComposer: View {
     /// "Message Example Team", or "Message Grace" in a direct chat.
     let placeholder: String
@@ -1223,7 +1224,7 @@ struct TeamChatComposer: View {
             }
             if editing == nil && !targets.isEmpty {
                 BotMentionControls(text: $state.draft, selection: $selection, selected: $mentions,
-                                   bots: targets, focused: focused) { focused = true }
+                                   bots: targets, focused: focused, skipped: $state.unnamed) { focused = true }
             }
             if editing == nil {
                 ComposerAttachmentChips(chips: state.files.map { ComposerChip(id: $0.id, title: $0.name) }) { id in

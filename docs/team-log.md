@@ -745,13 +745,14 @@ No log line has the text of a message, the name of a writer or the name of a tea
 
 #### Mentions of a person
 
-A person names another person of the team with `@` in the chat, as the person names an agent. The app sends the member ID in `mentions`, and the Mac writes the entry ID of the `member` entry of that member. The log format and the relay do not change.
+A person names another person of the team with `@` in the chat, as the person names an agent, or by typing the name alone, as one swipe of the keyboard types it. The app sends the member ID in `mentions`, and the Mac writes the entry ID of the `member` entry of that member. The log format and the relay do not change.
 
 - A mention of a person starts no turn of an agent. Rule 4 of [An agent answers](#an-agent-answers) names `bot` entries, and the `member` entry of a Mac for a team only, which is no person.
 - A mention of this Mac's person notifies also in a quiet team and in a muted chat (see rule 4 of [Notifications](#notifications)).
 - `GET /v1/team/rooms` gives `mentioned` and `mention_first` for each room. `mentioned` stays true until the read position passes each unread message that names this Mac's person. An own message, a removed message and a message that does not show never count. One query walks the index of the messages back from the newest message to the read position. It reads at most the newest 1,000 messages after the read position, also own messages, so a mention under them does not show.
 - The Mac app makes a banner for a quiet team or a muted chat when `mention_first` grows: a new mention arrived since the last list, also when a plain message came after it. A plain message makes a banner only when the switch of the team is on and its chat is not muted.
 - The `@` list of the app has the agents that a teammate can ask, then each other person of the team, without the Macs for a team only. The app lists the people only for a room with `mentioned`, because an older service does not notify a named person in a quiet team. A typed `@` name that an agent and a person share gives the agent. A tap gives the row that the person taps.
+- A name without `@` names a person of that list (`BotMentions.namedPeople`): the whole name as a word of its own, in any case and with or without accents, or its first word when no other person has that first word. The composer shows each named person under the field ("Mentioned"), and the cross of a chip keeps the text and only drops the mention until the draft is sent. An agent answers only to `@`, because the name of an agent, such as Gumroad, is an everyday word, so a name that an agent has, a name that two people share and a name of fewer than three letters need `@`. A link, a mail address or a longer word that holds a name names nobody. The bubble of the named person shows the name in bold, with its `@` or without it (`TeamMentionEmphasis`). An older app sees the mention (the notification and the mark of the row) but shows a name without `@` as plain text.
 
 #### Agents of different Macs
 

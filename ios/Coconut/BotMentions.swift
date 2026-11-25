@@ -5,6 +5,9 @@ struct SelectedBotMention: Identifiable, Equatable {
     let name: String
     var location: Int? = nil
     var snapshot: String? = nil
+    /// True for a person that the text names without `@` (BotMentions.namedPeople). A remove of its chip keeps the
+    /// text and only stops the mention.
+    var typedName = false
 }
 
 /// A bot that a person can name with `@` in a composer: a bot of this Mac in its chat, or a bot of a team in the
@@ -109,10 +112,92 @@ enum BotMentions {
         return result
     }
 
-    static func recipients<B: MentionableBot>(in text: String, selected: [SelectedBotMention],
-                                              bots: [B]) -> [SelectedBotMention] {
+    /// Everyone that the text names, each one time, in the order of the text: the `@` names, and the people that it
+    /// names without `@` (namedPeople), except the people in `skipping`.
+    static func recipients<B: MentionableBot>(in text: String, selected: [SelectedBotMention], bots: [B],
+                                              skipping: Set<String> = []) -> [SelectedBotMention] {
         var seen = Set<String>()
-        return occurrences(in: text, selected: selected, bots: bots).filter { seen.insert($0.id).inserted }
+        let named = occurrences(in: text, selected: selected, bots: bots)
+            + namedPeople(in: text, bots: bots, skipping: skipping)
+        return named.sorted { ($0.location ?? 0) < ($1.location ?? 0) }.filter { seen.insert($0.id).inserted }
+    }
+
+    /// The people that the text names without `@`, so that a name typed in one swipe of the keyboard names the person
+    /// (the person: "support mentions by name just by typing their name via one swipe"). A name counts as a word of
+    /// its own, in any case: the whole name of a person of the list, or its first word when no other person has that
+    /// first word. An agent answers only to `@`, because the name of an agent, such as Gumroad, is an everyday word:
+    /// a name that an agent of the list has names nobody here, and so does a name that two people share. A name of
+    /// fewer than three letters needs `@` too. `skipping` holds the people whose chip the person removed.
+    static func namedPeople<B: MentionableBot>(in text: String, bots: [B],
+                                               skipping: Set<String> = []) -> [SelectedBotMention] {
+        let rows = bots.filter(\.isMentionable)
+        let people = rows.filter { $0.mentionedPerson != nil }
+        guard !people.isEmpty, !text.isEmpty else { return [] }
+        let agents = Set(rows.filter { $0.mentionedPerson == nil }.map { key($0.name) })
+        var owners: [String: (form: String, ids: Set<String>)] = [:]
+        for person in people {
+            let whole = person.name.trimmingCharacters(in: .whitespacesAndNewlines)
+            owners[key(whole), default: (whole, [])].ids.insert(person.id)
+        }
+        let firsts = Dictionary(grouping: people) { key(firstWord(of: $0.name)) }
+        for (first, group) in firsts where group.count == 1 && owners[first] == nil {
+            owners[first] = (firstWord(of: group[0].name), [group[0].id])
+        }
+        let forms = owners.filter { $0.value.ids.count == 1 && $0.value.form.count >= 3 && !agents.contains($0.key) }
+            .compactMap { _, owner in owner.ids.first.map { (form: owner.form, id: $0) } }
+            .filter { !skipping.contains($0.id) }
+        let names = Dictionary(people.map { ($0.id, $0.name) }, uniquingKeysWith: { first, _ in first })
+        return nameRanges(of: forms.map(\.form), in: text).compactMap { form, range in
+            guard let id = forms.first(where: { key($0.form) == key(form) })?.id, let name = names[id] else { return nil }
+            return SelectedBotMention(id: id, name: name, location: text.distance(from: text.startIndex, to: range.lowerBound),
+                                      typedName: true)
+        }
+    }
+
+    /// Where the text has each of `forms` as a word of its own, in any case and with or without accents: the longest
+    /// form first, and no two places overlap. A place may follow `@`, which the range leaves out. Inside a word, a
+    /// link (`/grace`, `grace.com`) or a mail address (`grace@`) a form is no name.
+    static func nameRanges(of forms: [String], in text: String) -> [(form: String, range: Range<String.Index>)] {
+        var found: [(form: String, range: Range<String.Index>)] = []
+        for form in forms.filter({ !$0.isEmpty }).sorted(by: { $0.count > $1.count }) {
+            var start = text.startIndex
+            while start < text.endIndex,
+                  let range = text.range(of: form, options: [.caseInsensitive, .diacriticInsensitive],
+                                         range: start..<text.endIndex) {
+                start = range.upperBound
+                guard standsAlone(range, in: text), !found.contains(where: { $0.range.overlaps(range) }) else { continue }
+                found.append((form, range))
+            }
+        }
+        return found.sorted { $0.range.lowerBound < $1.range.lowerBound }
+    }
+
+    private static func standsAlone(_ range: Range<String.Index>, in text: String) -> Bool {
+        var start = range.lowerBound
+        // A name may follow `@`, where a word starts, but not in a mail address: ada@grace.
+        if start > text.startIndex, text[text.index(before: start)] == "@" { start = text.index(before: start) }
+        if start > text.startIndex {
+            let before = text[text.index(before: start)]
+            guard before.isWhitespace || "([{\"'“‘*".contains(before) else { return false }
+        }
+        guard range.upperBound < text.endIndex else { return true }
+        let after = text[range.upperBound]
+        if after == "." {
+            // A dot ends a sentence, but a letter after it makes a link or a longer name: grace.com.
+            let next = text.index(after: range.upperBound)
+            return next == text.endIndex || !(text[next].isLetter || text[next].isNumber || "_-@".contains(text[next]))
+        }
+        // The apostrophe of iOS (’) and the plain one end a name: Grace’s.
+        return after.isWhitespace || ",!?;:)]}\"'”’*…—–".contains(after)
+    }
+
+    private static func key(_ name: String) -> String {
+        name.trimmingCharacters(in: .whitespacesAndNewlines).folding(options: [.caseInsensitive, .diacriticInsensitive],
+                                                                     locale: nil)
+    }
+
+    private static func firstWord(of name: String) -> String {
+        String(name.trimmingCharacters(in: .whitespacesAndNewlines).split(whereSeparator: \.isWhitespace).first ?? "")
     }
 
     static func replacementRange<B: MentionableBot>(for query: BotMentionQuery, in text: String,
@@ -226,6 +311,8 @@ struct BotMentionControls<B: MentionableBot>: View {
     let bots: [B]
     /// False hides the list, for example while the field is not focused or edits a sent message.
     let focused: Bool
+    /// The people whose chip the person removed (BotMentions.namedPeople). A chat without people has none.
+    var skipped: Binding<Set<String>> = .constant([])
     let focus: () -> Void
 
     var body: some View {
@@ -242,7 +329,8 @@ struct BotMentionControls<B: MentionableBot>: View {
                     focus()
                 }
             }
-            BotMentionRecipients(recipients: BotMentions.recipients(in: text, selected: selected, bots: bots)) { mention in
+            BotMentionRecipients(recipients: BotMentions.recipients(in: text, selected: selected, bots: bots,
+                                                                    skipping: skipped.wrappedValue)) { mention in
                 let occurrences = BotMentions.occurrences(in: text, selected: selected, bots: bots).filter { $0.id == mention.id }
                 for occurrence in occurrences.reversed() {
                     guard let location = occurrence.location else { continue }
@@ -252,11 +340,14 @@ struct BotMentionControls<B: MentionableBot>: View {
                     selected = BotMentions.reconciled(selected, in: text)
                 }
                 selected.removeAll { $0.id == mention.id }
+                // A name without `@` stays in the text: the message only stops naming the person.
+                skipped.wrappedValue.insert(mention.id)
                 selection = TextSelection(insertionPoint: text.endIndex)
                 focus()
             }
         }
         .onChange(of: text) { _, value in
+            if value.isEmpty { skipped.wrappedValue = [] }
             let valid = BotMentions.occurrences(in: value, selected: selected, bots: bots)
             selected = BotMentions.reconciled(selected, in: value).filter { mention in
                 valid.contains { $0.id == mention.id && ($0.location == mention.location || mention.location == nil) }

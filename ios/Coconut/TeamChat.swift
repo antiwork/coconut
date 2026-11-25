@@ -935,6 +935,9 @@ struct TeamComposerState: Equatable {
     /// The drafts on the Mac that go with the next message, in the order of the picks. A chip above the field shows
     /// each one.
     var files: [TeamFile] = []
+    /// The people whose names the draft has without `@` and whose chip the person removed (BotMentions.namedPeople).
+    /// The message does not name them. The list ends with the draft.
+    var unnamed: Set<String> = []
     /// The picked files from the moment of the pick until the Mac has their drafts: a photo that still loads, the fit
     /// step and the upload. The plus control shows the hourglass meanwhile, and Send is off.
     var uploads = OrderedUploads<TeamFile>()
@@ -981,6 +984,7 @@ struct TeamComposerState: Equatable {
     mutating func edit(_ message: TeamMessage) {
         quote = nil
         linkPreview = nil
+        unnamed = []
         editing = message
         draft = message.text
     }
@@ -1025,6 +1029,7 @@ struct TeamComposerState: Equatable {
         linkPreview = nil
         removedLink = nil
         files = []
+        unnamed = []
     }
 
     /// The first link of the draft is now `link`, or the draft has none. The preview of another link goes at once, and
@@ -1916,8 +1921,9 @@ enum TeamMentionTarget: MentionableBot, Equatable, Sendable {
     var mentionedPerson: TeamMember? { if case .person(let member) = self { member } else { nil } }
 }
 
-/// The names of team bots and people with `@` in the team chat. A mention of a bot asks the bot. A mention of a person
-/// starts no turn: it tells the person, also in a quiet team.
+/// The names of team bots and people in the team chat: a bot with `@`, a person with `@` or by the name alone
+/// (BotMentions.namedPeople). A mention of a bot asks the bot. A mention of a person starts no turn: it tells the
+/// person, also in a quiet team.
 enum TeamMentions {
     /// The most mentions that the Mac takes in one message (`MAX_MENTIONS` in backend/coconut/team_store.py). A send
     /// with more saves nothing, so a message that the Mac refuses for its mentions never waits for a retry.
@@ -1958,8 +1964,8 @@ enum TeamMentions {
     }
 }
 
-/// How a bubble shows a message that names this person: the `@` name of the person in bold, as Markdown already
-/// shows a strong word. No new color. A bubble shows each other name as the text has it.
+/// How a bubble shows a message that names this person: the name of the person in bold, with its `@` or without it,
+/// as Markdown already shows a strong word. No new color. A bubble shows each other name as the text has it.
 enum TeamMentionEmphasis {
     /// What VoiceOver adds to such a bubble, as the bold name shows it.
     static let spoken = "Names you"
@@ -1970,26 +1976,36 @@ enum TeamMentionEmphasis {
         return message.mentions?.contains(own.member) == true
     }
 
-    /// The text of the bubble: each `@name` of this person in bold. A text with a code mark (`) stays as it is,
-    /// because a mark of Markdown inside code would show as a character.
+    /// The text of the bubble: each name of this person in bold, with its `@` or without it, as the composer of the
+    /// writer finds a name (BotMentions.namedPeople): the whole name, and its first word when no other person and no
+    /// agent of the team has that word. A text with a code mark (`) stays as it is, because a mark of Markdown inside
+    /// code would show as a character.
     static func text(_ text: String, message: TeamMessage?, room: TeamRoom) -> String {
-        guard namesMe(message, room: room), let name = room.ownMember?.name, !name.isEmpty, !text.contains("`")
+        guard namesMe(message, room: room), let own = room.ownMember, !own.name.isEmpty, !text.contains("`")
         else { return text }
-        let token = "@" + name
         var result = ""
-        var rest = text[...]
-        while let range = rest.range(of: token, options: .caseInsensitive) {
-            let before = range.lowerBound == text.startIndex ? nil : text[text.index(before: range.lowerBound)]
-            let after = range.upperBound == text.endIndex ? nil : text[range.upperBound]
-            result += String(rest[..<range.lowerBound])
-            if before.map(BotMentions.isBoundary) ?? true, after.map(BotMentions.isBoundary) ?? true {
-                result += "**" + String(text[range]) + "**"
-            } else {
-                result += String(text[range])
-            }
-            rest = rest[range.upperBound...]
+        var rest = text.startIndex
+        for (_, range) in BotMentions.nameRanges(of: forms(of: own, in: room), in: text) {
+            var start = range.lowerBound
+            if start > text.startIndex, text[text.index(before: start)] == "@" { start = text.index(before: start) }
+            guard start >= rest else { continue }
+            result += String(text[rest..<start]) + "**" + String(text[start..<range.upperBound]) + "**"
+            rest = range.upperBound
         }
-        return result + String(rest)
+        return result + String(text[rest...])
+    }
+
+    /// The forms of the name of this person that name the person.
+    private static func forms(of own: TeamMember, in room: TeamRoom) -> [String] {
+        func first(_ name: String) -> String {
+            String(name.split(whereSeparator: \.isWhitespace).first ?? "").lowercased()
+        }
+        let whole = own.name.trimmingCharacters(in: .whitespacesAndNewlines)
+        let word = String(whole.split(whereSeparator: \.isWhitespace).first ?? "")
+        let taken = Set(room.people.filter { $0.member != own.member }.map { first($0.name) }
+                        + TeamMentions.bots(of: room).map { $0.name.lowercased() })
+        guard word != whole, word.count >= 3, !taken.contains(word.lowercased()) else { return [whole] }
+        return [whole, word]
     }
 }
 
@@ -2019,8 +2035,8 @@ enum TeamRowSpeech {
 /// only a service that knows a mention of a person does so (TeamRoom.knowsPersonMentions).
 enum TeamNotificationFooter {
     static let on = "Get notified when someone writes in this team."
-    static let off = "You get a notification only when someone names you with @."
-    static let onWithMuted = on + " A muted chat notifies only when someone names you with @."
+    static let off = "You get a notification only when someone names you."
+    static let onWithMuted = on + " A muted chat notifies only when someone names you."
 
     /// With the switch on, a team with a muted chat (TeamChatMute) gets the longer text.
     static func text(enabled: Bool, room: TeamRoom) -> String {

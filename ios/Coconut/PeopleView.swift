@@ -165,7 +165,8 @@ extension AppStore {
             notice("n4", "announcement", "Coconut 0.2 ships Thursday.", posted: 6 * 1440, ends: -3 * 1440,
                    active: false, author: "m2", name: "Grace", seen: true),
         ]
-        let json = "{\"rooms\": [{\"room\": \"gumroad\", \"name\": \"Gumroad\", \"state\": \"active\", \"unread\": 0, \"notices\": ["
+        // `mentioned` as a current Mac sends it, so the `@` list and a name without `@` name the people too.
+        let json = "{\"rooms\": [{\"room\": \"gumroad\", \"name\": \"Gumroad\", \"state\": \"active\", \"unread\": 0, \"mentioned\": false, \"notices\": ["
             + notices.joined(separator: ", ") + "]}]}"
         guard var rooms = try? APIJSON.decoder().decode(TeamRooms.self, from: Data(json.utf8)) else { return }
         rooms.rooms[0].canInvite = true
