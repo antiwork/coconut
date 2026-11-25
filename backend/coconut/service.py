@@ -340,6 +340,8 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
         self.todos = GitHubTodos(self.business)
         from .risk_reviews import RiskReviews
         self.risk_reviews = RiskReviews(self.business)
+        from .support_handoffs import SupportHandoffs
+        self.support_handoffs = SupportHandoffs(self.business)
         self.github_requests = threading.Lock()
         try:
             self._recover_workspace_binding()
@@ -1127,6 +1129,12 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
             # The review of a decision is an issue of Finance, so the next list of the to-dos reads GitHub again.
             self.todos.forget()
             return result
+        if path == '/v1/support/handoffs':
+            from .support_handoffs import mutate_handoff
+            result = mutate_handoff(self, method, data, key, fingerprint)
+            # The conversation of a choice is an issue of Support, so the next list of the to-dos reads GitHub again.
+            self.todos.forget()
+            return result
         if path.startswith('/v1/business/'):
             from .business import mutate_business
             result = mutate_business(self, method, path.split('/')[3:], data, key, fingerprint)
@@ -1136,9 +1144,11 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
         if path == '/v1/github/item' or path.startswith('/v1/github/item/'):
             from .github_items import mutate_github_item
             result = mutate_github_item(self, method, path.split('/')[4:], data, key, fingerprint)
-            # A close or a reopen of an issue changes the to-dos, and the state of a review of Finance.
+            # A close or a reopen of an issue changes the to-dos, the state of a review of Finance, and the issue of a
+            # conversation of Support.
             self.todos.forget()
             self.risk_reviews.forget()
+            self.support_handoffs.forget()
             return result
         if path.startswith('/v1/support/conversations/'):
             from .support_threads import mutate_support

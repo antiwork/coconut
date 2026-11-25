@@ -82,6 +82,7 @@
 		33A7251327045D42BA8DF9FD /* TeamFiles.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0DB621874B1AF6F5054A82F5 /* TeamFiles.swift */; };
 		3429EE3AAB243969EB014880 /* TunnelFrames.swift in Sources */ = {isa = PBXBuildFile; fileRef = 124BFA46377F786FAC3CB2EE /* TunnelFrames.swift */; };
 		35C202B9C51B20B38223633D /* MacBanners.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB399F2E24791A095A12029D /* MacBanners.swift */; };
+		35F99A90D3B2F63724CE7915 /* SupportHandoffs.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1B695E283CBD8364A0FAB6ED /* SupportHandoffs.swift */; };
 		3659B5709A05E658B631EF17 /* BotPhase.swift in Sources */ = {isa = PBXBuildFile; fileRef = 66C01B452AF6DE7CA34E741B /* BotPhase.swift */; };
 		372F3B5EDC00ED506260F76D /* BoardSection.swift in Sources */ = {isa = PBXBuildFile; fileRef = B78CA35A955E85981763BFDA /* BoardSection.swift */; };
 		382851A3FDE3B53F73CEB4CA /* ShareItems.swift in Sources */ = {isa = PBXBuildFile; fileRef = 49E4849F245C2982D84A3988 /* ShareItems.swift */; };
@@ -235,6 +236,7 @@
 		B15ACAFBE7184FB08FD744E8 /* MarkdownUI in Frameworks */ = {isa = PBXBuildFile; productRef = BC59E1DD5B09E3520ADF36FE /* MarkdownUI */; };
 		B1CD36F3065A747AD96BB30E /* ProcessNoticeRow.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4186B41A461A1A5C35FBF33E /* ProcessNoticeRow.swift */; };
 		B242F0A01EE8D3D6573C9BCF /* NotificationContent.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7CA9695EAB2F655862469B6C /* NotificationContent.swift */; };
+		B54E52C106C0F26DC8F33A50 /* SupportHandoffs.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1B695E283CBD8364A0FAB6ED /* SupportHandoffs.swift */; };
 		B5AFB604F249D7910BF7CEB7 /* ShareItems.swift in Sources */ = {isa = PBXBuildFile; fileRef = 49E4849F245C2982D84A3988 /* ShareItems.swift */; };
 		B5D1A8BE6C4E98AD6A098DF4 /* Home.swift in Sources */ = {isa = PBXBuildFile; fileRef = DA3E57857A5BE776F16DA660 /* Home.swift */; };
 		B6EBC9B621DCB6CC6B50AA4B /* BotMentions.swift in Sources */ = {isa = PBXBuildFile; fileRef = B8BC9EE960764592EBC7C381 /* BotMentions.swift */; };
@@ -390,6 +392,7 @@
 		150449BCD1EA051889FBAC65 /* TeamViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TeamViews.swift; sourceTree = "<group>"; };
 		150811EF36AC20B533E07A4F /* DocumentPage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DocumentPage.swift; sourceTree = "<group>"; };
 		192C514F4386030356307039 /* CoconutShare.appex */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = "wrapper.app-extension"; path = CoconutShare.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+		1B695E283CBD8364A0FAB6ED /* SupportHandoffs.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SupportHandoffs.swift; sourceTree = "<group>"; };
 		1BCCBD2348AD6BFA9CD627F6 /* ShareDirectory.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShareDirectory.swift; sourceTree = "<group>"; };
 		22ECF8C307532AF3869C15F7 /* SettingsStyle.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsStyle.swift; sourceTree = "<group>"; };
 		23128A0920B9862B6A642790 /* Bento.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Bento.swift; sourceTree = "<group>"; };
@@ -732,6 +735,7 @@
 				58902FCC4F76AF4C4BF4B674 /* SpendView.swift */,
 				E047A026D090ABDE156F4AAF /* StateUpdates.swift */,
 				BDEFBD4FEDF5DE66EB20E185 /* SupportConversation.swift */,
+				1B695E283CBD8364A0FAB6ED /* SupportHandoffs.swift */,
 				89E9F80C1D8CD858F6D8D921 /* Team.swift */,
 				E015BADEE4C67B15CE17C0ED /* TeamAlerts.swift */,
 				F57307766B130CB4F400B4A9 /* TeamAlertViews.swift */,
@@ -1184,6 +1188,7 @@
 				42C7E9A7DD0489682D7AB07A /* SpendView.swift in Sources */,
 				19A96D695D5D2C1EBD30410F /* StateUpdates.swift in Sources */,
 				A4073EC19928A4CD8903DC3F /* SupportConversation.swift in Sources */,
+				B54E52C106C0F26DC8F33A50 /* SupportHandoffs.swift in Sources */,
 				6E31A7C5E83E7F6F4EF4CF84 /* Team.swift in Sources */,
 				CF22339084AE575384926D18 /* TeamAlertViews.swift in Sources */,
 				1F1A30177247DE328DB3B91F /* TeamAlerts.swift in Sources */,
@@ -1315,6 +1320,7 @@
 				D912ADC33A21B4BD43D4FED1 /* SpendView.swift in Sources */,
 				0CE3FD694FA5FF40A3BE0B2B /* StateUpdates.swift in Sources */,
 				3E09D2F0BFE22E568A97578A /* SupportConversation.swift in Sources */,
+				35F99A90D3B2F63724CE7915 /* SupportHandoffs.swift in Sources */,
 				63432758C5476346F4222543 /* Team.swift in Sources */,
 				6311986E94DE683D9505A53F /* TeamAlertViews.swift in Sources */,
 				218637DFF03E21536877505C /* TeamAlerts.swift in Sources */,

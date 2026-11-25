@@ -365,6 +365,8 @@ class Handler(BaseHTTPRequestHandler):
                     self._json(200, service.todos.list(fresh=parse_qs(url.query).get('fresh') == ['1']))
                 elif url.path == '/v1/risk/reviews':
                     self._json(200, service.risk_reviews.list(fresh=parse_qs(url.query).get('fresh') == ['1']))
+                elif url.path == '/v1/support/handoffs':
+                    self._json(200, service.support_handoffs.list(fresh=parse_qs(url.query).get('fresh') == ['1']))
                 elif url.path == '/v1/business':
                     self._json(200, service.business.catalog(fresh=parse_qs(url.query).get('fresh') == ['1']))
                 elif url.path == '/v1/business/work':

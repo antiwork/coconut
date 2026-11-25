@@ -115,6 +115,10 @@ struct SupportConversationView: View {
                                        expand: { await expand(message) }, answer: { target = message.id })
                 }
                 if conversation.messages.isEmpty { Text("No messages.").font(.subheadline).foregroundStyle(.secondary) }
+                // How to respond, as the options of a poll, while the newest message is the customer's; Gumclaw does the
+                // work of most (SupportHandoffs.swift). The box at the bottom stays for an answer of the person's own.
+                SupportChoices(thread: id, subject: title, waiting: conversation.state == "open" && conversation.messages.last?.outgoing == false,
+                               canClose: conversation.canReply == true, close: { await setState("closed") }, reload: { loads += 1 })
                 if conversation.canReply == true, conversation.state == "open", conversation.messages.last?.outgoing == true {
                     Button("Close conversation", systemImage: "checkmark.circle") { Task { await setState("closed") } }
                         .buttonStyle(CoconutButtonStyle(kind: .quiet)).disabled(busy)
@@ -161,7 +165,10 @@ struct SupportConversationView: View {
             }
         }
         .task(id: loads) { await load() }
-        .refreshable { await load() }
+        .refreshable {
+            await load()
+            await store.loadSupportHandoffs(fresh: true)
+        }
         // Back from Connections, a page that could not read Gmail tries again.
         .onAppear { if failure != nil { loads += 1 } }
         .sheet(isPresented: $asking) {
