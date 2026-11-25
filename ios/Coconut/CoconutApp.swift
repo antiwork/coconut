@@ -510,9 +510,8 @@ extension CoconutHome {
                 guard let bot = store.bots.first(where: { $0.id == agent }) else { return }
                 _ = await store.sendNewChat(in: bot, text: "Which sellers had a payout held on Friday?")
             }
-        // To-dos (TodoLists.swift): the sheet of a new one on Product and on Finance, and a to-do added as Add does.
+        // To-dos (TodoLists.swift): the sheet of a new one on Product, and a to-do added as Add does. Finance has no +.
         case "new-todo": open(.product); later { PendingTodoIssues.shared.adding = .product }
-        case "new-todo-finance": open(.finance); later { PendingTodoIssues.shared.adding = .finance }
         case "todo-add":
             open(.product)
             later {

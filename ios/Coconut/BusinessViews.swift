@@ -26,7 +26,8 @@ struct BusinessHomeView: View {
             }
         }
         .navigationTitle("Finance")
-        .newTodoButton(.finance)
+        // No + here: the person found that a + made no sense on Finance (2026-11-24). Agents file its to-dos, and the
+        // message box of the tab writes to the agent of the business.
         .task(id: "\(store.connection)/\(store.businessChanges)") { await load() }
         .onChange(of: store.businessGeneration) { _, _ in report = nil; error = nil }
         .refreshable {

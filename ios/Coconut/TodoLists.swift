@@ -327,7 +327,8 @@ struct TodoIssueRows: View {
                         BoardLoadNotice(title: "To-dos unavailable", message: message) { Task { await store.loadTodoIssues(fresh: true) } }
                             .padding(inList ? 0 : BoardStyle.Space.m)
                     } else {
-                        Text(store.todoIssues == nil ? "Loading to-dos" : "No to-dos. Tap + to add one.")
+                        // Finance has no + (BusinessHomeView), so its empty list names none.
+                        Text(store.todoIssues == nil ? "Loading to-dos" : area == .finance ? "No to-dos." : "No to-dos. Tap + to add one.")
                             .font(.subheadline).foregroundStyle(.secondary)
                             .padding(.horizontal, inList ? 0 : BoardStyle.Space.m).padding(.vertical, BoardStyle.Space.m)
                             .frame(maxWidth: .infinity, alignment: .leading)
@@ -419,11 +420,11 @@ struct TodoListSection: View {
 }
 
 extension View {
-    /// The + of a tab with a list (TodoArea): one line adds a to-do to the list of the tab.
+    /// The + of Product and Support: one line adds a to-do to the list of the tab. Finance has none (BusinessHomeView).
     func newTodoButton(_ area: TodoArea) -> some View { modifier(NewTodoButton(area: area)) }
 }
 
-/// The + and its sheet. Each page keeps its own sheet, so a page of Support that Finance pushed opens one sheet only.
+/// The + and its sheet. Each page keeps its own sheet, so a stack with two pages that have a + opens one sheet only.
 /// A preview launch asks for the sheet through PendingTodoIssues.adding.
 private struct NewTodoButton: ViewModifier {
     let area: TodoArea
