@@ -4,9 +4,8 @@
 // one as a prop, already bound to its item (`choose=openChat(c.id)`), as ItemSections does in the list-detail pattern.
 use Attention, Card, ChatRow, Choice, Draft, Message, Photo, Turn from "./shapes.contract"
 
-fn two(n: number): string = n < 10 ? `0${n}` : `${n}`
-// The time of a turn to the second: 9s, 4m 05s, 1h 02m 05s (ConversationActivity.elapsed).
-fn elapsed(ms: number): string = ms < 60000 ? `${floor(max(ms, 0) / 1000)}s` : ms < 3600000 ? `${floor(ms / 60000)}m ${two(floor(ms / 1000) % 60)}s` : `${floor(ms / 3600000)}h ${two(floor(ms / 60000) % 60)}m ${two(floor(ms / 1000) % 60)}s`
+// The time of a turn to the second, without leading zeros: 9s, 4m 5s, 1h 2m 5s (ConversationActivity.elapsed).
+fn elapsed(ms: number): string = ms < 60000 ? `${floor(max(ms, 0) / 1000)}s` : ms < 3600000 ? `${floor(ms / 60000)}m ${floor(ms / 1000) % 60}s` : `${floor(ms / 3600000)}h ${floor(ms / 60000) % 60}m ${floor(ms / 1000) % 60}s`
 // The count of an unread badge: over 99 shows 99+ (UnreadBadge.text).
 fn badgeText(n: number): string = n > 99 ? "99+" : `${n}`
 // The colours of a face: the eight of app.forma, written out (see app.contract).

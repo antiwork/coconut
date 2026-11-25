@@ -351,12 +351,12 @@ enum UsageMath {
         return String(format: "$%.2f", value)
     }
 
-    /// "45s", "12m", "3h 05m".
+    /// "45s", "12m", "3h 5m", without leading zeros (ConversationActivity.elapsed).
     static func duration(_ seconds: Int) -> String {
         if seconds < 60 { return "\(seconds)s" }
         let minutes = seconds / 60
         if minutes < 60 { return "\(minutes)m" }
-        return String(format: "%dh %02dm", minutes / 60, minutes % 60)
+        return "\(minutes / 60)h \(minutes % 60)m"
     }
 }
 

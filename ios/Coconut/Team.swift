@@ -189,15 +189,16 @@ enum NoticeKind: String, CaseIterable, Identifiable, Sendable {
     var needsEnd: Bool { self == .deadline }
 }
 
-/// The time to the end of a notice, to the second when it is close: "2d 04h", "3h 05m", "4m 09s", "Ended".
+/// The time to the end of a notice, to the second when it is close: "2d 4h", "3h 5m", "4m 9s", "Ended". No part has a
+/// leading zero, as the time of a step (ConversationActivity.elapsed).
 enum NoticeCountdown {
     static func text(until end: Date, now: Date) -> String {
         let total = Int(end.timeIntervalSince(now))
         guard total > 0 else { return "Ended" }
         let (days, hours, minutes, seconds) = (total / 86_400, total / 3600 % 24, total / 60 % 60, total % 60)
-        if days > 0 { return String(format: "%dd %02dh", days, hours) }
-        if hours > 0 { return String(format: "%dh %02dm", hours, minutes) }
-        return String(format: "%dm %02ds", minutes, seconds)
+        if days > 0 { return "\(days)d \(hours)h" }
+        if hours > 0 { return "\(hours)h \(minutes)m" }
+        return "\(minutes)m \(seconds)s"
     }
 }
 

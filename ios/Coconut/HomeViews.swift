@@ -720,7 +720,7 @@ struct ChatRowLayout<Face: View, Subtitle: View>: View {
     let unread: Int
     let date: Date?
     /// The start of the step that a working chat does now, which the line under the name names. The row then shows the
-    /// time since it started (23s, 4m 05s), as the working line of the chat does.
+    /// time since it started (23s, 4m 5s), as the working line of the chat does.
     var step: Date? = nil
     var mentioned = false
     /// The person muted the chat (TeamChatMute).

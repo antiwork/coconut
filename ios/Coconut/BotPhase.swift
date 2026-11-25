@@ -35,12 +35,12 @@ struct ConversationActivity: Equatable {
     /// How many messages of the person wait for the next turn.
     var queued = 0
 
-    /// A time to the second: 9s, 4m 05s, 1h 02m 05s.
+    /// A time to the second: 9s, 4m 5s, 1h 2m 5s. No part has a leading zero (the person: "06s is weird just 6s").
     static func elapsed(_ seconds: TimeInterval) -> String {
         let total = max(0, Int(seconds))
         let (hours, minutes, rest) = (total / 3600, total / 60 % 60, total % 60)
-        if hours > 0 { return String(format: "%dh %02dm %02ds", hours, minutes, rest) }
-        if minutes > 0 { return String(format: "%dm %02ds", minutes, rest) }
+        if hours > 0 { return "\(hours)h \(minutes)m \(rest)s" }
+        if minutes > 0 { return "\(minutes)m \(rest)s" }
         return "\(rest)s"
     }
 }
