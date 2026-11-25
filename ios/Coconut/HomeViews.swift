@@ -282,16 +282,8 @@ struct HomeLaunchView: View {
         }
     }
 
-    /// A chat works while its row says so: a working line, or a card that waits for the person (AppStore.botWorks). A
-    /// direct chat with a bot of a team works while the bot types in it. Every other chat is idle, also a chat with
-    /// people.
-    private func works(_ item: ChatListItem, at date: Date) -> Bool {
-        switch item {
-        case .bot(let bot): store.botWorks(bot)
-        case .botDirect(_, let direct): !(direct.typing?.active(at: date).isEmpty ?? true)
-        case .team, .direct: false
-        }
-    }
+    /// A chat works while its row says so (AppStore.chatWorks), as in the sidebar of the Mac.
+    private func works(_ item: ChatListItem, at date: Date) -> Bool { store.chatWorks(item, at: date) }
 
     /// What asks for the person comes first on Product: the rules that breach now, then the cards that wait. Each row
     /// draws nothing when there is nothing to show. The breaches of the business are not here: Support past SLA is a

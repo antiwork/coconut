@@ -31,6 +31,17 @@ extension AppStore {
     /// Chats and the grid of the working agents (ChatGridView) read it.
     func botWorks(_ bot: Bot) -> Bool { botPhase(bot) != nil || botNeedsYou(bot) }
 
+    /// A row of a chat list works: an agent chat that works or whose card waits (botWorks), or a direct chat with a bot
+    /// of a team while the bot types in it. Every other chat is idle, also a chat with people. A folded section of
+    /// Chats on the iPhone and of the Mac sidebar keeps such a row in sight.
+    func chatWorks(_ item: ChatListItem, at date: Date) -> Bool {
+        switch item {
+        case .bot(let bot): botWorks(bot)
+        case .botDirect(_, let direct): !(direct.typing?.active(at: date).isEmpty ?? true)
+        case .team, .direct: false
+        }
+    }
+
     /// The cards of the grid now: the chats of the deck that work, the chats with a working line first.
     func chatGridCards() -> [Bot] { chatDeckCards().filter(botWorks) }
 }

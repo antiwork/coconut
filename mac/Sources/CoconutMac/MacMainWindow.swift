@@ -422,9 +422,14 @@ struct DetailColumnBottomInset: NSViewRepresentable {
 }
 
 /// The sidebar: the Coconut chat, then the places (Home, Live, Spend, Finance, Support, Projects and You), then the
-/// chats in sections: Starred, Unread, Team chats, Project chats and Archived. The iPhone's Product tab has no row
-/// here: the person chose on a card to leave the sidebar as it is (2026-11-24), so Home keeps the cards and Support
-/// keeps the queue of the product issues. Do not add the row or offer it again.
+/// chats in the sections of Chats on the iPhone (ChatSections): Starred, Unread, a section for each project, Coconut
+/// first, then Team chats, Other agents, Personal at the bottom, and Archived. The person chose on a card to split the
+/// sidebar by project as Chats is (2026-11-25), after asking for Chats "more like slack" with "almost everything ...
+/// archived / hidden to focus on real work". A section of a project, Team chats and Other agents start folded and fold
+/// as a section of Slack: a folded section still shows the open chat and the chats that work or wait for the person
+/// (stays), and its unread chats are in Unread. The Mac keeps the sections that the person opened. The iPhone's
+/// Product tab has no row here: the person chose on a card to leave the sidebar as it is (2026-11-24), so Home keeps
+/// the cards and Support keeps the queue of the product issues. Do not add the row or offer it again.
 struct MacSidebar: View {
     @Environment(AppStore.self) private var store
     @Environment(\.showChatDeck) private var showChatDeck
@@ -432,32 +437,34 @@ struct MacSidebar: View {
     @State private var deleting: Bot?
     @AppStorage("sidebar-unreads-open") private var unreadsOpen = true
     @AppStorage("sidebar-starred-open") private var starredOpen = true
-    @AppStorage("sidebar-people-open") private var peopleOpen = true
-    @AppStorage("sidebar-agents-open") private var agentsOpen = true
+    /// The sections of the projects, Team chats and Other agents that the person opened (ChatListSection.open). Every
+    /// such section starts folded.
+    @AppStorage("sidebar-sections-open") private var openSections = ""
     @State private var archivedOpen = false
     /// The row of "Unread" that the person opened (ChatSections.make, `keeping`). It keeps its place while it is open,
     /// so the read does not move the row away from under the pointer.
     @State private var keptUnread: String?
+    /// The chat that a Send of the message box made last. A folded section keeps it in sight, so the person sees where
+    /// the new chat went, as Chats on the iPhone does (NewChatReveal).
+    @State private var keptChat: String?
 
-    /// The bots that are not archived, newest activity first, split into the pinned bots and the other bots.
-    /// It reads only its arguments, so it needs no main actor.
     var body: some View {
         // The store keeps the newest activity of each bot (ChatSummaries), so the sidebar reads no message. A pass
-        // over the messages for each body cost about 3 ms with 1,500 messages.
-        // An agent keeps its place by the newest of its chats, which show under it.
-        let latest = AgentChats.activity(bots: store.bots, latest: store.chatSummaries.newestActivity)
-        // A project that nobody wrote in, and has no chat, is in the message box only (AgentChats.isBlank). A chat
-        // whose project is gone has a row of its own (AgentChats.orphans).
-        let rows = store.bots.agents + AgentChats.orphans(in: store.bots)
-        let sections = ChatSections.make(bots: rows.filter { AgentChats.isListed($0, latest: latest) },
-                                         latest: latest, rooms: store.shownTeamRooms, local: store.newestLocalMessages,
+        // over the messages for each body cost about 3 ms with 1,500 messages. A project that nobody wrote in is in
+        // the message box only (AgentChats.isBlank), and a chat whose project is gone has a row of its own in Other
+        // agents (AgentChats.orphans).
+        let sections = ChatSections.make(bots: store.bots, latest: store.chatSummaries.newestActivity,
+                                         rooms: store.shownTeamRooms, local: store.newestLocalMessages,
                                          keeping: keptUnread)
         let pins = SidebarPins(pinnedBots: sections.pinned, documents: store.documents ?? [], bots: store.bots,
                                teamBots: store.teamBots)
+        let open = ChatListSection.open(openSections)
+        let now = Date.now
         // The cards are a page of Home, so Home stays marked while they show.
         let marked = Binding<MacSelection?>(get: { selection == .inbox ? .home : selection }, set: { selection = $0 })
         return List(selection: marked) {
-            // The Coconut chat: where the person changes Coconut. Coconut has no settings window for it.
+            // The Coconut chat: where the person changes Coconut. Coconut has no settings window for it. The further
+            // chats of the Coconut project are in its section.
             if let coconut = store.bots.coconutChat {
                 CoconutChatRow(bot: coconut).tag(MacSelection.bot(coconut.id))
                     .contextMenu {
@@ -465,7 +472,6 @@ struct MacSidebar: View {
                         Button("Show all agents") { showDeck(from: coconut) }
                         Button(BotChatMute.label(coconut)) { Task { await store.muteBot(coconut, muted: coconut.notifications) } }
                     }
-                chatRows(of: coconut)
             }
             MacSidebarLabel(title: "Home", symbol: "house")
                 .badge(HomeFeed.badge(store.homeUnread))
@@ -493,10 +499,11 @@ struct MacSidebar: View {
                 .tag(MacSelection.profile)
                 .accessibilityIdentifier("sidebar-profile")
             // The chats, in the sections of Slack: each one folds with its header, and the Mac keeps the choice. A
-            // section without rows does not show. Starred comes first.
+            // section without rows does not show. Starred comes first. A starred project has its own chat here, and its
+            // further chats stay in its section, as on the iPhone.
             if !pins.isEmpty || !sections.pinnedChats.isEmpty {
                 Section("Starred", isExpanded: $starredOpen) {
-                    ForEach(pins.bots) { bot in row(bot) }
+                    ForEach(pins.bots) { bot in botRow(bot, name: bot.name) }
                     // The pinned chats of the teams, as the same rows that they have in "Team chats".
                     ForEach(sections.pinnedChats) { item in itemRow(item) }
                     ForEach(pins.pages) { page in pageRow(page) }
@@ -510,14 +517,17 @@ struct MacSidebar: View {
                     Text("Unread").contextMenu { MarkAllReadButton() }
                 }
             }
-            if !sections.people.isEmpty {
-                Section("Team chats", isExpanded: $peopleOpen) {
-                    ForEach(sections.people) { item in itemRow(item) }
-                }
-            }
-            if !sections.bots.isEmpty {
-                Section("Agents", isExpanded: $agentsOpen) {
-                    ForEach(sections.bots) { item in itemRow(item) }
+            // A section for each project, Coconut first, then Team chats, Other agents and Personal at the bottom, as
+            // the sections of Chats on the iPhone. A folded section keeps the real work in sight (stays).
+            ForEach(sections.groups) { section in
+                let isOpen = open.contains(section.id)
+                Section {
+                    ForEach(section.shown(open: isOpen) { stays($0, at: now) }) { item in itemRow(item, in: section) }
+                } header: {
+                    MacFoldHeader(title: section.title, open: isOpen) {
+                        withAnimation(.snappy) { openSections = ChatListSection.toggle(section.id, openSections) }
+                    }
+                    .accessibilityIdentifier("sidebar-section-" + section.id)
                 }
             }
             // The archived chats, newest first and closed until the person opens the section. An archived chat stays
@@ -525,7 +535,7 @@ struct MacSidebar: View {
             let archived = AgentChats.archived(in: store.bots, latest: store.chatSummaries.newestActivity).filter { !$0.coconut }
             if !archived.isEmpty {
                 Section("Archived", isExpanded: $archivedOpen) {
-                    ForEach(archived) { bot in row(bot) }
+                    ForEach(archived) { bot in botRow(bot, name: bot.listName) }
                 }
             }
         }
@@ -536,6 +546,12 @@ struct MacSidebar: View {
         // A chat that the person opens from "Unread" stays there until the person opens something else.
         .onChange(of: selection) { _, selected in
             keptUnread = sections.unread.first { Self.item($0, is: selected) }?.id
+        }
+        // A Send of the message box leaves the new chat closed (AppStore.sendNewChat). Its section keeps it in sight,
+        // also when it is folded.
+        .onChange(of: store.newChatSend) { _, send in
+            guard let send, let bot = store.bots.first(where: { $0.id == send.chat }) else { return }
+            keptChat = ChatListItem.bot(bot).id
         }
         // A deleted bot leaves the list. Its chat closes, and Home shows instead.
         .onChange(of: store.bots.map(\.id)) { _, ids in
@@ -563,23 +579,16 @@ struct MacSidebar: View {
             .accessibilityIdentifier("sidebar-page-\(page.key)")
     }
 
-    /// The row of an agent, and under it the rows of its further chats. An archived row stands alone.
-    @ViewBuilder
-    private func row(_ bot: Bot) -> some View {
-        botRow(bot)
-        if !bot.archived && !bot.isChat { chatRows(of: bot) }
+    /// A row that a folded section keeps in sight, as a folded section of Slack keeps the open conversation and the
+    /// ones with activity: the open chat, the chat that a Send of the message box made last, and a chat that works or
+    /// whose card waits (AppStore.chatWorks). An unread chat is in Unread.
+    private func stays(_ item: ChatListItem, at date: Date) -> Bool {
+        Self.item(item, is: selection) || item.id == keptChat || store.chatWorks(item, at: date)
     }
 
     /// Shows the deck of all chats with the chat of a row in the middle. A card that the person opens shows in the window.
     private func showDeck(from bot: Bot) {
         showChatDeck?(ChatDeckRequest(start: bot.id, opened: nil) { selection = .bot($0) })
-    }
-
-    /// The further chats of an agent, newest first: the title of each chat, set in under the name of the agent.
-    private func chatRows(of agent: Bot) -> some View {
-        ForEach(AgentChats.chats(of: agent.id, in: store.bots, latest: store.chatSummaries.newestActivity)) { chat in
-            botRow(chat, nested: true)
-        }
     }
 
     /// True when the row of `item` is the chat of `selection`.
@@ -591,18 +600,18 @@ struct MacSidebar: View {
         }
     }
 
-    /// `nested` sets a chat in under the row of its project. A chat whose project is gone stands alone.
-    private func botRow(_ bot: Bot, nested: Bool = false) -> some View {
-        MacSidebarRow(name: bot.archived ? bot.listName : bot.isChat ? bot.chatLabel : bot.name, unread: bot.unreadCount,
-                      muted: !bot.notifications) {
-            // A project has no face. A further chat shows a bubble under its project, and a dot marks work.
-            if bot.isChat && !bot.archived {
+    /// The row of an agent chat. `name` is what the place of the row needs: in the section of its project a further
+    /// chat shows its own title (ChatListSection.title), and elsewhere it names its project too (Bot.listName).
+    private func botRow(_ bot: Bot, name: String) -> some View {
+        MacSidebarRow(name: name, unread: bot.unreadCount, muted: !bot.notifications) {
+            // A project has no face, and a dot marks work. A further chat shows a bubble while it is idle, and the dot
+            // of a project while it works.
+            if bot.isChat && !bot.archived && !store.isBotActive(bot) {
                 Image(systemName: "bubble.left").font(.caption).foregroundStyle(.tertiary)
             } else {
                 ZStack { BotActivityDot(bot: bot) }.frame(width: 12)
             }
         }
-            .padding(.leading, nested ? BoardStyle.Space.m : 0)
             .tag(MacSelection.bot(bot.id))
             .contextMenu {
                 if !bot.archived {
@@ -636,11 +645,21 @@ struct MacSidebar: View {
             .accessibilityIdentifier("sidebar-bot-\(bot.id)")
     }
 
+    /// The row of a chat in a section of a project, Team chats or Other agents.
+    @ViewBuilder
+    private func itemRow(_ item: ChatListItem, in section: ChatListSection) -> some View {
+        if case .bot(let bot) = item {
+            botRow(bot, name: section.title(of: bot))
+        } else {
+            itemRow(item)
+        }
+    }
+
     /// The row of a chat in any section: an agent, a team, a direct chat with a person, or one with a bot of a team.
     @ViewBuilder
     private func itemRow(_ item: ChatListItem) -> some View {
         switch item {
-        case .bot(let bot): row(bot)
+        case .bot(let bot): botRow(bot, name: bot.listName)
         case .team(let room):
             if let chat = item.chat {
                 MacSidebarRow(name: room.title, unread: item.unreadCount, muted: room.shownChatMuted,
@@ -665,6 +684,37 @@ struct MacSidebar: View {
                 .tag(MacSelection.team(TeamChatKey(room: room.room, bot: direct.bot)))
                 .accessibilityIdentifier("sidebar-bot-direct-" + direct.bot)
         }
+    }
+}
+
+/// The title of a section of the sidebar that folds as a section of Slack: a folded section keeps the open chat and
+/// the chats that work or wait for the person in sight (MacSidebar.stays), and its unread chats are in Unread. A click
+/// on the title folds or opens it. The chevron shows while the pointer is over the title, at the place where the
+/// sidebar shows the chevron of Starred and Unread.
+private struct MacFoldHeader: View {
+    let title: String
+    let open: Bool
+    let toggle: () -> Void
+    @State private var hovering = false
+
+    var body: some View {
+        Button(action: toggle) {
+            HStack(spacing: BoardStyle.Space.xs) {
+                Text(title)
+                Spacer(minLength: 0)
+                Image(systemName: "chevron.right")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .rotationEffect(.degrees(open ? 90 : 0))
+                    .opacity(hovering ? 1 : 0)
+                    .accessibilityHidden(true)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering = $0 }
+        .accessibilityAddTraits(.isHeader)
+        .accessibilityValue(open ? "Expanded" : "Collapsed")
     }
 }
 

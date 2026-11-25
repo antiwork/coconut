@@ -1593,26 +1593,6 @@ enum ChatListItem: Identifiable, Equatable {
 }
 
 enum ChatList {
-    /// The bots and the chats of the teams in one list, newest activity first. Both are in that order already. The
-    /// activity of a team is its newest message, or the time when this Mac made or joined it, the activity of a named
-    /// chat is its newest message or the time of the chat, and the activity of a direct chat is its newest message. A
-    /// chat of a team and a bot with the same time keep the bot first.
-    fileprivate static func merge(bots: [Bot], latest: [String: Date], chats: [ChatListItem]) -> [ChatListItem] {
-        func activity(_ bot: Bot) -> Date { latest[bot.id] ?? bot.createdAt.apiDate ?? .distantPast }
-        var items: [ChatListItem] = []
-        items.reserveCapacity(bots.count + chats.count)
-        var next = chats.startIndex
-        for bot in bots {
-            while next < chats.endIndex, chats[next].teamActivity > activity(bot) {
-                items.append(chats[next])
-                next += 1
-            }
-            items.append(.bot(bot))
-        }
-        items += chats[next...]
-        return items
-    }
-
     /// The teams, their named chats and the direct chats with a person of the rooms (TeamRoom.listedDirects), newest
     /// activity first. A named chat is a row of a team (TeamRoom.inChat). An older service sends no `chats` and no
     /// `directs`, so its rooms bring the teams only.
@@ -1729,40 +1709,53 @@ enum ChatList {
     }
 }
 
-/// The sections of the Mac sidebar: the pinned bots, the people (the teams and the direct chats with a person), and
-/// the other bots with the direct chats with a bot of a team. Each one newest activity first.
+/// The sections of the Mac sidebar: the sections of Chats on the iPhone (ChatList.sections), with Unread after Starred.
+/// The person chose on a card to split the sidebar by project as Chats is (2026-11-25): Starred, Unread, a section for
+/// each project, Coconut first, then Team chats, Other agents, and Personal at the bottom. The Coconut chat has its own
+/// row at the top of the sidebar, and the sidebar lists the archived chats itself.
 struct ChatSections: Equatable {
-    /// The chats with an unread message, as "Unreads" of Slack: the people and the agents that are not starred, newest
-    /// activity first. A chat shows here and not in its own section, so it moves back when the person reads it.
+    /// The chats with an unread message, as "Unreads" of Slack: every chat that is not starred, the further chats of
+    /// the projects too, newest activity first. A chat shows here and not in its own section, so it moves back when
+    /// the person reads it.
     var unread: [ChatListItem] = []
+    /// The starred projects, newest activity first (ChatList.isStarred). Their further chats stay in their sections.
     var pinned: [Bot]
     /// The pinned chats of the teams (ChatList.pinnedChats). The section "Starred" has them after the pinned bots.
     var pinnedChats: [ChatListItem] = []
-    var people: [ChatListItem]
-    /// The bots that are not pinned (`.bot`) and the direct chats with a bot of a team (`.botDirect`).
-    var bots: [ChatListItem]
+    /// The sections of the projects, Team chats and Other agents, in the order of Chats on the iPhone, without the
+    /// unread chats and the Coconut chat. A section without rows does not show.
+    var groups: [ChatListSection] = []
 
-    /// A section without rows does not show. A starred agent stays in "Starred", also with an unread message, as in
-    /// Slack. `latest` is the date of the newest message of each bot (ChatSummaries). The chat `keeping` (a
+    /// A starred chat stays in "Starred", also with an unread message, as in Slack. `bots` are all the bots of the
+    /// store, and `latest` is the date of the newest message of each bot (ChatSummaries). The chat `keeping` (a
     /// ChatListItem ID) stays in "Unread" without unread messages: the chat that the person opened from there keeps
     /// its row while it is open, as in Slack, so the read does not move the row away from under the pointer.
     static func make(bots: [Bot], latest: [String: Date], rooms: [TeamRoom],
                      local: [TeamChatKey: TeamLastMessage] = [:], keeping: String? = nil) -> ChatSections {
-        func activity(_ bot: Bot) -> Date { latest[bot.id] ?? bot.createdAt.apiDate ?? .distantPast }
-        let active = bots.filter { !$0.archived }.sorted { activity($0) > activity($1) }
-        let people = ChatList.people(rooms, local: local)
-        let others = ChatList.merge(bots: active.filter { !$0.pinned }, latest: latest,
-                                    chats: ChatList.botDirects(rooms, local: local))
-        func itemActivity(_ item: ChatListItem) -> Date {
-            if case .bot(let bot) = item { return activity(bot) }
-            return item.teamActivity
+        let sections = ChatList.sections(bots: bots, latest: latest, rooms: rooms, local: local)
+        let starred = sections.first { $0.kind == .starred }?.items ?? []
+        // The sidebar shows the Coconut chat at its top, and the archived chats in its own Archived.
+        let listed = sections.filter { $0.kind != .starred && $0.kind != .archived }.map { section in
+            ChatListSection(kind: section.kind, title: section.title, items: section.items.filter { item in
+                if case .bot(let bot) = item { return !ChatList.isCoconut(bot) }
+                return true
+            })
         }
         func isUnread(_ item: ChatListItem) -> Bool { item.unreadCount > 0 || item.id == keeping }
-        // A stable sort keeps the order of each section for chats of the same time.
-        let unread = (people + others).enumerated().filter { isUnread($0.element) }
-            .sorted { (itemActivity($0.element), -$0.offset) > (itemActivity($1.element), -$1.offset) }.map(\.element)
-        return ChatSections(unread: unread, pinned: active.filter(\.pinned), pinnedChats: ChatList.pinnedChats(rooms),
-                            people: people.filter { !isUnread($0) }, bots: others.filter { !isUnread($0) })
+        // A stable sort keeps the order of the sections for chats of the same time.
+        let unread = listed.flatMap(\.items).enumerated().filter { isUnread($0.element) }
+            .sorted { first, second in
+                (first.element.activity(latest: latest), -first.offset)
+                    > (second.element.activity(latest: latest), -second.offset)
+            }
+            .map(\.element)
+        let groups = listed.map { section in
+            ChatListSection(kind: section.kind, title: section.title, items: section.items.filter { !isUnread($0) })
+        }
+        let pinned = starred.compactMap { item -> Bot? in if case .bot(let bot) = item { bot } else { nil } }
+        return ChatSections(unread: unread, pinned: pinned,
+                            pinnedChats: starred.filter { if case .bot = $0 { false } else { true } },
+                            groups: groups.filter { !$0.items.isEmpty })
     }
 }
 

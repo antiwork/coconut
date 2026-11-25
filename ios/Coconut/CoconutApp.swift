@@ -93,11 +93,12 @@ struct CoconutApp: App {
 /// label, and each badge counts its own list (TodoLists.swift, TodoCounts): the person asked for three lists and three
 /// counts in place of one. An issue is a to-do of one list, so no other tab lists it again. The page of a project opens
 /// from the name of its agent, and the list of all projects from the project chip of the box. The app opens on Chats,
-/// because the person does not want to land in a list of work. The Mac sidebar has its own list.
+/// because the person does not want to land in a list of work. The Mac sidebar has the same sections of the chats, with
+/// Unread after Starred (ChatSections).
 ///
 /// A conversation with the agent of a project is an agent in every label (New agent, Archive agent, the section Other
-/// agents of Chats, the Agents section of the Mac sidebar), because the person sees a group chat as people with an
-/// agent or without one. The tab is Chats, because it holds the agents and the chats with people. Code names such as
+/// agents of Chats and of the Mac sidebar), because the person sees a group chat as people with an agent or without
+/// one. The tab is Chats, because it holds the agents and the chats with people. Code names such as
 /// `chats`, `ChatList` and `NewChatBar` stay.
 ///
 /// The tab bar always has exactly five tabs. With a sixth, iOS puts the last tabs behind a More tab, and the person
