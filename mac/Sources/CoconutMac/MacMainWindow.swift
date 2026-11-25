@@ -437,8 +437,9 @@ struct DetailColumnBottomInset: NSViewRepresentable {
 /// archived / hidden to focus on real work". A section of a project, Team chats and Other agents start folded and fold
 /// as a section of Slack: a folded section still shows the open chat and the chats that work or wait for the person
 /// (stays), and its unread chats are in Unread. The Mac keeps the sections that the person opened. Archived starts
-/// folded too and counts its chats on the right of its title, as the row Archived of Chats on the iPhone, which opens
-/// them on a page of their own. The iPhone's
+/// folded too and counts its chats on the right of its title, as the row Archived of Chats on the iPhone counts them.
+/// The iPhone opens them on a page of their own, but the Mac keeps Archived folding in place: the person chose that on
+/// a card (2026-11-25), so do not make it a row that opens a page or offer that again. The iPhone's
 /// Product tab has no row here: the person chose on a card to leave the sidebar as it is (2026-11-24), so Home keeps
 /// the cards and Support keeps the queue of the product issues. Do not add the row or offer it again.
 struct MacSidebar: View {
@@ -541,9 +542,10 @@ struct MacSidebar: View {
                     .accessibilityIdentifier("sidebar-section-" + section.id)
                 }
             }
-            // The archived chats, newest first and folded until the person opens the section, as on the iPhone: the
-            // title counts them on the right, and the chevron takes the place of the number under the pointer. An
-            // archived chat stays readable.
+            // The archived chats, newest first and folded until the person opens the section: the title counts them on
+            // the right, and the chevron takes the place of the number under the pointer. An archived chat stays
+            // readable. The iPhone has them on a page behind one row (ArchivedChatsRow), and the person chose on a card
+            // to keep them folding in place here.
             if !sections.archived.isEmpty {
                 Section {
                     if archivedOpen {
