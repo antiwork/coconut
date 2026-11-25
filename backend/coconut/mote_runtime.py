@@ -20,11 +20,13 @@ The first turn makes the mote home from the profile: mote's own files, the profi
 Coconut platform, its memory in BODY.md and a copy of its skills. From then on mote keeps its own home, and Hermes keeps
 its own. mote reads its model from `<profile>/mote/config.json` and the key from the environment of this service or
 from `<profile>/mote.env` (KEY=value lines). Only the mote process gets these, and mote keeps its model keys out of its
-shell commands.
+shell commands. A Bedrock API key (AWS_BEARER_TOKEN_BEDROCK, with BEDROCK_REGION) never reaches mote: the service
+relays mote's model calls to Bedrock (bedrock_relay.py), and mote gets the address and the token of the relay.
 """
 from __future__ import annotations
 
 import ast
+import collections
 import json
 import logging
 import os
@@ -57,6 +59,8 @@ KINDS = {'execute': ('terminal', 'command'), 'delete': ('terminal', 'command'), 
          'read': ('read_file', 'path'), 'edit': ('patch', 'path'), 'search': ('search_files', 'pattern'),
          'fetch': ('web_extract', 'url')}
 COMMAND_TEXT = 'This agent runs on mote, which has no Hermes commands. Write what you want in words.'
+FAILED = 'mote could not finish this turn.'
+STOPPED = 'mote stopped this turn.'
 RUNTIME_TEXT = {'hermes': 'Hermes Agent: every tool, routines, helpers and the board.',
                 'mote': ('mote: a small agent with four tools and a home of plain files. The routines of the agent, '
                          'its work on the board and its card checks stay on Hermes.')}
@@ -178,8 +182,10 @@ def read_env(path: Path) -> dict:
 def base_env() -> dict:
     """The environment of mote: this service's, without Hermes, Coconut and Python settings, with the usual folders of
     commands on the PATH."""
+    from .bedrock_relay import KEY, REGION
     env = {key: value for key, value in os.environ.items()
-           if not key.startswith(('HERMES_', 'COCONUT_')) and key not in ('PYTHONPATH', 'PYTHONHOME', 'VIRTUAL_ENV')}
+           if not key.startswith(('HERMES_', 'COCONUT_'))
+           and key not in ('PYTHONPATH', 'PYTHONHOME', 'VIRTUAL_ENV', KEY, REGION)}
     paths = (env.get('PATH') or '/usr/bin:/bin:/usr/sbin:/sbin').split(':')
     paths += ['/opt/homebrew/bin', '/usr/local/bin', str(Path.home() / '.local' / 'bin')]
     env['PATH'] = ':'.join(dict.fromkeys(path for path in paths if path))
@@ -260,6 +266,8 @@ class MoteRuntime:
         self.pollers: dict[str, threading.Thread] = {}
         self.active: dict[str, str] = {}
         self.running: dict[str, subprocess.Popen | None] = {}
+        # The relay to Bedrock of each key and region (bedrock_relay.py).
+        self.relays: dict[tuple[str, str], object] = {}
 
     def home_for(self, profile: Path) -> Path:
         if command() is None:
@@ -303,23 +311,25 @@ class MoteRuntime:
     def _run(self, home: Path, turn: dict) -> None:
         turn_id = str(turn['id'])
         try:
-            outcome = self._turn(home, turn)
+            outcome, detail = self._turn(home, turn)
         except Exception:
             LOG.exception('A turn of mote failed.')
-            outcome = 'failed'
-        self._report(turn_id, 'done', outcome=outcome)
+            outcome, detail = 'failed', FAILED
+        # The phone shows the detail of a turn that did not succeed (gateway_bridge.TurnEvents).
+        self._report(turn_id, 'done', outcome=outcome, **({'detail': detail} if detail and outcome != 'success' else {}))
         with self.lock:
             self.active.pop(turn_id, None)
 
-    def _turn(self, home: Path, turn: dict) -> str:
+    def _turn(self, home: Path, turn: dict) -> tuple[str, str | None]:
+        """Run one turn. Return its outcome and, for a turn that did not succeed, why."""
         turn_id, chat = str(turn['id']), str(turn['chat_id'])
         if turn.get('command'):
             self._report(turn_id, 'send', message_id=f'{turn_id}:command', text=COMMAND_TEXT)
-            return 'success'
+            return 'success', None
         with self.lock:
             if chat in self.running:
                 # One mote process for each session. The service runs the turn when the chat is free (GatewayBusy).
-                return 'busy'
+                return 'busy', None
             self.running[chat] = None
         try:
             return self._mote(home, turn, turn_id, chat)
@@ -327,7 +337,7 @@ class MoteRuntime:
             with self.lock:
                 self.running.pop(chat, None)
 
-    def _mote(self, home: Path, turn: dict, turn_id: str, chat: str) -> str:
+    def _mote(self, home: Path, turn: dict, turn_id: str, chat: str) -> tuple[str, str | None]:
         entry = dict(self._sessions(home).get(chat) or {})
         session = entry.get('session')
         if session and not (home / 'sessions' / f'{session}.jsonl').is_file():
@@ -347,7 +357,7 @@ class MoteRuntime:
         pause = self.folder / 'turns' / f'{turn_id}.paused'
         pause.parent.mkdir(parents=True, exist_ok=True)
         env = base_env()
-        env.update(read_env(home.parent / ENV_FILE))
+        env.update(self._model_env(home.parent))
         env.update(MOTE_HOME=str(home), COCONUT_TURN=turn_id, COCONUT_BRIDGE=str(self.bridge.address_file),
                    COCONUT_PAUSE=str(pause))
         env['PATH'] = f'{self._bin()}:{env["PATH"]}'
@@ -367,7 +377,9 @@ class MoteRuntime:
         if images:
             prompt['images'] = images
         self._send(process, prompt)
-        calls, said, outcome, paused, stopped = set(), set(), 'failed', False, False
+        calls, said, outcome, paused, stopped, ended = set(), set(), 'failed', False, False, False
+        # What mote reports in grey. The error that ends a turn comes after the idle state of the turn.
+        notes = collections.deque(maxlen=4)
         try:
             for line in process.stdout:
                 try:
@@ -375,6 +387,11 @@ class MoteRuntime:
                 except ValueError:
                     continue
                 if not isinstance(event, dict):
+                    continue
+                if event.get('type') == 'note' and str(event.get('text') or '').strip():
+                    notes.append(' '.join(str(event['text']).split()))
+                    continue
+                if ended:
                     continue
                 if event.get('type') == 'session' and isinstance(event.get('id'), str):
                     entry['session'] = event['id']
@@ -404,12 +421,14 @@ class MoteRuntime:
                         outcome = 'success'
                     elif stop == 'cancelled':
                         outcome = 'cancelled'
-                    break
+                    # mote then writes its last notes and exits at the end of its input.
+                    ended = True
+                    self._close(process)
+                    timer = threading.Timer(STOP_SECONDS, self._kill, (process,))
+                    timer.daemon = True
+                    timer.start()
         finally:
-            try:
-                process.stdin.close()
-            except OSError:
-                pass
+            self._close(process)
             try:
                 process.wait(timeout=STOP_SECONDS)
             except subprocess.TimeoutExpired:
@@ -419,7 +438,40 @@ class MoteRuntime:
         if records and entry.get('session'):
             entry['records'] = sorted(sent | {record['id'] for record in records})
             self._save_session(home, chat, entry)
-        return outcome
+        if outcome == 'cancelled':
+            return outcome, STOPPED
+        if outcome != 'success':
+            LOG.warning('mote did not finish a turn of the chat %s: %s', chat, ' | '.join(notes) or 'no note')
+            return outcome, (FAILED[:-1] + ': ' + notes[-1])[:400] if notes else FAILED
+        return outcome, None
+
+    @staticmethod
+    def _close(process) -> None:
+        try:
+            process.stdin.close()
+        except (OSError, ValueError):
+            pass
+
+    @staticmethod
+    def _kill(process) -> None:
+        if process.poll() is None:
+            process.kill()
+
+    def _model_env(self, profile: Path) -> dict:
+        """The variables of `<profile>/mote.env` for mote. With a Bedrock key and no Anthropic key, mote calls the relay
+        of this service, which holds the Bedrock key (bedrock_relay.py)."""
+        from .bedrock_relay import KEY, REGION, Relay
+        values = read_env(profile / ENV_FILE)
+        key = values.pop(KEY, None) or os.environ.get(KEY)
+        region = values.pop(REGION, None) or os.environ.get(REGION) or 'us-east-1'
+        if key and not any(values.get(name) or os.environ.get(name)
+                           for name in ('ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN')):
+            with self.lock:
+                relay = self.relays.get((key, region))
+                if relay is None:
+                    relay = self.relays[(key, region)] = Relay(key, region)
+            values.update(ANTHROPIC_BASE_URL=relay.url, ANTHROPIC_API_KEY=relay.token)
+        return values
 
     def _send(self, process, message: dict) -> bool:
         with self.lock:

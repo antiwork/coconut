@@ -575,9 +575,10 @@ class TurnEvents:
             elif event.get('outcome') == 'success':
                 self.emit('completed', {'summary': 'Complete.'})
             elif event.get('outcome') == 'cancelled':
-                self.emit('failed', {'summary': 'Hermes stopped this turn.'})
+                # A runtime other than Hermes names itself in `detail` (mote_runtime.py). The plugin sends none.
+                self.emit('failed', {'summary': event.get('detail') or 'Hermes stopped this turn.'})
             else:
-                self.emit('failed', {'summary': 'The Hermes gateway could not finish this turn.'})
+                self.emit('failed', {'summary': event.get('detail') or 'The Hermes gateway could not finish this turn.'})
             return True
         return False
 

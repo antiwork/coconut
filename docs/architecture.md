@@ -588,6 +588,12 @@ agent's profile folder, and removing that file moves it back (`mote_runtime.py`)
 - mote asks for no approval: every command of the agent runs, whatever the access mode of Coconut says.
 - mote's model is in `<profile>/mote/config.json`. Its key is in the service's environment or `<profile>/mote.env`,
   which only the mote process reads.
+- On a Mac whose Claude access is Amazon Bedrock, `mote.env` holds a Bedrock API key (`AWS_BEARER_TOKEN_BEDROCK`, and
+  `BEDROCK_REGION`, us-east-1 by default). The service then relays mote's model calls to Bedrock on the loopback
+  (`bedrock_relay.py`): mote gets the relay's address and a token of the service, and the Bedrock key stays in the
+  service. A model name without a dot, such as `claude-opus-5-5`, goes to its global inference profile.
+- A turn that mote does not finish shows mote's reason on the phone (the `detail` of its `done` event), not the text
+  for Hermes.
 
 ## Team-only mode
 
