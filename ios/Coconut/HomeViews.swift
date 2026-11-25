@@ -174,7 +174,7 @@ struct HomeLaunchView: View {
                     .homeRow()
             }
             ForEach(sections) { section in
-                let isOpen = open.contains(section.id)
+                let isOpen = section.alwaysOpen || open.contains(section.id)
                 ChatSectionHeader(section: section, open: isOpen, first: section.id == sections.first?.id) {
                     withAnimation(.snappy) { openSections = ChatListSection.toggle(section.id, openSections) }
                 }
@@ -348,6 +348,9 @@ struct HomeLaunchView: View {
 /// (HomeLaunchView.stays). The phone keeps the sections that the person opened: one section on each line.
 struct ChatListSection: Identifiable, Equatable {
     enum Kind: Equatable {
+        /// The chats that the person starred, as the Starred section of Slack: the starred projects and the pinned
+        /// chats of the teams. It comes first, and it stays open: the person chose these chats to have them at hand.
+        case starred
         /// The chats of a project, its own chat first: the ID of the project.
         case project(String)
         /// The teams, their named chats, and the direct chats with a person or with a bot of a team.
@@ -365,8 +368,12 @@ struct ChatListSection: Identifiable, Equatable {
     let title: String
     let items: [ChatListItem]
 
+    /// The section holds the chats that the person chose, so it shows them without a tap, as the Starred of Slack.
+    var alwaysOpen: Bool { kind == .starred }
+
     var id: String {
         switch kind {
+        case .starred: "starred"
         case .project(let id): "project-" + id
         case .people: "people"
         case .others: "others"
@@ -403,7 +410,8 @@ struct ChatListSection: Identifiable, Equatable {
 
 /// The title of a section of Chats, as in the sidebar of Slack: a chevron that turns down while the section is open,
 /// and the name in the quiet color of a title. A tap opens or folds the section. A folded section says nothing about
-/// what it holds: its unread and working chats show under it all the same.
+/// what it holds: its unread and working chats show under it all the same. A section that holds the chats the person
+/// chose (ChatListSection.alwaysOpen) keeps its rows in sight and has nothing to fold.
 struct ChatSectionHeader: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @ScaledMetric(relativeTo: .subheadline) private var chevron: CGFloat = 14
@@ -414,30 +422,39 @@ struct ChatSectionHeader: View {
     let toggle: () -> Void
 
     var body: some View {
-        Button(action: toggle) {
-            HStack(spacing: BoardStyle.Space.s) {
-                Image(systemName: "chevron.right")
-                    .font(.footnote.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                    .rotationEffect(.degrees(open ? 90 : 0))
-                    .animation(BoardStyle.fade(reduceMotion: reduceMotion), value: open)
-                    .frame(width: chevron)
-                Text(section.title)
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                Spacer(minLength: 0)
-            }
-            .padding(.top, first ? BoardStyle.Space.s : BoardStyle.Space.l)
-            .padding(.bottom, BoardStyle.Space.s)
-            .background(BoardStyle.paper)
-            .contentShape(Rectangle())
+        if section.alwaysOpen {
+            label
+                .accessibilityElement(children: .combine)
+                .accessibilityAddTraits(.isHeader)
+                .accessibilityIdentifier("chat-section-" + section.id)
+        } else {
+            Button(action: toggle) { label }
+                .buttonStyle(HomePressStyle())
+                .accessibilityElement(children: .combine)
+                .accessibilityAddTraits(.isHeader)
+                .accessibilityValue(open ? "Expanded" : "Collapsed")
+                .accessibilityIdentifier("chat-section-" + section.id)
         }
-        .buttonStyle(HomePressStyle())
-        .accessibilityElement(children: .combine)
-        .accessibilityAddTraits(.isHeader)
-        .accessibilityValue(open ? "Expanded" : "Collapsed")
-        .accessibilityIdentifier("chat-section-" + section.id)
+    }
+
+    private var label: some View {
+        HStack(spacing: BoardStyle.Space.s) {
+            Image(systemName: "chevron.right")
+                .font(.footnote.weight(.semibold))
+                .foregroundStyle(.secondary)
+                .rotationEffect(.degrees(open ? 90 : 0))
+                .animation(BoardStyle.fade(reduceMotion: reduceMotion), value: open)
+                .frame(width: chevron)
+            Text(section.title)
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+            Spacer(minLength: 0)
+        }
+        .padding(.top, first ? BoardStyle.Space.s : BoardStyle.Space.l)
+        .padding(.bottom, BoardStyle.Space.s)
+        .background(BoardStyle.paper)
+        .contentShape(Rectangle())
     }
 }
 

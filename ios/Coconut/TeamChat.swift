@@ -1644,9 +1644,11 @@ enum ChatList {
     /// The Chats list of the iPhone in the sections of Slack (ChatListSection; the person, 2026-11-25: "Sections by
     /// project and personal agents at bottom"): a section for each project, Coconut first and then Gumroad, then the
     /// chats with people, the agents of an earlier release with the chats whose project is gone, then Personal at the
-    /// bottom, then Archived. A project's own chat comes first in its section, as a channel of Slack, and its further
-    /// chats follow newest activity first. The chats with people come newest activity first after the pinned chats of
-    /// the teams, which keep their fixed order (pinnedChats). An archived chat shows only in Archived, newest first (the
+    /// bottom, then Archived. The chats that the person starred, a project and a pinned chat of a team, come first in
+    /// Starred, as in the sidebar of Slack, and they show nowhere else. A project's own chat comes first in its section,
+    /// as a channel of Slack, and its further
+    /// chats follow newest activity first. The chats with people come newest activity first. An archived chat shows only
+    /// in Archived, newest first (the
     /// person: "almost everything should be archived / hidden to focus on real work"). A chat of an archived project
     /// that is not archived itself, and a chat that nobody wrote in (AgentChats.isBlank), show nowhere. A section without
     /// rows does not show. `latest` is the date of the newest message of each bot.
@@ -1666,16 +1668,22 @@ enum ChatList {
             .sorted { (rank($0), $0.createdAt, $0.id) < (rank($1), $1.createdAt, $1.id) }
         func section(of project: Bot) -> ChatListSection? {
             let own = shown.filter { $0.agentId == project.id }
-            let items = (own.filter { $0.id == project.id } + newestFirst(own.filter { $0.id != project.id }))
-                .map(ChatListItem.bot)
+            // A project that the person starred has its own chat in Starred, as a starred channel of Slack.
+            let items = (own.filter { $0.id == project.id && !isStarred($0) }
+                + newestFirst(own.filter { $0.id != project.id })).map(ChatListItem.bot)
             return items.isEmpty ? nil : ChatListSection(kind: .project(project.id), title: project.name, items: items)
         }
         let projectIds = Set(projects.map(\.id))
-        let people = pinnedChats(rooms) + sorted(peopleItems(rooms, local: local) + botDirectItems(rooms, local: local))
+        // The chats that the person starred, as the Starred section of Slack: the starred projects and the pinned chats
+        // of the teams, both in their fixed order.
+        let starred = newestFirst(shown.filter(isStarred)).map(ChatListItem.bot) + pinnedChats(rooms)
+        let people = sorted(peopleItems(rooms, local: local) + botDirectItems(rooms, local: local))
         let others = newestFirst(shown.filter { !projectIds.contains($0.agentId) }).map(ChatListItem.bot)
         let archived = AgentChats.archived(in: bots, latest: latest)
             .filter { !$0.coconut && !AgentChats.isBlank($0, latest: latest) }.map(ChatListItem.bot)
-        var sections = projects.filter { !isPersonal($0) }.compactMap(section)
+        var sections: [ChatListSection] = []
+        if !starred.isEmpty { sections.append(ChatListSection(kind: .starred, title: "Starred", items: starred)) }
+        sections += projects.filter { !isPersonal($0) }.compactMap(section)
         if !people.isEmpty { sections.append(ChatListSection(kind: .people, title: "Team chats", items: people)) }
         if !others.isEmpty { sections.append(ChatListSection(kind: .others, title: "Other agents", items: others)) }
         sections += projects.filter(isPersonal).compactMap(section)
