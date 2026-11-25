@@ -2,10 +2,10 @@ import SwiftUI
 
 /// The customer conversations of Support that the person hands to Gumclaw (backend/coconut/support_handoffs.py).
 /// Gumclaw answers the support mailbox and leaves open the conversations that wait for a person. The page of one offers
-/// how to respond as the options of a poll, beside the box for an answer of the person's own: Let Gumclaw answer,
-/// Refund and answer, or Close without answer. The first two go to Gumclaw as a risk review does: the Mac files the
-/// conversation as an issue of gumroad-private with the label `support` and an `@gumclaw` line, and Gumclaw answers the
-/// customer, reports in the issue and closes it with the conversation.
+/// how to respond as the options of a poll, beside the box for the person's own words (an answer, or a request to an
+/// agent): Let Gumclaw answer, Refund and answer, or Close without answer. The first two go to Gumclaw as a risk review
+/// does: the Mac files the conversation as an issue of gumroad-private with the label `support` and an `@gumclaw` line,
+/// and Gumclaw answers the customer, reports in the issue and closes it with the conversation.
 struct SupportHandoffList: Codable, Equatable, Sendable {
     /// owner/name of the issues: antiwork/gumroad-private.
     var repository: String

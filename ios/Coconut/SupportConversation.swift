@@ -87,7 +87,6 @@ struct SupportConversationView: View {
     @State private var target: String?
     @State private var busy = false
     @State private var actionError: String?
-    @State private var asking = false
 
     private var title: String { conversation.map(\.subject).flatMap { $0.isEmpty ? nil : $0 } ?? subject }
     private var answered: SupportConversation.Message? {
@@ -116,7 +115,8 @@ struct SupportConversationView: View {
                 }
                 if conversation.messages.isEmpty { Text("No messages.").font(.subheadline).foregroundStyle(.secondary) }
                 // How to respond, as the options of a poll, while the newest message is the customer's; Gumclaw does the
-                // work of most (SupportHandoffs.swift). The box at the bottom stays for an answer of the person's own.
+                // work of most (SupportHandoffs.swift). The box at the bottom stays for the person's own words: an
+                // answer, or a request to an agent.
                 SupportChoices(thread: id, subject: title, waiting: conversation.state == "open" && conversation.messages.last?.outgoing == false,
                                canClose: conversation.canReply == true, close: { await setState("closed") }, reload: { loads += 1 })
                 if conversation.canReply == true, conversation.state == "open", conversation.messages.last?.outgoing == true {
@@ -138,16 +138,19 @@ struct SupportConversationView: View {
             }
         }
         .safeAreaInset(edge: .bottom, spacing: 0) {
-            if let conversation, conversation.canReply == true {
+            // The box answers the customer, or hands the conversation to an agent with the person's words (ReplyBox).
+            // Without the support mailbox it only hands over.
+            if let conversation {
                 ReplyBox(draftKey: "support:" + id, placeholder: "Answer", note: answered?.replyTo.map { "To " + $0 },
-                         identifier: "support-answer") { text, key in await answer(text, key: key) }
+                         identifier: "support-answer", handoff: AgentHandoff(supportThread: id, subject: title),
+                         canReply: conversation.canReply == true) { text, key in await answer(text, key: key) }
             }
         }
         .navigationTitle("Support")
         .toolbar {
-            ToolbarItem(placement: .primaryAction) {
-                Menu {
-                    if conversation?.canReply == true, let state = conversation?.state {
+            if conversation?.canReply == true, let state = conversation?.state {
+                ToolbarItem(placement: .primaryAction) {
+                    Menu {
                         // Short labels: the narrow menu of an iPhone broke "Reopen conversation" with a hyphen.
                         if state == "open" {
                             Button("Close", systemImage: "checkmark.circle") { Task { await setState("closed") } }
@@ -156,12 +159,10 @@ struct SupportConversationView: View {
                             Button("Reopen", systemImage: "arrow.uturn.backward.circle") { Task { await setState("open") } }
                                 .accessibilityIdentifier("support-reopen")
                         }
-                    }
-                    Button("Ask an agent", systemImage: "bubble.left.and.bubble.right") { asking = true }
-                        .disabled(store.bots.allSatisfy(\.archived))
-                } label: { Label("Actions", systemImage: "ellipsis.circle") }
-                    .disabled(conversation == nil || busy)
-                    .accessibilityIdentifier("support-menu")
+                    } label: { Label("Actions", systemImage: "ellipsis.circle") }
+                        .disabled(busy)
+                        .accessibilityIdentifier("support-menu")
+                }
             }
         }
         .task(id: loads) { await load() }
@@ -171,10 +172,6 @@ struct SupportConversationView: View {
         }
         // Back from Connections, a page that could not read Gmail tries again.
         .onAppear { if failure != nil { loads += 1 } }
-        .sheet(isPresented: $asking) {
-            AskAgentSheet(summary: "Work on the support conversation \"\(title)\".", link: "Gmail thread " + id,
-                          keep: "Keep the answers in this conversation of the support mailbox.")
-        }
     }
 
     private func load() async {

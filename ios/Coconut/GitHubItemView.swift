@@ -1,9 +1,9 @@
 import SwiftUI
 
 /// An issue or a pull request in Coconut (GitHubItem): the state and the title, the people and the labels, for a pull
-/// request its checks, review, changes and merge, then the text and the comments, with a box to comment under them.
-/// The menu closes and reopens it, asks an agent and copies the link. Nothing here opens github.com: the person reads
-/// and answers the work of the agents where the rest of the work is.
+/// request its checks, review, changes and merge, then the text and the comments, with a box under them that comments
+/// or starts an agent on the item (ReplyBox). The menu closes and reopens it and copies the link. Nothing here opens
+/// github.com: the person reads and answers the work of the agents where the rest of the work is.
 struct GitHubItemView: View {
     @Environment(AppStore.self) private var store
     let route: GitHubItemRoute
@@ -12,7 +12,6 @@ struct GitHubItemView: View {
     @State private var busy = false
     @State private var actionError: String?
     @State private var confirmingMerge = false
-    @State private var asking = false
     @State private var loads = 0
 
     var body: some View {
@@ -33,9 +32,9 @@ struct GitHubItemView: View {
             }
         }
         .safeAreaInset(edge: .bottom, spacing: 0) {
-            if item != nil {
+            if let item {
                 ReplyBox(draftKey: "github:\(route.repository)#\(route.number)", placeholder: "Comment",
-                         identifier: "github-comment") { text, key in await comment(text, key: key) }
+                         identifier: "github-comment", handoff: AgentHandoff(item)) { text, key in await comment(text, key: key) }
             }
         }
         // A number of GitHub is a name, so it shows without the separator of an amount: #4731, not #4,731.
@@ -53,12 +52,6 @@ struct GitHubItemView: View {
             Button(mergeLabel) { Task { await merge() } }.accessibilityIdentifier("github-merge-confirm")
         } message: {
             Text("GitHub merges the commit that you see now. A newer push stops the merge.")
-        }
-        .sheet(isPresented: $asking) {
-            if let item {
-                AskAgentSheet(summary: "Work on \(item.repository)#\(item.number): \(item.title)", link: item.url ?? "",
-                              keep: "Keep the work and its results in this \(item.isPull ? "pull request" : "issue"), so the person sees them in Coconut.")
-            }
         }
     }
 
@@ -138,8 +131,6 @@ struct GitHubItemView: View {
                 }
                 .accessibilityIdentifier("github-reopen")
             }
-            Button("Ask an agent", systemImage: "bubble.left.and.bubble.right") { asking = true }
-                .disabled(store.bots.allSatisfy(\.archived))
             if let link = item.link {
                 Button("Copy link", systemImage: "link") { Pasteboard.copy(link) }
             }
@@ -444,16 +435,34 @@ struct GitHubPatchLines: View {
     }
 }
 
-/// The box under an issue, a pull request or a support conversation: one field and Send, as the box of a chat. Send
-/// first gives the field all that the keyboard holds (KeyboardSettle), and a text that comes back from dictation after
-/// the send clears again (SentEcho). A failed send puts the text back with the reason above it. One text keeps one
-/// request key, so a Send again after a lost answer sends nothing twice. The draft stays when the page closes.
+/// The box under an issue, a pull request, a support conversation or a risk review: one field and Send, as the box of
+/// a chat. Send first gives the field all that the keyboard holds (KeyboardSettle), and a text that comes back from
+/// dictation after the send clears again (SentEcho). A failed send puts the text back with the reason above it. One
+/// text keeps one request key, so a Send again after a lost answer sends nothing twice. The draft stays when the page
+/// closes.
+///
+/// Under an issue, a pull request and a support conversation the box is the message box too (the person: "comment box
+/// can merge w this new agent chat box. Then can do all work from coco"), so a comment, an answer and the work of an
+/// agent start in one place. A chip under the field names where the text goes: the box's own reply first, then the
+/// projects and the team agents of the message box (NewChatBar). To a project the text starts a new chat with the item
+/// on top (AgentHandoff), and to a team agent such as Gumclaw it goes to the direct chat. As a Send of the message box,
+/// it opens no chat: the chat shows in Chats, and the empty box says for a moment where the text went. With an agent
+/// chosen, the empty box shows the item as its suggestion, and Send hands the item over as it is. The box starts on its
+/// own reply, and a draft keeps where it goes, so a text written for an agent never comes back as a comment on GitHub
+/// or an answer to a customer.
 struct ReplyBox: View {
+    @Environment(AppStore.self) private var store
     let draftKey: String
+    /// The word of the box's own reply: its placeholder, and the first row of its chip.
     let placeholder: String
-    /// A line above the field, such as the address that an answer goes to.
+    /// A line above the field, such as the address that an answer goes to. It shows while the box replies.
     var note: String? = nil
     var identifier = "reply-box"
+    /// The item that an agent gets with the text. Nil keeps the box a reply only, as under a risk review.
+    var handoff: AgentHandoff? = nil
+    /// The page sends its own reply. Without it the box sends only to agents, as under a support conversation while the
+    /// support mailbox is not connected.
+    var canReply = true
     /// Sends the text with its request key. Nil is success; else the words of the failure.
     let send: @MainActor (String, String) async -> String?
     @State private var text = ""
@@ -461,125 +470,338 @@ struct ReplyBox: View {
     @State private var failure: String?
     @State private var echo = SentEcho()
     @State private var attempt: (key: String, text: String)?
+    /// Where the text goes, as ReplyDestination.key: empty for the box's own reply.
+    @State private var chosen = ""
+    /// Where the last text went, which the empty box says for a moment.
+    @State private var handed: Handed?
+    /// The agent of the business as the phone last saw it (NewChatBar), until the list of the teams is here.
+    @AppStorage(ChatProject.businessAgentKey) private var businessAgent = ""
     @FocusState private var focused: Bool
 
+    private struct Handed: Equatable {
+        let id = UUID()
+        let name: String
+    }
+
     private var trimmed: String { text.trimmingCharacters(in: .whitespacesAndNewlines) }
+    /// Where the draft goes, kept beside the draft.
+    private var chosenKey: String { draftKey + "/to" }
 
     var body: some View {
+        let agents = handoff == nil ? nil : agentList()
+        let target = destination(in: agents)
         VStack(alignment: .leading, spacing: BoardStyle.Space.xs) {
             // The line floats over the page as it scrolls under the box, so it sits in a capsule of its own.
             if let failure {
                 Text(failure).font(.caption).foregroundStyle(BoardStyle.destructive).fixedSize(horizontal: false, vertical: true)
                     .padding(.horizontal, BoardStyle.Space.s).padding(.vertical, 3)
                     .modifier(FloatingCapsule())
-            } else if let note {
+            } else if let note, target == .reply {
                 Text(note).font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
                     .padding(.horizontal, BoardStyle.Space.s).padding(.vertical, 3)
                     .modifier(FloatingCapsule())
             }
-            HStack(alignment: .bottom, spacing: 0) {
-                TextField(placeholder, text: $text, axis: .vertical)
-                    .focused($focused)
-                    .modifier(ComposerFieldStyle(send: submit))
-                    .padding(.horizontal, BoardStyle.Space.m)
-                    .accessibilityIdentifier(identifier + "-input")
-                if sending {
-                    ProgressView().frame(minWidth: 44, minHeight: 44)
-                } else {
-                    ComposerSendButton(symbol: "arrow.up", enabled: !trimmed.isEmpty, label: "Send", action: submit,
-                                       identifier: identifier + "-send")
-                }
+            if let handoff, let agents {
+                stacked(target, handoff: handoff, agents: agents)
+            } else {
+                row
             }
-            .padding(.trailing, BoardStyle.Space.xs)
-            .modifier(ComposerSurface(shape: RoundedRectangle(cornerRadius: BoardStyle.Radius.large, style: .continuous)))
-            .modifier(ComposerGlassGroup())
         }
         .padding(.horizontal, BoardStyle.Space.l)
         .padding(.top, BoardStyle.Space.xs)
         .padding(.bottom, BoardStyle.Space.s)
         .modifier(ComposerBackdrop())
-        .onAppear { if text.isEmpty { text = ComposerDrafts.read(draftKey) } }
+        .onAppear {
+            guard text.isEmpty else { return }
+            text = ComposerDrafts.read(draftKey)
+            // A draft comes back with where it goes. Without one the box starts on its own reply.
+            chosen = text.isEmpty ? "" : ComposerDrafts.read(chosenKey)
+        }
         .onChange(of: text) { old, new in
             if echo.takesBack(old: old, new: new) { text = ""; return }
-            if !sending { ComposerDrafts.write(new, chat: draftKey) }
+            if !sending { keepDraft(new) }
             if failure != nil && !new.isEmpty && new != old { failure = nil }
+        }
+        .onChange(of: chosen) { _, _ in if !sending { keepDraft(text) } }
+        .task(id: handed?.id) {
+            guard handed != nil else { return }
+            try? await Task.sleep(for: .seconds(3))
+            guard !Task.isCancelled else { return }
+            handed = nil
         }
     }
 
-    private func submit() {
-        KeyboardSettle.run(if: focused) {
-            let draft = trimmed
-            guard !draft.isEmpty, !sending else { return }
-            let key = attempt?.text == draft ? attempt?.key ?? UUID().uuidString : UUID().uuidString
-            attempt = (key, draft)
-            sending = true
-            failure = nil
-            echo.sent(text)
-            text = ""
-            Task {
-                let problem = await send(draft, key)
-                sending = false
-                if let problem {
-                    echo.cancel()
-                    failure = problem
-                    if text.isEmpty { text = draft }
-                } else {
-                    attempt = nil
-                    ComposerDrafts.write(text, chat: draftKey)
-                }
+    /// The field and Send on one line: the box of a page that only replies.
+    private var row: some View {
+        HStack(alignment: .bottom, spacing: 0) {
+            TextField(placeholder, text: $text, axis: .vertical)
+                .focused($focused)
+                .modifier(ComposerFieldStyle(send: submit))
+                .padding(.horizontal, BoardStyle.Space.m)
+                .accessibilityIdentifier(identifier + "-input")
+            sendButton(enabled: canReply && !trimmed.isEmpty)
+        }
+        .padding(.trailing, BoardStyle.Space.xs)
+        .modifier(ComposerSurface(shape: RoundedRectangle(cornerRadius: BoardStyle.Radius.large, style: .continuous)))
+        .modifier(ComposerGlassGroup())
+    }
+
+    /// The text on top, and under it the chip that names where it goes and Send, as the message box (NewChatBar).
+    private func stacked(_ target: ReplyDestination?, handoff: AgentHandoff, agents: ReplyAgents) -> some View {
+        let shape = RoundedRectangle(cornerRadius: BoardStyle.Radius.large, style: .continuous)
+        let enabled: Bool = switch target {
+        case .reply?: !trimmed.isEmpty
+        // While the box says where the last text went, an empty box sends nothing.
+        case .agent?: !trimmed.isEmpty || handed == nil
+        case nil: false
+        }
+        return VStack(alignment: .leading, spacing: 0) {
+            TextField(prompt(target, handoff: handoff), text: $text, axis: .vertical)
+                .focused($focused)
+                .modifier(ComposerFieldStyle(send: submit, stacked: true))
+                .padding(.horizontal, BoardStyle.Space.m)
+                .disabled(target == nil)
+                .accessibilityIdentifier(identifier + "-input")
+            HStack(spacing: 0) {
+                chip(target, agents: agents)
+                Spacer(minLength: 0)
+                sendButton(enabled: enabled)
             }
+            .padding(.horizontal, BoardStyle.Space.xs)
+        }
+        .modifier(ComposerClickArea(shape: shape) { focused = true })
+        .modifier(ComposerSurface(shape: shape))
+        .modifier(ComposerGlassGroup())
+    }
+
+    @ViewBuilder private func sendButton(enabled: Bool) -> some View {
+        if sending {
+            ProgressView().frame(minWidth: 44, minHeight: 44)
+        } else {
+            ComposerSendButton(symbol: "arrow.up", enabled: enabled, label: "Send", action: submit,
+                               identifier: identifier + "-send")
+        }
+    }
+
+    /// The gray text of the empty box: where the last text went, for a moment; else the item that an agent gets; else
+    /// the box's own reply.
+    private func prompt(_ target: ReplyDestination?, handoff: AgentHandoff) -> String {
+        if let handed { return "Sent to " + handed.name }
+        if case .agent? = target { return handoff.summary }
+        return placeholder
+    }
+
+    /// Where the text goes, as a chip that opens the box's own reply, the projects and the team agents. Before the Mac
+    /// sends its projects, a page that cannot reply says so.
+    @ViewBuilder
+    private func chip(_ target: ReplyDestination?, agents: ReplyAgents) -> some View {
+        if let target {
+            let choice = Binding(get: { target.key }, set: { chosen = $0 })
+            let name = target.name(reply: placeholder)
+            Menu {
+                if canReply {
+                    Picker(placeholder, selection: choice) { Text(placeholder).tag("") }
+                        .pickerStyle(.inline)
+                }
+                Picker("New agent", selection: choice) {
+                    ForEach(agents.projects) { project in Text(project.name).tag(project.id) }
+                }
+                .pickerStyle(.inline)
+                if !agents.agents.isEmpty {
+                    Picker("Team agents", selection: choice) {
+                        ForEach(agents.agents) { agent in Text(agent.name).tag(agent.memory) }
+                    }
+                    .pickerStyle(.inline)
+                }
+            } label: {
+                ComposerChipLabel(title: name)
+            }
+            .modifier(ComposerChipMenuStyle())
+            // The first item stays first, also when the menu opens above the chip.
+            .menuOrder(.fixed)
+            .accessibilityLabel("Send to, " + name)
+            .accessibilityIdentifier(identifier + "-to")
+        } else {
+            Text("No project yet")
+                .font(.subheadline.weight(.medium))
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, BoardStyle.Space.s)
+                .frame(minHeight: 44)
+                .accessibilityIdentifier(identifier + "-to")
+        }
+    }
+
+    /// Where a Send goes now. A box without an item only replies.
+    private func destination(in agents: ReplyAgents?) -> ReplyDestination? {
+        guard let agents else { return canReply ? .reply : nil }
+        return ReplyDestination.resolve(chosen, canReply: canReply, in: agents)
+    }
+
+    /// The projects and the team agents of the message box (NewChatBar), the project with the newest chat first.
+    private func agentList() -> ReplyAgents {
+        let latest = AgentChats.activity(bots: store.bots, latest: store.chatSummaries.newestActivity)
+        let agents = ChatProject.teamAgents(in: store.shownTeamRooms)
+        // Until the list of the teams is here, the agent of the business is the one that the phone kept.
+        let business = store.team == nil ? TeamAgentChoice(memory: businessAgent) : ChatProject.businessAgent(in: agents)
+        return ReplyAgents(projects: ChatProject.choices(in: store.bots, latest: latest), agents: agents,
+                           teamLoaded: store.team != nil, business: business)
+    }
+
+    /// Keeps the draft and where it goes. An empty draft keeps neither.
+    private func keepDraft(_ draft: String) {
+        ComposerDrafts.write(draft, chat: draftKey)
+        ComposerDrafts.write(draft.isEmpty ? "" : chosen, chat: chosenKey)
+    }
+
+    private func submit() {
+        let target = destination(in: handoff == nil ? nil : agentList())
+        KeyboardSettle.run(if: focused) {
+            switch target {
+            case .reply?: reply()
+            case .agent(let agent)?: handOff(to: agent)
+            case nil: break
+            }
+        }
+    }
+
+    /// Sends the text as the box's own reply: a comment, an answer, a question in the issue of a risk review.
+    private func reply() {
+        let draft = trimmed
+        guard canReply, !draft.isEmpty, !sending else { return }
+        let key = attempt?.text == draft ? attempt?.key ?? UUID().uuidString : UUID().uuidString
+        attempt = (key, draft)
+        sending = true
+        failure = nil
+        echo.sent(text)
+        text = ""
+        Task {
+            let problem = await send(draft, key)
+            sending = false
+            if let problem {
+                echo.cancel()
+                failure = problem
+                if text.isEmpty { text = draft }
+            } else {
+                attempt = nil
+                keepDraft(text)
+            }
+        }
+    }
+
+    /// Sends the item with the text to an agent: the first message of a new chat of a project, which stays closed
+    /// (AppStore.sendNewChat), or a message of the direct chat with a team agent. An empty box sends the item alone.
+    /// When the Mac does not take it, its notice says why and the text comes back.
+    private func handOff(to agent: NewChatTarget) {
+        guard let handoff, !sending else { return }
+        let words = trimmed
+        guard !words.isEmpty || handed == nil else { return }
+        let message = handoff.message(words)
+        failure = nil
+        switch agent {
+        case .project(let project):
+            sending = true
+            if !words.isEmpty {
+                echo.sent(text)
+                text = ""
+            }
+            Task {
+                let chat = await store.sendNewChat(in: project, text: message)
+                sending = false
+                guard chat != nil else {
+                    echo.cancel()
+                    if !words.isEmpty, text.isEmpty { text = words }
+                    return
+                }
+                keepDraft(text)
+                handed = Handed(name: agent.name)
+            }
+        case .teamAgent(let team):
+            // The store keeps the message and sends it. A message that does not go waits in the chat with Retry.
+            guard store.sendTeamMessage(team.chat, text: message, replyingTo: nil) else { return }
+            if !words.isEmpty {
+                echo.sent(text)
+                text = ""
+            }
+            handed = Handed(name: agent.name)
         }
     }
 }
 
-/// Hands an issue, a pull request or a conversation to an agent: the agent, a line of instructions, Send. The message
-/// goes to the agent's chat with the link, and that chat opens.
-struct AskAgentSheet: View {
-    @Environment(AppStore.self) private var store
-    @Environment(\.dismiss) private var dismiss
-    @Environment(\.openChat) private var openChat
-    @Environment(\.pushRoute) private var pushRoute
-    /// The first line of the message: "Work on antiwork/gumroad-private#4563: <title>".
+/// The item that an agent gets from the box under it (ReplyBox): a first line that names it as the suggestions of the
+/// message box do ("Work on #4872: …"), which names the new chat too, and the address that opens it in Coconut
+/// (InAppLink), then the person's words.
+struct AgentHandoff: Equatable {
     let summary: String
-    /// Where the work is, for the agent: its address, or the ID of its thread.
     let link: String
-    /// The last line: where the agent keeps the work.
-    let keep: String
-    @State private var selected = ""
-    @State private var instruction = ""
-    @State private var busy = false
 
-    var body: some View {
-        NavigationStack {
-            Form {
-                Picker("Agent", selection: $selected) {
-                    Text("Choose an agent").tag("")
-                    ForEach(store.bots.withoutChats.filter { !$0.archived }) { Text($0.name).tag($0.id) }
-                }
-                TextField("Instructions (optional)", text: $instruction, axis: .vertical).lineLimit(3...6)
-            }
-            .navigationTitle("Ask an agent").inlineNavigationTitle().settingsBackground()
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
-                ToolbarItem(placement: .confirmationAction) {
-                    Button(busy ? "Sending…" : "Send") { send() }.disabled(selected.isEmpty || busy)
-                }
-            }
-        }
-        .frame(minWidth: 360, minHeight: 300)
+    /// The message of the agent. An empty text hands the item over as it is.
+    func message(_ words: String) -> String {
+        [summary + "\n" + link, words].filter { !$0.isEmpty }.joined(separator: "\n\n")
+    }
+}
+
+extension AgentHandoff {
+    /// An issue or a pull request.
+    init(_ item: GitHubItem) {
+        // A number of GitHub is a name, so it has no separator of thousands.
+        summary = "Work on #" + String(item.number) + ": " + item.title
+        link = item.url ?? "https://github.com/" + item.repository + (item.isPull ? "/pull/" : "/issues/") + String(item.number)
     }
 
-    private func send() {
-        guard let bot = store.bots.first(where: { $0.id == selected }) else { return }
-        busy = true
-        Task {
-            defer { busy = false }
-            let request = instruction.trimmingCharacters(in: .whitespacesAndNewlines)
-            let text = [summary, link, request, keep].filter { !$0.isEmpty }.joined(separator: "\n\n")
-            if await store.send(bot: bot, text: text, mode: "queue") {
-                dismiss()
-                if let openChat { openChat(bot.id) } else { pushRoute?(ConversationRoute(botId: bot.id)) }
-            }
+    /// A conversation of the support mailbox. The address of its Gmail thread opens it in Coconut, and an agent finds
+    /// the thread by the ID in it.
+    init(supportThread id: String, subject: String) {
+        summary = "Work on the support conversation \"" + (subject.isEmpty ? "No subject" : subject) + "\""
+        link = "https://mail.google.com/mail/u/0/#all/" + id
+    }
+}
+
+/// The agents that the box under an item sends to, as the message box lists them (NewChatBar).
+struct ReplyAgents {
+    /// The projects, the one with the newest chat first, then the Coconut chat (ChatProject.choices).
+    let projects: [Bot]
+    /// The agents of the teams that the person can write to, such as Gumclaw (ChatProject.teamAgents).
+    let agents: [TeamAgentChoice]
+    /// The list of the teams is here, so a team agent that it lacks is gone.
+    let teamLoaded: Bool
+    /// The agent of the business (ChatProject.businessAgent).
+    let business: TeamAgentChoice?
+}
+
+/// Where the text of the box under an item goes: the box's own reply (a comment, an answer) or an agent.
+enum ReplyDestination: Equatable {
+    case reply
+    case agent(NewChatTarget)
+
+    /// The value of the choice: empty for the reply, the ID of a project, or the memory of a team agent
+    /// (TeamAgentChoice.memory), which names it also before the list of the teams is here.
+    var key: String {
+        switch self {
+        case .reply: ""
+        case .agent(.project(let bot)): bot.id
+        case .agent(.teamAgent(let agent)): agent.memory
         }
+    }
+
+    func name(reply: String) -> String {
+        switch self {
+        case .reply: reply
+        case .agent(let agent): agent.name
+        }
+    }
+
+    /// The place of a choice. An empty choice is the reply while the page can send one. An agent that left the list
+    /// gives way to the agent that the tabs of the business send to (NewChatPlace), and a page without its own reply
+    /// starts there too: a choice of an agent never turns into the reply, so a text written for an agent does not go
+    /// to a customer or to GitHub. Nil before the Mac sends its projects.
+    static func resolve(_ chosen: String, canReply: Bool, in list: ReplyAgents) -> ReplyDestination? {
+        if chosen.isEmpty, canReply { return .reply }
+        if let project = list.projects.first(where: { $0.id == chosen }) { return .agent(.project(project)) }
+        if let kept = TeamAgentChoice(memory: chosen) {
+            if !list.teamLoaded { return .agent(.teamAgent(kept)) }
+            if let agent = list.agents.first(where: { $0.id == kept.id }) { return .agent(.teamAgent(agent)) }
+        }
+        return NewChatPlace.support.target(chosen: "", projects: list.projects, agents: list.agents, business: list.business)
+            .map(ReplyDestination.agent)
     }
 }
