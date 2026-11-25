@@ -76,7 +76,7 @@ struct HomeLaunchView: View {
         .task(id: "\(store.connection)/\(store.businessChanges)") { await loadProductWork() }
         // Brainstorm in the place of New to-do (the person's request): a talk by voice with the model of a project that
         // ends as the next steps in the message box of Product, to send to an agent that builds them (Brainstorm.swift).
-        // Support keeps its +, and Finance has none.
+        // Finance and Support have no + either: agents add the to-dos of the three lists.
         .brainstormButton()
         // The root of the app loads the to-dos and the overview for the counts of the tabs (CoconutHome), so a pull only
         // loads them again.

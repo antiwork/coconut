@@ -19,15 +19,8 @@ struct BusinessWorkspaceView: View {
         }
         .background(BoardStyle.paper)
         .navigationTitle(BusinessFunction.name(function))
-        .modifier(SupportTodoButton(shown: function == "support"))
-    }
-}
-
-/// The + of Support adds a to-do to the list of Support. The other functions add work in their Work view.
-private struct SupportTodoButton: ViewModifier {
-    let shown: Bool
-    func body(content: Content) -> some View {
-        if shown { content.newTodoButton(.support) } else { content }
+        // No + on Support: the person removed it on a card (2026-11-24), as on Finance. Agents file its to-dos, and the
+        // message box of the tab writes to the agent of the business.
     }
 }
 

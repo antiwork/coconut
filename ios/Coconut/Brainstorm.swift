@@ -7,8 +7,8 @@ import Speech
 /// Brainstorm: the person talks an idea through with the model of a project, by voice, and the talk ends as the next
 /// steps in the message box, ready to send to an agent that builds them. The person asked for it on Product, in the
 /// place of New to-do: "have brainstorming special button which enables live chat voice mode with agent and then it
-/// turns it into next steps (chat box prefill) and then send to build". Support keeps its + (TodoLists), and Finance
-/// has none.
+/// turns it into next steps (chat box prefill) and then send to build". Finance and Support have no + either: agents
+/// add the to-dos of the three lists.
 ///
 /// The phone listens and speaks itself. Speech recognition on the phone writes down what the person says, and a pause
 /// of a second sends it. The Mac answers with the model of the project and what its profile knows (SOUL.md and memory)

@@ -13,7 +13,8 @@ Coconut is an issue or a label on GitHub, and a change on GitHub shows at the ne
     POST  /v1/todos {title, area}     a new to-do: an issue with the label of its list
     PATCH /v1/todos {number, area}    moves a to-do to another list: the label of the new list replaces the old one
 
-The number travels in the body, so the request log keeps the route without it.
+The number travels in the body, so the request log keeps the route without it. The app has no + to add a to-do any
+more (the person removed it from every list), so only older builds POST one; agents file theirs on GitHub directly.
 """
 from __future__ import annotations
 

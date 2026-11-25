@@ -510,9 +510,6 @@ extension CoconutHome {
                 guard let bot = store.bots.first(where: { $0.id == agent }) else { return }
                 _ = await store.sendNewChat(in: bot, text: "Which sellers had a payout held on Friday?")
             }
-        // To-dos (TodoLists.swift): the sheet of a new one on Support, and a to-do added as Add does. Finance has no +,
-        // and Product has Brainstorm in the place of its + (Brainstorm.swift).
-        case "new-todo": open(.support); later { PendingTodoIssues.shared.adding = .support }
         // Brainstorm: the page with the talk of the demo, and with Next steps the message box of Product that gets them.
         case "brainstorm": open(.product); later { PendingBrainstorm.shared.opening = true }
         case "brainstorm-steps":
@@ -520,13 +517,6 @@ extension CoconutHome {
             later {
                 PendingBrainstorm.shared.finishing = true
                 PendingBrainstorm.shared.opening = true
-            }
-        case "todo-add":
-            open(.product)
-            later {
-                let choices = QuickTodos.choices(in: store.bots, latest: store.chatSummaries.newestActivity)
-                let bot = QuickTodos.defaultAgent(last: UserDefaults.standard.string(forKey: TodoArea.product.agentKey) ?? "", in: choices)
-                await store.addTodoIssue("Find the three refunds over $500 from last week", area: .product, agent: bot)
             }
         case "agent-list": open(.chats, [AgentListRoute()])
         case "cards": open(.product, [HomeDestination.inbox])

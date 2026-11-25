@@ -27,9 +27,6 @@ enum TodoArea: String, CaseIterable, Codable, Hashable, Sendable {
         case .product: "hammer"
         }
     }
-
-    /// The project of the person's last new to-do of this list on this device (QuickTodos.agentKey for each list).
-    var agentKey: String { "todoAgent-" + rawValue }
 }
 
 /// One to-do: an open issue with the fields of its row.
@@ -109,8 +106,8 @@ struct TodoIssues: Codable, Equatable, Sendable {
     static let cache = "todos.json"
 }
 
-/// The number on the tab of a list: its to-dos, the ones on their way too, and the breaches of the business that are
-/// its own and no to-do of the list, which the overview of Finance proves while it is current (AttentionRules).
+/// The number on the tab of a list: its to-dos and the breaches of the business that are its own and no to-do of the
+/// list, which the overview of Finance proves while it is current (AttentionRules).
 /// Support past SLA counts on Support (conversations of the customers), and the risk reviews past SLA count on Finance
 /// (reviews of sellers): the person asked for the needs attention of the business to show as to-dos. The breaches
 /// about the issues themselves, product issues past SLA and high priority, count once, as their to-dos. The cards, the
@@ -119,13 +116,13 @@ enum TodoCounts {
     /// `reviews`: the risk reviews that Finance lists (RiskReviewList.current). They take the place of the breach of
     /// the risk reviews, and the open issue of a review is the same work, so it counts once, as its review. A review
     /// whose issue Gumclaw closed is decided: it shows until the next publish drops it, and counts no more.
-    static func count(_ area: TodoArea, todos: TodoIssues?, pending: Int = 0, attention: [AttentionItem] = [],
+    static func count(_ area: TodoArea, todos: TodoIssues?, attention: [AttentionItem] = [],
                       reviews: [RiskReview]? = nil) -> Int {
         let reviews = area == .finance ? reviews : nil
         let hidden = reviewIssues(reviews)
         let listed = todos?.items(in: area).filter { !hidden.contains($0.number) }.count ?? 0
         let breached = reviews.map { $0.filter { !$0.decided }.count } ?? breaches(area, attention).reduce(0) { $0 + $1.count }
-        return listed + pending + breached
+        return listed + breached
     }
 
     /// The numbers of the open issues of the reviews that a list shows as reviews.
@@ -144,34 +141,13 @@ enum TodoCounts {
     }
 }
 
-/// A to-do that the person added and GitHub has not confirmed yet. It shows at once, and stays with Retry when it fails.
-struct PendingTodoIssue: Identifiable, Equatable {
-    let id = UUID()
-    let title: String
-    let area: TodoArea
-    let agentId: String?
-    /// One key for each to-do, so a retry after a lost answer makes no second issue (github_todos).
-    let requestId = UUID().uuidString
-    var failed = false
-}
-
-/// The to-dos on their way. They live in memory only. `adding` asks a page of the list for its sheet of a new to-do,
-/// for a preview launch.
-@MainActor @Observable
-final class PendingTodoIssues {
-    static let shared = PendingTodoIssues()
-    var items: [PendingTodoIssue] = []
-    var adding: TodoArea?
-}
-
-private struct TodoCreateRequest: Encodable { let title: String; let area: String }
 private struct TodoMoveRequest: Encodable { let number: Int; let area: String }
 
 extension AppStore {
     /// The badge of the tab of a list (TodoCounts).
     func todoCount(_ area: TodoArea, now: Date = Date()) -> Int {
-        TodoCounts.count(area, todos: todoIssues, pending: PendingTodoIssues.shared.items.filter { $0.area == area }.count,
-                         attention: attentionItems(now: now), reviews: riskReviews?.current(now: now))
+        TodoCounts.count(area, todos: todoIssues, attention: attentionItems(now: now),
+                         reviews: riskReviews?.current(now: now))
     }
 
     /// Reads the to-dos again. A failure keeps the list that shows, with the error for a list that has none yet.
@@ -195,50 +171,6 @@ extension AppStore {
         guard list != todoIssues else { return }
         todoIssues = list
         if !isDemo { try? ProtectedCache.write(list, name: TodoIssues.cache) }
-    }
-
-    /// Adds a to-do: an issue of the work repository with the label of its list. Then the agent of the chosen project
-    /// starts on it at once in a chat of its own, as a quick to-do did, and keeps its work in the issue. Returns false
-    /// when GitHub refused or did not answer; the to-do then stays with Retry, under the same key.
-    @discardableResult
-    func addTodoIssue(_ title: String, area: TodoArea, agent: Bot?, retrying: PendingTodoIssue? = nil) async -> Bool {
-        let title = title.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !title.isEmpty else { return false }
-        let pending = PendingTodoIssues.shared
-        var item = retrying ?? PendingTodoIssue(title: title, area: area, agentId: agent?.id)
-        item.failed = false
-        if let index = pending.items.firstIndex(where: { $0.id == item.id }) { pending.items[index] = item }
-        else { pending.items.insert(item, at: 0) }
-        if let agent { UserDefaults.standard.set(agent.id, forKey: area.agentKey) }
-        let todo: TodoIssue
-        do {
-            if isDemo {
-                let number = (todoIssues?.items.map(\.number).max() ?? 4800) + 1
-                todo = TodoIssue(number: number, title: title, areas: [area.rawValue], labels: [GitHubLabel(name: area.rawValue)],
-                                 assignees: [], author: GitHubDemo.viewer.login, comments: 0, createdAt: Date().formatted(.iso8601),
-                                 updatedAt: Date().formatted(.iso8601), url: "https://github.com/example/gumroad/issues/\(number)", mine: false)
-            } else {
-                todo = try await businessRequest("todos", method: "POST", body: APIJSON.encode(TodoCreateRequest(title: title, area: area.rawValue)),
-                                                 requestId: item.requestId)
-            }
-        } catch {
-            if let index = pending.items.firstIndex(where: { $0.id == item.id }) { pending.items[index].failed = true }
-            if !(error is CancellationError) { self.error = error.localizedDescription }
-            return false
-        }
-        pending.items.removeAll { $0.id == item.id }
-        var list = todoIssues ?? TodoIssues(repository: "antiwork/gumroad-private", login: nil, items: [])
-        list.items.removeAll { $0.number == todo.number }
-        list.items.insert(todo, at: 0)
-        receiveTodoIssues(list)
-        if !isDemo { businessChanges += 1 }
-        guard let agent, let chat = await makeChat(of: agent) else { return true }
-        let repository = todoIssues?.repository ?? list.repository
-        let text = ["Work on \(repository)#\(todo.number): \(todo.title)", todo.url ?? "",
-                    "Keep the work and its results in this issue, so the person sees them in Coconut."]
-            .filter { !$0.isEmpty }.joined(separator: "\n\n")
-        _ = await send(bot: chat, text: text)
-        return true
     }
 
     /// Moves a to-do to another list: the label of the list changes on GitHub. The row moves at once and comes back
@@ -265,7 +197,7 @@ extension AppStore {
     }
 }
 
-/// The rows of one list: the to-dos on their way, then the to-dos, high priority first. A row opens its issue in
+/// The rows of one list: the to-dos, high priority first. A row opens its issue in
 /// Coconut (GitHubItemView). Hold it to move it to another list, which changes its label on GitHub. On Product the rows
 /// are rows of its List; on Finance and Support they are rows of a section (TodoListSection).
 struct TodoIssueRows: View {
@@ -277,7 +209,6 @@ struct TodoIssueRows: View {
     var inList = true
 
     var body: some View {
-        let pending = PendingTodoIssues.shared.items.filter { $0.area == area }
         // Finance lists each risk review past SLA, when the Mac has the list, in place of the row that counts them.
         let reviews = area == .finance ? store.shownRiskReviews : nil
         let hidden = TodoCounts.reviewIssues(reviews)
@@ -295,20 +226,6 @@ struct TodoIssueRows: View {
             } else {
                 ForEach(TodoCounts.breaches(area, store.attentionItems())) { TodoBreachRow(item: $0, inList: inList) }
             }
-            ForEach(pending) { item in
-                let agent = item.agentId.flatMap { id in store.bots.first { $0.id == id }?.name }
-                row(symbol: item.failed ? "exclamationmark.circle" : "circle.dotted", tint: item.failed ? BoardStyle.destructive : .secondary,
-                    title: item.title, detail: [agent, item.failed ? "Not added. Tap to try again" : "Adding"].compactMap { $0 }.joined(separator: " · ")) {
-                    guard item.failed else { return }
-                    Task { await store.addTodoIssue(item.title, area: area, agent: store.bots.first { $0.id == item.agentId }, retrying: item) }
-                }
-                .swipeActions(edge: .trailing) {
-                    if item.failed {
-                        Button("Remove", systemImage: "trash", role: .destructive) { PendingTodoIssues.shared.items.removeAll { $0.id == item.id } }
-                    }
-                }
-                .modifier(TodoRowInset(inList: inList))
-            }
             ForEach(todos) { todo in
                 row(symbol: todo.symbol, tint: todo.tint, title: todo.title, detail: todo.detail()) {
                     pushRoute?(todo.route(in: repository))
@@ -321,15 +238,14 @@ struct TodoIssueRows: View {
                 .accessibilityIdentifier("todo-\(todo.number)")
                 .modifier(TodoRowInset(inList: inList))
             }
-            if pending.isEmpty && todos.isEmpty && reviews == nil {
+            if todos.isEmpty && reviews == nil {
                 Group {
                     if store.todoIssues == nil, let message = store.todoIssuesError {
                         BoardLoadNotice(title: "To-dos unavailable", message: message) { Task { await store.loadTodoIssues(fresh: true) } }
                             .padding(inList ? 0 : BoardStyle.Space.m)
                     } else {
-                        // Finance has no + (BusinessHomeView), and Product has Brainstorm in its place (Brainstorm.swift),
-                        // so their empty lists name none.
-                        Text(store.todoIssues == nil ? "Loading to-dos" : area == .support ? "No to-dos. Tap + to add one." : "No to-dos.")
+                        // No list has a + (the person removed them), so an empty list names none.
+                        Text(store.todoIssues == nil ? "Loading to-dos" : "No to-dos.")
                             .font(.subheadline).foregroundStyle(.secondary)
                             .padding(.horizontal, inList ? 0 : BoardStyle.Space.m).padding(.vertical, BoardStyle.Space.m)
                             .frame(maxWidth: .infinity, alignment: .leading)
@@ -417,97 +333,6 @@ struct TodoListSection: View {
             await store.loadTodoIssues()
             if area == .finance { await store.loadRiskReviews() }
         }
-    }
-}
-
-extension View {
-    /// The + of Support: one line adds a to-do to the list of the tab. Finance has none (BusinessHomeView), and Product
-    /// has Brainstorm in its place (Brainstorm.swift), so their to-dos come from agents and from the issues on GitHub.
-    func newTodoButton(_ area: TodoArea) -> some View { modifier(NewTodoButton(area: area)) }
-}
-
-/// The + and its sheet. Each page keeps its own sheet, so a stack with two pages that have a + opens one sheet only.
-/// A preview launch asks for the sheet through PendingTodoIssues.adding.
-private struct NewTodoButton: ViewModifier {
-    let area: TodoArea
-    @State private var shown = false
-
-    func body(content: Content) -> some View {
-        content
-            .toolbar {
-                ToolbarItem(placement: .primaryAction) {
-                    Button("New to-do", systemImage: "plus") { shown = true }
-                        .accessibilityIdentifier("new-todo-\(area.rawValue)")
-                }
-            }
-            .sheet(isPresented: $shown) { NewTodoIssueSheet(area: area) }
-            .onChange(of: PendingTodoIssues.shared.adding, initial: true) { _, asked in
-                guard asked == area else { return }
-                PendingTodoIssues.shared.adding = nil
-                shown = true
-            }
-    }
-}
-
-/// The sheet of a new to-do: one line of text and the project whose agent works on it. Add makes the issue in the list
-/// of the tab, and the agent starts on it in a chat of its own.
-struct NewTodoIssueSheet: View {
-    @Environment(AppStore.self) private var store
-    @Environment(\.dismiss) private var dismiss
-    let area: TodoArea
-    @State private var chosen: String?
-    @State private var text = ""
-    @FocusState private var focused: Bool
-
-    var body: some View {
-        let latest = AgentChats.activity(bots: store.bots, latest: store.chatSummaries.newestActivity)
-        let choices = QuickTodos.choices(in: store.bots, latest: latest)
-        let last = UserDefaults.standard.string(forKey: area.agentKey) ?? UserDefaults.standard.string(forKey: QuickTodos.agentKey) ?? ""
-        let agent = chosen.flatMap { id in choices.first { $0.id == id } } ?? QuickTodos.defaultAgent(last: last, in: choices)
-        VStack(alignment: .leading, spacing: BoardStyle.Space.m) {
-            TextField("New to-do in \(area.title)", text: $text)
-                .font(.title3)
-                .focused($focused)
-                .submitLabel(.done)
-                .onSubmit { add(agent) }
-                .accessibilityIdentifier("new-todo-input")
-            HStack(spacing: BoardStyle.Space.s) {
-                if let agent {
-                    Menu {
-                        Picker("Project", selection: Binding(get: { agent.id }, set: { chosen = $0 })) {
-                            ForEach(choices) { Text($0.name).tag($0.id) }
-                        }
-                        .pickerStyle(.inline)
-                    } label: {
-                        ComposerChipLabel(title: agent.name)
-                    }
-                    .menuOrder(.fixed)
-                    .fixedSize()
-                    .accessibilityLabel("Project, \(agent.name)")
-                    .accessibilityIdentifier("new-todo-agent")
-                }
-                Spacer(minLength: 0)
-                Button("Add") { add(agent) }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                    .keyboardShortcut(.defaultAction)
-                    .accessibilityIdentifier("new-todo-add")
-            }
-        }
-        .padding(BoardStyle.Space.l)
-        #if os(iOS)
-        .presentationDetents([.height(150)])
-        #else
-        .frame(width: 420)
-        #endif
-        .onAppear { focused = true }
-    }
-
-    private func add(_ agent: Bot?) {
-        let line = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !line.isEmpty else { return }
-        dismiss()
-        Task { await store.addTodoIssue(line, area: area, agent: agent) }
     }
 }
 
