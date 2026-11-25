@@ -510,11 +510,11 @@ struct MacSidebar: View {
                 .tag(MacSelection.profile)
                 .accessibilityIdentifier("sidebar-profile")
             // The chats, in the sections of Slack: each one folds with its header, and the Mac keeps the choice. A
-            // section without rows does not show. Starred comes first. A starred project has its own chat here, and its
-            // further chats stay in its section, as on the iPhone.
+            // section without rows does not show. Starred comes first. A starred chat, a project or one of its further
+            // chats, is here and in no other section, as on the iPhone, and names its project.
             if !pins.isEmpty || !sections.pinnedChats.isEmpty {
                 Section("Starred", isExpanded: $starredOpen) {
-                    ForEach(pins.bots) { bot in botRow(bot, name: bot.name) }
+                    ForEach(pins.bots) { bot in botRow(bot, name: bot.listName) }
                     // The pinned chats of the teams, as the same rows that they have in "Team chats".
                     ForEach(sections.pinnedChats) { item in itemRow(item) }
                     ForEach(pins.pages) { page in pageRow(page) }
@@ -636,7 +636,7 @@ struct MacSidebar: View {
                     NewChatButton(bot: bot)
                     Button("Show all agents") { showDeck(from: bot) }
                     Divider()
-                    if !bot.isChat {
+                    if ChatList.canStar(bot) {
                         Button(bot.pinned ? "Unstar" : "Star") { Task { await store.pinBot(bot, pinned: !bot.pinned) } }
                     }
                     Button(BotChatMute.label(bot)) { Task { await store.muteBot(bot, muted: bot.notifications) } }

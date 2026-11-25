@@ -383,7 +383,7 @@ struct ChatDeckCard: View {
     private var menu: some View {
         Menu {
             NewChatButton(bot: bot, done: close)
-            if !bot.isChat && !bot.coconut {
+            if ChatList.canStar(bot) {
                 item(bot.pinned ? "Unstar" : "Star", bot.pinned ? "star.slash" : "star") {
                     Task { await store.pinBot(bot, pinned: !bot.pinned) }
                 }

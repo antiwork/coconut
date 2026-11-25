@@ -1658,14 +1658,13 @@ enum ChatList {
     /// The Chats list of the iPhone in the sections of Slack (ChatListSection; the person, 2026-11-25: "Sections by
     /// project and personal agents at bottom"): a section for each project, Coconut first and then Gumroad, then the
     /// chats with people, the agents of an earlier release with the chats whose project is gone, then Personal at the
-    /// bottom, then Archived. The chats that the person starred, a project and a pinned chat of a team, come first in
-    /// Starred, as in the sidebar of Slack, and they show nowhere else. A project's own chat comes first in its section,
-    /// as a channel of Slack, and its further
-    /// chats follow newest activity first. The chats with people come newest activity first. An archived chat shows only
-    /// in Archived, newest first (the
-    /// person: "almost everything should be archived / hidden to focus on real work"). A chat of an archived project
-    /// that is not archived itself, and a chat that nobody wrote in (AgentChats.isBlank), show nowhere. A section without
-    /// rows does not show. `latest` is the date of the newest message of each bot.
+    /// bottom, then Archived. The chats that the person starred, an agent chat (a project or one of its further chats)
+    /// and a pinned chat of a team, come first in Starred, as in the sidebar of Slack, and they show nowhere else. A
+    /// project's own chat comes first in its section, as a channel of Slack, and its further chats follow newest
+    /// activity first. The chats with people come newest activity first. An archived chat shows only in Archived,
+    /// newest first (the person: "almost everything should be archived / hidden to focus on real work"). A chat of an
+    /// archived project that is not archived itself, and a chat that nobody wrote in (AgentChats.isBlank), show
+    /// nowhere. A section without rows does not show. `latest` is the date of the newest message of each bot.
     static func sections(bots: [Bot], latest: [String: Date], rooms: [TeamRoom],
                          local: [TeamChatKey: TeamLastMessage] = [:]) -> [ChatListSection] {
         func activity(_ bot: Bot) -> Date { latest[bot.id] ?? bot.createdAt.apiDate ?? .distantPast }
@@ -1681,18 +1680,20 @@ enum ChatList {
         let projects = bots.filter { !$0.isChat && !$0.archived && ($0.isProject || $0.coconut) }
             .sorted { (rank($0), $0.createdAt, $0.id) < (rank($1), $1.createdAt, $1.id) }
         func section(of project: Bot) -> ChatListSection? {
-            let own = shown.filter { $0.agentId == project.id }
-            // A project that the person starred has its own chat in Starred, as a starred channel of Slack.
-            let items = (own.filter { $0.id == project.id && !isStarred($0) }
+            // A chat that the person starred, the project's own chat or a further one, is in Starred and nowhere
+            // else, as a starred channel of Slack.
+            let own = shown.filter { $0.agentId == project.id && !isStarred($0) }
+            let items = (own.filter { $0.id == project.id }
                 + newestFirst(own.filter { $0.id != project.id })).map(ChatListItem.bot)
             return items.isEmpty ? nil : ChatListSection(kind: .project(project.id), title: project.name, items: items)
         }
         let projectIds = Set(projects.map(\.id))
-        // The chats that the person starred, as the Starred section of Slack: the starred projects and the pinned chats
-        // of the teams, both in their fixed order.
+        // The chats that the person starred, as the Starred section of Slack: the starred agent chats, newest activity
+        // first, then the pinned chats of the teams in their fixed order.
         let starred = newestFirst(shown.filter(isStarred)).map(ChatListItem.bot) + pinnedChats(rooms)
         let people = sorted(peopleItems(rooms, local: local) + botDirectItems(rooms, local: local))
-        let others = newestFirst(shown.filter { !projectIds.contains($0.agentId) }).map(ChatListItem.bot)
+        let others = newestFirst(shown.filter { !projectIds.contains($0.agentId) && !isStarred($0) })
+            .map(ChatListItem.bot)
         let archived = AgentChats.archived(in: bots, latest: latest)
             .filter { !$0.coconut && !AgentChats.isBlank($0, latest: latest) }.map(ChatListItem.bot)
         var sections: [ChatListSection] = []
@@ -1721,8 +1722,14 @@ enum ChatList {
     /// The Coconut chat itself, not one of its further chats.
     static func isCoconut(_ bot: Bot) -> Bool { bot.coconut && !bot.isChat }
 
-    /// A starred project, at the top of the Chats list with the star mark.
-    static func isStarred(_ bot: Bot) -> Bool { bot.pinned && !bot.isChat && !bot.coconut }
+    /// A chat that the person starred, at the top of the Chats list in Starred with the star mark: a project, one of
+    /// its further chats, or an agent of an earlier release (the person: "Don't see a way to pin a chat to the top of
+    /// list"). The Coconut chat always shows first in its section and at the top of the Mac sidebar, so it has no star.
+    static func isStarred(_ bot: Bot) -> Bool { bot.pinned && !isCoconut(bot) }
+
+    /// The chat offers Star or Unstar: a swipe to the right on its row in Chats, its card in the deck, and its menu in
+    /// the Mac sidebar. An archived chat shows only in Archived, and Unarchive takes a starred one back to Starred.
+    static func canStar(_ bot: Bot) -> Bool { !bot.archived && !isCoconut(bot) }
 
     private static func peopleItems(_ rooms: [TeamRoom], local: [TeamChatKey: TeamLastMessage]) -> [ChatListItem] {
         rooms.flatMap { room in
@@ -1752,7 +1759,7 @@ struct ChatSections: Equatable {
     /// the projects too, newest activity first. A chat shows here and not in its own section, so it moves back when
     /// the person reads it.
     var unread: [ChatListItem] = []
-    /// The starred projects, newest activity first (ChatList.isStarred). Their further chats stay in their sections.
+    /// The starred agent chats, newest activity first (ChatList.isStarred): a project, or one of its further chats.
     var pinned: [Bot]
     /// The pinned chats of the teams (ChatList.pinnedChats). The section "Starred" has them after the pinned bots.
     var pinnedChats: [ChatListItem] = []

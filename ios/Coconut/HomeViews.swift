@@ -166,17 +166,19 @@ struct HomeLaunchView: View {
 
     /// The list of Chats in the sections of Slack (the person, 2026-11-25: "Chats should look/be more like slack and
     /// almost everything should be archived / hidden to focus on real work. Sections by project and personal agents at
-    /// bottom"): a section for each project, Coconut first, then the chats with people, the agents of an earlier release,
-    /// Personal at the bottom, and Archived (ChatList.sections). A tap on the title of a section opens or folds it, and
-    /// the phone keeps the sections that the person opened, so every section starts folded. A folded section still shows
-    /// its real work: a chat that works or whose card waits, an unread chat, a starred project, a pinned chat of a team,
-    /// the Coconut chat and the chat that the person opened last (stays). An idle chat is one tap away, and Archived is
-    /// one row at the end with the number of its chats, which opens them on a page of their own. Every row has the form
-    /// of a chat row: the name, the last message or the step, the age and the badges. The list has no tabs or toggles
-    /// inside it, because the person found that nobody taps them (2026-11-24), and a chat archives itself after the time
-    /// that You sets (AutoArchiveMenu, 14 hours unless the person picks another). The top right has
-    /// the two buttons that the person asked for that evening: Working, which lists only the chats that work in one
-    /// list without section titles (WorkingFilterButton), and the grid of the agents that work (ChatGridButton).
+    /// bottom"): a section for each project, Coconut first, then the chats with people, the agents of an earlier
+    /// release, Personal at the bottom, and Archived (ChatList.sections). A tap on the title of a section opens or
+    /// folds it, and the phone keeps the sections that the person opened, so every section starts folded. A folded
+    /// section still shows its real work: a chat that works or whose card waits, an unread chat, the Coconut chat and
+    /// the chat that the person opened last (stays). Starred comes first and stays open: a swipe to the right on any
+    /// chat stars it, as Pin in Messages and Telegram, and moves it to the top of the list (the person: "Don't see a
+    /// way to pin a chat to the top of list"). An idle chat is one tap away, and Archived is one row at the end with
+    /// the number of its chats, which opens them on a page of their own. Every row has the form of a chat row: the
+    /// name, the last message or the step, the age and the badges. The list has no tabs or toggles inside it, because
+    /// the person found that nobody taps them (2026-11-24), and a chat archives itself after the time that You sets
+    /// (AutoArchiveMenu, 14 hours unless the person picks another). The top right has the two buttons that the person
+    /// asked for that evening: Working, which lists only the chats that work in one list without section titles
+    /// (WorkingFilterButton), and the grid of the agents that work (ChatGridButton).
     private func chatList(_ sections: [ChatListSection]) -> some View {
         let now = Date.now
         let open = ChatListSection.open(openSections)
@@ -300,10 +302,13 @@ struct HomeLaunchView: View {
                     if bot.canRemove { archiveButton(bot) }
                     muteButton(bot)
                 }
+                .swipeActions(edge: .leading, allowsFullSwipe: true) {
+                    if ChatList.canStar(bot) { starButton(bot) }
+                }
                 .homeRow()
         case .team, .direct, .botDirect:
-            // A team chat has Star and Mute in its menu, and a named chat has Mute in its swipe too. The Team
-            // screen has the leave action.
+            // A team chat has Star and Mute in its menu, Star on a swipe to the right as an agent chat has, and a named
+            // chat has Mute on a swipe to the left too. The Team screen has the leave action.
             if let chat = item.chat {
                 Button {
                     keptChat = item.id
@@ -319,6 +324,9 @@ struct HomeLaunchView: View {
                     .accessibilityIdentifier(Self.identifier(chat))
                     .swipeActions(edge: .trailing, allowsFullSwipe: true) {
                         if let mute = TeamChatMute.listAction(item) { teamMuteButton(mute) }
+                    }
+                    .swipeActions(edge: .leading, allowsFullSwipe: true) {
+                        if let pin = TeamChatPin.listAction(item) { teamStarButton(pin) }
                     }
                     .homeRow()
             }
@@ -379,6 +387,30 @@ struct HomeLaunchView: View {
         .accessibilityIdentifier("mute-bot-\(bot.id)")
     }
 
+    /// Star or Unstar on a swipe to the right, as Pin in Messages and Telegram. A starred chat moves to Starred at the
+    /// top of the list and stays there while it is idle: the Mac does not archive it (AgentChats._may_archive).
+    private func starButton(_ bot: Bot) -> some View {
+        Button { Task { await store.pinBot(bot, pinned: !bot.pinned) } } label: {
+            Label(bot.pinned ? TeamChatPin.unpin : TeamChatPin.pin, systemImage: bot.pinned ? "star.slash" : "star")
+        }
+        .tint(BoardStyle.husk)
+        .accessibilityIdentifier((bot.pinned ? "unstar-bot-" : "star-bot-") + bot.id)
+    }
+
+    /// Star or Unstar for a chat of a team: the same choice as its menu (TeamChatMuteMenu).
+    private func teamStarButton(_ pin: TeamChatPin.ListAction) -> some View {
+        Button {
+            store.error = nil
+            Task { await store.setTeamChatPinned(pin.room, chat: pin.chat, direct: pin.direct, pinned: pin.pinned) }
+        } label: {
+            Label(pin.label, systemImage: pin.symbol)
+        }
+        .tint(BoardStyle.husk)
+        .disabled(TeamChatPin.waits(TeamChatPin.key(room: pin.room, chat: pin.chat, direct: pin.direct),
+                                    store.teamChatPinChoices))
+        .accessibilityIdentifier("chat-row-pin-swipe")
+    }
+
     /// Mute or Unmute for a named chat of a team: the same choice as its menu (TeamChatMuteMenu).
     private func teamMuteButton(_ mute: TeamChatMute.ListAction) -> some View {
         Button {
@@ -408,7 +440,7 @@ struct HomeLaunchView: View {
 /// never unfolds in the list: it is one row that opens its chats on a page of their own (ArchivedChatsRow).
 struct ChatListSection: Identifiable, Equatable {
     enum Kind: Equatable {
-        /// The chats that the person starred, as the Starred section of Slack: the starred projects and the pinned
+        /// The chats that the person starred, as the Starred section of Slack: the starred agent chats and the pinned
         /// chats of the teams. It comes first, and it stays open: the person chose these chats to have them at hand.
         case starred
         /// The chats of a project, its own chat first: the ID of the project.
@@ -696,7 +728,7 @@ struct BotContactRow: View {
     let bot: Bot
     /// The name of the row. A further chat of a project shows its title next to the name of the project.
     var title: String? = nil
-    /// The star mark of a starred project at the top of the Chats list.
+    /// The star mark of a starred chat at the top of the Chats list.
     var pinned = false
     /// The row reads the summary of its bot, not the messages, so a streamed word does not redraw it.
     private var summary: BotChatSummary { store.chatSummaries[bot.id] }

@@ -56,7 +56,7 @@ enum AgentChats {
             && bot.lastMessage.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
-    /// True when a list shows the chat: a chat that the person wrote in, a starred agent, or the Coconut chat.
+    /// True when a list shows the chat: a chat that the person wrote in, a starred chat, or the Coconut chat.
     static func isListed(_ bot: Bot, latest: [String: Date]) -> Bool {
         !bot.archived && (bot.pinned || !isBlank(bot, latest: latest))
     }
