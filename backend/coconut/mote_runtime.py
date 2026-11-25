@@ -51,6 +51,7 @@ POLL_SECONDS = 25
 STOP_SECONDS = 15
 # mote puts this many characters of BODY.md in each request. Its own BODY.md and a profile's memory fit.
 BODY_IN_PROMPT = 6000
+PLACEHOLDER = '(nothing yet)'
 SKILL = 'coconut-tools'
 INSTALL = 'uv tool install git+https://github.com/slavingia/mote'
 MISSING = f'mote is not installed on this Mac. Install it with `{INSTALL}`, then switch again.'
@@ -222,7 +223,9 @@ def prepare(profile) -> Path:
                          (_read(profile / 'memories' / 'USER.md'), _read(profile / 'memories' / 'MEMORY.md'))
                          if text.strip())
     if memory:
-        _write(home / 'BODY.md', _read(home / 'BODY.md').strip() + '\n\n' + memory + '\n')
+        # mote's own BODY.md is a heading over the placeholder "(nothing yet)", which the memory replaces.
+        body = '\n'.join(line for line in _read(home / 'BODY.md').strip().splitlines() if line.strip() != PLACEHOLDER)
+        _write(home / 'BODY.md', body.strip() + '\n\n' + memory + '\n')
     skills = profile / 'skills'
     if skills.is_dir():
         for found in sorted(skills.rglob('SKILL.md')):
