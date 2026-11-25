@@ -77,18 +77,19 @@ struct CoconutApp: App {
     }
 }
 
-/// The five tabs of the iPhone in their order: Product, Support, Finance, Chats and You, as the person listed them.
+/// The five tabs of the iPhone in their order: Finance, Support, Product, Chats and You, as the person listed them.
+/// For a day the tabs began with Product and Finance was called Business; the person then put Finance first again.
 /// Each tab holds only its own things:
-/// - Product: the rules that breach for the agents and the cards that wait, then its to-dos and the open pull requests.
-/// - Support: its to-dos, with the conversations past their service level first, then the queue of the customers.
 /// - Finance: its to-dos, the issues labelled `finance`, then the overview of the business with the risk reviews,
-///   which opens Accounting, Marketing and History. The person named it Business for a day, then Finance again.
+///   which opens Accounting, Marketing and History.
+/// - Support: its to-dos, with the conversations past their service level first, then the queue of the customers.
+/// - Product: the rules that breach for the agents and the cards that wait, then its to-dos and the open pull requests.
 /// - Chats: every agent and every chat with people in the sections of Slack, one for each project, Personal at the
 ///   bottom and Archived last, with the message box under the list. A folded section shows only the real work
 ///   (ChatList.sections).
 /// - You: the person, this device and the settings: the Mac, notifications, connections, usage, the team and the
 ///   repositories that Coconut follows.
-/// Product, Support and Finance each start with their own list of to-dos, the issues of gumroad-private with their
+/// Finance, Support and Product each start with their own list of to-dos, the issues of gumroad-private with their
 /// label, and each badge counts its own list (TodoLists.swift, TodoCounts): the person asked for three lists and three
 /// counts in place of one. An issue is a to-do of one list, so no other tab lists it again. The page of a project opens
 /// from the name of its agent, and the list of all projects from the project chip of the box. The app opens on Chats,
@@ -101,7 +102,7 @@ struct CoconutApp: App {
 ///
 /// The tab bar always has exactly five tabs. With a sixth, iOS puts the last tabs behind a More tab, and the person
 /// does not want More. A new place goes on the page of a tab, or it takes the place of a tab.
-enum HomeTab: Hashable { case product, support, finance, chats, profile }
+enum HomeTab: Hashable { case finance, support, product, chats, profile }
 
 struct CoconutHome: View {
     @Environment(AppStore.self) private var store
@@ -156,24 +157,24 @@ struct CoconutHome: View {
         // The tab bar shows filled symbols, as the system tab bars do.
         TabView(selection: $selectedTab) {
             // Each of the three tabs of work counts its own to-dos (TodoCounts).
-            Tab(value: HomeTab.product) {
-                root(tab: .product, path: $productPath)
-            } label: {
-                Label { Text("Product") } icon: { Image(systemName: "hammer.fill") }
-            }.badge(store.todoCount(.product))
-                .accessibilityIdentifier("home-product")
-            Tab(value: HomeTab.support) {
-                root(tab: .support, path: $supportPath)
-            } label: {
-                Label { Text("Support") } icon: { Image(systemName: "lifepreserver.fill") }
-            }.badge(store.todoCount(.support))
-                .accessibilityIdentifier("home-support")
             Tab(value: HomeTab.finance) {
                 root(tab: .finance, path: $financePath)
             } label: {
                 Label { Text("Finance") } icon: { Image(systemName: "chart.xyaxis.line") }
             }.badge(store.todoCount(.finance))
                 .accessibilityIdentifier("home-finance")
+            Tab(value: HomeTab.support) {
+                root(tab: .support, path: $supportPath)
+            } label: {
+                Label { Text("Support") } icon: { Image(systemName: "lifepreserver.fill") }
+            }.badge(store.todoCount(.support))
+                .accessibilityIdentifier("home-support")
+            Tab(value: HomeTab.product) {
+                root(tab: .product, path: $productPath)
+            } label: {
+                Label { Text("Product") } icon: { Image(systemName: "hammer.fill") }
+            }.badge(store.todoCount(.product))
+                .accessibilityIdentifier("home-product")
             Tab(value: HomeTab.chats) {
                 root(tab: .chats, path: $chatsPath)
             } label: {
