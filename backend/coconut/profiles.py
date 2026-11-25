@@ -167,12 +167,17 @@ class HermesProfiles:
             return prompt_revision(home / HOME, boundary=self.boundary(home), names=MOTE_PROMPT_FILES)
         return prompt_revision(home, boundary=self.boundary(home))
 
-    def soul_revision(self, bot: dict) -> tuple[str, float] | None:
-        """The hash of SOUL.md and the time of its last change, or None without SOUL.md."""
+    def soul_revision(self, bot: dict, runtime: str = 'hermes') -> tuple[str, float] | None:
+        """The hash of SOUL.md and the time of its last change, or None without SOUL.md. For `mote`, the SOUL.md of the
+        mote home in the profile."""
         if self.row(bot) is None:
             return None
         home = self.home(bot)
-        path = home / 'SOUL.md'
+        if runtime == 'mote':
+            from .mote_runtime import HOME
+            path = home / HOME / 'SOUL.md'
+        else:
+            path = home / 'SOUL.md'
         _safe(path, self.boundary(home))
         try:
             content = read_regular(path, 'SOUL.md')

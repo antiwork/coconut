@@ -2,6 +2,7 @@
 import base64
 import os
 import json
+from pathlib import Path
 from uuid import UUID, uuid5
 
 
@@ -158,6 +159,19 @@ INSTRUCTIONS_CHANGED = ('Your instructions or your saved memory changed after yo
 SESSION_INSTRUCTIONS_CHANGED = ('Your instructions in SOUL.md changed after this conversation started. This conversation '
                                 'can still show the earlier text. Read SOUL.md in your Hermes home again, and follow it '
                                 'from now on.\n')
+# The same notes for a turn on mote, whose instructions are SOUL.md and BODY.md of its mote home (mote_runtime.prepare).
+MOTE_INSTRUCTIONS_CHANGED = ('Your instructions or your saved memory changed after you made this card. This conversation '
+                             'can still show the earlier text. Read {soul} and {body} again. Check this answer against '
+                             'them before you act. If it no longer fits them, say so and ask again.')
+MOTE_SESSION_INSTRUCTIONS_CHANGED = ('Your instructions in SOUL.md changed after this conversation started. This '
+                                     'conversation can still show the earlier text. Read {soul} again, and follow it '
+                                     'from now on.')
+
+
+def mote_instructions(text: str, home) -> str:
+    """`text` for a turn on mote in `home`: the note of an answered card names the files of the mote home."""
+    return text.replace(INSTRUCTIONS_CHANGED.strip(), MOTE_INSTRUCTIONS_CHANGED.format(
+        soul=Path(home) / 'SOUL.md', body=Path(home) / 'BODY.md'))
 
 
 def recent_work_note(task):

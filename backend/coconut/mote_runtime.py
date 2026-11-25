@@ -394,10 +394,16 @@ class MoteRuntime:
         sent = set(entry.get('records') or [])
         records = [record for record in turn.get('records') or [] if isinstance(record, dict)
                    and isinstance(record.get('id'), str) and isinstance(record.get('text'), str)
-                   and record['id'] not in sent]
+                   and record.get('kind') != 'instructions' and record['id'] not in sent]
         # mote has no hook that holds the tools of a turn with a mode, as the Hermes plugin does (hooks.guard_tool). The
         # service refuses the Coconut tools that such a turn may not call, and the note says what the turn may do.
         text = MODE_TEXT.get(turn.get('mode'), '') + str(turn.get('text') or '')
+        instructions = next((record for record in turn.get('records') or [] if isinstance(record, dict)
+                             and record.get('kind') == 'instructions' and isinstance(record.get('text'), str)), None)
+        if instructions is not None:
+            if (not instructions.get('noted') and self._note_due(home, session, entry.get('instructions'), instructions)
+                    and instructions['text'] not in text):
+                text += '\n\n' + instructions['text']
         if records:
             from .native_conversation import records_text
             text += records_text(records)
@@ -425,7 +431,9 @@ class MoteRuntime:
         prompt = {'type': 'prompt', 'text': text}
         if images:
             prompt['images'] = images
-        self._send(process, prompt)
+        if self._send(process, prompt) and instructions is not None:
+            # The entry keeps the one revision that the session saw, once mote has the prompt. The session event saves it.
+            entry['instructions'] = instructions.get('revision')
         calls, said, outcome, paused, stopped, ended = set(), set(), 'failed', False, False, False
         # What mote reports in grey. The error that ends a turn comes after the idle state of the turn.
         notes = collections.deque(maxlen=4)
@@ -493,6 +501,24 @@ class MoteRuntime:
             LOG.warning('mote did not finish a turn of the chat %s: %s', chat, ' | '.join(notes) or 'no note')
             return outcome, (FAILED[:-1] + ': ' + notes[-1])[:400] if notes else FAILED
         return outcome, None
+
+    @staticmethod
+    def _note_due(home: Path, session: str | None, seen: str | None, record: dict) -> bool:
+        """Whether a mote session gets the note about changed instructions, by the rule of the Hermes plugin
+        (hooks.instructions_note_due). mote writes the system prompt, with SOUL.md, in the first line of a new session
+        and reuses it on --session. So a new session gets no note, and a continuing one gets it once for each change. A
+        session without a revision on record gets it when it started before the change: the creation time of its
+        session file (st_birthtime, which macOS has; without it, no note)."""
+        if not session:
+            return False
+        if seen is not None:
+            return seen != record.get('revision')
+        try:
+            started = getattr((home / 'sessions' / f'{session}.jsonl').stat(), 'st_birthtime', None)
+        except OSError:
+            return False
+        changed = record.get('changed_at')
+        return started is not None and isinstance(changed, (int, float)) and started < changed
 
     @staticmethod
     def _close(process) -> None:

@@ -766,13 +766,19 @@ class GatewayChat:
         The turn joins the bot's conversation, or the Hermes session `session`, for example of a cron run
         (hooks.join_conversation finds a session by its ID when no conversation has that root)."""
         from .native_conversation import session_root
-        home = self.profiles.home(bot)
+        home = profile = self.profiles.home(bot)
         if (mode is None or mote_check) and not hermes and not gateway_claim_turn(task):
             # An agent on mote takes the turns of its chats in its mote home, which no Hermes gateway serves. A work
             # session with a Kanban claim and a turn with a mode of its own, such as a status question, stay on Hermes
             # (mote_runtime.py). A check of a card that a mote turn made runs on mote (run_gateway_context).
             from .mote_runtime import turn_home
             home = turn_home(self, bot, home)
+        runtime = 'hermes' if Path(home) == Path(profile) else 'mote'
+        if runtime == 'mote':
+            # The note of an answered card names the files of the mote home, which the mote session reads.
+            from .native_conversation import mote_instructions
+            text = mote_instructions(text, home)
+            own = mote_instructions(own, home) if own is not None else None
         deadline = time.monotonic() + GATEWAY_WAIT_SECONDS
         busy_deadline = time.monotonic() + BUSY_WAIT_SECONDS
         if wanted is None:
@@ -783,8 +789,12 @@ class GatewayChat:
         from .native_conversation import turn_images, turn_records
         records = turn_records(task) if own is not None else []
         if own is not None:
-            records += self._instructions_record(bot, own)
+            records += self._instructions_record(bot, own, runtime)
             records += self._notices_record()
+        elif runtime == 'mote':
+            # A check of a card and a follow-up on one have no own text, and their mote session keeps the SOUL.md of
+            # its start, so they get the note when it is due (MoteRuntime._note_due). On Hermes they get no record.
+            records = self._instructions_record(bot, '', runtime)
         # The attached images of the turn go to Hermes as images, so the model sees a pasted screenshot.
         if images is None:
             images = turn_images(task.get('attachments', []))
@@ -849,22 +859,31 @@ class GatewayChat:
         import hashlib
         return [{'id': 'notices:' + hashlib.sha256(text.encode()).hexdigest()[:16], 'text': text}]
 
-    def _instructions_record(self, bot: dict, own: str) -> list[dict]:
+    def _instructions_record(self, bot: dict, own: str, runtime: str = 'hermes') -> list[dict]:
         """The record of the bot's SOUL.md, as a list of one record, or none without a readable SOUL.md. A continuing
         Hermes session keeps its first system prompt, which holds SOUL.md. The plugin gives a running session the note
         once for each change of `revision` (hooks.add_records). A session without a revision on record gets it only
-        when it started before `changed_at`. Hermes freezes the memory of a session by design, so memory gives no note."""
-        from .native_conversation import INSTRUCTIONS_CHANGED, SESSION_INSTRUCTIONS_CHANGED
+        when it started before `changed_at`. Hermes freezes the memory of a session by design, so memory gives no note.
+        A turn on mote gets the record of the mote home's SOUL.md, and mote_runtime applies the same rule."""
+        from .native_conversation import (INSTRUCTIONS_CHANGED, MOTE_SESSION_INSTRUCTIONS_CHANGED,
+                                          SESSION_INSTRUCTIONS_CHANGED, mote_instructions)
         from .profiles import ProfileError
         try:
-            soul = self.profiles.soul_revision(bot)
+            soul = self.profiles.soul_revision(bot, runtime)
         except (OSError, ProfileError):
             return []
         if soul is None:
             return []
+        text = SESSION_INSTRUCTIONS_CHANGED.strip()
+        changed = INSTRUCTIONS_CHANGED.strip()
+        if runtime == 'mote':
+            from .mote_runtime import HOME
+            home = Path(self.profiles.home(bot)) / HOME
+            text = MOTE_SESSION_INSTRUCTIONS_CHANGED.format(soul=home / 'SOUL.md')
+            changed = mote_instructions(changed, home)
         record = {'id': 'instructions:' + soul[0], 'kind': 'instructions', 'revision': soul[0], 'changed_at': soul[1],
-                  'text': SESSION_INSTRUCTIONS_CHANGED.strip()}
-        if INSTRUCTIONS_CHANGED.strip() in own:
+                  'text': text}
+        if changed in own:
             # The answer to a card already tells the bot to read its files again (resume_prompt).
             record['noted'] = True
         return [record]
@@ -958,7 +977,7 @@ class GatewayChat:
                 # The recorded result ends the check, so the plugin blocks each further tool call of the turn.
                 return dict(result, instruction=CHECK_FINISH, ended=True) if result.get('status') == 'recorded' else result
             if not check and tool == 'resolve_reply':
-                return self.resolve_decision_reply(context_id, arguments)
+                return self._turn_reply(data, self.resolve_decision_reply(context_id, arguments))
             if check:
                 raise ServiceError(409, 'Record the check with coconut_refresh_decision. The card stays as it is.')
             if tool == 'workspace':
@@ -973,7 +992,7 @@ class GatewayChat:
             return self.native_event(task_id, 'native_question' if tool == 'ask' else 'native_proposal', arguments,
                                      runtime=runtime)
         if tool == 'resolve_reply':
-            return self.resolve_chat_decision(task_id, arguments)
+            return self._turn_reply(data, self.resolve_chat_decision(task_id, arguments))
         if tool == 'wait':
             if arguments.get('process_id'):
                 # Hermes runs the processes of a gateway turn, and Coconut has no receipts for them.
@@ -1039,6 +1058,16 @@ class GatewayChat:
                                                          'text': require_text(arguments, 'text', 20000)})
             return {key: receipt[key] for key in ('status', 'target_bot_id', 'task_id') if key in receipt}
         raise ServiceError(404, 'This Coconut tool does not exist.')
+
+    def _turn_reply(self, data: dict, reply: dict) -> dict:
+        """The answer of resolve_reply for its turn. On mote, the note of an answered card (decision_inbox) names the
+        files of the mote home."""
+        home = self.gateway_bridge.home_of(data.get('turn_id'))
+        from .mote_runtime import home_runtime
+        if isinstance(reply, dict) and reply.get('instruction') and home_runtime(self, home):
+            from .native_conversation import mote_instructions
+            reply['instruction'] = mote_instructions(reply['instruction'], home)
+        return reply
 
     def gateway_workspace(self, task_id: str, context_id: str | None = None) -> dict:
         """coconut_workspace of a gateway work turn: the registry and the outcome of the worktree of its work session,
