@@ -102,28 +102,32 @@ enum NewChatPlace: String {
 /// placeholder changes to start with suggestion for response per thing"): the breach of the tab first, the support
 /// conversations or the risk reviews past SLA, then each to-do of its list that nobody works on or waits for, high
 /// priority first. The box shows the first one that it did not send yet in place of its placeholder, and Send on the
-/// empty box sends it, so one tap hands the top thing of the tab to the agent of the box.
+/// empty box sends it, so one tap hands the top thing of the tab to the agent of the box. The count and the to-dos are
+/// those that the list of the tab shows (TodoCounts): while Finance lists each risk review, the reviews that nobody
+/// decided or gave to Gumclaw count, and the issue of a review is no to-do.
 enum NewChatSuggestion {
     /// The sent suggestions that a box keeps, newest last, one on each line. A suggestion that the person sent does not
     /// come back after a restart, also while the agent has not started on it yet.
     static let kept = 30
 
-    static func list(_ area: TodoArea, todos: TodoIssues?, attention: [AttentionItem]) -> [String] {
-        let breaches = TodoCounts.breaches(area, attention).compactMap { breach -> String? in
-            guard breach.count > 0 else { return nil }
-            switch area {
-            case .support:
-                return breach.count == 1 ? "Answer the support conversation past SLA"
-                    : "Answer the " + String(breach.count) + " support conversations past SLA"
-            case .finance:
-                return breach.count == 1 ? "Clear the risk review past SLA"
-                    : "Clear the " + String(breach.count) + " risk reviews past SLA"
-            case .product: return nil
-            }
+    static func list(_ area: TodoArea, todos: TodoIssues?, attention: [AttentionItem],
+                     reviews: [RiskReview]? = nil) -> [String] {
+        let reviews = area == .finance ? reviews : nil
+        let count = reviews.map { $0.filter { !$0.withGumclaw && !$0.decided }.count }
+            ?? TodoCounts.breaches(area, attention).reduce(0) { $0 + $1.count }
+        var breach: String?
+        switch area {
+        case .support where count > 0:
+            breach = count == 1 ? "Answer the support conversation past SLA"
+                : "Answer the " + String(count) + " support conversations past SLA"
+        case .finance where count > 0:
+            breach = count == 1 ? "Clear the risk review past SLA" : "Clear the " + String(count) + " risk reviews past SLA"
+        default: break
         }
-        let open = (todos?.items(in: area) ?? []).filter { !$0.working && $0.awaiting == nil }
+        let hidden = TodoCounts.reviewIssues(reviews)
+        let open = (todos?.items(in: area) ?? []).filter { !$0.working && $0.awaiting == nil && !hidden.contains($0.number) }
         // A number of GitHub is a name, so it has no separator of thousands.
-        return breaches + open.map { "Work on #" + String($0.number) + ": " + $0.title }
+        return [breach].compactMap { $0 } + open.map { "Work on #" + String($0.number) + ": " + $0.title }
     }
 }
 
@@ -174,7 +178,8 @@ struct NewChatBar: View {
         let target = place.target(chosen: chosen, projects: projects, agents: agents)
         let suggestion = place.area.flatMap { area in
             let done = Set(sentSuggestions.split(separator: "\n").map(String.init))
-            return NewChatSuggestion.list(area, todos: store.todoIssues, attention: store.attentionItems())
+            return NewChatSuggestion.list(area, todos: store.todoIssues, attention: store.attentionItems(),
+                                          reviews: store.shownRiskReviews)
                 .first { !done.contains($0) }
         }
         VStack(spacing: 0) {
