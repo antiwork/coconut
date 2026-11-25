@@ -67,6 +67,9 @@ extension EnvironmentValues {
 extension Notification.Name {
     /// The command Show all chats of the Mac menu asks the main window for the deck.
     static let showChatDeck = Notification.Name("coconut.showChatDeck")
+    /// The command Show working agents of the Mac menu asks the main window for the grid of the agents that work
+    /// (ChatGridView), and closes the grid while it shows.
+    static let showChatGrid = Notification.Name("coconut.showChatGrid")
 }
 
 /// The sizes of the deck. A card lays its chat out at `content` and shows it at `scale`: a smaller copy of the chat,

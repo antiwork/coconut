@@ -50,6 +50,11 @@ struct ChatDeckPresenter: ViewModifier {
                 guard let open else { return }
                 present(ChatDeckRequest(start: current, opened: current, open: open))
             }
+            // The card of the chat on the screen closes the grid and opens nothing again, as in the deck.
+            .onReceive(NotificationCenter.default.publisher(for: .showChatGrid)) { _ in
+                guard let open else { return }
+                present(ChatDeckRequest(start: nil, opened: current, grid: true, open: open))
+            }
         #endif
     }
 
@@ -143,7 +148,9 @@ extension View {
 }
 
 #if os(macOS)
-/// The View menu entry that shows all chats, with the shortcut that Safari has for its tab overview.
+/// The View menu entries that show the chats: every agent in the deck, with the shortcut that Safari has for its tab
+/// overview, and the agents that work in the grid (ChatGridView), on the same key with Option in place of Shift (the
+/// person chose the grid for the Mac on a card). A second press of a shortcut closes what it showed.
 struct ChatDeckCommands: Commands {
     var body: some Commands {
         CommandGroup(after: .sidebar) {
@@ -151,6 +158,10 @@ struct ChatDeckCommands: Commands {
                 NotificationCenter.default.post(name: .showChatDeck, object: nil)
             }
             .keyboardShortcut("\\", modifiers: [.command, .shift])
+            Button("Show working agents") {
+                NotificationCenter.default.post(name: .showChatGrid, object: nil)
+            }
+            .keyboardShortcut("\\", modifiers: [.command, .option])
         }
     }
 }

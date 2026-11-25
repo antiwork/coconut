@@ -61,7 +61,7 @@ struct CoconutApp: App {
             CommandGroup(replacing: .appSettings) { ProfileCommand(model: model) }
             // File > New chat (Command-N): the message box with a project chosen.
             CommandGroup(replacing: .newItem) { NewChatCommands(model: model) }
-            // Show all chats, with Command-Shift-\ in the View menu.
+            // Show all agents (Command-Shift-\) and Show working agents (Option-Command-\) in the View menu.
             ChatDeckCommands()
             // View > Mark all as read, with Shift-Esc as in Slack.
             CommandGroup(after: .sidebar) { MarkAllReadCommand(model: model, store: store) }

@@ -93,7 +93,8 @@ struct MacMainWindow: View {
         .environment(\.showTeamChat) { chat in selection = .team(chat) }
         // The title of a Team chat opens the Team screen of its team over Profile, where the teams are.
         .environment(\.showTeamScreen) { room in go(.profile, pushing: [TeamScreenRoute(roomId: room)]) }
-        // The deck of all chats: a pinch on a chat, the menu of a chat and Command-Shift-\ show it.
+        // The deck of all chats: a pinch on a chat, the menu of a chat and Command-Shift-\ show it. Option-Command-\
+        // shows the grid of the agents that work (ChatGridView).
         .modifier(ChatDeckPresenter(current: currentChat) { selection = .bot($0) })
         // A banner or a share asks for a chat. The window shows it.
         .onChange(of: model.shownChat, initial: true) { _, chat in

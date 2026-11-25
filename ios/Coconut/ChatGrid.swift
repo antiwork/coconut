@@ -1,4 +1,7 @@
 import SwiftUI
+#if os(macOS)
+import AppKit
+#endif
 
 /// The sizes of the grid of the agents that work (ChatGridView). Each card has the row of its chat, as Chats shows it,
 /// over a smaller copy of the chat. The cards fill the screen when they fit, so every agent that works shows at once. A
@@ -81,7 +84,8 @@ struct ChatGridLayout: Equatable {
 /// row of its chat, as Chats shows it, over a smaller copy of the chat that follows its newest messages and its working
 /// line live. A tap on a card zooms into its chat, as a card of the deck does. Done, a tap beside the cards, or a pull
 /// down closes the grid. The grid keeps its order while it shows: a chat that starts to work joins at the end, and a
-/// chat that stops keeps its card, so no card moves while the person reads it.
+/// chat that stops keeps its card, so no card moves while the person reads it. On the Mac, View > Show working agents
+/// (Option-Command-\) shows it over the main window, and Escape or the same command closes it.
 struct ChatGridView: View {
     @Environment(AppStore.self) private var store
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -99,6 +103,9 @@ struct ChatGridView: View {
     /// The screen, and the area of the cards on it.
     @State private var screen = CGRect.zero
     @State private var area = CGRect.zero
+    #if os(macOS)
+    @State private var monitor: Any?
+    #endif
 
     /// `hidden` is the grid see-through and a little larger, before it opens and after it closes. `opening` is a card
     /// zoomed in until it fills the screen, on its way to the chat.
@@ -151,6 +158,11 @@ struct ChatGridView: View {
         .accessibilityAction(.escape) { close() }
         .onAppear { begin() }
         .onChange(of: store.chatGridCards().map(\.id)) { _, ids in join(ids) }
+        #if os(macOS)
+        .onDisappear { removeKeys() }
+        // A second Show working agents closes the grid, as the deck closes on a second Show all agents.
+        .onReceive(NotificationCenter.default.publisher(for: .showChatGrid)) { _ in close() }
+        #endif
     }
 
     // MARK: Layers
@@ -188,15 +200,18 @@ struct ChatGridView: View {
             .onTapGesture { close() }
         }
         .scrollIndicators(.hidden)
-        // The grid bounces also when its cards fit, so a pull down past the top can close it.
-        .scrollBounceBehavior(.always)
         .scrollClipDisabled()
         .scrollDisabled(phase != .grid)
+        #if os(iOS)
+        // The grid bounces also when its cards fit, so a pull down past the top can close it. The Mac leaves this
+        // out: a swipe of a trackpad past the top would close the grid by mistake, and Escape closes it there.
+        .scrollBounceBehavior(.always)
         .onScrollGeometryChange(for: Bool.self) { geometry in
             geometry.contentOffset.y + geometry.contentInsets.top < -90
         } action: { _, pulled in
             if pulled { close() }
         }
+        #endif
     }
 
     private func card(_ bot: Bot, layout: ChatGridLayout) -> some View {
@@ -270,6 +285,9 @@ struct ChatGridView: View {
 
     private func begin() {
         order = store.chatGridCards().map(\.id)
+        #if os(macOS)
+        installKeys()
+        #endif
         withAnimation(openAnimation) { phase = .grid }
     }
 
@@ -312,6 +330,30 @@ struct ChatGridView: View {
             dismiss()
         }
     }
+
+    // MARK: Keyboard
+
+    #if os(macOS)
+    /// Escape closes the grid. The message box of the chat under the grid keeps the focus otherwise, so a monitor takes
+    /// the key first, as in the deck. The message box gives up the focus, so no typing goes into a field that the
+    /// person cannot see.
+    private func installKeys() {
+        guard monitor == nil else { return }
+        _ = NSApp.keyWindow?.makeFirstResponder(nil)
+        monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+            // A key with Command, Option or Control is a shortcut of the window, not a key of the grid.
+            let plain = event.modifierFlags.intersection(.deviceIndependentFlagsMask).isEmpty
+            guard plain, event.keyCode == 53 else { return event }
+            MainActor.assumeIsolated { close() }
+            return nil
+        }
+    }
+
+    private func removeKeys() {
+        if let monitor { NSEvent.removeMonitor(monitor) }
+        monitor = nil
+    }
+    #endif
 }
 
 /// Where the cards of the grid stand on the screen. A plain class, so a scroll that moves them redraws nothing.
