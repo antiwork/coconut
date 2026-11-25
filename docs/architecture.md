@@ -569,6 +569,26 @@ A task without a run keeps the guard: its creator may have opened the PR, and th
 
 A task that a guard holds for more than an hour shows: Coconut logs a warning once and puts the guard in the status of the task and of its Work item (`_note_respawn_guards`).
 
+### An agent on mote
+
+An agent (a project and its chats) can run its chats on [mote](https://github.com/slavingia/mote) instead of Hermes,
+to compare the two. The setting `agent_runtime` of `coconut_settings` ("run Gumroad on mote") writes `mote.on` in the
+agent's profile folder, and removing that file moves it back (`mote_runtime.py`).
+
+- A chat turn of such an agent goes to the bridge under the home `<profile>/mote` instead of the Hermes home, so the
+  gateway never takes it (`_run_in_gateway`). A thread of the service polls the bridge for that home in-process, runs
+  each turn in `mote --json` with one mote session for each chat, and reports mote's state as bridge events: a tool call
+  as `tool`, each message as `send`, and the end as `done`. A stop of Coconut stops mote. The phone sees no difference.
+- mote calls the Coconut tools with the shell command `coconut` (`mote_tool.py`), which posts to `/v1/gateway/tools`
+  for the turn, with the schemas of the plugin's toolset. A card or a recorded wait ends the mote turn.
+- The first switch makes the mote home from the profile: mote's own files, the profile's `SOUL.md` with the platform
+  hint, its memory in `BODY.md` and a flat copy of its skills. mote then keeps its own home.
+- Routines, work sessions with a Kanban claim, card checks, status questions and team turns stay on Hermes. A Hermes
+  command gets a short answer. Without the mote command, a turn runs on Hermes.
+- mote asks for no approval: every command of the agent runs, whatever the access mode of Coconut says.
+- mote's model is in `<profile>/mote/config.json`. Its key is in the service's environment or `<profile>/mote.env`,
+  which only the mote process reads.
+
 ## Team-only mode
 
 A Mac can run a production Hermes agent with no person at it and no Coconut. To let that agent publish pages to a

@@ -759,6 +759,12 @@ class GatewayChat:
         (hooks.join_conversation finds a session by its ID when no conversation has that root)."""
         from .native_conversation import session_root
         home = self.profiles.home(bot)
+        if mode is None and not gateway_claim_turn(task):
+            # An agent on mote takes the turns of its chats in its mote home, which no Hermes gateway serves. A work
+            # session with a Kanban claim and a turn with a mode of its own, such as a card check, stay on Hermes
+            # (mote_runtime.py).
+            from .mote_runtime import turn_home
+            home = turn_home(self, bot, home)
         deadline = time.monotonic() + GATEWAY_WAIT_SECONDS
         busy_deadline = time.monotonic() + BUSY_WAIT_SECONDS
         if wanted is None:

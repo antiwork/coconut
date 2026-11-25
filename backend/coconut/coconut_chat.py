@@ -31,7 +31,7 @@ SETTINGS_SCHEMA = {
         'Read or change the settings of this Coconut. Only a turn of Coconut has it: the Coconut chat, and the change '
         'that another agent hands to it with coconut_message_bot. Coconut has no settings screens, '
         'so the person changes everything here, in plain words: "use Opus", "let chats run commands '
-        'without asking", "mute Desk", "let each agent run 4 work sessions", "fall back to Sonnet", "archive chats after a week". When the person sends "/help", call "read" '
+        'without asking", "mute Desk", "let each agent run 4 work sessions", "fall back to Sonnet", "archive chats after a week", "run Gumroad on mote". When the person sends "/help", call "read" '
         'and list in short lines what they can ask you to change, with the current values. First call with action "read" to see the current values and the choices. '
         'Then call action "change" with one setting. Say in one line what changed, from what to what, and that '
         'the person can ask to undo it. A change that deletes something or costs money needs a card first '
@@ -41,14 +41,15 @@ SETTINGS_SCHEMA = {
         'properties': {
             'action': {'type': 'string', 'enum': ['read', 'change']},
             'setting': {'type': 'string', 'enum': [
-                'default_model', 'fallback_models', 'default_access', 'agent_notifications', 'agent_name', 'work_sessions_per_agent',
-                'helpers_per_task', 'auto_archive_hours', 'mode']},
+                'default_model', 'fallback_models', 'default_access', 'agent_notifications', 'agent_name', 'agent_runtime',
+                'work_sessions_per_agent', 'helpers_per_task', 'auto_archive_hours', 'mode']},
             'agent': {'type': 'string', 'description': 'The name or ID of the project, for an agent_* setting.'},
             'model': {'type': 'string', 'description': 'A model ID from the catalog that "read" lists.'},
             'provider': {'type': 'string', 'description': 'The provider of that model, from the catalog.'},
             'reasoning_effort': {'type': 'string'},
             'value': {'description': 'The new value: an access mode (off, smart, manual), true or false for '
-                                     'notifications, a name, local or cloud for mode, a number from 1 to 64 (null for '
+                                     'notifications, a name, hermes or mote for agent_runtime (the agent that runs '
+                                     'the chats of that project), local or cloud for mode, a number from 1 to 64 (null for '
                                      'Automatic) for work_sessions_per_agent and helpers_per_task, the hours '
                                      'without activity after which a chat archives itself for auto_archive_hours '
                                      '(0 for never), or for '
@@ -122,11 +123,13 @@ def read(service) -> dict:
     for bot in bots:
         shown = view(service, bot, dict(bot))
         agents.append({'id': bot['id'], 'name': shown['name'], 'coconut': bool(shown.get('coconut')),
-                       'archived': bool(bot.get('archived')), 'notifications': bot.get('notifications', True)})
+                       'archived': bool(bot.get('archived')), 'notifications': bot.get('notifications', True),
+                       'runtime': _runtime(service, bot)})
     return {'mode': 'local', 'modes': {'local': 'available', 'cloud': 'coming soon'},
             'default_model': {key: default.get(key) for key in ('model', 'provider', 'reasoning_effort')},
             'fallback_models': _fallback(service), 'models': models, 'default_access': approvals.get('defaults'),
             'access_modes': {mode: ACCESS_TEXT[mode] for mode in ACCESS}, 'agents': agents,
+            'runtimes': _runtimes(),
             'parallel_work': {**_limits(service), 'total': 'No limit: every agent works at once.'},
             'auto_archive_hours': service.auto_archive_hours(),
             'auto_archive': 'A chat without activity for this many hours archives itself. 0 means never.',
@@ -212,7 +215,33 @@ def change(service, arguments: dict) -> dict:
         service.mutate('PATCH', f'/v1/bots/{bot["id"]}', data, key, device)
         return {'setting': setting, 'agent': view(service, bot, dict(bot))['name'], 'before': before,
                 'after': next(iter(data.values())) or 'default', 'changed': True}
+    if setting == 'agent_runtime':
+        from . import mote_runtime
+        with service.lock:
+            bot = _agent(service, arguments.get('agent'))
+        home = service.profiles.home(bot)
+        before = mote_runtime.runtime(home)
+        after = mote_runtime.switch(home, arguments.get('value'))
+        return {'setting': setting, 'agent': view(service, bot, dict(bot))['name'], 'before': before, 'after': after,
+                'changed': after != before, 'note': mote_runtime.SWITCH_NOTE}
     raise ServiceError(400, 'Choose a setting that "read" lists.')
+
+
+def _runtime(service, bot) -> str:
+    """hermes or mote: the agent that runs the chats of a project (mote_runtime.py)."""
+    from .mote_runtime import runtime
+    try:
+        return runtime(service.profiles.home(bot))
+    except Exception:
+        return 'hermes'
+
+
+def _runtimes() -> dict:
+    from . import mote_runtime
+    text = dict(mote_runtime.RUNTIME_TEXT)
+    if mote_runtime.command() is None:
+        text['mote'] += ' ' + mote_runtime.MISSING
+    return text
 
 
 def settings_tool(service, task_id: str, arguments: dict) -> dict:
