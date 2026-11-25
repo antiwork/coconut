@@ -29,6 +29,10 @@ struct Bot: Codable, Identifiable, Equatable, Sendable {
     /// True for Coconut, Gumroad and Personal, the projects: the only places where a chat starts. False for an agent of an
     /// earlier release, whose chats stay readable. An older Mac sends nothing (isProject).
     var project: Bool? = nil
+    /// The key of a project: "coconut", "gumroad" or "personal" (bot_profiles.PROJECTS), which stays when the person
+    /// renames the project. The Chats list puts the sections of the projects in that order, Personal at the bottom. An
+    /// older Mac sends none.
+    var projectKey: String? = nil
     /// The ID of the project, for a further chat of that project: a fresh conversation. Every chat runs on the one Hermes
     /// profile of the Mac.
     var chatOf: String? = nil
@@ -72,7 +76,7 @@ struct BotPreference: Codable, Identifiable, Equatable, Sendable {
 extension Bot {
     enum CodingKeys: String, CodingKey {
         case id, sessionId, name, role, instructions, status
-        case lastMessage, unreadCount, archived, createdAt, memory, pinned, preferences, modelOverride, effectiveModel, modelError, notifications, approvalOverride, effectiveApproval, workerLimit, health, coconut, project, chatOf, chatTitle, lastReadMessageId, todo
+        case lastMessage, unreadCount, archived, createdAt, memory, pinned, preferences, modelOverride, effectiveModel, modelError, notifications, approvalOverride, effectiveApproval, workerLimit, health, coconut, project, projectKey, chatOf, chatTitle, lastReadMessageId, todo
     }
 
     init(from decoder: Decoder) throws {
@@ -101,6 +105,7 @@ extension Bot {
         health = try values.decodeIfPresent(BotHealth.self, forKey: .health)
         coconut = try values.decodeIfPresent(Bool.self, forKey: .coconut) ?? false
         project = try values.decodeIfPresent(Bool.self, forKey: .project)
+        projectKey = try values.decodeIfPresent(String.self, forKey: .projectKey)
         chatOf = try values.decodeIfPresent(String.self, forKey: .chatOf)
         chatTitle = try values.decodeIfPresent(String.self, forKey: .chatTitle)
         lastReadMessageId = try values.decodeIfPresent(String.self, forKey: .lastReadMessageId)

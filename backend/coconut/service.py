@@ -901,8 +901,13 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
         from .coconut_chat import view
         result = view(self, bot, self._public(bot))
         if not bot.get('chat_of'):
-            # The apps list only projects under Projects and in the message box (bot_profiles.PROJECTS).
-            result['project'] = self._is_project(bot['id'])
+            # The apps list only projects under Projects and in the message box (bot_profiles.PROJECTS). The key names
+            # the project whatever the person renamed it to, so the Chats list of the iPhone can put its section in the
+            # order of PROJECTS, with Personal at the bottom.
+            key = self._project_ids().get(bot['id'])
+            result['project'] = key is not None
+            if key:
+                result['project_key'] = key
         if catalog is not None:
             try:
                 route = self.provider.resolve_model(bot, catalog)

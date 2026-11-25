@@ -1641,37 +1641,59 @@ enum ChatList {
         return chats
     }
 
-    /// The Chats list of the iPhone, as Telegram has it: one list of every chat, and every row has the same form. The
-    /// Coconut chat and the starred projects come first, in the order they were made, then the pinned chats of the
-    /// teams in a fixed order (pinnedChats). Then every other chat, newest activity first: the chats of the projects,
-    /// the archived chats and agents, the teams, their named chats, and the direct chats with a person or with a bot of
-    /// a team. The person merged Idle and Archived, so an archived chat has its place by its newest activity like any
-    /// other, with no Archived row of its own. A chat of an archived project that is not archived itself, and a chat
-    /// that nobody wrote in (AgentChats.isBlank), are not in the list. `latest` is the date of the newest message of
-    /// each bot. Chats shows this list whole, with no tabs (the person: nobody taps them, 2026-11-24).
-    static func all(bots: [Bot], latest: [String: Date], rooms: [TeamRoom],
-                    local: [TeamChatKey: TeamLastMessage] = [:]) -> [ChatListItem] {
+    /// The Chats list of the iPhone in the sections of Slack (ChatListSection; the person, 2026-11-25: "Sections by
+    /// project and personal agents at bottom"): a section for each project, Coconut first and then Gumroad, then the
+    /// chats with people, the agents of an earlier release with the chats whose project is gone, then Personal at the
+    /// bottom, then Archived. A project's own chat comes first in its section, as a channel of Slack, and its further
+    /// chats follow newest activity first. The chats with people come newest activity first after the pinned chats of
+    /// the teams, which keep their fixed order (pinnedChats). An archived chat shows only in Archived, newest first (the
+    /// person: "almost everything should be archived / hidden to focus on real work"). A chat of an archived project
+    /// that is not archived itself, and a chat that nobody wrote in (AgentChats.isBlank), show nowhere. A section without
+    /// rows does not show. `latest` is the date of the newest message of each bot.
+    static func sections(bots: [Bot], latest: [String: Date], rooms: [TeamRoom],
+                         local: [TeamChatKey: TeamLastMessage] = [:]) -> [ChatListSection] {
         func activity(_ bot: Bot) -> Date { latest[bot.id] ?? bot.createdAt.apiDate ?? .distantPast }
-        let open = Set(bots.filter { !$0.archived && !$0.isChat }.map(\.id))
+        func newestFirst(_ list: [Bot]) -> [Bot] { list.sorted { (activity($0), $0.id) > (activity($1), $1.id) } }
+        let agents = Dictionary(bots.filter { !$0.isChat }.map { ($0.id, $0) }) { first, _ in first }
         // A chat whose project is gone shows as a chat of its own (AgentChats.orphans).
         let orphans = Set(AgentChats.orphans(in: bots).map(\.id))
-        let shown = bots.filter {
-            (open.contains($0.agentId) || orphans.contains($0.id)) && AgentChats.isListed($0, latest: latest)
+        let shown = bots.filter { bot in
+            (orphans.contains(bot.id) || agents[bot.agentId].map { !$0.archived } == true)
+                && AgentChats.isListed(bot, latest: latest)
         }
-        let coconut = shown.filter(isCoconut)
-        let starred = shown.filter(isStarred).sorted {
-            let first = $0.createdAt.apiDate ?? .distantPast
-            let second = $1.createdAt.apiDate ?? .distantPast
-            return first == second ? $0.id < $1.id : first < second
+        // The projects, and the Coconut chat of an older Mac, which sends no `project`.
+        let projects = bots.filter { !$0.isChat && !$0.archived && ($0.isProject || $0.coconut) }
+            .sorted { (rank($0), $0.createdAt, $0.id) < (rank($1), $1.createdAt, $1.id) }
+        func section(of project: Bot) -> ChatListSection? {
+            let own = shown.filter { $0.agentId == project.id }
+            let items = (own.filter { $0.id == project.id } + newestFirst(own.filter { $0.id != project.id }))
+                .map(ChatListItem.bot)
+            return items.isEmpty ? nil : ChatListSection(kind: .project(project.id), title: project.name, items: items)
         }
-        let top = Set((coconut + starred).map(\.id))
-        // `shown` has no archived chat (isListed), so the archived chats join the others once each.
-        let archived = bots.filter { $0.archived && !AgentChats.isBlank($0, latest: latest) }
-        let others = (shown.filter { !top.contains($0.id) } + archived)
-            .sorted { (activity($0), $0.id) > (activity($1), $1.id) }
-        return (coconut + starred).map(ChatListItem.bot) + pinnedChats(rooms)
-            + merge(bots: others, latest: latest,
-                    chats: sorted(peopleItems(rooms, local: local) + botDirectItems(rooms, local: local)))
+        let projectIds = Set(projects.map(\.id))
+        let people = pinnedChats(rooms) + sorted(peopleItems(rooms, local: local) + botDirectItems(rooms, local: local))
+        let others = newestFirst(shown.filter { !projectIds.contains($0.agentId) }).map(ChatListItem.bot)
+        let archived = AgentChats.archived(in: bots, latest: latest)
+            .filter { !$0.coconut && !AgentChats.isBlank($0, latest: latest) }.map(ChatListItem.bot)
+        var sections = projects.filter { !isPersonal($0) }.compactMap(section)
+        if !people.isEmpty { sections.append(ChatListSection(kind: .people, title: "Team chats", items: people)) }
+        if !others.isEmpty { sections.append(ChatListSection(kind: .others, title: "Other agents", items: others)) }
+        sections += projects.filter(isPersonal).compactMap(section)
+        if !archived.isEmpty { sections.append(ChatListSection(kind: .archived, title: "Archived", items: archived)) }
+        return sections
+    }
+
+    /// The place of a project's section: Coconut, then Gumroad, then any other project, in the order of the Mac
+    /// (bot_profiles.PROJECTS). Personal has its section at the bottom of the list (isPersonal).
+    private static func rank(_ project: Bot) -> Int {
+        if project.coconut || project.projectKey == "coconut" { return 0 }
+        return project.projectKey == "gumroad" ? 1 : 2
+    }
+
+    /// The Personal project, whose section is the last one: the person keeps their own agents under the work. An older
+    /// Mac sends no key, so the name tells it then.
+    static func isPersonal(_ project: Bot) -> Bool {
+        project.projectKey.map { $0 == "personal" } ?? (project.name == "Personal")
     }
 
     /// The Coconut chat itself, not one of its further chats.

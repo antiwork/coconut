@@ -2,18 +2,17 @@ import SwiftUI
 
 /// Two tabs of the iPhone. Product has the rules that breach for the agents and the cards that wait, then its to-dos,
 /// the issues of gumroad-private with the label product (TodoLists.swift), and the open pull requests (ProductWork).
-/// Chats is one list, as Telegram has it: the agents of the projects, the teams, their named chats and the direct
-/// chats, working, idle and archived together, with the message box under the list (NewChatBar). Many idle agents of
-/// one project fold into a tree under its name (ChatTree).
+/// Chats has the sections of Slack: one for each project, the chats with people, Personal at the bottom and Archived
+/// (ChatList.sections), with the message box under the list (NewChatBar). A folded section shows only the real work.
 struct HomeLaunchView: View {
     enum Part { case product, chats }
     var part = Part.chats
     @Environment(AppStore.self) private var store
-    /// The projects whose tree is open on Chats (ChatTree). The phone keeps them.
-    @AppStorage(ChatTree.key) private var openTrees = ""
-    /// A chat in the tree of its project starts where the name of the project starts, after the chevron (ChatTreeRow).
-    @ScaledMetric(relativeTo: .body) private var treeChevron = ChatTreeRow.chevronWidth
-    private var treeIndent: CGFloat { treeChevron + BoardStyle.Space.m }
+    /// The sections of Chats that the person opened (ChatListSection). The phone keeps them.
+    @AppStorage(ChatListSection.key) private var openSections = ""
+    /// The row of Chats that the person opened last, or the chat that a Send just made. A folded section keeps it, so
+    /// the row is still there when the person comes back from the chat, as "Unread" keeps the open chat on the Mac.
+    @State private var keptChat: String?
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @Environment(\.pushRoute) private var pushRoute
     @Environment(\.openURL) private var openURL
@@ -27,8 +26,8 @@ struct HomeLaunchView: View {
     var body: some View {
         switch part {
         case .product: productList
-        case .chats: chatList(ChatList.all(bots: store.bots, latest: store.chatSummaries.newestActivity,
-                                           rooms: store.shownTeamRooms, local: store.newestLocalMessages))
+        case .chats: chatList(ChatList.sections(bots: store.bots, latest: store.chatSummaries.newestActivity,
+                                                rooms: store.shownTeamRooms, local: store.newestLocalMessages))
         }
     }
 
@@ -152,34 +151,36 @@ struct HomeLaunchView: View {
         .homeRow()
     }
 
-    /// The list of Chats, as Telegram has it: the pinned chats first, then every other chat newest activity first
-    /// (ChatList.all), the archived chats too. Every row has the same form: the name, the last message, the age and the
-    /// badges. A starred row only adds the star mark. The list has no tabs or toggles, because the person found that
-    /// nobody taps them (2026-11-24): working, idle and archived chats share the one list, and a chat archives itself
-    /// after the time that You sets (AutoArchiveMenu). Many idle agents of one project fold into one row with its name,
-    /// which opens into a tree of them (ChatTree). A chat whose row shows work never folds, so each one stays in sight.
-    private func chatList(_ rows: [ChatListItem]) -> some View {
+    /// The list of Chats in the sections of Slack (the person, 2026-11-25: "Chats should look/be more like slack and
+    /// almost everything should be archived / hidden to focus on real work. Sections by project and personal agents at
+    /// bottom"): a section for each project, Coconut first, then the chats with people, the agents of an earlier release,
+    /// Personal at the bottom, and Archived (ChatList.sections). A tap on the title of a section opens or folds it, and
+    /// the phone keeps the sections that the person opened, so every section starts folded. A folded section still shows
+    /// its real work: a chat that works or whose card waits, an unread chat, a starred project, a pinned chat of a team,
+    /// the Coconut chat and the chat that the person opened last (stays). An idle chat is one tap away, and Archived
+    /// shows nothing while it is folded. Every row has the form of a chat row: the name, the last message or the step,
+    /// the age and the badges. The list has no tabs or toggles, because the person found that nobody taps them
+    /// (2026-11-24), and a chat archives itself after the time that You sets (AutoArchiveMenu).
+    private func chatList(_ sections: [ChatListSection]) -> some View {
         let now = Date.now
-        let working = Set(rows.filter { works($0, at: now) }.map(\.id))
-        let entries = ChatTree.entries(rows, open: ChatTree.open(openTrees), loose: working)
+        let open = ChatListSection.open(openSections)
         // A list, not a stack, so that a row of a chat has the swipe of the system: swipe left to archive.
         return List {
-            if rows.isEmpty {
+            if sections.isEmpty {
                 Text("No chats yet.")
                     .font(.subheadline).foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity).padding(.vertical, BoardStyle.Space.xxl)
                     .accessibilityIdentifier("chats-empty")
                     .homeRow()
             }
-            ForEach(entries) { entry in
-                switch entry {
-                case .group(let group):
-                    ChatTreeRow(group: group) {
-                        withAnimation(.snappy) { openTrees = ChatTree.toggle(group.agentId, openTrees) }
-                    }
-                    .homeRow()
-                case .chat(let item, let nested):
-                    chatRow(item, nested: nested)
+            ForEach(sections) { section in
+                let isOpen = open.contains(section.id)
+                ChatSectionHeader(section: section, open: isOpen, first: section.id == sections.first?.id) {
+                    withAnimation(.snappy) { openSections = ChatListSection.toggle(section.id, openSections) }
+                }
+                .homeRow()
+                ForEach(section.shown(open: isOpen) { stays($0, at: now) }) { item in
+                    chatRow(item, in: section)
                 }
             }
         }
@@ -192,8 +193,8 @@ struct HomeLaunchView: View {
         .navigationTitle("Chats")
         .toolbar {
             // One tap reads every chat, as Read All in Telegram. It shows while a chat of the list has an unread
-            // count.
-            if rows.contains(where: { $0.unreadCount > 0 }) {
+            // count. A folded section shows its unread chats, so each one has a row.
+            if sections.contains(where: { $0.items.contains { $0.unreadCount > 0 } }) {
                 ToolbarItem(placement: .primaryAction) {
                     MarkAllReadButton().accessibilityIdentifier("chats-mark-all-read")
                 }
@@ -202,22 +203,30 @@ struct HomeLaunchView: View {
         .refreshable { await store.reconnect() }
         // The message box under the list gives the keyboard back when the list moves.
         .scrollDismissesKeyboard(.interactively)
-        // A new chat shows at its place in the list, with the tree of its project open.
-        .modifier(NewChatReveal { bot in openTrees = ChatTree.opening(bot.agentId, openTrees) })
+        // A new chat shows in its section, also a folded one, and the list scrolls to it.
+        .modifier(NewChatReveal { bot in keptChat = ChatListItem.bot(bot).id })
     }
 
-    /// One chat of the list. A chat in the tree of its project is set in under the name of the project and shows its own
-    /// title, because the row above names the project.
+    /// A chat that a folded section still shows: the real work, and what the person keeps at hand.
+    private func stays(_ item: ChatListItem, at date: Date) -> Bool {
+        if item.id == keptChat || item.unreadCount > 0 || item.isPinnedChat || works(item, at: date) { return true }
+        if case .bot(let bot) = item { return ChatList.isCoconut(bot) || ChatList.isStarred(bot) }
+        return false
+    }
+
+    /// One chat of the list. The title of a project's section names the project, so a further chat of the project
+    /// shows its own title (ChatListSection.title). A tap opens the chat, and the folded section keeps its row.
     @ViewBuilder
-    private func chatRow(_ item: ChatListItem, nested: Bool) -> some View {
+    private func chatRow(_ item: ChatListItem, in section: ChatListSection) -> some View {
         switch item {
         case .bot(let bot):
-            BotContactRow(bot: bot, title: nested ? ChatTree.title(bot) : bot.isChat ? bot.listName : nil,
-                          pinned: !nested && ChatList.isStarred(bot))
+            BotContactRow(bot: bot, title: section.title(of: bot), pinned: ChatList.isStarred(bot))
                 .padding(.vertical, BoardStyle.Space.m)
-                .padding(.leading, nested ? treeIndent : 0)
                 .background(BoardStyle.paper)
-                .modifier(ChatDeckRow(botId: bot.id) { pushRoute?(ConversationRoute(botId: bot.id)) })
+                .modifier(ChatDeckRow(botId: bot.id) {
+                    keptChat = item.id
+                    pushRoute?(ConversationRoute(botId: bot.id))
+                })
                 .accessibilityIdentifier(ChatList.isCoconut(bot) ? "coconut-chat" : "bot-conversation-\(bot.id)")
                 .swipeActions(edge: .trailing, allowsFullSwipe: true) {
                     // A project stays, and so does the Coconut chat (Bot.canRemove). An archived chat offers
@@ -230,7 +239,10 @@ struct HomeLaunchView: View {
             // A team chat has Star and Mute in its menu, and a named chat has Mute in its swipe too. The Team
             // screen has the leave action.
             if let chat = item.chat {
-                Button { pushRoute?(TeamChatRoute(chat: chat)) } label: {
+                Button {
+                    keptChat = item.id
+                    pushRoute?(TeamChatRoute(chat: chat))
+                } label: {
                     PeopleRow(item: item, pinMark: item.isPinnedChat)
                         .padding(.vertical, BoardStyle.Space.m)
                         .background(BoardStyle.paper)
@@ -288,8 +300,9 @@ struct HomeLaunchView: View {
         }
     }
 
-    /// Archive, or Unarchive for a chat that is archived. The row stays in Idle either way: an archived chat runs no
-    /// routine and sends no notification until a message of the person brings it back (agent_chats.py).
+    /// Archive, or Unarchive for a chat that is archived. An archived chat moves to Archived at the bottom of the list,
+    /// and Unarchive takes it back to its section. It runs no routine and sends no notification until a message of the
+    /// person brings it back (agent_chats.py).
     private func archiveButton(_ bot: Bot) -> some View {
         Button { Task { await store.archiveBot(bot, archived: !bot.archived) } } label: {
             Label(bot.archived ? "Unarchive" : "Archive", systemImage: bot.archived ? "tray.and.arrow.up" : "archivebox")
@@ -329,158 +342,121 @@ struct HomeLaunchView: View {
 
 }
 
-/// The two tabs of Chats. Working has the agents and chats that work or wait for the person, and Idle has the
-/// others, the archived chats among them, so the person finds a free agent for the next task in one tap.
-/// The tree of Chats: many agents of one project fold into one row with the name of the project (the person: "tree to
-/// group if many with one type of agent"). A project with `minimum` idle agents or more has that row at the place of
-/// the first of them, and they show under it, in the order of the list, while the row is open. A project with fewer
-/// keeps its agents as rows of their own. A working agent and the chats with people never fold, so a tree never hides
-/// a chat that works.
-enum ChatTree {
-    /// "Many": the fewest agents of one project that fold. Two rows read fine without a tree.
-    static let minimum = 3
-    static let key = "chat-tree-open"
-
-    /// The row of a project and the agents under it, in the order of the list.
-    struct Group: Identifiable, Equatable {
-        let agentId: String
-        let name: String
-        let bots: [Bot]
-        let open: Bool
-        var id: String { "tree-" + agentId }
+/// A section of Chats, as a section of the sidebar of Slack: the chats of one project, the chats with people, the
+/// agents of an earlier release, or Archived (ChatList.sections). The title folds and opens it (ChatSectionHeader).
+/// Every section starts folded, and a folded section shows only the chats that the list keeps in sight
+/// (HomeLaunchView.stays). The phone keeps the sections that the person opened: one section on each line.
+struct ChatListSection: Identifiable, Equatable {
+    enum Kind: Equatable {
+        /// The chats of a project, its own chat first: the ID of the project.
+        case project(String)
+        /// The teams, their named chats, and the direct chats with a person or with a bot of a team.
+        case people
+        /// The agents of an earlier release, which are no project, with their chats, and the chats whose project is
+        /// gone (AgentChats.orphans).
+        case others
+        /// The archived chats and agents, newest activity first.
+        case archived
     }
 
-    /// One row of the list: a chat, set in when it is in an open tree, or the row of a project.
-    enum Entry: Identifiable, Equatable {
-        case chat(ChatListItem, nested: Bool)
-        case group(Group)
+    static let key = "chat-sections-open"
 
-        var id: String {
-            switch self {
-            case .chat(let item, _): item.id
-            case .group(let group): group.id
-            }
+    let kind: Kind
+    let title: String
+    let items: [ChatListItem]
+
+    var id: String {
+        switch kind {
+        case .project(let id): "project-" + id
+        case .people: "people"
+        case .others: "others"
+        case .archived: "archived"
         }
     }
 
-    /// The rows of the list, `items` in its order. `open` has the projects whose tree is open, and `loose` the chats
-    /// that never fold: the chats that work.
-    static func entries(_ items: [ChatListItem], open: Set<String>, loose: Set<String> = []) -> [Entry] {
-        var members: [String: [Bot]] = [:]
-        for item in items where !loose.contains(item.id) {
-            if case .bot(let bot) = item { members[bot.agentId, default: []].append(bot) }
-        }
-        var placed = Set<String>()
-        var entries: [Entry] = []
-        for item in items {
-            guard !loose.contains(item.id), case .bot(let bot) = item, let bots = members[bot.agentId],
-                  bots.count >= minimum else {
-                entries.append(.chat(item, nested: false))
-                continue
-            }
-            guard placed.insert(bot.agentId).inserted else { continue }
-            let isOpen = open.contains(bot.agentId)
-            // Each chat has the name of its project, also a chat whose project is gone (AgentChats.orphans).
-            let name = bots.first { $0.id == bot.agentId }?.name ?? bots[0].name
-            entries.append(.group(Group(agentId: bot.agentId, name: name, bots: bots, open: isOpen)))
-            if isOpen { entries += bots.map { .chat(.bot($0), nested: true) } }
-        }
-        return entries
+    /// The rows of the section: every chat while it is open, and the chats that `stays` keeps while it is folded.
+    /// Archived keeps none: nothing in it is work.
+    func shown(open: Bool, stays: (ChatListItem) -> Bool) -> [ChatListItem] {
+        if open { return items }
+        return kind == .archived ? [] : items.filter(stays)
     }
 
-    /// The name of an agent in the tree of its project: the title of a further chat. The first chat of the project
-    /// has the name of the project.
-    static func title(_ bot: Bot) -> String { bot.isChat ? bot.chatLabel : bot.name }
+    /// The name of the row of a chat. The title of a project's section names the project, so its own chat shows the
+    /// name and a further chat its title. Elsewhere a chat names its agent too (Bot.listName).
+    func title(of bot: Bot) -> String {
+        if case .project = kind { return bot.isChat ? bot.chatLabel : bot.name }
+        return bot.listName
+    }
 
-    /// The projects whose tree is open, from the kept value: one project on each line. A line of an older build names
-    /// its tab first ("idle/<project>"), and a tree that was open in either tab stays open.
+    /// The sections that the person opened, from the kept value.
     static func open(_ kept: String) -> Set<String> {
-        Set(kept.split(separator: "\n").map { project($0) })
+        Set(kept.split(separator: "\n").map(String.init))
     }
 
-    /// The kept value with the tree of `agentId` opened or closed.
-    static func toggle(_ agentId: String, _ kept: String) -> String {
-        setting(agentId, open: !open(kept).contains(agentId), kept)
-    }
-
-    /// The kept value with the tree of `agentId` open.
-    static func opening(_ agentId: String, _ kept: String) -> String {
-        setting(agentId, open: true, kept)
-    }
-
-    private static func setting(_ agentId: String, open: Bool, _ kept: String) -> String {
-        var lines = kept.split(separator: "\n").filter { project($0) != agentId }.map(String.init)
-        if open { lines.append(agentId) }
+    /// The kept value with the section `id` opened or folded.
+    static func toggle(_ id: String, _ kept: String) -> String {
+        var lines = kept.split(separator: "\n").map(String.init).filter { $0 != id }
+        if !open(kept).contains(id) { lines.append(id) }
         return lines.joined(separator: "\n")
-    }
-
-    /// The project of a kept line, without the tab of an older build.
-    private static func project(_ line: Substring) -> String {
-        String(line.split(separator: "/").last ?? line)
     }
 }
 
-/// The row of a project whose agents fold on Chats (ChatTree), in the form of every other row: a chevron where a face
-/// would be, the name of the project, how many of its agents fold, and the age of the newest with their unread
-/// messages. A tap opens or closes the tree. A starred project keeps its star mark.
-struct ChatTreeRow: View {
-    @Environment(AppStore.self) private var store
+/// The title of a section of Chats, as in the sidebar of Slack: a chevron that turns down while the section is open,
+/// and the name in the quiet color of a title. A tap opens or folds the section. A folded section says nothing about
+/// what it holds: its unread and working chats show under it all the same.
+struct ChatSectionHeader: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    /// The width of the chevron. A chat in the tree starts after it.
-    static let chevronWidth: CGFloat = 16
-    @ScaledMetric(relativeTo: .body) private var chevron = ChatTreeRow.chevronWidth
-    let group: ChatTree.Group
+    @ScaledMetric(relativeTo: .subheadline) private var chevron: CGFloat = 14
+    let section: ChatListSection
+    let open: Bool
+    /// The first section starts close under the title of the page.
+    var first = false
     let toggle: () -> Void
 
     var body: some View {
-        let unread = group.bots.reduce(0) { $0 + BotChatMute.unread($1) }
-        let newest = group.bots.compactMap { store.chatSummaries[$0.id].newestDate ?? $0.createdAt.apiDate }.max()
-        let waiting = group.bots.filter { store.botNeedsYou($0) }.count
-        let starred = store.bots.first { $0.id == group.agentId }.map(ChatList.isStarred) ?? false
-        let count = group.bots.count == 1 ? "1 agent" : "\(group.bots.count) agents"
         Button(action: toggle) {
-            ChatRowLayout(name: group.name, unread: unread, date: newest, pinned: starred) {
+            HStack(spacing: BoardStyle.Space.s) {
                 Image(systemName: "chevron.right")
+                    .font(.footnote.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .rotationEffect(.degrees(open ? 90 : 0))
+                    .animation(BoardStyle.fade(reduceMotion: reduceMotion), value: open)
+                    .frame(width: chevron)
+                Text(section.title)
                     .font(.subheadline.weight(.semibold))
                     .foregroundStyle(.secondary)
-                    .rotationEffect(.degrees(group.open ? 90 : 0))
-                    .animation(BoardStyle.fade(reduceMotion: reduceMotion), value: group.open)
-                    .frame(width: chevron)
-            } subtitle: {
-                // A card that waits in the tree says so, as the row of the chat would.
-                (Text(count) + Text(waiting > 0 ? " · " + (waiting == 1 ? "1 needs you" : "\(waiting) need you") : "")
-                    .foregroundStyle(BoardStyle.attention))
-                    .font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
+                    .lineLimit(1)
+                Spacer(minLength: 0)
             }
-            .padding(.vertical, BoardStyle.Space.m)
+            .padding(.top, first ? BoardStyle.Space.s : BoardStyle.Space.l)
+            .padding(.bottom, BoardStyle.Space.s)
             .background(BoardStyle.paper)
             .contentShape(Rectangle())
         }
         .buttonStyle(HomePressStyle())
         .accessibilityElement(children: .combine)
-        .accessibilityLabel([group.name, count, waiting > 0 ? "\(waiting) need you" : nil,
-                             unread > 0 ? UnreadBadge.spoken(unread) : nil].compactMap { $0 }.joined(separator: ", "))
-        .accessibilityValue(group.open ? "Expanded" : "Collapsed")
-        .accessibilityIdentifier("chat-tree-" + group.agentId)
+        .accessibilityAddTraits(.isHeader)
+        .accessibilityValue(open ? "Expanded" : "Collapsed")
+        .accessibilityIdentifier("chat-section-" + section.id)
     }
 }
 
 /// A Send that starts a chat leaves the chat closed (sendNewChat): the Send of the message box, and Send to a new agent
-/// in a chat, which keeps the person in that chat. The Chats list then opens the tree of its project (ChatTree), for a
-/// chat that does not work yet, and scrolls its row into view: the chat is the newest, so it is the first row under the
-/// starred chats or the first row of its tree.
+/// in a chat, which keeps the person in that chat. The Chats list keeps the new chat in sight in its section, also a
+/// folded one, and scrolls its row into view: the chat is the newest of its project, so it is the first row under the
+/// project's own chat.
 private struct NewChatReveal: ViewModifier {
     @Environment(AppStore.self) private var store
-    /// Opens the tree of the project of the chat.
-    let open: (Bot) -> Void
+    /// Keeps the chat in sight in its section.
+    let keep: (Bot) -> Void
 
     func body(content: Content) -> some View {
         ScrollViewReader { proxy in
             content.onChange(of: store.newChatSend) { _, send in
                 guard let send, let bot = store.bots.first(where: { $0.id == send.chat }) else { return }
-                open(bot)
+                keep(bot)
                 Task {
-                    // The row is in the list after the update that the open tree makes.
+                    // The row is in the list after the update that keeping it makes.
                     try? await Task.sleep(for: .milliseconds(150))
                     withAnimation { proxy.scrollTo(ChatListItem.bot(bot).id) }
                 }
@@ -577,9 +553,10 @@ enum BotRowSubtitle: Equatable {
         if needsYou { self = .needsYou } else if let phase { self = .phase(phase) } else if let health { self = .health(health) } else { self = .preview }
     }
 
-    /// VoiceOver reads what the row shows. It reads the unread count only when there is one.
-    func accessibilityLabel(bot: Bot, preview: String, queued: Int = 0) -> String {
-        var parts = [bot.name]
+    /// VoiceOver reads what the row shows: its name (`name`, the title of a further chat in its project's section), and
+    /// the unread count only when there is one.
+    func accessibilityLabel(bot: Bot, name: String? = nil, preview: String, queued: Int = 0) -> String {
+        var parts = [name ?? bot.name]
         switch self {
         case .needsYou: parts.append(StatusLabel.label(for: "needs_you"))
         case .phase(let phase): parts += [phase.label] + [MessageQueue.label(queued)].compactMap { $0 }
@@ -663,7 +640,8 @@ struct BotContactRow: View {
             .animation(BoardStyle.fade(reduceMotion: reduceMotion), value: subtitle)
         }
         .accessibilityElement(children: .combine)
-        .accessibilityLabel(subtitle.accessibilityLabel(bot: bot, preview: subtitle == .preview ? preview : "",
+        .accessibilityLabel(subtitle.accessibilityLabel(bot: bot, name: title,
+                                                        preview: subtitle == .preview ? preview : "",
                                                         queued: store.queuedCount(bot.id)))
     }
 }

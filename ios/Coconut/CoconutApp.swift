@@ -83,8 +83,9 @@ struct CoconutApp: App {
 /// - Support: its to-dos, with the conversations past their service level first, then the queue of the customers.
 /// - Finance: its to-dos, the issues labelled `finance`, then the overview of the business with the risk reviews,
 ///   which opens Accounting, Marketing and History. The person named it Business for a day, then Finance again.
-/// - Chats: every agent and every chat with people in one list, working, idle and archived, with the message box under
-///   the list. Many idle agents of one project fold into a tree under its name (ChatTree).
+/// - Chats: every agent and every chat with people in the sections of Slack, one for each project, Personal at the
+///   bottom and Archived last, with the message box under the list. A folded section shows only the real work
+///   (ChatList.sections).
 /// - You: the person, this device and the settings: the Mac, notifications, connections, usage, the team and the
 ///   repositories that Coconut follows.
 /// Product, Support and Finance each start with their own list of to-dos, the issues of gumroad-private with their
@@ -93,10 +94,10 @@ struct CoconutApp: App {
 /// from the name of its agent, and the list of all projects from the project chip of the box. The app opens on Chats,
 /// because the person does not want to land in a list of work. The Mac sidebar has its own list.
 ///
-/// A conversation with the agent of a project is an agent in every label (New agent, Archive agent, "24 agents" in a
-/// tree, the Agents section of the Mac sidebar), because the person sees a group chat as people with an agent or
-/// without one. The tab is Chats, because it holds the agents and the chats with people. Code names such as `chats`,
-/// `ChatList` and `NewChatBar` stay.
+/// A conversation with the agent of a project is an agent in every label (New agent, Archive agent, the section Other
+/// agents of Chats, the Agents section of the Mac sidebar), because the person sees a group chat as people with an
+/// agent or without one. The tab is Chats, because it holds the agents and the chats with people. Code names such as
+/// `chats`, `ChatList` and `NewChatBar` stay.
 ///
 /// The tab bar always has exactly five tabs. With a sixth, iOS puts the last tabs behind a More tab, and the person
 /// does not want More. A new place goes on the page of a tab, or it takes the place of a tab.

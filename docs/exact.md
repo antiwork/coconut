@@ -398,10 +398,14 @@ Not yet measured: the time from save to screen on the web host, and a `push --wa
   the schedule of a message, the fifth rule of Needs attention (stale data, which a preview has none of). Of the chat:
   Edit of a draft card (`MessageDraftEditor`), a reply to a card in words (`DecisionReplyComposer`), the links of a
   card's sources and its GitHub embeds, View revised proposal, opening a page of the Library, the zoom, swipe and
-  share of the photo viewer, and the hold of a message or a photo (copy, reply, reactions). Also the tree
-  of the Swift app's Chats tab (`ChatTree`, 4a20dfb), where three or more idle agents of one project fold
-  under the project's name, and its title Chats in place of Agents. The rows now name a further chat of a project after
-  the project and its own title (`Bot.listName`, from the Mac's `chat_of` and `chat_title`), which that tree needs.
+  share of the photo viewer, and the hold of a message or a photo (copy, reply, reactions). Also the sections of the
+  Swift app's Chats tab (`ChatList.sections`, `ChatListSection`): one for each project, Coconut first, then Team chats,
+  Other agents, Personal at the bottom and Archived last, each folded until the person opens it and showing only the
+  chats that work, wait for the person or are unread while folded, so an archived chat shows only in Archived there.
+  The Exact app still lists every chat in one list, archived chats among the others, and its title Agents in place of
+  Chats. The rows name a further chat of a project after the project and its own title (`Bot.listName`, from the Mac's
+  `chat_of` and `chat_title`), which a section of a project names by its title alone; the Mac sends `project_key`
+  (coconut, gumroad, personal) for the order of the sections.
 - The pairing code lives in the memory of the data module. An update that applies while a phone pairs reloads the app,
   which then shows a new code, and the Mac seals its setup for the old one; send the new code. Keeping the code in the
   Keychain until the phone pairs would end this.

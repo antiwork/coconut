@@ -31,6 +31,7 @@
         "reasoning_effort": "medium"
       },
       "project": true,
+      "project_key": "coconut",
       "coconut": true
     },
     {
@@ -51,7 +52,8 @@
         "provider": "preview",
         "reasoning_effort": "medium"
       },
-      "project": true
+      "project": true,
+      "project_key": "gumroad"
     },
     {
       "archived": false,
@@ -71,7 +73,8 @@
         "provider": "preview",
         "reasoning_effort": "medium"
       },
-      "project": true
+      "project": true,
+      "project_key": "personal"
     },
     {
       "archived": false,
