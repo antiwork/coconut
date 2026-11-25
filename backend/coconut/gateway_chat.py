@@ -686,7 +686,9 @@ class GatewayChat:
             text = own + work_notes(request) + self.cards_note(task)
         if gateway_claim_turn(task):
             return self._run_work_turn(task, bot, text, emit, own=own)
-        return self._run_in_gateway(task, bot, text, emit, session=cron_session or None, own=own)
+        # The card of a routine run continues the Hermes session of that run, which mote does not have.
+        return self._run_in_gateway(task, bot, text, emit, session=cron_session or None, own=own,
+                                    hermes=bool(cron_session))
 
     def run_gateway_context(self, task: dict, request_task: dict, bot: dict, history: list, context: dict,
                             emit) -> bool:
@@ -758,14 +760,14 @@ class GatewayChat:
                         commentary: bool = True, context_id: str | None = None, wanted=None, session: str | None = None,
                         chat: str | None = None, mode: str | None = None, own: str | None = None,
                         folder: str | None = None, command: str | None = None, images: list | None = None,
-                        mote_check: bool = False) -> bool:
+                        mote_check: bool = False, hermes: bool = False) -> bool:
         """Give a turn to the adapter of the bot's profile. Wait for one, at most GATEWAY_WAIT_SECONDS.
 
         The turn joins the bot's conversation, or the Hermes session `session`, for example of a cron run
         (hooks.join_conversation finds a session by its ID when no conversation has that root)."""
         from .native_conversation import session_root
         home = self.profiles.home(bot)
-        if (mode is None or mote_check) and not gateway_claim_turn(task):
+        if (mode is None or mote_check) and not hermes and not gateway_claim_turn(task):
             # An agent on mote takes the turns of its chats in its mote home, which no Hermes gateway serves. A work
             # session with a Kanban claim and a turn with a mode of its own, such as a status question, stay on Hermes
             # (mote_runtime.py). A check of a card that a mote turn made runs on mote (run_gateway_context).
