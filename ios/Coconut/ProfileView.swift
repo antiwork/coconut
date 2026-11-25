@@ -59,7 +59,7 @@ struct ProfileView: View {
                 BoardRow(symbol: "link", title: "Connections", detail: "Google, GitHub and other tools")
                     .boardButton("mcp-settings") { pushRoute?(ProfileRoute.connections) }
                 // The repositories of GitHub that Coconut follows for the work of the business: a setting, so it is
-                // here and not on Business.
+                // here and not on Finance.
                 BoardRow(symbol: "shippingbox", title: "Repositories", value: repositorySummary)
                     .boardButton("profile-repositories") { pushRoute?(BusinessRoute.projects) }
             }

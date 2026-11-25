@@ -77,17 +77,17 @@ struct CoconutApp: App {
     }
 }
 
-/// The five tabs of the iPhone in their order: Product, Support, Business, Chats and You, as the person listed them.
+/// The five tabs of the iPhone in their order: Product, Support, Finance, Chats and You, as the person listed them.
 /// Each tab holds only its own things:
 /// - Product: the rules that breach for the agents and the cards that wait, then its to-dos and the open pull requests.
 /// - Support: its to-dos, with the conversations past their service level first, then the queue of the customers.
-/// - Business (the case `finance`): its to-dos, the issues labelled `finance`, then the overview of the business with
-///   the risk reviews, which opens Accounting, Marketing and History.
+/// - Finance: its to-dos, the issues labelled `finance`, then the overview of the business with the risk reviews,
+///   which opens Accounting, Marketing and History. The person named it Business for a day, then Finance again.
 /// - Chats: every agent and every chat with people in one list, working, idle and archived, with the message box under
 ///   the list. Many idle agents of one project fold into a tree under its name (ChatTree).
 /// - You: the person, this device and the settings: the Mac, notifications, connections, usage, the team and the
 ///   repositories that Coconut follows.
-/// Product, Support and Business each start with their own list of to-dos, the issues of gumroad-private with their
+/// Product, Support and Finance each start with their own list of to-dos, the issues of gumroad-private with their
 /// label, and each badge counts its own list (TodoLists.swift, TodoCounts): the person asked for three lists and three
 /// counts in place of one. An issue is a to-do of one list, so no other tab lists it again. The page of a project opens
 /// from the name of its agent, and the list of all projects from the project chip of the box. The app opens on Chats,
@@ -96,7 +96,7 @@ struct CoconutApp: App {
 /// A conversation with the agent of a project is an agent in every label (New agent, Archive agent, "24 agents" in a
 /// tree, the Agents section of the Mac sidebar), because the person sees a group chat as people with an agent or
 /// without one. The tab is Chats, because it holds the agents and the chats with people. Code names such as `chats`,
-/// `finance`, `ChatList` and `NewChatBar` stay.
+/// `ChatList` and `NewChatBar` stay.
 ///
 /// The tab bar always has exactly five tabs. With a sixth, iOS puts the last tabs behind a More tab, and the person
 /// does not want More. A new place goes on the page of a tab, or it takes the place of a tab.
@@ -170,7 +170,7 @@ struct CoconutHome: View {
             Tab(value: HomeTab.finance) {
                 root(tab: .finance, path: $financePath)
             } label: {
-                Label { Text("Business") } icon: { Image(systemName: "chart.xyaxis.line") }
+                Label { Text("Finance") } icon: { Image(systemName: "chart.xyaxis.line") }
             }.badge(store.todoCount(.finance))
                 .accessibilityIdentifier("home-finance")
             Tab(value: HomeTab.chats) {
@@ -186,7 +186,7 @@ struct CoconutHome: View {
                 Label { Text("You") } icon: { Image(systemName: "person.crop.circle.fill") }
             }.accessibilityIdentifier("home-profile")
         }
-        // The count of Support has the breach of Business's overview (TodoCounts), so the overview loads here for every
+        // The count of Support has the breach of Finance's overview (TodoCounts), so the overview loads here for every
         // tab, not only while Support shows: at each connection, then every 5 minutes. The publisher writes it every 15
         // minutes, and a report older than an hour proves no breach, so an overview that loaded once dropped from the count.
         .task(id: "\(store.connection)/\(store.businessChanges)") {
@@ -507,7 +507,7 @@ extension CoconutHome {
                 guard let bot = store.bots.first(where: { $0.id == agent }) else { return }
                 _ = await store.sendNewChat(in: bot, text: "Which sellers had a payout held on Friday?")
             }
-        // To-dos (TodoLists.swift): the sheet of a new one on Product and on Business, and a to-do added as Add does.
+        // To-dos (TodoLists.swift): the sheet of a new one on Product and on Finance, and a to-do added as Add does.
         case "new-todo": open(.product); later { PendingTodoIssues.shared.adding = .product }
         case "new-todo-finance": open(.finance); later { PendingTodoIssues.shared.adding = .finance }
         case "todo-add":

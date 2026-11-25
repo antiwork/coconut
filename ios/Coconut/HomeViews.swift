@@ -38,7 +38,7 @@ struct HomeLaunchView: View {
         return ScrollViewReader { proxy in
             List {
                 attention(cards: cards)
-                // The to-dos of Product, which its badge counts (TodoCounts). They have no title, as on Business and
+                // The to-dos of Product, which its badge counts (TodoCounts). They have no title, as on Finance and
                 // Support: the rows say what they are (TodoListSection). The cards and the alerts of the agents above
                 // them are no to-dos of gumroad-private, so they add nothing to the count.
                 TodoIssueRows(area: .product)

@@ -41,7 +41,7 @@ struct BusinessHomePresentation {
         var count = 0
     }
     /// The breaches of the overview that AttentionRules reads. Support past SLA counts on Support and the risk reviews
-    /// past SLA on Business, each as the first row of the to-dos of its tab (TodoCounts), as the person asked for the
+    /// past SLA on Finance, each as the first row of the to-dos of its tab (TodoCounts), as the person asked for the
     /// needs attention of the business to show as to-dos. The issues past SLA and of high priority are open issues of
     /// gumroad-private, so they are to-dos of their own lists already: only the Mac's Home shows them as breaches.
     var attention: [AttentionRow] {
@@ -83,8 +83,8 @@ struct BusinessHomePresentation {
         return AttentionRow(id: id, title: breach, detail: detail, symbol: symbol, route: route, unavailable: false,
                             count: Int(count.rounded(.up)))
     }
-    /// The queues that Business shows as tiles: the risk reviews. The open pull requests are the state of the product,
-    /// so Product lists them (ProductWork) and Business does not.
+    /// The queues that Finance shows as tiles: the risk reviews. The open pull requests are the state of the product,
+    /// so Product lists them (ProductWork) and Finance does not.
     var informational: [AttentionRow] {
         [("risk", "Risk review", "shield.lefthalf.filled", BusinessRoute.report("risk"))].map { key, title, symbol, route in
             let notice = sourceNotice(key) ?? (currentStatusUnknown ? "Current status unknown" : nil)
@@ -212,7 +212,7 @@ struct BusinessHomeContent: View {
         }.foregroundStyle(BoardStyle.ink)
     }
 
-    /// The places that Business opens, as the rows of one tile: a name needs no tile of its own. The repositories that
+    /// The places that Finance opens, as the rows of one tile: a name needs no tile of its own. The repositories that
     /// Coconut follows are a setting, so You has them.
     private var places: some View {
         let rows = Self.functions.map { (title: $0.name, route: BusinessRoute.function($0.key), id: "function-" + $0.key) }
@@ -237,7 +237,7 @@ struct BusinessHomeContent: View {
         }
     }
 
-    /// Support is a place of its own, a tab of the iPhone and a row of the Mac sidebar, so Business opens the other
+    /// Support is a place of its own, a tab of the iPhone and a row of the Mac sidebar, so Finance opens the other
     /// functions.
     private static let functions = BusinessFunction.builtIns.filter { $0.key != "support" }
 

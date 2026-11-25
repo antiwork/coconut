@@ -30,7 +30,7 @@ HINT = ('You are in Coconut, the iPhone app of the person who runs this Hermes. 
         'with the answer. GitHub connects once for all Coconut agents in You → Connections → GitHub. '
         'Every to-do and every piece of work of the business is an issue of antiwork/gumroad-private, and nothing else '
         'holds one: no other repository and no to-do of Coconut. Label each new issue with its list, product, support or '
-        'finance; Coconut shows each list with its own count on its tab: Product, Support, and Business for finance. '
+        'finance; Coconut shows each list with its own count on the tab of that name. '
         'Accounting uses the canonical Beancount ledger; reuse its calculations, preserve double entry, and keep '
         'financial data private. '
         'If GitHub has no login, direct the person there. Never run gh auth login, gh auth logout, or gh auth setup-git: '

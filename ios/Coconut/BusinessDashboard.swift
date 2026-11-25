@@ -1,7 +1,7 @@
 import SwiftUI
 import Charts
 
-/// The place of one function: its report and its work. Support is a place of its own. Business opens the others.
+/// The place of one function: its report and its work. Support is a place of its own. Finance opens the others.
 struct BusinessWorkspaceView: View {
     let function: String
     private var hasReport: Bool { function == "accounting" || function == "support" }
@@ -13,7 +13,7 @@ struct BusinessWorkspaceView: View {
             if function == "support" { BusinessReportView(key: function, top: AnyView(TodoListSection(area: .support))) }
             // One view, with no control between the report and the work: the person found that nobody taps such
             // tabs (2026-11-24). The work of Accounting is the issues labelled finance, which are the to-dos of the
-            // Business tab, so its page is its report. A function without a report has its work only.
+            // Finance tab, so its page is its report. A function without a report has its work only.
             else if hasReport { BusinessReportView(key: function) }
             else { BusinessWorkListView(function: function) }
         }
@@ -238,7 +238,7 @@ private struct SupportDashboard: View {
         let waiting = counts["unassigned"].number
         VStack(alignment: .leading, spacing: BoardStyle.Space.l) {
             // The queue "issues" of the report is every open issue of gumroad-private, so its rows are the to-dos of
-            // Product, Support and Business, each on its own tab. The iPhone's Support shows the customers only. The Mac
+            // Product, Support and Finance, each on its own tab. The iPhone's Support shows the customers only. The Mac
             // shows both queues, one under the other with its name, and no control between them: the person found that
             // nobody taps such tabs (2026-11-24).
             #if os(macOS)

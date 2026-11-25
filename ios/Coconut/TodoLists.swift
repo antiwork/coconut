@@ -1,10 +1,9 @@
 import SwiftUI
 
-/// The three to-do lists of Coconut: Product, Support and Business, one on each tab of that name with its own count.
+/// The three to-do lists of Coconut: Product, Support and Finance, one on each tab of that name with its own count.
 /// A to-do is an open issue of antiwork/gumroad-private, where the team and the agents work, and nothing else holds a
 /// to-do: no other repository, no chat and no card of Coconut. The label of the issue names its list (`product`,
-/// `support`, and `finance` for Business, a label that the agents of other Macs already use), so GitHub shows the same
-/// split as the tabs. An issue with none of the labels is a to-do of
+/// `support`, `finance`), so GitHub shows the same split as the tabs. An issue with none of the labels is a to-do of
 /// Product, the list of the repository's issues before the split, and an issue with two is in both lists (backend
 /// github_todos.py). The person asked for three lists in place of one ("more context full"), so a new place that shows
 /// to-dos shows one list, never a mix.
@@ -13,8 +12,8 @@ enum TodoArea: String, CaseIterable, Codable, Hashable, Sendable {
 
     var title: String {
         switch self {
-        // The tab of the label `finance` is Business: money, payouts, risk, tax, accounting and marketing.
-        case .finance: "Business"
+        // Money, payouts, risk, tax, accounting and marketing.
+        case .finance: "Finance"
         case .support: "Support"
         case .product: "Product"
         }
@@ -111,8 +110,8 @@ struct TodoIssues: Codable, Equatable, Sendable {
 }
 
 /// The number on the tab of a list: its to-dos, the ones on their way too, and the breaches of the business that are
-/// its own and no to-do of the list, which the overview of Business proves while it is current (AttentionRules).
-/// Support past SLA counts on Support (conversations of the customers), and the risk reviews past SLA count on Business
+/// its own and no to-do of the list, which the overview of Finance proves while it is current (AttentionRules).
+/// Support past SLA counts on Support (conversations of the customers), and the risk reviews past SLA count on Finance
 /// (reviews of sellers): the person asked for the needs attention of the business to show as to-dos. The breaches
 /// about the issues themselves, product issues past SLA and high priority, count once, as their to-dos. The cards, the
 /// work that agents track and the alerts of the agents are no to-dos of these lists, so they add to no tab.
@@ -255,7 +254,7 @@ extension AppStore {
 
 /// The rows of one list: the to-dos on their way, then the to-dos, high priority first. A row opens its issue in
 /// Coconut (GitHubItemView). Hold it to move it to another list, which changes its label on GitHub. On Product the rows
-/// are rows of its List; on Business and Support they are rows of a section (TodoListSection).
+/// are rows of its List; on Finance and Support they are rows of a section (TodoListSection).
 struct TodoIssueRows: View {
     @Environment(AppStore.self) private var store
     @Environment(\.pushRoute) private var pushRoute
@@ -337,7 +336,7 @@ struct TodoIssueRows: View {
 }
 
 /// A breach of the business that counts on a list (TodoCounts): the conversations of Support or the risk reviews of
-/// Business past their service level. The page shows their queue under the list, so the row leads nowhere.
+/// Finance past their service level. The page shows their queue under the list, so the row leads nowhere.
 private struct TodoBreachRow: View {
     let item: AttentionItem
     let inList: Bool
@@ -372,7 +371,7 @@ private struct TodoRowInset: ViewModifier {
     }
 }
 
-/// The list of one tab on a page of tiles: Business and Support, with the breach of the tab as the first row. It has no
+/// The list of one tab on a page of tiles: Finance and Support, with the breach of the tab as the first row. It has no
 /// title and no count: its rows say what they are, and the badge of the tab counts them (TodoCounts). The person: "Don't
 /// have to say todos in the ui the table itself is self descriptive". Product is a List and shows TodoIssueRows itself.
 struct TodoListSection: View {
@@ -395,7 +394,7 @@ extension View {
     func newTodoButton(_ area: TodoArea) -> some View { modifier(NewTodoButton(area: area)) }
 }
 
-/// The + and its sheet. Each page keeps its own sheet, so a page of Support that Business pushed opens one sheet only.
+/// The + and its sheet. Each page keeps its own sheet, so a page of Support that Finance pushed opens one sheet only.
 /// A preview launch asks for the sheet through PendingTodoIssues.adding.
 private struct NewTodoButton: ViewModifier {
     let area: TodoArea

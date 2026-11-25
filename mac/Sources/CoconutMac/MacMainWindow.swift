@@ -264,7 +264,7 @@ struct MacMainWindow: View {
         case .people:
             placeStack { PeopleView(openTeamChat: { selection = .team($0) }).navigationTitle("People") }
         case .business:
-            placeStack { BusinessHomeView().navigationTitle("Business") }
+            placeStack { BusinessHomeView().navigationTitle("Finance") }
         case .support:
             placeStack { BusinessWorkspaceView(function: "support") }
         case .profile:
@@ -420,7 +420,7 @@ struct DetailColumnBottomInset: NSViewRepresentable {
     }
 }
 
-/// The sidebar: the Coconut chat, then the places (Home, Live, Spend, Business, Support, Projects and You), then the
+/// The sidebar: the Coconut chat, then the places (Home, Live, Spend, Finance, Support, Projects and You), then the
 /// chats in sections: Starred, Unread, Team chats, Project chats and Archived. The iPhone's Product tab has no row
 /// here: the person chose on a card to leave the sidebar as it is (2026-11-24), so Home keeps the cards and Support
 /// keeps the queue of the product issues. Do not add the row or offer it again.
@@ -478,7 +478,7 @@ struct MacSidebar: View {
             MacSidebarLabel(title: "Spend", symbol: "dollarsign.circle")
                 .tag(MacSelection.spend)
                 .accessibilityIdentifier("sidebar-spend")
-            MacSidebarLabel(title: "Business", symbol: "chart.xyaxis.line")
+            MacSidebarLabel(title: "Finance", symbol: "chart.xyaxis.line")
                 .tag(MacSelection.business)
                 .accessibilityIdentifier("sidebar-business")
             MacSidebarLabel(title: "Support", symbol: "lifepreserver")

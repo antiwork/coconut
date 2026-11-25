@@ -57,7 +57,7 @@ final class AppStore {
     var businessCatalog: BusinessCatalog?
     var businessChanges = 0
     var demoBusinessWork = BusinessWork.previews
-    /// The open to-dos of the three lists, Product, Support and Business (TodoLists.swift), from the Mac or from the last
+    /// The open to-dos of the three lists, Product, Support and Finance (TodoLists.swift), from the Mac or from the last
     /// start. Nil until the first.
     var todoIssues: TodoIssues?
     /// The last failed load of the to-dos. A list shows it only while it has no to-dos.
@@ -452,13 +452,13 @@ final class AppStore {
             apply(cache.snapshotForRestore, persist: false)
             lastSync = cache.syncedAt
         }
-        // The overview of Business from the last start, so the count of Support has its breach at once. The rules
+        // The overview of Finance from the last start, so the count of Support has its breach at once. The rules
         // count a breach only while the overview is under an hour old (BusinessHomePresentation).
         if businessReports["overview"] == nil,
            let overview: BusinessReport = ProtectedCache.read(BusinessReport.overviewCache) {
             businessReports["overview"] = overview
         }
-        // The to-dos from the last start, so the counts of Product, Support and Business show before the Mac answers.
+        // The to-dos from the last start, so the counts of Product, Support and Finance show before the Mac answers.
         if todoIssues == nil, let todos: TodoIssues = ProtectedCache.read(TodoIssues.cache) {
             todoIssues = todos
         }

@@ -161,7 +161,7 @@ struct BusinessReportsView: View {
                 }
                 .chartYAxis { Self.moneyAxis }
                 .accessibilityIdentifier("business-reports-daily-chart")
-                // Data only, in the words of the tile of Business: the name and the number.
+                // Data only, in the words of the tile of Finance: the name and the number.
                 Text("Daily average " + BusinessFormat.money(periods.averageGmv)).font(.callout).monospacedDigit()
             }
         }

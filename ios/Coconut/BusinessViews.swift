@@ -11,7 +11,7 @@ struct BusinessHomeView: View {
 
     var body: some View {
         BoardPage(width: .wide, spacing: BoardStyle.Space.l) {
-            // The to-dos of Business come first, which the badge of the tab counts (TodoLists.swift).
+            // The to-dos of Finance come first, which the badge of the tab counts (TodoLists.swift).
             TodoListSection(area: .finance)
             if let report = shownReport {
                 TimelineView(.periodic(from: .now, by: 60)) { context in
@@ -25,7 +25,7 @@ struct BusinessHomeView: View {
                     .accessibilityIdentifier("business-home-refresh-error")
             }
         }
-        .navigationTitle("Business")
+        .navigationTitle("Finance")
         .newTodoButton(.finance)
         .task(id: "\(store.connection)/\(store.businessChanges)") { await load() }
         .onChange(of: store.businessGeneration) { _, _ in report = nil; error = nil }
