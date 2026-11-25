@@ -14,8 +14,10 @@ import Speech
 /// of a second sends it. The Mac answers with the model of the project and what its profile knows (SOUL.md and memory)
 /// in two or three seconds, without the tools of a turn, which take minutes (backend/coconut/brainstorm.py). The phone
 /// reads the answer aloud and listens again. Next steps asks the same model for the message that builds what the two
-/// worked out. The page closes, and the message waits in the message box of Product with the project of the talk, so
-/// the person reads it and sends it to an agent there. The talk and that box share their project (NewChatPlace.product).
+/// worked out. The page closes, and the message waits in the message box of Product, so the person reads it and sends
+/// it. That box sends to Gumclaw (the person: "those 3 tabs should go to gumclaw"), which has no model on this Mac, so
+/// the talk is with the project of the business then. The talk and that box share the choice of the person
+/// (NewChatPlace.product): a project chosen in the talk is where the box sends too.
 /// A Mac has no Product page and no voice yet, so the button shows on the iPhone.
 
 /// One thing said in a brainstorm, by the person or by the model of the project.
@@ -26,9 +28,8 @@ struct BrainstormLine: Identifiable, Hashable, Sendable {
     let text: String
 }
 
-/// The next steps of a talk, with the project that they go to.
+/// The next steps of a talk.
 struct BrainstormSteps: Equatable {
-    let project: String
     let text: String
 }
 
@@ -143,11 +144,12 @@ private struct BrainstormButton: ViewModifier {
         .accessibilityIdentifier("brainstorm")
     }
 
-    /// The message box of Product takes the next steps once the page is gone, with the project of the talk.
+    /// The message box of Product takes the next steps once the page is gone. It keeps where it sends: Gumclaw, or the
+    /// project that the person chose, also in the talk. The project that the talk fell back to never takes its place.
     private func prefill() {
         guard let steps else { return }
         self.steps = nil
-        store.newChatRequest = NewChatRequest(project: steps.project, text: steps.text, place: .product)
+        store.newChatRequest = NewChatRequest(text: steps.text, place: .product)
     }
 }
 
@@ -271,10 +273,10 @@ struct BrainstormView: View {
 
     /// Asks for the next steps. They go to the message box when the page has closed (BrainstormButton).
     private func finish(_ target: Bot?) {
-        guard let target else { return }
+        guard target != nil else { return }
         Task {
             guard let steps = await session.finish() else { return }
-            done(BrainstormSteps(project: target.id, text: steps))
+            done(BrainstormSteps(text: steps))
             dismiss()
         }
     }

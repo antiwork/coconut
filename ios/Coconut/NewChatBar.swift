@@ -4,8 +4,16 @@ import SwiftUI
 enum ChatProject {
     static let projectKey = "chatProject"
     /// The key of the project of the business (bot_profiles.PROJECTS). Finance, Support and Product start their box
-    /// with it.
+    /// with it while the person cannot write to the agent of the business (businessAgent).
     static let business = "gumroad"
+    /// The key of the agent of the business that the phone keeps (TeamAgentChoice.memory).
+    static let businessAgentKey = "businessAgent"
+
+    /// The agent of the business: the agent of the teams that this person can write to, Gumclaw for Gumroad, which runs
+    /// on a Mac of its own with the admin access, the support mailbox and the risk tools. Finance, Support and Product
+    /// send to it (the person, 2026-11-25: "those 3 tabs should go to gumclaw"). Nil when the person can write to no
+    /// agent of a team.
+    static func businessAgent(in agents: [TeamAgentChoice]) -> TeamAgentChoice? { agents.first }
 
     /// The places that a chat can start in: the projects with the newest chat first, then the Coconut chat. An archived
     /// project and an agent that is no project are not among them.
@@ -38,6 +46,21 @@ struct TeamAgentChoice: Identifiable, Equatable {
     let name: String
     /// The team bot ID (`t-<room>-<entry>`), which no project has.
     var id: String { chat.bot ?? chat.room }
+
+    init(chat: TeamChatKey, name: String) {
+        self.chat = chat
+        self.name = name
+    }
+
+    /// The agent as the phone keeps it: the room, the team bot ID and the name, one on each line.
+    var memory: String { [chat.room, chat.bot ?? "", name].joined(separator: "\n") }
+
+    /// The agent that the phone kept, or nil for nothing kept.
+    init?(memory: String) {
+        let parts = memory.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+        guard parts.count == 3, !parts[0].isEmpty, !parts[1].isEmpty else { return nil }
+        self.init(chat: TeamChatKey(room: parts[0], bot: parts[1]), name: parts[2])
+    }
 }
 
 /// Where the message box sends: a project, where the message starts a new chat, or an agent of a team, whose direct
@@ -63,10 +86,12 @@ enum NewChatTarget: Equatable {
 
 /// The page that the message box sits under: a tab of the iPhone (the person: "new chat should show up every tab
 /// you're on"), or Home of the Mac, which is the place of Chats. Each place keeps its own project and its own draft,
-/// and the project follows where the person is: Finance, Support and Product start with the project of the business,
-/// and You with Coconut, where Coconut's settings change. Chats keeps the project that each New agent chooses
-/// (AppStore.startChat), and only its box takes those starts. The box of Product takes the next steps of a brainstorm
-/// (NewChatRequest.place, Brainstorm.swift), which shares its project.
+/// and the project follows where the person is: Finance, Support and Product send to Gumclaw, the agent of the
+/// business (ChatProject.businessAgent; the person: "those 3 tabs should go to gumclaw"), and to the project of the
+/// business while the person cannot write to it, and You starts with Coconut, where Coconut's settings change. Chats
+/// keeps the project that each New agent chooses (AppStore.startChat), and only its box takes those starts. The box of
+/// Product takes the next steps of a brainstorm (NewChatRequest.place, Brainstorm.swift), which shares the choice of
+/// the person.
 enum NewChatPlace: String {
     case chats, product, support, finance, you
 
@@ -80,8 +105,16 @@ enum NewChatPlace: String {
     /// The list of to-dos that the empty box suggests from (NewChatSuggestion).
     var area: TodoArea? { TodoArea(rawValue: rawValue) }
 
-    /// The project that the box of the place starts with until the person chooses one there. Nil for Chats, which
-    /// starts with the newest project.
+    /// Finance, Support and Product send to the agent of the business until the person chooses another there.
+    var startsWithBusinessAgent: Bool {
+        switch self {
+        case .finance, .support, .product: true
+        case .chats, .you: false
+        }
+    }
+
+    /// The project that the box of the place starts with until the person chooses one there, and while the person
+    /// cannot write to the agent of the business. Nil for Chats, which starts with the newest project.
     func startingProject(in projects: [Bot]) -> Bot? {
         switch self {
         case .chats: nil
@@ -90,11 +123,14 @@ enum NewChatPlace: String {
         }
     }
 
-    /// What the box sends to: the choice of the person while it is in the list, else the project that the place starts
-    /// with, else the newest project. Nil before the Mac sends its projects.
-    func target(chosen: String, projects: [Bot], agents: [TeamAgentChoice]) -> NewChatTarget? {
+    /// What the box sends to: the choice of the person while it is in the list, else on Finance, Support and Product
+    /// the agent of the business (`business`), else the project that the place starts with, else the newest project.
+    /// Nil before the Mac sends its projects. A brainstorm passes no agent, because only a project of this Mac talks.
+    func target(chosen: String, projects: [Bot], agents: [TeamAgentChoice],
+                business: TeamAgentChoice? = nil) -> NewChatTarget? {
         if let project = projects.first(where: { $0.id == chosen }) { return .project(project) }
         if let agent = agents.first(where: { $0.id == chosen }) { return .teamAgent(agent) }
+        if startsWithBusinessAgent, let business { return .teamAgent(business) }
         return (startingProject(in: projects) ?? projects.first).map(NewChatTarget.project)
     }
 }
@@ -157,6 +193,9 @@ struct NewChatBar: View {
     @State private var sent: SentNote?
     /// The suggestions that this box sent, one on each line, so the next one takes their place (NewChatSuggestion.kept).
     @AppStorage private var sentSuggestions: String
+    /// The agent of the business as the phone last saw it (TeamAgentChoice.memory). The list of the teams comes from
+    /// the Mac a moment after a launch, so until then the tabs of the business name it and send to it from this.
+    @AppStorage(ChatProject.businessAgentKey) private var businessAgent = ""
     @FocusState private var focused: Bool
 
     private struct SentNote: Equatable {
@@ -176,7 +215,10 @@ struct NewChatBar: View {
         let latest = AgentChats.activity(bots: store.bots, latest: store.chatSummaries.newestActivity)
         let projects = ChatProject.choices(in: store.bots, latest: latest)
         let agents = ChatProject.teamAgents(in: store.shownTeamRooms)
-        let target = place.target(chosen: chosen, projects: projects, agents: agents)
+        // The list of the teams decides once it is here. A list without the agent sends to the project of the business.
+        let business = store.team == nil ? TeamAgentChoice(memory: businessAgent) : ChatProject.businessAgent(in: agents)
+        let seen: String? = store.team == nil ? nil : (business?.memory ?? "")
+        let target = place.target(chosen: chosen, projects: projects, agents: agents, business: business)
         let suggestion = place.area.flatMap { area in
             let done = Set(sentSuggestions.split(separator: "\n").map(String.init))
             return NewChatSuggestion.list(area, todos: store.todoIssues, attention: store.attentionItems(),
@@ -197,6 +239,11 @@ struct NewChatBar: View {
         .onChange(of: target?.id, initial: true) { _, id in
             guard place == .chats, let id, id != chosen, chosen.isEmpty || store.team != nil else { return }
             chosen = id
+        }
+        // The phone keeps the agent of the business that the list of the teams names, and forgets it when the list has
+        // none, so the next launch starts where this one ended.
+        .onChange(of: seen, initial: true) { _, kept in
+            if let kept, kept != businessAgent { businessAgent = kept }
         }
         .onChange(of: store.newChatRequest, initial: true) { _, request in
             if let request, request.place == place { apply(request) }
