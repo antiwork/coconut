@@ -234,11 +234,12 @@ extension AppStore {
         AttentionRules.items(attentionInput, now: now)
     }
 
-    /// Loads the overview of Finance, so its breaches show before the person opens Finance. A Mac without the
-    /// reports fails here, and then the rows stay empty.
+    /// Loads the overview of Finance, so its breaches show before the person opens Finance, and the risk reviews that
+    /// Finance lists in place of its breach. A Mac without the reports fails here, and then the rows stay empty.
     func loadBusinessAttention() async {
         // The demo returns its report without keeping it, so this keeps it for both.
         if let report = try? await businessReport("overview") { businessReports["overview"] = report }
+        await loadRiskReviews()
     }
 }
 

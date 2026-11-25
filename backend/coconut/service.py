@@ -338,6 +338,8 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
         self.github_items = GitHubItems(lambda: self.business)
         from .github_todos import GitHubTodos
         self.todos = GitHubTodos(self.business)
+        from .risk_reviews import RiskReviews
+        self.risk_reviews = RiskReviews(self.business)
         self.github_requests = threading.Lock()
         try:
             self._recover_workspace_binding()
@@ -1115,6 +1117,12 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
         if path == '/v1/todos':
             from .github_todos import mutate_todos
             return mutate_todos(self, method, data, key, fingerprint)
+        if path == '/v1/risk/reviews':
+            from .risk_reviews import mutate_risk
+            result = mutate_risk(self, method, data, key, fingerprint)
+            # The review of a decision is an issue of Finance, so the next list of the to-dos reads GitHub again.
+            self.todos.forget()
+            return result
         if path.startswith('/v1/business/'):
             from .business import mutate_business
             result = mutate_business(self, method, path.split('/')[3:], data, key, fingerprint)
@@ -1124,8 +1132,9 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
         if path == '/v1/github/item' or path.startswith('/v1/github/item/'):
             from .github_items import mutate_github_item
             result = mutate_github_item(self, method, path.split('/')[4:], data, key, fingerprint)
-            # A close or a reopen of an issue changes the to-dos.
+            # A close or a reopen of an issue changes the to-dos, and the state of a review of Finance.
             self.todos.forget()
+            self.risk_reviews.forget()
             return result
         if path.startswith('/v1/support/conversations/'):
             from .support_threads import mutate_support

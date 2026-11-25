@@ -31,6 +31,7 @@ struct BusinessHomeView: View {
         .onChange(of: store.businessGeneration) { _, _ in report = nil; error = nil }
         .refreshable {
             await store.loadTodoIssues(fresh: true)
+            await store.loadRiskReviews(fresh: true)
             await load()
         }
     }

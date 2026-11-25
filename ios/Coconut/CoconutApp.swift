@@ -545,6 +545,9 @@ extension CoconutHome {
         case "support-work": open(.support)
         case "support-conversation":
             open(.support, [SupportThreadRoute(id: "sample-0", subject: "Payout timing question")])
+        // A risk review past SLA of Finance (RiskReviews.swift): one that Gumclaw has, and one that waits for a choice.
+        case "risk-review": open(.finance, [RiskReviewRoute(user: "4321043910336")])
+        case "risk-review-new": open(.finance, [RiskReviewRoute(user: "8155930716101")])
         // An issue and a pull request of Product, as a tap on their rows opens them.
         case "github-issue": open(.product, [GitHubItemRoute(repository: "example/gumroad", number: 4712)])
         case "github-pull": open(.product, [GitHubItemRoute(repository: "example/gumroad", number: 4731)])

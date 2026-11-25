@@ -60,6 +60,8 @@ final class AppStore {
     /// The open to-dos of the three lists, Product, Support and Finance (TodoLists.swift), from the Mac or from the last
     /// start. Nil until the first.
     var todoIssues: TodoIssues?
+    /// The risk reviews past SLA that Finance lists, each one decided in the app (RiskReviews.swift).
+    var riskReviews: RiskReviewList?
     /// The last failed load of the to-dos. A list shows it only while it has no to-dos.
     var todoIssuesError: String?
     /// The bots of other Macs that own the team pages in `documents`. They come with each list.
@@ -461,6 +463,9 @@ final class AppStore {
         // The to-dos from the last start, so the counts of Product, Support and Finance show before the Mac answers.
         if todoIssues == nil, let todos: TodoIssues = ProtectedCache.read(TodoIssues.cache) {
             todoIssues = todos
+        }
+        if riskReviews == nil, let reviews: RiskReviewList = ProtectedCache.read(RiskReviewList.cache) {
+            riskReviews = reviews
         }
         if wasLocked {
             Self.pairingLog.notice("The device reads the saved pairing again.")

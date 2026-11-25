@@ -116,8 +116,21 @@ struct TodoIssues: Codable, Equatable, Sendable {
 /// about the issues themselves, product issues past SLA and high priority, count once, as their to-dos. The cards, the
 /// work that agents track and the alerts of the agents are no to-dos of these lists, so they add to no tab.
 enum TodoCounts {
-    static func count(_ area: TodoArea, todos: TodoIssues?, pending: Int = 0, attention: [AttentionItem] = []) -> Int {
-        (todos?.items(in: area).count ?? 0) + pending + breaches(area, attention).reduce(0) { $0 + $1.count }
+    /// `reviews`: the risk reviews that Finance lists (RiskReviewList.current). They take the place of the breach of
+    /// the risk reviews, and the open issue of a review is the same work, so it counts once, as its review. A review
+    /// whose issue Gumclaw closed is decided: it shows until the next publish drops it, and counts no more.
+    static func count(_ area: TodoArea, todos: TodoIssues?, pending: Int = 0, attention: [AttentionItem] = [],
+                      reviews: [RiskReview]? = nil) -> Int {
+        let reviews = area == .finance ? reviews : nil
+        let hidden = reviewIssues(reviews)
+        let listed = todos?.items(in: area).filter { !hidden.contains($0.number) }.count ?? 0
+        let breached = reviews.map { $0.filter { !$0.decided }.count } ?? breaches(area, attention).reduce(0) { $0 + $1.count }
+        return listed + pending + breached
+    }
+
+    /// The numbers of the open issues of the reviews that a list shows as reviews.
+    static func reviewIssues(_ reviews: [RiskReview]?) -> Set<Int> {
+        Set(reviews?.compactMap { $0.withGumclaw ? $0.issue?.number : nil } ?? [])
     }
 
     /// The rows of Needs attention that belong to a list.
@@ -158,7 +171,7 @@ extension AppStore {
     /// The badge of the tab of a list (TodoCounts).
     func todoCount(_ area: TodoArea, now: Date = Date()) -> Int {
         TodoCounts.count(area, todos: todoIssues, pending: PendingTodoIssues.shared.items.filter { $0.area == area }.count,
-                         attention: attentionItems(now: now))
+                         attention: attentionItems(now: now), reviews: riskReviews?.current(now: now))
     }
 
     /// Reads the to-dos again. A failure keeps the list that shows, with the error for a list that has none yet.
@@ -265,10 +278,23 @@ struct TodoIssueRows: View {
 
     var body: some View {
         let pending = PendingTodoIssues.shared.items.filter { $0.area == area }
-        let todos = store.todoIssues?.items(in: area) ?? []
+        // Finance lists each risk review past SLA, when the Mac has the list, in place of the row that counts them.
+        let reviews = area == .finance ? store.shownRiskReviews : nil
+        let hidden = TodoCounts.reviewIssues(reviews)
+        let todos = (store.todoIssues?.items(in: area) ?? []).filter { !hidden.contains($0.number) }
         let repository = store.todoIssues?.repository ?? "antiwork/gumroad-private"
         Group {
-            ForEach(TodoCounts.breaches(area, store.attentionItems())) { TodoBreachRow(item: $0, inList: inList) }
+            if let reviews {
+                ForEach(reviews) { review in
+                    row(symbol: review.symbol, tint: review.tint, title: review.title, detail: review.detail()) {
+                        pushRoute?(RiskReviewRoute(user: review.user))
+                    }
+                    .accessibilityIdentifier("risk-review-\(review.user)")
+                    .modifier(TodoRowInset(inList: inList))
+                }
+            } else {
+                ForEach(TodoCounts.breaches(area, store.attentionItems())) { TodoBreachRow(item: $0, inList: inList) }
+            }
             ForEach(pending) { item in
                 let agent = item.agentId.flatMap { id in store.bots.first { $0.id == id }?.name }
                 row(symbol: item.failed ? "exclamationmark.circle" : "circle.dotted", tint: item.failed ? BoardStyle.destructive : .secondary,
@@ -295,7 +321,7 @@ struct TodoIssueRows: View {
                 .accessibilityIdentifier("todo-\(todo.number)")
                 .modifier(TodoRowInset(inList: inList))
             }
-            if pending.isEmpty && todos.isEmpty {
+            if pending.isEmpty && todos.isEmpty && reviews == nil {
                 Group {
                     if store.todoIssues == nil, let message = store.todoIssuesError {
                         BoardLoadNotice(title: "To-dos unavailable", message: message) { Task { await store.loadTodoIssues(fresh: true) } }
@@ -384,8 +410,11 @@ struct TodoListSection: View {
         }
         .accessibilityIdentifier("todos-\(area.rawValue)")
         // The root of the iPhone loads the list for the counts of the tabs (CoconutHome). The Mac has no counts, so its
-        // pages load it here.
-        .task(id: "\(store.connection)/\(store.businessChanges)") { await store.loadTodoIssues() }
+        // pages load it here, and Finance its risk reviews.
+        .task(id: "\(store.connection)/\(store.businessChanges)") {
+            await store.loadTodoIssues()
+            if area == .finance { await store.loadRiskReviews() }
+        }
     }
 }
 
