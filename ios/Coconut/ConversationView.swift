@@ -1110,7 +1110,7 @@ struct ConversationComposer: View {
                 DatePicker("Start", selection: $scheduledAt, in: Date()...)
                     .font(.footnote)
             }
-            ComposerSlashMenu(suggestions: slashSuggestions, highlighted: slashIndex) { run($0) }
+            ComposerSlashMenu(suggestions: slashSuggestions, highlighted: slashIndex, note: slashNote) { run($0) }
             // One box, as in Codex. A short draft is one line with the plus and Send beside it. When the box opens, the
             // text is on top, and under it are the plus and Send or Stop.
             VStack(alignment: .leading, spacing: 0) {
@@ -1207,6 +1207,11 @@ struct ConversationComposer: View {
                                          // The Mac keeps a project and the Coconut chat out of the archive, and an
                                          // archived chat can always come back (Bot.canRemove).
                                          archived: connected && (bot.archived || bot.canRemove) ? bot.archived : nil)
+    }
+
+    /// The line under the models of `/model` for an agent whose chats run on mote.
+    private var slashNote: String? {
+        text.lowercased().hasPrefix("/model ") ? ModelChoice(store: store).chatNote(bot) : nil
     }
 
     /// The row of the slash menu that Return runs.

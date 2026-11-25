@@ -132,6 +132,34 @@ def runtime(profile) -> str:
     return 'mote' if (Path(profile) / MARKER).is_file() else 'hermes'
 
 
+def chat_model(profile) -> dict | None:
+    """The model of the chat turns of the agent of a profile folder while they run on mote, as turn_home routes them:
+    the folder holds the marker and the mote command exists. It comes from `<profile>/mote/config.json`. None for an
+    agent on Hermes, and for a config that is absent or unreadable. The bot view calls it for every bot, so an agent on
+    Hermes costs one stat."""
+    profile = Path(profile)
+    if runtime(profile) != 'mote' or command() is None:
+        return None
+    from .profiles import ProfileError, read_regular
+    try:
+        # The bot view reads this on each state read: only a regular, small file, so a pipe cannot hold a state read.
+        config = json.loads(read_regular(profile / HOME / 'config.json', 'config.json', limit=65536,
+                                         kind='The mote config'))
+    except (OSError, ValueError, ProfileError, RecursionError):
+        return None
+    def text(value):
+        # JSON of Python can hold half of a surrogate pair, which the apps refuse with the whole state.
+        try:
+            return value if isinstance(value, str) and value.strip() and value.encode() else None
+        except UnicodeEncodeError:
+            return None
+    model = text(config.get('model')) if isinstance(config, dict) else None
+    if model is None:
+        return None
+    return {'model': model, 'provider': text(config.get('provider')) or 'anthropic',
+            'reasoning_effort': text(config.get('effort')), 'runtime': 'mote'}
+
+
 def switch(profile, value: str) -> str:
     """Move the agent of a profile folder to `value`, hermes or mote. The next turn of each of its chats runs there."""
     from .service_base import ServiceError

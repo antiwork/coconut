@@ -921,6 +921,14 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
                 result['effective_model'] = {key: route.get(key) for key in ('model', 'provider', 'reasoning_effort')}
             except ValueError as error:
                 result.update(effective_model=None, model_error=str(error))
+        # The chats of an agent on mote run on mote's model. effective_model stays the model of its other work.
+        try:
+            from .mote_runtime import chat_model
+            model = chat_model(self.profiles.home(bot))
+        except (ProfileError, OSError):
+            model = None
+        if model is not None:
+            result['chat_model'] = model
         return result
 
     def _model_override(self, value: Any, catalog: dict | None) -> dict | None:

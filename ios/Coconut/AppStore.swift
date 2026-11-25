@@ -346,9 +346,9 @@ final class AppStore {
         let start = task.phaseStartedAt?.apiDate ?? task.turnStartedAt?.apiDate
         return (task.phase.flatMap(BotPhase.init(rawValue:)) ?? .thinking, start, detail)
     }
-    /// The name of the model of an agent, as its settings show it.
-    func modelName(_ botId: String) -> String? {
-        guard let model = bots.first(where: { $0.id == botId })?.effectiveModel else { return nil }
+    /// The name of the model of the chats of an agent: mote's model while its chats run on mote, else its model.
+    func chatModelName(_ botId: String) -> String? {
+        guard let bot = bots.first(where: { $0.id == botId }), let model = bot.chatModel ?? bot.effectiveModel else { return nil }
         return modelCatalog?.name(for: model) ?? model.model
     }
     func botPhase(_ bot: Bot) -> BotPhase? {
@@ -369,14 +369,14 @@ final class AppStore {
             if streams.contains(where: TranscriptPresentation.hasStreamingWords) && !reconnecting { return nil }
             let running = runningPhase(where: { $0.chatBotId == botId })
             return ConversationActivity(phase: .writing, startedAt: running?.startedAt, reconnecting: reconnecting,
-                                        model: modelName(botId), queued: queuedCount(botId))
+                                        model: chatModelName(botId), queued: queuedCount(botId))
         }
         if let running = runningPhase(where: { $0.chatBotId == botId }) {
             return ConversationActivity(phase: running.phase, startedAt: running.startedAt, reconnecting: reconnecting,
-                                        detail: running.detail, model: modelName(botId), queued: queuedCount(botId))
+                                        detail: running.detail, model: chatModelName(botId), queued: queuedCount(botId))
         }
         if outgoingMessages.contains(where: { $0.botId == botId && $0.expectsResponse }) {
-            return ConversationActivity(phase: .thinking, startedAt: nil, reconnecting: reconnecting, model: modelName(botId))
+            return ConversationActivity(phase: .thinking, startedAt: nil, reconnecting: reconnecting, model: chatModelName(botId))
         }
         return nil
     }
@@ -3650,7 +3650,9 @@ final class AppStore {
         sentPreviewReports = reports
     }
 
-    private func preservingNativeSettings(in incoming: [Bot]) -> [Bot] {
+    /// `ofCard`: the bots of a card carry no chat model, so they keep the stored one. A state read has the current one,
+    /// and its absence there says that the agent runs on Hermes.
+    private func preservingNativeSettings(in incoming: [Bot], ofCard: Bool = false) -> [Bot] {
         var values = incoming
         let previous = Dictionary(uniqueKeysWithValues: bots.map { ($0.id, $0) })
         for index in values.indices {
@@ -3660,6 +3662,7 @@ final class AppStore {
                 values[index].instructions = native.instructions
                 values[index].modelOverride = native.modelOverride
                 values[index].effectiveModel = native.effectiveModel
+                if ofCard { values[index].chatModel = native.chatModel }
                 values[index].approvalOverride = native.approvalOverride
                 values[index].effectiveApproval = native.effectiveApproval
                 values[index].workerLimit = native.workerLimit
@@ -3705,6 +3708,7 @@ final class AppStore {
                         bots[index].instructions = bot.instructions
                         bots[index].modelOverride = bot.modelOverride
                         bots[index].effectiveModel = bot.effectiveModel
+                        bots[index].chatModel = bot.chatModel
                         bots[index].approvalOverride = bot.approvalOverride
                         bots[index].effectiveApproval = bot.effectiveApproval
                         bots[index].workerLimit = bot.workerLimit
@@ -3793,7 +3797,7 @@ final class AppStore {
                     cachedState?.messages = messages
                     decisions = StateUpdates.merge(card.decisions ?? [card.decision], into: decisions)
                     tasks = StateUpdates.merge(card.tasks ?? [card.task], into: tasks)
-                    bots = StateUpdates.merge(preservingNativeSettings(in: card.bot.id == card.owner.id ? [card.bot] : [card.bot, card.owner]), into: bots)
+                    bots = StateUpdates.merge(preservingNativeSettings(in: card.bot.id == card.owner.id ? [card.bot] : [card.bot, card.owner], ofCard: true), into: bots)
                     cachedState?.decisions = decisions
                     cachedState?.tasks = tasks
                     cachedState?.bots = bots

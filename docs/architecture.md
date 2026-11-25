@@ -603,6 +603,9 @@ agent's profile folder, and removing that file moves it back (`mote_runtime.py`)
 - mote asks for no approval: every command of the agent runs, whatever the access mode of Coconut says.
 - mote's model is in `<profile>/mote/config.json`. Its key is in the service's environment or `<profile>/mote.env`,
   which only the mote process reads.
+- The bot view of such an agent carries `chat_model`, read from that file (`mote_runtime.chat_model`).
+  `effective_model` stays the Hermes model of its other work. The apps show `chat_model` on the working line of a chat,
+  and a line under the models of `/model` names it.
 - On a Mac whose Claude access is Amazon Bedrock, `mote.env` holds a Bedrock API key (`AWS_BEARER_TOKEN_BEDROCK`, and
   `BEDROCK_REGION`, us-east-1 by default). The service then relays mote's model calls to Bedrock on the loopback
   (`bedrock_relay.py`): mote gets the relay's address and a token of the service, and the Bedrock key stays in the

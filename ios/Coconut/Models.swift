@@ -17,6 +17,9 @@ struct Bot: Codable, Identifiable, Equatable, Sendable {
     var preferences: [BotPreference] = []
     var modelOverride: ModelOverride? = nil
     var effectiveModel: ModelOverride? = nil
+    /// The model of the chat turns of an agent whose chats run on mote. Nil on Hermes: then effectiveModel runs them.
+    /// effectiveModel stays the model of the agent's other work.
+    var chatModel: ModelOverride? = nil
     var notifications: Bool = true
     var approvalOverride: String? = nil
     var effectiveApproval: String? = nil
@@ -76,7 +79,7 @@ struct BotPreference: Codable, Identifiable, Equatable, Sendable {
 extension Bot {
     enum CodingKeys: String, CodingKey {
         case id, sessionId, name, role, instructions, status
-        case lastMessage, unreadCount, archived, createdAt, memory, pinned, preferences, modelOverride, effectiveModel, modelError, notifications, approvalOverride, effectiveApproval, workerLimit, health, coconut, project, projectKey, chatOf, chatTitle, lastReadMessageId, todo
+        case lastMessage, unreadCount, archived, createdAt, memory, pinned, preferences, modelOverride, effectiveModel, chatModel, modelError, notifications, approvalOverride, effectiveApproval, workerLimit, health, coconut, project, projectKey, chatOf, chatTitle, lastReadMessageId, todo
     }
 
     init(from decoder: Decoder) throws {
@@ -97,6 +100,7 @@ extension Bot {
         preferences = try values.decodeIfPresent([BotPreference].self, forKey: .preferences) ?? []
         modelOverride = try values.decodeIfPresent(ModelOverride.self, forKey: .modelOverride)
         effectiveModel = try values.decodeIfPresent(ModelOverride.self, forKey: .effectiveModel)
+        chatModel = try values.decodeIfPresent(ModelOverride.self, forKey: .chatModel)
         notifications = try values.decodeIfPresent(Bool.self, forKey: .notifications) ?? true
         approvalOverride = try values.decodeIfPresent(String.self, forKey: .approvalOverride)
         effectiveApproval = try values.decodeIfPresent(String.self, forKey: .effectiveApproval)

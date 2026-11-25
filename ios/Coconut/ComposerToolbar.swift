@@ -238,6 +238,8 @@ struct ComposerSlashMenu: View {
     let suggestions: [ComposerSlash.Suggestion]
     /// The row that Return runs.
     var highlighted = 0
+    /// A line of text under the rows (ModelChoice.chatNote).
+    var note: String? = nil
     let choose: (ComposerSlash.Suggestion) -> Void
 
     var body: some View {
@@ -261,6 +263,13 @@ struct ComposerSlashMenu: View {
                     }
                     .buttonStyle(.plain)
                     .accessibilityIdentifier("slash-" + item.id)
+                }
+                if let note {
+                    Text(note).font(.footnote).foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, BoardStyle.Space.m)
+                        .padding(.vertical, BoardStyle.Space.s)
+                        .accessibilityIdentifier("slash-note")
                 }
             }
             .modifier(ComposerSurface(shape: RoundedRectangle(cornerRadius: BoardStyle.Radius.medium, style: .continuous)))

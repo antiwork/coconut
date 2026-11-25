@@ -89,6 +89,7 @@ struct StateUpdates: Decodable, Sendable {
         update(\.preferences)
         update(\.modelOverride)
         update(\.effectiveModel)
+        update(\.chatModel)
         update(\.notifications)
         update(\.approvalOverride)
         update(\.effectiveApproval)
