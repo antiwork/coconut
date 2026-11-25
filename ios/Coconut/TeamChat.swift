@@ -1754,8 +1754,8 @@ struct ChatSections: Equatable {
     /// The sections of the projects, Team chats and Other agents, in the order of Chats on the iPhone, without the
     /// unread chats and the Coconut chat. A section without rows does not show.
     var groups: [ChatListSection] = []
-    /// The archived chats and agents, newest activity first: the rows of Archived on the iPhone, so both count the same
-    /// chats on the right of the title (ChatListSection.count).
+    /// The archived chats and agents, newest activity first: the chats of Archived on the iPhone, so the title here and
+    /// the row Archived of Chats count the same chats (ArchivedChatsRow).
     var archived: [Bot] = []
 
     /// A starred chat stays in "Starred", also with an unread message, as in Slack. `bots` are all the bots of the

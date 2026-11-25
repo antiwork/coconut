@@ -922,7 +922,8 @@ final class AppStore {
     }
 
     /// Archives an agent, or brings it back. An archived agent leaves the sidebar of the Mac for its section "Archived",
-    /// and its routines stop. The Chats list of the iPhone moves it to its section Archived too (ChatList.sections).
+    /// and its routines stop. The Chats list of the iPhone moves it to Archived too, the page that its last row opens
+    /// (ChatList.sections).
     func archiveBot(_ bot: Bot, archived: Bool) async {
         if isDemo {
             if let index = bots.firstIndex(where: { $0.id == bot.id }) { bots[index].archived = archived }

@@ -200,9 +200,8 @@ struct AgentsView: View {
                     }
                 }
             }
-            // What the projects keep: their pages. The archived chats have no page of their own: the person merged
-            // Archived into the list of Chats, where they sit among the idle chats (on the Mac, in Archived of the
-            // sidebar).
+            // What the projects keep: their pages. The archived chats are on the page that the last row of Chats
+            // opens (on the Mac, in Archived of the sidebar).
             BoardSection {
                 BoardRow(symbol: "rectangle.3.group", title: "All pages",
                          value: store.documents.map { "\($0.count)" })

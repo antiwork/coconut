@@ -403,9 +403,9 @@ Not yet measured: the time from save to screen on the web host, and a `push --wa
   card's sources and its GitHub embeds, View revised proposal, opening a page of the Library, the zoom, swipe and
   share of the photo viewer, and the hold of a message or a photo (copy, reply, reactions). Also the sections of the
   Swift app's Chats tab (`ChatList.sections`, `ChatListSection`): one for each project, Coconut first, then Team chats,
-  Other agents, Personal at the bottom and Archived last, each folded until the person opens it and showing only the
-  chats that work, wait for the person or are unread while folded, so an archived chat shows only in Archived there,
-  whose title counts its chats on the right.
+  Other agents and Personal at the bottom, each folded until the person opens it and showing only the chats that work,
+  wait for the person or are unread while folded, then one row Archived with the number of the archived chats, which
+  opens them on a page of their own (`ArchivedChatsRow`), so an archived chat shows only there.
   The Exact app still lists every chat in one list, archived chats among the others, and its title Agents in place of
   Chats. The rows name a further chat of a project after the project and its own title (`Bot.listName`, from the Mac's
   `chat_of` and `chat_title`), which a section of a project names by its title alone; the Mac sends `project_key`

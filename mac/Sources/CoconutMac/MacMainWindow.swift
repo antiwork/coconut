@@ -437,7 +437,8 @@ struct DetailColumnBottomInset: NSViewRepresentable {
 /// archived / hidden to focus on real work". A section of a project, Team chats and Other agents start folded and fold
 /// as a section of Slack: a folded section still shows the open chat and the chats that work or wait for the person
 /// (stays), and its unread chats are in Unread. The Mac keeps the sections that the person opened. Archived starts
-/// folded too and counts its chats on the right of its title, as Chats on the iPhone. The iPhone's
+/// folded too and counts its chats on the right of its title, as the row Archived of Chats on the iPhone, which opens
+/// them on a page of their own. The iPhone's
 /// Product tab has no row here: the person chose on a card to leave the sidebar as it is (2026-11-24), so Home keeps
 /// the cards and Support keeps the queue of the product issues. Do not add the row or offer it again.
 struct MacSidebar: View {

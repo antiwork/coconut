@@ -1,12 +1,14 @@
 import SwiftUI
 
-/// Two tabs of the iPhone. Product has the rules that breach for the agents and the cards that wait, then its to-dos,
-/// the issues of gumroad-private with the label product (TodoLists.swift), and the open pull requests (ProductWork).
-/// Chats has the sections of Slack: one for each project, the chats with people, Personal at the bottom and Archived
+/// Two tabs of the iPhone, and the page of the archived chats. Product has the rules that breach for the agents and the
+/// cards that wait, then its to-dos, the issues of gumroad-private with the label product (TodoLists.swift), and the
+/// open pull requests (ProductWork). Chats has the sections of Slack: one for each project, the chats with people,
+/// Personal at the bottom, then one row Archived that opens the archived chats on a page of their own
 /// (ChatList.sections), with the message box under the list (NewChatBar). A folded section shows only the real work.
 /// Its top right has Working, which lists only the chats that work, and the grid of the agents that work (ChatGrid).
 struct HomeLaunchView: View {
-    enum Part { case product, chats }
+    /// What the view shows: Product, Chats, or the archived chats, which the last row of Chats opens.
+    enum Part { case product, chats, archived }
     var part = Part.chats
     @Environment(AppStore.self) private var store
     /// The sections of Chats that the person opened (ChatListSection). The phone keeps them.
@@ -29,9 +31,15 @@ struct HomeLaunchView: View {
     var body: some View {
         switch part {
         case .product: productList
-        case .chats: chatList(ChatList.sections(bots: store.bots, latest: store.chatSummaries.newestActivity,
-                                                rooms: store.shownTeamRooms, local: store.newestLocalMessages))
+        case .chats: chatList(sections)
+        case .archived: archivedList(sections.first { $0.kind == .archived })
         }
+    }
+
+    /// The sections of Chats (ChatList.sections). The page of the archived chats shows the rows of Archived.
+    private var sections: [ChatListSection] {
+        ChatList.sections(bots: store.bots, latest: store.chatSummaries.newestActivity,
+                          rooms: store.shownTeamRooms, local: store.newestLocalMessages)
     }
 
     private var productList: some View {
@@ -162,8 +170,8 @@ struct HomeLaunchView: View {
     /// Personal at the bottom, and Archived (ChatList.sections). A tap on the title of a section opens or folds it, and
     /// the phone keeps the sections that the person opened, so every section starts folded. A folded section still shows
     /// its real work: a chat that works or whose card waits, an unread chat, a starred project, a pinned chat of a team,
-    /// the Coconut chat and the chat that the person opened last (stays). An idle chat is one tap away, and Archived
-    /// shows nothing while it is folded, only the number of its chats on the right of its title. Every row has the form
+    /// the Coconut chat and the chat that the person opened last (stays). An idle chat is one tap away, and Archived is
+    /// one row at the end with the number of its chats, which opens them on a page of their own. Every row has the form
     /// of a chat row: the name, the last message or the step, the age and the badges. The list has no tabs or toggles
     /// inside it, because the person found that nobody taps them (2026-11-24), and a chat archives itself after the time
     /// that You sets (AutoArchiveMenu, 14 hours unless the person picks another). The top right has
@@ -193,15 +201,24 @@ struct HomeLaunchView: View {
                         .accessibilityIdentifier("chats-empty")
                         .homeRow()
                 }
-                ForEach(sections) { section in
+                // Archived is no section here: it is one row at the end, and a tap opens its chats on a page of their
+                // own (the person: "Archived should be behind a tap just one row with number at bottom of chats").
+                let listed = sections.filter { $0.kind != .archived }
+                ForEach(listed) { section in
                     let isOpen = section.alwaysOpen || open.contains(section.id)
-                    ChatSectionHeader(section: section, open: isOpen, first: section.id == sections.first?.id) {
+                    ChatSectionHeader(section: section, open: isOpen, first: section.id == listed.first?.id) {
                         withAnimation(.snappy) { openSections = ChatListSection.toggle(section.id, openSections) }
                     }
                     .homeRow()
                     ForEach(section.shown(open: isOpen) { stays($0, at: now) }) { item in
                         chatRow(item, in: section)
                     }
+                }
+                if let archived = sections.first(where: { $0.kind == .archived }) {
+                    ArchivedChatsRow(count: archived.items.count, first: listed.isEmpty) {
+                        pushRoute?(ArchivedChatsRoute())
+                    }
+                    .homeRow()
                 }
             }
         }
@@ -228,6 +245,31 @@ struct HomeLaunchView: View {
         .scrollDismissesKeyboard(.interactively)
         // A new chat shows in its section, also a folded one, and the list scrolls to it.
         .modifier(NewChatReveal { bot in keptChat = ChatListItem.bot(bot).id })
+    }
+
+    /// The archived chats, newest first, on the page that the last row of Chats opens (ArchivedChatsRow). Each row is
+    /// the row of a chat with its agent's name: a tap opens the chat, and a swipe offers Unarchive, which takes the chat
+    /// back to its section, and Mute. A message of the person brings an archived chat back too (agent_chats.py).
+    private func archivedList(_ section: ChatListSection?) -> some View {
+        List {
+            if let section {
+                ForEach(section.items) { item in chatRow(item, in: section) }
+            } else {
+                Text("No archived chats.")
+                    .font(.subheadline).foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity).padding(.vertical, BoardStyle.Space.xxl)
+                    .accessibilityIdentifier("archived-empty")
+                    .homeRow()
+            }
+        }
+        .listStyle(.plain)
+        .scrollContentBackground(.hidden)
+        .environment(\.defaultMinListRowHeight, 0)
+        .contentMargins(.top, BoardStyle.Space.s, for: .scrollContent)
+        .contentMargins(.bottom, BoardStyle.Space.xl, for: .scrollContent)
+        .background(BoardStyle.paper)
+        .navigationTitle("Archived")
+        .refreshable { await store.reconnect() }
     }
 
     /// A chat that a folded section still shows: the real work, and what the person keeps at hand.
@@ -317,9 +359,9 @@ struct HomeLaunchView: View {
         }
     }
 
-    /// Archive, or Unarchive for a chat that is archived. An archived chat moves to Archived at the bottom of the list,
-    /// and Unarchive takes it back to its section. It runs no routine and sends no notification until a message of the
-    /// person brings it back (agent_chats.py).
+    /// Archive, or Unarchive for a chat that is archived. An archived chat moves to Archived, the page that the last row
+    /// of the list opens, and Unarchive takes it back to its section. It runs no routine and sends no notification until
+    /// a message of the person brings it back (agent_chats.py).
     private func archiveButton(_ bot: Bot) -> some View {
         Button { Task { await store.archiveBot(bot, archived: !bot.archived) } } label: {
             Label(bot.archived ? "Unarchive" : "Archive", systemImage: bot.archived ? "tray.and.arrow.up" : "archivebox")
@@ -362,7 +404,8 @@ struct HomeLaunchView: View {
 /// A section of Chats, as a section of the sidebar of Slack: the chats of one project, the chats with people, the
 /// agents of an earlier release, or Archived (ChatList.sections). The title folds and opens it (ChatSectionHeader).
 /// Every section starts folded, and a folded section shows only the chats that the list keeps in sight
-/// (HomeLaunchView.stays). The phone keeps the sections that the person opened: one section on each line.
+/// (HomeLaunchView.stays). The phone keeps the sections that the person opened: one section on each line. Archived
+/// never unfolds in the list: it is one row that opens its chats on a page of their own (ArchivedChatsRow).
 struct ChatListSection: Identifiable, Equatable {
     enum Kind: Equatable {
         /// The chats that the person starred, as the Starred section of Slack: the starred projects and the pinned
@@ -375,7 +418,8 @@ struct ChatListSection: Identifiable, Equatable {
         /// The agents of an earlier release, which are no project, with their chats, and the chats whose project is
         /// gone (AgentChats.orphans).
         case others
-        /// The archived chats and agents, newest activity first.
+        /// The archived chats and agents, newest activity first. Chats has them on their own page behind one row
+        /// (ArchivedChatsRow), and the Mac sidebar in its folded Archived (ChatSections.archived).
         case archived
     }
 
@@ -388,11 +432,6 @@ struct ChatListSection: Identifiable, Equatable {
     /// The section holds the chats that the person chose, so it shows them without a tap, as the Starred of Slack.
     var alwaysOpen: Bool { kind == .starred }
 
-    /// The number on the right of the title: Archived counts its chats (the person: "Archived chats show at bottom even
-    /// below personal and count on right"), because it shows none of them while it is folded. Other sections show their
-    /// real work while folded, so their titles have no number.
-    var count: Int? { kind == .archived ? items.count : nil }
-
     var id: String {
         switch kind {
         case .starred: "starred"
@@ -404,10 +443,8 @@ struct ChatListSection: Identifiable, Equatable {
     }
 
     /// The rows of the section: every chat while it is open, and the chats that `stays` keeps while it is folded.
-    /// Archived keeps none: nothing in it is work.
     func shown(open: Bool, stays: (ChatListItem) -> Bool) -> [ChatListItem] {
-        if open { return items }
-        return kind == .archived ? [] : items.filter(stays)
+        open ? items : items.filter(stays)
     }
 
     /// The name of the row of a chat. The title of a project's section names the project, so its own chat shows the
@@ -432,9 +469,8 @@ struct ChatListSection: Identifiable, Equatable {
 
 /// The title of a section of Chats, as in the sidebar of Slack: a chevron that turns down while the section is open,
 /// and the name in the quiet color of a title. A tap opens or folds the section. A folded section says nothing about
-/// what it holds: its unread and working chats show under it all the same. Archived shows none of its chats while it is
-/// folded, so its title has their number on the right (ChatListSection.count), as a folder of Mail. A section that
-/// holds the chats the person chose (ChatListSection.alwaysOpen) keeps its rows in sight and has nothing to fold.
+/// what it holds: its unread and working chats show under it all the same. A section that holds the chats the person
+/// chose (ChatListSection.alwaysOpen) keeps its rows in sight and has nothing to fold.
 struct ChatSectionHeader: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @ScaledMetric(relativeTo: .subheadline) private var chevron: CGFloat = 14
@@ -473,13 +509,6 @@ struct ChatSectionHeader: View {
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
             Spacer(minLength: 0)
-            if let count = section.count {
-                Text(count, format: .number)
-                    .font(.subheadline)
-                    .monospacedDigit()
-                    .foregroundStyle(.secondary)
-                    .accessibilityLabel(Self.chats(count))
-            }
         }
         .padding(.top, first ? BoardStyle.Space.s : BoardStyle.Space.l)
         .padding(.bottom, BoardStyle.Space.s)
@@ -489,6 +518,47 @@ struct ChatSectionHeader: View {
 
     /// What VoiceOver reads for the number of Archived, for example "12 chats".
     static func chats(_ count: Int) -> String { count == 1 ? "1 chat" : "\(count) chats" }
+}
+
+/// The last row of Chats: Archived, with the number of the archived chats on the right. A tap opens them on a page of
+/// their own (ArchivedChatsRoute), so they never fill the list (the person: "Archived should be behind a tap just one
+/// row with number at bottom of chats"). The row has the line of a section title, with a box where a section has its
+/// chevron, because it opens a page and folds nothing.
+struct ArchivedChatsRow: View {
+    @ScaledMetric(relativeTo: .subheadline) private var symbol: CGFloat = 14
+    let count: Int
+    /// The row starts close under the title of the page when no section is above it.
+    var first = false
+    let open: () -> Void
+
+    var body: some View {
+        Button(action: open) {
+            HStack(spacing: BoardStyle.Space.s) {
+                Image(systemName: "archivebox")
+                    .font(.footnote.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .frame(width: symbol)
+                    .accessibilityHidden(true)
+                Text("Archived")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                Spacer(minLength: 0)
+                Text(count, format: .number)
+                    .font(.subheadline)
+                    .monospacedDigit()
+                    .foregroundStyle(.secondary)
+                    .accessibilityLabel(ChatSectionHeader.chats(count))
+            }
+            .padding(.top, first ? BoardStyle.Space.s : BoardStyle.Space.l)
+            .padding(.bottom, BoardStyle.Space.s)
+            .background(BoardStyle.paper)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(HomePressStyle())
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier("chats-archived")
+    }
 }
 
 /// A Send that starts a chat leaves the chat closed (sendNewChat): the Send of the message box, and Send to a new agent

@@ -55,3 +55,6 @@ struct NoticeBoardRoute: Hashable {
 
 /// The list of all agents, with the pages, the live work and the spend. The project menu of Home opens it.
 struct AgentListRoute: Hashable {}
+
+/// The archived chats, newest first. The last row of Chats on the iPhone opens them (HomeLaunchView, Part.archived).
+struct ArchivedChatsRoute: Hashable {}
