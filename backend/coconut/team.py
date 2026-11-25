@@ -44,7 +44,8 @@ for a person, because the app shows them.
 - `PUT /v1/team/rooms/<room>/pin` and `PUT /v1/team/rooms/<room>/chats/<id>/pin` with `{pinned}`: the person pins or
   unpins the Team chat or a named chat on this Mac (team_chats.py), with the rules of the routes above.
 - The routes of the direct messages under `/v1/team/rooms/<room>/directs/<member>`, and of a direct chat with a bot
-  under `/v1/team/rooms/<room>/directs/<team bot ID>` (team_directs.py). A `GET /v1/team/rooms` with
+  under `/v1/team/rooms/<room>/directs/<team bot ID>` (team_directs.py). `PUT .../directs/<chat>/pin` with `{pinned}`
+  pins or unpins the chat on this Mac, as the pin of a named chat does. A `GET /v1/team/rooms` with
   `X-Coconut-Team: direct` from a paired device sets the mark of direct messages on this Mac.
 
 No answer has a key, a token or an invite secret. Only the invite link, which the person shares, carries a secret.

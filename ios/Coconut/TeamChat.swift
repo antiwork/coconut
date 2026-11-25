@@ -202,8 +202,8 @@ enum BotChatMute {
     static func unread(_ bot: Bot) -> Int { bot.notifications ? bot.unreadCount : 0 }
 }
 
-/// The choice of this person to pin a chat of a team: the Team chat or a named chat (docs/team-log.md, "Starred
-/// chats"). The words and the symbols are those of a pinned agent. A direct chat has no pin.
+/// The choice of this person to pin a chat of a team: the Team chat, a named chat, or a direct chat
+/// (docs/team-log.md, "Starred chats"). The words and the symbols are those of a pinned agent.
 enum TeamChatPin {
     static let pin = "Star"
     static let unpin = "Unstar"
@@ -213,6 +213,8 @@ enum TeamChatPin {
         let room: String
         /// The named chat, or nil for the Team chat.
         let chat: String?
+        /// The direct chat: the member ID of a person, or the team bot ID. Nil for a chat of the team.
+        var direct: String? = nil
         let label: String
         let symbol: String
         /// The value that the request sends: true pins.
@@ -221,18 +223,33 @@ enum TeamChatPin {
 
     /// The item of the menu of the row of a chat of a team, or nil. "Unstar" shows in each state of the team, so a
     /// pinned chat of a team that this Mac left can leave the top of the list without a removal of its history.
-    /// "Star" shows only for an active team. A direct chat, an agent, a Mac for a team only and an older service have
-    /// none.
+    /// "Star" shows only for an active team. A chat of a service that knows no pin of a direct chat has none.
     static func listAction(_ item: ChatListItem) -> ListAction? {
-        guard case .team(let room) = item, let choice = room.chatPinChoice, choice || room.status == .active else {
+        switch item {
+        case .team(let room):
+            guard let choice = room.chatPinChoice, choice || room.status == .active else { return nil }
+            return ListAction(room: room.room, chat: room.shownChat?.id, label: choice ? unpin : pin,
+                              symbol: choice ? "star.slash" : "star", pinned: !choice)
+        case .direct(let room, let direct):
+            return directAction(room: room, chat: direct.member, pinned: direct.pinned)
+        case .botDirect(let room, let direct):
+            return directAction(room: room, chat: direct.bot, pinned: direct.pinned)
+        case .bot:
             return nil
         }
-        return ListAction(room: room.room, chat: room.shownChat?.id, label: choice ? unpin : pin,
-                          symbol: choice ? "star.slash" : "star", pinned: !choice)
     }
 
-    /// The key of a chat in the choices that wait: the ID of the named chat, else the ID of the room.
-    static func key(room: String, chat: String?) -> String { chat ?? room }
+    /// The item of a direct chat, as a chat of a team. `pinned` is nil from a service that knows no pin of a direct
+    /// chat, and the row then has no item.
+    private static func directAction(room: TeamRoom, chat: String, pinned: Bool?) -> ListAction? {
+        guard let pinned, pinned || room.status == .active else { return nil }
+        return ListAction(room: room.room, chat: nil, direct: chat, label: pinned ? unpin : pin,
+                          symbol: pinned ? "star.slash" : "star", pinned: !pinned)
+    }
+
+    /// The key of a chat in the choices that wait: the ID of the named chat, else the ID of the room, or for a
+    /// direct chat the member ID of a person or the team bot ID.
+    static func key(room: String, chat: String?, direct: String? = nil) -> String { direct ?? chat ?? room }
 
     /// True while a request to pin or unpin the chat runs. Its item then waits.
     static func waits(_ key: String, _ choices: [String: Bool]) -> Bool { choices[key] != nil }
@@ -256,6 +273,21 @@ enum TeamChatChoices {
                     if let pin = pins[chats[index].id], chats[index].pinned != nil { chats[index].pinned = pin }
                 }
                 shown.chats = chats
+            }
+            // The direct chats, a chat with a person and a chat with a bot, by the ID of the chat in the choices.
+            if var directs = shown.directs {
+                for index in directs.indices {
+                    if let pin = pins[directs[index].member], directs[index].pinned != nil {
+                        directs[index].pinned = pin
+                    }
+                }
+                shown.directs = directs
+            }
+            if var directs = shown.botDirects {
+                for index in directs.indices {
+                    if let pin = pins[directs[index].bot], directs[index].pinned != nil { directs[index].pinned = pin }
+                }
+                shown.botDirects = directs
             }
             return shown
         }
@@ -296,6 +328,9 @@ struct TeamDirect: Decodable, Identifiable, Equatable, Sendable {
     var memberName: String? = nil
     var unread: Int? = nil
     var lastMessage: TeamLastMessage? = nil
+    /// The person pinned the chat, so it shows with the starred chats at the top of the list (TeamChatPin). Nil from
+    /// a service that knows no pin of a direct chat.
+    var pinned: Bool? = nil
 
     var id: String { member }
 }
@@ -314,11 +349,14 @@ struct TeamBotDirect: Decodable, Identifiable, Equatable, Sendable {
     /// The bot types in the chat (docs/team-log.md, "The Mac for a team only", rule 12): the seconds that were left
     /// when the Mac sent the list, as one subject of the form of the Team chat. Nil while the bot does not type.
     var typing: TeamTypingList? = nil
+    /// The person pinned the chat, so it shows with the starred chats at the top of the list (TeamChatPin). Nil from
+    /// a service that knows no pin of a direct chat.
+    var pinned: Bool? = nil
 
     var id: String { bot }
 
     init(bot: String, botName: String? = nil, member: String? = nil, memberName: String? = nil, unread: Int? = nil,
-         lastMessage: TeamLastMessage? = nil, typing: TeamTypingList? = nil) {
+         lastMessage: TeamLastMessage? = nil, typing: TeamTypingList? = nil, pinned: Bool? = nil) {
         self.bot = bot
         self.botName = botName
         self.member = member
@@ -326,6 +364,7 @@ struct TeamBotDirect: Decodable, Identifiable, Equatable, Sendable {
         self.unread = unread
         self.lastMessage = lastMessage
         self.typing = typing
+        self.pinned = pinned
     }
 
     init(from decoder: Decoder) throws {
@@ -336,13 +375,16 @@ struct TeamBotDirect: Decodable, Identifiable, Equatable, Sendable {
         memberName = try? container.decodeIfPresent(String.self, forKey: .memberName)
         unread = try? container.decodeIfPresent(Int.self, forKey: .unread)
         lastMessage = try? container.decodeIfPresent(TeamLastMessage.self, forKey: .lastMessage)
+        pinned = try? container.decodeIfPresent(Bool.self, forKey: .pinned)
         // A value that is not a number of seconds shows nobody.
         typing = (try? container.decodeIfPresent(Double.self, forKey: .typing)).flatMap { seconds in
             seconds.map { TeamTypingList(items: [TeamTyping(member: "", bot: bot, botName: botName, seconds: $0)]) }
         }
     }
 
-    private enum CodingKeys: String, CodingKey { case bot, botName, member, memberName, unread, lastMessage, typing }
+    private enum CodingKeys: String, CodingKey {
+        case bot, botName, member, memberName, unread, lastMessage, typing, pinned
+    }
 }
 
 /// The other side of a direct chat, as the chat and its row show it: a person of the team, or a bot of the team.
@@ -1527,10 +1569,15 @@ enum ChatListItem: Identifiable, Equatable {
         }
     }
 
-    /// A chat of a team that this person pinned (TeamChatPin). It shows at the top of the Chats list.
+    /// A chat that this person pinned (TeamChatPin): a chat of a team, or a direct chat with a person or an agent. It
+    /// shows at the top of the Chats list.
     var isPinnedChat: Bool {
-        if case .team(let room) = self { return room.chatPinned }
-        return false
+        switch self {
+        case .team(let room): room.chatPinned
+        case .direct(_, let direct): direct.pinned == true
+        case .botDirect(_, let direct): direct.pinned == true
+        case .bot: false
+        }
     }
 
     /// The newest activity of a chat of a team: its newest message, or for a team the time when this Mac made or
@@ -1579,10 +1626,19 @@ enum ChatList {
     }
 
     /// The chats of the teams that this person pinned (TeamChatPin), in a fixed order: the teams in the order of the
-    /// Mac, and in each team the Team chat, then the named chats in the order of the Mac. So a pinned chat keeps its
-    /// place when a message comes, as a pinned agent does. These chats are not in the other lists.
+    /// Mac, and in each team the Team chat, then the named chats in the order of the Mac, then the direct chats with
+    /// a person and with an agent by their ID. So a pinned chat keeps its place when a message comes, as a pinned
+    /// agent does. These chats are not in the other lists.
     static func pinnedChats(_ rooms: [TeamRoom]) -> [ChatListItem] {
-        rooms.flatMap { room in ([room] + room.namedChatRooms).filter(\.chatPinned).map(ChatListItem.team) }
+        var chats: [ChatListItem] = []
+        for room in rooms {
+            chats += ([room] + room.namedChatRooms).filter(\.chatPinned).map(ChatListItem.team)
+            let directs = room.directList.filter { $0.pinned == true }.sorted { $0.member < $1.member }
+            chats += directs.map { ChatListItem.direct(room, $0) }
+            let botDirects = room.botDirectList.filter { $0.pinned == true }.sorted { $0.bot < $1.bot }
+            chats += botDirects.map { ChatListItem.botDirect(room, $0) }
+        }
+        return chats
     }
 
     /// The Chats list of the iPhone, as Telegram has it: one list of every chat, and every row has the same form. The
@@ -1627,12 +1683,15 @@ enum ChatList {
     private static func peopleItems(_ rooms: [TeamRoom], local: [TeamChatKey: TeamLastMessage]) -> [ChatListItem] {
         rooms.flatMap { room in
             ([.team(room)] + room.namedChatRooms.map(ChatListItem.team)).filter { !$0.isPinnedChat }
-                + room.listedDirects(local: local).map { ChatListItem.direct(room, $0) }
+                + room.listedDirects(local: local).filter { $0.pinned != true }.map { ChatListItem.direct(room, $0) }
         }
     }
 
     private static func botDirectItems(_ rooms: [TeamRoom], local: [TeamChatKey: TeamLastMessage]) -> [ChatListItem] {
-        rooms.flatMap { room in room.listedBotDirects(local: local).map { ChatListItem.botDirect(room, $0) } }
+        rooms.flatMap { room in
+            room.listedBotDirects(local: local).filter { $0.pinned != true }
+                .map { ChatListItem.botDirect(room, $0) }
+        }
     }
 
     private static func sorted(_ items: [ChatListItem]) -> [ChatListItem] {

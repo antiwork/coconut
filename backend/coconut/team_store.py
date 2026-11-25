@@ -31,6 +31,9 @@ Each table has the room ID in its key, because a Mac can be in more than one roo
 - `team_chat_reads`: the read position of this Mac in each named chat that the person read.
 - `team_chat_pins`: the chats that the person of this Mac pinned: the Team chat (an empty `chat`) and each named
   chat. The choice is the person's, so it never goes into the log. The row goes with its chat.
+- `team_direct_pins`: the direct chats that the person of this Mac pinned: the member ID of a chat with a person,
+  or the team bot ID of a chat with a bot. The choice is the person's, so it never goes into the log. The row
+  stays after a member or a bot leaves, so a chat that the person may no longer write to stays at the top.
 - `team_chat_mutes`: the named chats that the person of this Mac muted. A plain message of such a chat notifies no
   phone. The choice is the person's, so it never goes into the log. The row goes with its chat.
 - `team_triggers`: on a team-only Mac only, the messages and the direct messages that start a turn of a bot of this
@@ -152,6 +155,7 @@ CREATE TABLE IF NOT EXISTS team_chat_reads (room TEXT NOT NULL, chat TEXT NOT NU
     PRIMARY KEY (room, chat));
 CREATE TABLE IF NOT EXISTS team_chat_mutes (room TEXT NOT NULL, chat TEXT NOT NULL, PRIMARY KEY (room, chat));
 CREATE TABLE IF NOT EXISTS team_chat_pins (room TEXT NOT NULL, chat TEXT NOT NULL, PRIMARY KEY (room, chat));
+CREATE TABLE IF NOT EXISTS team_direct_pins (room TEXT NOT NULL, chat TEXT NOT NULL, PRIMARY KEY (room, chat));
 CREATE TABLE IF NOT EXISTS team_file_pieces (room TEXT NOT NULL, entry TEXT NOT NULL, member TEXT NOT NULL,
     file TEXT NOT NULL, piece INTEGER NOT NULL, size INTEGER NOT NULL, received REAL NOT NULL, data BLOB NOT NULL,
     PRIMARY KEY (room, entry));
@@ -175,7 +179,8 @@ TABLES = ('team_rooms', 'team_entries', 'team_members', 'team_pending', 'team_sh
           'team_page_entries', 'team_bots', 'team_pages', 'team_messages', 'team_names', 'team_reads', 'team_triggers',
           'team_directs', 'team_direct_reads', 'team_bot_direct_reads', 'team_direct_waits', 'team_removed',
           'team_invites', 'team_agent_mail',
-          'team_erased', 'team_chats', 'team_chat_reads', 'team_chat_mutes', 'team_chat_pins', 'team_reactions', 'team_file_pieces', 'team_message_files',
+          'team_erased', 'team_chats', 'team_chat_reads', 'team_chat_mutes', 'team_chat_pins', 'team_direct_pins',
+          'team_reactions', 'team_file_pieces', 'team_message_files',
           'team_file_drafts')
 # The table of the reactions and its index for the views. The store makes both in `migrate`, so a store of an older
 # version reads its stored `reaction` entries one time when it gets the table (_read_reactions_again). The state is a
@@ -1696,6 +1701,19 @@ class TeamStore:
             return self.db.execute('INSERT OR IGNORE INTO team_chat_pins (room, chat) VALUES (?, ?)',
                                    (room, chat or '')).rowcount > 0
         return self.db.execute('DELETE FROM team_chat_pins WHERE room=? AND chat=?', (room, chat or '')).rowcount > 0
+
+    def pinned_directs(self, room: str) -> set[str]:
+        """The direct chats of the room that the person of this Mac pinned: the member ID of a chat with a person, or
+        the team bot ID of a chat with a bot."""
+        return {row[0] for row in self.db.execute('SELECT chat FROM team_direct_pins WHERE room=?', (room,))}
+
+    def pin_direct(self, room: str, chat: str, pinned: bool) -> bool:
+        """Pin or unpin a direct chat for the person of this Mac: True when the choice changed. The caller checked that
+        the chat is a direct chat of the store."""
+        if pinned:
+            return self.db.execute('INSERT OR IGNORE INTO team_direct_pins (room, chat) VALUES (?, ?)',
+                                   (room, chat)).rowcount > 0
+        return self.db.execute('DELETE FROM team_direct_pins WHERE room=? AND chat=?', (room, chat)).rowcount > 0
 
     def in_muted_chat(self, room: str, entry: str) -> bool:
         """True when the message `entry` is in a named chat that the person of this Mac muted."""

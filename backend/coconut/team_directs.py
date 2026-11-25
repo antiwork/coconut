@@ -14,6 +14,8 @@ the member ID of the other person, or the team bot ID of a bot (`t-<room ID>-<en
 - `PATCH /v1/team/rooms/<room>/directs/<chat>/messages/<id>` with `{text}`: change a message of this Mac's person.
 - `DELETE /v1/team/rooms/<room>/directs/<chat>/messages/<id>`: remove a message of this Mac's person.
 - `POST /v1/team/rooms/<room>/directs/<chat>/read` with `{first}`: move the read position of the chat.
+- `PUT /v1/team/rooms/<room>/directs/<chat>/pin` with `{pinned}`: the person pins or unpins the chat, with the rules
+  of the pin of a named chat (TeamChats.team_chat_pin). Its item in `GET /v1/team/rooms` then has `pinned`.
 - `PUT /v1/team/rooms/<room>/directs/<chat>/messages/<id>/reaction` with `{emoji}`: the reaction of this Mac's person
   on a message of the chat (team_reactions.py).
 
@@ -71,6 +73,7 @@ class TeamDirects:
                   ('PATCH', 'message'): lambda: self.team_direct_edit(room, chat, rest[1], data),
                   ('DELETE', 'message'): lambda: self.team_direct_unsend(room, chat, rest[1]),
                   ('POST', 'read'): lambda: self.team_direct_mark_read(room, chat, data),
+                  ('PUT', 'pin'): lambda: self.team_direct_pin(room, chat, data),
                   ('PUT', 'message reaction'): lambda: self.team_direct_react(room, chat, rest[1], data)}
         if len(rest) == 3 and rest[0] == 'messages' and rest[2] == 'reaction':
             shape = 'message reaction'
@@ -182,6 +185,25 @@ class TeamDirects:
                 self._event(DIRECTS_EVENT if bot is None else BOT_DIRECTS_EVENT, {'team': room_id, **key})
             return {'room': room_id, **key, 'read': self.team_store.direct_read_position(room_id, member, bot),
                     'unread': self.team_store.direct_unread(room_id, member, bot)}
+
+    def team_direct_pin(self, room_id: str, chat: str, data: dict) -> dict:
+        """Pin or unpin a direct chat of this Mac's person: the chat with a member, or the chat with a bot. The choice
+        is the person's, so it stays on this Mac and never goes into the log. The route has the rules of the pin of a
+        named chat (TeamChats.team_chat_pin): only a person's Mac has it, and TEAM_EVENT tells the other devices of
+        the person. A chat that this Mac knows answers; another value answers 404."""
+        from .service_base import ServiceError
+        from .team_sync import TEAM_EVENT
+        pinned = data.get('pinned')
+        if type(pinned) is not bool:
+            raise ServiceError(400, 'Supply true or false for pinned.')
+        member, bot = self._team_direct_chat(room_id, chat)
+        key = self._team_direct_key(room_id, member, bot)
+        with self.transaction():
+            if self.team_store.room(room_id) is None:
+                raise ServiceError(404, 'This Mac is not in this team.')
+            if self.team_store.pin_direct(room_id, key.get('bot') or key.get('member'), pinned):
+                self._event(TEAM_EVENT, {'team': room_id, **key})
+        return {'room': room_id, **key, 'pinned': pinned}
 
     # Steps
 
@@ -349,11 +371,15 @@ class TeamDirects:
 
     def _team_direct_summary(self, room: dict) -> list[dict]:
         """The direct chats of two people of a room for GET /v1/team/rooms: one item for each chat with a message that
-        shows, newest chat first. A chat with a member that left stays. The caller holds the service lock."""
+        shows, newest chat first. A chat with a member that left stays. On a person's Mac each item also has `pinned`:
+        true when the person pinned the chat (TeamDirects.team_direct_pin), so the app shows it with the starred
+        chats. The caller holds the service lock."""
+        pinned = self.team_store.pinned_directs(room['room']) if self._team_has_phones else None
         return [{'member': row['member'], 'member_name': row['member_name'],
                  'unread': self.team_store.direct_unread(room['room'], row['member']),
                  'last_message': {'first': row['first'], 'this_mac': row['writer'] == room['member'],
-                                  'text': row['text'][:PREVIEW], 'created_at': row['created_at']}}
+                                  'text': row['text'][:PREVIEW], 'created_at': row['created_at']},
+                 **({'pinned': row['member'] in pinned} if pinned is not None else {})}
                 for row in self.team_store.direct_chats(room['room'])]
 
     def _team_bot_direct_summary(self, room: dict) -> list[dict]:
@@ -361,8 +387,11 @@ class TeamDirects:
         shows, newest chat first. A chat with a bot that left stays. `member` and `member_name` name the Mac of the
         `bot` entry: a reader does not check that this Mac runs Coconut for a team only. `typing` is the whole number
         of seconds that are left of the typing sign of the bot, or null. A sign shows only while the room is active and
-        the member of the bot is in the member list. The caller holds the service lock."""
+        the member of the bot is in the member list. On a person's Mac each item also has `pinned`: true when the
+        person pinned the chat. The caller holds the service lock."""
         from .team_pages import team_id
+
+        pinned = self.team_store.pinned_directs(room['room']) if self._team_has_phones else None
 
         def typing(row) -> int | None:
             if room['state'] != ACTIVE or self.team_store.member(room['room'], row['member']) is None:
@@ -374,5 +403,6 @@ class TeamDirects:
                  'unread': self.team_store.direct_unread(room['room'], row['member'], row['bot']),
                  'last_message': {'first': row['first'], 'this_mac': row['writer'] == room['member'],
                                   'text': row['text'][:PREVIEW], 'created_at': row['created_at']},
-                 'typing': typing(row)}
+                 'typing': typing(row),
+                 **({'pinned': team_id(room['room'], row['bot']) in pinned} if pinned is not None else {})}
                 for row in self.team_store.bot_direct_chats(room['room'])]

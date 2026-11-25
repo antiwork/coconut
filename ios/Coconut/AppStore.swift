@@ -2194,27 +2194,35 @@ final class AppStore {
     }
 
     /// Pins or unpins a chat of a team for this person (TeamChatPin): the Team chat when `chat` is nil, else a named
-    /// chat. Return whether the change was queued. Each answer changes only that chat
-    /// in the list as it is now, as for a mute.
+    /// chat, or a direct chat when `direct` names it (the member ID of a person or the team bot ID). Return whether the
+    /// change was queued. Each answer changes only that chat in the list as it is now, as for a mute.
     @discardableResult
-    func setTeamChatPinned(_ room: String, chat: String?, pinned: Bool) async -> Bool {
-        let path = "team/rooms/\(room)" + (chat.map { "/chats/\($0)" } ?? "") + "/pin"
+    func setTeamChatPinned(_ room: String, chat: String?, direct: String? = nil, pinned: Bool) async -> Bool {
+        let path = "team/rooms/\(room)" + (direct.map { "/directs/\($0)" } ?? chat.map { "/chats/\($0)" } ?? "") + "/pin"
         return optimistically(path, change: { transaction in
             optimisticUpdates.set(path, to: Optional(pinned), in: transaction,
                 read: {
                     guard let value = self.team?.rooms.first(where: { $0.room == room }) else { return nil }
+                    if let direct {
+                        return value.directs?.first { $0.member == direct }?.pinned
+                            ?? value.botDirects?.first { $0.bot == direct }?.pinned
+                    }
                     return chat.flatMap { id in value.chats?.first { $0.id == id }?.pinned } ?? (chat == nil ? value.pinned : nil)
                 }, write: { value in
                     guard let value, let i = self.team?.rooms.firstIndex(where: { $0.room == room }) else { return }
-                    if let chat, let j = self.team?.rooms[i].chats?.firstIndex(where: { $0.id == chat }) { self.team?.rooms[i].chats?[j].pinned = value }
-                    else if chat == nil { self.team?.rooms[i].pinned = value }
+                    if let direct, let j = self.team?.rooms[i].directs?.firstIndex(where: { $0.member == direct }) { self.team?.rooms[i].directs?[j].pinned = value }
+                    else if let direct, let j = self.team?.rooms[i].botDirects?.firstIndex(where: { $0.bot == direct }) { self.team?.rooms[i].botDirects?[j].pinned = value }
+                    else if let chat, let j = self.team?.rooms[i].chats?.firstIndex(where: { $0.id == chat }) { self.team?.rooms[i].chats?[j].pinned = value }
+                    else if chat == nil && direct == nil { self.team?.rooms[i].pinned = value }
                 })
         }, save: {
             let answer: TeamChatPinAnswer? = await self.write(path, method: "PUT", payload: TeamPinRequest(pinned: pinned), as: TeamChatPinAnswer.self)
             self.optimisticUpdates.receive {
                 guard let answer, let i = self.team?.rooms.firstIndex(where: { $0.room == room }) else { return }
-                if let chat = answer.chat, let j = self.team?.rooms[i].chats?.firstIndex(where: { $0.id == chat }) { self.team?.rooms[i].chats?[j].pinned = answer.pinned }
-                else if answer.chat == nil { self.team?.rooms[i].pinned = answer.pinned }
+                if let member = answer.member, let j = self.team?.rooms[i].directs?.firstIndex(where: { $0.member == member }) { self.team?.rooms[i].directs?[j].pinned = answer.pinned }
+                else if let bot = answer.bot, let j = self.team?.rooms[i].botDirects?.firstIndex(where: { $0.bot == bot }) { self.team?.rooms[i].botDirects?[j].pinned = answer.pinned }
+                else if let chat = answer.chat, let j = self.team?.rooms[i].chats?.firstIndex(where: { $0.id == chat }) { self.team?.rooms[i].chats?[j].pinned = answer.pinned }
+                else if answer.chat == nil && answer.member == nil && answer.bot == nil { self.team?.rooms[i].pinned = answer.pinned }
             }
             self.teamChanges += 1
         })
@@ -3825,7 +3833,9 @@ private struct TeamProfileRequest: Encodable { let memberName: String }
 private struct TeamNotificationsRequest: Encodable { let enabled: Bool }
 private struct TeamNotificationsAnswer: Decodable, Sendable { let room: String; let notifications: Bool }
 private struct TeamPinRequest: Encodable { let pinned: Bool }
-private struct TeamChatPinAnswer: Decodable, Sendable { let room: String; let chat: String?; let pinned: Bool }
+private struct TeamChatPinAnswer: Decodable, Sendable {
+    let room: String; let chat: String?; let member: String?; let bot: String?; let pinned: Bool
+}
 private struct TeamChatNotificationsAnswer: Decodable, Sendable {
     let room: String; let chat: String; let notifications: Bool
 }

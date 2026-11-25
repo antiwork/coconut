@@ -416,6 +416,7 @@ Everything else is in `coconut.sqlite3`:
 | `team_chat_reads` | The read position of this Mac in each named chat that the person read: one row for each room and chat. |
 | `team_chat_mutes` | The named chats that the person of this Mac muted: one row for each room and muted chat. See rule 4 of [Notifications](#notifications). |
 | `team_chat_pins` | The chats that the person of this Mac pinned: one row for each room and pinned chat, with an empty `chat` for the Team chat. See [Starred chats](#starred-chats). |
+| `team_direct_pins` | The direct chats that the person of this Mac pinned: one row for each room and direct chat, with the member ID of the other person or the team agent ID. See [Starred chats](#starred-chats). |
 | `team_triggers` | Only on a team-only Mac: the messages that start a turn of an agent of this Mac, in the order in which the Mac accepted them, each with a mark for a turn that began. See [An agent answers](#an-agent-answers). |
 | `team_directs` | The direct messages that this Mac shows: one row for each `direct` entry whose box opens for this Mac, with the other member of its chat, and `bot`, `page` and the link preview from the box. `bot` is null for a chat of two people. An index on the room, the member, `bot` and `first` gives a page and the unread count of one chat. See [Direct messages](#direct-messages) and [Direct chat with an agent](#direct-chat-with-an-agent). |
 | `team_direct_reads` | The read position of this Mac in each direct chat of two people: one row for each room and other member. |
@@ -675,6 +676,7 @@ The routes have the authorization of the other team routes, and a write with an 
 | `PUT /v1/team/rooms/<room>/notifications`, body `{enabled}` | Turns the notifications of the room on or off for the phones of this Mac, and answers `{room, notifications}`. See [Notifications](#notifications). |
 | `PUT /v1/team/rooms/<room>/chats/<id>/notifications`, body `{enabled}` | Mutes (`false`) or unmutes (`true`) one named chat for the phones of this Mac, and answers `{room, chat, notifications}`. See [Notifications](#notifications). |
 | `PUT /v1/team/rooms/<room>/pin` and `PUT /v1/team/rooms/<room>/chats/<id>/pin`, body `{pinned}` | Pins or unpins the Team chat or one named chat on this Mac, and answers `{room, chat, pinned}` (`chat` is null for the Team chat). See [Starred chats](#starred-chats). |
+| `PUT /v1/team/rooms/<room>/directs/<chat>/pin`, body `{pinned}` | Pins or unpins one direct chat on this Mac, and answers `{room, member, pinned}` or `{room, bot, pinned}`. See [Starred chats](#starred-chats). |
 
 A message in an answer:
 
@@ -956,23 +958,24 @@ No log line has the name of a chat.
 
 #### Starred chats
 
-A person stars the Team chat or a named chat, as the person stars an agent. A direct chat has no star.
+A person stars the Team chat, a named chat, or a direct chat with a person or an agent, as the person stars an agent.
 
-- The choice stays on this Mac in `team_chat_pins`. It never goes into the log or to the relay.
-- The Mac deletes the choice when it removes the chat or leaves the team.
-- `GET /v1/team/rooms` gives `pinned` for the Team chat and each named chat on a person's Mac.
+- The choice stays on this Mac: in `team_chat_pins` for the chats of the team, and in `team_direct_pins` for a direct chat. It never goes into the log or to the relay.
+- The Mac deletes the choice of a named chat when it removes the chat, and every choice of a room when it leaves the team. The choice of a direct chat stays, so a chat that the person can no longer write to keeps its place.
+- `GET /v1/team/rooms` gives `pinned` for the Team chat and each named chat on a person's Mac, and for each item of `directs` and `bot_directs`.
 - A Mac for a team only and an older service send no `pinned` field. The app then shows no action.
 - `PUT /v1/team/rooms/<room>/pin` changes the Team chat choice with `{"pinned": true}` or `{"pinned": false}`.
 - `PUT /v1/team/rooms/<room>/chats/<id>/pin` changes a named chat choice with the same body.
+- `PUT /v1/team/rooms/<room>/directs/<chat>/pin` changes a direct chat choice with the same body, and answers `{room, member, pinned}` for a chat with a person or `{room, bot, pinned}` for a chat with an agent.
 - Only a paired device can change the choice. A Mac for a team only returns 409. An unknown chat returns 404.
 - A change adds `team.updated`. The same value again writes nothing. These routes keep no answer for an `Idempotency-Key`.
 - The menu shows "Star" or "Unstar" with `star` or `star.slash`, above "Mute" for a named chat.
 - "Star" shows only for an active team. "Unstar" shows in each state, so the person can remove a star without deleting history.
 - The row shows the new choice at once. A failed request restores the old state and shows the error.
 - VoiceOver says "Starred" for a starred chat.
-- Starred chats keep one order: teams in the Mac order, then the Team chat before each named chat in its order.
+- Starred chats keep one order: teams in the Mac order, then the Team chat before each named chat in its order, then the direct chats with a person and with an agent by their ID, so a message does not move a starred chat.
 - On iPhone, starred chats show below the starred agent tiles, with a `star` mark, before the other rows.
-- A starred chat shows in "All" and "People". It never shows in "Agents".
+- A starred chat shows where its row shows: in "All" and "People" for a chat with a person, and in "All" and "Agents" for a chat with an agent. The Chats list of the app shows every chat, with no filter.
 - On Mac, "Starred" shows starred agents, starred chats, then starred pages. An unread message does not move a starred chat.
 
 #### Reactions

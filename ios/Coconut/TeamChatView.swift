@@ -1591,10 +1591,13 @@ struct DirectContactRow: View {
     let unread: Int
     let lastMessage: TeamLastMessage?
     var avatarSize: CGFloat = BoardStyle.rowFace
+    /// The row shows the star of a pinned chat: a chat that this person pinned shows at the top of the list
+    /// (TeamChatPin).
+    var pinMark = false
 
     var body: some View {
         let preview = TeamChatPreview.text(lastMessage, direct: true)
-        ChatRowLayout(name: peer.name, unread: unread, date: lastMessage?.createdAt?.apiDate) {
+        ChatRowLayout(name: peer.name, unread: unread, date: lastMessage?.createdAt?.apiDate, pinned: pinMark) {
             DirectPeerFace(peer: peer, size: avatarSize)
         } subtitle: {
             Text(preview)
@@ -1602,8 +1605,8 @@ struct DirectContactRow: View {
                 .lineLimit(dynamicTypeSize.isAccessibilitySize ? 2 : 1)
         }
         .accessibilityElement(children: .combine)
-        .accessibilityLabel([peer.name, preview, unread > 0 ? UnreadBadge.spoken(unread) : nil].compactMap { $0 }
-            .joined(separator: ", "))
+        .accessibilityLabel([peer.name, preview, unread > 0 ? UnreadBadge.spoken(unread) : nil,
+                             pinMark ? TeamChatPin.spoken : nil].compactMap { $0 }.joined(separator: ", "))
     }
 }
 
@@ -1638,9 +1641,13 @@ struct TeamChatMuteMenu: ViewModifier {
                     case .pin(let pin):
                         Button(pin.label, systemImage: pin.symbol) {
                             store.error = nil
-                            Task { await store.setTeamChatPinned(pin.room, chat: pin.chat, pinned: pin.pinned) }
+                            Task {
+                                await store.setTeamChatPinned(pin.room, chat: pin.chat, direct: pin.direct,
+                                                              pinned: pin.pinned)
+                            }
                         }
-                        .disabled(TeamChatPin.waits(TeamChatPin.key(room: pin.room, chat: pin.chat),
+                        .disabled(TeamChatPin.waits(TeamChatPin.key(room: pin.room, chat: pin.chat,
+                                                                    direct: pin.direct),
                                                     store.teamChatPinChoices))
                         .accessibilityIdentifier("chat-row-pin-menu")
                     case .mute(let mute):
@@ -1672,10 +1679,10 @@ struct PeopleRow: View {
         case .team(let room): TeamContactRow(room: room, avatarSize: avatarSize, pinMark: pinMark)
         case .direct(let room, let direct):
             DirectContactRow(peer: room.directPeer(direct.member), unread: direct.unread ?? 0,
-                             lastMessage: direct.lastMessage, avatarSize: avatarSize)
+                             lastMessage: direct.lastMessage, avatarSize: avatarSize, pinMark: pinMark)
         case .botDirect(let room, let direct):
             DirectContactRow(peer: room.botPeer(direct.bot), unread: direct.unread ?? 0,
-                             lastMessage: direct.lastMessage, avatarSize: avatarSize)
+                             lastMessage: direct.lastMessage, avatarSize: avatarSize, pinMark: pinMark)
         case .bot: EmptyView()
         }
     }
