@@ -474,14 +474,15 @@ class TeamTurns:
     def _team_say(self, room: str, bot: str, trigger: str, part, text: str, reply_to: str | None = None,
                   request: bool = True, chat: str | None = None, direct: str | None = None,
                   alert: dict | None = None, file: dict | None = None, deadline: float | None = None,
-                  request_trigger: str | None = None, check=None) -> str:
+                  request_trigger: str | None = None, check=None, thread: str | None = None) -> str:
         """Write one message of the bot into `chat` (None for the Team chat), or into its direct chat with the person
         `direct` (a member ID). Nothing when the bot no longer answers there, for example after a removal, a leave or
         the removal of the chat, and nothing when the request is gone: `trigger` names the message that the bot
         answers, and it must still show with its member in the list (`request`). A direct message goes only to a
         member in the list, and has no `reply_to`. A failure of the relay or of the helper leaves a log line, and the
         chat shows nothing. `alert` is the checked alert of a send outside a turn (team_alerts.alert_request): the
-        message carries it in a team chat, and a direct message carries none.
+        message carries it in a team chat, and a direct message carries none. `thread` names the message whose thread
+        a later part of an answer joins in a team chat (docs/team-log.md, "Inbox chats"); a direct message has none.
         `request_trigger` separates a live request from the ID of its file delivery. `check` validates the active turn
         before writes and reads new room entries before the file message.
 
@@ -547,6 +548,8 @@ class TeamTurns:
                     fields['mentions'] = named
                 if reply_to:
                     fields['reply_to'] = reply_to
+                if thread:
+                    fields['thread'] = thread
                 if chat is not None:
                     fields['chat'] = chat
                 if alert is not None:
@@ -635,12 +638,14 @@ class Reply:
         self.gateway_turn = None
 
     def say(self, text: str) -> None:
-        """Write a message of the bot. The first part of a turn in the team chat answers the trigger."""
+        """Write a message of the bot. The first part of a turn in the team chat answers the trigger. Each later part
+        names the trigger as its `thread`, without a quote, so an inbox chat keeps the whole answer in the notice that
+        the person answered (docs/team-log.md, "Inbox chats")."""
         for piece in parts(text):
             first = self.count == 0
             self.service._team_say(self.turn['room'], self.turn['bot'], self.turn['entry'], self.count, piece,
                                    self.turn['entry'] if first else None, chat=self.turn['chat'],
-                                   direct=self.turn.get('direct'))
+                                   direct=self.turn.get('direct'), thread=None if first else self.turn['entry'])
             self.count += 1
 
     def flush(self) -> None:

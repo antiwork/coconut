@@ -385,10 +385,13 @@ struct CoconutHome: View {
         }
     }
 
-    /// Shows a Team chat or a direct chat on the stack of Chats, with the list under it. The sheets close.
+    /// Shows a Team chat or a direct chat on the stack of Chats, with the list under it. The sheets close. One notice of
+    /// an inbox chat shows over the list of its notices, so Back leads there.
     private func showTeamChat(_ chat: TeamChatKey) {
         notificationDecisionId = nil
-        show(.chats, path: NavigationPath([TeamChatRoute(chat: chat)]))
+        let routes = chat.thread == nil ? [TeamChatRoute(chat: chat)]
+            : [TeamChatRoute(chat: chat.wholeChat), TeamChatRoute(chat: chat)]
+        show(.chats, path: NavigationPath(routes))
     }
 
     /// Shows the cards that wait on Product, with the rest of Product under them. The card with this ID comes first.
@@ -562,6 +565,16 @@ extension CoconutHome {
                 open(.chats, store.documentPath(page.id))
             }
         case "notices": open(.chats, [NoticeBoardRoute(roomId: room)])
+        // The inbox chat Notices of the team preview (TeamInbox.swift), one notice with answers, and the tap on the
+        // notification of a notice.
+        case "notice-inbox":
+            open(.chats, [TeamChatRoute(chat: TeamChatKey(room: room, chat: AppStore.previewNoticesChat))])
+        case "notice-thread":
+            let inbox = TeamChatKey(room: room, chat: AppStore.previewNoticesChat)
+            open(.chats, [TeamChatRoute(chat: inbox), TeamChatRoute(chat: inbox.inThread(AppStore.previewNoticeThread))])
+        case "notice-thread-tap":
+            showNotification(.chat(TeamChatKey(room: room, chat: AppStore.previewNoticesChat,
+                                               thread: AppStore.previewNoticeThread)))
         case "team": open(.profile, [ProfileRoute.team])
         case "direct":
             let member = store.shownTeamRooms.first?.directList.first?.member

@@ -482,7 +482,7 @@ class PushDelivery:
         if room is None or room['state'] != ACTIVE:
             return False
         message = store.message(item['team'], item['message_id'])
-        return (message is not None and message['first'] > store.read_position(item['team'], message['chat'])
+        return (message is not None and store.message_unread(item['team'], message)
                 and self.team_notifies(room, item['message_id']))
 
     def record_direct(self, room, entry):
@@ -532,6 +532,15 @@ class PushDelivery:
         message that no longer shows."""
         message = self.service.team_store.message(item['team'], item['message_id'])
         return message['chat'] if message else None
+
+    def notice_thread(self, item):
+        """The thread of a team item in an inbox chat (docs/team-log.md, "Inbox chats"): the notice that a tap opens.
+        None in each other chat and for a message that no longer shows."""
+        store = self.service.team_store
+        message = store.message(item['team'], item['message_id'])
+        if message is None or not store.inbox(item['team'], message['chat']):
+            return None
+        return message['thread']
 
     def relevant(self, item):
         """Whether the item still describes something the person has not seen: an open card, a visible message,
@@ -703,11 +712,12 @@ class PushDelivery:
             return payload, item['message_id']
         if item['kind'] == 'team':
             # A message of a named chat carries its chat, so a tap opens that chat. An older app opens the Team chat.
-            chat = self.named_chat(item)
+            # A message of an inbox chat carries its thread too, so a tap opens that notice. An older app ignores it.
+            chat, thread = self.named_chat(item), self.notice_thread(item)
             payload = {'aps': {'alert': {'title': 'Coconut', 'body': TEAM_BODY}, 'sound': 'default',
                                'thread-id': team_thread(item['team'], chat)},
                        'coconut': {'version': 1, 'device_id': device_id, 'kind': 'team', 'team': item['team'],
-                                   **({'chat': chat} if chat else {})}}
+                                   **({'chat': chat} if chat else {}), **({'thread': thread} if thread else {})}}
             if sealed:
                 payload['aps']['alert'] = team_alert(service.team_store, item['team'], item['message_id'])
             return payload, item['message_id']

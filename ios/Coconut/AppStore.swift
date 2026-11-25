@@ -110,6 +110,10 @@ final class AppStore {
     var teamAlertFilters: [TeamChatKey: TeamAlertFilter] = [:]
     var teamAlertChats: [TeamChatKey: TeamChat] = [:]
     @ObservationIgnored private var teamAlertRequests: [TeamChatKey: Int] = [:]
+    /// The notices of each inbox chat that the app loaded, by the key of the whole chat (TeamInboxView).
+    var teamThreads: [TeamChatKey: TeamThreadList] = [:]
+    /// The number of the latest request of the notices of an inbox chat, by chat. Only its answer goes into the list.
+    @ObservationIgnored private var teamThreadRequests: [TeamChatKey: Int] = [:]
     /// The number of the latest request of the newest page, by chat. Only its answer goes into the chat.
     @ObservationIgnored private var teamChatRequests: [TeamChatKey: Int] = [:]
     @ObservationIgnored private var teamChatRequestCount = 0
@@ -304,6 +308,11 @@ final class AppStore {
     /// False when the app cannot tell: a notice, a group of several chats, or a chat or a card that the app does not have.
     func notificationIsRead(_ target: NotificationTarget) -> Bool {
         guard target.noticeRoom == nil else { return false }
+        // A notice of an inbox chat is read when its list says so, or when the chat has no unread notice at all.
+        if let chat = target.chat, let thread = chat.thread,
+           let item = teamThreads[chat.wholeChat]?.threads.first(where: { $0.id == thread }) {
+            return item.unread == 0 || teamUnread(chat) == 0
+        }
         if let chat = target.chat { return teamUnread(chat) == 0 }
         guard !target.group else { return false }
         if let decision = target.decisionId {
@@ -792,6 +801,7 @@ final class AppStore {
         teamChatsOnScreen = []; teamOlderRequests = [:]; teamMessageChanges = [:]; teamTypingPace = [:]
         teamReactionWriters = [:]
         teamAlertFilters = [:]; teamAlertChats = [:]; teamAlertRequests = [:]
+        teamThreads = [:]; teamThreadRequests = [:]
         queues = [:]; mcpServers = []
         optimisticUpdates.reset()
         documentContents = [:]; resetBusiness()
@@ -2045,6 +2055,10 @@ final class AppStore {
         // A room that left the list takes its chats with it, also unsent messages that a restart brought back. So does
         // a named chat that the room no longer has.
         dropTeamChats(teamChats.keys.filter { !teamListHas($0) })
+        for chat in teamThreads.keys where !teamListHas(chat) {
+            teamThreads[chat] = nil
+            teamThreadRequests[chat] = nil
+        }
         return true
     }
 
@@ -2062,6 +2076,11 @@ final class AppStore {
         // A reset skips the events between the cursors, also the changes of documents.
         if page.documentsChanged == true || page.reset != nil { teamDocumentChanges += 1 }
         reloadTeamChats(Self.teamChatsToRead(after: page, chats: teamChats))
+        // The notices of an inbox chat change with each message of its room: a new notice, an answer, or a read.
+        let rooms = Set(page.teamMessagesChanged ?? [])
+        for chat in teamThreads.keys where page.reset != nil || rooms.contains(chat.room) {
+            Task { await loadTeamThreads(chat) }
+        }
         // The row of a team or a direct chat shows its newest message and its unread count, so a change of the chat
         // loads the list too. The list also says who types.
         let typing = !(page.teamTypingChanged ?? []).isEmpty
@@ -2436,6 +2455,68 @@ final class AppStore {
 
     // MARK: Team chat
 
+    /// The most notices of one request: the first page of read notices, and each later page.
+    static let teamThreadPage = 50
+
+    /// Reads the notices of an inbox chat (docs/team-log.md, "Inbox chats"): each unread notice and the newest read ones.
+    /// A refresh asks for as many read notices as the list shows, so the list does not fold back while the person reads
+    /// further down. Only the answer of the latest request goes into the list.
+    @discardableResult
+    func loadTeamThreads(_ chat: TeamChatKey) async -> Bool {
+        let chat = chat.wholeChat
+        if isDemo {
+            if teamThreads[chat] == nil { teamThreads[chat] = TeamThreadList(loaded: true) }
+            return true
+        }
+        guard let client, let id = chat.chat else { return false }
+        teamChatRequestCount += 1
+        let request = teamChatRequestCount
+        teamThreadRequests[chat] = request
+        let limit = min(100, max(Self.teamThreadPage, teamThreads[chat]?.read.count ?? 0))
+        let page: TeamThreadPage
+        do { page = try await client.request("team/rooms/\(chat.room)/threads?chat=\(id)&limit=\(limit)") } catch {
+            guard self.client === client, teamThreadRequests[chat] == request, teamListHas(chat) else { return false }
+            if !(error is CancellationError) { teamThreads[chat, default: TeamThreadList()].error = Self.teamMessage(error) }
+            return false
+        }
+        guard self.client === client, teamThreadRequests[chat] == request, teamListHas(chat) else { return false }
+        var list = teamThreads[chat] ?? TeamThreadList()
+        list.take(page)
+        if teamThreads[chat] != list { teamThreads[chat] = list }
+        return true
+    }
+
+    /// Reads the next page of the read notices of an inbox chat, under the ones that the list has.
+    func loadOlderTeamThreads(_ chat: TeamChatKey) async {
+        let chat = chat.wholeChat
+        guard !isDemo, let client, let id = chat.chat, let before = teamThreads[chat]?.before,
+              teamThreads[chat]?.loadingMore == false else { return }
+        teamThreads[chat]?.loadingMore = true
+        let request = teamThreadRequests[chat]
+        let page: TeamThreadPage
+        do {
+            page = try await client.request(
+                "team/rooms/\(chat.room)/threads?chat=\(id)&before=\(before)&limit=\(Self.teamThreadPage)")
+        } catch {
+            teamThreads[chat]?.loadingMore = false
+            return
+        }
+        // A refresh of the first page that came in between has its own `before`, so this page waits for the next tap.
+        guard self.client === client, teamThreadRequests[chat] == request, teamThreads[chat]?.before == before else {
+            teamThreads[chat]?.loadingMore = false
+            return
+        }
+        teamThreads[chat]?.append(page)
+    }
+
+    /// The message that a message in one notice answers when the person picked none: the newest message of the notice
+    /// that another member or an agent wrote, else its first message. So the agent of the notice gets the answer, as an
+    /// answer to its message starts its turn (team_turns.py).
+    private func threadAnswer(_ chat: TeamChatKey) -> TeamMessage? {
+        guard chat.thread != nil, let messages = teamChats[chat]?.messages else { return nil }
+        return messages.last { !$0.isOwn } ?? messages.first
+    }
+
     /// Reads the newest page of the chat of a team and merges it by message ID. True when the page is fresh from the
     /// Mac. Only the answer of the latest request goes into the chat, and a page of an earlier pairing goes nowhere.
     @discardableResult
@@ -2705,7 +2786,8 @@ final class AppStore {
     func sendTeamMessage(_ chat: TeamChatKey, text: String, replyingTo answered: TeamMessage?, page: TeamAboutPage? = nil,
                          mentions: [String] = [], preview: TeamLinkPreview? = nil, files: [TeamFile] = []) -> Bool {
         let page = chat.bot == nil ? nil : page
-        let answered = page == nil ? answered : nil
+        // In one notice of an inbox chat, a message answers the notice by default, so its agent gets it.
+        let answered = page == nil ? answered ?? threadAnswer(chat) : nil
         let text = text.trimmingCharacters(in: .whitespacesAndNewlines)
         let preview = teamChats[chat]?.offersPreviews == true ? preview?.fitting(in: text) : nil
         let files = chat.isDirect ? [] : Array(files.prefix(TeamFileRules.limit))
@@ -2940,12 +3022,15 @@ final class AppStore {
     }
 
     /// Tells the Mac that the person read the chat up to the message with this `first`. The app sends each position
-    /// one time, and marks it as sent only after the Mac confirmed it.
+    /// one time, and marks it as sent only after the Mac confirmed it. A key with a thread reads that one notice of an
+    /// inbox chat, which leaves the unread notices of its list at once.
     func markTeamRead(_ chat: TeamChatKey, first: Int) async {
+        markTeamThreadsRead(chat, through: first)
         guard !isDemo, first > teamReadMark(chat) ?? 0 else { return }
         teamReadPosting[chat] = first
         let list = teamListVersion
-        let answer: TeamReadAnswer? = await write("\(chat.path)/read", payload: TeamReadRequest(first: first, chat: chat.chat),
+        let answer: TeamReadAnswer? = await write("\(chat.path)/read",
+                                                  payload: TeamReadRequest(first: first, chat: chat.chat, thread: chat.thread),
                                                   as: TeamReadAnswer.self, quiet: true, refreshInBackground: true)
         let newestRead = teamReadPosting[chat] == first
         if newestRead { teamReadPosting[chat] = nil }
@@ -2972,6 +3057,18 @@ final class AppStore {
         } else if team?.rooms[index].unread != unread {
             team?.rooms[index].unread = unread
         }
+    }
+
+    /// The person read the chat that a list of notices shows: the notice of the key, or each notice of the whole chat.
+    /// The list shows it under Read at once, and in the demo the count of the row goes down too.
+    private func markTeamThreadsRead(_ chat: TeamChatKey, through first: Int) {
+        let whole = chat.wholeChat
+        guard teamThreads[whole] != nil else { return }
+        if let thread = chat.thread { teamThreads[whole]?.markRead(thread, through: first) }
+        else { teamThreads[whole]?.markAllRead() }
+        guard isDemo, let id = chat.chat, let index = team?.rooms.firstIndex(where: { $0.room == chat.room }),
+              let named = team?.rooms[index].chats?.firstIndex(where: { $0.id == id }) else { return }
+        team?.rooms[index].chats?[named].unread = teamThreads[whole]?.unread.count ?? 0
     }
 
     /// The person changed the draft of the Team chat or of a named chat: the Mac tells the team that the person types,
@@ -3863,7 +3960,7 @@ private struct TeamFileAnswer: Decodable, Sendable { let file: TeamFile }
 private struct TeamFileDropAnswer: Decodable, Sendable { let file: String }
 private struct TeamEditRequest: Encodable { let text: String }
 private struct TeamReactionRequest: Encodable { let emoji: String }
-private struct TeamReadRequest: Encodable { let first: Int; let chat: String? }
+private struct TeamReadRequest: Encodable { let first: Int; let chat: String?; let thread: String? }
 private struct TeamTypingRequest: Encodable { let chat: String? }
 /// The body of a new chat and of a new name. A delete sends no name.
 private struct TeamChatRequest: Encodable { let name: String? }
@@ -3915,6 +4012,9 @@ struct OutgoingCache: Codable {
     /// The messages of the direct chats with a bot that the Mac did not confirm, by room and team bot ID. An older app
     /// has none.
     var botDirectMessages: [String: [String: [TeamPendingMessage]]]? = nil
+    /// The messages of one notice of an inbox chat that the Mac did not confirm, by room, chat and thread. An older app
+    /// has none.
+    var threadMessages: [String: [String: [String: [TeamPendingMessage]]]]? = nil
 
     /// The unsent messages of each chat of a team. Each part is nil when it has no message.
     var pendingTeamMessages: [TeamChatKey: [TeamPendingMessage]] {
@@ -3930,6 +4030,11 @@ struct OutgoingCache: Codable {
             for (room, bots) in botDirectMessages ?? [:] {
                 for (bot, pending) in bots { chats[TeamChatKey(room: room, bot: bot)] = pending }
             }
+            for (room, named) in threadMessages ?? [:] {
+                for (chat, threads) in named {
+                    for (thread, pending) in threads { chats[TeamChatKey(room: room, chat: chat, thread: thread)] = pending }
+                }
+            }
             return chats
         }
         set {
@@ -3937,9 +4042,11 @@ struct OutgoingCache: Codable {
             var direct: [String: [String: [TeamPendingMessage]]] = [:]
             var named: [String: [String: [TeamPendingMessage]]] = [:]
             var bots: [String: [String: [TeamPendingMessage]]] = [:]
+            var threads: [String: [String: [String: [TeamPendingMessage]]]] = [:]
             for (chat, pending) in newValue {
                 if let member = chat.member { direct[chat.room, default: [:]][member] = pending }
                 else if let bot = chat.bot { bots[chat.room, default: [:]][bot] = pending }
+                else if let id = chat.chat, let thread = chat.thread { threads[chat.room, default: [:]][id, default: [:]][thread] = pending }
                 else if let id = chat.chat { named[chat.room, default: [:]][id] = pending }
                 else { team[chat.room] = pending }
             }
@@ -3947,6 +4054,7 @@ struct OutgoingCache: Codable {
             directMessages = direct.isEmpty ? nil : direct
             namedMessages = named.isEmpty ? nil : named
             botDirectMessages = bots.isEmpty ? nil : bots
+            threadMessages = threads.isEmpty ? nil : threads
         }
     }
 }

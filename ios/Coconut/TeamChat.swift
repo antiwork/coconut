@@ -16,18 +16,28 @@ struct TeamChatKey: Hashable, Sendable, ExpressibleByStringLiteral {
     var chat: String? = nil
     /// The team bot ID (`t-<room>-<entry>`) of a direct chat with a bot. Nil for each other chat.
     var bot: String? = nil
+    /// The thread of a named chat that this key shows on its own: one notice of an inbox chat (docs/team-log.md, "Inbox
+    /// chats"), with the answers to it. Nil for the whole chat.
+    var thread: String? = nil
 
-    init(room: String, member: String? = nil, chat: String? = nil, bot: String? = nil) {
+    init(room: String, member: String? = nil, chat: String? = nil, bot: String? = nil, thread: String? = nil) {
         self.room = room
         self.member = member
         self.chat = chat
         self.bot = bot
+        self.thread = chat == nil ? nil : thread
     }
 
     init(stringLiteral room: String) { self.init(room: room) }
 
     /// A direct chat: with a person or with a bot.
     var isDirect: Bool { member != nil || bot != nil }
+
+    /// The whole chat of a key of one thread: the inbox that lists the thread.
+    var wholeChat: TeamChatKey { TeamChatKey(room: room, member: member, chat: chat, bot: bot) }
+
+    /// The key of one thread of this chat.
+    func inThread(_ thread: String) -> TeamChatKey { TeamChatKey(room: room, chat: chat, thread: thread) }
 
     /// The path of the chat on the Mac. The messages and the read position are under it. A direct chat with a bot has
     /// the path of a direct chat with the team bot ID in the place of the member ID. A named chat has the path of the
@@ -41,8 +51,9 @@ struct TeamChatKey: Hashable, Sendable, ExpressibleByStringLiteral {
     /// notification of the chat has it.
     var botEntry: String? { bot.flatMap { $0.split(separator: "-").last.map(String.init) } }
 
-    /// The part of a query that names a named chat ("&chat=<ID>"), or nothing for another chat.
-    var query: String { chat.map { "&chat=" + $0 } ?? "" }
+    /// The part of a query that names a named chat ("&chat=<ID>") and one of its threads ("&thread=<ID>"), or nothing
+    /// for another chat.
+    var query: String { (chat.map { "&chat=" + $0 } ?? "") + (thread.map { "&thread=" + $0 } ?? "") }
 }
 
 /// One named chat of a room, from `chats` of the list of the teams: its ID, its name, and the fields that the room has
@@ -62,6 +73,9 @@ struct TeamNamedChat: Decodable, Identifiable, Equatable, Sendable {
     /// True when this person pinned the chat on this Mac (TeamChatPin). A Mac for a team only and an older service send
     /// none.
     var pinned: Bool? = nil
+    /// True for an inbox chat (docs/team-log.md, "Inbox chats"): agents deliver their alerts and reports there, so it
+    /// opens as a list of notices, and `unread` counts the unread notices. An older service sends none.
+    var inbox: Bool? = nil
 }
 
 extension TeamRoom {
@@ -112,6 +126,9 @@ extension TeamRoom {
 
     /// The person pinned the chat that this room shows (TeamChatPin).
     var chatPinned: Bool { chatPinChoice == true }
+
+    /// The chat that this room shows is an inbox chat: it opens as a list of notices (TeamInboxView).
+    var isInbox: Bool { shownChat?.inbox == true }
 }
 
 extension TeamRooms {
@@ -562,6 +579,9 @@ struct TeamMessage: Decodable, Identifiable, Equatable, Sendable {
     /// The alert of a message of an agent: its type and its level (docs/team-log.md, "Alerts"). Nil for a plain
     /// message, and from a Mac without alerts.
     var alert: TeamAlert? = nil
+    /// The first message of the thread of this message in its chat (docs/team-log.md, "Inbox chats"). Nil from a Mac
+    /// without threads.
+    var thread: String? = nil
 
     /// A message of this Mac's person. A bot of this Mac writes as itself, not as the person.
     var isOwn: Bool { thisMac == true && bot == nil }
@@ -626,11 +646,12 @@ extension TeamMessage {
         // An alert of a wrong shape, or of a level that this app does not know, decodes to nil: a plain message.
         let decodedAlert: TeamAlert? = try? container.decodeIfPresent(TeamAlert.self, forKey: .alert)
         alert = bot == nil ? nil : decodedAlert
+        thread = try? container.decodeIfPresent(String.self, forKey: .thread)
     }
 
     private enum CodingKeys: String, CodingKey {
         case id, first, member, memberName, thisMac, bot, botName, text, replyTo, reply, mentions, createdAt, editedAt
-        case page, reactions, preview, files, alert
+        case page, reactions, preview, files, alert, thread
     }
 }
 
@@ -1342,6 +1363,9 @@ struct TeamChatRow: Identifiable, Equatable, Sendable {
     /// The first row of a run: messages of one writer on one day with no other writer between them. The name of the
     /// writer shows above it.
     let startsRun: Bool
+    /// The message answers the row right above it. One notice of an inbox chat then shows no quote: the answer is
+    /// plain from the order (TeamMessageRow).
+    var answersRowAbove = false
 
     var message: TeamMessage? { if case .message(let message) = content { message } else { nil } }
 
@@ -1377,9 +1401,14 @@ struct TeamChatRow: Identifiable, Equatable, Sendable {
         var previous: (writer: TeamWriter, createdAt: String)?
         for item in shown + pending {
             let startsDay = previous.map { !DaySeparator.sameDay($0.createdAt, item.createdAt, calendar: calendar) } ?? true
+            let answered: String? = switch item.content {
+            case .message(let message): message.replyTo
+            case .pending(let pending): pending.replyTo
+            }
             rows.append(TeamChatRow(id: item.id, listID: item.listID, content: item.content, writer: item.writer,
                                     createdAt: item.createdAt, startsDay: startsDay,
-                                    startsRun: startsDay || previous?.writer != item.writer))
+                                    startsRun: startsDay || previous?.writer != item.writer,
+                                    answersRowAbove: answered != nil && answered == rows.last?.message?.id))
             previous = (item.writer, item.createdAt)
         }
         return rows

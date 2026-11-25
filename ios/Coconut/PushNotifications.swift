@@ -428,12 +428,16 @@ struct NotificationTarget: Equatable, Sendable {
     var bot: String? = nil
     /// The named chat of a team message, or of a group of the messages of one named chat. An older Mac sends none.
     var named: String? = nil
+    /// The notice of a message of an inbox chat (docs/team-log.md, "Inbox chats"): a tap opens that notice. An older Mac
+    /// sends none.
+    var thread: String? = nil
     /// The room of a new notice: a tap opens the notice board of that team.
     var noticeRoom: String? = nil
 
     var conversationRoute: ConversationRoute { ConversationRoute(botId: botId, decisionId: decisionId, messageId: messageId) }
-    /// The chat of a team that the notification opens: a Team chat, a named chat or a direct chat.
-    var chat: TeamChatKey? { team.map { TeamChatKey(room: $0, member: member, chat: named, bot: bot) } }
+    /// The chat of a team that the notification opens: a Team chat, a named chat or a direct chat, or one notice of an
+    /// inbox chat.
+    var chat: TeamChatKey? { team.map { TeamChatKey(room: $0, member: member, chat: named, bot: bot, thread: thread) } }
 
     func destination(pendingDecisionIds: Set<String>, snapshotReady: Bool) -> NotificationDestination? {
         if let noticeRoom { return .notices(noticeRoom) }
@@ -485,6 +489,8 @@ struct NotificationTarget: Equatable, Sendable {
             guard let room else { return nil }
             deviceId = device; botId = ""; taskId = ""; decisionId = nil; messageId = nil; team = room
             self.named = named
+            // A message of an inbox chat names its notice. A value that is not the ID of an entry opens the chat.
+            self.thread = named == nil ? nil : (data["thread"] as? String).flatMap { isEntryId($0) ? $0 : nil }
             return
         }
         if data["kind"] as? String == "direct" {

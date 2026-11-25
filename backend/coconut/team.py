@@ -397,6 +397,8 @@ class Team(TeamSync, TeamSocket, TeamPages, TeamMessages, TeamChats, TeamDirects
             return self.team_unshare(parts[1], parts[3])
         if len(parts) == 3 and parts[0] == 'rooms' and parts[2] == 'messages' and method == 'GET':
             return self.team_messages(parts[1], data)
+        if len(parts) == 3 and parts[0] == 'rooms' and parts[2] == 'threads' and method == 'GET':
+            return self.team_threads(parts[1], data)
         if len(parts) == 3 and parts[0] == 'rooms' and parts[2] == 'messages' and method == 'POST':
             return self.team_send(parts[1], data, repeat)
         if len(parts) == 4 and parts[0] == 'rooms' and parts[2] == 'messages' and method == 'PATCH':

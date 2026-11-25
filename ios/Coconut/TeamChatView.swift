@@ -6,10 +6,21 @@ import SwiftUI
 /// same with `.id(chat)`. A page that "Chat about this page" quotes waits in the store under the key of its chat, so it
 /// shows only in that chat.
 struct TeamChatDestination: View {
+    @Environment(AppStore.self) private var store
     let route: TeamChatRoute
 
+    /// An inbox chat opens as its list of notices (docs/team-log.md, "Inbox chats"). One notice of it opens as a chat.
+    private var inbox: Bool {
+        route.chat.thread == nil && route.chat.chat != nil
+            && store.team?.rooms.first { $0.room == route.chat.room }?.inChat(route.chat.chat)?.isInbox == true
+    }
+
     var body: some View {
-        TeamChatView(chatKey: route.chat).id(route.chat)
+        if inbox {
+            TeamInboxView(chatKey: route.chat).id(route.chat)
+        } else {
+            TeamChatView(chatKey: route.chat).id(route.chat)
+        }
     }
 }
 
@@ -40,12 +51,28 @@ struct TeamChatView: View {
     /// The bots and the people that the person picked with `@` in the draft (see BotMentions).
     @State private var mentions: [SelectedBotMention] = []
     @State private var deleting: TeamMessage?
-    /// New messages pull the chat down while the reader is at its bottom. Only a move of the reader changes it.
-    @State private var follows = true
+    /// New messages pull the chat down while the reader is at its bottom. Only a move of the reader changes it. One
+    /// notice of an inbox chat opens at its top, as a mail does, so it starts without.
+    @State private var follows: Bool
     /// The chat shows its newest message. The read position moves only then.
     @State private var atBottom = true
     @State private var userScrolling = false
     @State private var isVisible = false
+
+    init(chatKey: TeamChatKey) {
+        self.chatKey = chatKey
+        _follows = State(initialValue: chatKey.thread == nil)
+    }
+
+    /// The chat shows one notice of an inbox chat (docs/team-log.md, "Inbox chats"): it opens at the top of the notice,
+    /// and it reads the notice as soon as it shows, as a mail does.
+    private var isNotice: Bool { chatKey.thread != nil }
+    /// The words of the notice for the title: from its first message.
+    private var noticeTitle: String? {
+        guard isNotice else { return nil }
+        let first = chat.messages.first { $0.id == chatKey.thread } ?? chat.messages.first
+        return first.map { TeamNoticeText.split($0.text).title }
+    }
     /// True while the person can see the chat: it is on screen, the app is in front, and on a Mac its window too. A Mac
     /// scene stays active behind another app, so the Mac asks whether the window appears active.
     private var seesChat: Bool {
@@ -186,7 +213,8 @@ struct TeamChatView: View {
                                            editedText: row.message.flatMap { chat.editing[$0.id] },
                                            canWrite: writable,
                                            canReact: TeamReactions.offered(on: row, in: chatKey, canWrite: writable),
-                                           actions: actions(proxy: proxy))
+                                           actions: actions(proxy: proxy),
+                                           hidesQuote: isNotice && row.answersRowAbove)
                         }
                         .pinnedDayRow(pinnedDay, id: row.id, date: date, startsDay: row.startsDay)
                         // Keep full text height when the list resizes or scrolls to a new message.
@@ -219,8 +247,8 @@ struct TeamChatView: View {
             .environment(\.defaultMinListRowHeight, 1)
             .accessibilityIdentifier("team-chat-transcript")
             .modifier(ConversationTimestamps())
-            .defaultScrollAnchor(.bottom, for: .initialOffset)
-            .defaultScrollAnchor(.bottom, for: .alignment)
+            .defaultScrollAnchor(isNotice ? .top : .bottom, for: .initialOffset)
+            .defaultScrollAnchor(isNotice ? .top : .bottom, for: .alignment)
             .scrollDismissesKeyboard(.interactively)
             .contentShape(Rectangle())
             .simultaneousGesture(TapGesture().onEnded { composerFocused = false })
@@ -277,10 +305,11 @@ struct TeamChatView: View {
                 proxy.scrollTo(Self.bottom, anchor: .bottom)
             }
             .onChange(of: readKey, initial: true) { _, _ in
+                // A notice reads as soon as it shows, wherever the person scrolls in it.
                 guard filter.isAll,
                       let first = TeamReadPosition.toPost(newest: chat.newestFirst, posted: store.teamReadMark(chatKey),
                                                            visible: seesChat,
-                                                           atBottom: atBottom) else { return }
+                                                           atBottom: atBottom || isNotice) else { return }
                 Task { await store.markTeamRead(chatKey, first: first) }
             }
         }
@@ -363,14 +392,14 @@ struct TeamChatView: View {
                 } else {
                     // The title of the team opens its Team screen, as the title of a bot opens its settings.
                     NavigationLink(value: TeamScreenRoute(roomId: room.room)) {
-                        TeamTitle(room: room, faceSize: 28)
+                        TeamTitle(room: room, faceSize: 28, notice: noticeTitle)
                             .frame(maxWidth: nameWidth + 36, alignment: .leading)
                             .fixedSize(horizontal: true, vertical: false)
                         .padding(.leading, 4).padding(.trailing, BoardStyle.Space.m)
                         .frame(minHeight: 44).contentShape(Capsule())
                     }
                     .buttonStyle(.plain)
-                    .accessibilityLabel(TeamTitle.spoken(room))
+                    .accessibilityLabel(TeamTitle.spoken(room, notice: noticeTitle))
                     .accessibilityIdentifier("team-chat-title")
                     .simultaneousGesture(TapGesture().onEnded { composerFocused = false })
                 }
@@ -400,7 +429,7 @@ struct TeamChatView: View {
                     .accessibilityIdentifier("direct-chat-title")
             } else {
                 Button { showTeamScreen?(room.room) } label: {
-                    TeamTitle(room: room, faceSize: 24)
+                    TeamTitle(room: room, faceSize: 24, notice: noticeTitle)
                     .padding(.leading, BoardStyle.Space.xs).padding(.trailing, 12)
                     .frame(height: Self.titlePillHeight)
                     .modifier(FloatingCapsule())
@@ -409,7 +438,7 @@ struct TeamChatView: View {
                 .buttonStyle(.plain)
                 .padding(.top, 8)
                 .help("Team settings")
-                .accessibilityLabel(TeamTitle.spoken(room))
+                .accessibilityLabel(TeamTitle.spoken(room, notice: noticeTitle))
                 .accessibilityIdentifier("team-chat-title")
             }
         }
@@ -497,7 +526,8 @@ struct TeamChatView: View {
                 .modifier(ComposerBackdrop())
                 .accessibilityIdentifier("team-chat-closed")
         } else {
-            TeamChatComposer(placeholder: TeamDirectText.message(peer(room)?.name ?? room.title),
+            // A message in one notice answers the notice, as a reply to a mail does.
+            TeamChatComposer(placeholder: isNotice ? "Reply" : TeamDirectText.message(peer(room)?.name ?? room.title),
                              targets: mentionTargets(room), peer: peer(room)?.name, state: $composer,
                              mentions: $mentions, focused: $composerFocused,
                              enabled: canWrite(room), previews: chat.offersPreviews,
@@ -686,6 +716,9 @@ struct TeamMessageRow: View {
     /// The chat offers reactions on this message (TeamReactions.offered).
     let canReact: Bool
     let actions: TeamMessageActions
+    /// The bubble shows no quote of the answered message: in one notice of an inbox chat, the message right above is the
+    /// one that it answers (TeamChatRow.answersRowAbove).
+    var hidesQuote = false
     @State private var held = false
     @State private var showsReactions = false
     /// The file whose held view shows, on an iPhone.
@@ -919,7 +952,7 @@ struct TeamMessageRow: View {
 
     private var bubble: some View {
         BubbleStack(spacing: 4) {
-            switch TeamRowQuote(message: message, pending: pending) {
+            switch hidesQuote ? nil : TeamRowQuote(message: message, pending: pending) {
             case .page(let page): pageQuote(page)
             case .reply(let id):
                 let reference = quote(of: id)
@@ -1426,9 +1459,13 @@ struct PersonFace: View {
 struct TeamTitle: View {
     let room: TeamRoom
     let faceSize: CGFloat
+    /// The title of one notice of an inbox chat (docs/team-log.md, "Inbox chats"). The chat and the team go under it.
+    var notice: String? = nil
 
-    /// What VoiceOver reads for the title: "Example Team team, 3 people", or "Design, Example Team" for a named chat.
-    static func spoken(_ room: TeamRoom) -> String {
+    /// What VoiceOver reads for the title: "Example Team team, 3 people", or "Design, Example Team" for a named chat. One
+    /// notice reads its title first: "Three chargebacks in an hour on one seller, Notices, Example Team".
+    static func spoken(_ room: TeamRoom, notice: String? = nil) -> String {
+        if let notice, let chat = room.shownChat { return notice + ", " + chat.name + ", " + room.name }
         if let chat = room.shownChat { return chat.name + ", " + room.name }
         return [room.name + " team", room.whoLine].compactMap { $0 }.joined(separator: ", ")
     }
@@ -1437,8 +1474,11 @@ struct TeamTitle: View {
         HStack(spacing: 8) {
             TeamFace(room: room, size: faceSize)
             VStack(alignment: .leading, spacing: 0) {
-                Text(room.title).font(.body.weight(.semibold)).lineLimit(1).truncationMode(.tail)
-                if room.shownChat != nil {
+                Text(notice ?? room.title).font(.body.weight(.semibold)).lineLimit(1).truncationMode(.tail)
+                if notice != nil {
+                    Text(room.chatAndTeam).font(.footnote).foregroundStyle(.secondary).lineLimit(1)
+                        .accessibilityIdentifier("team-chat-who")
+                } else if room.shownChat != nil {
                     Text(room.name).font(.footnote).foregroundStyle(.secondary).lineLimit(1)
                         .accessibilityIdentifier("team-chat-who")
                 } else if let line = room.whoLine {

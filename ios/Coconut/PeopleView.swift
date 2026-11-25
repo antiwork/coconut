@@ -191,6 +191,7 @@ extension AppStore {
                                                        createdAt: ago(75))),
         ]
         team = rooms
+        applyInboxPreview(room: "gumroad", now: now)
     }
 }
 #endif

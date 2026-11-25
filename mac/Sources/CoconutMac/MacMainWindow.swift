@@ -329,11 +329,19 @@ struct MacMainWindow: View {
             // the routines in the details repeats the bot name.
             .toolbar(removing: .title)
         case .team(let chat):
-            // A team has no details column, so the chat takes the whole detail column and has no control for one.
+            // A team has no details column, so the chat takes the whole detail column and has no control for one. An
+            // inbox chat shows its notices, and a notice opens over them as a chat (docs/team-log.md, "Inbox chats").
             NavigationStack(path: $chatPath) {
-                TeamChatView(chatKey: chat)
-                    .id(chat)
-                    .modifier(InAppDestinations())
+                Group {
+                    if store.team?.rooms.first(where: { $0.room == chat.room })?.inChat(chat.chat)?.isInbox == true {
+                        TeamInboxView(chatKey: chat)
+                    } else {
+                        TeamChatView(chatKey: chat)
+                    }
+                }
+                .id(chat)
+                .modifier(InAppDestinations())
+                .navigationDestination(for: TeamChatRoute.self) { TeamChatView(chatKey: $0.chat).id($0.chat) }
             }
             .stackRoutes { route in chatPath.append(route) }
             .ignoresSafeArea(.container, edges: .top)

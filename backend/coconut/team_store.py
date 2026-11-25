@@ -22,13 +22,17 @@ Each table has the room ID in its key, because a Mac can be in more than one roo
 - `team_messages`: a view of `team_entries` for the chats: one row for each valid `message` entry, in the order of
   `first`. `chat` is the entry ID of the named chat of the message, or null for the Team chat. `preview` is the link
   preview of the message as JSON, or null. `alert_type` and `alert_level` are the alert of a message of a bot
-  (team_alerts.py), or both null.
+  (team_alerts.py), or both null. `thread` is the entry ID of the first message of its thread (docs/team-log.md,
+  "Inbox chats"): the message itself, or the thread of the message that it answers or follows (_thread_of).
 - `team_chats`: a view of `team_entries`: the valid `chat` entries of the admin, the named chats of the room.
 - `team_names`: the last name that the store showed for each member and each bot. It stays after a `delete` entry,
   so a message of a member that left keeps a name, and a message of a bot can still name a valid `bot` entry.
 - `team_reads`: the read position of this Mac in the Team chat of each room: the `first` of the newest message that
   the person read.
 - `team_chat_reads`: the read position of this Mac in each named chat that the person read.
+- `team_thread_reads`: the read position of this Mac in each thread of a named chat that the person opened in an inbox
+  chat (docs/team-log.md, "Inbox chats"). A message is read when it is at or before the position of its chat or of its
+  thread. A row at or before the position of its chat says nothing more, so it goes.
 - `team_chat_pins`: the chats that the person of this Mac pinned: the Team chat (an empty `chat`) and each named
   chat. The choice is the person's, so it never goes into the log. The row goes with its chat.
 - `team_direct_pins`: the direct chats that the person of this Mac pinned: the member ID of a chat with a person,
@@ -153,6 +157,8 @@ CREATE TABLE IF NOT EXISTS team_chats (room TEXT NOT NULL, entry TEXT NOT NULL, 
     name TEXT NOT NULL, created_at TEXT NOT NULL, PRIMARY KEY (room, entry));
 CREATE TABLE IF NOT EXISTS team_chat_reads (room TEXT NOT NULL, chat TEXT NOT NULL, first INTEGER NOT NULL,
     PRIMARY KEY (room, chat));
+CREATE TABLE IF NOT EXISTS team_thread_reads (room TEXT NOT NULL, chat TEXT NOT NULL, thread TEXT NOT NULL,
+    first INTEGER NOT NULL, PRIMARY KEY (room, chat, thread));
 CREATE TABLE IF NOT EXISTS team_chat_mutes (room TEXT NOT NULL, chat TEXT NOT NULL, PRIMARY KEY (room, chat));
 CREATE TABLE IF NOT EXISTS team_chat_pins (room TEXT NOT NULL, chat TEXT NOT NULL, PRIMARY KEY (room, chat));
 CREATE TABLE IF NOT EXISTS team_direct_pins (room TEXT NOT NULL, chat TEXT NOT NULL, PRIMARY KEY (room, chat));
@@ -179,7 +185,8 @@ TABLES = ('team_rooms', 'team_entries', 'team_members', 'team_pending', 'team_sh
           'team_page_entries', 'team_bots', 'team_pages', 'team_messages', 'team_names', 'team_reads', 'team_triggers',
           'team_directs', 'team_direct_reads', 'team_bot_direct_reads', 'team_direct_waits', 'team_removed',
           'team_invites', 'team_agent_mail',
-          'team_erased', 'team_chats', 'team_chat_reads', 'team_chat_mutes', 'team_chat_pins', 'team_direct_pins',
+          'team_erased', 'team_chats', 'team_chat_reads', 'team_thread_reads', 'team_chat_mutes', 'team_chat_pins',
+          'team_direct_pins',
           'team_reactions', 'team_file_pieces', 'team_message_files',
           'team_file_drafts')
 # The table of the reactions and its index for the views. The store makes both in `migrate`, so a store of an older
@@ -225,7 +232,8 @@ LIBRARY_BOT = ('room', 'entry', 'name', 'avatar', 'color', 'team', 'member', 'me
 TEAM_BOT = ('entry', 'member', 'name', 'avatar', 'color', 'open', 'direct')
 # What the chat of the phone gets for a message. TeamStore.messages reads these rows.
 MESSAGE_FIELDS = ('entry', 'first', 'member', 'member_name', 'bot', 'bot_name', 'text', 'reply_to', 'mentions',
-                  'created_at', 'updated_at', 'edited', 'chat', 'preview', 'files', 'alert_type', 'alert_level')
+                  'created_at', 'updated_at', 'edited', 'chat', 'preview', 'files', 'alert_type', 'alert_level',
+                  'thread')
 # A message shows only when its `bot` is null or names a `bot` entry of the same member that the store showed once.
 # The bot entry can come after the message, because the relay keeps only its newest write, so the check runs at read
 # time. team_names keeps the bot after a `delete`, so the history of a bot that the team no longer has stays. The same
@@ -240,6 +248,11 @@ NAMES_MEMBER = '''EXISTS (SELECT 1 FROM json_each(m.mentions) j JOIN team_names 
 # A message counts as unread for this Mac's person when another member wrote it, or a bot wrote it. The value is the
 # member ID of this Mac.
 UNREAD_MESSAGE = '(m.member!=? OR m.bot IS NOT NULL)'
+# A message counts as unread only after the read position of its thread too, which the person moves in an inbox chat
+# (docs/team-log.md, "Inbox chats"). A chat without such a position has no row in team_thread_reads, and the Team chat
+# never has one, so this term changes nothing there.
+THREAD_UNREAD = '''m.first>COALESCE((SELECT t.first FROM team_thread_reads t WHERE t.room=m.room AND t.chat=m.chat
+    AND t.thread=m.thread), 0)'''
 # The event of each transaction that changes the chat of a room: a message, an edit, a removal, or the read position.
 # GET /v1/updates then has `team_messages_changed`.
 MESSAGES_EVENT = 'team_messages.updated'
@@ -321,9 +334,17 @@ MAX_UNREAD = 99
 MAX_MENTION_ROWS = 1000
 # The statement of TeamStore.mention_first. The values are the room, the chat, the read position, and the member ID of
 # this Mac two times.
-MENTION_SQL = f'''SELECT MAX(m.first) FROM (SELECT room, first, member, bot, mentions, chat FROM team_messages
+MENTION_SQL = f'''SELECT MAX(m.first) FROM (SELECT room, first, member, bot, mentions, chat, thread FROM team_messages
     WHERE room=? AND chat IS ? AND first>? ORDER BY first DESC LIMIT {MAX_MENTION_ROWS}) m
-    WHERE {UNREAD_MESSAGE} AND {SHOWN_MESSAGE} AND {NAMES_MEMBER}'''
+    WHERE {UNREAD_MESSAGE} AND {SHOWN_MESSAGE} AND {NAMES_MEMBER} AND {THREAD_UNREAD}'''
+# A later part of the answer of an agent follows the part before it this closely: the Mac of the agent writes the parts
+# of one segment one after the other. A Mac before the field `thread` wrote such a part with no link to its thread
+# (_thread_of).
+PART_SECONDS = 2
+# The threads of an inbox chat (TeamStore.threads): the read threads of one page, and the most unread threads of a list.
+THREAD_PAGE = 50
+MAX_THREAD_PAGE = 100
+MAX_UNREAD_THREADS = 200
 # A message starts a turn of a bot, or notifies the phone of a person, only while it is younger than this. An older
 # message is history, for example the log that a Mac reads after it joins.
 TRIGGER_SECONDS = 3600
@@ -512,6 +533,24 @@ def entry_id(value) -> bool:
     return isinstance(value, str) and HEX32.fullmatch(value) is not None
 
 
+def follows_part(previous: tuple | None, member: str, bot: str | None, alert: bool, created_at: str) -> bool:
+    """True when a message of an agent is a later part of the answer right before it in its chat, from a Mac before the
+    field `thread` (docs/team-log.md, "Inbox chats"). `previous` is the message before it in the chat as (entry, member,
+    bot, thread, created_at): of the same agent, in a thread that it did not start, and at most PART_SECONDS older. An
+    alert is a report of its own, and so is a message of a person."""
+    if previous is None or bot is None or alert:
+        return False
+    entry, writer, agent, thread, before = previous
+    if (writer, agent) != (member, bot) or not thread or thread == entry:
+        return False
+    try:
+        gap = (datetime.fromisoformat(created_at.replace('Z', '+00:00'))
+               - datetime.fromisoformat(before.replace('Z', '+00:00'))).total_seconds()
+    except ValueError:
+        return False
+    return 0 <= gap <= PART_SECONDS
+
+
 def preview_fields(value, text: str) -> dict | None:
     """The link preview of a message (docs/team-log.md, "Link previews"), or None when it is absent or does not fit.
 
@@ -648,7 +687,9 @@ def message_fields(fields: dict) -> dict | None:
     an absent field, so a later writer can write either. Fields that this version does not know stay in the payload,
     and nothing reads them. `preview` is the link preview of preview_fields, or None. `files` are the items of
     files_fields, or an empty list for a value that does not fit. `alert` is the alert of a message of a bot
-    (team_alerts.alert_fields), or None: a person writes no alert.
+    (team_alerts.alert_fields), or None: a person writes no alert. `thread` names a message whose thread the message
+    joins without a quote (docs/team-log.md, "Inbox chats"): a later part of the answer of an agent. A value that is not
+    an entry ID is left out, and the message stays.
     """
     text, reply_to, mentions, bot, chat = (fields.get(name) for name in ('text', 'reply_to', 'mentions', 'bot', 'chat'))
     files = files_fields(fields.get('files')) or []
@@ -659,9 +700,11 @@ def message_fields(fields: dict) -> dict | None:
     mentions = [] if mentions is None else mentions
     if not isinstance(mentions, list) or len(mentions) > MAX_MENTIONS or not all(map(entry_id, mentions)):
         return None
+    thread = fields.get('thread')
     return dict(text=text, reply_to=reply_to, mentions=list(dict.fromkeys(mentions)), bot=bot, chat=chat,
                 preview=preview_fields(fields.get('preview'), text), files=files,
-                alert=alert_fields(fields.get('alert')) if bot is not None else None)
+                alert=alert_fields(fields.get('alert')) if bot is not None else None,
+                thread=thread if entry_id(thread) else None)
 
 
 def notice_time(value) -> str | None:
@@ -1083,6 +1126,21 @@ class TeamStore:
             (room, chat, alert_type, first) WHERE alert_type IS NOT NULL''')
         self.db.execute('''CREATE INDEX IF NOT EXISTS team_messages_alert_level ON team_messages
             (room, chat, alert_level, first) WHERE alert_level IS NOT NULL''')
+        if 'thread' not in {row[1] for row in self.db.execute('PRAGMA table_info(team_messages)')}:
+            # The new column and the pass are one step, as for the column `chat` above. They come before the pass of
+            # the files, which writes each row of a message with all its columns (_show_message).
+            self.db.execute('SAVEPOINT team_thread_column')
+            try:
+                self.db.execute('ALTER TABLE team_messages ADD COLUMN thread TEXT')
+                self._read_threads_again()
+            except BaseException:
+                self.db.execute('ROLLBACK TO team_thread_column')
+                self.db.execute('RELEASE team_thread_column')
+                raise
+            self.db.execute('RELEASE team_thread_column')
+        # The messages of one thread in the order of `first`: a page of a thread, its newest message, and the threads of
+        # an inbox chat by their newest message.
+        self.db.execute('CREATE INDEX IF NOT EXISTS team_messages_thread ON team_messages (room, chat, thread, first)')
         if 'files' not in {row[1] for row in self.db.execute('PRAGMA table_info(team_messages)')}:
             # The new column and the pass are one step, as for the column `chat` above.
             self.db.execute('SAVEPOINT team_files_column')
@@ -1252,6 +1310,29 @@ class TeamStore:
             if message is not None and message['alert'] is not None:
                 self.db.execute('UPDATE team_messages SET alert_type=?, alert_level=? WHERE room=? AND entry=?',
                                 (*stored_alert(message['alert']), room, entry))
+
+    def _read_threads_again(self) -> None:
+        """Give each message of a store of an older version its thread, one time (docs/team-log.md, "Inbox chats"). The
+        pass walks the messages of each room in the order of `first` with the rules of _thread_of. No Mac of that
+        version wrote the field `thread`, so the pass reads the columns of the rows and no payload. It changes no read
+        position and no event."""
+        rows = self.db.execute('''SELECT room, chat, entry, member, bot, reply_to, alert_type, created_at
+            FROM team_messages ORDER BY room, first''').fetchall()
+        threads: dict[tuple[str, str], tuple[str, str | None]] = {}
+        previous: dict[tuple[str, str | None], tuple] = {}
+        for room, chat, entry, member, bot, reply_to, alert_type, created_at in rows:
+            answered = threads.get((room, reply_to)) if reply_to else None
+            before = previous.get((room, chat))
+            if answered is not None and answered[1] == chat:
+                thread = answered[0]
+            elif before is not None and follows_part(before, member, bot, alert_type is not None, created_at):
+                thread = before[3]
+            else:
+                thread = entry
+            threads[(room, entry)] = (thread, chat)
+            previous[(room, chat)] = (entry, member, bot, thread, created_at)
+        self.db.executemany('UPDATE team_messages SET thread=? WHERE room=? AND entry=?',
+                            [(thread, room, entry) for (room, entry), (thread, _) in threads.items()])
 
     def _read_files_again(self) -> None:
         """Read the files of a store of an older version, one time (docs/team-log.md, "Files"). That version kept each
@@ -1602,6 +1683,7 @@ class TeamStore:
             for (message,) in named:
                 self._name_files(room, message, [])
             self.db.execute('DELETE FROM team_chat_reads WHERE room=? AND chat=?', (room, entry['id']))
+            self.db.execute('DELETE FROM team_thread_reads WHERE room=? AND chat=?', (room, entry['id']))
             # The choice of the person goes with the chat. A chat that shows again starts as not muted.
             self.db.execute('DELETE FROM team_chat_mutes WHERE room=? AND chat=?', (room, entry['id']))
             self.db.execute('DELETE FROM team_chat_pins WHERE room=? AND chat=?', (room, entry['id']))
@@ -1921,20 +2003,50 @@ class TeamStore:
             removed = self.db.execute('DELETE FROM team_messages WHERE room=? AND entry=?', (room, entry['id']))
             self._name_files(room, entry['id'], [])
             return removed.rowcount > 0
+        # A message keeps the thread that it got when it first showed, also through an edit.
+        shown = self.db.execute('SELECT thread FROM team_messages WHERE room=? AND entry=?', (room, entry['id'])).fetchone()
+        thread = shown[0] if shown and shown[0] else self._thread_of(room, dict(entry, at=at), message)
         self.db.execute('''INSERT INTO team_messages (room, entry, first, member, bot, text, reply_to, mentions,
-            created_at, updated_at, edited, chat, preview, files, alert_type, alert_level)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            created_at, updated_at, edited, chat, preview, files, alert_type, alert_level, thread)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT (room, entry) DO UPDATE SET first=excluded.first, bot=excluded.bot, text=excluded.text,
             reply_to=excluded.reply_to, mentions=excluded.mentions, updated_at=excluded.updated_at,
             edited=excluded.edited, chat=excluded.chat, preview=excluded.preview, files=excluded.files,
-            alert_type=excluded.alert_type, alert_level=excluded.alert_level''',
+            alert_type=excluded.alert_type, alert_level=excluded.alert_level, thread=excluded.thread''',
                         (room, entry['id'], entry['first'], entry['member'], message['bot'], message['text'],
                          message['reply_to'], json.dumps(message['mentions']), at, at, int(rev > 1), message['chat'],
                          stored_preview(message.get('preview')), stored_files(message['files']),
-                         *stored_alert(message.get('alert'))))
+                         *stored_alert(message.get('alert')), thread))
+        # The relay keeps only the newest write of an entry, so an edited message can come after its answers. They
+        # started threads of their own then, and now join its thread.
+        if shown is None and rev > 1:
+            for (answer,) in self.db.execute('''SELECT entry FROM team_messages WHERE room=? AND chat IS ? AND reply_to=?
+                    AND thread=entry''', (room, message['chat'], entry['id'])).fetchall():
+                self.db.execute('UPDATE team_messages SET thread=? WHERE room=? AND chat IS ? AND thread=?',
+                                (thread, room, message['chat'], answer))
         self._name_files(room, entry['id'], [(entry['member'], item['id'], item['size'], item['hash'])
                                              for item in message['files']])
         return True
+
+    def _thread_of(self, room: str, entry: dict, message: dict) -> str:
+        """The thread of a message that starts to show (docs/team-log.md, "Inbox chats"): the thread of the message that
+        its field `thread` names, else of the message that it answers (`reply_to`), when that message shows in the same
+        chat. A later part of the answer of an agent from a Mac before `thread` names neither: it joins the thread of
+        the part right before it (follows_part). Each other message starts a thread of its own. `entry` has the time of
+        the relay as text in `at`."""
+        chat = message['chat']
+        for named in (message.get('thread'), message['reply_to']):
+            if named:
+                row = self.db.execute('SELECT thread FROM team_messages WHERE room=? AND entry=? AND chat IS ?',
+                                      (room, named, chat)).fetchone()
+                if row is not None:
+                    return row[0] or named
+        before = self.db.execute('''SELECT entry, member, bot, thread, created_at FROM team_messages
+            WHERE room=? AND chat IS ? AND first<? ORDER BY first DESC LIMIT 1''', (room, chat, entry['first'])).fetchone()
+        if before is not None and follows_part(tuple(before), entry['member'], message['bot'],
+                                               message.get('alert') is not None, entry['at']):
+            return before[3]
+        return entry['id']
 
     # Files (docs/team-log.md, "Files")
 
@@ -2642,19 +2754,23 @@ class TeamStore:
     # The Team chat
 
     def messages(self, room: str, before: int | None = None, limit: int = 50, chat: str | None = None,
-                 alert_type: str | None = None, alert_level: str | None = None) -> list[dict]:
+                 alert_type: str | None = None, alert_level: str | None = None,
+                 thread: str | None = None) -> list[dict]:
         """The shown messages of one chat of a room (None for the Team chat) before the `first` of `before`, newest
-        first, at most `limit`. With `alert_type` or `alert_level`, only the alerts of that type and that level."""
-        return self._rows(MESSAGE_FIELDS, *self._page(room, chat, before, limit, alert_type, alert_level))
+        first, at most `limit`. With `alert_type` or `alert_level`, only the alerts of that type and that level. With
+        `thread`, only the messages of that thread (docs/team-log.md, "Inbox chats")."""
+        return self._rows(MESSAGE_FIELDS, *self._page(room, chat, before, limit, alert_type, alert_level, thread))
 
     def _page(self, room: str, chat: str | None, before: int | None, limit: int, alert_type: str | None = None,
-              alert_level: str | None = None) -> tuple[str, tuple]:
+              alert_level: str | None = None, thread: str | None = None) -> tuple[str, tuple]:
         """The statement and the values of one page. A page with `before` has `m.first<?` as a plain term, so the
         index team_messages_chat starts its search at `before`, and a page reads about `limit` rows in any chat. A
         term such as `(? IS NULL OR m.first<?)` would make SQLite walk the index from the newest row. A page of one
-        type or one level of alert has that term as a plain term too, for the indexes of the alerts."""
+        type or one level of alert has that term as a plain term too, for the indexes of the alerts, and so does a page
+        of one thread, for the index team_messages_thread."""
         terms, values = ['m.chat IS ?'], [room, chat]
-        for term, value in (('m.alert_type=?', alert_type), ('m.alert_level=?', alert_level), ('m.first<?', before)):
+        for term, value in (('m.alert_type=?', alert_type), ('m.alert_level=?', alert_level), ('m.thread=?', thread),
+                            ('m.first<?', before)):
             if value is not None:
                 terms.append(term)
                 values.append(value)
@@ -2687,7 +2803,7 @@ class TeamStore:
         # The name of a member or a bot is the last one that the store showed, also after a `delete` (team_names).
         return f'''SELECT m.entry, m.first, m.member, n.name, m.bot, k.name, m.text,
             m.reply_to, m.mentions, m.created_at, m.updated_at, m.edited, m.chat, m.preview, m.files, m.alert_type,
-            m.alert_level FROM team_messages m
+            m.alert_level, m.thread FROM team_messages m
             LEFT JOIN team_names n ON n.room=m.room AND n.member=m.member AND n.kind='member'
             LEFT JOIN team_names k ON k.room=m.room AND k.entry=m.bot AND k.kind='bot'
             WHERE m.room=? AND {SHOWN_MESSAGE} AND {where}'''
@@ -2729,15 +2845,114 @@ class TeamStore:
         else:
             self.db.execute('''INSERT INTO team_chat_reads (room, chat, first) VALUES (?, ?, ?)
                 ON CONFLICT (room, chat) DO UPDATE SET first=excluded.first''', (room, chat, position))
+            # The position of a thread at or before the new position of its chat says nothing more.
+            self.db.execute('DELETE FROM team_thread_reads WHERE room=? AND chat=? AND first<=?', (room, chat, position))
         return position
 
+    def inbox(self, room: str, chat: str | None) -> bool:
+        """True for an inbox chat (docs/team-log.md, "Inbox chats"): a named chat that agents deliver alerts to. Each
+        thread of it is a notice that the person opens, and reads, on its own. The index team_messages_alert_type finds
+        the first alert, so the check reads at most one row."""
+        return chat is not None and self.db.execute('''SELECT 1 FROM team_messages WHERE room=? AND chat=?
+            AND alert_type IS NOT NULL LIMIT 1''', (room, chat)).fetchone() is not None
+
+    def thread_read_position(self, room: str, chat: str, thread: str) -> int:
+        """The read position of one thread of a named chat: the later of the position of the chat and of the thread."""
+        row = self.db.execute('SELECT first FROM team_thread_reads WHERE room=? AND chat=? AND thread=?',
+                              (room, chat, thread)).fetchone()
+        return max(self.read_position(room, chat), row[0] if row else 0)
+
+    def mark_thread_read(self, room: str, chat: str, thread: str, first: int, member: str) -> int | None:
+        """Move the read position of one thread of a named chat to `first`, but never back and never past the newest
+        message of that thread. The new position, or None when it stays.
+
+        When this read leaves no unread message between the position of the chat and a later message, the position of
+        the chat moves up to the newest message before the oldest unread one (or to the newest message), and the rows of
+        the threads at or before it go (mark_read). So the store keeps a row only for a thread that the person read
+        ahead of an older unread one, and the count of the unread threads reads only the rows after the oldest one."""
+        newest = self.db.execute('SELECT MAX(first) FROM team_messages WHERE room=? AND chat=? AND thread=?',
+                                 (room, chat, thread)).fetchone()[0]
+        if newest is None:
+            return None
+        position = min(first, newest)
+        if position <= self.thread_read_position(room, chat, thread):
+            return None
+        self.db.execute('''INSERT INTO team_thread_reads (room, chat, thread, first) VALUES (?, ?, ?, ?)
+            ON CONFLICT (room, chat, thread) DO UPDATE SET first=excluded.first''', (room, chat, thread, position))
+        oldest = self.db.execute(f'''SELECT MIN(m.first) FROM team_messages m WHERE m.room=? AND m.chat=? AND m.first>?
+            AND {UNREAD_MESSAGE} AND {SHOWN_MESSAGE} AND {THREAD_UNREAD}''',
+                                 (room, chat, self.read_position(room, chat), member)).fetchone()[0]
+        if oldest is None:
+            read = self.db.execute('SELECT MAX(first) FROM team_messages WHERE room=? AND chat=?',
+                                   (room, chat)).fetchone()[0]
+        else:
+            read = self.db.execute('SELECT MAX(first) FROM team_messages WHERE room=? AND chat=? AND first<?',
+                                   (room, chat, oldest)).fetchone()[0]
+        if read:
+            self.mark_read(room, read, chat)
+        return position
+
+    def message_unread(self, room: str, message: dict) -> bool:
+        """True while the person has not read a shown message: it is after the read position of its chat and of its
+        thread. A push of the message checks it before it goes (push.py)."""
+        if message['first'] <= self.read_position(room, message['chat']):
+            return False
+        if message['chat'] is None or not message.get('thread'):
+            return True
+        row = self.db.execute('SELECT first FROM team_thread_reads WHERE room=? AND chat=? AND thread=?',
+                              (room, message['chat'], message['thread'])).fetchone()
+        return row is None or message['first'] > row[0]
+
+    def threads(self, room: str, chat: str, member: str, before: int | None = None,
+                limit: int = THREAD_PAGE) -> tuple[list[dict], int | None]:
+        """The threads of an inbox chat (docs/team-log.md, "Inbox chats"), each with `thread`, `count` (its shown
+        messages), `unread` (its unread messages, by the rule of `unread`), `root` (its first shown message) and
+        `latest` (its newest one). Without `before`: each unread thread, at most MAX_UNREAD_THREADS, the newest first,
+        then the `limit` read threads with the newest messages. With `before`: the next `limit` read threads whose newest
+        message is before `before`. The second value is the `before` of the next page, or None after the oldest thread.
+        A thread is in the order of its newest message, so an answer brings it up, as a thread of mail."""
+        unread = dict(self.db.execute(f'''SELECT m.thread, COUNT(*) FROM team_messages m WHERE m.room=? AND m.chat=?
+            AND m.first>? AND {UNREAD_MESSAGE} AND {SHOWN_MESSAGE} AND {THREAD_UNREAD}
+            GROUP BY m.thread ORDER BY MAX(m.first) DESC LIMIT {MAX_UNREAD_THREADS}''',
+                                      (room, chat, self.read_position(room, chat), member)).fetchall())
+        page = self.db.execute(f'''SELECT m.thread, MAX(m.first) AS last FROM team_messages m WHERE m.room=? AND m.chat=?
+            AND {SHOWN_MESSAGE} AND m.thread NOT IN (SELECT value FROM json_each(?)) GROUP BY m.thread
+            HAVING last<? ORDER BY last DESC LIMIT ?''',
+                               (room, chat, json.dumps(list(unread)), before or 1 << 62, limit + 1)).fetchall()
+        more = len(page) > limit
+        page = page[:limit]
+        chosen = (list(unread) if before is None else []) + [thread for thread, _ in page]
+        stats = {thread: (count, low, high) for thread, count, low, high in self.db.execute(f'''SELECT m.thread,
+            COUNT(*), MIN(m.first), MAX(m.first) FROM team_messages m WHERE m.room=? AND m.chat=?
+            AND m.thread IN (SELECT value FROM json_each(?)) AND {SHOWN_MESSAGE} GROUP BY m.thread''',
+                                                                                    (room, chat, json.dumps(chosen)))}
+        firsts = sorted({first for count, low, high in stats.values() for first in (low, high)})
+        rows = {row['first']: row for row in self._messages('m.chat=? AND m.first IN (SELECT value FROM json_each(?))',
+                                                             (room, chat, json.dumps(firsts)))}
+        threads = []
+        for thread in chosen:
+            if thread not in stats or stats[thread][1] not in rows or stats[thread][2] not in rows:
+                continue
+            count, low, high = stats[thread]
+            threads.append(dict(thread=thread, count=count, unread=unread.get(thread, 0), root=rows[low],
+                                latest=rows[high]))
+        return threads, (page[-1][1] if more and page else None)
+
+    def thread_count(self, room: str, chat: str) -> int:
+        """How many threads of one named chat show: the notices of an inbox chat, read and unread. The index
+        team_messages_thread gives each thread once."""
+        return self.db.execute(f'''SELECT COUNT(DISTINCT m.thread) FROM team_messages m WHERE m.room=? AND m.chat=?
+            AND {SHOWN_MESSAGE}''', (room, chat)).fetchone()[0]
+
     def unread(self, room: str, member: str, chat: str | None = None) -> int:
-        """How many shown messages of one chat are after its read position, up to MAX_UNREAD. Only a message of this
-        Mac's person counts as read: the person did not write the reply of a bot of this Mac. The LIMIT keeps the count
-        to at most MAX_UNREAD rows of the index."""
-        return self.db.execute(f'''SELECT COUNT(*) FROM (SELECT 1 FROM team_messages m WHERE m.room=? AND m.chat IS ?
-            AND m.first>? AND {UNREAD_MESSAGE} AND {SHOWN_MESSAGE} LIMIT {MAX_UNREAD})''',
-                               (room, chat, self.read_position(room, chat), member)).fetchone()[0]
+        """How many shown messages of one chat are unread, up to MAX_UNREAD: after the read position of the chat and of
+        their thread. Only a message of this Mac's person counts as read: the person did not write the reply of a bot of
+        this Mac. An inbox chat counts its unread threads instead, the notices that wait for the person
+        (docs/team-log.md, "Inbox chats"). The LIMIT keeps the count to at most MAX_UNREAD rows of the index."""
+        counted = 'DISTINCT m.thread' if self.inbox(room, chat) else '1'
+        return self.db.execute(f'''SELECT COUNT(*) FROM (SELECT {counted} FROM team_messages m WHERE m.room=?
+            AND m.chat IS ? AND m.first>? AND {UNREAD_MESSAGE} AND {SHOWN_MESSAGE} AND {THREAD_UNREAD}
+            LIMIT {MAX_UNREAD})''', (room, chat, self.read_position(room, chat), member)).fetchone()[0]
 
     def names_member(self, room: str, entry: str, member: str) -> bool:
         """True when the shown message `entry` names `member` in its `mentions`."""

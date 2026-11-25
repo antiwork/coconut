@@ -5,13 +5,17 @@ history in `team_messages` (team_store.py). An edit is a new write of the same e
 removal is a `delete` entry over it. The routes are for the chat of the app:
 
 - `GET /v1/team/rooms/<room>/messages?before=<first>&limit=<n>&chat=<id>`: one page of messages, newest first.
-  With `alert_type` or `alert_level`, the page has only the alerts of that type and that level (team_alerts.py).
+  With `alert_type` or `alert_level`, the page has only the alerts of that type and that level (team_alerts.py). With
+  `thread`, only the messages of that thread (docs/team-log.md, "Inbox chats").
+- `GET /v1/team/rooms/<room>/threads?chat=<id>&before=<first>&limit=<n>`: the notices of an inbox chat, each thread
+  with its first and its newest message: each unread thread, then a page of the read ones.
 - `POST /v1/team/rooms/<room>/messages` with `{text, reply_to?, mentions?, chat?, preview?, files?}`: send a message.
   `files` are the IDs of the drafts of team_files.py.
 - `PATCH /v1/team/rooms/<room>/messages/<id>` with `{text}`: change a message of this Mac's person.
 - `DELETE /v1/team/rooms/<room>/messages/<id>`: remove a message of this Mac's person. On the admin's Mac, also a
   message of another member or of a bot: an `erase` entry takes it out of the chat on each Mac.
-- `POST /v1/team/rooms/<room>/read` with `{first, chat?}`: move the read position of this Mac.
+- `POST /v1/team/rooms/<room>/read` with `{first, chat?, thread?}`: move the read position of this Mac, or of one
+  thread of an inbox chat.
 
 `chat` names a named chat of the team (team_chats.py). Without it, a route means the Team chat. A message has its chat,
 so an edit and a removal need none.
@@ -31,8 +35,9 @@ from . import team_keys
 from .team_alerts import alert_view, filter_fields
 from .team_pages import team_id, team_ids
 from .team_relay import MAX_NUMBER, number
-from .team_store import (ACTIVE, BOT_DIRECTS_EVENT, DIRECTS_EVENT, MAX_AGENT_CHAIN, MAX_MENTIONS, MAX_TEXT, MESSAGES_EVENT,
-                         entry_id, files_fields, preview_fields, preview_view, reaction_views, shown_text, unicode_text)
+from .team_store import (ACTIVE, BOT_DIRECTS_EVENT, DIRECTS_EVENT, MAX_AGENT_CHAIN, MAX_MENTIONS, MAX_TEXT, MAX_THREAD_PAGE,
+                         MESSAGES_EVENT, THREAD_PAGE, entry_id, files_fields, preview_fields, preview_view,
+                         reaction_views, shown_text, unicode_text)
 
 log = logging.getLogger(__name__)
 
@@ -109,7 +114,8 @@ class TeamMessages:
 
         `alert_type` and `alert_level` filter the page to the alerts of one type and one level (docs/team-log.md,
         "Alerts"). The newest page, with or without a filter, also has `alerts`: the counts of all alerts of the chat,
-        for the filter of the app. A filter changes no read position."""
+        for the filter of the app. A filter changes no read position. `thread` gives the page of one thread of the chat
+        (docs/team-log.md, "Inbox chats"), which has no `alerts`."""
         from .service_base import ServiceError
         room = self._team_room(room_id)
         before = query_number(data, 'before', None, 1, MAX_NUMBER, 'Use a whole number for before.')
@@ -118,11 +124,14 @@ class TeamMessages:
             alert_type, alert_level = filter_fields(data)
         except ValueError as error:
             raise ServiceError(400, str(error)) from None
+        thread = data.get('thread')
+        if thread is not None and not entry_id(thread):
+            raise ServiceError(400, GONE_MESSAGE)
         with self.lock:
             chat = self._team_chat_named(room_id, data.get('chat'))
-            rows = self.team_store.messages(room_id, before, limit + 1, chat, alert_type, alert_level)
+            rows = self.team_store.messages(room_id, before, limit + 1, chat, alert_type, alert_level, thread)
             messages = self._team_message_views(room, rows[:limit])
-            alerts = self.team_store.alert_counts(room_id, chat) if before is None else None
+            alerts = self.team_store.alert_counts(room_id, chat) if before is None and thread is None else None
         older = rows[limit - 1]['first'] if len(rows) > limit else None
         answer = {'room': room_id, 'messages': messages, 'before': older}
         if alerts is not None:
@@ -240,21 +249,56 @@ class TeamMessages:
 
     def team_mark_read(self, room_id: str, data: dict) -> dict:
         """Move the read position of this Mac in one chat to `first`, the `first` of the newest message that the person
-        read. The position only moves forward, and never past the newest message. A move tells the other devices."""
+        read. The position only moves forward, and never past the newest message. A move tells the other devices.
+
+        With `thread`, the position of that thread of a named chat moves instead (docs/team-log.md, "Inbox chats"):
+        the person opened one notice of an inbox chat. `unread` of the answer is then the count of the chat, which is
+        the count of its unread threads."""
         from .service_base import ServiceError
         first = data.get('first')
         if not number(first):
             raise ServiceError(400, 'Give the first of the newest message that the person read.')
+        thread = data.get('thread')
+        if thread is not None and not entry_id(thread):
+            raise ServiceError(400, GONE_MESSAGE)
         self._team_room(room_id)
         with self.transaction():
             room = self.team_store.room(room_id)
             if room is None:
                 raise ServiceError(404, 'This Mac is not in this team.')
             chat = self._team_chat_named(room_id, data.get('chat'))
+            if thread is not None:
+                if chat is None:
+                    raise ServiceError(400, 'Name the chat of the thread.')
+                if self.team_store.mark_thread_read(room_id, chat, thread, first, room['member']) is not None:
+                    self._event(MESSAGES_EVENT, {'team': room_id})
+                return {'room': room_id, 'read': self.team_store.thread_read_position(room_id, chat, thread),
+                        'unread': self.team_store.unread(room_id, room['member'], chat)}
             if self.team_store.mark_read(room_id, first, chat) is not None:
                 self._event(MESSAGES_EVENT, {'team': room_id})
             return {'room': room_id, 'read': self.team_store.read_position(room_id, chat),
                     'unread': self.team_store.unread(room_id, room['member'], chat)}
+
+    def team_threads(self, room_id: str, data: dict) -> dict:
+        """The notices of an inbox chat (docs/team-log.md, "Inbox chats"): each thread with its first message, its newest
+        message, and its counts, as TeamStore.threads gives them. `before` is the `before` of the answer before, for the
+        next page of read threads. A chat that is not an inbox has the same answer, so an app can show any named chat
+        this way."""
+        from .service_base import ServiceError
+        room = self._team_room(room_id)
+        before = query_number(data, 'before', None, 1, MAX_NUMBER, 'Use a whole number for before.')
+        limit = query_number(data, 'limit', THREAD_PAGE, 1, MAX_THREAD_PAGE, f'Ask for 1 to {MAX_THREAD_PAGE} threads.')
+        with self.lock:
+            chat = self._team_chat_named(room_id, data.get('chat'))
+            if chat is None:
+                raise ServiceError(400, 'Name the chat of the threads.')
+            threads, older = self.team_store.threads(room_id, chat, room['member'], before, limit)
+            total = self.team_store.thread_count(room_id, chat) if before is None else None
+            views = self._team_message_views(room, [row for thread in threads for row in (thread['root'], thread['latest'])])
+        items = [{'id': thread['thread'], 'count': thread['count'], 'unread': thread['unread'],
+                  'root': views[2 * index], 'latest': views[2 * index + 1]} for index, thread in enumerate(threads)]
+        return {'room': room_id, 'chat': chat, 'threads': items, 'before': older,
+                **({'total': total} if total is not None else {})}
 
     def team_read_all(self) -> None:
         """Read each chat of each team through its newest message: the Team chat, each named chat, and each direct chat
@@ -387,6 +431,8 @@ class TeamMessages:
                  'preview': preview_view(row['preview']),
                  'files': self.team_store.file_views(room['room'], row['entry'], row['files']),
                  'alert': alert_view(row['alert_type'], row['alert_level']),
+                 # The thread of the message in its chat (docs/team-log.md, "Inbox chats").
+                 'thread': row['thread'],
                  'created_at': row['created_at'], 'edited_at': row['updated_at'] if row['edited'] else None}
                 for row, entries in zip(rows, mentions)]
 
@@ -406,8 +452,12 @@ class TeamMessages:
                     'text': shown_text(row['text'], row['files'])[:PREVIEW],
                     'created_at': row['created_at']}
         mention = store.mention_first(room['room'], room['member'], chat)
+        # An inbox chat lists its notices, and its count is the count of the unread ones (docs/team-log.md, "Inbox
+        # chats"). Only such a chat has the field, so an older app shows each chat as a chat.
+        inbox = {'inbox': True} if store.inbox(room['room'], chat) else {}
         return {'unread': store.unread(room['room'], room['member'], chat), 'last_message': last,
-                'mentioned': mention is not None, **({'mention_first': mention} if mention is not None else {})}
+                'mentioned': mention is not None, **({'mention_first': mention} if mention is not None else {}),
+                **inbox}
 
     # Agents of different Macs talk in the Team chat (docs/team-log.md, "Agents of different Macs")
 
