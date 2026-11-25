@@ -243,7 +243,8 @@ struct MacMainWindow: View {
             return
         }
         let latest = AgentChats.activity(bots: store.bots, latest: store.chatSummaries.newestActivity)
-        let project = ChatProject.target(chosen: boxProject, in: ChatProject.choices(in: store.bots, latest: latest))
+        // A choice that is no project, such as an agent of a team, stays: the start then names no project.
+        let project = ChatProject.choices(in: store.bots, latest: latest).first { $0.id == boxProject }
         store.startChat(in: project)
     }
 

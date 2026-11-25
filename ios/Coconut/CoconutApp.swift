@@ -267,9 +267,10 @@ struct CoconutHome: View {
                 }
             }
                 .toolbar(tabBarVisibility, for: .tabBar)
-                // The message box sits above the tab bar on Chats. Every New agent leads to it.
+                // The message box sits above the tab bar on every tab (the person: "new chat should show up every tab
+                // you're on"). Each tab keeps its own project and draft, and every New agent leads to the box of Chats.
                 .safeAreaInset(edge: .bottom, spacing: 0) {
-                    if tab == .chats { NewChatBar() }
+                    NewChatBar(place: NewChatPlace(tab))
                 }
                 .navigationTitle("")
                 // A tab root has its name as a large title, so a root and a pushed page look different. You has the
@@ -578,5 +579,18 @@ extension CoconutHome {
             if place.hasPrefix("project-") { open(.finance, [BusinessRoute.projects, BusinessRoute.project(String(place.dropFirst(8)))]) }
         }
         #endif
+    }
+}
+
+extension NewChatPlace {
+    /// The place of the message box of a tab (NewChatBar).
+    init(_ tab: HomeTab) {
+        switch tab {
+        case .product: self = .product
+        case .support: self = .support
+        case .finance: self = .finance
+        case .chats: self = .chats
+        case .profile: self = .you
+        }
     }
 }

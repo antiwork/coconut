@@ -392,8 +392,10 @@ Not yet measured: the time from save to screen on the web host, and a `push --wa
 - `preview.json` is a copy. An app folder cannot read outside itself, so it must be copied again when the fixture
   changes. The data module reads the fixture's `task_id` links, the phase, detail and `phase_started_at` of a working
   task (else its `updated_at`) and the bots with `chat_of`.
-- The picker of the Swift message box (`NewChatBar`) starts with All projects and ends with Open and All agents. This one
-  lists the projects and ends with New project, as asked. A message from Home always starts a new chat with the project.
+- The picker of the Swift message box (`NewChatBar`) lists the projects, then the agents of the teams that the person can
+  write to (Gumclaw), and ends with All projects, and the iPhone shows the box on every tab with a project and a
+  suggestion of its own (`NewChatPlace`, `NewChatSuggestion`). This one lists the projects and ends with New project, as
+  asked; the app has no tabs or team chats yet. A message from Home always starts a new chat with the project.
 - Not ported: the slash commands other than `/model` and `/effort` (new, compact, stop, mute, archive, help), mentions, the access menu, editing a queued message, link and GitHub previews,
   the schedule of a message, the fifth rule of Needs attention (stale data, which a preview has none of). Of the chat:
   Edit of a draft card (`MessageDraftEditor`), a reply to a card in words (`DecisionReplyComposer`), the links of a

@@ -181,6 +181,15 @@ extension AppStore {
                        lastMessage: TeamLastMessage(text: "Can you check the refund for the Friday double payouts?",
                                                     createdAt: ago(9))),
         ]
+        // The agent of the team on a Mac of its own, which each person can write to, as Gumclaw is for Gumroad.
+        rooms.rooms[0].bots = [TeamRoomBot(id: "t-gumroad-gumclaw", name: "Gumclaw", member: "m4", memberName: "Gumclaw",
+                                           open: true, direct: true)]
+        rooms.rooms[0].botDirects = [
+            TeamBotDirect(bot: "t-gumroad-gumclaw", botName: "Gumclaw", unread: 0,
+                          lastMessage: TeamLastMessage(bot: "t-gumroad-gumclaw", botName: "Gumclaw",
+                                                       text: "The ledger through October balances; November waits on two Stripe payouts.",
+                                                       createdAt: ago(75))),
+        ]
         team = rooms
     }
 }
