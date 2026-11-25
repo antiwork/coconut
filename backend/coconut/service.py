@@ -342,6 +342,9 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
         self.risk_reviews = RiskReviews(self.business)
         from .support_handoffs import SupportHandoffs
         self.support_handoffs = SupportHandoffs(self.business)
+        # Asks GitHub and Gmail for changes while an app reads the updates, so its pages read them at once.
+        from .business_watch import BusinessWatch
+        self.business_watch = BusinessWatch(self)
         self.github_requests = threading.Lock()
         try:
             self._recover_workspace_binding()
@@ -3004,6 +3007,7 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
         self._start_budget_poller()
         self._start_team()
         self.push.start()
+        self.business_watch.start()
 
     def _register_pr_artifact(self, task_id: str | None, payload: dict, *, bot_id=None):
         try:

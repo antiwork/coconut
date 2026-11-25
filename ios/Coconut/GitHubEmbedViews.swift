@@ -77,14 +77,15 @@ struct GitHubEmbedStack: View {
     }
 }
 
-/// Loads the GitHub cards of a text when the view shows. A view that always shows carries it, because the stack of
-/// the cards is empty before they load.
+/// Loads the GitHub cards of a text when the view shows, and again when GitHub changed (GitHubEmbeds.expire), so a card
+/// that shows follows its issue or pull request. A view that always shows carries it, because the stack of the cards is
+/// empty before they load.
 struct GitHubEmbedLoading: ViewModifier {
     @Environment(AppStore.self) private var store
     let text: String
 
     func body(content: Content) -> some View {
-        content.task(id: text) { await store.githubEmbeds.load(text: text) }
+        content.task(id: "\(store.githubEmbeds.changes)/\(text)") { await store.githubEmbeds.load(text: text) }
     }
 }
 

@@ -1829,6 +1829,19 @@ final class AppStore {
         for taskId in changed { Task { await loadActivity(taskId) } }
     }
 
+    /// The updates carry no issue, report or mail. They name what changed on GitHub or in Gmail, which the Mac watches
+    /// while an app reads the updates (backend business_watch.py), and every page of the business that shows reads again
+    /// at once (`businessChanges`): the to-dos and their counts, the reports of Finance, Support and Product, an open
+    /// issue, pull request or support conversation (LiveReload), and the GitHub cards of a chat. So a change shows without
+    /// a pull to refresh (the person: "things update instantly ... so one does not need to refresh"). A reset skips the
+    /// events between the cursors, also these, so it reads again too.
+    private func reloadChangedBusiness(_ page: StateUpdates) {
+        let changed = page.businessChanged ?? []
+        guard !changed.isEmpty || page.reset != nil else { return }
+        if changed.contains("issues") || page.reset != nil { githubEmbeds.expire() }
+        businessChanges += 1
+    }
+
     /// An image of a feed. The bytes of an image never change, so the store keeps the decoded image.
     func activityImage(taskId: String, image: ActivityImage) async -> PlatformImage? {
         let key = (taskId + "/" + image.id) as NSString
@@ -3337,6 +3350,7 @@ final class AppStore {
                             self.reloadChangedDocuments(page)
                             self.reloadChangedTeam(page)
                             self.reloadChangedActivity(page)
+                            self.reloadChangedBusiness(page)
                             Task { await self.syncPushRegistration() }
                         }
                         self.scheduleDelivery()

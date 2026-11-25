@@ -421,7 +421,8 @@ struct DecisionSources: View {
         .font(.footnote)
         .foregroundStyle(.secondary)
         .tint(.secondary)
-        .task(id: links) { await store.githubEmbeds.load(Array(links.prefix(GitHubLink.limit))) }
+        // Again when GitHub changed (GitHubEmbeds.expire), so the card of a pull request follows its checks and merge.
+        .task(id: "\(store.githubEmbeds.changes) \(links)") { await store.githubEmbeds.load(Array(links.prefix(GitHubLink.limit))) }
     }
 
     private func reference(_ source: DecisionSource) -> AttributedString {

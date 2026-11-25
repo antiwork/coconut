@@ -295,6 +295,10 @@ class StateSync:
         if after < 0:
             raise ServiceError(400, 'The event cursor must be zero or greater.')
         deadline = time.monotonic() + min(max(wait, 0), 25)
+        # An app that reads the updates shows the business too, so GitHub and Gmail are watched for the next minute.
+        watch = getattr(self, 'business_watch', None)
+        if watch is not None:
+            watch.watched()
         with self._read_view() as view:
             # The number is read before the cursor, so a commit between the read of the cursor and the wait ends the wait.
             seen = self.commits.count
@@ -326,7 +330,7 @@ class StateSync:
             settings.update_unconfirmed model_catalog.updated routine.created routine.updated routine.deleted routine.triggered
             routine.reconciliation_required routines.unavailable google.updated github.updated device.paired maintenance.withdrawal_corrected
             document.created document.updated document.deleted team.updated team_messages.updated
-            team_directs.updated team_bot_directs.updated team_typing.updated activity.updated""".split())
+            team_directs.updated team_bot_directs.updated team_typing.updated activity.updated business.updated""".split())
         # The state holds no document, because the phone reads the Library with GET /v1/documents. A document event
         # sends only its task. The save of a turn also adds the message of its card, which has its own event.
         if (after > cursor or len(rows) > 1000 or len(rows) != cursor - after
@@ -440,15 +444,20 @@ class StateSync:
                           # The tasks whose live activity changed (turn_activity.py). An app with the live panel of
                           # such a task open reads GET /v1/tasks/<task>/activity again.
                           activity_changed=sorted({json.loads(r[3])['task'] for r in rows
-                                                   if r[1] == 'activity.updated'}))
+                                                   if r[1] == 'activity.updated'}),
+                          # What changed on GitHub or in Gmail (business_watch.py): issues, reports or mail. An app reads
+                          # the pages of the business that it shows again.
+                          business_changed=sorted({source for r in rows if r[1] == 'business.updated'
+                                                   for source in json.loads(r[3]).get('sources', [])}))
             if any(m.get('client_request_id') for m in messages):
                 receipts = self.db.execute(CONFIRMED_REQUESTS).fetchone()
                 result['confirmed_request_ids'] = json.loads(receipts[0])
-        # Native task changes publish work.updated. Age alone changes no native state. A document event or a team
-        # event changes no Work row and no card.
+        # Native task changes publish work.updated. Age alone changes no native state. A document event, a team event
+        # or a change on GitHub or in Gmail changes no Work row and no card.
         structural = not rows or refresh_activity or any(r[1] not in ('message.created', 'message.updated', 'bot.read', 'bot.updated',
             'document.created', 'document.updated', 'document.deleted', 'team.updated', 'team_messages.updated',
-            'team_directs.updated', 'team_bot_directs.updated', 'team_typing.updated', 'activity.updated')
+            'team_directs.updated', 'team_bot_directs.updated', 'team_typing.updated', 'activity.updated',
+            'business.updated')
             for r in rows)
         if structural:
             work_outcomes = set()

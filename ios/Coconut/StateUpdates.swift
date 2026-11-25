@@ -30,6 +30,10 @@ struct StateUpdates: Decodable, Sendable {
     var teamTypingChanged: [String]?
     /// The tasks whose live activity changed. The feed is not part of the state: a view that shows it reads it again.
     var activityChanged: [String]?
+    /// What changed on GitHub or in Gmail: `issues` (the work repository), `reports` (the published reports) or `mail`
+    /// (the support mailbox). The Mac watches them while an app reads the updates (backend business_watch.py), and the
+    /// pages of the business read again (AppStore.reloadChangedBusiness). They are not part of the state either.
+    var businessChanged: [String]?
     var confirmedRequestIds: [String]?
 
     /// The chats that changed: each Team chat, each direct chat and each direct chat with a bot of this page.

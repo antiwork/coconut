@@ -25,6 +25,8 @@ struct LinkPreviewList: View {
                 }
             }
         }
+        // GitHub changed (GitHubEmbeds.expire): the GitHub cards read again, so a card follows its issue or pull request.
+        .task(id: store.githubEmbeds.changes) { await store.githubEmbeds.load(links.filter(GitHubLink.isCard)) }
         .task(id: text) {
             let text = text
             let githubOnly = githubOnly

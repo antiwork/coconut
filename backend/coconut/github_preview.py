@@ -33,7 +33,8 @@ MAX_EXCERPT = 400
 MAX_LABELS = 6
 MAX_ASSIGNEES = 5
 MAX_ENTRIES = 256
-FRESH = 90
+# A preview reads GitHub with the ETag of its last answer (GitHubBusiness._read), so a short time costs no rate limit.
+FRESH = 20
 MISSING = 300
 REFUSED = 60
 
@@ -153,6 +154,11 @@ class GitHubPreviews:
             raise
         except (KeyError, TypeError, ValueError, AttributeError):
             raise ServiceError(502, 'GitHub returned a page that Coconut cannot preview.') from None
+
+    def forget(self):
+        """GitHub changed (business_watch.py): the next preview of each address reads it again."""
+        with self.lock:
+            self.cache = {}
 
     def _keep(self, cache_key, seconds, value):
         with self.lock:

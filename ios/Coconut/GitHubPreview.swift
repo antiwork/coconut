@@ -242,12 +242,14 @@ enum GitHubLink {
 }
 
 /// The GitHub previews that the app loaded. A view reads the cards of a text, and they show when the Mac answers.
-/// A preview is fresh for two minutes. An address without a preview (private, missing, no GitHub connection) is
-/// asked again after five minutes.
+/// A preview is fresh for 30 seconds, and a change of the work repository on GitHub makes every card old at once
+/// (expire), so a card that shows reads again (GitHubEmbedLoading). The Mac asks GitHub with the ETag of its last answer,
+/// so a read that finds nothing new costs nothing of the rate limit. An address without a preview (private, missing, no
+/// GitHub connection) is asked again after five minutes.
 @MainActor
 @Observable
 final class GitHubEmbeds {
-    static let fresh: TimeInterval = 120
+    static let fresh: TimeInterval = 30
     static let retry: TimeInterval = 300
     static let capacity = 300
 
@@ -257,6 +259,8 @@ final class GitHubEmbeds {
     @ObservationIgnored private var loading: Set<String> = []
     @ObservationIgnored private var linkCache: [String: [URL]] = [:]
     @ObservationIgnored private var generation = 0
+    /// Counts the times that GitHub changed, so a card that shows loads again (GitHubEmbedLoading).
+    private(set) var changes = 0
     /// Reads one preview from the Mac. The store sets it.
     @ObservationIgnored var fetch: (@MainActor (URL) async -> GitHubPreview?)?
     @ObservationIgnored var now: () -> Date = Date.init
@@ -321,6 +325,12 @@ final class GitHubEmbeds {
         if failed.count > Self.capacity { failed.removeAll() }
     }
 
+    /// GitHub changed (AppStore.reloadChangedBusiness): each card stays until its next answer, which the next load asks.
+    func expire() {
+        loaded = [:]
+        changes += 1
+    }
+
     /// Forgets each preview, for another Mac or another GitHub account.
     func reset() {
         generation += 1
@@ -328,6 +338,7 @@ final class GitHubEmbeds {
         loaded = [:]
         failed = [:]
         loading = []
+        changes += 1
     }
 }
 

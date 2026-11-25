@@ -15,6 +15,13 @@ from .service_base import ServiceError
 
 REPORTS = {'overview': 'home', 'accounting': 'home', 'support': 'support', 'risk': 'risk', 'engineering': 'prs',
            'periods': 'periods'}
+# The folder of the published reports in their repository. A new publish is a new commit there (business_watch.py).
+FOLDER = 'docs/0825'
+
+
+def reports_repository():
+    """The repository that publishes the reports: dashboards, or COCONUT_BUSINESS_REPORTS_REPO."""
+    return key(os.environ.get('COCONUT_BUSINESS_REPORTS_REPO', 'dashboards'))
 
 
 def contents(business, repository, path):
@@ -31,8 +38,8 @@ def contents(business, repository, path):
 def report(business, name):
     if name not in REPORTS:
         raise ServiceError(404, 'This report is unavailable.')
-    repository = key(os.environ.get('COCONUT_BUSINESS_REPORTS_REPO', 'dashboards'))
-    path = 'docs/0825/' + REPORTS[name] + '.json'
+    repository = reports_repository()
+    path = FOLDER + '/' + REPORTS[name] + '.json'
     text, source = contents(business, repository, path)
     try:
         data = json.loads(text)

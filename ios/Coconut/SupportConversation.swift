@@ -82,6 +82,14 @@ struct SupportConversationView: View {
     @State private var conversation: SupportConversation?
     @State private var failure: (status: Int, message: String)?
     @State private var loads = 0
+    /// The person's answers that Gmail has not confirmed yet. They show at the end at once, and a read of the page in the
+    /// meantime keeps them.
+    @State private var pendingAnswers: [SupportConversation.Message] = []
+    /// A close or a reopen that the Mac has not confirmed yet. The page shows the new state at once.
+    @State private var pendingState: String?
+    /// Counts the starts and ends of the person's writes. A read that ran across one can be older than the write, so it
+    /// is dropped.
+    @State private var writes = 0
     @State private var everything = false
     /// The message that the answer answers, when the person chose one. Nil is the newest one from a customer.
     @State private var target: String?
@@ -98,10 +106,10 @@ struct SupportConversationView: View {
             VStack(alignment: .leading, spacing: BoardStyle.Space.s) {
                 Text(title.isEmpty ? "No subject" : title).font(.title3.weight(.semibold)).textSelection(.enabled)
                     .fixedSize(horizontal: false, vertical: true).accessibilityAddTraits(.isHeader)
-                if let state = conversation?.state { SupportStateChip(state: state) }
+                if let state = shown?.state { SupportStateChip(state: state) }
             }
             .padding(.bottom, BoardStyle.Space.s)
-            if let conversation {
+            if let conversation = shown {
                 if conversation.more > 0 {
                     Button(conversation.more == 1 ? "Show 1 earlier message" : "Show \(conversation.more) earlier messages") {
                         everything = true; loads += 1
@@ -112,6 +120,8 @@ struct SupportConversationView: View {
                     SupportMessageTile(message: message, answering: conversation.canReply == true && target == message.id,
                                        canAnswer: conversation.canReply == true && !message.outgoing && conversation.messages.count > 1,
                                        expand: { await expand(message) }, answer: { target = message.id })
+                        // An answer on its way shows lighter until Gmail confirms it.
+                        .opacity(message.id.hasPrefix(Self.pendingPrefix) ? 0.55 : 1)
                 }
                 if conversation.messages.isEmpty { Text("No messages.").font(.subheadline).foregroundStyle(.secondary) }
                 // How to respond, as the options of a poll, while the newest message is the customer's; Gumclaw does the
@@ -170,19 +180,35 @@ struct SupportConversationView: View {
             await load()
             await store.loadSupportHandoffs(fresh: true)
         }
+        // A message of the customer, an answer of Gumclaw or a close from elsewhere shows without a pull (LiveReload).
+        .liveReload { await load(quiet: true) }
         // Back from Connections, a page that could not read Gmail tries again.
         .onAppear { if failure != nil { loads += 1 } }
     }
 
-    private func load() async {
+    private static let pendingPrefix = "pending-"
+
+    /// The conversation as the person sees it: a close or a reopen on its way in its new state, and the answers on their
+    /// way at the end.
+    private var shown: SupportConversation? {
+        guard var shown = conversation else { return nil }
+        if let pendingState { shown.state = pendingState }
+        shown.messages += pendingAnswers
+        return shown
+    }
+
+    /// Reads the conversation. A quiet read, while the page shows (LiveReload), keeps the page as it is when it fails.
+    private func load(quiet: Bool = false) async {
+        let before = writes
         do {
             let loaded = try await store.supportConversation(id, subject: subject, everything: everything)
+            guard !Task.isCancelled, before == writes else { return }
             conversation = loaded; failure = nil
         } catch is CancellationError {
         } catch ServiceError.response(let status, let message) {
-            if conversation == nil { failure = (status, message) } else { actionError = message }
+            if conversation == nil { failure = (status, message) } else if !quiet { actionError = message }
         } catch {
-            if conversation == nil { failure = (0, error.localizedDescription) } else { actionError = error.localizedDescription }
+            if conversation == nil { failure = (0, error.localizedDescription) } else if !quiet { actionError = error.localizedDescription }
         }
     }
 
@@ -197,8 +223,19 @@ struct SupportConversationView: View {
         } catch { actionError = error.localizedDescription }
     }
 
-    /// Sends the answer and shows it at the end. Nil is success; else the words of the failure.
+    /// Sends the answer. It shows at the end at once, lighter until Gmail confirms it, and a failure takes it away and
+    /// puts the text back in the box. Nil is success; else the words of the failure.
     private func answer(_ text: String, key: String) async -> String? {
+        let mailbox = conversation?.messages.last { $0.outgoing }
+        let pending = SupportConversation.Message(id: Self.pendingPrefix + key, fromName: mailbox?.fromName ?? "",
+            fromEmail: mailbox?.fromEmail ?? conversation?.account ?? "", to: [answered?.replyTo ?? answered?.fromEmail].compactMap { $0 },
+            date: Date.now.formatted(.iso8601), text: text, cut: false, attachments: [], outgoing: true)
+        pendingAnswers.append(pending)
+        writes += 1
+        defer {
+            pendingAnswers.removeAll { $0.id == pending.id }
+            writes += 1
+        }
         do {
             let sent = try await store.answerSupport(id, text: text, message: target, requestId: key)
             if conversation?.messages.contains(where: { $0.id == sent.id }) == false { conversation?.messages.append(sent) }
@@ -212,9 +249,17 @@ struct SupportConversationView: View {
         }
     }
 
+    /// Closes or reopens. The page shows the new state at once and the Mac's state when it answers; a refusal shows the
+    /// state before with the reason.
     private func setState(_ state: String) async {
         busy = true
-        defer { busy = false }
+        pendingState = state
+        writes += 1
+        defer {
+            busy = false
+            pendingState = nil
+            writes += 1
+        }
         do {
             let changed = try await store.setSupportConversation(id, state: state)
             conversation = changed

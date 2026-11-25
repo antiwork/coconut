@@ -37,6 +37,52 @@ struct BoardPage<Content: View>: View {
     private static var contentID: String { "board-page-content" }
 }
 
+/// A page of GitHub or Gmail (an issue, a pull request, a support conversation) reads again while it shows, so a
+/// comment, an answer or a close from elsewhere shows without a pull to refresh (the person: "Make it so things update
+/// instantly and optimistically so one does not need to refresh"). It reads at once when the Mac says that GitHub or
+/// Gmail changed (`businessChanges`, backend business_watch.py), and every few seconds for what the Mac does not watch,
+/// such as an issue of another repository. The Mac asks GitHub with the ETag of its last answer, so a read that finds
+/// nothing new costs nothing of the rate limit. Only a page of a connected app in front reads: the page's own first
+/// load stays its first read, and a return to the app or a new connection reads at once. A page whose read can fail
+/// keeps what it shows (a quiet read).
+struct LiveReload: ViewModifier {
+    @Environment(AppStore.self) private var store
+    @Environment(\.scenePhase) private var scenePhase
+    var every: Duration = .seconds(10)
+    let reload: @MainActor () async -> Void
+    /// The task ran once already, so a new start follows a change, a connection or a return to the app.
+    @State private var started = false
+
+    private struct Key: Hashable {
+        let connected: Bool
+        let changes: Int
+        let active: Bool
+    }
+
+    func body(content: Content) -> some View {
+        content.task(id: Key(connected: store.connection == .connected, changes: store.businessChanges,
+                             active: scenePhase == .active)) {
+            let first = !started
+            started = true
+            guard !store.isDemo, store.connection == .connected, scenePhase == .active else { return }
+            // A page that opened before the connection could not read, so the connection reads at once.
+            if !first { await reload() }
+            while !Task.isCancelled {
+                try? await Task.sleep(for: every)
+                if Task.isCancelled { return }
+                await reload()
+            }
+        }
+    }
+}
+
+extension View {
+    /// Reads the page again while it shows (LiveReload).
+    func liveReload(every: Duration = .seconds(10), _ reload: @escaping @MainActor () async -> Void) -> some View {
+        modifier(LiveReload(every: every, reload: reload))
+    }
+}
+
 enum PreviewLaunch {
     /// A screenshot of the lower part of a page starts the app with `--bottom`. Only a debug build on a simulator
     /// reads it.

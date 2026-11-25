@@ -66,6 +66,15 @@ repository with the same contract. These are company reports, not project-specif
 use the existing Beancount aggregates without reproducing financial calculations. `/v1/business/ledger` lists canonical
 `.beancount` files and reads a selected file directly from Accounting. Missing amounts stay unknown instead of becoming zero.
 
+The business pages stay live. While an app reads `GET /v1/updates`, the Mac asks every 5 seconds whether the issues of
+the work repository, the published reports or the support mailbox changed (`business_watch.py`): the newest updated
+issue, the newest commit of `docs/0825`, the history ID of the mailbox. A change drops the lists that the Mac keeps for
+a few seconds and adds a `business.updated` event, which the updates carry as `business_changed`, so the to-dos, their
+counts, the reports and the GitHub cards of the chats read again at once. An open issue, pull request or support
+conversation also reads again every 10 seconds (`LiveReload`), for the repositories that the Mac does not watch. Every
+GitHub read sends the ETag of its last answer (`GitHubBusiness._read`), and GitHub answers an unchanged read with 304
+Not Modified, which costs nothing of its rate limit.
+
 The native reports show charts, summary cards and queues, and expose the complete source data. A snapshot older than
 an hour, or one without a timestamp, carries a freshness notice. The dashboards publisher and site remain active
 until ingestion, every source record and every existing visualization have verified replacements. Current gaps
@@ -80,7 +89,9 @@ after a failed save. Writes of native settings and writes within one team run in
 error banner. Pairing changes discard pending projections and private reading caches.
 
 Pins, archives, settings, routine edits, Library actions and business issue states use this path. Messages and decision
-answers retain their existing durable outboxes. Opening a previously read Library page or report draws its cached
+answers retain their existing durable outboxes. A comment on an issue or a pull request and an answer to a support
+conversation show at the end of their page at once, lighter until GitHub or Gmail confirms them, and a close or a reopen
+shows its new state at once; a failure takes the comment or the answer back into its box with the reason. Opening a previously read Library page or report draws its cached
 content while revalidating it. New execution waits for pending model and access edits to finish; a failed prerequisite
 leaves the message or task unsent. Each local intent gets a distinct receipt key, including a return to an earlier value.
 Saves return after their receipt; background refreshes coalesce instead of delaying

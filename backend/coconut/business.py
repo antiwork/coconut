@@ -14,6 +14,7 @@ import os
 import re
 import threading
 import time
+from collections import OrderedDict
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlencode
 from urllib.request import Request, urlopen
@@ -56,18 +57,30 @@ def refusal(error):
     return message.strip()[:300] if isinstance(message, str) and message.strip() else None
 
 
-def github_request(method, path, token, body=None):
+# A read that GitHub answers with 304 Not Modified costs nothing of its rate limit. The Mac keeps the newest answer of
+# each read with its ETag and asks again with If-None-Match (GitHubBusiness._read), so the live pages of the apps and
+# the watch of the business (business_watch.py) can read every few seconds, and a read that finds nothing new is free.
+KEPT_READS = 400
+KEPT_BYTES = 24 * 1024 * 1024
+
+
+def _send(method, path, token, body=None, etag=None):
+    """One request to GitHub: its status, its ETag and its body. A 304 Not Modified has no body."""
     data = json.dumps(body).encode() if body is not None else None
-    request = Request('https://api.github.com/' + path, data=data, method=method, headers={
-        'Accept': 'application/vnd.github+json', 'Authorization': 'Bearer ' + token,
-        'Content-Type': 'application/json', 'User-Agent': 'Coconut', 'X-GitHub-Api-Version': '2022-11-28'})
+    headers = {'Accept': 'application/vnd.github+json', 'Authorization': 'Bearer ' + token,
+               'Content-Type': 'application/json', 'User-Agent': 'Coconut', 'X-GitHub-Api-Version': '2022-11-28'}
+    if etag:
+        headers['If-None-Match'] = etag
+    request = Request('https://api.github.com/' + path, data=data, method=method, headers=headers)
     try:
         with urlopen(request, timeout=20) as response:
             content = response.read(2_097_153)
             if len(content) > 2_097_152:
                 raise ServiceError(502, 'GitHub returned too much data. Narrow the view and try again.')
-            return json.loads(content) if content else {}
+            return response.status, response.headers.get('ETag'), content
     except HTTPError as error:
+        if error.code == 304 and etag:
+            return 304, error.headers.get('ETag') or etag, b''
         if error.code == 401:
             raise ServiceError(409, 'Reconnect GitHub in You → Connections → GitHub.') from None
         if error.code == 404:
@@ -79,8 +92,19 @@ def github_request(method, path, token, body=None):
             # issue. The person reads that reason in the app.
             raise ServiceError(422, refusal(error) or 'GitHub refused this change. Refresh before retrying.') from None
         raise ServiceError(502, 'GitHub did not confirm the change. Refresh the work before retrying.') from None
-    except (URLError, TimeoutError, ValueError):
+    except (URLError, TimeoutError):
         raise ServiceError(502, 'GitHub is unavailable. Refresh before retrying a change.') from None
+
+
+def _decoded(content):
+    try:
+        return json.loads(content) if content else {}
+    except ValueError:
+        raise ServiceError(502, 'GitHub is unavailable. Refresh before retrying a change.') from None
+
+
+def github_request(method, path, token, body=None):
+    return _decoded(_send(method, path, token, body)[2])
 
 
 class GitHubBusiness:
@@ -91,6 +115,10 @@ class GitHubBusiness:
         self.write_lock = threading.RLock()
         self.cache_lock = threading.Lock()
         self.cache = {}
+        # The newest answer of each read with its ETag, oldest use first (_read).
+        self.read_lock = threading.Lock()
+        self.reads = OrderedDict()
+        self.read_bytes = 0
 
     def _token(self):
         self.connection.refresh()
@@ -100,7 +128,33 @@ class GitHubBusiness:
         return token
 
     def _call(self, method, path, body=None):
-        return self.request(method, path, self._token(), body)
+        token = self._token()
+        if method == 'GET' and self.request is github_request:
+            return self._read(path, token)
+        return self.request(method, path, token, body)
+
+    def _read(self, path, token):
+        """A read with the ETag of its kept answer. GitHub answers 304 Not Modified when nothing changed, which costs
+        nothing of its rate limit, and the kept answer is decoded again, so each caller gets its own copy. Another
+        account sees other data, so the account is part of the key."""
+        identity = (hashlib.sha256(token.encode()).hexdigest(), path)
+        with self.read_lock:
+            kept = self.reads.get(identity)
+            if kept:
+                self.reads.move_to_end(identity)
+        status, etag, content = _send('GET', path, token, etag=kept[0] if kept else None)
+        if status == 304 and kept:
+            return _decoded(kept[1])
+        with self.read_lock:
+            old = self.reads.pop(identity, None)
+            if old:
+                self.read_bytes -= len(old[1])
+            if etag and len(content) <= KEPT_BYTES // 8:
+                self.reads[identity] = (etag, content)
+                self.read_bytes += len(content)
+            while self.reads and (len(self.reads) > KEPT_READS or self.read_bytes > KEPT_BYTES):
+                self.read_bytes -= len(self.reads.popitem(last=False)[1][1])
+        return _decoded(content)
 
     def _pages(self, path, size=100):
         page = 1

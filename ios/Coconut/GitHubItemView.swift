@@ -8,6 +8,14 @@ struct GitHubItemView: View {
     @Environment(AppStore.self) private var store
     let route: GitHubItemRoute
     @State private var item: GitHubItem?
+    /// The person's comments that GitHub has not confirmed yet. They show at the end at once, and a read of the page in
+    /// the meantime keeps them.
+    @State private var pendingComments: [GitHubItem.Entry] = []
+    /// A close or a reopen that GitHub has not confirmed yet. The page shows the new state at once.
+    @State private var pendingState: (state: String, reason: String?)?
+    /// Counts the starts and ends of the person's writes. A read that ran across one can be older than the write, so it
+    /// is dropped.
+    @State private var writes = 0
     @State private var failure: String?
     @State private var busy = false
     @State private var actionError: String?
@@ -16,7 +24,7 @@ struct GitHubItemView: View {
 
     var body: some View {
         BoardPage(spacing: BoardStyle.Space.l) {
-            if let item {
+            if let item = shown {
                 header(item)
                 if item.pull != nil { GitHubPullSummary(item: item, route: route, busy: busy) { confirmingMerge = true } }
                 if let actionError {
@@ -48,6 +56,8 @@ struct GitHubItemView: View {
         }
         .task(id: loads) { await load() }
         .refreshable { await load() }
+        // A comment, a review, a close or a push from elsewhere shows without a pull (LiveReload).
+        .liveReload { await load(quiet: true) }
         .confirmationDialog(mergeTitle, isPresented: $confirmingMerge, titleVisibility: .visible) {
             Button(mergeLabel) { Task { await merge() } }.accessibilityIdentifier("github-merge-confirm")
         } message: {
@@ -99,6 +109,8 @@ struct GitHubItemView: View {
             ForEach(item.comments) { entry in
                 GitHubEntryTile(author: entry.author, verb: Self.verb(entry), date: entry.createdAt, text: entry.body,
                                 own: entry.author?.login == item.viewer, review: entry.state)
+                    // A comment on its way shows lighter until GitHub confirms it.
+                    .opacity(entry.id.hasPrefix(Self.pendingPrefix) ? 0.55 : 1)
             }
             if item.body.isEmpty && item.comments.isEmpty {
                 Text("No description or comments yet.").font(.subheadline).foregroundStyle(.secondary)
@@ -152,19 +164,49 @@ struct GitHubItemView: View {
 
     // MARK: Actions
 
-    private func load() async {
+    private static let pendingPrefix = "pending-"
+
+    /// The item as the person sees it: a close or a reopen on its way in its new state, and the comments on their way at
+    /// the end.
+    private var shown: GitHubItem? {
+        guard var shown = item else { return nil }
+        if let pendingState { shown.state = pendingState.state; shown.stateReason = pendingState.reason }
+        shown.comments += pendingComments
+        return shown
+    }
+
+    /// The person as this page shows them, with their avatar when they wrote here before.
+    private var viewer: GitHubPerson? {
+        guard let item, let login = item.viewer else { return nil }
+        return ([item.author] + item.comments.map(\.author)).compactMap { $0 }.first { $0.login == login }
+            ?? GitHubPerson(login: login)
+    }
+
+    /// Reads the item. A quiet read, while the page shows (LiveReload), keeps the page as it is when it fails.
+    private func load(quiet: Bool = false) async {
+        let before = writes
         do {
             let loaded = try await store.githubItem(route)
-            guard !Task.isCancelled else { return }
-            item = loaded; failure = nil
+            guard !Task.isCancelled, before == writes else { return }
+            if item != loaded { item = loaded }
+            failure = nil
         } catch is CancellationError {
         } catch {
-            if item == nil { failure = error.localizedDescription } else { actionError = error.localizedDescription }
+            if item == nil { failure = error.localizedDescription } else if !quiet { actionError = error.localizedDescription }
         }
     }
 
-    /// Posts a comment and shows it at the end. Nil is success; else the words of the failure.
+    /// Posts a comment. It shows at the end at once, lighter until GitHub confirms it, and a failure takes it away and
+    /// puts the text back in the box. Nil is success; else the words of the failure.
     private func comment(_ text: String, key: String) async -> String? {
+        let pending = GitHubItem.Entry(id: Self.pendingPrefix + key, kind: "comment", author: viewer, body: text,
+                                       createdAt: Date.now.formatted(.iso8601))
+        pendingComments.append(pending)
+        writes += 1
+        defer {
+            pendingComments.removeAll { $0.id == pending.id }
+            writes += 1
+        }
         do {
             let entry = try await store.commentOnGitHubItem(route, body: text, requestId: key)
             if item?.comments.contains(where: { $0.id == entry.id }) == false { item?.comments.append(entry) }
@@ -177,9 +219,17 @@ struct GitHubItemView: View {
         }
     }
 
+    /// Closes or reopens. The page shows the new state at once and GitHub's state when it answers; a refusal shows the
+    /// state before with the reason.
     private func setState(_ state: String, reason: String? = nil) async {
         busy = true
-        defer { busy = false }
+        pendingState = (state, reason)
+        writes += 1
+        defer {
+            busy = false
+            pendingState = nil
+            writes += 1
+        }
         do {
             item = try await store.setGitHubItemState(route, state: state, reason: reason)
             actionError = nil
@@ -190,7 +240,11 @@ struct GitHubItemView: View {
     private func merge() async {
         guard let sha = item?.pull?.headSha else { return }
         busy = true
-        defer { busy = false }
+        writes += 1
+        defer {
+            busy = false
+            writes += 1
+        }
         do {
             item = try await store.mergeGitHubPull(route, sha: sha)
             actionError = nil
