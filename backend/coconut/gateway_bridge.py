@@ -336,6 +336,12 @@ class GatewayBridge:
             turn = self.turns.get(turn_id)
             return turn.context_id if turn is not None and turn.state == 'active' else None
 
+    def home_of(self, turn_id) -> str | None:
+        """The home of the adapter of a running turn, or None."""
+        with self.lock:
+            turn = self.turns.get(turn_id)
+            return turn.home if turn is not None and turn.state == 'active' else None
+
     def answer(self, turn_id: str, answer: dict) -> bool:
         """Give the answer to a question to the adapter of its turn, with its next poll."""
         with self.lock:

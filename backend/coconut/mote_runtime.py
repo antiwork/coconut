@@ -12,9 +12,14 @@ takes the others (hermes_plugin/coconut/adapter.py): it polls the bridge in this
 everything is as for Hermes: the phone, a stop, cards and the other Coconut tools, which mote calls with the shell
 command `coconut` (mote_tool.py).
 
+A card that a mote turn makes carries `_runtime: 'mote'` (home_runtime), and its check runs in the mote session of the
+chat, which holds the conversation that the card came from (gateway_chat.run_gateway_context). The service takes only
+coconut_refresh_decision from the check, and the chat gets no message of it (service._start_context). The instruction
+revision of such a card hashes SOUL.md and BODY.md of the mote home, which the check reads (card_runtime).
+
 What mote lacks stays on Hermes: the routines of the agent run in the Hermes gateway as before, and so do status
-questions and the turns of a team chat. A turn that mote cannot take, for example on a Mac without the mote command,
-runs on Hermes.
+questions, the turns of a work session with a Kanban claim, the checks of the other cards and the turns of a team chat.
+A turn that mote cannot take, for example on a Mac without the mote command, runs on Hermes.
 
 The first turn makes the mote home from the profile: mote's own files, the profile's SOUL.md with the hint of the
 Coconut platform, its memory in BODY.md and a copy of its skills. From then on mote keeps its own home, and Hermes keeps
@@ -64,9 +69,20 @@ FAILED = 'mote could not finish this turn.'
 STOPPED = 'mote stopped this turn.'
 RUNTIME_TEXT = {'hermes': 'Hermes Agent: every tool, routines, helpers and the board.',
                 'mote': ('mote: a small agent with four tools and a home of plain files. The routines of the agent, '
-                         'its work on the board and its card checks stay on Hermes.')}
-SWITCH_NOTE = ('The next turn of each chat of this agent runs there. Its routines, its work on the board and its card '
-               'checks stay on Hermes.')
+                         'its work on the board, its status questions and the checks of cards from Hermes stay on '
+                         'Hermes.')}
+SWITCH_NOTE = ('The next turn of each chat of this agent runs there, and so do the checks of the cards that mote makes. '
+               'Its routines, its work on the board, its status questions and the checks of cards from Hermes stay on '
+               'Hermes.')
+# The start of the text of a turn with a mode (gateway_bridge.submit_turn). The Coconut text of such a turn names the
+# Coconut tools by their Hermes names, and mote has only shell commands.
+# A check on mote can run any shell command, as each turn on mote can: mote asks for no approval, and the person who
+# moves an agent to mote accepts that (docs/architecture.md). The service limits only the Coconut tools of the check.
+MODE_TEXT = {
+    'refresh': ('This turn runs on mote. Here coconut_refresh_decision is the command '
+                "`coconut refresh_decision '<json>'`, and `coconut schema refresh_decision` gives its fields. It is the "
+                'only Coconut tool of this check. Commands that only read are allowed.\n\n'),
+}
 TOOLS_NOTE = ('Here the tools of Coconut are the shell command `coconut` (skill coconut-tools): `coconut ask` for '
               'coconut_ask, `coconut suggest` for coconut_suggest, and so on. `coconut tools` lists them.')
 SKILL_TEXT = """---
@@ -257,6 +273,34 @@ def turn_home(service, bot: dict, home):
         return home
 
 
+def home_runtime(service, home) -> str | None:
+    """'mote' for the home of a turn that mote runs (a home that a mote thread of this service polls), else None."""
+    runner = getattr(service, '_mote_runtime', None)
+    if runner is None or not home:
+        return None
+    with runner.lock:
+        return 'mote' if os.path.realpath(home) in runner.pollers else None
+
+
+def card_runtime(service, decision: dict) -> str:
+    """The runtime that checks a card, and so whose instructions its revision hashes: mote for a card that a mote turn
+    made in a chat of an agent that still runs on mote, else hermes. The routing of the check
+    (gateway_chat.run_gateway_context) and the revision of the card (decision_freshness) both use it. Without the mote
+    command it gives hermes, as turn_home does. Only an unexpected error in turn_home, for example in prepare, still
+    runs the check on Hermes once, and that check records the mote revision."""
+    if decision.get('_runtime') != 'mote':
+        return 'hermes'
+    from .gateway_bridge import plain_chat_turn
+    from .profiles import ProfileError
+    from .service_base import ServiceError
+    try:
+        if not plain_chat_turn(service._get('tasks', decision['task_id'])) or command() is None:
+            return 'hermes'
+        return runtime(service.profiles.home(service._get('bots', decision['bot_id'])))
+    except (OSError, ProfileError, ServiceError):  # a card whose task or agent is gone must not stop a card pass
+        return 'hermes'
+
+
 class MoteRuntime:
     """The threads that take the turns of the mote homes from the bridge and run them in mote."""
 
@@ -351,7 +395,9 @@ class MoteRuntime:
         records = [record for record in turn.get('records') or [] if isinstance(record, dict)
                    and isinstance(record.get('id'), str) and isinstance(record.get('text'), str)
                    and record['id'] not in sent]
-        text = str(turn.get('text') or '')
+        # mote has no hook that holds the tools of a turn with a mode, as the Hermes plugin does (hooks.guard_tool). The
+        # service refuses the Coconut tools that such a turn may not call, and the note says what the turn may do.
+        text = MODE_TEXT.get(turn.get('mode'), '') + str(turn.get('text') or '')
         if records:
             from .native_conversation import records_text
             text += records_text(records)

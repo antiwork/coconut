@@ -594,8 +594,12 @@ agent's profile folder, and removing that file moves it back (`mote_runtime.py`)
   for the turn, with the schemas of the plugin's toolset. A card or a recorded wait ends the mote turn.
 - The first switch makes the mote home from the profile: mote's own files, the profile's `SOUL.md` with the platform
   hint, its memory in `BODY.md` and a flat copy of its skills. mote then keeps its own home.
-- Routines, work sessions with a Kanban claim, card checks, status questions and team turns stay on Hermes. A Hermes
-  command gets a short answer. Without the mote command, a turn runs on Hermes.
+- A card check of a chat runs in the mote session of that chat when a mote turn made the card. The card carries
+  `_runtime: 'mote'`. The service takes only `refresh_decision` from the check, and the chat gets no message of it.
+  While the agent runs on mote, the instruction revision of such a card is a hash of `SOUL.md` and `BODY.md` in the
+  mote home. A change of these files makes the card stale, and a change of the Hermes profile does not.
+- Routines, work sessions with a Kanban claim, status questions, the checks of other cards and team turns stay on
+  Hermes. A Hermes command gets a short answer. Without the mote command, a turn runs on Hermes.
 - mote asks for no approval: every command of the agent runs, whatever the access mode of Coconut says.
 - mote's model is in `<profile>/mote/config.json`. Its key is in the service's environment or `<profile>/mote.env`,
   which only the mote process reads.

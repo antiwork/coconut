@@ -88,11 +88,16 @@ def read_regular(path: Path, name: str, limit: int = MAX_PROMPT_FILE_BYTES, kind
     return content
 
 
-def prompt_revision(home: str | Path, *, boundary: str | Path | None = None) -> str:
+# The files of a Hermes profile that shape its prompt, and those of a mote home (mote_runtime.prepare).
+PROMPT_FILES = ('SOUL.md', 'memories/MEMORY.md', 'memories/USER.md')
+MOTE_PROMPT_FILES = ('SOUL.md', 'BODY.md')
+
+
+def prompt_revision(home: str | Path, *, boundary: str | Path | None = None, names: tuple = PROMPT_FILES) -> str:
     home = Path(home).expanduser().absolute()
     boundary = Path(boundary).expanduser().absolute() if boundary is not None else home
     hashes = {}
-    for name in ('SOUL.md', 'memories/MEMORY.md', 'memories/USER.md'):
+    for name in names:
         path = home / name
         _safe(path, boundary)
         try:
@@ -109,8 +114,7 @@ def prompt_revision(home: str | Path, *, boundary: str | Path | None = None) -> 
 
 
 # The revision of a profile without prompt files.
-EMPTY_REVISION = hashlib.sha256(json.dumps(dict.fromkeys(('SOUL.md', 'memories/MEMORY.md', 'memories/USER.md')),
-                                           sort_keys=True).encode()).hexdigest()
+EMPTY_REVISION = hashlib.sha256(json.dumps(dict.fromkeys(PROMPT_FILES), sort_keys=True).encode()).hexdigest()
 
 
 class HermesProfiles:
@@ -152,10 +156,15 @@ class HermesProfiles:
         _safe(path, self.boundary(home))
         return path.read_text() if path.exists() else bot.get('instructions', '')
 
-    def prompt_revision(self, bot: dict) -> str:
+    def prompt_revision(self, bot: dict, runtime: str = 'hermes') -> str:
+        """The revision of the instructions of the bot's agent in `runtime`: its Hermes profile, or for `mote` the mote
+        home in that profile (mote_runtime.card_runtime)."""
         if self.row(bot) is None:
             return EMPTY_REVISION
         home = self.home(bot)
+        if runtime == 'mote':
+            from .mote_runtime import HOME
+            return prompt_revision(home / HOME, boundary=self.boundary(home), names=MOTE_PROMPT_FILES)
         return prompt_revision(home, boundary=self.boundary(home))
 
     def soul_revision(self, bot: dict) -> tuple[str, float] | None:

@@ -735,11 +735,16 @@ class GatewayChat:
         # The terminal of a follow-up with a Kanban claim runs in the workspace of that claim, as the worker's
         # TERMINAL_CWD. This also applies in the bot's chat, for a card of a conversation turn that owns an outcome.
         folder = (context.get('_kanban_claim') or {}).get('workspace')
+        # A check reads the conversation that made the card. A card of a mote turn in the bot's chat has its check in
+        # the mote session of that chat. Another card keeps its check on Hermes, also after a switch to mote.
+        from .mote_runtime import card_runtime
+        with self.lock:
+            mote_check = check and card_runtime(self, self._get('decisions', context['decision_id'])) == 'mote'
         try:
             self._run_in_gateway(task, bot, text, follow_up, context_id=context['id'], wanted=wanted,
                                  mode='refresh' if check else None, silent=check, commentary=not check,
                                  session=root, chat=chat, images=turn_images(request_task.get('attachments', [])),
-                                 folder=folder if folder and os.path.isdir(folder) else None)
+                                 folder=folder if folder and os.path.isdir(folder) else None, mote_check=mote_check)
         finally:
             ended.set()
             if holder is not None and holder.poll() is not None:
@@ -752,17 +757,18 @@ class GatewayChat:
     def _run_in_gateway(self, task: dict, bot: dict, text: str, emit, *, silent: bool = False,
                         commentary: bool = True, context_id: str | None = None, wanted=None, session: str | None = None,
                         chat: str | None = None, mode: str | None = None, own: str | None = None,
-                        folder: str | None = None, command: str | None = None, images: list | None = None) -> bool:
+                        folder: str | None = None, command: str | None = None, images: list | None = None,
+                        mote_check: bool = False) -> bool:
         """Give a turn to the adapter of the bot's profile. Wait for one, at most GATEWAY_WAIT_SECONDS.
 
         The turn joins the bot's conversation, or the Hermes session `session`, for example of a cron run
         (hooks.join_conversation finds a session by its ID when no conversation has that root)."""
         from .native_conversation import session_root
         home = self.profiles.home(bot)
-        if mode is None and not gateway_claim_turn(task):
+        if (mode is None or mote_check) and not gateway_claim_turn(task):
             # An agent on mote takes the turns of its chats in its mote home, which no Hermes gateway serves. A work
-            # session with a Kanban claim and a turn with a mode of its own, such as a card check, stay on Hermes
-            # (mote_runtime.py).
+            # session with a Kanban claim and a turn with a mode of its own, such as a status question, stay on Hermes
+            # (mote_runtime.py). A check of a card that a mote turn made runs on mote (run_gateway_context).
             from .mote_runtime import turn_home
             home = turn_home(self, bot, home)
         deadline = time.monotonic() + GATEWAY_WAIT_SECONDS
@@ -958,10 +964,12 @@ class GatewayChat:
                 # follow-up had coconut_workspace (COCONUT_WORKSPACE_OUTCOME of its prepared worker).
                 return self.gateway_workspace(task_id, context_id=context_id)
             raise ServiceError(409, 'Answer the current question. Its pending decision stays open.')
-        if tool == 'ask':
-            return self.native_event(task_id, 'native_question', arguments)
-        if tool == 'suggest':
-            return self.native_event(task_id, 'native_proposal', arguments)
+        if tool in ('ask', 'suggest'):
+            # A card of a turn on mote is checked in the mote session that made it (run_gateway_context).
+            from .mote_runtime import home_runtime
+            runtime = home_runtime(self, self.gateway_bridge.home_of(data.get('turn_id')))
+            return self.native_event(task_id, 'native_question' if tool == 'ask' else 'native_proposal', arguments,
+                                     runtime=runtime)
         if tool == 'resolve_reply':
             return self.resolve_chat_decision(task_id, arguments)
         if tool == 'wait':

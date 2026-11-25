@@ -340,7 +340,7 @@ class WithdrawalCorrections:
             card = self._withdrawn_card(caller, request)
             decision, task, context = card['decision'], card['task'], card['context']
             try:
-                profile_revision = self.profiles.prompt_revision(self._get('bots', decision['bot_id']))
+                profile_revision = self._card_revision(decision)
             except (OSError, ProfileError) as error:
                 raise ServiceError(409, 'Coconut cannot read the current agent instructions. Retry this correction after the profile is readable.') from error
             withdrawn = {key: decision.get(key) for key in (

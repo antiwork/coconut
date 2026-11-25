@@ -13,7 +13,7 @@ class NativeExecution:
                 "AND json_extract(data, '$.task_id')=? AND json_extract(data, '$.turn_id') IS ? LIMIT 1",
                 (task_id, turn_id)).fetchone() is not None
 
-    def native_event(self, task_id, kind, payload, context_id=None):
+    def native_event(self, task_id, kind, payload, context_id=None, runtime=None):
         from .service import ServiceError, YieldForDecision, now, digest, encoded
         source_facts, source_seen = {}, {}
         if kind in ('native_question', 'native_proposal'):
@@ -153,6 +153,10 @@ class NativeExecution:
                 decision['draft'] = draft
                 decision['draft_hash'] = digest(encoded(draft))
             decision.update(self.decision_origin(task))
+            if runtime:
+                # The runtime of the turn that made the card, which holds its conversation. A check of the card runs
+                # there (gateway_chat.run_gateway_context).
+                decision['_runtime'] = runtime
             if not approval:
                 # A resumed task can also prepare an unrelated draft. Require its explicit link.
                 decision.update(self.decision_followup(task, payload, allow_resume=draft is None))
@@ -173,6 +177,14 @@ class NativeExecution:
                 freshness['profile_revision'] = record.get('_worker_profile_revision')
             elif '_worker_profile_revision' in payload:
                 freshness['profile_revision'] = payload['_worker_profile_revision']
+            elif runtime == 'mote':
+                # A mote turn read the mote home. If the agent left mote during the turn, the card is stale for its
+                # Hermes check (_initialize_decision_freshness).
+                from .profiles import ProfileError
+                try:
+                    freshness['profile_revision'] = self.profiles.prompt_revision(self._get('bots', task['bot_id']), 'mote')
+                except (OSError, ProfileError):
+                    pass
             self._put('decisions', decision)
             if optional:
                 self._initialize_decision_freshness(decision, **freshness)

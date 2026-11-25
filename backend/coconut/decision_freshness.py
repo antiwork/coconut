@@ -429,11 +429,17 @@ class DecisionFreshness:
                       and r.get('turn_id') not in refresh_turns])
         return digest(encoded(facts)), work
 
+    def _card_revision(self, decision):
+        """The revision of the instructions that a check of the card reads: of the Hermes profile, or of the mote home
+        for a card that mote checks (mote_runtime.card_runtime)."""
+        from .mote_runtime import card_runtime
+        return self.profiles.prompt_revision(self._get('bots', decision['bot_id']), card_runtime(self, decision))
+
     def _initialize_decision_freshness(self, decision, *, profile_revision=_PROFILE_REVISION_UNSET):
         if decision['action_type'] not in ('question', 'draft_message'):
             return
         artifacts = self._all('artifacts')
-        current_revision = self.profiles.prompt_revision(self._get('bots', decision['bot_id']))
+        current_revision = self._card_revision(decision)
         if profile_revision is _PROFILE_REVISION_UNSET:
             # Direct local events certify their construction snapshot. Hermes supplies its worker snapshot.
             profile_revision = current_revision
@@ -456,7 +462,7 @@ class DecisionFreshness:
         if not decision.get('_profile_revision'):
             return False
         try:
-            return decision['_profile_revision'] != self.profiles.prompt_revision(self._get('bots', decision['bot_id']))
+            return decision['_profile_revision'] != self._card_revision(decision)
         except (OSError, ProfileError):
             return True
 
@@ -597,11 +603,12 @@ class DecisionFreshness:
             plan(self, _DirectWrites(self))
 
     def _profile_revisions_current(self, revisions):
-        """True when each bot profile still has the revision that a card pass read. None stands for a failed read."""
+        """True when each bot profile still has the revision that a card pass read, by bot and runtime
+        (_plan_decision_refreshes). None stands for a failed read."""
         from .profiles import ProfileError
-        for bot_id, revision in revisions.items():
+        for (bot_id, runtime), revision in revisions.items():
             try:
-                current = self.profiles.prompt_revision(self._get('bots', bot_id))
+                current = self.profiles.prompt_revision(self._get('bots', bot_id), runtime)
             except (OSError, ProfileError):
                 current = None
             if current != revision:
@@ -723,14 +730,18 @@ class DecisionFreshness:
         writes.check(lambda service: not service.stopping.is_set() and not service.restart_pending
                      and service._profile_revisions_current(profile_revisions))
 
-        def read_profile(bot_id):
-            if bot_id not in profile_revisions:
+        from .mote_runtime import card_runtime
+
+        def read_profile(decision):
+            # One bot can have cards that Hermes checks and cards that mote checks, each against its own instructions.
+            key = (decision['bot_id'], card_runtime(self, decision))
+            if key not in profile_revisions:
                 try:
-                    profile_revisions[bot_id] = self.profiles.prompt_revision(self._get('bots', bot_id))
+                    profile_revisions[key] = self.profiles.prompt_revision(self._get('bots', key[0]), key[1])
                 except (OSError, ProfileError):
-                    logging.getLogger(__name__).exception('Could not read the native profile for card checks of bot %s.', bot_id)
-                    profile_revisions[bot_id] = None
-            return profile_revisions[bot_id]
+                    logging.getLogger(__name__).exception('Could not read the native profile for card checks of bot %s (%s).', *key)
+                    profile_revisions[key] = None
+            return profile_revisions[key]
 
         assessed = {}
         for decision in decisions:
@@ -739,7 +750,7 @@ class DecisionFreshness:
                     or decision.get('assessment_stale') or not has_assessment(decision)):
                 continue
             records = self._decision_records(decision, tasks, artifacts)
-            profile_revision = read_profile(decision['bot_id'])
+            profile_revision = read_profile(decision)
             if profile_revision is None:
                 if invalidate_assessment(decision):
                     writes.put('decisions', decision)
@@ -771,7 +782,7 @@ class DecisionFreshness:
                 records, fingerprint, work, profile_revision = assessed[decision['id']]
             else:
                 records = self._decision_records(decision, tasks, artifacts)
-                profile_revision = read_profile(decision['bot_id'])
+                profile_revision = read_profile(decision)
                 if profile_revision is None:
                     continue
                 fingerprint, work = self._decision_evidence(decision, tasks, records, artifacts, profile_revision=profile_revision)
@@ -836,7 +847,7 @@ class DecisionFreshness:
                 tasks = self._task_map()
                 artifacts = self._all('artifacts')
                 records = self._decision_records(decision, tasks, artifacts)
-                profile_revision = self.profiles.prompt_revision(self._get('bots', decision['bot_id']))
+                profile_revision = self._card_revision(decision)
                 if payload.get('_worker_profile_revision', profile_revision) != profile_revision:
                     raise ServiceError(409, 'The native worker used different agent instructions. Stop this check; Coconut must check the current profile.')
                 fingerprint, _ = self._decision_evidence(decision, tasks, records, artifacts, ignore_context_id=context_id,
