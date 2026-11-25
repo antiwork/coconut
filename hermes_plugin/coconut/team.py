@@ -41,7 +41,8 @@ from urllib.error import HTTPError
 from gateway.platforms.base import BasePlatformAdapter, SendResult
 from gateway.platforms.event import MessageEvent, MessageType
 
-from .adapter import DEFAULT_BRIDGE, OUTSIDE, PHOTO_LIMIT, REQUEST_SECONDS, RETRY_SECONDS, Bridge, CoconutAdapter, report_outside
+from .adapter import (DEFAULT_BRIDGE, OUTSIDE, PHOTO_LIMIT, REQUEST_SECONDS, RETRY_SECONDS, Bridge, CoconutAdapter,
+                      in_thread, report_outside)
 
 LOG = logging.getLogger(__name__)
 # A running turn stops when the adapter cannot reach the service for this long: its reply can no longer reach the chat,
@@ -186,7 +187,7 @@ async def send_standalone(pconfig, chat_id, message, *, thread_id=None, media_fi
                     raise TimeoutError('The file delivery ran out of time.')
                 payload = dict(payload, budget_seconds=min(40, remaining - 5))
                 timeout = remaining
-            return await asyncio.to_thread(bridge.request, route, payload, timeout)
+            return await in_thread(bridge.request, route, payload, timeout)
         answer, shown = (await send_tries(request, home, str(chat_id), dict(kind='send', message_id=message_id, text=text),
                                       deadline=file_deadline if media_files else None)
                      if text.strip() else ({'recorded': True}, 0))

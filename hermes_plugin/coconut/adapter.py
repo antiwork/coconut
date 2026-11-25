@@ -24,7 +24,10 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import concurrent.futures
 import contextlib
+import contextvars
+import functools
 import json
 import logging
 import os
@@ -49,6 +52,13 @@ RETRY_SECONDS = (1, 2, 5, 10, 30)
 REQUEST_SECONDS = 10
 # Requests go to loopback only, never through a proxy from the environment.
 OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+# The requests to the service run on these threads (in_thread), never on the default executor of the gateway's loop.
+# One gateway serves every profile of the Mac, and each adapter keeps a poll open for up to POLL_SECONDS. On the default
+# executor (12 threads on an 8-core Mac), the polls of 17 profiles held every thread, so each `asyncio.to_thread` of
+# Hermes waited about ten seconds. Hermes makes one such call for each message of a turn before it sends the reply, so
+# the reply of a long turn arrived more than an hour after the agent wrote it. Each profile loads this module, so each
+# has its own threads. A thread starts when no idle one is free, and it stays for the next request.
+BRIDGE_THREADS = concurrent.futures.ThreadPoolExecutor(max_workers=32, thread_name_prefix='coconut-bridge')
 # The turns whose card ended them (coconut_ask), and the mode of a turn that is not a plain chat turn, for example
 # `context`: a follow-up on a pending card. The pre_tool_call hook reads both (hooks.guard_tool).
 PAUSED: set[str] = set()
@@ -171,8 +181,15 @@ def cached_images(images) -> tuple[list[str], list[str]]:
     return urls, types
 
 
+async def in_thread(function, *args):
+    """Run a blocking call on BRIDGE_THREADS with the context of the caller, as `asyncio.to_thread` runs it on the
+    default executor."""
+    call = functools.partial(contextvars.copy_context().run, function, *args)
+    return await asyncio.get_running_loop().run_in_executor(BRIDGE_THREADS, call)
+
+
 class Bridge:
-    """The routes of the Coconut service. Each call blocks, so the adapter runs it in a thread."""
+    """The routes of the Coconut service. Each call blocks, so the adapter runs it in a thread (in_thread)."""
 
     def __init__(self, path):
         self.path = Path(path)
@@ -289,7 +306,7 @@ class CoconutAdapter(BasePlatformAdapter):
         self._mark_disconnected()
 
     async def _request(self, route: str, payload: dict, timeout: float = REQUEST_SECONDS) -> dict:
-        return await asyncio.to_thread(self._bridge.request, route, payload, timeout)
+        return await in_thread(self._bridge.request, route, payload, timeout)
 
     def _starting(self) -> bool:
         """Whether the gateway still restores sessions after its start. Until then it queues each inbound message
