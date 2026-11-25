@@ -3186,8 +3186,8 @@ final class AppStore {
             let explicitKey = idempotencyKey ?? OptimisticRequest.id
             let key = explicitKey ?? uncertainWriteKeys[requestSignature] ?? UUID().uuidString
             if explicitKey == nil { uncertainWriteKeys[requestSignature] = key }
-            let (receiptModel, receiptBaseURL, receiptCatalog, receiptMCP, receiptMessages, receiptDecisions, receiptBots, receiptRoutines, receiptNativeReadAt, receiptCursor, receiptEpoch) = optimisticUpdates.receive {
-                (model, modelBaseURL, modelCatalog, mcpServers, messages, decisions, bots, routines, nativeSettingsReadAt, cachedState?.cursor, snapshotEpoch)
+            let (receiptModel, receiptBaseURL, receiptCatalog, receiptMCP, receiptMessages, receiptDecisions, receiptBots, receiptRoutines, receiptNativeReadAt, receiptCursor, receiptEpoch, receiptAutoArchive) = optimisticUpdates.receive {
+                (model, modelBaseURL, modelCatalog, mcpServers, messages, decisions, bots, routines, nativeSettingsReadAt, cachedState?.cursor, snapshotEpoch, autoArchiveHours)
             }
             let result: Response = try await client.request(path, method: method, body: body, idempotencyKey: key)
             guard belongsToPairing() else { return nil }
@@ -3225,6 +3225,13 @@ final class AppStore {
                         bots[index].effectiveModel = settings.modelCatalog?.defaults.selection
                     }
                 } else if let settings = result as? MCPResponse, mcpServers == receiptMCP { mcpServers = settings.servers }
+                // The Mac answers with the time that it keeps, and that time becomes the confirmed one. Without it the
+                // row of You went back to the earlier time as soon as the edit ended, because only a settings read
+                // confirmed the time, and that read takes seconds and the next write cancels it.
+                if let settings = result as? AutoArchiveResponse, autoArchiveHours == receiptAutoArchive {
+                    autoArchiveHours = settings.autoArchiveHours
+                    cachedState?.autoArchiveHours = settings.autoArchiveHours
+                }
                 if method == "DELETE", path.hasPrefix("routines/") {
                     routines.removeAll { "routines/" + $0.id == path }
                     cachedState?.routines = routines
