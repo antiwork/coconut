@@ -1114,6 +1114,10 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
         except (ValueError, TypeError, AttributeError):
             raise ServiceError(400, 'Supply a UUID in Idempotency-Key.')
         fingerprint = digest(encoded([device_id, method, path, data]))
+        if method == 'POST' and path == '/v1/brainstorm':
+            # Each call is a new answer of the model of a project, so it keeps no saved response (brainstorm.py).
+            from .brainstorm import brainstorm
+            return brainstorm(self, data)
         if path == '/v1/todos':
             from .github_todos import mutate_todos
             return mutate_todos(self, method, data, key, fingerprint)

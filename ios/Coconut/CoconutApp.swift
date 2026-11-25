@@ -510,8 +510,17 @@ extension CoconutHome {
                 guard let bot = store.bots.first(where: { $0.id == agent }) else { return }
                 _ = await store.sendNewChat(in: bot, text: "Which sellers had a payout held on Friday?")
             }
-        // To-dos (TodoLists.swift): the sheet of a new one on Product, and a to-do added as Add does. Finance has no +.
-        case "new-todo": open(.product); later { PendingTodoIssues.shared.adding = .product }
+        // To-dos (TodoLists.swift): the sheet of a new one on Support, and a to-do added as Add does. Finance has no +,
+        // and Product has Brainstorm in the place of its + (Brainstorm.swift).
+        case "new-todo": open(.support); later { PendingTodoIssues.shared.adding = .support }
+        // Brainstorm: the page with the talk of the demo, and with Next steps the message box of Product that gets them.
+        case "brainstorm": open(.product); later { PendingBrainstorm.shared.opening = true }
+        case "brainstorm-steps":
+            open(.product)
+            later {
+                PendingBrainstorm.shared.finishing = true
+                PendingBrainstorm.shared.opening = true
+            }
         case "todo-add":
             open(.product)
             later {

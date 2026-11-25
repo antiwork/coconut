@@ -327,8 +327,9 @@ struct TodoIssueRows: View {
                         BoardLoadNotice(title: "To-dos unavailable", message: message) { Task { await store.loadTodoIssues(fresh: true) } }
                             .padding(inList ? 0 : BoardStyle.Space.m)
                     } else {
-                        // Finance has no + (BusinessHomeView), so its empty list names none.
-                        Text(store.todoIssues == nil ? "Loading to-dos" : area == .finance ? "No to-dos." : "No to-dos. Tap + to add one.")
+                        // Finance has no + (BusinessHomeView), and Product has Brainstorm in its place (Brainstorm.swift),
+                        // so their empty lists name none.
+                        Text(store.todoIssues == nil ? "Loading to-dos" : area == .support ? "No to-dos. Tap + to add one." : "No to-dos.")
                             .font(.subheadline).foregroundStyle(.secondary)
                             .padding(.horizontal, inList ? 0 : BoardStyle.Space.m).padding(.vertical, BoardStyle.Space.m)
                             .frame(maxWidth: .infinity, alignment: .leading)
@@ -420,7 +421,8 @@ struct TodoListSection: View {
 }
 
 extension View {
-    /// The + of Product and Support: one line adds a to-do to the list of the tab. Finance has none (BusinessHomeView).
+    /// The + of Support: one line adds a to-do to the list of the tab. Finance has none (BusinessHomeView), and Product
+    /// has Brainstorm in its place (Brainstorm.swift), so their to-dos come from agents and from the issues on GitHub.
     func newTodoButton(_ area: TodoArea) -> some View { modifier(NewTodoButton(area: area)) }
 }
 

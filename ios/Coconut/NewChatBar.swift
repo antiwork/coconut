@@ -65,7 +65,8 @@ enum NewChatTarget: Equatable {
 /// you're on"), or Home of the Mac, which is the place of Chats. Each place keeps its own project and its own draft,
 /// and the project follows where the person is: Finance, Support and Product start with the project of the business,
 /// and You with Coconut, where Coconut's settings change. Chats keeps the project that each New agent chooses
-/// (AppStore.startChat), and only its box takes those starts.
+/// (AppStore.startChat), and only its box takes those starts. The box of Product takes the next steps of a brainstorm
+/// (NewChatRequest.place, Brainstorm.swift), which shares its project.
 enum NewChatPlace: String {
     case chats, product, support, finance, you
 
@@ -198,7 +199,7 @@ struct NewChatBar: View {
             chosen = id
         }
         .onChange(of: store.newChatRequest, initial: true) { _, request in
-            if place == .chats { apply(request) }
+            if let request, request.place == place { apply(request) }
         }
         // The text of a send that the keyboard gives back right after it goes again (SentEcho).
         .onChange(of: text) { old, draft in

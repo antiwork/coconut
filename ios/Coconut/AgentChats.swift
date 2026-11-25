@@ -112,10 +112,12 @@ extension Array where Element == Bot {
 }
 
 /// What a way to start a chat asks of the message box: the project that it sends to, and the text that waits in it.
-/// A request without a project keeps the project that the box shows.
+/// A request without a project keeps the project that the box shows. It goes to the box of Chats, where every New
+/// agent leads, unless it names another place: the next steps of a brainstorm go to the box of Product (Brainstorm.swift).
 struct NewChatRequest: Equatable {
     var project: String?
     var text = ""
+    var place = NewChatPlace.chats
 }
 
 /// A Send that started a chat, from the message box or with Send to a new agent in a chat: the chat that got the first

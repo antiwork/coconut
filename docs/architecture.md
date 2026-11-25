@@ -175,6 +175,19 @@ Native profile data is not copied into peer messages automatically.
 
 Every chat uses the default model, `<Hermes home>/config.yaml`, unless its project's profile sets a model of its own. The Coconut chat changes the default model (`coconut_settings` `default_model`, `PUT /v1/settings/model`), and so does `/model` in the message box. A chat has no model of its own.
 
+### Brainstorm
+
+Brainstorm on Product is a talk by voice with the model of a project that ends as the next steps in the message box. The
+iPhone listens and speaks on the phone (`ios/Coconut/Brainstorm.swift`). `POST /v1/brainstorm` takes the project
+(`bot_id`), the talk so far (`messages`, each with `role` and `text`) and `finish`, and answers `{"text": ...}`: the next
+spoken answer, or with `finish` the message that builds what the talk worked out. It keeps no saved response, because
+each call is a new answer. The answer is one call to the main model of the project's profile, with its `SOUL.md` and
+memory, and no tools: a Hermes turn takes minutes, a direct call two or three seconds. The call runs in
+`brainstorm_worker.py` under the Hermes Python and the environment of the profile (`provider.environment`), so the
+profile's logins pay for it and Coconut reads no key. One worker per project stays up between the calls of a talk and
+ends after a quarter of an hour without one. A talk without messages only starts the worker, which opens the connection
+with one small call, so the first answer comes as fast as the others.
+
 ## The Hermes gateway
 
 Coconut moves its agent turns from its own worker processes to the person's Hermes gateway, in phases. Phase 1 made each agent a Hermes profile.

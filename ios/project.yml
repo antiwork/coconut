@@ -81,6 +81,9 @@ targets:
           - UIInterfaceOrientationLandscapeRight
         NSCameraUsageDescription: Coconut uses the camera when you scan a pairing QR code or take a photo to attach to a message.
         NSPhotoLibraryAddUsageDescription: Coconut saves a photo from a chat to your library only when you choose Save Image.
+        # Brainstorm on Product (Brainstorm.swift): the phone listens and writes down what you say.
+        NSMicrophoneUsageDescription: Coconut listens while you brainstorm with an agent by voice.
+        NSSpeechRecognitionUsageDescription: Coconut writes down what you say in a brainstorm, so the agent can answer.
         NSAppTransportSecurity:
           NSAllowsLocalNetworking: true
           NSExceptionDomains:

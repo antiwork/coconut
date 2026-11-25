@@ -103,6 +103,7 @@
 		41466C9D92D01AEF376C25A4 /* Theme.swift in Sources */ = {isa = PBXBuildFile; fileRef = B08638DC7DBFF79E2F881694 /* Theme.swift */; };
 		4186C5BD158DBB0756669125 /* ShareComposeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B7A950D770C6DD05FA8B289B /* ShareComposeView.swift */; };
 		41F696721D6BE315A11789F5 /* LinkPreviews.swift in Sources */ = {isa = PBXBuildFile; fileRef = 903AD4E2708B4A32290D084C /* LinkPreviews.swift */; };
+		421F3C3B63AA994408570805 /* Brainstorm.swift in Sources */ = {isa = PBXBuildFile; fileRef = F4B9890CA5750D15C7138E43 /* Brainstorm.swift */; };
 		42C7E9A7DD0489682D7AB07A /* SpendView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 58902FCC4F76AF4C4BF4B674 /* SpendView.swift */; };
 		42D00E4DF57774806D168565 /* ShareSuggestions.swift in Sources */ = {isa = PBXBuildFile; fileRef = C992BA74F5644F9E7AFCFCED /* ShareSuggestions.swift */; };
 		44C35F34533B9BC2BD6C59E0 /* AgentProject.swift in Sources */ = {isa = PBXBuildFile; fileRef = E965675846C512EBE08ADB77 /* AgentProject.swift */; };
@@ -112,6 +113,7 @@
 		47E0B805C6F0533FD94B01A8 /* TranscriptWindow.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0C177466512540E1010ADAD1 /* TranscriptWindow.swift */; };
 		480916CAB418CCDE19B99F6D /* Onboarding.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6676C4B4D2B7F8B8C8248F67 /* Onboarding.swift */; };
 		492D67EE9F463A1E80C0AA2D /* ChatSummaries.swift in Sources */ = {isa = PBXBuildFile; fileRef = C5F99DD733E95E46E48B7BE0 /* ChatSummaries.swift */; };
+		4A6884273A5772ABD4DD2F20 /* Brainstorm.swift in Sources */ = {isa = PBXBuildFile; fileRef = F4B9890CA5750D15C7138E43 /* Brainstorm.swift */; };
 		4D7A4AAC80F180EA780A819D /* Theme.swift in Sources */ = {isa = PBXBuildFile; fileRef = B08638DC7DBFF79E2F881694 /* Theme.swift */; };
 		4E068C9BD14BF2C83F32AC77 /* ShareSuggestions.swift in Sources */ = {isa = PBXBuildFile; fileRef = C992BA74F5644F9E7AFCFCED /* ShareSuggestions.swift */; };
 		5189900E05C6EB73F4FAC061 /* hermes-pairing-message.txt in Resources */ = {isa = PBXBuildFile; fileRef = BF7C349246F8FA67CFC7F7D9 /* hermes-pairing-message.txt */; };
@@ -524,6 +526,7 @@
 		F148539DFD85BF3879FA031A /* PairingSetup.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PairingSetup.swift; sourceTree = "<group>"; };
 		F37BDA516D4A047F983A10C8 /* ShareViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShareViewController.swift; sourceTree = "<group>"; };
 		F448A74041D874CA655251FF /* push-envelope.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "push-envelope.swift"; sourceTree = "<group>"; };
+		F4B9890CA5750D15C7138E43 /* Brainstorm.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Brainstorm.swift; sourceTree = "<group>"; };
 		F57307766B130CB4F400B4A9 /* TeamAlertViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TeamAlertViews.swift; sourceTree = "<group>"; };
 		F651A9C93CDD66940CB67BA1 /* GitHubEmbedViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GitHubEmbedViews.swift; sourceTree = "<group>"; };
 		F85BED295D4BCB7E12AA75B6 /* APIClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = APIClient.swift; sourceTree = "<group>"; };
@@ -647,6 +650,7 @@
 				66C01B452AF6DE7CA34E741B /* BotPhase.swift */,
 				BCBA7E17655BED561202EC41 /* BotSettingsView.swift */,
 				9FB796A12D68BA7FB37609B0 /* BotStatusRow.swift */,
+				F4B9890CA5750D15C7138E43 /* Brainstorm.swift */,
 				69409F2D054CB7924336C9A0 /* Business.swift */,
 				F8C0E15F61D290FC6AF37B21 /* BusinessDashboard.swift */,
 				D2B07DA538DAD512F3EA46D8 /* BusinessHome.swift */,
@@ -1082,6 +1086,7 @@
 				3659B5709A05E658B631EF17 /* BotPhase.swift in Sources */,
 				38367AB3AD663E17234E46E8 /* BotSettingsView.swift in Sources */,
 				2AC3DA42703F1E091D7C5D31 /* BotStatusRow.swift in Sources */,
+				4A6884273A5772ABD4DD2F20 /* Brainstorm.swift in Sources */,
 				219950E3524D97CEC9354790 /* Business.swift in Sources */,
 				2AC59869DB6D5FAA4A7E4E9E /* BusinessDashboard.swift in Sources */,
 				C0398E99DE76B4F16983A7E3 /* BusinessHome.swift in Sources */,
@@ -1218,6 +1223,7 @@
 				A56E0CE4A3D4FEB6F2BD8243 /* BotPhase.swift in Sources */,
 				02913C91F4994541DB0A1D2D /* BotSettingsView.swift in Sources */,
 				9AC5EEB8EE3F8B9C8695BD37 /* BotStatusRow.swift in Sources */,
+				421F3C3B63AA994408570805 /* Brainstorm.swift in Sources */,
 				E7A2236459A678FDFAB49020 /* Business.swift in Sources */,
 				3C8628DA5E9B8D0781BD3177 /* BusinessDashboard.swift in Sources */,
 				C5125796B2C9E9AD25B9329F /* BusinessHome.swift in Sources */,
