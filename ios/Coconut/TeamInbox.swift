@@ -381,8 +381,8 @@ struct TeamThreadRow: View {
     }
 }
 
-/// The title of Read in the list of notices, in the form of a section of Chats (ChatSectionHeader): a chevron that turns
-/// down while it is open, the title, and the count on the right, as Archived has it.
+/// The title of Read in the list of notices, as a folding section of Slack: a chevron that turns down while it is open,
+/// the title, and the count on the right.
 struct NoticeFoldHeader: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @ScaledMetric(relativeTo: .subheadline) private var chevron: CGFloat = 14

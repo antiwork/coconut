@@ -544,7 +544,7 @@ struct MacSidebar: View {
             }
             // The archived chats, newest first and folded until the person opens the section: the title counts them on
             // the right, and the chevron takes the place of the number under the pointer. An archived chat stays
-            // readable. The iPhone has them on a page behind one row (ArchivedChatsRow), and the person chose on a card
+            // readable. The iPhone has them on a page behind one row (ChatSectionRow), and the person chose on a card
             // to keep them folding in place here.
             if !sections.archived.isEmpty {
                 Section {

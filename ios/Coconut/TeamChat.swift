@@ -1658,13 +1658,15 @@ enum ChatList {
     /// The Chats list of the iPhone in the sections of Slack (ChatListSection; the person, 2026-11-25: "Sections by
     /// project and personal agents at bottom"): a section for each project, Coconut first and then Gumroad, then the
     /// chats with people, the agents of an earlier release with the chats whose project is gone, then Personal at the
-    /// bottom, then Archived. The chats that the person starred, an agent chat (a project or one of its further chats)
-    /// and a pinned chat of a team, come first in Starred, as in the sidebar of Slack, and they show nowhere else. A
-    /// project's own chat comes first in its section, as a channel of Slack, and its further chats follow newest
-    /// activity first. The chats with people come newest activity first. An archived chat shows only in Archived,
-    /// newest first (the person: "almost everything should be archived / hidden to focus on real work"). A chat of an
-    /// archived project that is not archived itself, and a chat that nobody wrote in (AgentChats.isBlank), show
-    /// nowhere. A section without rows does not show. `latest` is the date of the newest message of each bot.
+    /// bottom, then Archived. Chats nests them (the person: "Everything should be nested"): Starred shows its chats,
+    /// and every other section is one row that opens its chats (ChatSectionRow). The chats that the person starred, an
+    /// agent chat (a project or one of its further chats) and a pinned chat of a team, come first in Starred, as in the
+    /// sidebar of Slack, and they show nowhere else. A project's own chat comes first in its section, as a channel of
+    /// Slack, and its further chats follow newest activity first. The chats with people come newest activity first. An
+    /// archived chat shows only in Archived, newest first (the person: "almost everything should be archived / hidden
+    /// to focus on real work"). A chat of an archived project that is not archived itself, and a chat that nobody wrote
+    /// in (AgentChats.isBlank), show nowhere. A section without rows does not show. `latest` is the date of the newest
+    /// message of each bot.
     static func sections(bots: [Bot], latest: [String: Date], rooms: [TeamRoom],
                          local: [TeamChatKey: TeamLastMessage] = [:]) -> [ChatListSection] {
         func activity(_ bot: Bot) -> Date { latest[bot.id] ?? bot.createdAt.apiDate ?? .distantPast }
@@ -1767,7 +1769,7 @@ struct ChatSections: Equatable {
     /// unread chats and the Coconut chat. A section without rows does not show.
     var groups: [ChatListSection] = []
     /// The archived chats and agents, newest activity first: the chats of Archived on the iPhone, so the title here and
-    /// the row Archived of Chats count the same chats (ArchivedChatsRow).
+    /// the row Archived of Chats count the same chats (ChatSectionRow).
     var archived: [Bot] = []
 
     /// A starred chat stays in "Starred", also with an unread message, as in Slack. `bots` are all the bots of the
