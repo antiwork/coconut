@@ -47,10 +47,9 @@ SHELL_HOLES = [(354.5, 532.5, 39.35), (450.5, 627.5, 39.35), (324.5, 657.5, 39.3
 # chose three dark circles on a brown fill as the most subtle coconut, which can also read as three coconuts, after he
 # found near-black on yellow too corporate and wanted no blue ground. `shell` fills the icon and `hole` is the colour
 # of the circles. The circles stand in an equilateral triangle with two in the top row and one centred below them, as
-# he asked. He also asked for larger holes to match a coconut's proportions, so the three circles span 48% of the
-# icon's width, as the eyes of a real coconut span 46 to 48% of its face in photos. Each circle is 196 px across at
-# 1024, with gaps of about half that: closer circles merged into one clump at Home Screen sizes. A real eye on its own
-# is only about a tenth of the nut, so the circles are larger than life. The triangle's centre of mass sits a little
+# he asked. On the 1024 px canvas, each circle is 216 px across. The centres are 304 px apart, which leaves an
+# 88 px gap between circles. The larger circles give the mark more weight and leave about 2 px between dots at
+# 24 px. The triangle's centre of mass sits a little
 # above the middle of the icon, halfway to centring the box around the circles, because it looked low when its centre
 # of mass was at the middle and high when its box was. `scale` sizes the circles around the middle. Each hole is
 # (x, y, radius). An `outline`, such as SHELL with the holes SHELL_HOLES, draws a whole shell on `ground` instead,
@@ -58,7 +57,7 @@ SHELL_HOLES = [(354.5, 532.5, 39.35), (450.5, 627.5, 39.35), (324.5, 657.5, 39.3
 MARK = dict(
     shell='#ffffff',
     hole='#000000',
-    holes=[(439.00, 459.32, 49.00), (585.00, 459.32, 49.00), (512.00, 585.76, 49.00)],
+    holes=[(436.00, 457.00, 54.00), (588.00, 457.00, 54.00), (512.00, 588.64, 54.00)],
     scale=2.0,
     outline=None,
     ground=None,
