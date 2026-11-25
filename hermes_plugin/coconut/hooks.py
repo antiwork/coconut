@@ -37,7 +37,8 @@ call as a failure: it asks again, waits, tries again and then tries the fallback
 middleware) gives such an empty reply a fixed closing text, so Hermes ends the turn. After a card, a wait, a check and
 in a run of Hermes, it does so at once. In another turn, it lets Hermes remind the model once after a tool result, and
 closes the next empty reply. The chat does not show that text (adapter.ends_quietly), and the adapter reports the end of
-the turn as quiet, so the chat shows no message for it.
+the turn as quiet, so the chat shows no message for it. A turn that Hermes stops by itself after it lost its lease
+ends with an empty reply too: `note_stopped_turn` (on_session_end) marks it, and Coconut runs the turn again.
 
 Compression. `note_prompt_size` (post_api_request) marks a Coconut chat whose model call reached the compression
 threshold of Hermes, and the adapter compresses that chat after the turn. `follow_new_session` (on_session_reset) keeps
@@ -69,6 +70,7 @@ def register(ctx):
     ctx.register_hook('on_interim_message', cron_interim)
     ctx.register_hook('post_llm_call', cron_answer)
     ctx.register_hook('on_session_end', cron_end)
+    ctx.register_hook('on_session_end', note_stopped_turn)
     ctx.register_hook('pre_tool_call', guard_tool)
     ctx.register_hook('pre_tool_call', report_tool)
     ctx.register_hook('post_tool_call', save_todos)
@@ -1009,3 +1011,26 @@ def cron_end(completed=False, failed=False, interrupted=False, **_):
     from . import cron
     cron.finish('cancelled' if interrupted else 'success' if completed and not failed else 'failure')
 
+
+# The exit reason of a turn that Hermes stopped by itself names the stop: interrupted_by_system(<issuer>) or
+# interrupted_during_api_call(<issuer>) (agent/turn_iteration_prep.py, agent/interrupt_control.py).
+STOP_REASON = re.compile(r'interrupted_(?:by_system|during_api_call)\((?P<issuer>[a-z_]+)\)')
+# Only a lost turn lease: it stops the turn while the gateway still waits for it (agent/turn_facade_lease.py). A gateway
+# shutdown resumes its turns at the next start. A watchdog or an eviction can end the agent after the gateway moved on,
+# when the chat may already run its next turn.
+RESUMED_STOPS = frozenset({'session_turn_lease_lost'})
+
+
+def note_stopped_turn(session_id='', interrupted=False, turn_exit_reason='', **_):
+    """on_session_end: mark a Coconut turn that Hermes stopped by itself, so the adapter reports it as stopped and the
+    service runs it again. Hermes reports such a turn as a success with an empty reply."""
+    match = STOP_REASON.fullmatch(str(turn_exit_reason or ''))
+    if not interrupted or match is None or match['issuer'] not in RESUMED_STOPS:
+        return None
+    holder, turn, helper = _owner(session_id)
+    from .adapter import STOPPED, CoconutAdapter
+    if turn is None or helper or not isinstance(holder, CoconutAdapter):
+        return None
+    STOPPED[turn] = match['issuer']
+    LOG.warning('Coconut: Hermes ended turn %s early (%s). Coconut runs it again.', turn, match['issuer'])
+    return None
