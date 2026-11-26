@@ -513,6 +513,14 @@ What the guard does not cover:
 - When the agent's conversation runs an agent-originated turn in the gateway, the person's message stops that turn, as a stop of the person does (`gateway_chat.preempt_for_person`). The stopped turn goes back to the queue with the same input, and the reply that it sent so far goes. It runs again after the person's turn, with a note that tells the agent to continue it and not to repeat finished steps.
 - A turn that ended before the stop reached it keeps its result. Work sessions and audits run in chats of their own, so they never block the person's chat. A card check that runs in the conversation still finishes first.
 
+### A turn that Hermes ends without its work
+
+- Hermes can end a turn of a Coconut chat without its work and still report the turn as delivered. The adapter reported each such turn as a success, so the chat showed it as complete.
+- The sign-in notice. When Hermes finds no credentials for the model of a turn, it sends a notice in place of a reply, before the agent starts (gateway/run_turn_runner.py, `_resolution_failure_reply`), and adds that the request was not processed. After the Claude login of Hermes expired on 2026-11-25, 14 turns of three profiles ended this way in under two hours. Coconut now fails a turn whose reply starts with that notice and that called no tool (`TurnEvents`, `hermes_notices.sign_in_failure`). The chat shows the notice as the status of the turn, and the bot shows a provider error (`native_auth_permanent`) until one of its turns completes.
+- A lost turn lease. Hermes stops a turn when the session cannot refresh its turn lease, for example while its state database is locked (agent/turn_facade_lease.py). The turn ends with no reply or with a short explanation, and Hermes counts it as a success. On 2026-11-25 this stopped 6 turns, among them a work session whose change built but was not committed. The plugin now marks such a turn from the exit reason of `on_session_end` (`hooks.note_stopped_turn`), the adapter reports its end as stopped, and the service runs it again, at most twice, as after a gateway restart (`GatewayInterrupted`, `_retry_stopped_turn`). Then the turn fails with the reason.
+- Only a lost lease runs again. A gateway shutdown resumes its turns at the next start of Hermes. A watchdog or an eviction can end the agent after the gateway gave up on the turn, so its hook could mark the next turn of the chat.
+- Gaps in Hermes: the platform adapter gets only the result of the delivery, with no failure or stop reason (`processing_ok` in gateway/platforms/base.py). A credential failure comes before the agent, so no hook reports it. A turn that failed for sign-in does not run again after the next sign-in: the person sends it again.
+
 ### No worker with the gateway
 
 - With the gateway on, Coconut starts no worker. Each Kanban claim holds the gateway's placeholder process (`kanban_worker_pid`), also for a task that the gateway does not run.

@@ -98,6 +98,9 @@ FOLDER_TASKS: dict[str, set] = {}
 # for example its own turn for a finished background delegation (hooks.join_conversation). The adapter reports such a
 # turn as `busy`, and the service gives it again when the session is free.
 BUSY: set[str] = set()
+# The Coconut turns that Hermes ended early by itself, with the name of the stop (hooks.note_stopped_turn). The adapter
+# reports the end of such a turn as stopped, and the service runs the turn again (gateway_bridge.GatewayInterrupted).
+STOPPED: dict[str, str] = {}
 # The ID of a message outside a Coconut turn starts with this prefix. Its edits and its delete take the same route.
 OUTSIDE = 'outside:'
 # The service keeps photos of at most 4 MB (gateway_chat.gateway_file).
@@ -144,6 +147,7 @@ def forget_turn(turn) -> bool:
     quiet = turn in CLOSED
     for turns in (PAUSED, WAITED, CLOSED, NUDGED, HERMES_RUNS):
         turns.discard(turn)
+    STOPPED.pop(turn, None)
     return quiet
 
 
@@ -486,6 +490,7 @@ class CoconutAdapter(BasePlatformAdapter):
         if self._turns.get(event.source.chat_id) == event.message_id:
             del self._turns[event.source.chat_id]
         self._typing.discard(event.message_id)
+        stopped = {'stopped': STOPPED[event.message_id]} if event.message_id in STOPPED else {}
         quiet = forget_turn(event.message_id)
         MODES.pop(event.message_id, None)
         CONTEXTS.pop(event.message_id, None)
@@ -504,7 +509,7 @@ class CoconutAdapter(BasePlatformAdapter):
             commit_records(event.message_id)
         for delay in (*RETRY_SECONDS, None):
             if await self._report(event.message_id, 'done', outcome=getattr(outcome, 'value', str(outcome)),
-                                  quiet=quiet):
+                                  quiet=quiet, **stopped):
                 break
             if delay is not None:
                 await asyncio.sleep(delay)

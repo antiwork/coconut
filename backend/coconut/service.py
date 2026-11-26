@@ -3859,7 +3859,7 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
                         self._refresh_bot(task['bot_id'])
 
     def _retry_stopped_turn(self, task_id, error) -> bool:
-        """Queue a turn again when the gateway went silent during it, at most twice. A failed turn is broken work.
+        """Queue a turn again that the gateway left unfinished, at most twice. A failed turn is broken work.
 
         A tool that started without a receipt keeps the turn failed, so no action runs twice.
         """
@@ -3872,7 +3872,7 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
                     or self._has_uncertain_receipt(task_id, current.get('_native_turn_id'))):
                 return False
             self._withdraw_stream(task_id)
-            current.update(status='queued', summary='Resuming after the Hermes gateway restarted.', updated_at=now(),
+            current.update(status='queued', summary=error.resuming, updated_at=now(),
                            _gateway_retries=current.get('_gateway_retries', 0) + 1)
             self._put('tasks', current)
             self._event('task.updated', self._public(current), current['bot_id'], task_id)

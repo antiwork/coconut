@@ -38,7 +38,7 @@ import threading
 import time
 import uuid
 
-from .hermes_notices import readable_text
+from .hermes_notices import readable_text, sign_in_failure
 from .silent_responses import is_silence_reply
 
 TAKE_SECONDS = 30
@@ -140,6 +140,18 @@ class GatewayUnavailable(RuntimeError):
 
 class GatewayStopped(RuntimeError):
     """The gateway went silent during a turn, usually because Hermes or Coconut restarted. The service retries it."""
+    # The summary of the task while it waits for the retry (service._retry_stopped_turn).
+    resuming = 'Resuming after the Hermes gateway restarted.'
+
+
+class GatewayInterrupted(GatewayStopped):
+    """Hermes ended a turn early by itself, for example because the session of the chat lost its turn lease
+    (hermes_plugin/coconut/hooks.py, note_stopped_turn). Hermes counts such a turn as a success with the reply that it
+    had, often none. The work of the turn is not done, so the service retries it."""
+    resuming = 'Resuming after Hermes ended the turn early.'
+
+    def __init__(self, reason: str):
+        super().__init__(f'Hermes ended this turn early ({reason}).')
 
 
 class GatewayBusy(RuntimeError):
@@ -310,8 +322,8 @@ class GatewayBridge:
             if turn.state != 'active':
                 return {'ok': False}
             turn.events.append({key: data[key] for key in ('kind', 'text', 'message_id', 'interim', 'outcome', 'quiet',
-                                                           'question_id', 'question_kind', 'detail', 'choices',
-                                                           'tool', 'args')
+                                                           'stopped', 'question_id', 'question_kind', 'detail',
+                                                           'choices', 'tool', 'args')
                                 if key in data})
             if kind == 'done':
                 turn.state = 'done'
@@ -524,6 +536,8 @@ class TurnEvents:
         self.text = ''
         self.phase = None
         self.sent = False
+        # Whether the model called a tool in this turn.
+        self.worked = False
 
     def apply(self, event: dict) -> bool:
         """Apply one event. Return True at the end of the turn."""
@@ -535,6 +549,7 @@ class TurnEvents:
             self._phase('thinking')
         elif kind == 'tool':
             # A tool call of the model: what the agent does now, with its command, file or query.
+            self.worked = True
             from .turn_phase import tool_phase
             self._phase(*tool_phase(event.get('tool'), event.get('args')))
         elif kind == 'question':
@@ -566,9 +581,18 @@ class TurnEvents:
                 # Text of the other turn that reached this turn before the gateway skipped it.
                 self.emit('text_delta', {'text': '', 'replace': True})
             raise GatewayBusy('The Hermes gateway runs another turn in the session of this chat.')
+        elif kind == 'done' and event.get('stopped'):
+            # Hermes stopped the turn before its end. Its reply, often none, does not answer the turn.
+            raise GatewayInterrupted(str(event['stopped']).replace('_', ' ')[:80])
         elif kind == 'done':
+            # The sign-in notice of Hermes comes before the model runs, so a turn with a tool call is never one.
+            failure = None if self.segment is None or self.worked else sign_in_failure(self.text)
+            if failure is not None and event.get('outcome') in ('success', 'failure'):
+                # The chat shows the notice as the status of the failed turn, and the bot shows a provider error until
+                # one of its turns completes (work_sources.record_provider_failure).
+                self.emit('failed', {'summary': failure, 'error_code': 'native_auth_permanent'})
             # Hermes sends no reply when the model chose silence, and drops a reply that is only the marker.
-            if event.get('outcome') == 'success' and self.silent and (not self.sent or is_silence_reply(self.text)):
+            elif event.get('outcome') == 'success' and self.silent and (not self.sent or is_silence_reply(self.text)):
                 if self.segment is not None:
                     # Take back a reply that is a silence marker.
                     self.emit('text_delta', {'text': '', 'replace': True})

@@ -37,6 +37,22 @@ NOTICES = {
         "❌ The background task couldn't start because no AI model sign-in is configured. On the Mac of this agent, "
         "run `hermes doctor` to see the cause."),
 }
+# The first sentence of the sign-in notice of a chat turn, the same in the text of Hermes and in NOTICES.
+SIGN_IN_FAILURE = "⚠️ I couldn't connect to the AI model service, so this message wasn't processed."
+
+
+def sign_in_failure(text: str) -> str | None:
+    """The text for the chat of a reply that is the sign-in notice of Hermes, or None for each other reply.
+
+    Hermes sends this notice in place of a reply when it finds no credentials for the model of a turn, before the agent
+    starts (gateway/run_turn_runner.py, _resolution_failure_reply). It adds that the request was not processed
+    (gateway/run_turn.py, FAILED_TURN_NOTICE). The adapter reports the turn as a success, because the gateway delivered
+    the notice. The first paragraph becomes the text of NOTICES, because the text of Hermes names `/login` and `/model`.
+    """
+    first, gap, rest = str(text or '').partition('\n\n')
+    if not first.strip().startswith(SIGN_IN_FAILURE):
+        return None
+    return NOTICES['gateway.errors.no_credentials'] + gap + rest
 
 
 # The status line of Hermes for a switch to its fallback model. A rate limit adds the retry sentence.
