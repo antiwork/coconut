@@ -181,7 +181,8 @@ struct HomeLaunchView: View {
     /// chevron turns down and its chats show under it, set in to its title with a line down from its symbol
     /// (ChatListRow). Another tap folds it. Every section starts folded, and the phone keeps the ones that the person
     /// opened. An open section shows its active chats, and Load more shows the others (the person, 2026-11-26: "load
-    /// only active by default when expanded with load more"). A folded row shows what works or waits inside, so a live
+    /// only active by default when expanded with load more"). A section with no active chat opens to all its chats.
+    /// A folded row shows what works or waits inside, so a live
     /// chat in a folded section still says so. No row counts its chats (the person, 2026-11-26: "Don't need counts of
     /// chats stressful"). Starred comes first and stays open, because the person chose its chats: a swipe to the
     /// right on any chat stars it, as Pin in Messages and Telegram (the person: "Don't see a way to pin a chat to the
@@ -240,10 +241,13 @@ struct HomeLaunchView: View {
                     .id(section.id)
                     .homeRow()
                     if open {
-                        // Starred and Unread show every chat: the person chose them, or has not read them.
-                        let shown = section.shown(all: section.alwaysOpen || loadedSections.contains(section.id)) {
-                            active($0, at: now)
-                        }
+                        // Starred and Unread show every chat: the person chose them, or has not read them. A section
+                        // with no active chat shows them all, because Load more alone read as an empty section
+                        // (Tastelint on #598).
+                        let isActive = { (item: ChatListItem) in active(item, at: now) }
+                        let all = section.alwaysOpen || loadedSections.contains(section.id)
+                            || !section.items.contains(where: isActive)
+                        let shown = section.shown(all: all, stays: isActive)
                         ForEach(shown) { item in chatRow(item, in: section, nested: true) }
                         if shown.count < section.items.count {
                             ChatSectionMore(section: section) {
@@ -732,7 +736,8 @@ struct ChatSectionSummary: Equatable {
 /// section, its title and a chevron. The row does not count its chats (the person, 2026-11-26: "Don't need counts of
 /// chats stressful"). Its unread chats are in Unread until the person reads them (ChatList.tree). A tap opens the
 /// section in place: the chevron turns down, and its active chats show under the row, set in to its title
-/// (ChatListRow), with Load more for the others (ChatSectionMore). Another tap folds it. While it is folded, a line
+/// (ChatListRow), with Load more for the others (ChatSectionMore). A section with no active chat shows them all.
+/// Another tap folds it. While it is folded, a line
 /// under the title says what waits for the person and what works inside, in the words and colors of the row of a chat,
 /// so a live chat in a folded section still shows from the list; Working at the top right lists every chat that works.
 /// Starred and Unread have the row without the chevron, because they stay open. Archived is the last row, under
