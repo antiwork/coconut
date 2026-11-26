@@ -205,7 +205,8 @@ private struct NowSmall: View {
             Text("As of " + entry.glance!.updatedAt.formatted(date: .omitted, time: .shortened))
                 .font(.caption2).foregroundStyle(.secondary)
         } else if let start {
-            StepTime(start: start).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+            StepTime(start: start, now: entry.date, alignment: .leading)
+                .font(.caption.weight(.semibold)).foregroundStyle(.secondary)
         }
     }
 }
@@ -230,10 +231,7 @@ private struct NowList: View {
                 NewAgentButton()
             }
             .padding(.bottom, 6)
-            if shown.isEmpty {
-                Spacer(minLength: 0)
-                if !todos { TodoStrip(todos: glance.todos) }
-            } else {
+            if !shown.isEmpty {
                 VStack(alignment: .leading, spacing: todos ? 10 : 6) {
                     ForEach(shown) { row in
                         Link(destination: row.link.url) {
@@ -241,9 +239,16 @@ private struct NowList: View {
                         }
                     }
                 }
-                Spacer(minLength: 0)
             }
-            if todos { TodoStrip(todos: glance.todos) }
+            if todos {
+                // The counts follow the last row, so fewer rows leave room at the bottom, not a gap above the counts
+                // that looks like rows that did not load. The space above them gives way when six rows fill the widget.
+                if !shown.isEmpty { Spacer(minLength: 0).frame(maxHeight: 12).layoutPriority(1) }
+                TodoStrip(todos: glance.todos)
+            }
+            Spacer(minLength: 0)
+            // A medium widget has room for the counts only when no row shows.
+            if !todos && shown.isEmpty { TodoStrip(todos: glance.todos) }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .widgetURL(HomeScreenLink.tab("chats").url)
@@ -270,7 +275,7 @@ private struct NowRectangular: View {
                     Text(work.name).font(.headline).lineLimit(1)
                     Spacer(minLength: 0)
                     if let start = work.startedAt, !entry.stale {
-                        StepTime(start: start).font(.caption).frame(width: 44, alignment: .trailing)
+                        StepTime(start: start, now: entry.date).font(.caption)
                     }
                 }
                 Text(glance.working.count == 1 ? work.step : work.step + " · \(glance.working.count) working")

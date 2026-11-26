@@ -35,16 +35,40 @@ struct CoconutMarkShape: Shape {
     }
 }
 
-/// The time since a step started, to the second and live, as the working line of a chat shows it. A widget redraws
-/// itself only for a new entry, so the system counts the time: "1:23". The count stops after a day: an open range
-/// left the Lock Screen activity empty, because the system draws its times ahead for the always-on display.
+/// The time since a step started, to the second and live, in the words of the working line of a chat: "9s", "3m 8s",
+/// "1h 2m 5s" (ConversationActivity.elapsed). A clock's "3:08" read as a time of day beside the time of a card. A
+/// widget redraws itself only for a new entry, so the system counts the time; at a whole minute it says "3m".
 struct StepTime: View {
     let start: Date
+    /// When the view is drawn. The time stops when its glance is old, at most `GlanceProvider.freshFor` later.
+    let now: Date
+    var alignment: HorizontalAlignment = .trailing
+
+    /// Hours, minutes and seconds in narrow units, without the parts that are zero.
+    static let format = Date.ComponentsFormatStyle(style: .narrow, fields: [.hour, .minute, .second])
 
     var body: some View {
-        Text(timerInterval: start...start.addingTimeInterval(24 * 3600), countsDown: false)
+        // A start a little ahead of the clock of the phone counts from now.
+        let start = min(start, now)
+        // A live time takes the width that it is given, so a hidden text of the longest time that it reaches before it
+        // stops gives it its width.
+        Text(verbatim: Self.widest(from: start, until: now.addingTimeInterval(GlanceProvider.freshFor)))
+            .hidden()
+            .fixedSize()
+            .overlay(alignment: Alignment(horizontal: alignment, vertical: .center)) {
+                Text(.dateRange(startingAt: start), format: Self.format)
+                    .multilineTextAlignment(alignment == .leading ? .leading : .trailing)
+            }
             .monospacedDigit()
-            .multilineTextAlignment(.trailing)
+            .lineLimit(1)
+    }
+
+    /// The widest time with the parts of the longest time that the step reaches: "59m 59s" for a step that stays under
+    /// an hour. Digits are of one width, so no time with those parts is wider.
+    static func widest(from start: Date, until end: Date) -> String {
+        let reach = end.timeIntervalSince(start)
+        let widest: TimeInterval = reach < 60 ? 59 : reach < 3600 ? 3599 : reach < 36_000 ? 35_999 : 359_999
+        return format.format(start..<start.addingTimeInterval(widest))
     }
 }
 
@@ -126,8 +150,7 @@ struct GlanceRowView: View {
         switch row {
         case .card(let card): Text(GlanceTime.text(card.createdAt, now: now)).fixedSize()
         case .work(let work):
-            // A live time takes the width that it is given, so it gets a width of its own.
-            if let start = work.startedAt, !stale { StepTime(start: start).frame(width: 56, alignment: .trailing) }
+            if let start = work.startedAt, !stale { StepTime(start: start, now: now) }
         case .unread(let chat):
             Text(chat.count > 99 ? "99+" : "\(chat.count)")
                 .font(.caption2.weight(.semibold).monospacedDigit())

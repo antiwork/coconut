@@ -90,9 +90,8 @@ private struct WorkTime: View {
 
     var body: some View {
         if !stale, let start = state.working.first?.startedAt {
-            StepTime(start: start)
+            StepTime(start: start, now: .now)
                 .foregroundStyle(BoardStyle.positive)
-                .frame(maxWidth: 56, alignment: .trailing)
         } else if state.workingCount > 0 {
             Text("\(state.workingCount)").monospacedDigit().foregroundStyle(BoardStyle.positive)
         }
