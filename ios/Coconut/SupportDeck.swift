@@ -382,7 +382,10 @@ struct SupportDeckView: View {
     @ViewBuilder private var answerBox: some View {
         if let ticket = current, let conversation = conversations[ticket.id] {
             let subject = conversation.subject.isEmpty ? ticket.subject : conversation.subject
+            // The chip names the reply, so the field names whom it answers (Tastelint on #601).
+            let name = conversation.messages.last { !$0.outgoing }?.fromName ?? ""
             ReplyBox(draftKey: "support:" + ticket.id, placeholder: "Answer and close",
+                     replyPrompt: name.isEmpty ? "Your answer" : "Answer " + name,
                      note: conversation.defaultTarget?.replyTo.map { "To " + $0 }, identifier: "support-answer",
                      handoff: AgentHandoff(supportThread: ticket.id, subject: subject),
                      canReply: conversation.canReply == true) { text, key in await answer(ticket, text, key: key) }

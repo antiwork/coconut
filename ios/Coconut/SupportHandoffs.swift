@@ -39,7 +39,7 @@ enum SupportChoice: String, CaseIterable, Identifiable, Sendable {
 
     var explanation: String {
         switch self {
-        case .gumclaw: "Gumclaw answers from the support mailbox."
+        case .gumclaw: "From the support mailbox."
         case .refund: "Gumclaw refunds the purchase and tells the customer."
         case .close: "Nothing goes to the customer."
         }

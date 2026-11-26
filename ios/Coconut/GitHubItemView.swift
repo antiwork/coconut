@@ -509,6 +509,9 @@ struct ReplyBox: View {
     let draftKey: String
     /// The word of the box's own reply: its placeholder, and the first row of its chip.
     let placeholder: String
+    /// The gray text of the empty box while it replies under a chip that already names the reply, so the two lines
+    /// don't repeat each other (SupportDeckView: "Answer Mira" over "Answer and close"). Nil shows the word of the reply.
+    var replyPrompt: String? = nil
     /// A line above the field, such as the address that an answer goes to. It shows while the box replies.
     var note: String? = nil
     var identifier = "reply-box"
@@ -638,7 +641,7 @@ struct ReplyBox: View {
     private func prompt(_ target: ReplyDestination?, handoff: AgentHandoff) -> String {
         if let handed { return "Sent to " + handed.name }
         if case .agent? = target { return handoff.summary }
-        return placeholder
+        return replyPrompt ?? placeholder
     }
 
     /// Where the text goes, as a chip that opens the box's own reply, the projects and the team agents. Before the Mac
