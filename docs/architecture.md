@@ -603,7 +603,9 @@ agent's profile folder, and removing that file moves it back (`mote_runtime.py`)
 - mote calls the Coconut tools with the shell command `coconut` (`mote_tool.py`), which posts to `/v1/gateway/tools`
   for the turn, with the schemas of the plugin's toolset. A card or a recorded wait ends the mote turn.
 - The first switch makes the mote home from the profile: mote's own files, the profile's `SOUL.md` with the platform
-  hint, its memory in `BODY.md` and a flat copy of its skills. mote then keeps its own home.
+  hint, its memory in `BODY.md` and a flat copy of its skills. mote then keeps its own home, except the paragraph of
+  `SOUL.md` that starts as the hint: each turn brings it up to date with the hint (`mote_runtime.write_hint`), so a
+  change of the hint reaches mote agents after a release, as it reaches Hermes agents.
 - A card check of a chat runs in the mote session of that chat when a mote turn made the card. The card carries
   `_runtime: 'mote'`. The service takes only `refresh_decision` from the check, and the chat gets no message of it.
   While the agent runs on mote, the instruction revision of such a card is a hash of `SOUL.md` and `BODY.md` in the
