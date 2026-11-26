@@ -272,17 +272,21 @@ struct SupportCsatView: View {
             VStack(alignment: .leading, spacing: BoardStyle.Space.s) {
                 let low = (csat.range.low ?? 0) - 1
                 let high = (csat.range.high ?? 1) + 1
-                Chart(csat.series) { day in
-                    LineMark(x: .value("Day", day.id), y: .value("Score", day.score))
+                let last = max(1, csat.series.count - 1)
+                // The days are plotted by their position, not by their name: a named axis draws one label per day and a
+                // phone stacks fourteen of them on top of each other.
+                Chart(csat.series.indices, id: \.self) { index in
+                    LineMark(x: .value("Day", index), y: .value("Score", csat.series[index].score))
                         .foregroundStyle(BoardStyle.accent)
-                    PointMark(x: .value("Day", day.id), y: .value("Score", day.score))
+                    PointMark(x: .value("Day", index), y: .value("Score", csat.series[index].score))
                         .foregroundStyle(BoardStyle.accent)
                         .symbolSize(18)
                 }
                 .chartYScale(domain: low...max(high, low + 1))
-                .chartXAxis { AxisMarks(values: .automatic(desiredCount: 5)) { value in
-                    if let raw = value.as(String.self) {
-                        AxisValueLabel { Text(BusinessFormat.shortMonth(String(raw.prefix(7))) + " " + String(raw.suffix(2))) }
+                .chartXScale(domain: 0...last)
+                .chartXAxis { AxisMarks(values: days(csat.series)) { value in
+                    if let index = value.as(Int.self), csat.series.indices.contains(index) {
+                        AxisValueLabel { Text(short(csat.series[index].date)) }
                     }
                 } }
                 .frame(height: 180)
@@ -292,6 +296,20 @@ struct SupportCsatView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(BoardStyle.surface, in: RoundedRectangle(cornerRadius: BoardStyle.Radius.small))
         }
+    }
+
+    /// The positions that carry a label under the line: the first, the last and two between them.
+    private func days(_ series: [SupportCsat.Day]) -> [Int] {
+        guard series.count > 4 else { return Array(series.indices) }
+        let step = max(1, (series.count - 1) / 3)
+        var marked = Array(stride(from: 0, to: series.count - 1, by: step))
+        marked.append(series.count - 1)
+        return marked
+    }
+
+    /// `Nov 16`, for a day of the measurement (`2026-11-16`).
+    private func short(_ raw: String) -> String {
+        BusinessFormat.shortMonth(String(raw.prefix(7))) + " " + String(raw.suffix(2))
     }
 
     private func range(_ csat: SupportCsat) -> String {
