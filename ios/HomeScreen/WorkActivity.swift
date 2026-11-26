@@ -100,11 +100,12 @@ extension CoconutWorkAttributes.ContentState {
         return .working
     }
 
-    /// "2 working · 1 needs you": what the header of the activity counts.
+    /// "1 needs you · 2 working": what the header of the activity counts, the cards first, as the widgets and the rows of
+    /// Chats count them (ChatSectionSummary).
     var summary: String {
         var parts: [String] = []
-        if workingCount > 0 { parts.append("\(workingCount) working") }
         if cards > 0 { parts.append(cards == 1 ? "1 needs you" : "\(cards) need you") }
+        if workingCount > 0 { parts.append("\(workingCount) working") }
         return parts.isEmpty ? "Nothing works" : parts.joined(separator: " · ")
     }
 }
