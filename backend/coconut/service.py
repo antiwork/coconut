@@ -1579,6 +1579,8 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
                     from .github_todos import NO_CREATION
                     raise ServiceError(410, NO_CREATION)
                 return self._bot_view(self._new_chat(bot), self._request_model_catalog)
+            if parts[3:] == ['merge'] and method == 'POST':
+                return self.merge_chat(bot, data, callbacks)
             if parts[3:] == ['read'] and method == 'POST':
                 unread.mark_read(self.db, bot)
                 self._put('bots', bot)
@@ -2706,7 +2708,7 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
                 self._event('artifact.updated', self._public(artifact), bot_id, task['id'])
             self._message(bot_id, artifact['title'], task_id=task['id'], role='user', kind='artifact', artifact_id=artifact_id, recipient_bot_ids=recipient_bot_ids)
 
-    def _cancel(self, task: dict, callbacks: list):
+    def _cancel(self, task: dict, callbacks: list, *, summary: str | None = None):
         exchange = self._get('exchanges', task['exchange_id'])
         exchange['cancelled'] = True
         self._put('exchanges', exchange)
@@ -2716,7 +2718,8 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
             if expanded == related:
                 break
             related = expanded
-        self._cancel_one(task, callbacks)
+        # A merge of chats says where the work went (AgentChats.merge_chat).
+        self._cancel_one(task, callbacks, **({'summary': summary} if summary else {}))
         for task_id in related - {task['id']}:
             self._cancel_one(self._get('tasks', task_id), callbacks)
 
@@ -3684,7 +3687,7 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
                         # This exact snapshot supplies the bot messages to the provider.
                         # A later delivery writes its own pending marker under the same lock.
                         self._put('tasks', task)
-                    history = self._history(bot['id'])
+                    history = self._with_merges(self._history(bot['id']), task)
                     visible_replies = ({identity: self._get('messages', identity).get('_visible_reply_context')
                                         for identity in task.get('_turn_message_ids', [])}
                                        if task.get('_chat_session') else {})

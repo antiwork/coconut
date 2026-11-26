@@ -86,6 +86,11 @@ struct ChatGridLayout: Equatable {
 /// down closes the grid. The grid keeps its order while it shows: a chat that starts to work joins at the end, and a
 /// chat that stops keeps its card, so no card moves while the person reads it. On the Mac, View > Show working agents
 /// (Option-Command-\) shows it over the main window, and Escape or the same command closes it.
+///
+/// On the iPhone, two fingers on two cards pinch them together, and letting go merges the chats ("from the grid view
+/// would be cool to pinch and merge two sessions together", 2026-11-26). The cards follow the fingers. Once they are
+/// close enough, the card of the chat that stays takes a ring and the bar names it, and letting go slides the other
+/// card under it. Only chats of one project merge (AppStore.mergeChats). VoiceOver merges with an action of a card.
 struct ChatGridView: View {
     @Environment(AppStore.self) private var store
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -103,6 +108,8 @@ struct ChatGridView: View {
     /// The screen, and the area of the cards on it.
     @State private var screen = CGRect.zero
     @State private var area = CGRect.zero
+    /// The two cards that a pinch draws together, while the fingers stay on the screen.
+    @State private var pinch: Pinch?
     #if os(macOS)
     @State private var monitor: Any?
     #endif
@@ -115,6 +122,29 @@ struct ChatGridView: View {
         let id: String
         let frame: CGRect
     }
+
+    /// Two cards that a pinch draws together: `into` is the chat that stays (survivor), `from` the chat that goes into
+    /// it. The fingers began at `start` and are at `center` now, and `scale` is how far they have closed, 1 at the
+    /// start. `armed` is a pinch close enough that letting go merges the chats, and `merging` one that was let go.
+    private struct Pinch: Equatable {
+        let into: String
+        let from: String
+        /// Where the two cards stood when the pinch began.
+        let intoFrame: CGRect
+        let fromFrame: CGRect
+        /// False for chats of two projects. Their cards follow the fingers, and the bar says why they do not merge.
+        let merges: Bool
+        let start: CGPoint
+        var center: CGPoint
+        var scale: CGFloat = 1
+        var armed = false
+        var merging = false
+    }
+
+    /// The scale of a pinch that arms it, and the scale over which it lets go of it again, so a hand that shakes at the
+    /// edge does not flip it.
+    private static let arms: CGFloat = 0.55
+    private static let disarms: CGFloat = 0.62
 
     private var openAnimation: Animation {
         reduceMotion ? .easeOut(duration: 0.15) : .spring(response: 0.42, dampingFraction: 0.82)
@@ -146,6 +176,15 @@ struct ChatGridView: View {
                     }
                     bar(cards)
                 }
+                // The grid covers the notice of the app, so it shows a refusal of the Mac itself, as of a merge.
+                .overlay(alignment: .top) {
+                    if let error = store.error {
+                        ErrorBanner(message: error) { store.error = nil }
+                            .padding(.horizontal, ChatGridLayout.margin)
+                            .transition(.opacity)
+                    }
+                }
+                .animation(.easeOut(duration: 0.2), value: store.error)
             }
             .scaleEffect(transform.scale, anchor: transform.anchor)
             .offset(transform.offset)
@@ -158,6 +197,10 @@ struct ChatGridView: View {
         .accessibilityAction(.escape) { close() }
         .onAppear { begin() }
         .onChange(of: store.chatGridCards().map(\.id)) { _, ids in join(ids) }
+        #if DEBUG && targetEnvironment(simulator)
+        // A task of its own, which no redraw of the cover cancels in the middle of the hold.
+        .onAppear { Task { await holdPreviewPinch() } }
+        #endif
         #if os(macOS)
         .onDisappear { removeKeys() }
         // A second Show working agents closes the grid, as the deck closes on a second Show all agents.
@@ -189,7 +232,7 @@ struct ChatGridView: View {
                             count: layout.columns)
         return ScrollView {
             LazyVGrid(columns: columns, spacing: ChatGridLayout.spacing) {
-                ForEach(cards) { bot in card(bot, layout: layout) }
+                ForEach(cards) { bot in card(bot, in: cards, layout: layout) }
             }
             // Cards that fit stand in the middle, between the top of the screen and the bar.
             .frame(maxWidth: .infinity, minHeight: layout.visible)
@@ -201,8 +244,11 @@ struct ChatGridView: View {
         }
         .scrollIndicators(.hidden)
         .scrollClipDisabled()
-        .scrollDisabled(phase != .grid)
+        .scrollDisabled(phase != .grid || pinch != nil)
         #if os(iOS)
+        .gesture(ChatGridPinch(began: beginPinch, changed: movePinch, ended: endPinch))
+        // A light tap when the cards are close enough to merge.
+        .sensoryFeedback(.impact(weight: .light), trigger: pinch?.armed ?? false) { old, new in new && !old }
         // The grid bounces also when its cards fit, so a pull down past the top can close it. The Mac leaves this
         // out: a swipe of a trackpad past the top would close the grid by mistake, and Escape closes it there.
         .scrollBounceBehavior(.always)
@@ -214,32 +260,68 @@ struct ChatGridView: View {
         #endif
     }
 
-    private func card(_ bot: Bot, layout: ChatGridLayout) -> some View {
-        ChatGridCard(bot: bot, layout: layout)
+    private func card(_ bot: Bot, in cards: [Bot], layout: ChatGridLayout) -> some View {
+        let moved = moved(bot.id)
+        return ChatGridCard(bot: bot, layout: layout)
+            .overlay {
+                RoundedRectangle(cornerRadius: ChatGridLayout.radius, style: .continuous)
+                    .strokeBorder(BoardStyle.control, lineWidth: 2)
+                    .opacity(pinch?.into == bot.id && pinch?.armed == true ? 1 : 0)
+            }
             .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { frames.value[bot.id] = $0 }
+            .scaleEffect(moved.scale)
+            .offset(moved.offset)
+            .opacity(moved.opacity)
+            .zIndex(moved.z)
             // Once a card zooms, the others stay away until the grid has gone.
             .opacity(zoom != nil && zoom?.id != bot.id ? 0 : 1)
             .onTapGesture { open(bot.id) }
             .accessibilityElement(children: .combine)
             .accessibilityAddTraits(.isButton)
             .accessibilityAction { open(bot.id) }
+            .accessibilityActions {
+                ForEach(cards.filter { $0.id != bot.id && $0.agentId == bot.agentId }) { other in
+                    Button("Merge with “\(Self.name(other))”") { merge(bot, other) }
+                }
+            }
             .accessibilityIdentifier("chat-grid-card-" + bot.id)
     }
 
+    /// Where a pinch puts a card. Its two cards follow the fingers as if the fingers held the grid, so each card stays
+    /// under its finger, and they shrink a little as they close in. The chat that stays is on top. Letting go slides
+    /// the other card under it, where it fades.
+    private func moved(_ id: String) -> (offset: CGSize, scale: CGFloat, opacity: Double, z: Double) {
+        guard let pinch, id == pinch.into || id == pinch.from else { return (.zero, 1, 1, 0) }
+        let stays = id == pinch.into
+        let frame = stays ? pinch.intoFrame : pinch.fromFrame
+        if pinch.merging {
+            if stays { return (.zero, 1, 1, 2) }
+            return (CGSize(width: pinch.intoFrame.midX - frame.midX, height: pinch.intoFrame.midY - frame.midY), 0.2, 0, 1)
+        }
+        let s = pinch.scale
+        let offset = CGSize(width: pinch.center.x - pinch.start.x + (s - 1) * (frame.midX - pinch.start.x),
+                            height: pinch.center.y - pinch.start.y + (s - 1) * (frame.midY - pinch.start.y))
+        let closed = min(max((1 - s) / (1 - Self.arms), 0), 1)
+        return (offset, !stays && pinch.armed ? 0.9 : 1 - 0.06 * closed, 1, stays ? 2 : 1)
+    }
+
     /// The count of the agents that work, in the middle, and Done at the side, as the tab overview of Safari has it.
+    /// During a pinch, Done steps aside for what letting go does.
     private func bar(_ cards: [Bot]) -> some View {
         HStack {
             Spacer(minLength: 0)
             Button("Done") { close() }
                 .buttonStyle(CoconutButtonStyle())
+                .opacity(pinch == nil ? 1 : 0)
                 .accessibilityIdentifier("chat-grid-done")
         }
         .overlay {
             if !cards.isEmpty {
-                Text(Self.summary(working: cards.filter { store.botPhase($0) != nil }.count,
-                                  waiting: cards.filter { store.botPhase($0) == nil && store.botNeedsYou($0) }.count))
+                Text(barText(cards))
                     .font(.footnote.monospacedDigit())
                     .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
                     .padding(.horizontal, BoardStyle.Space.m).padding(.vertical, BoardStyle.Space.xs)
                     .background(.ultraThinMaterial, in: Capsule())
                     .accessibilityIdentifier("chat-grid-count")
@@ -249,6 +331,19 @@ struct ChatGridView: View {
         .frame(height: ChatGridLayout.bar)
         .opacity(phase == .grid ? 1 : 0)
     }
+
+    /// What the bar says: the chat that letting go of a pinch merges into, why two cards do not merge, or the count.
+    private func barText(_ cards: [Bot]) -> String {
+        if let pinch {
+            if pinch.armed, let into = cards.first(where: { $0.id == pinch.into }) { return "Merge into “\(Self.name(into))”" }
+            if !pinch.merges, pinch.scale <= Self.arms { return "Only chats of the same project can merge" }
+        }
+        return Self.summary(working: cards.filter { store.botPhase($0) != nil }.count,
+                            waiting: cards.filter { store.botPhase($0) == nil && store.botNeedsYou($0) }.count)
+    }
+
+    /// The name of a card in what the grid says: the title of a further chat, else the name of the agent.
+    static func name(_ bot: Bot) -> String { bot.isChat ? bot.chatLabel : bot.name }
 
     /// "3 working", "3 working · 1 needs you", "2 need you", "None working".
     static func summary(working: Int, waiting: Int) -> String {
@@ -301,7 +396,7 @@ struct ChatGridView: View {
 
     /// The card fills the screen, then the chat shows without a push, and the grid fades away.
     private func open(_ id: String) {
-        guard phase == .grid else { return }
+        guard phase == .grid, pinch == nil else { return }
         if request.opened == id {
             close()
             return
@@ -330,6 +425,89 @@ struct ChatGridView: View {
             dismiss()
         }
     }
+
+    // MARK: Merge
+
+    /// A pinch begins with a finger on each of two cards. Any other pinch is not the grid's: it returns false.
+    private func beginPinch(_ first: CGPoint, _ second: CGPoint) -> Bool {
+        guard phase == .grid, pinch == nil, zoom == nil else { return false }
+        let cards = self.cards
+        func card(at point: CGPoint) -> Bot? { cards.first { frames.value[$0.id]?.contains(point) == true } }
+        guard let a = card(at: first), let b = card(at: second), a.id != b.id else { return false }
+        let (into, from) = Self.survivor(a, b)
+        guard let intoFrame = frames.value[into.id], let fromFrame = frames.value[from.id] else { return false }
+        let start = CGPoint(x: (first.x + second.x) / 2, y: (first.y + second.y) / 2)
+        pinch = Pinch(into: into.id, from: from.id, intoFrame: intoFrame, fromFrame: fromFrame,
+                      merges: a.agentId == b.agentId, start: start, center: start)
+        return true
+    }
+
+    private func movePinch(_ center: CGPoint, _ scale: CGFloat) {
+        guard var moved = pinch, !moved.merging else { return }
+        moved.center = center
+        moved.scale = min(max(scale, 0.15), 1.5)
+        let armed = moved.merges && moved.scale <= (moved.armed ? Self.disarms : Self.arms)
+        guard armed != moved.armed else {
+            pinch = moved
+            return
+        }
+        moved.armed = armed
+        withAnimation(.snappy(duration: 0.2)) { pinch = moved }
+    }
+
+    /// Letting go of an armed pinch merges the chats. Any other end puts the cards back.
+    private func endPinch(_ released: Bool) {
+        guard let ended = pinch, !ended.merging else { return }
+        guard released, ended.armed, let into = store.bots.first(where: { $0.id == ended.into }),
+              let from = store.bots.first(where: { $0.id == ended.from }) else {
+            withAnimation(.spring(response: 0.35, dampingFraction: 0.82)) { pinch = nil }
+            return
+        }
+        withAnimation(.easeIn(duration: 0.22)) { pinch?.merging = true }
+        Task {
+            try? await Task.sleep(for: .milliseconds(240))
+            withAnimation(.snappy) {
+                store.mergeChats(into: into, from: from)
+                pinch = nil
+            }
+        }
+    }
+
+    /// Merges the chats of two cards at once, for VoiceOver, which has no pinch.
+    private func merge(_ a: Bot, _ b: Bot) {
+        let (into, from) = Self.survivor(a, b)
+        withAnimation(.snappy) { store.mergeChats(into: into, from: from) }
+    }
+
+    /// The chat that stays when two cards merge, and the chat that goes into it. A project stays, as the Mac keeps it.
+    /// Of two chats, the older one stays and the newer one joins it.
+    static func survivor(_ a: Bot, _ b: Bot) -> (into: Bot, from: Bot) {
+        if !a.isChat { return (a, b) }
+        if !b.isChat { return (b, a) }
+        let first = a.createdAt.apiDate ?? .distantPast
+        let second = b.createdAt.apiDate ?? .distantPast
+        return second < first ? (b, a) : (a, b)
+    }
+
+    #if DEBUG && targetEnvironment(simulator)
+    /// `--demo --open grid-merge` holds a pinch of the first two cards of one project, then lets go of it. A simulator
+    /// takes no pinch from a terminal, so the hand check of the merge starts the app on it (ChatDeckPresenter).
+    private func holdPreviewPinch() async {
+        let arguments = ProcessInfo.processInfo.arguments
+        guard store.isDemo, let index = arguments.firstIndex(of: "--open"), arguments.indices.contains(index + 1),
+              arguments[index + 1] == "grid-merge" else { return }
+        try? await Task.sleep(for: .seconds(0.8))
+        let cards = self.cards
+        let pairs = cards.indices.flatMap { i in cards[(i + 1)...].map { (cards[i], $0) } }
+        guard let (a, b) = pairs.first(where: { $0.0.agentId == $0.1.agentId }),
+              let first = frames.value[a.id], let second = frames.value[b.id],
+              beginPinch(CGPoint(x: first.midX, y: first.midY), CGPoint(x: second.midX, y: second.midY)),
+              let start = pinch?.start else { return }
+        movePinch(start, 0.5)
+        try? await Task.sleep(for: .seconds(3))
+        endPinch(true)
+    }
+    #endif
 
     // MARK: Keyboard
 

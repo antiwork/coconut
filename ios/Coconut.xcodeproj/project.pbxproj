@@ -23,6 +23,7 @@
 		0B933DF2FA9824868655833C /* Noise.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6409D17E7F19827C918DD885 /* Noise.swift */; };
 		0C38F4A2D993E1604FB4DA70 /* PairingSetup.swift in Sources */ = {isa = PBXBuildFile; fileRef = F148539DFD85BF3879FA031A /* PairingSetup.swift */; };
 		0C7963316CE455F6ABEF5FDD /* DaySeparator.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA17F6B86E54A8B9D8A165C4 /* DaySeparator.swift */; };
+		0C95FE34E85CEF09410BA0CC /* MergedChatRow.swift in Sources */ = {isa = PBXBuildFile; fileRef = B238E854EED5C55E72D87FF5 /* MergedChatRow.swift */; };
 		0CE3FD694FA5FF40A3BE0B2B /* StateUpdates.swift in Sources */ = {isa = PBXBuildFile; fileRef = E047A026D090ABDE156F4AAF /* StateUpdates.swift */; };
 		0DD53CD5F1AF40BD9AEFDFF5 /* CoconutMacShare.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = CB0805EF92B357C282116D80 /* CoconutMacShare.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		0E115E85F7147FB4EAF1109E /* push-envelope.swift in Sources */ = {isa = PBXBuildFile; fileRef = F448A74041D874CA655251FF /* push-envelope.swift */; };
@@ -262,9 +263,11 @@
 		B1CD36F3065A747AD96BB30E /* ProcessNoticeRow.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4186B41A461A1A5C35FBF33E /* ProcessNoticeRow.swift */; };
 		B242F0A01EE8D3D6573C9BCF /* NotificationContent.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7CA9695EAB2F655862469B6C /* NotificationContent.swift */; };
 		B2DFFAEBE0BD65022D400E85 /* MacGlance.swift in Sources */ = {isa = PBXBuildFile; fileRef = E6E0A11CF7669FAC2F18EDF8 /* MacGlance.swift */; };
+		B4124375C7DB3A2CC398BECD /* MergedChatRow.swift in Sources */ = {isa = PBXBuildFile; fileRef = B238E854EED5C55E72D87FF5 /* MergedChatRow.swift */; };
 		B54E52C106C0F26DC8F33A50 /* SupportHandoffs.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1B695E283CBD8364A0FAB6ED /* SupportHandoffs.swift */; };
 		B5AFB604F249D7910BF7CEB7 /* ShareItems.swift in Sources */ = {isa = PBXBuildFile; fileRef = 49E4849F245C2982D84A3988 /* ShareItems.swift */; };
 		B5D1A8BE6C4E98AD6A098DF4 /* Home.swift in Sources */ = {isa = PBXBuildFile; fileRef = DA3E57857A5BE776F16DA660 /* Home.swift */; };
+		B5F50E5D9E085B2169E74594 /* ChatGridPinch.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6D3F0213D2BAC9F6296C1275 /* ChatGridPinch.swift */; };
 		B6EBC9B621DCB6CC6B50AA4B /* BotMentions.swift in Sources */ = {isa = PBXBuildFile; fileRef = B8BC9EE960764592EBC7C381 /* BotMentions.swift */; };
 		B8412C94199949B9ACE8F165 /* Routes.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA07287D8E8B821C1C945D80 /* Routes.swift */; };
 		BA70DB082B6B652644F9DB83 /* BusinessPeriods.swift in Sources */ = {isa = PBXBuildFile; fileRef = F039837ACEDD5BAAC10F0A23 /* BusinessPeriods.swift */; };
@@ -331,6 +334,7 @@
 		E9E8298FC7733957D8CCAACE /* TeamNotices.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2336F49F73947060895D6AAD /* TeamNotices.swift */; };
 		EA6609ACDBC474E3D42A6851 /* WorkActivity.swift in Sources */ = {isa = PBXBuildFile; fileRef = 191044A221F1EF2F77CD37D8 /* WorkActivity.swift */; };
 		EAC04248C852201538C8E66C /* ConversationTimestamps.swift in Sources */ = {isa = PBXBuildFile; fileRef = 85FE35330C6B3578235F72A6 /* ConversationTimestamps.swift */; };
+		EAC95FE27E6D4DB7BC03C756 /* ChatGridPinch.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6D3F0213D2BAC9F6296C1275 /* ChatGridPinch.swift */; };
 		EC9731506236390E56953EF1 /* mermaid.min.js in Resources */ = {isa = PBXBuildFile; fileRef = A1E9016F6861BCC1AAFCD8EB /* mermaid.min.js */; };
 		EE1579BAB4FDDA8811EBD45A /* ChatDeckView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3B252C8D2FF7AC9EFF6227FD /* ChatDeckView.swift */; };
 		EE829F49D569A8789B2FADD2 /* LinkPreviews.swift in Sources */ = {isa = PBXBuildFile; fileRef = 903AD4E2708B4A32290D084C /* LinkPreviews.swift */; };
@@ -486,6 +490,7 @@
 		69409F2D054CB7924336C9A0 /* Business.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Business.swift; sourceTree = "<group>"; };
 		6AA2396057CD5325BD54D0A7 /* DecisionPreviews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DecisionPreviews.swift; sourceTree = "<group>"; };
 		6B414E7E9F968575DD28C6A2 /* CoconutMac.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = CoconutMac.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		6D3F0213D2BAC9F6296C1275 /* ChatGridPinch.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatGridPinch.swift; sourceTree = "<group>"; };
 		6D6ED0DA53DA444633F861A5 /* MacShareInbox.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MacShareInbox.swift; sourceTree = "<group>"; };
 		733045D7C4C7256AF9744660 /* Usage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Usage.swift; sourceTree = "<group>"; };
 		7603EA9BBA8F58A8E5440011 /* TeamChat.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TeamChat.swift; sourceTree = "<group>"; };
@@ -541,6 +546,7 @@
 		AF78ECA5AAF444C7B0B3A210 /* ProfileView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProfileView.swift; sourceTree = "<group>"; };
 		B08638DC7DBFF79E2F881694 /* Theme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Theme.swift; sourceTree = "<group>"; };
 		B0B021992391F7146E07A782 /* CoconutWidgets.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = CoconutWidgets.entitlements; sourceTree = "<group>"; };
+		B238E854EED5C55E72D87FF5 /* MergedChatRow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MergedChatRow.swift; sourceTree = "<group>"; };
 		B5C532B556E6AC4611DC4B3F /* SettingsViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsViews.swift; sourceTree = "<group>"; };
 		B74D821023B1194DE11549AC /* TeamLog.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TeamLog.swift; sourceTree = "<group>"; };
 		B78CA35A955E85981763BFDA /* BoardSection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BoardSection.swift; sourceTree = "<group>"; };
@@ -751,6 +757,7 @@
 				5DC5E5DD482E6432698F08ED /* ChatDeckPresenter.swift */,
 				3B252C8D2FF7AC9EFF6227FD /* ChatDeckView.swift */,
 				68B2017E4372462B892B381C /* ChatGrid.swift */,
+				6D3F0213D2BAC9F6296C1275 /* ChatGridPinch.swift */,
 				5137DA013C0219DD57B22602 /* ChatSpend.swift */,
 				C5F99DD733E95E46E48B7BE0 /* ChatSummaries.swift */,
 				F10A7B1CED0436FAEEF28D16 /* Coconut.entitlements */,
@@ -787,6 +794,7 @@
 				149AD9F63EA164185C173F81 /* LiveActivity.swift */,
 				CF0EF03F4354527795B0C7B8 /* LiveView.swift */,
 				9BF9EE12E54B4787D2E6B806 /* MCPSettingsView.swift */,
+				B238E854EED5C55E72D87FF5 /* MergedChatRow.swift */,
 				4861BA2D14FED12544D4E695 /* MessageBanners.swift */,
 				78004F47AACBEB462A36AA3B /* MessageDraftView.swift */,
 				D5A5CE6296CF737CD3589D6C /* MessageForward.swift */,
@@ -1217,6 +1225,7 @@
 				942C032DF6A9FFE32FA843FE /* ChatDeckPresenter.swift in Sources */,
 				DAC489E385355FED3C0E5B2D /* ChatDeckView.swift in Sources */,
 				89F5889E269B5D63167088AF /* ChatGrid.swift in Sources */,
+				B5F50E5D9E085B2169E74594 /* ChatGridPinch.swift in Sources */,
 				97A292E173CDCE711D939F8B /* ChatSpend.swift in Sources */,
 				32BB73B8DFBCA8470F8DCE54 /* ChatSummaries.swift in Sources */,
 				1374C513472E49A360E09502 /* CoconutApp.swift in Sources */,
@@ -1259,6 +1268,7 @@
 				6FC0F33B81AAB8C90A26D69D /* MacPairingView.swift in Sources */,
 				3D5CF6751583AC56B193AC11 /* MacShareInbox.swift in Sources */,
 				BC051F22B284F252CD05C08B /* MenuBarIcon.swift in Sources */,
+				0C95FE34E85CEF09410BA0CC /* MergedChatRow.swift in Sources */,
 				1F4A2C4BDB8397C37252D8F0 /* MessageBanners.swift in Sources */,
 				BE17AA8A5AFFA3A3D953207A /* MessageDraftView.swift in Sources */,
 				CAB397DAAC2D22BCB7EE1F78 /* MessageForward.swift in Sources */,
@@ -1360,6 +1370,7 @@
 				79EFF53289BD7BF37A147BFD /* ChatDeckPresenter.swift in Sources */,
 				EE1579BAB4FDDA8811EBD45A /* ChatDeckView.swift in Sources */,
 				5837CA4B8CF6D059E509D0B8 /* ChatGrid.swift in Sources */,
+				EAC95FE27E6D4DB7BC03C756 /* ChatGridPinch.swift in Sources */,
 				8A095FC145ABE017F701C8B2 /* ChatSpend.swift in Sources */,
 				492D67EE9F463A1E80C0AA2D /* ChatSummaries.swift in Sources */,
 				A8E1E20FB19C388ACD17CA87 /* CoconutApp.swift in Sources */,
@@ -1397,6 +1408,7 @@
 				53E4F434E1B83297646DE36B /* LiveView.swift in Sources */,
 				061C88CB564F58F1D8B8D47F /* MCPSettingsView.swift in Sources */,
 				B2DFFAEBE0BD65022D400E85 /* MacGlance.swift in Sources */,
+				B4124375C7DB3A2CC398BECD /* MergedChatRow.swift in Sources */,
 				1CB9478644EB1289FFDA7E99 /* MessageBanners.swift in Sources */,
 				F81B2F287511865444AD03F8 /* MessageDraftView.swift in Sources */,
 				408177058733D06EF678F8D8 /* MessageForward.swift in Sources */,

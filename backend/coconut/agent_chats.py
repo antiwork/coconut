@@ -16,6 +16,10 @@ A chat goes to Archived by itself after a time without activity, as the person a
 is the setting auto_archive_hours: 14 hours until the person picks another time, or 0 for never, on You in the apps or
 in the Coconut chat. A chat that still has something to do or to show stays. A message of the person brings an archived
 chat back (_bring_back), so an old chat continues where it was.
+
+The person merges two chats of one project by pinching their cards together in the grid of the iPhone (merge_chat). One
+chat goes into the other: its agent stops, it goes to Archived, and the agent of the other chat gets its transcript and
+takes over its work.
 """
 from __future__ import annotations
 
@@ -48,6 +52,10 @@ NEWEST_MESSAGE = ("SELECT json_extract(data,'$.created_at') FROM messages WHERE 
                   "ORDER BY rowid DESC LIMIT 1")
 NEWEST_TASK = "SELECT json_extract(data,'$.updated_at') FROM tasks WHERE json_extract(data,'$.bot_id')=? ORDER BY rowid DESC LIMIT 1"
 TASK_BOTS = "SELECT json_extract(data,'$.bot_id'), json_extract(data,'$.conversation_bot_id') FROM tasks WHERE id=?"
+# The longest transcript of a merged chat that its merge message carries, and the longest message in it (merge_chat).
+# The newest messages stay.
+MERGE_TRANSCRIPT = 12000
+MERGE_MESSAGE = 3000
 
 
 def moment(value) -> datetime | None:
@@ -65,6 +73,34 @@ def chat_title(text: str) -> str:
     """The title of a chat from its first message: the first line with text, at most TITLE_LENGTH characters."""
     line = next((line.strip() for line in str(text).splitlines() if line.strip()), '')
     return line if len(line) <= TITLE_LENGTH else line[:TITLE_LENGTH - 1].rstrip() + '…'
+
+
+def chat_name(bot: dict) -> str:
+    """The name of a chat in a merge message, as the grid of the apps shows it: the title of a further chat, or the
+    name of a project."""
+    from .home_screen import chat_label
+    return chat_label(bot) if bot.get('chat_of') else bot.get('name') or 'Agent'
+
+
+def merge_transcript(messages: list[dict], cards: list[dict]) -> str:
+    """The transcript of a merged chat for the agent that takes it over: its visible messages, the newest last, and the
+    cards that waited for the person. Only the newest MERGE_TRANSCRIPT characters stay."""
+    lines = []
+    for message in reversed(messages):
+        text = message['text'].strip()
+        if len(text) > MERGE_MESSAGE:
+            text = text[:MERGE_MESSAGE].rstrip() + ' […]'
+        line = ('Person: ' if message['role'] == 'user' else 'Agent: ') + text
+        if lines and sum(map(len, lines)) + len(line) > MERGE_TRANSCRIPT:
+            lines.append('[Earlier messages are left out.]')
+            break
+        lines.append(line)
+    lines.reverse()
+    for card in cards:
+        labels = [option.get('label') for option in card.get('options') or [] if isinstance(option, dict) and option.get('label')]
+        lines.append(f'Card that waited for the person: {card.get("title") or "Untitled"}'
+                     + (f' (choices: {", ".join(labels)})' if labels else ''))
+    return '\n\n'.join(lines) if lines else 'The chat has no messages.'
 
 
 class AgentChats:
@@ -274,6 +310,77 @@ class AgentChats:
         self._event('bot.updated', self._public(bot), bot['id'])
         self._note_published(bot['id'], encoded(self._public(bot)))
         self._event('settings.updated', {'bot_id': bot['id']}, bot['id'])
+
+    def merge_chat(self, into: dict, data, callbacks: list) -> dict:
+        """POST /v1/bots/<id>/merge: the person pinched two cards of the grid together (ChatGridView in the apps), and
+        the chat of `chat_id` goes into this one. Its agent stops, maybe in the middle of a step, and it goes to
+        Archived, where it stays readable. A message of the person here carries its transcript and its open cards, so
+        the agent of this chat takes over its work (native_conversation.message_content). Both are chats of one
+        project, and a project never goes. Return the merged chat. The caller holds the transaction."""
+        from .native_conversation import visible_history
+        from .service_base import ServiceError
+        chat_id = data.get('chat_id') if isinstance(data, dict) else None
+        if not isinstance(chat_id, str) or not chat_id:
+            raise ServiceError(400, 'Send the chat_id of the chat to merge.')
+        if chat_id == into['id']:
+            raise ServiceError(400, 'A chat cannot merge into itself.')
+        chat = self._get('bots', chat_id)
+        if chat.get('_deleted'):
+            raise ServiceError(404, 'This chat was deleted.')
+        if not chat.get('chat_of'):
+            raise ServiceError(409, 'A project stays. Merge its chats into it instead.')
+        if not self._same_agent(into['id'], chat['id']):
+            raise ServiceError(409, 'Only chats of the same project can merge.')
+        if into['archived'] or chat['archived']:
+            raise ServiceError(409, 'Restore both chats before merging them.')
+        # An archived chat fires no routine, so a merge would stop it without a word.
+        if any(routine.get('bot_id') == chat['id'] and not routine.get('_deleted')
+               and (routine.get('enabled') or routine.get('state') not in (None, FINISHED_ROUTINE))
+               for routine in self._all('routines')):
+            raise ServiceError(409, 'This chat has a routine. Stop it before merging the chat.')
+        # A chat without a title takes the title of the chat that comes in, not of its merge message (_title_chat).
+        if into.get('chat_of') and not into.get('chat_title') and chat.get('chat_title'):
+            into = dict(self._get('bots', into['id']), chat_title=chat['chat_title'])
+            self._put('bots', into)
+        title, summary = chat_name(chat), f'Merged into “{chat_name(into)}”'
+        cards = [card for card in self._all('decisions')
+                 if card.get('status') == 'pending' and chat['id'] in (card.get('bot_id'), card.get('request_bot_id'))]
+        transcript = merge_transcript(visible_history(self._history(chat['id'])), cards)
+        active = [task['id'] for task in self._all('tasks')
+                  if task['status'] in self.ACTIVE and chat['id'] in (task['bot_id'], task.get('conversation_bot_id'))]
+        said = False
+        for index, task_id in enumerate(active):
+            task = self._get('tasks', task_id)
+            if task['status'] in self.ACTIVE:
+                # The last line of the chat says where its work went. An earlier stop keeps the usual line.
+                last = index == len(active) - 1
+                self._cancel(task, callbacks, summary=summary if last else None)
+                said = said or last
+        if not said:
+            self._message(chat['id'], summary, role='system', kind='status')
+            self._refresh_bot(chat['id'])
+        chat = self._get('bots', chat['id'])
+        chat.update(archived=True, _merged_into=into['id'])
+        self._publish_archive(chat)
+        self._message_interaction = dict(merged_chat=dict(id=chat['id'], title=title),
+                                         _merged_chat=dict(title=title, transcript=transcript))
+        try:
+            self._send(self._get('bots', into['id']), dict(text=f'Merged “{title}”', mode='auto'))
+        finally:
+            self._message_interaction = None
+        return self._bot_view(chat, self._request_model_catalog)
+
+    def _with_merges(self, history: list[dict], task: dict) -> list[dict]:
+        """The history of a turn, with the transcript on each merge message of the turn (merge_chat). The history leaves
+        out private fields, so the apps never get the transcript and only the agent reads it."""
+        identities = task.get('_turn_message_ids') or []
+        merges = {identity: json.loads(raw) for identity, raw in self.db.execute(
+            "SELECT id, json_extract(data,'$._merged_chat') FROM messages WHERE id IN (SELECT value FROM json_each(?)) "
+            "AND json_type(data,'$._merged_chat')='object'", (json.dumps(identities),))} if identities else {}
+        if not merges:
+            return history
+        return [dict(message, _merged_chat=merges[message['id']]) if message['id'] in merges else message
+                for message in history]
 
     def _delete_agent_chats(self, agent: dict, callbacks: list, *, audit: dict | None = None) -> None:
         """The chats of a removed agent go with it."""

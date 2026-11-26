@@ -270,6 +270,8 @@ struct Message: Codable, Identifiable, Equatable, Sendable {
     var reactionEvent: MessageReactionEvent? = nil
     /// A background process of Hermes that ended. The row shows it in place of the bubble (ProcessNoticeRow).
     var processNotice: ProcessNotice? = nil
+    /// The chat that the person merged into this one. The row shows it in place of the bubble (MergedChatRow).
+    var mergedChat: MergedChat? = nil
 }
 
 struct MessageDraft: Codable, Equatable, Sendable {

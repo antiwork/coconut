@@ -100,7 +100,18 @@ def attachment_context(attachments):
     return text
 
 
+# What a merge message tells the agent of the chat that stays (AgentChats.merge_chat). The person sees only
+# "Merged “<title>”", and the transcript follows.
+MERGED_CHAT = ('[The person merged the chat {title} into this chat. Coconut stopped the agent of that chat, maybe in the '
+               'middle of a step, and archived the chat. Take over its open work here. Check what is done before you '
+               'redo any of it, and ask again in this chat any question that still waits for the person. If nothing is '
+               'left to do, say so in one line. Its transcript follows, the newest message last.]\n\n')
+
+
 def message_content(message):
+    merged = message.get('_merged_chat')
+    if merged:
+        return MERGED_CHAT.format(title=json.dumps(merged.get('title', ''), ensure_ascii=False)) + merged.get('transcript', '')
     text = message['text']
     reference = message.get('reply_to')
     if reference and reference.get('role') == 'document':
