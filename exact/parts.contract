@@ -4,6 +4,7 @@
 // working line. A part draws what it is given. An action is the caller's: a part takes one as a prop, already bound to
 // its item (`choose=openChat(c.id)`), as ItemSections does in the list-detail pattern.
 use Attention, Card, ChatRow, Choice, Draft, FoundCard, FoundMessage, Message, Photo, Turn from "./shapes.contract"
+use CoconutLoader from "./loader.contract"
 
 // The time of a turn to the second, without leading zeros: 9s, 4m 5s, 1h 2m 5s (ConversationActivity.elapsed).
 fn elapsed(ms: number): string = ms < 60000 ? `${floor(max(ms, 0) / 1000)}s` : ms < 3600000 ? `${floor(ms / 60000)}m ${floor(ms / 1000) % 60}s` : `${floor(ms / 3600000)}h ${floor(ms / 60000) % 60}m ${floor(ms / 1000) % 60}s`
@@ -215,16 +216,18 @@ component Bubble
       text messageTime(m.at, now, offset) font="-exact-caption2" font-variant-numeric="tabular-nums" color="-exact-tertiary-label" padding="0px 12px" testId=`time-${m.id}`
 
 // One photo (PhotoTileRow.tile): a tile of 280 by 180 points alone, 236 by 180 beside others, with its caption under it.
-// A hairline keeps the edge of a white picture on the white page. A photo that loads shows the spinner and one that did
-// not load says so; a tap opens a photo that has loaded.
+// A hairline keeps the edge of a white picture on the white page. A photo that loads shows the coconut that waits, still
+// under Reduce Motion (`still`), and one that did not load says so; a tap opens a photo that has loaded. The tile keeps
+// its full strength while no tap opens it (`opacity=1`, which stops the host's dim of a disabled button), as Swift's does.
 component PhotoTile
   props
     photo: Photo
     wide: bool
+    still: bool
     open: action
   derive w = wide ? 280 : 236
   view
-    button press=open disabled=(photo.state != "ready") appearance="none" display="flex" flex-direction="column" gap=4 padding=0 width=w flex-shrink=0 text-align="start" aria-label=(photo.caption != "" ? `Photo, ${photo.caption}` : "Photo") testId=`photo-${photo.key}`
+    button press=open disabled=(photo.state != "ready") opacity=1 appearance="none" display="flex" flex-direction="column" gap=4 padding=0 width=w flex-shrink=0 text-align="start" aria-label=(photo.caption != "" ? `Photo, ${photo.caption}` : "Photo") testId=`photo-${photo.key}`
       column width=w height=180 box-sizing="border-box" border-radius=12 border-width=1 border-style="solid" border-color=line() overflow="hidden" background-color=surface() align-items="center" justify-content="center"
         if photo.state == "ready"
           image photo.src width=w height=180 object-fit="cover" aria-hidden=true testId="photo-image"
@@ -233,7 +236,7 @@ component PhotoTile
             image "symbol:photo" width=22 height=22 color="-exact-secondary-label" aria-hidden=true
             text "The photo did not load." font="-exact-footnote" color="-exact-secondary-label" text-align="center"
         else
-          progress aria-label="Loading the photo"
+          CoconutLoader(coconut=9.65, still=still, label="Loading the photo")
       if photo.caption != ""
         text photo.caption font="-exact-footnote" color="-exact-secondary-label" line-clamp=2 width=w
 
@@ -428,14 +431,18 @@ component UndoRow
         text "Undo"
 
 // What the agent does now, as BotStatusRow shows it under the newest message: the phase, then the time of its newest
-// step to the second, the model and the messages that wait, and the command in monospace under them.
+// step to the second, the model and the messages that wait, and the command in monospace under them. While the agent
+// writes, a small coconut juggles before the phase, except under Reduce Motion (`still`).
 component WorkingLine
   props
     turn: Turn
     now: number
+    still: bool
   view
     column padding="6px 14px 10px" gap=2 testId="working"
-      row gap=6 align-items="baseline" flex-wrap="wrap"
+      row gap=6 align-items="center" flex-wrap="wrap"
+        if turn.writing and not still
+          CoconutLoader(coconut=5, still=false, label="")
         text turn.phase font="-exact-subheadline" color="-exact-secondary-label" testId="working-phase"
         text `· ${elapsed(now - turn.startedAt)} · ${turn.model}${turn.queued > 0 ? ` · ${turn.queued} queued` : ""}` font="-exact-subheadline" font-variant-numeric="tabular-nums" color="-exact-secondary-label" testId="working-meta"
       if turn.detail != ""

@@ -17,6 +17,7 @@ TestFlight and Sparkle. The Python service in `backend/` is unchanged.
 |---|---|
 | `app.contract` | The root: Home and its search, a chat, the New project sheet, the composer and the menus |
 | `parts.contract` | Parts that only draw: face, unread badge, chat row, Needs attention row, the rows of a search (the title of a group, a card, a message and its words), the rows of a chat (bubble, quote, sender, day, New line, time, photo tile, file, Library page, background process, notice), the card with its options, draft, Undo and receipt, and the working line |
+| `loader.contract` | The coconut that waits (`CoconutLoader.swift`): three dots that break from the mark into a juggle, a throw that goes wide after 20 seconds and every 30 after, and the still mark that pulses under Reduce Motion |
 | `shapes.contract` | The records `app.ts` answers |
 | `app.ts` | The data module: the pairing, the connection to the Mac, the Mac's state and its cache, the search, attachments, and the fixture for the demo |
 | `tunnel.ts` | The phone's end of the tunnel (`docs/relay-transport.md`): pairing setups and the rendezvous box, Noise IK and IKpsk2 as the initiator, frames, requests as streams side by side |
@@ -52,7 +53,8 @@ The message box leaves while the field has focus or a search is open (`TabMessag
 Chat. The rows of `TranscriptMessageRow`, in the order and with the rules of `TranscriptPresentation`: a message with
 Markdown, a photo, a card, a file, a page of the Library, a background process of Hermes that ended, an activity line
 and the notices of a team, each with its time under it (`MessageTimes.label`), and the working line: the phase, the
-time of its newest step to the second, the model. The header names the chat itself (`Bot.chatLabel`). The day shows
+time of its newest step to the second, the model. While the agent writes, a small coconut juggles before the phase
+(`BotStatusRow`), except under Reduce Motion. The header names the chat itself (`Bot.chatLabel`). The day shows
 in a pill above the first row of each day (`DayPill`), and Slack's green New line goes above the first row of an agent
 that came since the person last read the chat, at the read mark that the chat opened with (`UnreadMark`). The
 person's own rows never take it, and the words that the person writes after the mark read the chat, so no row after
@@ -82,9 +84,10 @@ Home reads "Photo: caption". A file of the Mac comes through the tunnel (`GET /v
 each answer of `loadMedia`, the newest first, while the chat misses some and the socket is open. The phone keeps a
 tile of 840 pixels and a copy of 2400 for the viewer in `app:/tmp/upload/photos`, which the grants of build 19 name,
 and finds them there after a launch without a download; past 400 files the first look of a launch keeps only the open
-chat's. A photo shows the spinner while it loads, and "The photo did not load." when the Mac refuses the file or it is
-no image the phone reads; the next opening of the chat tries again. A photo that the phone sends keeps its copies for
-the file it becomes on the Mac, so it never loads back. In the demo the photos are the charts in `assets/demo`.
+chat's. A photo shows the coconut that waits while it loads (`loader.contract`), undimmed as in Swift although the tile
+takes no tap yet, and "The photo did not load." when the Mac refuses the file or it is no image the phone reads; the
+next opening of the chat tries again. A photo that the phone sends keeps its copies for the file it becomes on the Mac,
+so it never loads back. In the demo the photos are the charts in `assets/demo`.
 
 Cards (`Cards.swift`). A card has the earlier choice of a follow-up, its title, its sources (kind and title, no link
 yet), the size of a pull request to merge, and an X that dismisses it without an answer. While it waits it shows its
@@ -323,13 +326,26 @@ The local web host at 390 by 844 points, light and dark: the field under the tit
 bold, No Results, the box that leaves while the field has focus and comes back when it is empty, and a message and a
 card that open their chat. The Contract compiles with the pinned Exact, and `app.ts` passes `tsc --strict`.
 
+The coconut that waits, 2026-11-26. `loader.contract` writes each Track of `CoconutLoader.swift` as keyframes, with the
+y1 and y2 of a key as its `cubic-bezier`. A scratch script played those keyframes against `Juggle.holes` of the Swift
+file at 18,400 moments over 92 seconds, three throws that go wide among them: the dots stand at most 0.0006 of a coconut
+from Swift's, and the pulse under Reduce Motion at most 0.005 of opacity from Swift's. The web host showed it at 390 by
+844 points, light and dark, with a temporary edit of the demo (the photo of Payouts loads, the turn of Support writes):
+the tile, the working line, frames paused at chosen times (`document.getAnimations()`), and Chromium's Reduce Motion,
+under which the tile shows the still mark that pulses and the working line no coconut. The contract compiles with the 16
+warnings of main and no new one, and `app.ts` passes `tsc --strict`.
+
 Not done:
 
 - No run on a phone by an agent. A photo from a file of the Mac and an answer to a card on the Mac are checked with
   stand-ins only, until a phone takes the update.
-- The web host ran for phase 2, with 17 GB free (its toolchain was deleted afterwards), and for the search.
+- The web host ran for phase 2, for the search and for the coconut that waits; its toolchain was deleted after
+  each.
 - The search field of the phone is UIKit's search controller under the large title, and the web host draws a plain
   field: the field, its focus and its blur on a phone are not seen. The symbol of a card row draws only on Apple.
+- The juggle is unchecked on iOS, where Exact lowers it to Core Animation: translates in percent, an opacity that steps
+  (`step-end`), an iteration count of 0.476 after a negative delay, and two animations of one property, the later of
+  which wins.
 
 ## Build
 
@@ -395,7 +411,8 @@ An update over the air (loop 2), measured on 2026-11-19 with the update that add
 `gh workflow run` to the publish (the publish itself took 18 s), then it showed on Gianfranco's iPhone within a minute
 of opening the app, without a relaunch.
 
-Not yet measured: the time from save to screen on the web host, and a `push --watch` update.
+On the web host a save reaches the screen in about 3 seconds (the plan rebuilt in 2.6 s, 2026-11-26). Not yet measured:
+a `push --watch` update.
 
 ## Gaps found
 
@@ -427,6 +444,10 @@ Not yet measured: the time from save to screen on the web host, and a `push --wa
 - The search of the Swift app also finds to-dos and the pages of the Library, which this app does not have yet, and a
   message opens its chat at that message (`ConversationRoute` with `messageId`) and a card at its card
   (`decisionChatRoute`); here a row opens its chat at the end. Its ⌘K on the Mac is not ported.
+- The coconut of the working line stays 5 points at every text size, where Swift's grows with the text
+  (`@ScaledMetric`). It stands 6 points from the phase, as the phase does from the rest of the line; Swift's row spaces
+  its parts by 8. While the agent writes, the line is about 2.8 points taller, as in Swift: the coconut is 22.8 points
+  tall.
 - Not ported: the slash commands other than `/model` and `/effort` (new, compact, stop, mute, archive, help), mentions, the access menu, editing a queued message, link and GitHub previews,
   the schedule of a message, a pasted image in the message box or a composer (`AttachmentPaste`: Paste in the menu of
   the field on an iPhone, Command-V on a Mac), the fifth rule of Needs attention (stale data, which a preview has none of). Of the chat:
@@ -445,7 +466,10 @@ Not yet measured: the time from save to screen on the web host, and a `push --wa
   `chat_of` and `chat_title`), which a section of a project names by its title alone; the Mac sends `project_key`
   (coconut, gumroad, personal) for the order of the sections. Also the two buttons at the top right of the Swift app's
   Chats: Working (`WorkingFilterButton`), which lists only the chats that work or wait for the person, and the grid of
-  the agents that work (`ChatGridView`), which the Exact app has no deck for.
+  the agents that work (`ChatGridView`), which the Exact app has no deck for. Also the coconut of rows and buttons
+  (`CoconutLoader` `.row` and `.button`): the Exact app has none of the rows and buttons that wait with it in Swift yet
+  (earlier messages, an invite, Brainstorm). Nor the white coconut of Swift's viewer: the Exact viewer opens only a
+  photo that has loaded.
 - The pairing code lives in the memory of the data module. An update that applies while a phone pairs reloads the app,
   which then shows a new code, and the Mac seals its setup for the old one; send the new code. Keeping the code in the
   Keychain until the phone pairs would end this.
@@ -458,7 +482,7 @@ Keep it shipping until each phase reaches parity, and keep the bundle id of the 
 | Phase | Swift to port | Exact |
 |---|---|---|
 | 1 Live data | `APIClient`, `AppStore` (4,102), `Models`, `TunnelConnection`, `Onboarding`, pairing | Done: the pairing, the tunnel, the state and its updates, the model and effort (`/model`, `/effort`), attachments and the SQLite cache for a launch without the Mac are in `app.ts`, `tunnel.ts` and `crypto.ts` (see Live data). Attachments and the cache need the binary of their grants |
-| 2 Conversation | `ConversationView` (1,642), `Cards`, `MessagePhotos`, `MessageQueue`, `BotMentions`, `ModelSettingsView`, `LiveView`, `OmniSearch`, previews | Rows and cards done: days, the New line, senders and quotes, photos with their viewer, cards with sources, risk, previews, drafts, Undo and receipts, background processes and Library pages (see Photos and cards), and the search of chats, cards and messages (see Search). Left: the editing, the holding and the rest of the search in Not ported, `MessageQueue`, `BotMentions`, `LiveView` |
+| 2 Conversation | `ConversationView` (1,642), `Cards`, `MessagePhotos`, `MessageQueue`, `BotMentions`, `ModelSettingsView`, `LiveView`, `OmniSearch`, previews | Rows and cards done: days, the New line, senders and quotes, photos with their viewer, cards with sources, risk, previews, drafts, Undo and receipts, background processes and Library pages (see Photos and cards), the coconut that waits in photos and the working line, and the search of chats, cards and messages (see Search). Left: the editing, the holding and the rest of the search in Not ported, `MessageQueue`, `BotMentions`, `LiveView` |
 | 3 Team | `TeamChat` (2,093), `TeamChatView` (1,710), `TeamViews`, `Team`, `PeopleView` | A second family of chats and a notice board, over the same list |
 | 4 Business and library | `BusinessDashboard` and the other Business files, `Library`, `DocumentPage`, `UsageViews`, `DecisionInboxView`, `AgentProject`, `Bento`, `ChatDeckView` | Routes and tabs (`select(nav, name)`); Markdown for documents; charts as `svg` |
 | 5 Release | Bundle id, signing, TestFlight | Name the app `com.gumroad.coconut` so it replaces the Swift app; sign the IPA on CI as `testflight.yml` does (Exact has an EAS and a CI recipe); keys and a channel for updates |

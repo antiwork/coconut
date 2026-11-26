@@ -10,7 +10,7 @@
 // the SDK snapshot that Exact Build compiles with (2026-11-14) refuses a token name as a colour; name the tokens again
 // once its catalog is newer.
 // Colours, fonts, sizes and the safe area are the platform's unless a row says otherwise.
-use Ack, Chat, DeliveryState, Found, Home, Live, MacFound, Made, Media, PairCode, PairState, Photo, Saved, Sock, Suggestion, Time from "./shapes.contract"
+use Ack, Chat, DeliveryState, Found, Home, Live, MacFound, Made, Media, PairCode, PairState, Photo, Saved, Sock, Suggestion, Time, Viewport from "./shapes.contract"
 use ArtifactCard, AttentionRow, Bubble, CardView, ChatRowView, ChoiceButton, DayPill, DocumentCard, DraftBox, DraftButton, Face, NewLine, NoticeCard, PhotoTile, ProcessRow, RowTime, SearchCardRow, SearchHeader, SearchMessageRow, SenderLine, WorkingLine from "./parts.contract"
 use EmptyState from "exact:content"
 
@@ -52,6 +52,8 @@ component Coconut
   resource time = exactTime() as shape Time
   // The update that runs, and whether a newer one waits to apply.
   resource delivery = exactDelivery() as shape DeliveryState
+  // Reduce Motion, which keeps the coconut that waits still.
+  resource viewport = exactViewport() as shape Viewport
   resource saved = loadSaved(pairsRead) as shape Saved else empty()
   resource code = pairCode(codeRound) when mode == "pair" as shape PairCode else empty()
   resource pairing = pairWait(code.id, poll) when mode == "pair" and code.id != "" as shape PairState else empty()
@@ -92,6 +94,7 @@ component Coconut
   mutation modelSet as shape Ack queue refreshes chat, slash
   mutation effortSet as shape Ack queue refreshes chat, slash
   derive now = time.epochAtZero + since
+  derive still = viewport.prefersReducedMotion
   derive mode = demo ? "demo" : saved.paired ? "live" : "pair"
   // What the round connects for: the Mac's state, or the pairing of a setup that came into the box of the code. An
   // update that applies brings a new data module, which has no socket or handshake of the old one, so the number of the
@@ -373,12 +376,12 @@ component Coconut
                           SenderLine(sender=m.sender, mine=m.mine)
                         if m.photos.length == 1
                           for p in m.photos key=p.key
-                            PhotoTile(photo=p, wide=true, open=openPhotos(m.photos, 0))
+                            PhotoTile(photo=p, wide=true, still=still, open=openPhotos(m.photos, 0))
                         else
                           scroll width="100%" overflow-x="auto" overflow-y="hidden" scrollbar-width="none" testId=`photos-${m.id}`
                             row gap=8
                               for p, i in m.photos key=p.key
-                                PhotoTile(photo=p, wide=false, open=openPhotos(m.photos, i))
+                                PhotoTile(photo=p, wide=false, still=still, open=openPhotos(m.photos, i))
                         RowTime(id=m.id, at=m.at, now=now, offset=time.utcOffset, mine=m.mine)
                     else if m.kind == "activity"
                       text m.body font="-exact-footnote" color="-exact-secondary-label" padding="2px 12px" testId=`activity-${m.id}`
@@ -405,12 +408,12 @@ component Coconut
                           CardView(card=c, dismiss=closeCard(c.ref), undo=takeBack(c.ref))
                             if c.previews.length == 1
                               for p in c.previews key=p.key
-                                PhotoTile(photo=p, wide=true, open=openPhotos(c.previews, 0))
+                                PhotoTile(photo=p, wide=true, still=still, open=openPhotos(c.previews, 0))
                             else if c.previews.length > 1
                               scroll width="100%" overflow-x="auto" overflow-y="hidden" scrollbar-width="none" testId=`previews-${c.ref}`
                                 row gap=8
                                   for p, i in c.previews key=p.key
-                                    PhotoTile(photo=p, wide=false, open=openPhotos(c.previews, i))
+                                    PhotoTile(photo=p, wide=false, still=still, open=openPhotos(c.previews, i))
                             for d in c.drafts key=d.to
                               DraftBox(draft=d)
                             if c.pending and c.chosen == ""
@@ -424,7 +427,7 @@ component Coconut
                                     ChoiceButton(option=o, disabled=(o.approve and not c.previewsReady), pick=pickOption(c.ref, o.id))
                         RowTime(id=m.id, at=m.at, now=now, offset=time.utcOffset, mine=false)
                     else
-                      WorkingLine(turn=chat.turn, now=now)
+                      WorkingLine(turn=chat.turn, now=now, still=still)
               column flex-shrink=0 padding="6px 12px 8px" testId="composer-bar"
                 // The slash menu (ComposerSlashMenu) over the box: a row for each command, model or effort, and a mark on
                 // the one that every chat runs with. It shows only while the draft starts with a slash, so a chosen model

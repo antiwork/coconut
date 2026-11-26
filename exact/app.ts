@@ -1365,7 +1365,7 @@ const saveCache = async (storage: Storage, route: string, snap: Snapshot): Promi
 const status = (key = ''): Live => ({ version, pairs, error: lastError, quick: key !== '' && polled === key });
 
 const none: Project = { id: '', name: '', letter: '', face: 0 };
-const idle: Turn = { running: false, startedAt: 0, phase: '', detail: '', model: '', queued: 0 };
+const idle: Turn = { running: false, startedAt: 0, phase: '', writing: false, detail: '', model: '', queued: 0 };
 const emptyChat: Chat = { id: '', kind: 'agent', title: '', project: '', letter: '', face: 0, circle: false, messages: [], turn: idle, toolbar: false, live: false, missing: 0, muted: false };
 const rowDefaults: Message = {
   id: '', kind: 'text', mine: false, author: '', at: 0, title: '', body: '', detail: '', failed: false, startsDay: false, newLine: false, sender: '',
@@ -2021,7 +2021,7 @@ const sources: Sources = {
     // The working line is the last row of a chat whose agent works, with the model the chat runs with.
     if (chat.run) lines.push({ ...rowDefaults, id: 'working', kind: 'status' });
     const turn: Turn = chat.run
-      ? { running: true, startedAt: at + chat.run.startedAt, phase: chat.run.phase, detail: chat.run.detail, model: modelOfChat(chat.id), queued: chat.run.queued }
+      ? { running: true, startedAt: at + chat.run.startedAt, phase: chat.run.phase, writing: chat.run.phase === PHASES.writing, detail: chat.run.detail, model: modelOfChat(chat.id), queued: chat.run.queued }
       : idle;
     return {
       id: chat.id, kind: chat.kind, title: chat.label, project: chat.projectName, letter: chat.letter, face: chat.face, circle: chat.circle,
