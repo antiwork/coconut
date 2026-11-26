@@ -486,7 +486,8 @@ extension AppStore {
         guard let page = decode(["threads": threads, "before": NSNull(), "total": 6], as: TeamThreadPage.self),
               let messages = decode(["messages": [answer3, reply3, root3], "before": NSNull()], as: TeamMessagePage.self),
               let index = team?.rooms.firstIndex(where: { $0.room == room }) else { return }
-        let chat = TeamNamedChat(id: Self.previewNoticesChat, name: "Notices", createdAt: ago(20 * 1440), unread: 3,
+        let chat = TeamNamedChat(id: Self.previewNoticesChat, name: "Notices", createdAt: ago(20 * 1440),
+                                 mine: false, unread: 3,
                                  lastMessage: TeamLastMessage(bot: "t-\(room)-gumclaw", botName: "Gumclaw",
                                                               text: "Three chargebacks in an hour on one seller",
                                                               createdAt: ago(4)),

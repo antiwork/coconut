@@ -85,7 +85,7 @@ struct PeopleView: View {
                     ForEach(team.chats) { item in chatRow(item) }
                     if team.hasBoard {
                         BoardRow(symbol: team.room.bannerNotice?.kind.symbol ?? "megaphone",
-                                 tint: team.room.bannerNotice?.kind.tint ?? .secondary, title: "Notices",
+                                 tint: team.room.bannerNotice?.kind.tint ?? .secondary, title: "Notice board",
                                  detail: team.room.bannerNotice?.text,
                                  value: team.room.unseenNotices > 0 ? "\(team.room.unseenNotices) new" : nil)
                             .boardButton("people-notices-" + team.id) { pushRoute?(NoticeBoardRoute(roomId: team.id)) }
@@ -170,11 +170,13 @@ extension AppStore {
             + notices.joined(separator: ", ") + "]}]}"
         guard var rooms = try? APIJSON.decoder().decode(TeamRooms.self, from: Data(json.utf8)) else { return }
         rooms.rooms[0].canInvite = true
+        // Ada is a member and Grace is the admin, as for most people of a team. Each member makes a chat.
+        rooms.rooms[0].canMakeChats = true
         rooms.rooms[0].lastMessage = TeamLastMessage(member: "m3", memberName: "Lin", text: "The payout fix is in review.",
                                                      createdAt: ago(42))
         rooms.rooms[0].members = [
-            TeamMember(member: "m1", name: "Ada", admin: true, thisMac: true),
-            TeamMember(member: "m2", name: "Grace", direct: true),
+            TeamMember(member: "m1", name: "Ada", thisMac: true),
+            TeamMember(member: "m2", name: "Grace", admin: true, direct: true),
             TeamMember(member: "m3", name: "Lin", direct: true),
         ]
         rooms.rooms[0].directs = [

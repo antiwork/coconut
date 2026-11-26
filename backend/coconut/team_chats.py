@@ -1,9 +1,9 @@
 """The named chats of a team (docs/team-log.md, "Chats of a team").
 
-A team has the Team chat, and the admin makes more chats with a name. Each member reads each chat. A chat is one kept
-`chat` entry of the admin, and the ID of the chat is its entry ID. A rename is a new write of the entry, and a removal
-is a `delete` entry over it. A message and a `typing` entry name their chat in the field `chat`. TeamStore keeps the
-chats in `team_chats`.
+A team has the Team chat, and each member makes more chats with a name. Each member reads each chat. A chat is one
+kept entry of the member who made it: a `chat` entry of the admin, or a `member_chat` entry of another member. The ID of
+the chat is its entry ID. A rename is a new write of the entry, and a removal is a `delete` entry over it. A message and
+a `typing` entry name their chat in the field `chat`. TeamStore keeps the chats in `team_chats`.
 
 - `POST /v1/team/rooms/<room>/chats` with `{name}`: make a chat.
 - `PATCH /v1/team/rooms/<room>/chats/<id>` with `{name}`: rename it.
@@ -13,20 +13,21 @@ chats in `team_chats`.
 - `PUT /v1/team/rooms/<room>/chats/<id>/pin` with `{pinned}`, and `PUT /v1/team/rooms/<room>/pin` for the Team chat:
   the person pins or unpins the chat. Each member can do it, and the choice stays on this Mac.
 
-Only a paired device on the admin's Mac makes, renames and removes a chat. A paired device of each member mutes a
-chat. The routes of the Team chat take a chat in `chat`
-(team_messages.py, team_typing.py), and `GET /v1/team/rooms` gives `chats` and `can_manage_chats` (Team._team_view).
-No log line of this module has the name of a chat.
+A paired device on the Mac of each member makes a chat. Only the Mac of the member who made a chat renames and
+removes it, because only the writer of an entry replaces it (rule 3 of a reader). A paired device of each member mutes a
+chat. The routes of the Team chat take a chat in `chat` (team_messages.py, team_typing.py), and `GET /v1/team/rooms`
+gives `chats`, `can_make_chats` and `can_manage_chats` (Team._team_view). No log line of this module has the name of a
+chat.
 """
 from __future__ import annotations
 
 import hashlib
 from secrets import token_hex
 
-from .team_store import ACTIVE, MAX_CHAT_NAME, MAX_CHATS, entry_id
+from .team_store import ACTIVE, CHAT_KINDS, MAX_CHAT_NAME, MAX_CHATS, entry_id
 
 GONE_CHAT = 'This chat is no longer in the team.'
-ADMIN_ONLY = 'Only the admin of the team can change its chats.'
+NOT_MAKER = 'Only the member who made this chat can change it.'
 SAME_NAME = 'This team already has a chat with this name.'
 TOO_MANY = f'A team can have at most {MAX_CHATS} chats.'
 NOUN = 'the name of the chat'
@@ -36,11 +37,11 @@ class TeamChats:
     """The routes of the named chats, and the chat of a request of the Team chat routes. Team mixes this class in."""
 
     def team_chat_create(self, room_id: str, data: dict, device: str, repeat: str = '') -> dict:
-        """Make a named chat: a kept `chat` entry of the admin. With an `Idempotency-Key`, the entry ID comes from the
-        room, the device and the key, as for a message. So a repeat after a write without an answer finds that write
-        and makes no second chat."""
+        """Make a named chat: a kept entry of this member, of the kind `chat` on the admin's Mac and `member_chat` on
+        the Mac of another member. With an `Idempotency-Key`, the entry ID comes from the room, the device and the key,
+        as for a message. So a repeat after a write without an answer finds that write and makes no second chat."""
         from .team import team_errors
-        self._team_chat_admin(room_id, device)
+        self._team_chat_writer(room_id, device)
         name = self._team_chat_name(data)
         entry = hashlib.sha256(f'{room_id}:chat:{repeat}'.encode()).hexdigest()[:32] if repeat else token_hex(16)
         with team_errors(), self._team_room_lock(room_id):
@@ -52,38 +53,50 @@ class TeamChats:
                 else:
                     write = False
             if write:
-                self._team_write(room, entry, True, {'kind': 'chat', 'name': name}, tries=2)
+                kind = 'chat' if room['admin'] == room['member'] else 'member_chat'
+                self._team_write(room, entry, True, {'kind': kind, 'name': name}, tries=2)
         return dict(self._team_answer(room_id), chat=entry)
 
     def team_chat_rename(self, room_id: str, chat: str, data: dict, device: str) -> dict:
-        """Rename a named chat: a new write of its entry with the next `rev`. The same name writes nothing."""
+        """Rename a named chat: a new write of its entry with the next `rev` and the same kind. Only the Mac of the
+        member who made the chat writes it. The same name writes nothing."""
+        from .service_base import ServiceError
         from .team import team_errors
-        self._team_chat_admin(room_id, device)
+        self._team_chat_writer(room_id, device)
         name = self._team_chat_name(data)
         with team_errors(), self._team_room_lock(room_id):
             room = self._team_writable(room_id)
             with self.lock:
                 self._team_chat_named(room_id, chat)
-                write = self.team_store.chat(room_id, chat)['name'] != name
+                shown = self.team_store.chat(room_id, chat)
+                if shown['member'] != room['member']:
+                    raise ServiceError(403, NOT_MAKER)
+                kind = self.team_store.entry(room_id, chat)['kind']
+                write = shown['name'] != name
                 if write:
                     self._team_chat_fits(room_id, name, chat)
             if write:
-                self._team_write(room, chat, True, {'kind': 'chat', 'name': name}, tries=2)
+                self._team_write(room, chat, True, {'kind': kind, 'name': name}, tries=2)
         return dict(self._team_answer(room_id), chat=chat)
 
     def team_chat_delete(self, room_id: str, chat: str, device: str) -> dict:
-        """Remove a named chat for each member: a `delete` entry over its entry. A chat that is already removed, for
-        example after a delete without an answer, gets the same answer and writes nothing."""
+        """Remove a named chat for each member: a `delete` entry over its entry. Only the Mac of the member who made
+        the chat writes it, so a chat of another member answers 403. A chat that is already removed, for example after
+        a delete without an answer, gets the same answer and writes nothing."""
         from .service_base import ServiceError
         from .team import team_errors
-        self._team_chat_admin(room_id, device)
+        self._team_chat_writer(room_id, device)
         with team_errors(), self._team_room_lock(room_id):
             room = self._team_writable(room_id)
             with self.lock:
                 existing = self.team_store.entry(room_id, chat) if entry_id(chat) else None
-            if existing is None or existing['member'] != room['member'] or existing['kind'] not in ('chat', 'delete'):
+                shown = self.team_store.chat(room_id, chat) if existing else None
+            if shown is not None and shown['member'] != room['member']:
+                raise ServiceError(403, NOT_MAKER)
+            kind = existing['kind'] if existing and existing['member'] == room['member'] else None
+            if kind not in (*CHAT_KINDS, 'delete'):
                 raise ServiceError(404, GONE_CHAT)
-            if existing['kind'] == 'chat':
+            if kind in CHAT_KINDS:
                 self._team_write(room, chat, False, {'kind': 'delete'}, tries=2)
         return dict(self._team_answer(room_id), chat=chat)
 
@@ -138,16 +151,15 @@ class TeamChats:
         from .team import checked_name
         return checked_name(data.get('name'), NOUN, person=True, limit=MAX_CHAT_NAME)
 
-    def _team_chat_admin(self, room_id: str, device: str) -> None:
-        """Only a paired device on the admin's Mac changes the chats of an active room."""
+    def _team_chat_writer(self, room_id: str, device: str) -> None:
+        """Only a paired device on a person's Mac writes the chats of an active room. Each member makes a chat, and the
+        rename and the delete check the member who made it."""
         from .service_base import ServiceError
         from .team import PERSON_ONLY
         from .team_sync import INACTIVE
         if not device:
             raise ServiceError(403, PERSON_ONLY)
         room = self._team_room(room_id)
-        if room['admin'] != room['member']:
-            raise ServiceError(403, ADMIN_ONLY)
         if room['state'] != ACTIVE:
             raise ServiceError(409, INACTIVE[room['state']])
 
@@ -172,12 +184,13 @@ class TeamChats:
         return value
 
     def _team_chats_view(self, room: dict, members: list[dict]) -> list[dict]:
-        """`chats` of a room view: each named chat with the fields that the room has for the Team chat. On a person's
-        Mac each chat also has `notifications`: false when the person muted it. The caller holds the service lock."""
+        """`chats` of a room view: each named chat with the fields that the room has for the Team chat, and `mine`:
+        true when this Mac's member made it, so it can rename and remove it. On a person's Mac each chat also has
+        `notifications`: false when the person muted it. The caller holds the service lock."""
         muted = self.team_store.muted_chats(room['room']) if self._team_has_phones else None
         pinned = self.team_store.pinned_chats(room['room']) if self._team_has_phones else None
         return [dict(id=chat['entry'], name=chat['name'], created_at=chat['created_at'],
-                     **self._team_chat_summary(room, chat['entry']),
+                     mine=chat['member'] == room['member'], **self._team_chat_summary(room, chat['entry']),
                      typing=self._team_typing_view(room, members, chat['entry']),
                      **({'notifications': chat['entry'] not in muted, 'pinned': chat['entry'] in pinned}
                         if muted is not None else {}))

@@ -63,8 +63,11 @@ struct TeamRoom: Decodable, Identifiable, Equatable, Sendable {
     var typing: TeamTypingList? = nil
     /// The named chats of the team (docs/team-log.md, "Chats of a team"). An older service sends none.
     var chats: [TeamNamedChat]? = nil
-    /// True when this person can make, rename and delete the named chats: the Mac is the admin of an active team
-    /// (TeamChatManagement). An older service sends none, and none is false.
+    /// True when this person can make a named chat: each member of an active team can (TeamChatManagement). An older
+    /// service sends none, and the app then reads `canManageChats`.
+    var canMakeChats: Bool? = nil
+    /// True on the admin's Mac of an active team. An older service sends only this field, and there only the admin
+    /// makes, renames and deletes the named chats (TeamChatManagement). None is false.
     var canManageChats: Bool? = nil
     /// The direct chats of this person with a bot of the team, newest first (docs/team-log.md, "Direct chat with an
     /// agent"). Only a service that serves them sends it, for an app that asks with the header
