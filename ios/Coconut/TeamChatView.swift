@@ -1556,7 +1556,8 @@ struct TeamTypingRow: View {
             // The juggle ends the sentence: its coconuts land on the baseline of the last line of the text.
             HStack(alignment: .lastTextBaseline, spacing: dotsGap) {
                 Text(text).foregroundStyle(.secondary).lineLimit(2)
-                CoconutLoader(.typing).alignmentGuide(.lastTextBaseline) { $0.height * CoconutLoader.handLine }
+                CoconutLoader(.typing).foregroundStyle(.secondary)
+                    .alignmentGuide(.lastTextBaseline) { $0.height * CoconutLoader.handLine }
             }
         }
         .font(.subheadline)

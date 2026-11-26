@@ -24,7 +24,7 @@ struct BotStatusRow: View {
         VStack(alignment: .leading, spacing: 3) {
             HStack(spacing: 8) {
                 HStack(spacing: 8) {
-                    if writing { CoconutLoader(.typing).transition(.opacity) }
+                    if writing { CoconutLoader(.typing).foregroundStyle(.secondary).transition(.opacity) }
                     ZStack(alignment: .leading) {
                         ShimmerText(text: label, active: !activity.reconnecting)
                             .id(label)

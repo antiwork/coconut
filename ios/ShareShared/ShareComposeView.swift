@@ -76,7 +76,7 @@ struct ShareComposeView: View {
             Divider()
             HStack(spacing: BoardStyle.Space.s) {
                 if case .sending(let step, let steps) = model.phase {
-                    CoconutLoader(.row, label: nil)
+                    CoconutLoader(.row, label: nil).foregroundStyle(.secondary)
                     Text(Self.progress(step, steps)).font(.subheadline).foregroundStyle(.secondary)
                 }
                 Spacer()
