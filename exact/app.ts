@@ -52,6 +52,11 @@ type Draft = Card['drafts'][number];
 type Turn = Chat['turn'];
 type Live = Result<'sync'>;
 type Sock = Result<'socket'>;
+type Found = Result<'searchPhone'>;
+type FoundCard = Found['cards'][number];
+type FoundMessage = Found['messages'][number];
+type Span = FoundMessage['runs'][number];
+type MacFound = Result<'searchMac'>;
 
 // The parts of the fixture that are read here.
 interface FxOption { id: string; label: string; explanation: string; answer?: string; risk?: string | null; risk_level?: string | null }
@@ -688,6 +693,9 @@ const applying = (page: Page, snap: Snapshot): Snapshot | null => {
 // The decisions and tasks of the Mac's state, for the writes: a card's options and revision, a chat's running task.
 const decisions = new Map<string, LvDecision>();
 const running = new Map<string, string>();
+// The messages of the Mac that the search leaves out (OmniSearch.localMessages): one that streams, and one of another
+// kind than text, which its row may still show as words.
+const unsearched = new Set<string>();
 
 // A model id as a name: claude-opus-5-5 is Claude Opus 5.5.
 const modelName = (id: string): string => id.split('-').reduce((name, part) => {
@@ -843,6 +851,8 @@ const fromSnapshot = (snap: Snapshot): State => {
   const artifacts = new Map(snap.artifacts.map((a) => [a.id, a]));
   decisions.clear();
   for (const d of snap.decisions) decisions.set(d.id, d);
+  unsearched.clear();
+  for (const m of snap.messages) if (m.kind !== 'text' || m.streaming) unsearched.add(m.id);
   // An answer that went, a dismissal and a failure end once the Mac no longer has the card pending.
   for (const [ref, holding] of answers) if (holding.sending && decisions.get(ref)?.status !== 'pending') answers.delete(ref);
   for (const ref of dismissed) if (decisions.get(ref)?.status !== 'pending') dismissed.delete(ref);
@@ -1504,6 +1514,203 @@ const tidyPhotos = async (storage: Storage, chat: ChatState): Promise<void> => {
   }
 };
 
+// MARK: The search
+
+// The search of Home (OmniSearch): at most 8 chats, 3 cards and 20 messages, for the first 200 characters of the field.
+const CHAT_LIMIT = 8;
+const CARD_LIMIT = 3;
+const MESSAGE_LIMIT = 20;
+const QUERY_LIMIT = 200;
+
+// A text as the search compares it (OmniSearch.matching): without case, accents or width, so Ａ, á and a match. Greek
+// has one sigma.
+const fold = (text: string): string => text.replace(/[\uff00-\uffef]/g, (c) => c.normalize('NFKC')).normalize('NFD')
+  .replace(/\p{Mn}/gu, '').normalize('NFC').toLowerCase().replace(/ς/g, 'σ');
+// The fold of a text one character at a time: `from` and `to` are the place in the text, in code points, of the
+// character of each unit of `folded`, so a match in the fold marks the words of the text. A mark that folds away goes
+// with the character before it.
+const foldOf = (text: string): { folded: string; from: number[]; to: number[] } => {
+  let folded = '';
+  const from: number[] = [];
+  const to: number[] = [];
+  let i = 0;
+  for (const c of text) {
+    const f = fold(c);
+    i += 1;
+    if (f === '' && to.length > 0) to[to.length - 1] = i;
+    for (let k = 0; k < f.length; k++) {
+      from.push(i - 1);
+      to.push(i);
+    }
+    folded += f;
+  }
+  return { folded, from, to };
+};
+// The fold of each message, kept while the message is: every key in the field reads them all.
+const folds = new WeakMap<Msg, string>();
+const foldedBody = (m: Msg): string => {
+  const kept = folds.get(m);
+  if (kept !== undefined) return kept;
+  const f = fold(m.body);
+  folds.set(m, f);
+  return f;
+};
+
+// The words of a search (OmniSearch.words): a name or a message matches when it has each of them.
+const wordsOf = (query: string): string[] => fold(Array.from(query).slice(0, QUERY_LIMIT).join('')).split(/\s+/).filter((w) => w !== '');
+
+// How well a name matches (OmniSearch.rank): 0 when it starts with the search, 1 when each word starts a word of the
+// name, 2 when the words are inside it. Null when a word is missing.
+const rankOf = (name: string, words: string[]): number | null => {
+  const folded = fold(name);
+  if (words.length === 0 || !words.every((w) => folded.includes(w))) return null;
+  if (folded.startsWith(words.join(' '))) return 0;
+  const parts = folded.split(/[^\p{L}\p{N}\p{M}]+/u);
+  return words.every((w) => parts.some((p) => p.startsWith(w))) ? 1 : 2;
+};
+
+// A text on one line without the marks of Markdown (OmniSearch.plain): a link shows its words, and no star, underscore,
+// backtick, heading mark or bullet stays.
+const plain = (text: string): string => text
+  .replace(/!?\[([^\]]*)\]\([^)]*\)/g, '$1')
+  .replace(/^\s*(#{1,6}|[-*+>]|\d+\.)\s+/gm, '')
+  .replaceAll('**', '').replaceAll('__', '').replaceAll('`', '')
+  .split(/\s+/).filter((w) => w !== '').join(' ');
+
+const isSpace = (c: string): boolean => /\s/.test(c);
+// The words around the first match (OmniSearch.snippet): 40 characters before it and 160 after, cut at a space, with
+// "…" where the text goes on.
+const snippetOf = (text: string, word: string): string => {
+  const chars = Array.from(text);
+  const f = foldOf(text);
+  const match = f.folded.indexOf(word);
+  if (match < 0) return plain(chars.slice(0, 200).join(''));
+  const lower = f.from[match];
+  const upper = f.to[match + word.length - 1];
+  let start = Math.max(lower - 40, 0);
+  let end = Math.min(upper + 160, chars.length);
+  if (start > 0) {
+    const space = chars.slice(start, lower).findIndex(isSpace);
+    if (space >= 0) start += space + 1;
+  }
+  if (end < chars.length) {
+    for (let i = end - 1; i >= upper; i--) {
+      if (!isSpace(chars[i])) continue;
+      end = i;
+      break;
+    }
+  }
+  return (start > 0 ? '…' : '') + plain(chars.slice(start, end).join('')) + (end < chars.length ? '…' : '');
+};
+
+// A line in runs, each word of the search a hit, which the row shows in bold in the colour of the text
+// (OmniSearch.highlighted).
+const runsOf = (text: string, words: string[]): Span[] => {
+  const chars = Array.from(text);
+  const f = foldOf(text);
+  const hit = chars.map(() => false);
+  for (const word of words) {
+    for (let at = f.folded.indexOf(word); at >= 0; at = f.folded.indexOf(word, at + word.length)) {
+      for (let i = f.from[at]; i < f.to[at + word.length - 1]; i++) hit[i] = true;
+    }
+  }
+  const runs: Span[] = [];
+  chars.forEach((c, i) => {
+    const last = runs[runs.length - 1];
+    if (last && last.hit === hit[i]) last.text += c;
+    else runs.push({ text: c, hit: hit[i] });
+  });
+  return runs;
+};
+
+// The chats whose names have the words (OmniSearch.chats): the best match first, an archived chat after the others,
+// then the newest.
+const chatsFound = (s: State, zero: number, words: string[]): Row[] => {
+  const ranked: Array<{ row: Row; rank: number; archived: boolean }> = [];
+  for (const chat of s.chats.values()) {
+    const rank = rankOf(chat.title, words);
+    if (rank !== null) ranked.push({ row: rowOf(chat, zero), rank, archived: chat.archived === true });
+  }
+  return ranked.sort((a, b) => a.rank - b.rank || Number(a.archived) - Number(b.archived) || b.row.at - a.row.at)
+    .slice(0, CHAT_LIMIT).map((r) => r.row);
+};
+
+// The cards that wait whose titles have the words, the best match first, then the newest (OmniSearch.cards). A card
+// that its agent refreshes does not wait (Decision.isPending). A row opens the chat that holds the card
+// (AppStore.conversationBotId), and `detail` names the agent of the card (OmniSearch.owner).
+const cardsFound = (s: State, words: string[]): FoundCard[] => {
+  const ranked: Array<{ card: FoundCard; rank: number; at: number }> = [];
+  for (const w of s.waits) {
+    const where = cardIn(s, w.ref);
+    const held = where?.card;
+    const mac = decisions.get(w.ref);
+    const title = held ? (held.status === 'pending' && !held.refreshing ? held.title : null)
+      : mac && mac.status === 'pending' && mac.source_refreshing !== true ? mac.title : null;
+    const rank = title === null || dismissed.has(w.ref) ? null : rankOf(title, words);
+    if (title === null || rank === null) continue;
+    const chat = where?.chat.id ?? w.chat;
+    ranked.push({ card: { id: w.ref, chat, title, detail: s.chats.get(w.chat)?.title ?? 'Waiting' }, rank, at: w.at });
+  }
+  return ranked.sort((a, b) => a.rank - b.rank || b.at - a.at).slice(0, CARD_LIMIT).map((r) => r.card);
+};
+
+// A message that the search found: its chat, its time, whether the person wrote it, and its words around the match.
+interface Hit { id: string; chat: string; at: number; mine: boolean; snippet: string }
+
+// The text messages of the phone that have every word, newest first (OmniSearch.localMessages): those of the chats of
+// agents, as the Swift app searches the messages of its bots.
+const localHits = (s: State, zero: number, words: string[]): Hit[] => {
+  if (words.length === 0) return [];
+  const found: Array<{ chat: string; m: Msg }> = [];
+  for (const chat of s.chats.values()) {
+    if (chat.kind !== 'agent') continue;
+    for (const m of chat.messages) {
+      if (m.kind === 'text' && !unsearched.has(m.id) && words.every((w) => foldedBody(m).includes(w))) found.push({ chat: chat.id, m });
+    }
+  }
+  return found.sort((a, b) => b.m.at - a.m.at).slice(0, MESSAGE_LIMIT)
+    .map(({ chat, m }) => ({ id: m.id, chat, at: zero + m.at, mine: m.mine, snippet: snippetOf(m.body, words[0]) }));
+};
+
+// The messages that the Mac finds (AppStore.searchMessages): none without a connection, or from a Mac whose service
+// finds only the chats (it answers only bot_ids).
+const macHits = async (query: string): Promise<Hit[]> => {
+  const t = tunnel;
+  if (!t || !connected()) return [];
+  try {
+    const q = encodeURIComponent(Array.from(query).slice(0, QUERY_LIMIT).join(''));
+    const reply = await t.request('GET', `/v1/search?q=${q}`, headers('GET'));
+    if (reply.status !== 200) return [];
+    const answer = (await jsonOf(reply)) as { messages?: Array<{ id: string; bot_id: string; role: string; created_at: string; snippet: string }> };
+    return (answer.messages ?? []).map((m) => ({ id: m.id, chat: m.bot_id, at: parse(m.created_at), mine: m.role === 'user', snippet: plain(m.snippet) }));
+  } catch {
+    return [];
+  }
+};
+
+// The hits of the phone and of the Mac in one list, newest first (OmniSearch.merged). A hit of the Mac in a chat that
+// the phone does not show stays out.
+const merged = (s: State, local: Hit[], remote: Hit[]): Hit[] => {
+  const seen = new Set<string>();
+  const hits: Hit[] = [];
+  for (const h of [...local, ...remote]) {
+    if (seen.has(h.id) || s.chats.get(h.chat)?.kind !== 'agent') continue;
+    seen.add(h.id);
+    hits.push(h);
+  }
+  return hits.sort((a, b) => b.at - a.at).slice(0, MESSAGE_LIMIT);
+};
+
+// The rows of the hits: the name of the chat, "You: " before the words of the person, and whether the row above is in
+// the same chat (OmniSearch.continued), whose row then leaves out the name.
+const rowsOf = (s: State, hits: Hit[], words: string[]): FoundMessage[] => hits.map((h, i) => ({
+  id: h.id, chat: h.chat, name: s.chats.get(h.chat)?.title ?? 'Chat', at: h.at,
+  runs: runsOf((h.mine ? 'You: ' : '') + h.snippet, words), continued: i > 0 && hits[i - 1].chat === h.chat,
+}));
+
+// Each search of the Mac: one that a newer search follows within 200 ms asks nothing.
+let searchSeq = 0;
+
 const sources: Sources = {
   loadSaved: (_args, store) => {
     const saved = loadPairing(store);
@@ -1742,6 +1949,32 @@ const sources: Sources = {
       live,
       banner,
     };
+  },
+
+  // The search of Home (OmniSearch): the chats, the cards that wait and the text messages that the phone holds, at once.
+  // The messages of the Mac come with `searchMac`.
+  searchPhone: ([query, live, _version, zero]): Found => {
+    useLive = live;
+    launchAt = zero;
+    const s = ensure();
+    const at = zeroOf(s, zero);
+    const words = wordsOf(query);
+    return { q: query, chats: chatsFound(s, at, words), cards: cardsFound(s, words), messages: rowsOf(s, localHits(s, at, words), words) };
+  },
+
+  // The messages of a search with those of the Mac, 200 ms after the last key (OmniSearch.messages).
+  searchMac: async ([query, live, zero]): Promise<MacFound> => {
+    useLive = live;
+    searchSeq += 1;
+    const ask = searchSeq;
+    await new Promise((done) => setTimeout(done, 200));
+    if (ask !== searchSeq) return { q: '', messages: [] };
+    const words = wordsOf(query);
+    if (words.length === 0) return { q: query, messages: [] };
+    const remote = await macHits(query);
+    const s = ensure();
+    const at = zeroOf(s, zero);
+    return { q: query, messages: rowsOf(s, merged(s, localHits(s, at, words), remote), words) };
   },
 
   loadChat: ([zero, id, live, _version, offset, opened, _media]): Chat => {

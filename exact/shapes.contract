@@ -229,3 +229,39 @@ shape Live
   pairs: number
   error: string
   quick: bool
+
+// What the phone finds for the words of the search field of Home (OmniSearch): `q` is the search it answers, `chats`
+// the chats whose names have its words, `cards` the cards that wait whose titles have them, and `messages` the text
+// messages that have every word, newest first.
+shape Found
+  q: string
+  chats: ChatRow[]
+  cards: FoundCard[]
+  messages: FoundMessage[]
+
+// A card that waits, found by its title: `chat` holds it, and `detail` is the name of that chat, or Waiting.
+shape FoundCard
+  id: string
+  chat: string
+  title: string
+  detail: string
+
+// A message of a search (OmniSearch.MessageHit): its chat and the name of the chat, its time, and its words around the
+// first word of the search, cut in runs where each word of the search is `hit`. `continued` is a message in the chat of
+// the one above it, whose row leaves out the name.
+shape FoundMessage
+  id: string
+  chat: string
+  name: string
+  at: number
+  runs: Span[]
+  continued: bool
+
+shape Span
+  text: string
+  hit: bool
+
+// The messages of a search with those that the Mac finds (GET /v1/search), newest first.
+shape MacFound
+  q: string
+  messages: FoundMessage[]

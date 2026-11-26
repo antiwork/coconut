@@ -1,16 +1,18 @@
-// Coconut on Exact. Home: Needs attention, one flat list of chats (the unread ones first, then the newest), and a
-// message box that is always open, with a project picker that names the project the message goes to. A chat: its
-// messages with Markdown under the day they came, the New line, photos and their viewer, cards with their previews,
-// drafts and options, the working line, and the composer. Paired with a Mac, app.ts answers it from the Mac's
-// Coconut through the relay, and a round is one connection: `prepare` gets a socket ticket, `sock` is the socket,
-// `deliver` lets the answers that wait for it go on, and `live` is the handshake and the sync. Before a pairing the app
-// shows a pairing code; "Look around with demo data" answers from the preview fixture of the Swift app
-// (ios/Coconut/Fixtures). app.forma has the palette of Theme.swift. The rows write its values out, because the SDK
-// snapshot that Exact Build compiles with (2026-11-14) refuses a token name as a colour; name the tokens again once its
-// catalog is newer.
+// Coconut on Exact. Home: the search field, Needs attention, one flat list of chats (the unread ones first, then the
+// newest), and a message box that is always open, with a project picker that names the project the message goes to. In
+// place of the list, a search shows the chats, the cards that wait and the messages that have its words, and the box
+// leaves while it is open. A chat: its messages with Markdown under the day they came, the New line, photos and their
+// viewer, cards with their previews, drafts and options, the working line, and the composer. Paired with a Mac, app.ts
+// answers it from the Mac's Coconut through the relay, and a round is one connection: `prepare` gets a socket ticket,
+// `sock` is the socket, `deliver` lets the answers that wait for it go on, and `live` is the handshake and the sync.
+// Before a pairing the app shows a pairing code; "Look around with demo data" answers from the preview fixture of the
+// Swift app (ios/Coconut/Fixtures). app.forma has the palette of Theme.swift. The rows write its values out, because
+// the SDK snapshot that Exact Build compiles with (2026-11-14) refuses a token name as a colour; name the tokens again
+// once its catalog is newer.
 // Colours, fonts, sizes and the safe area are the platform's unless a row says otherwise.
-use Ack, Chat, DeliveryState, Home, Live, Made, Media, PairCode, PairState, Photo, Saved, Sock, Suggestion, Time from "./shapes.contract"
-use ArtifactCard, AttentionRow, Bubble, CardView, ChatRowView, ChoiceButton, DayPill, DocumentCard, DraftBox, DraftButton, Face, NewLine, NoticeCard, PhotoTile, ProcessRow, RowTime, SenderLine, WorkingLine from "./parts.contract"
+use Ack, Chat, DeliveryState, Found, Home, Live, MacFound, Made, Media, PairCode, PairState, Photo, Saved, Sock, Suggestion, Time from "./shapes.contract"
+use ArtifactCard, AttentionRow, Bubble, CardView, ChatRowView, ChoiceButton, DayPill, DocumentCard, DraftBox, DraftButton, Face, NewLine, NoticeCard, PhotoTile, ProcessRow, RowTime, SearchCardRow, SearchHeader, SearchMessageRow, SenderLine, WorkingLine from "./parts.contract"
+use EmptyState from "exact:content"
 
 routes nav
   home "/"
@@ -24,6 +26,9 @@ component Coconut
   state draft = ""
   state chatDraft = ""
   state composing = false
+  // The words of the search field of Home, and whether the field has the keyboard.
+  state query = ""
+  state searchFocus = false
   // The files of the next message, as the pickers gave them, and which of them came from the photo library.
   state attached: Picked[] = []
   state photos: string[] = []
@@ -55,6 +60,10 @@ component Coconut
   resource pump = deliver(sock.n) when sock.n > 0 as shape number else empty()
   resource live = sync(connectKey, sock.status == "open" and sock.key == connectKey, refresh) when connectKey != "" as shape Live else empty()
   resource home = loadHome(time.epochAtZero, target, mode == "live", live.version) when mode != "pair" as shape Home else empty()
+  // The search of Home: the chats, the cards and the messages of the phone at once (`found`), then the messages with
+  // those of the Mac (`more`), 200 ms after the last key. Each answers with the words it searched (`q`).
+  resource found = searchPhone(query, mode == "live", live.version) with time.epochAtZero when searching and mode != "pair" as shape Found else empty()
+  resource more = searchMac(query, mode == "live") with time.epochAtZero when searching and mode == "live" as shape MacFound else empty()
   // A chat reads its rows again for each photo that the phone kept (`media.n`), and its days in the zone of the person.
   resource chat = loadChat(time.epochAtZero, openId, mode == "live", live.version, time.utcOffset, opened, media.n) when openId != "" and mode != "pair" as shape Chat else empty()
   // The photos of the open chat come from the Mac one in each answer (`mediaRound`, see `fetchingMedia`).
@@ -64,20 +73,20 @@ component Coconut
   // false keeps the rows it had, so the menu and Send read them only while the draft starts with a slash (`slashing`),
   // and an empty draft asks once more, which empties them: a chosen model or effort empties the box (#575).
   resource slash = suggest(openId, chatDraft, mode == "live", live.version) when openId != "" and mode != "pair" and (slashing or chatDraft == "") as shape Suggestion[] else empty()
-  mutation started as shape Made queue refreshes home then afterStart
-  mutation created as shape Made refreshes home then afterCreate
+  mutation started as shape Made queue refreshes home, found then afterStart
+  mutation created as shape Made refreshes home, found then afterCreate
   // A write to the Mac is a queue: a newer send of a mutation that takes the newest reply lets the answer in flight go,
   // and an answer let go stops wherever it is on the connection that every answer shares (app.ts, `write`).
-  mutation read as shape Ack queue refreshes home
+  mutation read as shape Ack queue refreshes home, found
   // A write needs no read of its own after it: the Mac's change ends the read that waits for one (see `following`).
-  mutation queued as shape Made refreshes chat, home then afterQueued
-  mutation sent as shape Ack queue refreshes chat, home
-  mutation stopped as shape Ack queue refreshes chat, home
+  mutation queued as shape Made refreshes chat, home, found then afterQueued
+  mutation sent as shape Ack queue refreshes chat, home, found
+  mutation stopped as shape Ack queue refreshes chat, home, found
   // A choice on a card shows at once with Undo (`chosen`), and `answered` sends it once the Undo has passed. Both are
   // queues, so a choice on a second card waits for the first instead of letting it go.
-  mutation chosen as shape Made queue refreshes chat, home then afterChoose
-  mutation answered as shape Ack queue refreshes chat, home
-  mutation undone as shape Ack refreshes chat, home
+  mutation chosen as shape Made queue refreshes chat, home, found then afterChoose
+  mutation answered as shape Ack queue refreshes chat, home, found
+  mutation undone as shape Ack refreshes chat, home, found
   mutation dismissed as shape Ack queue refreshes chat, home
   // The menu asks again once the Mac took a model or an effort, so a `/model` typed before its answer moves the mark.
   mutation modelSet as shape Ack queue refreshes chat, slash
@@ -99,6 +108,15 @@ component Coconut
   derive attentionTotal = sum(home.attention.map(a => a.count))
   derive hasText = draft.trim() != ""
   derive chatHasText = chatDraft.trim() != ""
+  // The field has words, so the list shows what the search finds. A resource whose `when` turns false keeps its
+  // answer, so the rows read the search only while the field has words, and they take the messages of the Mac once
+  // those answer these words. An empty search says so once each list answered its words.
+  derive searching = query.trim() != ""
+  derive hits = more.q == query ? more.messages : found.messages
+  derive searched = found.q == query and (mode != "live" or more.q == query)
+  derive searchEmpty = searched and found.chats.length == 0 and found.cards.length == 0 and hits.length == 0
+  // The box under the list leaves while the search is open, so the keyboard has one field (TabMessageBox).
+  derive hideBar = searching or searchFocus
   derive canSend = chatHasText or attached.length > 0
   derive slashing = chatDraft.slice(0, 1) == "/"
   derive sending = pending(queued) or pending(sent)
@@ -162,6 +180,13 @@ component Coconut
   action openNew
     projectName = ""
     nav = push(nav, "/new")
+  // The search field of Home.
+  action search(v: string)
+    query = v
+  action focusSearch
+    searchFocus = true
+  action blurSearch
+    searchFocus = false
   // The box of Home: the project it sends to, the words, and Send, which starts a chat with that project.
   action pickProject(id: string)
     target = id
@@ -276,25 +301,48 @@ component Coconut
         for e in stack(nav) key=e.id
           if e.name == "home"
             column navigationKey=`${e.id}` navigationScroll="home-scroll" position="absolute" inset=0 display="flex" flex-direction="column" background-color="light-dark(#ffffff, #111111)"
-              // The list is titled Agents, as the Agents tab of the Swift app is.
-              header display="flex" align-items="center" padding="8px 16px"
+              // The list is titled Agents, as the Agents tab of the Swift app is. Under the title, the search field (iOS:
+              // UIKit's search controller) finds as the person types.
+              header display="flex" flex-wrap="wrap" align-items="center" gap=8 padding="8px 16px"
                 text "Agents" role="heading" aria-level=1 flex=1 testId="home-title"
+                input type="search" value=query input=search focus=focusSearch blur=blurSearch placeholder="Search" aria-label="Search" width="100%" testId="search"
               if home.banner != ""
                 text home.banner font="-exact-footnote" color="-exact-secondary-label" padding="0px 16px 6px" testId="home-banner"
-              scroll id="home-scroll" flex=1 min-height=0 keyboardDismissMode="on-drag" testId="home-scroll"
-                if home.attention.length > 0
-                  column gap=8 padding="4px 16px 12px" testId="attention-card"
-                    row align-items="center" gap=8 testId="attention-header"
-                      text "Needs attention" font="-exact-subheadline" font-weight=600 color="-exact-system-red"
-                      text `${attentionTotal}` font="-exact-caption1" font-weight=600 font-variant-numeric="tabular-nums" color="#ffffff" background-color="-exact-system-red" border-radius=9 min-width=18 height=18 padding="0px 6px" text-align="center" line-height="18px" box-sizing="border-box" testId="attention-count"
-                    column border-radius=12 background-color="light-dark(rgb(255 56 60 / 0.08), rgb(255 66 69 / 0.08))" border-width=1 border-style="solid" border-color="light-dark(rgb(255 56 60 / 0.22), rgb(255 66 69 / 0.22))" overflow="hidden"
-                      for a, i in home.attention key=a.id
-                        AttentionRow(item=a, first=(i == 0), choose=openChat(a.chat))
-                // One list, with no tabs: the person found that nobody taps them (2026-11-24). The unread chats come
-                // first (app.ts, loadHome), and archived chats sit among the others by their newest message.
-                for c in home.chats key=c.id
-                  ChatRowView(chat=c, now=now, offset=time.utcOffset, choose=openChat(c.id))
-              column flex-shrink=0 padding="6px 12px 8px" testId="home-bar"
+              // Nothing has the words: no chat, no card, and no message of the phone or the Mac (HomeView.searchIsEmpty).
+              if searching and searchEmpty
+                EmptyState(symbol="symbol:search", title=`No Results for “${query.trim()}”`, message="Check the spelling or try a new search.")
+              else
+                scroll id="home-scroll" flex=1 min-height=0 keyboardDismissMode="on-drag" testId="home-scroll"
+                  // In place of the list, the search (HomeView.searchRows): the chats, the cards that wait and the messages,
+                  // each group under its title, and a group without hits does not show. A row opens its chat.
+                  if searching
+                    column padding="8px 0px 24px" testId="search-results"
+                      if found.chats.length > 0
+                        SearchHeader(title="Chats", first=true)
+                        for c in found.chats key=c.id
+                          ChatRowView(chat=c, now=now, offset=time.utcOffset, choose=openChat(c.id))
+                      if found.cards.length > 0
+                        SearchHeader(title="Cards", first=(found.chats.length == 0))
+                        for k in found.cards key=k.id
+                          SearchCardRow(card=k, choose=openChat(k.chat))
+                      if hits.length > 0
+                        SearchHeader(title="Messages", first=(found.chats.length == 0 and found.cards.length == 0))
+                        for h in hits key=h.id
+                          SearchMessageRow(hit=h, now=now, offset=time.utcOffset, choose=openChat(h.chat))
+                  else
+                    if home.attention.length > 0
+                      column gap=8 padding="4px 16px 12px" testId="attention-card"
+                        row align-items="center" gap=8 testId="attention-header"
+                          text "Needs attention" font="-exact-subheadline" font-weight=600 color="-exact-system-red"
+                          text `${attentionTotal}` font="-exact-caption1" font-weight=600 font-variant-numeric="tabular-nums" color="#ffffff" background-color="-exact-system-red" border-radius=9 min-width=18 height=18 padding="0px 6px" text-align="center" line-height="18px" box-sizing="border-box" testId="attention-count"
+                        column border-radius=12 background-color="light-dark(rgb(255 56 60 / 0.08), rgb(255 66 69 / 0.08))" border-width=1 border-style="solid" border-color="light-dark(rgb(255 56 60 / 0.22), rgb(255 66 69 / 0.22))" overflow="hidden"
+                          for a, i in home.attention key=a.id
+                            AttentionRow(item=a, first=(i == 0), choose=openChat(a.chat))
+                    // One list, with no tabs: the person found that nobody taps them (2026-11-24). The unread chats come
+                    // first (app.ts, loadHome), and archived chats sit among the others by their newest message.
+                    for c in home.chats key=c.id
+                      ChatRowView(chat=c, now=now, offset=time.utcOffset, choose=openChat(c.id))
+              column flex-shrink=0 padding="6px 12px 8px" display=(hideBar ? "none" : "flex") testId="home-bar"
                 column border-radius=24 background-color="light-dark(#f4f4f4, #212121)" testId="home-box"
                   textarea id="home-input" value=draft input=editDraft rows=1 field-sizing="content" max-height=140 placeholder=`Message ${home.target.name}` aria-label="Message" border="none" background-color="transparent" min-width=0 padding="12px 16px 4px" testId="home-input"
                   row align-items="center" gap=4 height=44 padding="0px 6px 6px 6px"

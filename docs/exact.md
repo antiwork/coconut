@@ -15,10 +15,10 @@ TestFlight and Sparkle. The Python service in `backend/` is unchanged.
 
 | File | What |
 |---|---|
-| `app.contract` | The root: Home, a chat, the New project sheet, the composer and the menus |
-| `parts.contract` | Parts that only draw: face, unread badge, chat row, Needs attention row, the rows of a chat (bubble, quote, sender, day, New line, time, photo tile, file, Library page, background process, notice), the card with its options, draft, Undo and receipt, and the working line |
+| `app.contract` | The root: Home and its search, a chat, the New project sheet, the composer and the menus |
+| `parts.contract` | Parts that only draw: face, unread badge, chat row, Needs attention row, the rows of a search (the title of a group, a card, a message and its words), the rows of a chat (bubble, quote, sender, day, New line, time, photo tile, file, Library page, background process, notice), the card with its options, draft, Undo and receipt, and the working line |
 | `shapes.contract` | The records `app.ts` answers |
-| `app.ts` | The data module: the pairing, the connection to the Mac, the Mac's state and its cache, attachments, and the fixture for the demo |
+| `app.ts` | The data module: the pairing, the connection to the Mac, the Mac's state and its cache, the search, attachments, and the fixture for the demo |
 | `tunnel.ts` | The phone's end of the tunnel (`docs/relay-transport.md`): pairing setups and the rendezvous box, Noise IK and IKpsk2 as the initiator, frames, requests as streams side by side |
 | `crypto.ts` | X25519 and Poly1305 of TweetNaCl, and SHA-256, HMAC, HKDF and ChaCha20 from their specs, in TypeScript: Exact's `crypto.subtle` has no X25519 and no ChaCha20-Poly1305 |
 | `app.forma` | The palette of `Theme.swift`: page, card, user bubble, warm accent, green, the red tints, the eight faces |
@@ -37,6 +37,17 @@ message, the unread badge, the green dot while the agent works. At the bottom a 
 a picker that names the project the message goes to and ends with New project. Send starts a chat with that project
 and leaves it closed: the chat is the newest row of the list, and the box keeps the keyboard for the next one (as
 `NewChatBar` of the Swift app).
+
+Search. Under the title, a search field finds as the person types (`OmniSearch`, the field of Chats in the Swift app).
+In place of the list it shows Chats, Cards and Messages, each under its title, and a group without hits does not show.
+A name or a text matches when it has every word of the first 200 characters, without case, accents or width (Ａ, á and
+a match). Chats: at most 8, a name that starts with the words first, then a name whose words start with them, then the
+rest, an archived chat after the others, then the newest. Cards: at most 3 that wait, in the same order. Messages: at
+most 20 text messages of the chats of agents, newest first, each as the words around its first match, with the words
+of the search in bold and "You: " before a message of the person; a row under one of the same chat leaves out the
+name. On a paired phone, the Mac's `GET /v1/search` adds the messages that the phone does not hold, 200 ms after the
+last key, and No Results waits for it; a hit in a chat that the phone does not show stays out. A row opens its chat.
+The message box leaves while the field has focus or a search is open (`TabMessageBox`).
 
 Chat. The rows of `TranscriptMessageRow`, in the order and with the rules of `TranscriptPresentation`: a message with
 Markdown, a photo, a card, a file, a page of the Library, a background process of Hermes that ended, an activity line
@@ -303,11 +314,22 @@ viewer, the draft card with Send and Discard, a card with its source, risk, prev
 after a choice, a background process opened, and, with a temporary edit of the demo, the Undo row, a photo that loads
 and options that wait for a preview.
 
+Search, 2026-11-26. `app.ts` under bun against the fixture: "payout" finds the chat Payouts, its two cards and four
+messages, newest first, the second message of Payouts without its name; "PÁYOUT" and "ｐａｙｏｕｔ" find the same; a
+lone accent, spaces and a word that no text has find nothing. Against the service of this repository in fixture mode,
+through a stand-in tunnel: the hits of the Mac and of the phone merge without a copy, Markdown leaves only its words, a
+message that the phone does not hold comes from the Mac, and a hit in a chat that the phone does not show stays out.
+The local web host at 390 by 844 points, light and dark: the field under the title, the three groups with the words in
+bold, No Results, the box that leaves while the field has focus and comes back when it is empty, and a message and a
+card that open their chat. The Contract compiles with the pinned Exact, and `app.ts` passes `tsc --strict`.
+
 Not done:
 
 - No run on a phone by an agent. A photo from a file of the Mac and an answer to a card on the Mac are checked with
   stand-ins only, until a phone takes the update.
-- The web host ran once, for phase 2, with 17 GB free; its toolchain was deleted afterwards.
+- The web host ran for phase 2, with 17 GB free (its toolchain was deleted afterwards), and for the search.
+- The search field of the phone is UIKit's search controller under the large title, and the web host draws a plain
+  field: the field, its focus and its blur on a phone are not seen. The symbol of a card row draws only on Apple.
 
 ## Build
 
@@ -402,7 +424,10 @@ Not yet measured: the time from save to screen on the web host, and a `push --wa
   suggestion of its own (`NewChatPlace`, `NewChatSuggestion`). This one lists the projects and ends with New project, as
   asked; the app has no tabs or team chats yet, so it has no Brainstorm of Product either (`Brainstorm.swift`, a talk by
   voice that fills the box of Product). A message from Home always starts a new chat with the project.
-- Not ported: the slash commands other than `/model` and `/effort` (new, compact, stop, mute, archive, help), search (`OmniSearch`: ⌘K on the Mac, the field of Chats on the iPhone, and the messages of `/v1/search`), mentions, the access menu, editing a queued message, link and GitHub previews,
+- The search of the Swift app also finds to-dos and the pages of the Library, which this app does not have yet, and a
+  message opens its chat at that message (`ConversationRoute` with `messageId`) and a card at its card
+  (`decisionChatRoute`); here a row opens its chat at the end. Its ⌘K on the Mac is not ported.
+- Not ported: the slash commands other than `/model` and `/effort` (new, compact, stop, mute, archive, help), mentions, the access menu, editing a queued message, link and GitHub previews,
   the schedule of a message, a pasted image in the message box or a composer (`AttachmentPaste`: Paste in the menu of
   the field on an iPhone, Command-V on a Mac), the fifth rule of Needs attention (stale data, which a preview has none of). Of the chat:
   Edit of a draft card (`MessageDraftEditor`), a reply to a card in words (`DecisionReplyComposer`), the links of a
@@ -433,7 +458,7 @@ Keep it shipping until each phase reaches parity, and keep the bundle id of the 
 | Phase | Swift to port | Exact |
 |---|---|---|
 | 1 Live data | `APIClient`, `AppStore` (4,102), `Models`, `TunnelConnection`, `Onboarding`, pairing | Done: the pairing, the tunnel, the state and its updates, the model and effort (`/model`, `/effort`), attachments and the SQLite cache for a launch without the Mac are in `app.ts`, `tunnel.ts` and `crypto.ts` (see Live data). Attachments and the cache need the binary of their grants |
-| 2 Conversation | `ConversationView` (1,642), `Cards`, `MessagePhotos`, `MessageQueue`, `BotMentions`, `ModelSettingsView`, `LiveView`, previews | Rows and cards done: days, the New line, senders and quotes, photos with their viewer, cards with sources, risk, previews, drafts, Undo and receipts, background processes and Library pages (see Photos and cards). Left: the editing and holding in Not ported, `MessageQueue`, `BotMentions`, `LiveView` |
+| 2 Conversation | `ConversationView` (1,642), `Cards`, `MessagePhotos`, `MessageQueue`, `BotMentions`, `ModelSettingsView`, `LiveView`, `OmniSearch`, previews | Rows and cards done: days, the New line, senders and quotes, photos with their viewer, cards with sources, risk, previews, drafts, Undo and receipts, background processes and Library pages (see Photos and cards), and the search of chats, cards and messages (see Search). Left: the editing, the holding and the rest of the search in Not ported, `MessageQueue`, `BotMentions`, `LiveView` |
 | 3 Team | `TeamChat` (2,093), `TeamChatView` (1,710), `TeamViews`, `Team`, `PeopleView` | A second family of chats and a notice board, over the same list |
 | 4 Business and library | `BusinessDashboard` and the other Business files, `Library`, `DocumentPage`, `UsageViews`, `DecisionInboxView`, `AgentProject`, `Bento`, `ChatDeckView` | Routes and tabs (`select(nav, name)`); Markdown for documents; charts as `svg` |
 | 5 Release | Bundle id, signing, TestFlight | Name the app `com.gumroad.coconut` so it replaces the Swift app; sign the IPA on CI as `testflight.yml` does (Exact has an EAS and a CI recipe); keys and a channel for updates |
