@@ -3869,7 +3869,8 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
     def _retry_stopped_turn(self, task_id, error) -> bool:
         """Queue a turn again that the gateway left unfinished, at most twice. A failed turn is broken work.
 
-        A tool that started without a receipt keeps the turn failed, so no action runs twice.
+        A tool that started without a receipt keeps the turn failed, so no action runs twice. The run of the turn that
+        follows tells the agent to check what already happened (gateway_chat.resumed_note).
         """
         from .gateway_bridge import GatewayStopped
         if not isinstance(error, GatewayStopped):
@@ -3881,7 +3882,8 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
                 return False
             self._withdraw_stream(task_id)
             current.update(status='queued', summary=error.resuming, updated_at=now(),
-                           _gateway_retries=current.get('_gateway_retries', 0) + 1)
+                           _gateway_retries=current.get('_gateway_retries', 0) + 1,
+                           _resumed=[current.get('_native_turn_id'), current.get('_resume_decision')])
             self._put('tasks', current)
             self._event('task.updated', self._public(current), current['bot_id'], task_id)
         return True

@@ -290,6 +290,9 @@ CARDS_NOTE_LIMIT = 20
 # A bot-originated turn that stopped for a message of the person runs again after the reply (preempt_for_person).
 PREEMPTED = ('Your earlier turn on this input stopped, so you could answer the person first. Continue it from the '
              'conversation. Do not repeat a step that already finished.\n')
+# A turn that the gateway left unfinished runs again with the same input (Service._retry_stopped_turn, resumed_note).
+RESUMED = ('Your earlier turn on this input stopped before its end. Its steps can be missing from this conversation. '
+           'Check what already happened before you act, and do not repeat a step that already finished.\n')
 # The audit text names the board tools of a worker. In the gateway, Coconut runs them on its own board.
 AUDIT_BOARD_TOOLS = ('\nIn this chat, call coconut_kanban_list, coconut_kanban_show, coconut_kanban_create and '
                      'coconut_kanban_comment for kanban_list, kanban_show, kanban_create and kanban_comment. They use '
@@ -443,6 +446,7 @@ class GatewayChat:
         if text is None:
             return False
         own = gateway_turn_own(request)
+        text = self.resumed_note(task) + text
         with self.lock:
             text += self.cards_note(task)
         # No person waits on bot traffic, so it may end in silence, for example when the bot's own rules ask for silence
@@ -485,6 +489,17 @@ class GatewayChat:
             return False
         LOG.info('Turn %s stops for the message of the person in task %s. It runs again after it.', task_id, person_task_id)
         return True
+
+    def resumed_note(self, task: dict) -> str:
+        """RESUMED for each run of a turn that the gateway left unfinished, else ''.
+
+        The mark names the turn ID of the stopped turn and the card answer that it ran, and it stays on the task. So a
+        run that starts again after a restart of Coconut gets the note too. New input gets a new turn ID
+        (Service._advance_input) and an answer to a card of the turn is another answer, so the mark never reaches them."""
+        with self.lock:
+            current = self._get('tasks', task['id'])
+        turn = current.get('_native_turn_id')
+        return RESUMED if turn is not None and current.get('_resumed') == [turn, current.get('_resume_decision')] else ''
 
     def _requeue_if_preempted(self, task_id: str, emit) -> None:
         """Put a turn that stopped for the person's message back in the queue, with the same input. A turn that ended
@@ -682,8 +697,9 @@ class GatewayChat:
                        instructions_changed=(decision.get('_answers') or [{}])[-1].get('instructions_changed'))
         # The recorded answer is the turn's own text. The notes and the live cards are context of this turn only.
         own = resume_prompt(request)
+        note = self.resumed_note(task)
         with self.lock:
-            text = own + work_notes(request) + self.cards_note(task)
+            text = note + own + work_notes(request) + self.cards_note(task)
         if gateway_claim_turn(task):
             return self._run_work_turn(task, bot, text, emit, own=own)
         # The card of a routine run continues the Hermes session of that run, which mote does not have.
