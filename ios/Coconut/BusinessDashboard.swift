@@ -233,7 +233,8 @@ struct SupportHomeView: View {
 
     var body: some View {
         DashboardPage {
-            SupportTiles(data: shownReport?.data, stale: shownReport?.stale == true, error: error) { Task { await load() } }
+            SupportTiles(data: shownReport?.data, stale: shownReport?.stale == true, csat: store.supportCsat,
+                         error: error) { Task { await load() } }
         }
         .task(id: "\(store.connection)/\(store.businessChanges)") { await load() }
         .onChange(of: store.businessGeneration) { _, _ in report = nil; error = nil }
@@ -253,6 +254,7 @@ struct SupportHomeView: View {
         } catch is CancellationError { }
         catch { self.error = error.localizedDescription }
         await store.loadSupportHandoffs(fresh: fresh)
+        await store.loadSupportCsat()
     }
 }
 
@@ -267,6 +269,8 @@ struct SupportTiles: View {
     /// Nil while the report loads, or when it could not load.
     let data: BusinessValue?
     var stale = false
+    /// How Support's customers felt (SupportCsat.swift), read from the Mac beside the report.
+    var csat: SupportCsat? = nil
     var error: String? = nil
     var retry: () -> Void = {}
     @Environment(\.bentoCompact) private var compact
@@ -308,6 +312,12 @@ struct SupportTiles: View {
                       size: compact ? .medium : .large, chevron: true)
         }
         .accessibilityIdentifier("support-resolution").bento(3, 1, compact: (1, 1))
+        // The score of the newest measured day, with the fourteen days behind it: a tap opens what Gumclaw read and
+        // the button that asks it to raise the score (SupportCsatView).
+        BentoLink(route: .csat) {
+            SupportCsatTile(csat: csat)
+        }
+        .bento(12, 1, compact: (2, 1))
     }
 
     /// The conversations that came in each day. A tap opens the open conversations, under the same chart with its axes.

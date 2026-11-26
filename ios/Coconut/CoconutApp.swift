@@ -618,6 +618,9 @@ extension CoconutHome {
         case "todos-support": open(.support, [BusinessRoute.todos(.support)])
         case "support-conversations": open(.support, [BusinessRoute.conversations("support")])
         case "support-resolution": open(.support, [BusinessRoute.resolution("support")])
+        // The score of Support's customers, with what Gumclaw read and the button that asks it to raise the score
+        // (SupportCsatView).
+        case "support-csat": open(.support, [BusinessRoute.csat])
         case "support-conversation":
             open(.support, [SupportThreadRoute(id: "sample-0", subject: "Payout timing question")])
         // The open conversations of Support as a deck of cards (SupportDeckView), from the one that waits longest.

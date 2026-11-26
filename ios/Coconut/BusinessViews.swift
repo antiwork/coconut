@@ -57,6 +57,7 @@ struct BusinessDestinationView: View {
         case .todos(let area): TodoListPage(area: area)
         case .conversations(let queue): SupportDetailView(queue: queue, part: .conversations)
         case .resolution(let queue): SupportDetailView(queue: queue, part: .resolution)
+        case .csat: SupportCsatView()
         }
         }.id(store.businessGeneration)
     }

@@ -64,6 +64,9 @@ final class AppStore {
     var riskReviews: RiskReviewList?
     /// The issues of the customer conversations that went to Gumclaw from Support (SupportHandoffs.swift).
     var supportHandoffs: SupportHandoffList?
+    /// The mood of Support's customers: the score of the newest measured day, its move and Gumclaw's read of it
+    /// (SupportCsat.swift).
+    var supportCsat: SupportCsat?
     /// The conversations that this app closed, with when. The rows of Support leave them out until a newer report
     /// (supportTickets).
     var supportClosedAt: [String: Date] = [:]

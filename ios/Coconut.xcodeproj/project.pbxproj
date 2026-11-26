@@ -28,6 +28,7 @@
 		0DD53CD5F1AF40BD9AEFDFF5 /* CoconutMacShare.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = CB0805EF92B357C282116D80 /* CoconutMacShare.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		0E115E85F7147FB4EAF1109E /* push-envelope.swift in Sources */ = {isa = PBXBuildFile; fileRef = F448A74041D874CA655251FF /* push-envelope.swift */; };
 		0E708C1B47846F82A49FC450 /* DecisionReplyComposer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 980EB12D70F1EC36BEAD57F7 /* DecisionReplyComposer.swift */; };
+		0EAB59D041FF612C970D0F0E /* SupportCsat.swift in Sources */ = {isa = PBXBuildFile; fileRef = 111CD863924388E575FC1691 /* SupportCsat.swift */; };
 		0EECE77304B9ECFD4E0D4ED7 /* GoogleSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8C9BD0948D4BFCF51D6F5A47 /* GoogleSettingsView.swift */; };
 		0F4ACB19D56FE420DA0E3E64 /* CoconutLoader.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8FDC931BD365E803A9C83056 /* CoconutLoader.swift */; };
 		0FBE71F2917658FC7E2EE812 /* PeopleView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA3A363D562BF930B8F9A826 /* PeopleView.swift */; };
@@ -348,6 +349,7 @@
 		F282AC112039B4318D41128A /* GoogleSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8C9BD0948D4BFCF51D6F5A47 /* GoogleSettingsView.swift */; };
 		F29D888AA60715995F5F5AC8 /* CoconutWidgets.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = 5C11039691D7A6C6EED75E50 /* CoconutWidgets.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		F40C913893E8346DE9F02C31 /* PeopleView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA3A363D562BF930B8F9A826 /* PeopleView.swift */; };
+		F43C247762A72817A5EC4FA1 /* SupportCsat.swift in Sources */ = {isa = PBXBuildFile; fileRef = 111CD863924388E575FC1691 /* SupportCsat.swift */; };
 		F4438077768DD6AFFC540DBC /* CardSourcesPreview.json in Resources */ = {isa = PBXBuildFile; fileRef = 7ED5A4D198004EB7F33EB977 /* CardSourcesPreview.json */; };
 		F44886C88B35D999D667B73E /* OmniSearch.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2DDEFC72969A47BA11F20390 /* OmniSearch.swift */; };
 		F44E98A6DDB9163438280BAD /* SettingsViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = B5C532B556E6AC4611DC4B3F /* SettingsViews.swift */; };
@@ -434,6 +436,7 @@
 		0DBFEB0208E202DBB84B0F8A /* MacMainWindow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MacMainWindow.swift; sourceTree = "<group>"; };
 		0F7D0F8D88BFF0F00891F0D9 /* PreviewStateFixture.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PreviewStateFixture.swift; sourceTree = "<group>"; };
 		10AE334C126D44C9599B2102 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
+		111CD863924388E575FC1691 /* SupportCsat.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SupportCsat.swift; sourceTree = "<group>"; };
 		124BFA46377F786FAC3CB2EE /* TunnelFrames.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TunnelFrames.swift; sourceTree = "<group>"; };
 		13008F56D0CE5C5153046E24 /* MarkdownUI */ = {isa = PBXFileReference; lastKnownFileType = folder; name = MarkdownUI; path = Packages/MarkdownUI; sourceTree = SOURCE_ROOT; };
 		149AD9F63EA164185C173F81 /* LiveActivity.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveActivity.swift; sourceTree = "<group>"; };
@@ -834,6 +837,7 @@
 				58902FCC4F76AF4C4BF4B674 /* SpendView.swift */,
 				E047A026D090ABDE156F4AAF /* StateUpdates.swift */,
 				BDEFBD4FEDF5DE66EB20E185 /* SupportConversation.swift */,
+				111CD863924388E575FC1691 /* SupportCsat.swift */,
 				3E495C6F820CDDAB038DCCE8 /* SupportDeck.swift */,
 				1B695E283CBD8364A0FAB6ED /* SupportHandoffs.swift */,
 				89E9F80C1D8CD858F6D8D921 /* Team.swift */,
@@ -1133,10 +1137,10 @@
 			targets = (
 				7F2F5A68FD83C168A0C2DF7F /* Coconut */,
 				7787C3C6ED299383A1BC9BDE /* CoconutMac */,
+				EA4F49BE2A097AF59701F398 /* CoconutMacShare */,
 				7BCB11B2D6BED2E788C53C6C /* CoconutNotificationService */,
 				631C8CF061CFAB8F50866E3E /* CoconutShare */,
 				5927D5E274D27A9E2FF4D82F /* CoconutWidgets */,
-				EA4F49BE2A097AF59701F398 /* CoconutMacShare */,
 			);
 		};
 /* End PBXProject section */
@@ -1321,6 +1325,7 @@
 				42C7E9A7DD0489682D7AB07A /* SpendView.swift in Sources */,
 				19A96D695D5D2C1EBD30410F /* StateUpdates.swift in Sources */,
 				A4073EC19928A4CD8903DC3F /* SupportConversation.swift in Sources */,
+				F43C247762A72817A5EC4FA1 /* SupportCsat.swift in Sources */,
 				A73DA47DEFED9ED7505FDED7 /* SupportDeck.swift in Sources */,
 				B54E52C106C0F26DC8F33A50 /* SupportHandoffs.swift in Sources */,
 				6E31A7C5E83E7F6F4EF4CF84 /* Team.swift in Sources */,
@@ -1463,6 +1468,7 @@
 				D912ADC33A21B4BD43D4FED1 /* SpendView.swift in Sources */,
 				0CE3FD694FA5FF40A3BE0B2B /* StateUpdates.swift in Sources */,
 				3E09D2F0BFE22E568A97578A /* SupportConversation.swift in Sources */,
+				0EAB59D041FF612C970D0F0E /* SupportCsat.swift in Sources */,
 				D058EABC62EF68684AE7B04A /* SupportDeck.swift in Sources */,
 				35F99A90D3B2F63724CE7915 /* SupportHandoffs.swift in Sources */,
 				63432758C5476346F4222543 /* Team.swift in Sources */,

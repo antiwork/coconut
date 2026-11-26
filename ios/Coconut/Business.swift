@@ -5,6 +5,9 @@ enum BusinessRoute: Hashable {
     /// The details that the tiles of a dashboard open (DashboardPage): every to-do of a tab, the open conversations of
     /// a support queue ("support" or "issues"), and the times to resolution of a queue with who closed them.
     case todos(TodoArea), conversations(String), resolution(String)
+    /// How Support's customers felt: the score of the newest measured day, its move, and what Gumclaw read in the
+    /// conversations, with the request that asks it to raise the score (SupportCsatView).
+    case csat
 }
 
 struct BusinessRepository: Decodable, Identifiable, Hashable, Sendable {
