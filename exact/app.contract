@@ -10,14 +10,15 @@
 // the SDK snapshot that Exact Build compiles with (2026-11-14) refuses a token name as a colour; name the tokens again
 // once its catalog is newer.
 // Colours, fonts, sizes and the safe area are the platform's unless a row says otherwise.
-use Ack, Chat, DeliveryState, Found, Home, Live, MacFound, Made, Media, PairCode, PairState, Photo, Saved, Sock, Suggestion, Time, Viewport from "./shapes.contract"
-use ArtifactCard, AttentionRow, Bubble, CardView, ChatRowView, ChoiceButton, DayPill, DocumentCard, DraftBox, DraftButton, Face, NewLine, NoticeCard, PhotoTile, ProcessRow, RowTime, SearchCardRow, SearchHeader, SearchMessageRow, SenderLine, QueueRow, WorkingLine from "./parts.contract"
+use Ack, Chat, DeliveryState, Draft, Edited, Found, Home, Live, MacFound, Made, Media, PairCode, PairState, Photo, Saved, Sock, Suggestion, Time, Viewport from "./shapes.contract"
+use ArtifactCard, AttentionRow, Bubble, CardView, ChatRowView, ChoiceButton, DayPill, DocumentCard, DraftBox, DraftButton, DraftEdit, Face, NewLine, NoticeCard, PhotoTile, ProcessRow, RowTime, SearchCardRow, SearchHeader, SearchMessageRow, SenderLine, QueueRow, WorkingLine from "./parts.contract"
 use EmptyState from "exact:content"
 
 routes nav
   home "/"
     chat "/chat/:id"
     new "/new"
+    draft "/draft"
     photo "/photo"
 
 component Coconut
@@ -36,6 +37,18 @@ component Coconut
   state attached: Picked[] = []
   state photos: string[] = []
   state projectName = ""
+  // The draft card that the sheet of Edit draft changes (MessageDraftEditor), the fields of its message, which of From
+  // and Reply to the draft has, and why the last Save did not go.
+  state editingRef = ""
+  state editVia = ""
+  state editFrom = ""
+  state editTo = ""
+  state editReplyTo = ""
+  state editSubject = ""
+  state editBody = ""
+  state editHasFrom = false
+  state editHasReplyTo = false
+  state editError = ""
   // The time since launch, written once a second: the age of a chat and the seconds of a turn read it.
   state since = 0
   // The demo answers from the fixture. A round is one connection to the Mac; `refresh` asks for its next read.
@@ -95,6 +108,8 @@ component Coconut
   mutation answered as shape Ack queue refreshes chat, home, found
   mutation undone as shape Ack refreshes chat, home, found
   mutation dismissed as shape Ack queue refreshes chat, home
+  // Save of Edit draft: the sheet closes once the Mac keeps the new message, and says why when it does not.
+  mutation draftSaved as shape Edited refreshes chat, home, found then afterDraftSave
   // The menu asks again once the Mac took a model or an effort, so a `/model` typed before its answer moves the mark.
   mutation modelSet as shape Ack queue refreshes chat, slash
   mutation effortSet as shape Ack queue refreshes chat, slash
@@ -113,6 +128,9 @@ component Coconut
   derive createdId = match created { case some(c) => c.id, case none => "" }
   derive queuedId = match queued { case some(q) => q.id, case none => "" }
   derive chosenId = match chosen { case some(c) => c.id, case none => "" }
+  derive draftSavedOk = match draftSaved { case some(e) => e.ok, case none => false }
+  derive draftSaveError = match draftSaved { case some(e) => e.error, case none => "" }
+  derive canSaveDraft = editTo.trim() != "" and editBody.trim() != "" and not pending(draftSaved)
   derive attentionTotal = sum(home.attention.map(a => a.count))
   derive hasText = draft.trim() != ""
   derive chatHasText = chatDraft.trim() != ""
@@ -277,6 +295,39 @@ component Coconut
     send undone = undoAnswer(ref)
   action closeCard(ref: string)
     send dismissed = dismissCard(chat.id, ref)
+  // Edit of a draft card (MessageDraftEditor): its message in a sheet, where Save keeps the change on the Mac. The card
+  // keeps Send and Discard, and the message goes only with Send.
+  action openDraft(ref: string, d: Draft)
+    editingRef = ref
+    editVia = d.via
+    editFrom = d.from
+    editTo = d.to
+    editReplyTo = d.replyTo
+    editSubject = d.subject
+    editBody = d.body
+    editHasFrom = d.from != ""
+    editHasReplyTo = d.replyTo != ""
+    editError = ""
+    nav = push(nav, "/draft")
+  action editFromField(v: string)
+    editFrom = v
+  action editToField(v: string)
+    editTo = v
+  action editReplyToField(v: string)
+    editReplyTo = v
+  action editSubjectField(v: string)
+    editSubject = v
+  action editBodyField(v: string)
+    editBody = v
+  action saveDraft
+    if canSaveDraft
+      editError = ""
+      send draftSaved = saveCardDraft(openId, editingRef, editFrom, editTo, editReplyTo, editSubject, editBody)
+  action afterDraftSave
+    if draftSavedOk
+      nav = back(nav)
+    else
+      editError = draftSaveError != "" ? draftSaveError : "Could not save the draft. Try again."
   // The photos of a row or of a card, full screen, from the one that was tapped (PhotoViewer).
   action openPhotos(list: Photo[], at: number)
     viewed = list
@@ -445,8 +496,13 @@ component Coconut
                             if c.pending and c.chosen == ""
                               if c.drafts.length > 0
                                 row gap=8 align-items="center" flex-wrap="wrap"
-                                  for o, i in c.options key=o.id
-                                    DraftButton(label=o.label, primary=(i == 0), pick=pickOption(c.ref, o.id))
+                                  // Send, Edit and Discard (MessageDraftActions): Edit opens the message in a sheet.
+                                  for o in c.options.slice(0, 1) key=o.id
+                                    DraftButton(label=o.label, primary=true, pick=pickOption(c.ref, o.id))
+                                  for d in c.drafts key=d.to
+                                    DraftEdit(edit=openDraft(c.ref, d))
+                                  for o in c.options.slice(1) key=o.id
+                                    DraftButton(label=o.label, primary=false, pick=pickOption(c.ref, o.id))
                               else
                                 column gap=8
                                   for o in c.options key=o.id
@@ -527,6 +583,40 @@ component Coconut
                 section
                   row
                     input value=projectName input=editName placeholder="Name" aria-label="Name" autofocus=true submit=saveProject testId="new-name" flex=1 min-width=0
+          // Edit draft (MessageDraftEditor): Via as it is, From and Reply to where the draft has them, To, Subject and the
+          // message. Cancel and Save wait while a Save goes.
+          if e.name == "draft"
+            column navigationKey=`${e.id}` navigationPresentation="modal" navigationScroll="draft-form" position="absolute" inset=0 display="flex" flex-direction="column" testId="draft-editor"
+              header display="flex" align-items="center" justify-content="space-between" padding="8px 16px"
+                button id="back" press=back disabled=pending(draftSaved) aria-label="Cancel" testId="draft-cancel"
+                  image "symbol:close"
+                text "Edit draft" role="heading"
+                button press=saveDraft buttonStyle="bordered-prominent" aria-label="Save" disabled=(not canSaveDraft) testId="draft-save"
+                  image "symbol:checkmark"
+              list id="draft-form" appearance="auto" listStyle="inset-grouped" flex=1 min-height=0
+                section
+                  row
+                    text "Via" flex=1
+                    text editVia color="-exact-secondary-label" testId="draft-via"
+                  if editHasFrom
+                    row
+                      input value=editFrom input=editFromField placeholder="From" aria-label="From" autocapitalize="none" autocorrect="off" spellcheck=false testId="draft-sender-field" flex=1 min-width=0
+                  row
+                    input value=editTo input=editToField placeholder="To" aria-label="To" autocapitalize="none" autocorrect="off" spellcheck=false testId="draft-recipient-field" flex=1 min-width=0
+                  if editHasReplyTo
+                    row
+                      input value=editReplyTo input=editReplyToField placeholder="Reply to" aria-label="Reply to" autocapitalize="none" autocorrect="off" spellcheck=false testId="draft-reply-to-field" flex=1 min-width=0
+                  row
+                    input value=editSubject input=editSubjectField placeholder="Subject" aria-label="Subject" testId="draft-subject-field" flex=1 min-width=0
+                section
+                  row
+                    textarea value=editBody input=editBodyField rows=10 field-sizing="content" min-height=220 aria-label="Message" font="-exact-body" border="none" background-color="transparent" testId="draft-body-field" flex=1 min-width=0
+                  footer
+                    text "Changes stay in the draft until you select Send."
+                if editError != ""
+                  section
+                    row
+                      text editError color="light-dark(#b84524, #fc855c)" testId="draft-error"
           // The photos full screen on black (PhotoViewer): Close, which of them is in view, the photo whole, its caption,
           // and the next and the last one.
           if e.name == "photo"

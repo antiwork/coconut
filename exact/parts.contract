@@ -417,6 +417,14 @@ component DraftButton
     button press=pick appearance="none" display="flex" align-items="center" justify-content="center" min-height=44 padding="0px 16px" border-radius=22 background-color=(primary ? "light-dark(#7a4e2d, #d4a574)" : "transparent") testId=`draft-${label}`
       text label font="-exact-body" font-weight=(primary ? 600 : 400) color=(primary ? "-exact-background" : "-exact-secondary-label")
 
+// Edit of a draft card (MessageDraftActions): between Send and Discard, plain, in the ink of a label.
+component DraftEdit
+  props
+    edit: action
+  view
+    button press=edit appearance="none" display="flex" align-items="center" justify-content="center" min-height=44 padding="0px 12px" background-color="transparent" testId="draft-edit"
+      text "Edit" font="-exact-body" color="-exact-label"
+
 // The choice that waits for its Undo (AnswerUndoRow): it shows as sent, and Undo takes it back before it reaches the Mac.
 component UndoRow
   props
