@@ -56,9 +56,9 @@ struct NoticeBoardRoute: Hashable {
 /// The list of all agents, with the pages, the live work and the spend. The project menu of Home opens it.
 struct AgentListRoute: Hashable {}
 
-/// The chats of one section of Chats on a page of their own (HomeLaunchView, Part.section): a project, the chats with
-/// people, the agents of an earlier release, or the archived chats. Its row in Chats opens it (ChatSectionRow). The
-/// title stays when the last chat of the section leaves.
+/// The chats of one section of Chats on a page of their own (HomeLaunchView, Part.section): the archived chats, which
+/// the last row of Chats opens (ChatSectionRow), while every other section opens in place. The title stays when the
+/// last chat of the section leaves.
 struct ChatSectionRoute: Hashable {
     let id: String
     let title: String

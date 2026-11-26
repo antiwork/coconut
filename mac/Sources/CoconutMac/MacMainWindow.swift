@@ -733,7 +733,7 @@ private struct MacFoldHeader: View {
                             .monospacedDigit()
                             .padding(.trailing, 18)
                             .opacity(hovering ? 0 : 1)
-                            .accessibilityLabel(ChatSectionHeader.chats(count))
+                            .accessibilityLabel(ChatListSection.chats(count))
                     }
                     Image(systemName: "chevron.right")
                         .font(.caption.weight(.semibold))
