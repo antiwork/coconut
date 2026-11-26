@@ -274,8 +274,11 @@ extension BusinessReport {
             return ["slug": "closed-\(i)", "subject": subjects[i % subjects.count], "queue": "gumroad", "status": "closed",
                     "createdAt": ago(Double(i) * 1800 + wait * 60 + 7200), "lastUserEmailCreatedAt": ago(Double(i) * 1800 + wait * 60), "closedAt": ago(Double(i) * 1800)]
         }
+        // The waits of the demo conversations (SupportConversation.demoWaits), so the rows of Support and the cards agree.
         let open: [[String: Any]] = subjects.prefix(4).enumerated().map { i, title in
-            ["slug": "sample-\(i)", "subject": title, "queue": "gumroad", "status": "open", "createdAt": ago(Double(i + 1) * 3600), "lastUserEmailCreatedAt": ago(Double(i + 1) * 3000)]
+            let demo = SupportConversation.demoWaits[title] ?? (Double(i + 1), "")
+            return ["slug": "sample-\(i)", "subject": title, "queue": "gumroad", "status": "open", "emailFrom": demo.email,
+                    "createdAt": ago((demo.hours + 4) * 3600), "lastUserEmailCreatedAt": ago(demo.hours * 3600)]
         }
         let issues: [[String: Any]] = ["Checkout fails for cards that need 3D Secure", "Payout export misses refunds", "Discover search drops accented names"].enumerated().map { i, title in
             ["slug": "\(4712 + i * 9)", "subject": title, "createdAt": ago(Double(i + 1) * 86400), "url": "https://github.com/example/gumroad/issues/\(4712 + i * 9)", "labels": ["bug"]]

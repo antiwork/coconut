@@ -67,6 +67,7 @@ struct InAppDestinations: ViewModifier {
                 SupportConversationView(id: $0.id, subject: $0.subject).inlineNavigationTitle()
             }
             .navigationDestination(for: RiskReviewRoute.self) { RiskReviewView(route: $0).inlineNavigationTitle() }
+            .navigationDestination(for: SupportDeckRoute.self) { SupportDeckView(start: $0.start).inlineNavigationTitle() }
     }
 }
 

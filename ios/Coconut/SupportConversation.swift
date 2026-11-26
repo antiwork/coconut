@@ -62,9 +62,15 @@ extension AppStore {
 
     /// Closes or reopens a conversation, as the support pipeline does with its labels.
     func setSupportConversation(_ thread: String, state: String) async throws -> SupportConversation {
-        if isDemo { return SupportDemo.setState(thread, state: state) }
+        if isDemo {
+            let conversation = SupportDemo.setState(thread, state: state)
+            supportClosedAt[thread] = state == "closed" ? .now : nil
+            return conversation
+        }
         let conversation: SupportConversation = try await businessRequest("support/conversations/" + Self.supportPath(thread),
             method: "PATCH", body: APIJSON.encode(SupportStateRequest(state: state)), requestId: UUID().uuidString)
+        // The rows of Support leave the conversation out until a report published after the close (supportTickets).
+        supportClosedAt[thread] = state == "closed" ? .now : nil
         businessChanges += 1
         return conversation
     }
@@ -270,7 +276,7 @@ struct SupportConversationView: View {
 }
 
 /// Open or Closed, as the support queue counts the conversation.
-private struct SupportStateChip: View {
+struct SupportStateChip: View {
     let state: String
 
     var body: some View {
@@ -286,7 +292,8 @@ private struct SupportStateChip: View {
     }
 }
 
-private struct SupportMessageTile: View {
+/// One message of a conversation, on its page and on a card of the deck (SupportDeckView).
+struct SupportMessageTile: View {
     let message: SupportConversation.Message
     /// The person chose this message to answer.
     let answering: Bool
@@ -294,6 +301,8 @@ private struct SupportMessageTile: View {
     let canAnswer: Bool
     let expand: () async -> Void
     let answer: () -> Void
+    /// The color of a customer's message. A card of the deck is a surface, so its messages take the color of the page.
+    var fill: Color = BoardStyle.surface
     @State private var expanding = false
 
     var body: some View {
@@ -333,7 +342,7 @@ private struct SupportMessageTile: View {
         }
         .padding(BoardStyle.Space.m)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(message.outgoing ? BoardStyle.accent.opacity(0.1) : BoardStyle.surface,
+        .background(message.outgoing ? BoardStyle.accent.opacity(0.1) : fill,
                     in: RoundedRectangle(cornerRadius: BoardStyle.Radius.large, style: .continuous))
         .overlay {
             if answering {
@@ -352,7 +361,7 @@ private struct SupportMessageTile: View {
 
 /// Answers need the support mailbox: the Google sign-in of the account that holds support mail, with the right to send
 /// and label it. Only Coconut uses it, so the agents keep their read-only Gmail.
-private struct SupportMailboxConnect: View {
+struct SupportMailboxConnect: View {
     @Environment(AppStore.self) private var store
     let connected: () -> Void
     @State private var signIn = GoogleSignIn()
@@ -418,6 +427,16 @@ enum SupportDemo {
 }
 
 extension SupportConversation {
+    /// How long the customer of each open conversation of the demo queue has waited, in hours since their newest
+    /// message, and their address. The report of the demo (BusinessReport.previewSupport) and the conversations share
+    /// them, so a card says the wait that its row says. Three are past the service level, as the demo overview counts.
+    static let demoWaits: [String: (hours: Double, email: String)] = [
+        "Payout timing question": (29, "mira@example.com"),
+        "Help with a product download": (14, "daniel@example.com"),
+        "Update a purchase email": (9, "priya@example.com"),
+        "Refund for a double charge": (2, "tom@example.com"),
+    ]
+
     private typealias DemoThread = (customer: (String, String), messages: [(fromSupport: Bool, text: String, files: [Message.Attachment])])
 
     /// The conversation of a row of the demo queue (BusinessReport.previewSupport). The support mailbox is connected in
@@ -431,25 +450,27 @@ extension SupportConversation {
                 (false, "Great, thank you for checking. Will both payouts arrive together, or as two transfers?", [])]),
             "Help with a product download": (("Daniel Ortiz", "daniel@example.com"), [
                 (false, "I bought the Lightroom presets yesterday, but the download link says the file is missing. Receipt attached.", [.init(name: "receipt.pdf", size: 48_211)]),
-                (true, "Hi Daniel,\n\nThe creator replaced the file last night, which broke the old link. I sent a new link for the updated presets to this address.\n\nBest,\nGumroad Support", [])]),
+                (true, "Hi Daniel,\n\nThe creator replaced the file last night, which broke the old link. I sent a new link for the updated presets to this address.\n\nBest,\nGumroad Support", []),
+                (false, "Thanks, the new link works, but the bonus PDF from the product page isn't in the download.", [])]),
             "Update a purchase email": (("Priya Nair", "priya@example.com"), [
-                (false, "I bought a course with my old work email. Can you move it to priya@example.com?", []),
-                (true, "Hi Priya,\n\nDone. The course and its receipts are now under priya@example.com.\n\nBest,\nGumroad Support", [])]),
+                (false, "I bought a course with my old work email. Can you move it to priya@example.com?", [])]),
             "Refund for a double charge": (("Tom Becker", "tom@example.com"), [
-                (false, "I was charged twice for the same ebook this morning. A screenshot of my statement is attached.", [.init(name: "statement.png", size: 312_940)]),
-                (true, "Hi Tom,\n\nThe second charge was a duplicate. I refunded it, and it shows on your card in 5 to 10 days.\n\nBest,\nGumroad Support", [])]),
+                (false, "I was charged twice for the same ebook this morning. A screenshot of my statement is attached.", [.init(name: "statement.png", size: 312_940)])]),
         ]
         let fallback: DemoThread = (("Alex Kim", "alex@example.com"), [
             (false, "Hi, I need help with my order.", []),
             (true, "Hi Alex,\n\nHappy to help. Which purchase is it about?\n\nBest,\nGumroad Support", [])])
         let thread = threads[subject] ?? fallback
         let count = thread.messages.count
+        // The newest message of a conversation of the queue is the customer's, as old as the wait of its row.
+        let newest = (demoWaits[subject]?.hours ?? 0) * 3600
         let messages = thread.messages.enumerated().map { index, item -> Message in
             let from = item.fromSupport ? support : thread.customer
+            let age = demoWaits[subject] == nil ? Double(count - index) * 2700 : newest + Double(count - 1 - index) * 7200
             return Message(id: "\(id)-\(index)", fromName: from.0, fromEmail: from.1,
                            replyTo: item.fromSupport ? thread.customer.1 : from.1,
                            to: [item.fromSupport ? thread.customer.1 : support.1],
-                           date: Date().addingTimeInterval(-Double(count - index) * 2700).formatted(.iso8601),
+                           date: Date().addingTimeInterval(-age).formatted(.iso8601),
                            text: item.text, cut: false, attachments: item.files, outgoing: item.fromSupport)
         }
         return SupportConversation(id: id, subject: subject, account: support.1, messages: messages, more: 0,

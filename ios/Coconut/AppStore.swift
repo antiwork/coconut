@@ -64,6 +64,9 @@ final class AppStore {
     var riskReviews: RiskReviewList?
     /// The issues of the customer conversations that went to Gumclaw from Support (SupportHandoffs.swift).
     var supportHandoffs: SupportHandoffList?
+    /// The conversations that this app closed, with when. The rows of Support leave them out until a newer report
+    /// (supportTickets).
+    var supportClosedAt: [String: Date] = [:]
     /// The last failed load of the to-dos. A list shows it only while it has no to-dos.
     var todoIssuesError: String?
     /// The bots of other Macs that own the team pages in `documents`. They come with each list.

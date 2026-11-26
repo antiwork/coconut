@@ -80,7 +80,7 @@ extension AppStore {
         businessGeneration = UUID()
         businessItems = [:]; businessReports = [:]; businessCatalog = nil
         // Another Mac or another GitHub account has other to-dos.
-        todoIssues = nil; todoIssuesError = nil; riskReviews = nil; supportHandoffs = nil
+        todoIssues = nil; todoIssuesError = nil; riskReviews = nil; supportHandoffs = nil; supportClosedAt = [:]
         if !isDemo {
             ProtectedCache.remove(BusinessReport.overviewCache); ProtectedCache.remove(TodoIssues.cache)
             ProtectedCache.remove(RiskReviewList.cache)
