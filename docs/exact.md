@@ -482,13 +482,30 @@ a `push --watch` update.
 The Swift app is 36,371 lines in `ios/Coconut`, 901 in `ios/Tunnel`, 207 in `ios/PushShared` and 4,652 in `mac/Sources`.
 Keep it shipping until each phase reaches parity, and keep the bundle id of the Exact app different until the last one.
 
+### December 2026
+
+Sahil's goal (2026-11-26): by December 31 the Exact app replaces both Swift apps, the iPhone app first. Expo's SDK runs
+on iOS and Android but not on the Mac, so React Native alone would leave the Mac app in Swift.
+
+| Dates | Work |
+|---|---|
+| Nov 26–30 | Exact from the pin of Nov 17 to main, then a new binary from CI on the phones |
+| Dec 1–6 | The rest of phase 2: editing, holding, `MessageQueue`, `BotMentions`, `LiveView` and the chat's part of Not ported |
+| Dec 7–13 | Phases 3 and 4 at once, each in its own worktree |
+| Dec 14–20 | Phase 5, the Mac; the widgets, the share extension and the notification service of the iPhone |
+| Dec 21–31 | Phase 6: both apps under their final ids, tried on two phones and a Mac, then the Swift apps stop shipping |
+
+From December 14 a new feature of either app is built in `exact/` first, and in Swift only when a release before the
+switch needs it. The Exact Build sign-in of the shared Mac expires on December 17: renew it the week before.
+
 | Phase | Swift to port | Exact |
 |---|---|---|
 | 1 Live data | `APIClient`, `AppStore` (4,102), `Models`, `TunnelConnection`, `Onboarding`, pairing | Done: the pairing, the tunnel, the state and its updates, the model and effort (`/model`, `/effort`), attachments and the SQLite cache for a launch without the Mac are in `app.ts`, `tunnel.ts` and `crypto.ts` (see Live data). Attachments and the cache need the binary of their grants |
 | 2 Conversation | `ConversationView` (1,642), `Cards`, `MessagePhotos`, `MessageQueue`, `BotMentions`, `ModelSettingsView`, `LiveView`, `OmniSearch`, previews | Rows and cards done: days, the New line, senders and quotes, photos with their viewer, cards with sources, risk, previews, drafts, Undo and receipts, background processes and Library pages (see Photos and cards), the coconut that waits in photos and the working line, and the search of chats, cards and messages (see Search). Left: the editing, the holding and the rest of the search in Not ported, `MessageQueue`, `BotMentions`, `LiveView` |
 | 3 Team | `TeamChat` (2,093), `TeamChatView` (1,710), `TeamViews`, `Team`, `PeopleView` | A second family of chats and a notice board, over the same list |
 | 4 Business and library | `BusinessDashboard` and the other Business files, `Library`, `DocumentPage`, `UsageViews`, `DecisionInboxView`, `AgentProject`, `Bento`, `ChatDeckView` | Routes and tabs (`select(nav, name)`); Markdown for documents; charts as `svg` |
-| 5 Release | Bundle id, signing, TestFlight | Name the app `com.gumroad.coconut` so it replaces the Swift app; sign the IPA on CI as `testflight.yml` does (Exact has an EAS and a CI recipe); keys and a channel for updates |
+| 5 Mac | `CoconutMac` (1,599: the window, the sidebar, ⌘K, the inbox), `CoconutApp` (992: the menu bar, Sparkle), `CoconutKit` (2,166: login items, the install, pairing, the service), `CoconutTool` (428), and `ios/Coconut` as the Mac compiles it | `host.macos` in `app.json`; a layout for a wide window with the sidebar of the Swift app; the native parts below. Exact Build builds iOS only, so the Mac app builds on CI |
+| 6 Release | Bundle ids, signing, TestFlight, Sparkle | Name the app `com.gumroad.coconut` so it replaces the Swift app; sign the IPA on CI as `testflight.yml` does (Exact has an EAS and a CI recipe); keys and a channel for updates. The Mac app keeps `com.gumroad.coconut.mac` and ships as `mac-release.yml` ships the Swift one |
 
 Native parts:
 
@@ -499,8 +516,14 @@ Native parts:
 | Notification service | `CoconutNotificationService`, `PushShared` (207) | Swift in `modules/apple/notification-service/NotificationService.swift`, with the `PushShared` files copied there (links are refused). It runs no Contract or TypeScript. It shares the App Group and the Keychain group of the app, so it can read the key the app keeps |
 | Share extensions | `CoconutShare`, `ShareShared`, `CoconutMacShare` | `share_target` in `app.json` derives an Apple share extension (presentation `compose` or `confirmation`); a route such as `/share` reads `searchParam(entry, "text")` and `sharedFiles(entry, "files")`, and the app asks for the project. `apps/fieldnotes` does it. The extension of the Mac is not checked |
 | Mac menu bar | The status item of `mac/Sources` | A `button` with `-exact-menu="status"` is the status item; its `popovertarget` menu is the menu |
-| Sparkle | `mac/Sources/CoconutApp/Updater.swift`, the feed in `updates/` | Exact updates the Contract, assets and `app.ts` of an installed Mac app with signed updates (`deploy.store.macos`). A new grant or native code still needs a new binary, so Sparkle or a notarized download stays for those |
+| Sparkle | `mac/Sources/CoconutApp/Updater.swift`, the feed in `updates/` | Exact updates the Contract, assets and `app.ts` of an installed Mac app with signed updates (`deploy.store.macos`). A new grant or native code still needs a new binary, so Sparkle or a notarized download stays for those. Exact's recipe `docs/recipes/mac-binary-updates.md` (new at the pin of Nov 25) links Sparkle 2.10.1 through `host.macos.swiftPackages`, with an `Updates` module in `macos/modules/` |
+| Login items and the service | `CoconutKit` (`LoginItems`, `Install`, `PythonLocator`, `Launch`), `CoconutTool` (`coconut service`, `coconut sidecar`, `coconut install-source`), the two plists of `mac/LaunchAgents` and the bundled source | Not checked. The `coconut` tool can stay Swift, built apart and placed with the plists and the source by `host.macos.resources`; `SMAppService` and the menu of the login items need a Swift module in `macos/modules/` |
 | Widgets and the Live Activity | `CoconutWidgets` (the widgets, the New agent control and the one Live Activity of the working agents), fed by the glance that `HomeScreenPublisher.swift` writes (`HomeScreen`) and, after the person leaves the app, by the glance that the Mac sends through the relay (`home_screen.py`) | The `activities` extension of Exact Build for the Live Activity (not tried); the widgets are not checked |
 
 Decisions the first builds should settle: whether Exact Build takes `deploy.store.ios: "A"`, whether it includes the
 notification service and the share extension, and what a build of this app costs in worker time.
+
+Decisions the Mac phase should settle: `app.id` names the Apple bundle on both hosts, while the Mac's defaults, Keychain
+items and login items are under `com.gumroad.coconut.mac`, so the Mac build needs a variant with `idSuffix` `.mac` or
+its own manifest; whether `host.macos.resources` can place the plists where `SMAppService` reads them
+(`Contents/Library/LaunchAgents`); and how the Exact Mac app is signed and notarized for Sparkle.
