@@ -1,4 +1,4 @@
-// Coconut on Exact. Home: Needs attention, one flat list of chats (newest first), and a
+// Coconut on Exact. Home: Needs attention, one flat list of chats (the unread ones first, then the newest), and a
 // message box that is always open, with a project picker that names the project the message goes to. A chat: its
 // messages with Markdown under the day they came, the New line, photos and their viewer, cards with their previews,
 // drafts and options, the working line, and the composer. Paired with a Mac, app.ts answers it from the Mac's
@@ -290,8 +290,8 @@ component Coconut
                     column border-radius=12 background-color="light-dark(rgb(255 56 60 / 0.08), rgb(255 66 69 / 0.08))" border-width=1 border-style="solid" border-color="light-dark(rgb(255 56 60 / 0.22), rgb(255 66 69 / 0.22))" overflow="hidden"
                       for a, i in home.attention key=a.id
                         AttentionRow(item=a, first=(i == 0), choose=openChat(a.chat))
-                // One list, with no tabs: the person found that nobody taps them (2026-11-24). Archived chats sit
-                // among the others by their newest message.
+                // One list, with no tabs: the person found that nobody taps them (2026-11-24). The unread chats come
+                // first (app.ts, loadHome), and archived chats sit among the others by their newest message.
                 for c in home.chats key=c.id
                   ChatRowView(chat=c, now=now, offset=time.utcOffset, choose=openChat(c.id))
               column flex-shrink=0 padding="6px 12px 8px" testId="home-bar"

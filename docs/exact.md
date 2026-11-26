@@ -26,10 +26,12 @@ TestFlight and Sparkle. The Python service in `backend/` is unchanged.
 
 Home. Needs attention at the top, with the four rules of `Attention.swift` (a card waiting over 4 hours, an agent that
 cannot run, blocked work, an unseen notice of the team); the fixture alone breaches none, so `app.ts` applies what
-`AppStore.applyAttentionPreview` applies for the UI test of Home. Then one flat list of chats, newest first, with no
-tabs (the person found that nobody taps them, 2026-11-24): working and idle chats, chats with people too, and the
-archived chats of the Mac (the person merged Idle and Archived, so an archived chat sits among the others by its newest
-message, with no Archived row). Each row has the layout of `ChatRowLayout`: face,
+`AppStore.applyAttentionPreview` applies for the UI test of Home. Then one flat list of chats, the chats with an
+unread message first and then the newest (the person, 2026-11-25: "Put unread chats at top"), with no tabs (the person
+found that nobody taps them, 2026-11-24): working and idle chats, chats with people too, and the archived chats of the
+Mac (the person merged Idle and Archived, so an archived chat sits among the others by its newest message, with no
+Archived row). A muted chat counts no unread, as in the Swift app (`BotChatMute.unread`): it shows no badge and does
+not move up. Each row has the layout of `ChatRowLayout`: face,
 name, age (for a chat that shows its step, the time of that step to the second), a line that is the status or the last
 message, the unread badge, the green dot while the agent works. At the bottom a message box that is always open, with
 a picker that names the project the message goes to and ends with New project. Send starts a chat with that project
@@ -276,7 +278,8 @@ checked there: the menu after a pick, and whether the app still drops frames.
 
 Checked by running. `app.ts` under bun against the fixture: every answer is exactly its declared shape, the sources
 and their argument counts are the ones `app.contract` calls, and the behaviour holds (four Needs attention rows, seven
-chats newest first, a message starts a chat, a second one waits for the next turn, Stop, an answered card, model and
+chats with the two unread ones first and then the newest, a muted unread chat of a state of the Mac with no badge
+among the read ones, a message starts a chat, a second one waits for the next turn, Stop, an answered card, model and
 effort, a new project takes its letter). The check is a scratch script, not in the repository, which has no tests.
 
 Checked by reading. The contract files against the tables of Exact (`kernel/tables/schema.json`: attributes, roles,
@@ -404,16 +407,17 @@ Not yet measured: the time from save to screen on the web host, and a `push --wa
   card's sources and its GitHub embeds, View revised proposal, opening a page of the Library, the zoom, swipe and
   share of the photo viewer, and the hold of a message or a photo (copy, reply, reactions). Also the nested Chats tab of
   the Swift app (`ChatList.sections`, `ChatListSection`, `ChatSectionRow`): Starred first with its chats, which holds
-  every chat that the person starred with a swipe to the right on its row, then one row for each project, Coconut
-  first, then Team chats, Other agents, Personal at the bottom and Archived last. Each row says what waits for the
-  person and what works inside, counts the unread messages and the chats of its section, and opens them on a page of
-  their own (`ChatSectionRoute`), so an archived chat shows only on the page of Archived.
-  The Exact app still lists every chat in one list, archived chats among the others, and its title Agents in place of
-  Chats. The rows name a further chat of a project after the project and its own title (`Bot.listName`, from the Mac's
-  `chat_of` and `chat_title`), which a section of a project names by its title alone; the Mac sends `project_key`
-  (coconut, gumroad, personal) for the order of the sections. Also the two buttons at the top right of the Swift app's
-  Chats: Working (`WorkingFilterButton`), which lists only the chats that work or wait for the person, and the grid of
-  the agents that work (`ChatGridView`), which the Exact app has no deck for.
+  every chat that the person starred with a swipe to the right on its row, Unread under it with every unread chat that
+  is not starred (`ChatList.unreadSection`), then one row for each project, Coconut first, then Team chats, Other
+  agents, Personal at the bottom and Archived last. Each row says what waits for the person and what works inside,
+  counts the unread messages and the chats of its section, and opens them on a page of their own, unread chats first
+  (`ChatSectionRoute`), so an archived chat shows only on the page of Archived. The Exact app still lists every chat in
+  one list, the unread ones first, archived chats among the others, and its title Agents in place of Chats. The rows
+  name a further chat of a project after the project and its own title (`Bot.listName`, from the Mac's `chat_of` and
+  `chat_title`), which a section of a project names by its title alone; the Mac sends `project_key` (coconut, gumroad,
+  personal) for the order of the sections. Also the two buttons at the top right of the Swift app's Chats: Working
+  (`WorkingFilterButton`), which lists only the chats that work or wait for the person, and the grid of the agents that
+  work (`ChatGridView`), which the Exact app has no deck for.
 - The pairing code lives in the memory of the data module. An update that applies while a phone pairs reloads the app,
   which then shows a new code, and the Mac seals its setup for the old one; send the new code. Keeping the code in the
   Keychain until the phone pairs would end this.

@@ -1662,10 +1662,12 @@ enum ChatList {
     /// and every other section is one row that opens its chats (ChatSectionRow). The chats that the person starred, an
     /// agent chat (a project or one of its further chats) and a pinned chat of a team, come first in Starred, as in the
     /// sidebar of Slack, and they show nowhere else. A project's own chat comes first in its section, as a channel of
-    /// Slack, and its further chats follow newest activity first. The chats with people come newest activity first. An
-    /// archived chat shows only in Archived, newest first (the person: "almost everything should be archived / hidden
-    /// to focus on real work"). A chat of an archived project that is not archived itself, and a chat that nobody wrote
-    /// in (AgentChats.isBlank), show nowhere. A section without rows does not show. `latest` is the date of the newest
+    /// Slack, and its further chats follow newest activity first. The chats with people come newest activity first.
+    /// Above that order a chat with an unread message comes first in its section (the person, 2026-11-25: "Put unread
+    /// chats at top"), and Chats lists the unread chats once more under Starred (unreadSection). An archived chat shows
+    /// only in Archived, newest first (the person: "almost everything should be archived / hidden to focus on real
+    /// work"). A chat of an archived project that is not archived itself, and a chat that nobody wrote in
+    /// (AgentChats.isBlank), show nowhere. A section without rows does not show. `latest` is the date of the newest
     /// message of each bot.
     static func sections(bots: [Bot], latest: [String: Date], rooms: [TeamRoom],
                          local: [TeamChatKey: TeamLastMessage] = [:]) -> [ChatListSection] {
@@ -1685,17 +1687,17 @@ enum ChatList {
             // A chat that the person starred, the project's own chat or a further one, is in Starred and nowhere
             // else, as a starred channel of Slack.
             let own = shown.filter { $0.agentId == project.id && !isStarred($0) }
-            let items = (own.filter { $0.id == project.id }
-                + newestFirst(own.filter { $0.id != project.id })).map(ChatListItem.bot)
+            let items = unreadFirst((own.filter { $0.id == project.id }
+                + newestFirst(own.filter { $0.id != project.id })).map(ChatListItem.bot))
             return items.isEmpty ? nil : ChatListSection(kind: .project(project.id), title: project.name, items: items)
         }
         let projectIds = Set(projects.map(\.id))
         // The chats that the person starred, as the Starred section of Slack: the starred agent chats, newest activity
         // first, then the pinned chats of the teams in their fixed order.
         let starred = newestFirst(shown.filter(isStarred)).map(ChatListItem.bot) + pinnedChats(rooms)
-        let people = sorted(peopleItems(rooms, local: local) + botDirectItems(rooms, local: local))
-        let others = newestFirst(shown.filter { !projectIds.contains($0.agentId) && !isStarred($0) })
-            .map(ChatListItem.bot)
+        let people = unreadFirst(sorted(peopleItems(rooms, local: local) + botDirectItems(rooms, local: local)))
+        let others = unreadFirst(newestFirst(shown.filter { !projectIds.contains($0.agentId) && !isStarred($0) })
+            .map(ChatListItem.bot))
         let archived = AgentChats.archived(in: bots, latest: latest)
             .filter { !$0.coconut && !AgentChats.isBlank($0, latest: latest) }.map(ChatListItem.bot)
         var sections: [ChatListSection] = []
@@ -1750,6 +1752,36 @@ enum ChatList {
     private static func sorted(_ items: [ChatListItem]) -> [ChatListItem] {
         items.sorted { ($0.teamActivity, $1.id) > ($1.teamActivity, $0.id) }
     }
+
+    /// The chats of `items` with an unread message, newest activity first, as "Unreads" of Slack: Unread under Starred
+    /// in Chats on the iPhone (unreadSection) and in the Mac sidebar (ChatSections). A muted chat counts no unread
+    /// (ChatListItem.unreadCount), so it never shows there. The chat `keeping` (a ChatListItem ID) counts as unread:
+    /// the Mac keeps the row of the chat that the person opened from Unread. A stable sort keeps the order of `items`
+    /// for chats of the same time.
+    static func unread(_ items: [ChatListItem], latest: [String: Date], keeping: String? = nil) -> [ChatListItem] {
+        items.enumerated().filter { $0.element.unreadCount > 0 || $0.element.id == keeping }
+            .sorted { first, second in
+                (first.element.activity(latest: latest), -first.offset)
+                    > (second.element.activity(latest: latest), -second.offset)
+            }
+            .map(\.element)
+    }
+
+    /// Unread at the top of Chats on the iPhone, under Starred (the person, 2026-11-25: "Put unread chats at top"): the
+    /// chats with an unread message of every section of `sections` but Starred and Archived, newest activity first. A
+    /// starred chat stays in Starred, as in Slack. An unread chat stays in its own section too, at its top, so the row
+    /// of the section still counts it and its page lists it. Nil while every chat is read.
+    static func unreadSection(_ sections: [ChatListSection], latest: [String: Date]) -> ChatListSection? {
+        let listed = sections.filter { $0.kind != .starred && $0.kind != .archived }
+        let items = unread(listed.flatMap(\.items), latest: latest)
+        return items.isEmpty ? nil : ChatListSection(kind: .unread, title: "Unread", items: items)
+    }
+
+    /// The chats of a section with an unread message first, then the others, each in the order of the section: the
+    /// page of a section has its unread chats at the top.
+    private static func unreadFirst(_ items: [ChatListItem]) -> [ChatListItem] {
+        items.filter { $0.unreadCount > 0 } + items.filter { $0.unreadCount == 0 }
+    }
 }
 
 /// The sections of the Mac sidebar: the sections of Chats on the iPhone (ChatList.sections), with Unread after Starred.
@@ -1758,8 +1790,8 @@ enum ChatList {
 /// its own row at the top of the sidebar, and Archived has the archived chats of Chats (archived).
 struct ChatSections: Equatable {
     /// The chats with an unread message, as "Unreads" of Slack: every chat that is not starred, the further chats of
-    /// the projects too, newest activity first. A chat shows here and not in its own section, so it moves back when
-    /// the person reads it.
+    /// the projects too, newest activity first (ChatList.unread). A chat shows here and not in its own section, so it
+    /// moves back when the person reads it.
     var unread: [ChatListItem] = []
     /// The starred agent chats, newest activity first (ChatList.isStarred): a project, or one of its further chats.
     var pinned: [Bot]
@@ -1788,13 +1820,7 @@ struct ChatSections: Equatable {
             })
         }
         func isUnread(_ item: ChatListItem) -> Bool { item.unreadCount > 0 || item.id == keeping }
-        // A stable sort keeps the order of the sections for chats of the same time.
-        let unread = listed.flatMap(\.items).enumerated().filter { isUnread($0.element) }
-            .sorted { first, second in
-                (first.element.activity(latest: latest), -first.offset)
-                    > (second.element.activity(latest: latest), -second.offset)
-            }
-            .map(\.element)
+        let unread = ChatList.unread(listed.flatMap(\.items), latest: latest, keeping: keeping)
         let groups = listed.map { section in
             ChatListSection(kind: section.kind, title: section.title, items: section.items.filter { !isUnread($0) })
         }

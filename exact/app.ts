@@ -559,7 +559,8 @@ const rowOf = (chat: ChatState, zero: number): Row => {
   const at = newest(chat);
   return {
     id: chat.id, kind: chat.kind, title: chat.title, letter: chat.letter, face: chat.face, circle: chat.circle, line, status,
-    active: chat.run !== null, unread: chat.unread, at: Number.isFinite(at) ? zero + at : zero,
+    // A muted chat counts no unread, as in the Swift app (BotChatMute.unread): no badge, and it does not move up.
+    active: chat.run !== null, unread: chat.muted === true ? 0 : chat.unread, at: Number.isFinite(at) ? zero + at : zero,
     step: status === 'working' && chat.run ? zero + chat.run.startedAt : 0,
   };
 };
@@ -1733,7 +1734,9 @@ const sources: Sources = {
       target: list.find((p) => p.id === chosen) ?? list[0] ?? none,
       projects: list,
       attention: attention(s),
-      chats: Array.from(s.chats.values()).map((c) => rowOf(c, at)).sort((a, b) => b.at - a.at || (a.id < b.id ? -1 : 1)),
+      // The chats with an unread message first, then the newest (the person, 2026-11-25: "Put unread chats at top").
+      chats: Array.from(s.chats.values()).map((c) => rowOf(c, at))
+        .sort((a, b) => Number(b.unread > 0) - Number(a.unread > 0) || b.at - a.at || (a.id < b.id ? -1 : 1)),
       live,
       banner,
     };
