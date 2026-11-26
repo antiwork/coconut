@@ -610,7 +610,7 @@ component Coconut
                     input value=editSubject input=editSubjectField placeholder="Subject" aria-label="Subject" testId="draft-subject-field" flex=1 min-width=0
                 section
                   row
-                    textarea value=editBody input=editBodyField rows=10 field-sizing="content" min-height=220 aria-label="Message" font="-exact-body" border="none" background-color="transparent" testId="draft-body-field" flex=1 min-width=0
+                    textarea value=editBody input=editBodyField rows=10 field-sizing="content" min-height=220 aria-label="Message" testId="draft-body-field" flex=1 min-width=0
                   footer
                     text "Changes stay in the draft until you select Send."
                 if editError != ""
