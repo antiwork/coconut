@@ -164,6 +164,12 @@ enum OmniSearch {
         return true
     }
 
+    /// The hits in the chat of the hit before them. Their rows leave out the name of the chat, which the row above
+    /// shows.
+    static func continued(_ hits: [MessageHit]) -> Set<String> {
+        Set(zip(hits.dropFirst(), hits).filter { $0.botId == $1.botId }.map { $0.0.id })
+    }
+
     /// The hits of the device and of the Mac in one list, newest first. A hit of the Mac in a chat that the device
     /// does not show stays out.
     static func merged(_ local: [MessageHit], _ remote: [MessageHit], bots: Set<String>,

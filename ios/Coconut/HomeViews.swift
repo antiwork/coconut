@@ -410,7 +410,8 @@ struct HomeLaunchView: View {
         }
         if !messageHits.isEmpty {
             searchHeader("Messages", first: first == "Messages")
-            ForEach(messageHits) { hit in messageRow(hit, words: words) }
+            let continued = OmniSearch.continued(messageHits)
+            ForEach(messageHits) { hit in messageRow(hit, words: words, continued: continued.contains(hit.id)) }
         }
     }
 
@@ -421,9 +422,19 @@ struct HomeLaunchView: View {
             && OmniSearch.cards(words, in: store, limit: 1).isEmpty
     }
 
-    /// The title of a group of hits, as Starred has.
+    /// The title of a group of hits, in the quiet color of a title. The first starts close under the field.
     private func searchHeader(_ title: String, first: Bool) -> some View {
-        ChatSectionHeader(title: title, id: "search-" + title.lowercased(), first: first).homeRow()
+        Text(title)
+            .font(.subheadline.weight(.semibold))
+            .foregroundStyle(.secondary)
+            .lineLimit(1)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.top, first ? BoardStyle.Space.s : BoardStyle.Space.l)
+            .padding(.bottom, BoardStyle.Space.s)
+            .background(BoardStyle.paper)
+            .accessibilityAddTraits(.isHeader)
+            .accessibilityIdentifier("search-section-" + title.lowercased())
+            .homeRow()
     }
 
     /// A to-do, a page or a card of the search, as a row of a to-do list (TodoIssueRows).
@@ -451,29 +462,47 @@ struct HomeLaunchView: View {
         .homeRow()
     }
 
-    /// A message of the search: the chat and the day, then the words around the match with the words in bold. A tap
-    /// opens the chat at the message.
-    private func messageRow(_ hit: OmniSearch.MessageHit, words: [String]) -> some View {
+    /// A message of the search: the chat and the day, then the words around the match with the words in bold. A
+    /// message in the chat of the row above shows only its words and its day. A tap opens the chat at the message.
+    private func messageRow(_ hit: OmniSearch.MessageHit, words: [String], continued: Bool) -> some View {
         Button {
             pushRoute?(ConversationRoute(botId: hit.botId, messageId: hit.id))
         } label: {
-            ChatRowLayout(name: OmniSearch.owner(hit.botId, in: store) ?? "Chat", unread: 0, date: hit.createdAt.apiDate) {
-                EmptyView()
-            } subtitle: {
-                Text(OmniSearch.highlighted((hit.role == "user" ? "You: " : "") + hit.snippet, words))
-                    .font(.subheadline).foregroundStyle(.secondary)
-                    .lineLimit(2)
-                    // The grid of the row gives a cell one line unless the text asks for its height.
-                    .fixedSize(horizontal: false, vertical: true)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+            Group {
+                if continued {
+                    HStack(alignment: .firstTextBaseline, spacing: BoardStyle.Space.l) {
+                        snippet(of: hit, words: words)
+                        if let date = hit.createdAt.apiDate {
+                            CompactAgeLabel(date: date).font(.footnote.monospacedDigit()).foregroundStyle(.secondary)
+                        }
+                    }
+                    .padding(.bottom, BoardStyle.Space.m)
+                } else {
+                    ChatRowLayout(name: OmniSearch.owner(hit.botId, in: store) ?? "Chat", unread: 0,
+                                  date: hit.createdAt.apiDate) {
+                        EmptyView()
+                    } subtitle: {
+                        snippet(of: hit, words: words)
+                    }
+                    .padding(.vertical, BoardStyle.Space.m)
+                }
             }
-            .padding(.vertical, BoardStyle.Space.m)
             .background(BoardStyle.paper)
             .contentShape(Rectangle())
         }
         .buttonStyle(HomePressStyle())
         .accessibilityIdentifier("search-message-\(hit.id)")
         .homeRow()
+    }
+
+    /// The words of a message around the match, two lines at most.
+    private func snippet(of hit: OmniSearch.MessageHit, words: [String]) -> some View {
+        Text(OmniSearch.highlighted((hit.role == "user" ? "You: " : "") + hit.snippet, words))
+            .font(.subheadline).foregroundStyle(.secondary)
+            .lineLimit(2)
+            // The grid of the row gives a cell one line unless the text asks for its height.
+            .fixedSize(horizontal: false, vertical: true)
+            .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     /// A chat works while its row says so (AppStore.chatWorks), as in the sidebar of the Mac.

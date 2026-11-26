@@ -175,7 +175,8 @@ struct MacOmnibar: View {
 
     /// The rows, as high as they are up to 440 points, which then scroll.
     private func list(_ groups: [HitGroup], current: String?, words: [String]) -> some View {
-        ScrollView {
+        let continued = OmniSearch.continued(messageHits)
+        return ScrollView {
             VStack(alignment: .leading, spacing: 0) {
                 Color.clear.frame(height: 0).id(Self.top)
                 ForEach(groups) { group in
@@ -186,7 +187,9 @@ struct MacOmnibar: View {
                         .padding(.top, BoardStyle.Space.s)
                         .padding(.bottom, BoardStyle.Space.xs)
                         .accessibilityAddTraits(.isHeader)
-                    ForEach(group.hits) { hit in row(hit, isChosen: hit.id == current, words: words) }
+                    ForEach(group.hits) { hit in
+                        row(hit, isChosen: hit.id == current, words: words, continued: continued)
+                    }
                 }
             }
             .padding(BoardStyle.Space.xs)
@@ -196,9 +199,9 @@ struct MacOmnibar: View {
     }
 
     /// A row: a click opens it, and the pointer chooses it as it moves over it.
-    private func row(_ hit: Hit, isChosen: Bool, words: [String]) -> some View {
+    private func row(_ hit: Hit, isChosen: Bool, words: [String], continued: Set<String>) -> some View {
         Button { open(hit) } label: {
-            label(of: hit, words: words)
+            label(of: hit, words: words, continued: continued)
                 .padding(.horizontal, BoardStyle.Space.s)
                 .padding(.vertical, BoardStyle.Space.xs)
                 .frame(maxWidth: .infinity, minHeight: 28, alignment: .leading)
@@ -216,7 +219,7 @@ struct MacOmnibar: View {
     }
 
     @ViewBuilder
-    private func label(of hit: Hit, words: [String]) -> some View {
+    private func label(of hit: Hit, words: [String], continued: Set<String>) -> some View {
         switch hit {
         case .place(let title, let symbol, _):
             line(title, detail: nil) { Image(systemName: symbol).foregroundStyle(.secondary) }
@@ -233,22 +236,24 @@ struct MacOmnibar: View {
                 Image(systemName: OmniSearch.cardSymbol).foregroundStyle(BoardStyle.attention)
             }
         case .message(let hit):
+            // A message in the chat of the row above shows only its words and its age.
+            let inChatAbove = continued.contains(hit.id)
             HStack(alignment: .firstTextBaseline, spacing: BoardStyle.Space.s) {
-                Group {
-                    if let bot = store.bots.first(where: { $0.id == hit.botId }) { face(.bot(bot)) }
+                ZStack {
+                    if !inChatAbove, let bot = store.bots.first(where: { $0.id == hit.botId }) { face(.bot(bot)) }
                 }
                 .frame(width: 20)
                 VStack(alignment: .leading, spacing: BoardStyle.Space.line) {
-                    HStack(spacing: BoardStyle.Space.s) {
+                    if !inChatAbove {
                         Text(OmniSearch.owner(hit.botId, in: store) ?? "Chat").lineLimit(1)
-                        Spacer(minLength: BoardStyle.Space.s)
-                        if let date = hit.createdAt.apiDate {
-                            CompactAgeLabel(date: date).font(.caption).foregroundStyle(.tertiary)
-                        }
                     }
                     Text(OmniSearch.highlighted((hit.role == "user" ? "You: " : "") + hit.snippet, words))
                         .font(.callout).foregroundStyle(.secondary)
                         .lineLimit(2)
+                }
+                Spacer(minLength: BoardStyle.Space.s)
+                if let date = hit.createdAt.apiDate {
+                    CompactAgeLabel(date: date).font(.caption).foregroundStyle(.tertiary)
                 }
             }
         }
