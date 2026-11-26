@@ -175,7 +175,13 @@ enum WorkActivities {
             do {
                 follow(try Activity.request(attributes: CoconutWorkAttributes(), content: content, pushType: .token))
             } catch {
-                log.error("The Live Activity did not start: \(String(describing: error), privacy: .public)")
+                // Without a push token the activity still follows the app, as before the Mac sent glances.
+                log.error("The Live Activity did not start with a push token: \(String(describing: error), privacy: .public)")
+                do {
+                    _ = try Activity.request(attributes: CoconutWorkAttributes(), content: content, pushType: nil)
+                } catch {
+                    log.error("The Live Activity did not start: \(String(describing: error), privacy: .public)")
+                }
             }
             return
         }
