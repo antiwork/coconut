@@ -40,8 +40,10 @@ Chat. The rows of `TranscriptMessageRow`, in the order and with the rules of `Tr
 Markdown, a photo, a card, a file, a page of the Library, a background process of Hermes that ended, an activity line
 and the notices of a team, each with its time under it (`MessageTimes.label`), and the working line: the phase, the
 time of its newest step to the second, the model. The header names the chat itself (`Bot.chatLabel`). The day shows
-in a pill above the first row of each day (`DayPill`), and Slack's green New line goes above the first row that came
-since the person last read the chat, at the read mark that the chat opened with (`UnreadMark`). A message between
+in a pill above the first row of each day (`DayPill`), and Slack's green New line goes above the first row of an agent
+that came since the person last read the chat, at the read mark that the chat opened with (`UnreadMark`). The
+person's own rows never take it, and the words that the person writes after the mark read the chat, so no row after
+them takes it either. A message between
 agents names its sender and the others (`Gumclaw → Coconut`), a message of the person names the agents it went to, and
 an answer quotes the message or the page that it answers (`MessageQuote`). Photos and cards are described below
 (Photos and cards). The composer is

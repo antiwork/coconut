@@ -37,7 +37,8 @@ struct ConversationView: View {
     @State private var dayReference = Date()
     @State private var pinnedDay = PinnedDay()
     /// Slack's "New" line: the newest message that the person had read when this chat opened with unread replies. It
-    /// stays while the chat is open, so a reply that comes while the person reads does not move it.
+    /// stays while the chat is open, so a reply that comes while the person reads does not move it, and a message of the
+    /// person never brings it (`UnreadMark.firstNewRow`).
     @State private var unreadMark: UnreadMark?
     #if os(macOS)
     @State private var sentScroll = SentMessageScroll()
@@ -682,12 +683,19 @@ struct UnreadMark: Equatable {
         messageId = read
     }
 
-    /// The row that the "New" line goes above: the first row after the row that holds the read message. A mark that
-    /// the loaded rows do not hold, or a mark in the last row, draws no line.
+    /// The row that the "New" line goes above: the first row of an agent after the row that holds the read message.
+    /// The person's own messages never take the line. Words that the person writes after the mark read the chat, as on
+    /// the Mac (`unread.mark_read`), so no row after them takes it either. A mark that the loaded rows do not hold draws
+    /// no line.
     static func firstNewRow(after messageId: String, in entries: [TranscriptEntry]) -> String? {
-        guard let index = entries.firstIndex(where: { $0.messages.contains { $0.id == messageId } }),
-              entries.indices.contains(index + 1) else { return nil }
-        return entries[index + 1].id
+        guard let index = entries.firstIndex(where: { $0.messages.contains { $0.id == messageId } }) else { return nil }
+        for entry in entries[(index + 1)...] {
+            if !entry.messages.allSatisfy({ $0.role == "user" }) { return entry.id }
+            // Files come after the words that they went with, and an answer to a card can come from the Inbox: neither
+            // reads the chat.
+            if entry.messages.contains(where: { $0.kind == "text" && $0.decisionId == nil }) { return nil }
+        }
+        return nil
     }
 }
 

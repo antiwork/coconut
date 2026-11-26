@@ -131,9 +131,11 @@ interface CardData {
   outcome: string; earlier: string; revised: boolean; revision: number; draftHash: string; previewsHash: string;
 }
 // A row of a chat. `from` joins the photos that one agent sent one after another into one row (Message.photoSender).
+// `reads` marks words that the person wrote in the chat, which read it (`unread.mark_read`): not a file, a photo or the
+// answer to a card.
 interface Msg {
   id: string; kind: string; mine: boolean; author: string; at: number; title: string; body: string; detail: string; failed: boolean;
-  sender: string; quote: string; quoteAuthor: string; photos: PhotoRef[]; card: CardData | null; from: string;
+  sender: string; quote: string; quoteAuthor: string; photos: PhotoRef[]; card: CardData | null; from: string; reads: boolean;
 }
 // A turn that runs: `startedAt` is the start of its newest step (the Mac's `phase_started_at`), which the working line
 // and the row of the chat time.
@@ -179,7 +181,7 @@ interface State {
 
 const message = (id: string, kind: string, mine: boolean, at: number, body: string, extra: Partial<Msg> = {}): Msg => ({
   id, kind, mine, author: '', at, title: '', body, detail: '', failed: false, sender: '', quote: '', quoteAuthor: '', photos: [],
-  card: null, from: '', ...extra,
+  card: null, from: '', reads: false, ...extra,
 });
 
 // MARK: Cards
@@ -391,7 +393,7 @@ const build = (): State => {
       const artifact = m.kind === 'artifact' ? fx.artifacts.find((a) => a.task_id === m.task_id) : undefined;
       if (decision) return message(m.id, 'decision', false, at, '', { card: cardOf(decision, all) });
       if (artifact) return message(m.id, 'artifact', false, at, artifact.preview, { title: artifact.title });
-      return message(m.id, m.kind === 'activity' ? 'activity' : 'text', m.role === 'user', at, m.text);
+      return message(m.id, m.kind === 'activity' ? 'activity' : 'text', m.role === 'user', at, m.text, { reads: m.role === 'user' && m.kind === 'text' });
     });
     if (!bot.chat_of) projects.push({ id: bot.id, name: bot.name, letter, face: faceOf(letter) });
     const label = bot.chat_of ? said(bot.chat_title) || UNTITLED : bot.name;
@@ -826,7 +828,7 @@ const rowOfMessage = (m: LvMessage, at: number, artifacts: Map<string, LvArtifac
     });
   }
   if (m.kind === 'activity') return message(m.id, 'activity', false, at, m.text, base);
-  return message(m.id, 'text', mine, at, m.text, base);
+  return message(m.id, 'text', mine, at, m.text, { ...base, reads: mine && m.kind === 'text' && !m.decision_id });
 };
 
 const fromSnapshot = (snap: Snapshot): State => {
@@ -1769,11 +1771,13 @@ const sources: Sources = {
       } else {
         lines.push({
           id: m.id, kind: m.kind, mine: m.mine, author: m.author, at: time, title: m.title, body: m.body, detail: m.detail, failed: m.failed,
-          startsDay: day !== lastDay, newLine: read, sender: m.sender, quote: m.quote, quoteAuthor: m.quoteAuthor, photos, card,
+          startsDay: day !== lastDay, newLine: read && !m.mine, sender: m.sender, quote: m.quote, quoteAuthor: m.quoteAuthor, photos, card,
         });
-        read = false;
+        // The person's own rows never take the line, and the person's words read the chat: no later row takes it.
+        if (!m.mine || m.reads) read = false;
       }
-      // The New line goes above the first row after the message that the person read last (UnreadMark.firstNewRow).
+      // The New line goes above the first row of an agent after the message that the person read last
+      // (UnreadMark.firstNewRow).
       if (m.id === mark) read = true;
       lastDay = day;
       previous = m;
@@ -1919,7 +1923,7 @@ const sources: Sources = {
       unsent.set(chatId, { words, files, photos, at, send: null });
       const names = others.map((f) => f.name).join(', ');
       const body = [words, names === '' ? '' : '`' + names + '`'].filter((part) => part !== '').join('\n\n');
-      chat.messages = [...chat.messages, ...(body === '' ? [] : [message(`${chat.id}-m${s.counter}`, 'text', true, at, body)]), ...photoRow(`${chat.id}-p${s.counter}`, at)];
+      chat.messages = [...chat.messages, ...(body === '' ? [] : [message(`${chat.id}-m${s.counter}`, 'text', true, at, body, { reads: true })]), ...photoRow(`${chat.id}-p${s.counter}`, at)];
       return { id: chatId };
     }
     sends += 1;
@@ -1928,7 +1932,7 @@ const sources: Sources = {
     const textOf = words || ATTACHMENT_ONLY;
     const send: Outgoing = {
       rows: [
-        ...(words === '' ? [] : [message(`out-${n}`, 'text', true, sentAt, words)]),
+        ...(words === '' ? [] : [message(`out-${n}`, 'text', true, sentAt, words, { reads: true })]),
         ...photoRow(`out-${n}-p`, sentAt),
         ...others.map((f, i) => message(`out-${n}-${i}`, 'artifact', true, sentAt, bytesText(f.size), { title: f.name })),
       ],
