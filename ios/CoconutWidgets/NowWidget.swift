@@ -12,10 +12,15 @@ struct GlanceEntry: TimelineEntry {
     var stale: Bool { glance.map { date.timeIntervalSince($0.updatedAt) >= GlanceProvider.freshFor } ?? false }
 }
 
-/// Reads the glance that the app wrote (GlanceStore). The app asks WidgetKit for a new timeline at each change.
+/// Reads the newest glance: the one that the app wrote (GlanceStore), or the one that the Mac sent to the relay after the
+/// person left the app (MacGlance). The app asks WidgetKit for a new timeline at each change while it runs; after that a
+/// push of the Mac (iOS 26), a notification (CoconutNotificationService) or the end of the timeline does.
 struct GlanceProvider: TimelineProvider {
-    /// How long the work of a glance shows live after the app wrote it.
+    /// How long the work of a glance shows live after the app or the Mac wrote it.
     static let freshFor: TimeInterval = 15 * 60
+    /// When WidgetKit asks for the next timeline, so a widget reads the glance of the Mac without a push too. WidgetKit
+    /// keeps its own budget of reloads.
+    static let reload: TimeInterval = 15 * 60
 
     func placeholder(in context: Context) -> GlanceEntry { GlanceEntry(date: .now, glance: .sample()) }
 
@@ -26,32 +31,79 @@ struct GlanceProvider: TimelineProvider {
     }
 
     func getTimeline(in context: Context, completion: @escaping @Sendable (Timeline<GlanceEntry>) -> Void) {
-        let now = Date.now
-        let glance = GlanceStore.load()
-        var entries = [GlanceEntry(date: now, glance: glance)]
-        // A second entry stops the live times once the glance is old.
-        if let glance {
-            let staleAt = glance.updatedAt.addingTimeInterval(Self.freshFor)
-            if staleAt > now { entries.append(GlanceEntry(date: staleAt, glance: glance)) }
+        Task {
+            let glance = await Self.newest()
+            let now = Date.now
+            var entries = [GlanceEntry(date: now, glance: glance)]
+            // A second entry stops the live times once the glance is old.
+            if let glance {
+                let staleAt = glance.updatedAt.addingTimeInterval(Self.freshFor)
+                if staleAt > now { entries.append(GlanceEntry(date: staleAt, glance: glance)) }
+            }
+            completion(Timeline(entries: entries, policy: .after(now.addingTimeInterval(Self.reload))))
         }
-        completion(Timeline(entries: entries, policy: .after(now.addingTimeInterval(30 * 60))))
+    }
+
+    /// The glance of the app, or the newer one of the Mac on the relay. A newer glance of the Mac is saved, so the gallery
+    /// and the next timeline show it without the network. A glance that the app just wrote is the newest: the app asks for
+    /// a timeline at each change while it runs, and the Mac sends nothing meanwhile.
+    static func newest() async -> CoconutGlance? {
+        let app = GlanceStore.load()
+        if let app, app.fromMac != true, Date.now.timeIntervalSince(app.updatedAt) < 60 { return app }
+        guard let newest = CoconutGlance.newest(app: app, mac: await MacGlance.fromRelay()), newest != app else { return app }
+        GlanceStore.save(newest)
+        return newest
     }
 }
 
 /// Coconut on the Home Screen and the Lock Screen: what needs the person and what works, the most important first. A
 /// small widget shows the one most important thing; a medium widget the first three rows and New agent; a large widget
 /// six rows and the to-dos of Finance, Support and Product. Each row opens its chat, at its card.
+///
+/// iOS 26 has NowPushWidget instead, the same widget that the Mac can ask to reload. A bundle cannot leave a widget out
+/// on a newer iOS, so this one keeps a kind of its own and shows no size there.
 struct NowWidget: Widget {
-    static let kind = CoconutGlance.widgetKind
+    static let kind = CoconutGlance.widgetKindBefore26
 
     var body: some WidgetConfiguration {
-        StaticConfiguration(kind: Self.kind, provider: GlanceProvider()) { entry in
+        Self.configuration(kind: Self.kind, families: Self.families)
+    }
+
+    static var families: [WidgetFamily] {
+        if #available(iOS 26.0, *) { return [] }
+        return [.systemSmall, .systemMedium, .systemLarge, .accessoryRectangular, .accessoryCircular, .accessoryInline]
+    }
+
+    @MainActor
+    static func configuration(kind: String, families: [WidgetFamily]) -> some WidgetConfiguration {
+        StaticConfiguration(kind: kind, provider: GlanceProvider()) { entry in
             NowWidgetView(entry: entry)
         }
         .configurationDisplayName("Needs you")
         .description("The cards that wait for you, the agents that work and their step, and your unread chats.")
-        .supportedFamilies([.systemSmall, .systemMedium, .systemLarge,
-                            .accessoryRectangular, .accessoryCircular, .accessoryInline])
+        .supportedFamilies(families)
+    }
+}
+
+/// The widget of NowWidget on iOS 26, with a push handler: after the person leaves the app, the Mac asks it to read the
+/// new glance through the relay at each change (backend/coconut/home_screen.py).
+@available(iOS 26.0, *)
+struct NowPushWidget: Widget {
+    var body: some WidgetConfiguration {
+        NowWidget.configuration(kind: CoconutGlance.widgetKind,
+                                families: [.systemSmall, .systemMedium, .systemLarge,
+                                           .accessoryRectangular, .accessoryCircular, .accessoryInline])
+            .pushHandler(GlancePushHandler.self)
+    }
+}
+
+/// Gives the push token of the widgets to the relay, which the Mac then asks to reload them. The app names it too, at
+/// each start (HomeScreenPublisher), in case this extension stopped before the relay answered.
+@available(iOS 26.0, *)
+struct GlancePushHandler: WidgetPushHandler {
+    func pushTokenDidChange(_ pushInfo: WidgetPushInfo, widgets: [WidgetInfo]) {
+        let token = pushInfo.token
+        Task { await HomeScreenRelay.setWidgetToken(token) }
     }
 }
 

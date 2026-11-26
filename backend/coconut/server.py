@@ -359,6 +359,10 @@ class Handler(BaseHTTPRequestHandler):
                         wait = float(query.get('wait', ['0'])[0])
                     except ValueError:
                         raise ServiceError(400, 'after and wait must contain numbers.')
+                    # A phone that asks for updates has the app in front, so the Mac sends it no glance of the Home
+                    # Screen meanwhile (home_screen.py).
+                    if home_screen := getattr(getattr(service, 'push', None), 'home_screen', None):
+                        home_screen.note_seen(device)
                     self._json(200, service.updates(after, wait, collection_deltas=self.headers.get('X-Coconut-Updates') in ('2', '3', '4'),
                         native_events=self.headers.get('X-Coconut-Updates') in ('3', '4'),
                         compact_history=self.headers.get('X-Coconut-Updates') == '4', recent_work=self.recent_work))

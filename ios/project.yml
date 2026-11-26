@@ -219,16 +219,23 @@ targets:
               NSExtensionActivationSupportsFileWithMaxCount: 4
   # Coconut on the Home Screen and the Lock Screen: what needs the person and what works, New agent as a widget and a
   # control, and the Live Activity of the work of the agents. The app writes what they show into the Keychain group of
-  # its extensions (ios/HomeScreen/CoconutGlance.swift), so the extension compiles none of the views of the app.
+  # its extensions (ios/HomeScreen/CoconutGlance.swift), so the extension compiles none of the views of the app. After
+  # the person leaves the app, the Mac sends the glance through the relay, sealed with the key of the notifications, so
+  # the extension also opens it (PushShared, push-envelope.swift) and names the steps as the app does (BotPhase.swift).
+  # Its push capability gets the widgets a push token on iOS 26.
   CoconutWidgets:
     type: app-extension
     platform: iOS
     sources:
       - CoconutWidgets
       - HomeScreen
+      - Coconut/BotPhase.swift
       - Coconut/PlatformColor.swift
       - Coconut/Theme.swift
+      - PushShared/HomeScreenRelay.swift
+      - PushShared/NotificationKeys.swift
       - PushShared/TestIsolation.swift
+      - ../scripts/push-envelope.swift
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.gumroad.coconut.widgets
@@ -240,6 +247,10 @@ targets:
         CURRENT_PROJECT_VERSION: "1"
         APPLICATION_EXTENSION_API_ONLY: YES
         SKIP_INSTALL: YES
+        APS_ENVIRONMENT: development
+      configs:
+        Release:
+          APS_ENVIRONMENT: production
     info:
       path: CoconutWidgets/Info.plist
       properties:

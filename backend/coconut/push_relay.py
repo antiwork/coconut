@@ -57,12 +57,52 @@ class RelayTransport:
         return {'configured': True, 'relay_url': RELAY_URL, **json.loads(result.stdout)}
 
     def seal(self, public_key, payload, notification_id, expires):
-        content = notification_content(payload)
+        return self.seal_content(public_key, notification_content(payload), notification_id, expires)
+
+    def seal_content(self, public_key, content, notification_id, expires):
+        """Seal bytes for one phone, as a notification is sealed: a glance of the Home Screen (home_screen.py)."""
         request = dict(publicKey=public_key, id=notification_id, expires=int(expires),
                        content=base64.b64encode(content).decode())
         result = subprocess.run([str(self.directory / 'push-encrypt'), str(self.directory), 'seal'],
                                 input=json.dumps(request).encode(), capture_output=True, timeout=5, check=True)
         return json.loads(result.stdout)
+
+    def _post(self, path, route, body):
+        """POST to the relay with the send token of the route. Returns the HTTP status and the JSON answer, or a
+        status of 0 and a reason."""
+        url = urlsplit(RELAY_URL)
+        if url.scheme != 'https' or not url.hostname or url.username or url.password or url.query or url.fragment:
+            return 0, 'InvalidRelay'
+        connection = http.client.HTTPSConnection(url.hostname, url.port or 443, timeout=15)
+        try:
+            connection.request('POST', f'/v1/routes/{route["route_id"]}/{path}',
+                               json.dumps(body, separators=(',', ':')).encode(),
+                               {'Authorization': 'Bearer ' + route['send_token'], 'Content-Type': 'application/json'})
+            response = connection.getresponse()
+            data = response.read(4097)
+            if response.status != 200:
+                return response.status, 'RelayRejected'
+            return 200, json.loads(data)
+        except (OSError, ValueError, http.client.HTTPException):
+            return 0, 'TransportUnavailable'
+        finally:
+            connection.close()
+
+    def send_glance(self, route, envelope, glance_id, expires, live=None, urgent=False, widgets=False):
+        """Give the relay the newest sealed glance of the phone (relay/src/device.js, glance). `live` is the event of
+        the Live Activity, `update`, `end` or None; `widgets` asks the widgets of iOS 26 to read the glance again."""
+        if not self.configured:
+            return 0, 'PushNotConfigured'
+        status, result = self._post('glance', route, dict(id=glance_id, expires=int(expires), envelope=envelope,
+                                                          live=live, urgent=bool(urgent), widgets=bool(widgets)))
+        if status != 200:
+            return status, result
+        if not isinstance(result, dict):
+            return 0, 'InvalidRelayResponse'
+        status, reason = result.get('status'), result.get('reason')
+        if type(status) is not int or not isinstance(reason, str) or not re.fullmatch(r'[A-Za-z]{1,80}', reason):
+            return 0, 'InvalidRelayResponse'
+        return status, reason
 
     def send(self, route, envelope, notification_id, collapse_id, expires):
         if not self.configured:

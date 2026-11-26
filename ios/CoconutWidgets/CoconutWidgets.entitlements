@@ -2,7 +2,11 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-    <!-- The group that the app shares with its extensions holds the glance that the widgets show (GlanceStore). -->
+    <!-- The widgets of iOS 26 take a push of the Mac, which asks them to read its new glance (NowPushWidget). -->
+    <key>aps-environment</key>
+    <string>$(APS_ENVIRONMENT)</string>
+    <!-- The group that the app shares with its extensions holds the glance that the widgets show (GlanceStore), and the
+         keys and the relay route that open the glance of the Mac (NotificationKeys, HomeScreenRoute). -->
     <key>keychain-access-groups</key>
     <array>
         <string>$(AppIdentifierPrefix)com.gumroad.coconut.push</string>

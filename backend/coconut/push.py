@@ -21,6 +21,7 @@ import threading
 import time
 from uuid import NAMESPACE_URL, uuid5
 from . import app_badge, unread
+from .home_screen import HomeScreenPush
 from .push_relay import RelayTransport, validate_route, notification_alert, group_text, team_alert, direct_alert, notice_alert
 from .team_store import ACTIVE
 from .push_schedule import (LEGACY_SCHEDULE, OUTSIDE, due, holds_urgent, merge as merge_schedule,
@@ -35,7 +36,8 @@ ITEM_LIFETIME = 7 * 86400
 HISTORY = 30 * 86400
 # The app refreshes its registration while it runs. A registration this old belongs to an install nobody uses.
 STALE_REGISTRATION = 30 * 86400
-PUSH_TABLES = ('push_devices', 'push_routes', 'push_preferences', 'push_schedules')
+# push_glances: the phones that take the glance of the Home Screen, and what the Mac sent each one (home_screen.py).
+PUSH_TABLES = ('push_devices', 'push_routes', 'push_preferences', 'push_schedules', 'push_glances')
 # The phone reports the last result of its notification previews here. `coconut status` reads this file. A report stays
 # when the phone turns notifications off: the phone sends a report again only when it changes.
 PREVIEWS_FILE = 'push-previews.json'
@@ -160,6 +162,8 @@ class PushDelivery:
         self.service = service
         self.transport = transport or APNsTransport(service.root)
         self.relay = RelayTransport(service.root)
+        self.home_screen = HomeScreenPush(self)
+        self.home_screen_failure = None
         self.thread = None
         self.pruned = 0
         db = service.db
@@ -184,6 +188,8 @@ class PushDelivery:
             device_id TEXT PRIMARY KEY, last_delivered_at REAL, last_error TEXT, last_error_at REAL);
         CREATE TABLE IF NOT EXISTS push_previews (
             device_id TEXT PRIMARY KEY, data TEXT NOT NULL, reported REAL NOT NULL);
+        CREATE TABLE IF NOT EXISTS push_glances (
+            device_id TEXT PRIMARY KEY, data TEXT NOT NULL);
         ''')
         # The urgent summary of the settings screen counts the cards of the last week and lists the last urgent cards.
         if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='decisions'").fetchone():
@@ -254,6 +260,15 @@ class PushDelivery:
                                     (device_id, json.dumps(route)))
         elif self.service.db.execute('SELECT 1 FROM push_routes WHERE device_id=?', (device_id,)).fetchone():
             raise ServiceError(409, 'This iPhone uses encrypted notifications. Refresh its registration.')
+        # An app with widgets asks for the glance of the Home Screen (home_screen.py). It needs the relay route, which
+        # seals it. An app before widgets sends nothing, and the Mac sends it no glance.
+        home_screen = data.get('home_screen')
+        if home_screen is not None and type(home_screen) is not bool:
+            raise ServiceError(400, 'Supply true or false for home_screen.')
+        if home_screen and route is not None:
+            self.service.db.execute("INSERT OR IGNORE INTO push_glances VALUES (?,'{}')", (device_id,))
+        elif home_screen is False or route is None:
+            self.service.db.execute('DELETE FROM push_glances WHERE device_id=?', (device_id,))
         # A reinstall can pair again while retaining the same APNs address.
         self.service.db.execute('DELETE FROM push_devices WHERE token=? AND environment=? AND device_id<>?',
                                 (token, environment, device_id))
@@ -585,6 +600,17 @@ class PushDelivery:
 
     def _run(self):
         while not self.service.stopping.is_set():
+            # The glance goes before the notifications of the same change, so a widget that a notification reloads
+            # (ios/CoconutNotificationService) reads the new glance.
+            try:
+                self.home_screen.tick()
+                self.home_screen_failure = None
+            except Exception as error:
+                # The glance must not stop the notifications. The log names the kind of error once, never a text.
+                if type(error).__name__ != self.home_screen_failure:
+                    self.home_screen_failure = type(error).__name__
+                    logging.getLogger(__name__).warning('Coconut could not send the Home Screen glance: %s',
+                                                        self.home_screen_failure)
             try:
                 sent = self.deliver_one()
             except Exception:

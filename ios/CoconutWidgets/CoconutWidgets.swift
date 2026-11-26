@@ -7,6 +7,8 @@ import WidgetKit
 struct CoconutWidgets: WidgetBundle {
     var body: some Widget {
         NowWidget()
+        // The same widget with a push handler, so the Mac can reload it after the person leaves the app.
+        if #available(iOS 26.0, *) { NowPushWidget() }
         NewAgentWidget()
         NewAgentControl()
         WorkLiveActivity()

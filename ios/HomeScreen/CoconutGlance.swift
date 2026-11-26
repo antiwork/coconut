@@ -67,6 +67,8 @@ struct CoconutGlance: Codable, Hashable, Sendable {
     var todos: [Todos] = []
     /// When the app wrote it. A widget says when it is old, because the app writes only while it runs.
     var updatedAt: Date
+    /// True for the glance that the Mac sent after the person left the app (MacGlance), which a widget saved.
+    var fromMac: Bool? = nil
 
     /// The rows of a list, the most important first: the cards that wait, the agents that work, then the unread chats.
     /// A chat shows once, in its most important row.
@@ -107,8 +109,11 @@ struct CoconutGlance: Codable, Hashable, Sendable {
 
     /// The most cards, agents and chats that the glance keeps: more than the large widget shows.
     static let limit = 6
-    /// The kind of the widget that shows it (NowWidget). The app asks WidgetKit to read it again at each change.
+    /// The kind of the widget that shows it: NowPushWidget on iOS 26, which the Mac can reload with a push, and NowWidget
+    /// before iOS 26, which has a kind of its own. The app asks WidgetKit to read both again at each change.
     static let widgetKind = "coconut.now"
+    static let widgetKindBefore26 = "coconut.now.ios18"
+    static let widgetKinds = [widgetKind, widgetKindBefore26]
 }
 
 extension CoconutGlance.Todos {
