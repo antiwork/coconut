@@ -402,7 +402,7 @@ Not yet measured: the time from save to screen on the web host, and a `push --wa
   suggestion of its own (`NewChatPlace`, `NewChatSuggestion`). This one lists the projects and ends with New project, as
   asked; the app has no tabs or team chats yet, so it has no Brainstorm of Product either (`Brainstorm.swift`, a talk by
   voice that fills the box of Product). A message from Home always starts a new chat with the project.
-- Not ported: the slash commands other than `/model` and `/effort` (new, compact, stop, mute, archive, help), mentions, the access menu, editing a queued message, link and GitHub previews,
+- Not ported: the slash commands other than `/model` and `/effort` (new, compact, stop, mute, archive, help), search (`OmniSearch`: ⌘K on the Mac, the field of Chats on the iPhone, and the messages of `/v1/search`), mentions, the access menu, editing a queued message, link and GitHub previews,
   the schedule of a message, a pasted image in the message box or a composer (`AttachmentPaste`: Paste in the menu of
   the field on an iPhone, Command-V on a Mac), the fifth rule of Needs attention (stale data, which a preview has none of). Of the chat:
   Edit of a draft card (`MessageDraftEditor`), a reply to a card in words (`DecisionReplyComposer`), the links of a
