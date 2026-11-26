@@ -187,6 +187,9 @@ final class AppStore {
     /// The hours without activity after which a chat archives itself on the Mac, 0 for never (You, AutoArchiveMenu).
     /// Nil until the Mac says, and with a Mac older than the setting, which has no route to change it.
     var autoArchiveHours: Int?
+    /// The notification settings of the person, the same on each device (NotificationSettingsView). Nil until the Mac
+    /// says, and with a Mac older than the settings, which has no route to change them.
+    var notificationSettings: NotificationSettings?
     var pushRegistrationError: String?
     var pushStatus: PushStatus?
     @ObservationIgnored private var registeredPushSignature: String?
@@ -766,6 +769,7 @@ final class AppStore {
         pushConfigured = false
         personalBudget = nil
         autoArchiveHours = nil
+        notificationSettings = nil
         PushNotifications.shared.target = nil
         stopPolling()
         cacheTask?.cancel()
@@ -1673,6 +1677,26 @@ final class AppStore {
         return optimistically("settings/auto-archive", change: { transaction in
             optimisticValue(\.autoArchiveHours, Optional(hours), in: transaction)
         }, save: { let _: AutoArchiveResponse? = await self.write("settings/auto-archive", method: "PUT", payload: ["hours": hours], as: AutoArchiveResponse.self) })
+    }
+
+    /// Changes the notification settings. The page shows the change at once, and every device reads it with the
+    /// settings. The app sends each key, so the Mac keeps exactly what the page shows.
+    @discardableResult
+    func setNotificationSettings(_ settings: NotificationSettings) -> Bool {
+        if isDemo { notificationSettings = settings; return true }
+        return optimistically("settings/notifications", change: { transaction in
+            optimisticValue(\.notificationSettings, Optional(settings), in: transaction)
+        }, save: { let _: NotificationSettings? = await self.write("settings/notifications", method: "PUT", payload: settings, as: NotificationSettings.self) })
+    }
+
+    /// Tells the Mac the seconds since the last input at this Mac. While the person works at a Mac, the iPhone waits
+    /// with its notifications (NotificationSettings.mobileDelay). A failed report is lost, and the next one comes 30
+    /// seconds later. It is no write: a write would load the state again.
+    func reportPresence(idle: TimeInterval) async {
+        guard !isDemo, connection == .connected, let client,
+              let body = try? APIJSON.encode(["idle": idle.rounded()]) else { return }
+        let _: PresenceReport? = try? await client.request("device/presence", method: "PUT", body: body,
+                                                            idempotencyKey: UUID().uuidString, retryTransient: false)
     }
 
     func setModel(_ selection: ModelOverride) async -> Bool {
@@ -3223,8 +3247,8 @@ final class AppStore {
             let explicitKey = idempotencyKey ?? OptimisticRequest.id
             let key = explicitKey ?? uncertainWriteKeys[requestSignature] ?? UUID().uuidString
             if explicitKey == nil { uncertainWriteKeys[requestSignature] = key }
-            let (receiptModel, receiptBaseURL, receiptCatalog, receiptMCP, receiptMessages, receiptDecisions, receiptBots, receiptRoutines, receiptNativeReadAt, receiptCursor, receiptEpoch, receiptAutoArchive) = optimisticUpdates.receive {
-                (model, modelBaseURL, modelCatalog, mcpServers, messages, decisions, bots, routines, nativeSettingsReadAt, cachedState?.cursor, snapshotEpoch, autoArchiveHours)
+            let (receiptModel, receiptBaseURL, receiptCatalog, receiptMCP, receiptMessages, receiptDecisions, receiptBots, receiptRoutines, receiptNativeReadAt, receiptCursor, receiptEpoch, receiptAutoArchive, receiptNotifications) = optimisticUpdates.receive {
+                (model, modelBaseURL, modelCatalog, mcpServers, messages, decisions, bots, routines, nativeSettingsReadAt, cachedState?.cursor, snapshotEpoch, autoArchiveHours, notificationSettings)
             }
             let result: Response = try await client.request(path, method: method, body: body, idempotencyKey: key)
             guard belongsToPairing() else { return nil }
@@ -3268,6 +3292,10 @@ final class AppStore {
                 if let settings = result as? AutoArchiveResponse, autoArchiveHours == receiptAutoArchive {
                     autoArchiveHours = settings.autoArchiveHours
                     cachedState?.autoArchiveHours = settings.autoArchiveHours
+                }
+                if let settings = result as? NotificationSettings, notificationSettings == receiptNotifications {
+                    notificationSettings = settings
+                    cachedState?.notifications = settings
                 }
                 if method == "DELETE", path.hasPrefix("routines/") {
                     routines.removeAll { "routines/" + $0.id == path }
@@ -3524,6 +3552,7 @@ final class AppStore {
             assign(\.pushConfigured, snapshot.pushConfigured ?? false)
             // The demo has the time that a Mac starts with (14 hours, agent_chats.py), so You shows the row.
             assign(\.autoArchiveHours, snapshot.autoArchiveHours ?? (isDemo ? 14 : nil))
+            assign(\.notificationSettings, snapshot.notifications ?? (isDemo ? .demo : nil))
             assign(\.personalBudget, snapshot.personalBudget ?? (isDemo ? PersonalBudget(signedIn: true,
                 botId: snapshot.bots.first { $0.name == "Personal" && $0.chatOf == nil }?.id, month: "2026-11",
                 spentUsd: 41.2, limitUsd: 200, paused: false, resetsAt: "2026-12-01T00:00:00Z") : nil))
@@ -3747,11 +3776,13 @@ final class AppStore {
                     self.assign(\.routines, native.routines ?? [])
                     if let configured = native.pushConfigured { self.assign(\.pushConfigured, configured) }
                     if let hours = native.autoArchiveHours { self.assign(\.autoArchiveHours, hours) }
+                    if let settings = native.notifications { self.assign(\.notificationSettings, settings) }
                     self.nativeSettingsReadAt = Date()
                     if var state = self.cachedState {
                         state.bots = self.bots
                         state.pushConfigured = self.pushConfigured
                         state.autoArchiveHours = self.autoArchiveHours
+                        state.notifications = self.notificationSettings
                         self.apply(state, persist: true)
                         Task { await self.syncPushRegistration() }
                 }
@@ -3977,6 +4008,8 @@ private struct PairRequest: Encodable { let code: String; let deviceName: String
 private struct PairResponse: Decodable, Sendable { let token: String; let deviceId: String }
 private struct EmptyRequest: Encodable {}
 private struct Acknowledgement: Decodable, Sendable { let ok: Bool }
+
+private struct PresenceReport: Decodable, Sendable { let away: Int }
 private struct PinRequest: Encodable { let pinned: Bool }
 private struct ArchiveRequest: Encodable { let archived: Bool }
 private struct MergeRequest: Encodable { let chatId: String }

@@ -11,7 +11,8 @@ struct SelectedBotMention: Identifiable, Equatable {
 }
 
 /// A bot that a person can name with `@` in a composer: a bot of this Mac in its chat, or a bot of a team in the
-/// team chat. The picker shows its name. A person in the team chat also shows a face.
+/// team chat. The picker shows its name. A person in the team chat also shows a face. A chat of a team is a row of the
+/// `#` list (TeamChatMention).
 protocol MentionableBot: Identifiable where ID == String {
     var id: String { get }
     var name: String { get }
@@ -19,10 +20,26 @@ protocol MentionableBot: Identifiable where ID == String {
     var isMentionable: Bool { get }
     /// The member of a row for a person in the team chat. The row then shows the face of the person. Nil for a bot.
     var mentionedPerson: TeamMember? { get }
+    /// The text of its row: the name, or `#` and the name for a chat.
+    var listedName: String { get }
+    /// The accessibility identifier of its row.
+    var rowIdentifier: String { get }
+    /// What VoiceOver reads for its row in a list of `rows`.
+    func spokenName(among rows: [Self]) -> String
 }
 
 extension MentionableBot {
     var mentionedPerson: TeamMember? { nil }
+    var listedName: String { name }
+    var rowIdentifier: String { mentionedPerson == nil ? "mention-bot-\(id)" : "mention-person-\(id)" }
+
+    /// The name, and for two agents of one name, which of them it is.
+    func spokenName(among rows: [Self]) -> String {
+        guard mentionedPerson == nil else { return name }
+        let matching = rows.filter { $0.mentionedPerson == nil && $0.name.lowercased() == name.lowercased() }
+        guard matching.count > 1, let index = matching.firstIndex(where: { $0.id == id }) else { return name }
+        return "\(name), agent \(index + 1) of \(matching.count)"
+    }
 }
 
 extension Bot: MentionableBot {
@@ -39,7 +56,8 @@ struct BotMentionQuery {
 }
 
 enum BotMentions {
-    static func query(in text: String, selection: TextSelection?) -> BotMentionQuery? {
+    /// The name that the person types at the caret after `sigil`: `@` for a bot or a person, `#` for a chat.
+    static func query(in text: String, selection: TextSelection?, sigil: Character = "@") -> BotMentionQuery? {
         var caret = text.endIndex
         if let selection, case .selection(let range) = selection.indices {
             guard range.isEmpty else { return nil }
@@ -47,7 +65,7 @@ enum BotMentions {
         }
         guard caret <= text.endIndex else { return nil }
         let prefix = text[..<caret]
-        guard let at = prefix.lastIndex(of: "@"), startsToken(at, in: text) else { return nil }
+        guard let at = prefix.lastIndex(of: sigil), startsToken(at, in: text) else { return nil }
         let query = String(text[text.index(after: at)..<caret])
         guard query.count <= 64, !query.contains("\n") else { return nil }
         var end = caret
@@ -55,8 +73,9 @@ enum BotMentions {
         return BotMentionQuery(range: at..<end, text: query)
     }
 
-    static func candidates<B: MentionableBot>(in bots: [B], text: String, selection: TextSelection?) -> [B] {
-        guard let query = query(in: text, selection: selection) else { return [] }
+    static func candidates<B: MentionableBot>(in bots: [B], text: String, selection: TextSelection?,
+                                              sigil: Character = "@") -> [B] {
+        guard let query = query(in: text, selection: selection, sigil: sigil) else { return [] }
         return bots.filter { $0.isMentionable && (query.text.isEmpty || $0.name.range(of: query.text, options: [.anchored, .caseInsensitive, .diacriticInsensitive]) != nil) }
     }
 
@@ -201,15 +220,17 @@ enum BotMentions {
     }
 
     static func replacementRange<B: MentionableBot>(for query: BotMentionQuery, in text: String,
-                                                    bots: [B]) -> Range<String.Index> {
-        let length = bots.filter { matches(name: $0.name, at: query.range.lowerBound, in: text) }.map { $0.name.count + 1 }.max()
+                                                    bots: [B], sigil: Character = "@") -> Range<String.Index> {
+        let length = bots.filter { matches(name: $0.name, at: query.range.lowerBound, in: text, sigil: sigil) }
+            .map { $0.name.count + 1 }.max()
         guard let length else { return query.range }
         let end = text.index(query.range.lowerBound, offsetBy: length)
         return query.range.lowerBound..<max(end, query.range.upperBound)
     }
 
-    private static func matches(name: String, at index: String.Index, in text: String) -> Bool {
-        guard let range = text.range(of: "@" + name, options: [.anchored, .caseInsensitive], range: index..<text.endIndex) else { return false }
+    private static func matches(name: String, at index: String.Index, in text: String, sigil: Character = "@") -> Bool {
+        guard let range = text.range(of: String(sigil) + name, options: [.anchored, .caseInsensitive],
+                                     range: index..<text.endIndex) else { return false }
         if range.upperBound < text.endIndex, text[range.upperBound] == "." {
             let next = text.index(after: range.upperBound)
             if next < text.endIndex, text[next].isLetter || text[next].isNumber || "_-".contains(text[next]) { return false }
@@ -232,13 +253,6 @@ struct BotMentionPicker<B: MentionableBot>: View {
     let bots: [B]
     let select: (B) -> Void
 
-    private func accessibleName(for bot: B) -> String {
-        guard bot.mentionedPerson == nil else { return bot.name }
-        let matching = bots.filter { $0.mentionedPerson == nil && $0.name.lowercased() == bot.name.lowercased() }
-        guard matching.count > 1, let index = matching.firstIndex(where: { $0.id == bot.id }) else { return bot.name }
-        return "\(bot.name), agent \(index + 1) of \(matching.count)"
-    }
-
     var body: some View {
         if !bots.isEmpty {
             ScrollView {
@@ -250,7 +264,7 @@ struct BotMentionPicker<B: MentionableBot>: View {
                                     PersonFace(member: person, memberId: person.member, name: person.name, size: 30)
                                 }
                                 VStack(alignment: .leading, spacing: 2) {
-                                    Text(bot.name).font(.body).lineLimit(1)
+                                    Text(bot.listedName).font(.body).lineLimit(1)
                                 }
                                 Spacer(minLength: 0)
                             }
@@ -258,8 +272,8 @@ struct BotMentionPicker<B: MentionableBot>: View {
                             .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
-                        .accessibilityIdentifier(bot.mentionedPerson == nil ? "mention-bot-\(bot.id)" : "mention-person-\(bot.id)")
-                        .accessibilityLabel(accessibleName(for: bot))
+                        .accessibilityIdentifier(bot.rowIdentifier)
+                        .accessibilityLabel(bot.spokenName(among: bots))
                         if bot.id != bots.last?.id {
                             Divider().padding(.leading, BoardStyle.Space.m)
                         }
@@ -351,6 +365,32 @@ struct BotMentionControls<B: MentionableBot>: View {
             let valid = BotMentions.occurrences(in: value, selected: selected, bots: bots)
             selected = BotMentions.reconciled(selected, in: value).filter { mention in
                 valid.contains { $0.id == mention.id && ($0.location == mention.location || mention.location == nil) }
+            }
+        }
+    }
+}
+
+/// The `#` list of the composer of a team chat: the chats of the team (TeamChatLinks.chats). A pick writes `#` and the
+/// name of the chat. The text holds the whole mention, so the composer keeps no list of picks for it.
+struct ChatMentionControls: View {
+    @Binding var text: String
+    @Binding var selection: TextSelection?
+    let chats: [TeamChatMention]
+    /// False hides the list, for example while the field is not focused.
+    let focused: Bool
+    let focus: () -> Void
+
+    var body: some View {
+        if focused {
+            BotMentionPicker(bots: BotMentions.candidates(in: chats, text: text, selection: selection, sigil: "#")) { chat in
+                guard let query = BotMentions.query(in: text, selection: selection, sigil: "#") else { return }
+                let prefixCount = text.distance(from: text.startIndex, to: query.range.lowerBound)
+                let replacement = "#\(chat.name) "
+                text.replaceSubrange(BotMentions.replacementRange(for: query, in: text, bots: chats, sigil: "#"),
+                                     with: replacement)
+                selection = TextSelection(insertionPoint: text.index(text.startIndex,
+                                                                     offsetBy: prefixCount + replacement.count))
+                focus()
             }
         }
     }

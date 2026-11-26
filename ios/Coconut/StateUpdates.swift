@@ -183,4 +183,5 @@ struct NativeSnapshot: Decodable, Sendable {
     let routines: [Routine]?
     let pushConfigured: Bool?
     let autoArchiveHours: Int?
+    let notifications: NotificationSettings?
 }

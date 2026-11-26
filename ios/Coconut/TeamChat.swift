@@ -1959,16 +1959,22 @@ extension TeamRoom {
     }
 }
 
-/// One row of the `@` list of the team chat: a bot that a teammate can ask, or another person of the team. Its `id` is
-/// the ID that a send puts into `mentions`: the `t-` ID of the bot, or the member ID of the person.
+/// One row of the `@` list of the team chat: a bot that a teammate can ask, another person of the team, or everyone.
+/// Its `id` is the ID that a send puts into `mentions`: the `t-` ID of the bot, or the member ID of the person. A send
+/// puts the member ID of each other person in the place of `everyone` (TeamMentions.expanded).
 enum TeamMentionTarget: MentionableBot, Equatable, Sendable {
     case bot(TeamRoomBot)
     case person(TeamMember)
+    /// `@everyone`: each other person of the team, as Slack's @channel. No agent.
+    case everyone
+
+    static let everyoneId = "everyone"
 
     var id: String {
         switch self {
         case .bot(let bot): bot.id
         case .person(let member): member.member
+        case .everyone: Self.everyoneId
         }
     }
 
@@ -1976,12 +1982,21 @@ enum TeamMentionTarget: MentionableBot, Equatable, Sendable {
         switch self {
         case .bot(let bot): bot.name
         case .person(let member): member.name
+        case .everyone: "everyone"
         }
     }
 
     var isMentionable: Bool { true }
 
     var mentionedPerson: TeamMember? { if case .person(let member) = self { member } else { nil } }
+
+    var rowIdentifier: String {
+        switch self {
+        case .bot(let bot): "mention-bot-\(bot.id)"
+        case .person(let member): "mention-person-\(member.member)"
+        case .everyone: "mention-everyone"
+        }
+    }
 }
 
 /// The names of team bots and people in the team chat: a bot with `@`, a person with `@` or by the name alone
@@ -1994,12 +2009,29 @@ enum TeamMentions {
     static let overLimit = "Name at most \(limit) people and agents in one message."
 
     /// The rows of the `@` list: the bots that a teammate can ask, then the people of the team, each group in the order
-    /// of the names. This is the one place of that rule. A person is each member that is not a Mac for a team only and
-    /// is not this person. An older service does not notify a named person in a quiet team, so its list has the bots
-    /// only (TeamRoom.knowsPersonMentions).
+    /// of the names, then `everyone`. This is the one place of that rule. A person is each member that is not a Mac for
+    /// a team only and is not this person. An older service does not notify a named person in a quiet team, so its list
+    /// has the bots only (TeamRoom.knowsPersonMentions). `everyone` needs one other person at least, and at most
+    /// `limit` of them.
     static func targets(of room: TeamRoom) -> [TeamMentionTarget] {
-        let people = room.knowsPersonMentions ? room.people.filter { $0.thisMac != true } : []
-        return byName(bots(of: room).map(TeamMentionTarget.bot)) + byName(people.map(TeamMentionTarget.person))
+        let people = others(in: room)
+        let everyone: [TeamMentionTarget] = (1...limit).contains(people.count) ? [.everyone] : []
+        return byName(bots(of: room).map(TeamMentionTarget.bot)) + byName(people.map(TeamMentionTarget.person)) + everyone
+    }
+
+    /// The people that the `@` list offers: each person of the team but this one, on a service that knows a mention of
+    /// a person.
+    private static func others(in room: TeamRoom) -> [TeamMember] {
+        room.knowsPersonMentions ? room.people.filter { $0.thisMac != true } : []
+    }
+
+    /// The `mentions` of a send: each ID once, with the member ID of each other person in the place of `everyone`. The
+    /// Mac and the log see only the people, so each Mac notifies its person as for a mention by name, and an older app
+    /// reads the message as it reads any other.
+    static func expanded(_ ids: [String], in room: TeamRoom) -> [String] {
+        var seen = Set<String>()
+        return ids.flatMap { $0 == TeamMentionTarget.everyoneId ? others(in: room).map(\.member) : [$0] }
+            .filter { seen.insert($0).inserted }
     }
 
     private static func byName(_ items: [TeamMentionTarget]) -> [TeamMentionTarget] {
@@ -2027,6 +2059,104 @@ enum TeamMentions {
     }
 }
 
+/// One row of the `#` list of a team chat: the Team chat of the team, by the name of the team, or a named chat.
+struct TeamChatMention: MentionableBot, Equatable, Sendable {
+    /// The chat that the link of the name opens.
+    let key: TeamChatKey
+    let name: String
+
+    var id: String { key.chat ?? "" }
+    var isMentionable: Bool { true }
+    var listedName: String { "#" + name }
+    var rowIdentifier: String { "mention-chat-" + (key.chat ?? "team") }
+    func spokenName(among rows: [TeamChatMention]) -> String { name + ", chat" }
+}
+
+/// Names of chats in a team chat, as Slack links its channels: `#` and the name of a chat of the team
+/// (docs/team-log.md, "Names of chats"). The `#` list of the composer writes them. The message keeps the plain text,
+/// so the Mac, the log and an older app see no change. A bubble shows each such name as a link that opens the chat.
+/// The person asked for it (skills/coconut/references/app-changes.md): keep it.
+enum TeamChatLinks {
+    /// The rows of the `#` list: the Team chat by the name of the team, then the named chats in the order of the names.
+    static func chats(of room: TeamRoom) -> [TeamChatMention] {
+        let named = room.namedChats.filter { !$0.name.isEmpty }
+            .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+            .map { TeamChatMention(key: TeamChatKey(room: room.room, chat: $0.id), name: $0.name) }
+        let team = room.name.isEmpty ? [] : [TeamChatMention(key: TeamChatKey(room: room.room), name: room.name)]
+        return team + named
+    }
+
+    /// The address of a chat, as the widgets write it (HomeScreenLink.team): `coconut://open/team/<room>?chat=<ID>`.
+    static func url(of key: TeamChatKey) -> URL? {
+        var parts = URLComponents()
+        parts.scheme = "coconut"
+        parts.host = "open"
+        parts.path = "/team/" + key.room
+        parts.queryItems = key.chat.map { [URLQueryItem(name: "chat", value: $0)] }
+        return parts.url
+    }
+
+    /// The chat of such an address: the Team chat or a named chat. Nil for any other address, also for a direct chat.
+    static func chat(of url: URL) -> TeamChatKey? {
+        guard url.scheme?.lowercased() == "coconut", url.host()?.lowercased() == "open" else { return nil }
+        let path = url.pathComponents.filter { $0 != "/" }
+        guard path.count == 2, path[0] == "team" else { return nil }
+        let query = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
+        func value(_ name: String) -> String? { query.first { $0.name == name }?.value.flatMap { $0.isEmpty ? nil : $0 } }
+        guard value("member") == nil, value("bot") == nil else { return nil }
+        return TeamChatKey(room: path[1], chat: value("chat"))
+    }
+
+    /// The text of a bubble with each `#` name of a chat of the team as a Markdown link: the longest name that follows
+    /// `#`, in any case, as a word of its own. A name inside a link stays as it is, and so does a text with a code mark
+    /// (`), as TeamMentionEmphasis does.
+    static func text(_ text: String, room: TeamRoom) -> String {
+        guard text.contains("#"), !text.contains("`") else { return text }
+        let rows = Self.chats(of: room).sorted { $0.name.count > $1.name.count }
+        let links = text.ranges(of: #/\[[^\]]*\]\([^)]*\)/#)
+        var result = ""
+        var rest = text.startIndex
+        var index = text.startIndex
+        while index < text.endIndex, let hash = text[index...].firstIndex(of: "#") {
+            index = text.index(after: hash)
+            guard startsName(hash, in: text), !links.contains(where: { $0.contains(hash) }) else { continue }
+            for row in rows {
+                guard let nameEnd = Self.end(of: row.name, after: hash, in: text), let link = Self.url(of: row.key)
+                else { continue }
+                let shown = text[hash..<nameEnd].replacingOccurrences(of: "\\", with: "\\\\")
+                    .replacingOccurrences(of: "[", with: "\\[").replacingOccurrences(of: "]", with: "\\]")
+                result += String(text[rest..<hash]) + "[" + shown + "](" + link.absoluteString + ")"
+                rest = nameEnd
+                index = nameEnd
+                break
+            }
+        }
+        return result + String(text[rest...])
+    }
+
+    /// A `#` where a word starts.
+    private static func startsName(_ hash: String.Index, in text: String) -> Bool {
+        guard hash > text.startIndex else { return true }
+        let before = text[text.index(before: hash)]
+        return before.isWhitespace || "([{\"'“‘*".contains(before)
+    }
+
+    /// The end of `name` right after `hash`, when the name ends there as a word: grace.com and #Notices2 name no chat
+    /// Notices.
+    private static func end(of name: String, after hash: String.Index, in text: String) -> String.Index? {
+        guard let range = text.range(of: name, options: [.anchored, .caseInsensitive, .diacriticInsensitive],
+                                     range: text.index(after: hash)..<text.endIndex) else { return nil }
+        guard range.upperBound < text.endIndex else { return range.upperBound }
+        let after = text[range.upperBound]
+        if after == "." {
+            let next = text.index(after: range.upperBound)
+            guard next < text.endIndex else { return range.upperBound }
+            return text[next].isLetter || text[next].isNumber || "_-".contains(text[next]) ? nil : range.upperBound
+        }
+        return after.isWhitespace || ",!?;:)]}\"'”’*…—–".contains(after) ? range.upperBound : nil
+    }
+}
+
 /// How a bubble shows a message that names this person: the name of the person in bold, with its `@` or without it,
 /// as Markdown already shows a strong word. No new color. A bubble shows each other name as the text has it.
 enum TeamMentionEmphasis {
@@ -2046,9 +2176,16 @@ enum TeamMentionEmphasis {
     static func text(_ text: String, message: TeamMessage?, room: TeamRoom) -> String {
         guard namesMe(message, room: room), let own = room.ownMember, !own.name.isEmpty, !text.contains("`")
         else { return text }
+        // `@everyone` names this person too, but `everyone` alone is a plain word.
+        let everyone = BotMentions.nameRanges(of: ["everyone"], in: text).filter { _, range in
+            range.lowerBound > text.startIndex && text[text.index(before: range.lowerBound)] == "@"
+        }
+        let names = BotMentions.nameRanges(of: forms(of: own, in: room), in: text)
+        let ranges = (names + everyone.filter { found in !names.contains { $0.range.overlaps(found.range) } })
+            .sorted { $0.range.lowerBound < $1.range.lowerBound }
         var result = ""
         var rest = text.startIndex
-        for (_, range) in BotMentions.nameRanges(of: forms(of: own, in: room), in: text) {
+        for (_, range) in ranges {
             var start = range.lowerBound
             if start > text.startIndex, text[text.index(before: start)] == "@" { start = text.index(before: start) }
             guard start >= rest else { continue }

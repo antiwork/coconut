@@ -11,6 +11,7 @@ it with a clear line.
 """
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
 NAME = 'Coconut'
@@ -22,6 +23,13 @@ CLOUD_SOON = ('Cloud, the hosted upstream Coconut, is coming soon. This Coconut 
 # The limits of parallel work have no screen. The chat changes them through the routes of the service.
 LIMIT_ROUTES = {'work_sessions_per_agent': '/v1/settings/agent-limit', 'helpers_per_task': '/v1/settings/parallel-work'}
 ACCESS = ('off', 'smart', 'manual')
+NOTIFICATION_TEXT = {
+    'paused_until': 'Until then nothing notifies, except a card that needs attention now.',
+    'people': {'all': 'each new message of the team', 'mentions': 'direct messages, notices, mentions and keywords',
+               'nothing': 'no message of a person'},
+    'agents': {'all': 'cards and replies', 'cards': 'cards only', 'urgent': 'only cards that need attention now'},
+    'keywords': 'Words that notify in a team chat as a mention does.',
+    'mobile_delay': 'While the person works at a Mac, the iPhone waits this many minutes. Null: the iPhone notifies at once.'}
 ACCESS_TEXT = {'off': 'runs commands without asking', 'smart': 'asks for risky commands',
                'manual': 'asks before each command'}
 
@@ -31,7 +39,7 @@ SETTINGS_SCHEMA = {
         'Read or change the settings of this Coconut. Only a turn of Coconut has it: the Coconut chat, and the change '
         'that another agent hands to it with coconut_message_bot. Coconut has no settings screens, '
         'so the person changes everything here, in plain words: "use Opus", "let chats run commands '
-        'without asking", "mute Desk", "let each agent run 4 work sessions", "fall back to Sonnet", "archive chats after a week", "run Gumroad on mote". When the person sends "/help", call "read" '
+        'without asking", "mute Desk", "let each agent run 4 work sessions", "fall back to Sonnet", "archive chats after a week", "run Gumroad on mote", "pause notifications for an hour", "notify me only of mentions". When the person sends "/help", call "read" '
         'and list in short lines what they can ask you to change, with the current values. First call with action "read" to see the current values and the choices. '
         'Then call action "change" with one setting. Say in one line what changed, from what to what, and that '
         'the person can ask to undo it. A change that deletes something or costs money needs a card first '
@@ -42,7 +50,7 @@ SETTINGS_SCHEMA = {
             'action': {'type': 'string', 'enum': ['read', 'change']},
             'setting': {'type': 'string', 'enum': [
                 'default_model', 'fallback_models', 'default_access', 'agent_notifications', 'agent_name', 'agent_runtime',
-                'work_sessions_per_agent', 'helpers_per_task', 'auto_archive_hours', 'mode']},
+                'work_sessions_per_agent', 'helpers_per_task', 'auto_archive_hours', 'notifications', 'mode']},
             'agent': {'type': 'string', 'description': 'The name or ID of the project, for an agent_* setting.'},
             'model': {'type': 'string', 'description': 'A model ID from the catalog that "read" lists.'},
             'provider': {'type': 'string', 'description': 'The provider of that model, from the catalog.'},
@@ -52,7 +60,11 @@ SETTINGS_SCHEMA = {
                                      'the chats of that project), local or cloud for mode, a number from 1 to 64 (null for '
                                      'Automatic) for work_sessions_per_agent and helpers_per_task, the hours '
                                      'without activity after which a chat archives itself for auto_archive_hours '
-                                     '(0 for never), or for '
+                                     '(0 for never), for notifications an object with one or more of '
+                                     'pause_minutes (0 to resume) or paused_until (a UTC time, null to resume), '
+                                     'people (all, mentions, nothing), agents (all, cards, urgent), keywords (the '
+                                     'whole list of words) and mobile_delay (the minutes without input at a Mac '
+                                     'before the iPhone notifies, null for at once), or for '
                                      'fallback_models the whole list in order, each item with a model and a provider '
                                      'from the catalog (an empty list for no fallback).'},
         },
@@ -133,8 +145,10 @@ def read(service) -> dict:
             'parallel_work': {**_limits(service), 'total': 'No limit: every agent works at once.'},
             'auto_archive_hours': service.auto_archive_hours(),
             'auto_archive': 'A chat without activity for this many hours archives itself. 0 means never.',
-            'not_here': ('Pairing a device, phone notifications and their work hours, and signing in to GitHub or '
-                         'Google need the device itself: the header of this chat has them.')}
+            'notifications': service.notification_settings(),
+            'notification_choices': NOTIFICATION_TEXT,
+            'not_here': ('Pairing a device, turning on notifications on a phone and its work hours, and signing in to '
+                         'GitHub or Google need the device itself: the header of this chat has them.')}
 
 
 def _fallback(service):
@@ -187,6 +201,20 @@ def change(service, arguments: dict) -> dict:
         before = read(service)['default_access']
         service.mutate('PUT', '/v1/settings/approvals', {'mode': arguments['value']}, key, device)
         return {'setting': setting, 'before': before, 'after': arguments['value'], 'changed': True}
+    if setting == 'notifications':
+        value = arguments.get('value')
+        if not isinstance(value, dict):
+            raise ServiceError(400, 'Supply an object with the settings to change.')
+        value = dict(value)
+        if 'pause_minutes' in value:
+            minutes = value.pop('pause_minutes')
+            if not isinstance(minutes, int) or isinstance(minutes, bool) or minutes < 0:
+                raise ServiceError(400, 'Supply pause_minutes as a whole number of minutes, 0 to resume.')
+            until = datetime.now(timezone.utc) + timedelta(minutes=minutes)
+            value['paused_until'] = until.strftime('%Y-%m-%dT%H:%M:%SZ') if minutes else None
+        before = service.notification_settings()
+        after = service.mutate('PUT', '/v1/settings/notifications', value, key, device)
+        return {'setting': setting, 'before': before, 'after': after, 'changed': after != before}
     if setting == 'auto_archive_hours':
         before = service.auto_archive_hours()
         after = service.mutate('PUT', '/v1/settings/auto-archive', {'hours': arguments.get('value')}, key, device)

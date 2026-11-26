@@ -162,6 +162,7 @@ from .bot_profiles import ONLY_PROJECTS, BotProfiles
 from .agent_chats import ARCHIVE_PASS_SECONDS, AgentChats
 from .gateway_chat import GatewayChat
 from .message_queue import MessageQueue
+from .notification_settings import NotificationSettings
 from .documents import SCHEMA as DOCUMENTS_SCHEMA, Documents
 from .team import SCHEMA as TEAM_SCHEMA, Team
 from .turn_activity import TurnActivity
@@ -194,7 +195,7 @@ def marked(field):
     return f"json_type(data,'$.{field}') IN ('object','true')"
 
 
-class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness, WithdrawalCorrections, WorkRecovery, WorkSources, SilentResponses, TrackedWork, WorkStatus, WorkProgress, PullRequestReviews, DecisionInbox, BackgroundProcesses, NativeExecution, NativeRoutines, ApprovalUpdates, ParallelWorkUpdates, PersonalBudget, ServiceRestart, WorkspaceRecovery, WorktreeRetirement, SessionMaintenance, DatabaseMaintenance, TechnicalLane, HermesSetup, BotProfiles, AgentChats, GatewayChat, Documents, Team, Usage, TurnActivity, MessageQueue):
+class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness, WithdrawalCorrections, WorkRecovery, WorkSources, SilentResponses, TrackedWork, WorkStatus, WorkProgress, PullRequestReviews, DecisionInbox, BackgroundProcesses, NativeExecution, NativeRoutines, ApprovalUpdates, ParallelWorkUpdates, PersonalBudget, ServiceRestart, WorkspaceRecovery, WorktreeRetirement, SessionMaintenance, DatabaseMaintenance, TechnicalLane, HermesSetup, BotProfiles, AgentChats, GatewayChat, Documents, Team, Usage, TurnActivity, MessageQueue, NotificationSettings):
     ACTIVE = {'queued', 'working', 'scheduled', 'needs_you', 'paused', 'waiting'}
     TABLES = ('bots', 'tasks', 'messages', 'decisions', 'artifacts', 'routines')
     BOT_CHANGE_LIMIT = 8
@@ -1066,7 +1067,7 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
                         task = self._get('tasks', decision['task_id'])
                         decision.update(self.decision_origin(task))
                 state.update(cursor=self._cursor(), server_time=now(), provider=getattr(self.provider, 'name', 'unknown'), push_configured=self.push.configured,
-                             auto_archive_hours=self.auto_archive_hours())
+                             auto_archive_hours=self.auto_archive_hours(), notifications=self.notification_settings())
                 state['personal_budget'] = self.personal_budget_state()
                 if catalog is not None:
                     default = catalog.get('default', {})
@@ -1130,6 +1131,10 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
         except (ValueError, TypeError, AttributeError):
             raise ServiceError(400, 'Supply a UUID in Idempotency-Key.')
         fingerprint = digest(encoded([device_id, method, path, data]))
+        if method == 'PUT' and path == '/v1/device/presence':
+            # A Mac reports the idle time of its input every 30 seconds. It changes no row, so it keeps no saved
+            # response (notification_settings.py).
+            return self.note_presence(device_id, data)
         if method == 'POST' and path == '/v1/brainstorm':
             # Each call is a new answer of the model of a project, so it keeps no saved response (brainstorm.py).
             from .brainstorm import brainstorm
@@ -1629,6 +1634,8 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
                 return self._answer(decision, task, data, device)
         if parts == ['v1', 'settings', 'auto-archive'] and method == 'PUT':
             return self.set_auto_archive(data)
+        if parts == ['v1', 'settings', 'notifications'] and method == 'PUT':
+            return self.set_notification_settings(data)
         if parts == ['v1', 'settings', 'approvals'] and method == 'PUT':
             if not hasattr(self.provider, 'native_settings'):
                 raise ServiceError(503, 'Hermes is not available.')

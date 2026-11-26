@@ -24,7 +24,8 @@ final class AppModel: ObservableObject {
     @Published var shownChat: TeamChatKey?
     /// Coconut > Settings asked the main window to show Profile. The main window shows it and sets it to false.
     @Published var shownProfile = false
-    /// The agent whose chat got a share from the share menu. The main window shows the chat and sets it to nil.
+    /// The agent whose chat a banner or a share from the share menu asked for. The main window shows the chat and sets
+    /// it to nil.
     @Published var shownBot: String?
     /// File > New chat asked for a chat. The main window starts it, in the project of the chat that it shows or of the
     /// message box, and sets this to false.

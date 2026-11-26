@@ -539,7 +539,8 @@ struct TeamChatView: View {
         } else {
             // A message in one notice answers the notice, as a reply to a mail does.
             TeamChatComposer(placeholder: isNotice ? "Reply" : TeamDirectText.message(peer(room)?.name ?? room.title),
-                             targets: mentionTargets(room), peer: peer(room)?.name, state: $composer,
+                             targets: mentionTargets(room), chats: TeamChatLinks.chats(of: room),
+                             peer: peer(room)?.name, state: $composer,
                              mentions: $mentions, focused: $composerFocused,
                              enabled: canWrite(room), previews: chat.offersPreviews,
                              files: TeamFileRules.offered(in: chatKey, chat) ? composerFiles : nil, send: send)
@@ -608,8 +609,9 @@ struct TeamChatView: View {
         } else {
             // The store saves the message first. When the save fails, the composer keeps the text.
             // The mentions count in the draft before the trim: their places are places in the draft.
-            let named = BotMentions.recipients(in: composer.draft, selected: mentions, bots: mentionTargets(room),
-                                               skipping: composer.unnamed).map(\.id)
+            let named = TeamMentions.expanded(BotMentions.recipients(in: composer.draft, selected: mentions,
+                                                                     bots: mentionTargets(room),
+                                                                     skipping: composer.unnamed).map(\.id), in: room)
             guard store.sendTeamMessage(chatKey, from: composer, mentions: named) else { return }
             // A message of a person is no alert. The chat shows each message again, so the person sees it.
             store.setTeamAlertFilter(chatKey, .all)
@@ -739,8 +741,11 @@ struct TeamMessageRow: View {
     private var message: TeamMessage? { row.message }
     private var pending: TeamPendingMessage? { if case .pending(let pending) = row.content { pending } else { nil } }
     private var text: String { (editedText ?? row.text).trimmingCharacters(in: .newlines) }
-    /// The text that the bubble draws: the `@` name of this person in bold when the message names the person.
-    private var shownText: String { TeamMentionEmphasis.text(text, message: message, room: room) }
+    /// The text that the bubble draws: the `@` name of this person in bold when the message names the person, and each
+    /// `#` name of a chat as a link to the chat.
+    private var shownText: String {
+        TeamChatLinks.text(TeamMentionEmphasis.text(text, message: message, room: room), room: room)
+    }
     private var teamBot: TeamRoomBot? { message?.bot.flatMap { id in room.botList.first { $0.id == id } } }
     private var writerName: String {
         if let message, message.bot != nil { return teamBot?.name ?? message.botName ?? "Agent" }
@@ -1188,6 +1193,8 @@ struct TeamChatComposer: View {
     let placeholder: String
     /// The rows that `@` lists (TeamMentions.targets). None in a direct chat.
     let targets: [TeamMentionTarget]
+    /// The rows that `#` lists (TeamChatLinks.chats), also in a direct chat and in an edit: a name of a chat is text.
+    var chats: [TeamChatMention] = []
     /// The name of the other person of a direct chat, for the quote of a reply. Nil for the Team chat.
     let peer: String?
     /// The draft, and the reply, the page or the edit above the field.
@@ -1236,6 +1243,11 @@ struct TeamChatComposer: View {
             if editing == nil && !targets.isEmpty {
                 BotMentionControls(text: $state.draft, selection: $selection, selected: $mentions,
                                    bots: targets, focused: focused, skipped: $state.unnamed) { focused = true }
+            }
+            if !chats.isEmpty {
+                ChatMentionControls(text: $state.draft, selection: $selection, chats: chats, focused: focused) {
+                    focused = true
+                }
             }
             if editing == nil {
                 ComposerAttachmentChips(chips: state.files.map { ComposerChip(id: $0.id, title: $0.name) }) { id in
