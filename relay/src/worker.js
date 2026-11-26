@@ -50,8 +50,12 @@ export default {
           method: request.method, headers: { 'content-type': 'application/json', 'x-route-id': id }, body: text,
         }));
       }
-      const match = /^\/v1\/routes\/([a-f0-9]{64})(\/send)?$/.exec(path);
-      if (match && ((match[2] && request.method === 'POST') || (!match[2] && request.method === 'DELETE'))) {
+      // A Mac sends a notification (POST /send) and a glance of the Home Screen (POST /glance) with the send token. The
+      // iPhone revokes its route (DELETE), names the tokens of its Live Activity and widgets (PUT /live) and reads the
+      // newest glance for its widgets (GET /glance) with the manage token.
+      const match = /^\/v1\/routes\/([a-f0-9]{64})(\/send|\/glance|\/live)?$/.exec(path);
+      const allowed = { '/send': ['POST'], '/glance': ['POST', 'GET'], '/live': ['PUT'] }[match?.[2]] ?? ['DELETE'];
+      if (match && allowed.includes(request.method)) {
         if (!/^Bearer [a-f0-9]{64}$/.test(request.headers.get('authorization') || '')) return new Response(null, { status: 401 });
         const rate = await env.DELIVERY_LIMIT.limit({ key: request.headers.get('cf-connecting-ip') || 'unknown' });
         if (!rate.success) return new Response(null, { status: 429 });

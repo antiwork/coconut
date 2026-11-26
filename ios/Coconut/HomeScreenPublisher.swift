@@ -138,15 +138,17 @@ struct HomeScreenPublisher: ViewModifier {
         publishedAt = .now
         let glance = store.homeScreenGlance()
         GlanceStore.save(glance)
-        WidgetCenter.shared.reloadTimelines(ofKind: CoconutGlance.widgetKind)
+        for kind in CoconutGlance.widgetKinds { WidgetCenter.shared.reloadTimelines(ofKind: kind) }
         await WorkActivities.update(glance, canStart: scenePhase == .active)
+        await WorkActivities.nameWidgetToken()
     }
 }
 
 /// The one Live Activity of the work of the agents (CoconutWorkAttributes). It starts while the app shows and an agent
-/// works or a card waits, follows each change while the app runs, and ends when nothing works and nothing waits. iOS
-/// lets an app start an activity only from the front, and the app writes only while it runs, so an activity whose app
-/// stopped says from when it is (staleDate) instead of counting on.
+/// works or a card waits, and follows each change while the app runs. After the person leaves the app, the Mac updates it
+/// and ends it through the relay with its push token (backend/coconut/home_screen.py), with a glance sealed for this
+/// iPhone. iOS lets an app start an activity only from the front, so an activity starts again only in the app. An
+/// activity that hears from neither says from when it is (staleDate) instead of counting on.
 enum WorkActivities {
     /// How long a state shows its times live after the app wrote it.
     static let freshFor: TimeInterval = 5 * 60
@@ -157,7 +159,10 @@ enum WorkActivities {
         let activities = Activity<CoconutWorkAttributes>.activities
         let state = glance.map(CoconutWorkAttributes.ContentState.init)
         guard let state, !state.isDone else {
+            let ended = !activities.isEmpty
             for activity in activities { await activity.end(nil, dismissalPolicy: .immediate) }
+            // The Mac would otherwise update an activity that ended.
+            if ended { await PushTokens.shared.forgetActivities() }
             return
         }
         let content = ActivityContent(state: state, staleDate: state.updatedAt.addingTimeInterval(freshFor))
@@ -168,7 +173,7 @@ enum WorkActivities {
                 return
             }
             do {
-                _ = try Activity.request(attributes: CoconutWorkAttributes(), content: content, pushType: nil)
+                follow(try Activity.request(attributes: CoconutWorkAttributes(), content: content, pushType: .token))
             } catch {
                 log.error("The Live Activity did not start: \(String(describing: error), privacy: .public)")
             }
@@ -177,6 +182,53 @@ enum WorkActivities {
         // One activity holds every agent. An activity of an earlier run of the app ends.
         for activity in activities where activity.id != current.id { await activity.end(nil, dismissalPolicy: .immediate) }
         await current.update(content)
+        let (id, token) = (current.id, current.pushToken)
+        follow(current)
+        if let token { await PushTokens.shared.name(token, activity: id) }
+    }
+
+    /// Gives each new push token of the activity to the relay, for the run of the app: iOS can change it while the
+    /// activity runs.
+    private static func follow(_ activity: sending Activity<CoconutWorkAttributes>) {
+        let id = activity.id
+        Task {
+            guard await PushTokens.shared.follow(id) else { return }
+            for await token in activity.pushTokenUpdates { await PushTokens.shared.name(token, activity: id) }
+        }
+    }
+
+    /// Gives the relay the push token of the widgets (iOS 26), once in each run of the app. The widget extension names it
+    /// when it changes (GlancePushHandler), but the extension can stop before the relay answers.
+    static func nameWidgetToken() async {
+        guard #available(iOS 26.0, *), HomeScreenRoute.load() != nil, !(await PushTokens.shared.widgetsNamed),
+              let token = await WidgetCenter.shared.currentPushInfo?.token else { return }
+        await PushTokens.shared.name(widgets: token)
+    }
+}
+
+/// The push tokens of the Live Activity and of the widgets that the relay took in this run of the app. Without a route of
+/// notifications on the relay a call fails, and the next change tries again.
+actor PushTokens {
+    static let shared = PushTokens()
+    private var named: [String: Data] = [:]
+    private var followed = Set<String>()
+    private(set) var widgetsNamed = false
+
+    /// True the first time for each activity.
+    func follow(_ activity: String) -> Bool { followed.insert(activity).inserted }
+
+    func name(_ token: Data, activity: String) async {
+        guard named[activity] != token else { return }
+        if await HomeScreenRelay.setActivityToken(token) { named[activity] = token }
+    }
+
+    func forgetActivities() async {
+        named = [:]
+        await HomeScreenRelay.setActivityToken(nil)
+    }
+
+    func name(widgets token: Data) async {
+        widgetsNamed = await HomeScreenRelay.setWidgetToken(token)
     }
 }
 

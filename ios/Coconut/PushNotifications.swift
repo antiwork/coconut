@@ -693,6 +693,15 @@ struct PushRegistration: Encodable {
     var schedule: NotificationSchedule? = nil
     /// "urgent" or "nothing". It is not in the schedule, because a Mac before this choice refuses unknown schedule fields.
     var outsideWorkHours: String? = nil
+    /// The widgets and the Live Activity of the iPhone take the glance of the Mac after the person leaves the app
+    /// (backend/coconut/home_screen.py). A Mac before it ignores the field.
+    var homeScreen: Bool? = {
+        #if os(iOS)
+        true
+        #else
+        nil
+        #endif
+    }()
 
     /// Changes whenever something the Mac must hear about changes. An invalid enabled schedule is not
     /// sent, so it adds nothing; turning the schedule off always changes it.

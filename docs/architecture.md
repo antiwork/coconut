@@ -652,6 +652,7 @@ The host continues while the phone is disconnected or suspended.
 Provider operations cover task start, continuation, context, structured events, cancellation, and artifact retrieval through the host API.
 The host owns scheduling and pending decisions. Cloud workers can implement the same operations later.
 The mini encrypts notification previews and sends them through Coconut's shared Cloudflare Worker.
+It also seals the glance of the Home Screen for each phone after the person leaves the app (`home_screen.py`): the Worker keeps the newest one for the widgets and gives it to the Live Activity, and never sees its text.
 The iPhone decrypts previews locally. The relay owns the app's Apple credentials and requires verified app registration.
 Agent execution and conversation storage stay on the user's Mac. Secure cloud artifacts remain a future service.
 A host without Hermes can run each turn with Claude's Agent SDK instead (`--provider agent-sdk`). Nothing starts it by

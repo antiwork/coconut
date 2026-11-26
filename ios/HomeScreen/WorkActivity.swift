@@ -15,6 +15,50 @@ struct CoconutWorkAttributes: ActivityAttributes {
         var workingCount = 0
         /// When the app wrote this state. The app writes only while it runs, so an old state says when it is from.
         var updatedAt: Date
+        /// The glance that the Mac sealed for this iPhone, in a state that came from the Mac through the relay after the
+        /// person left the app (relay/src/apns.js). The other fields are then empty, and `shown` opens it.
+        var sealed: SealedGlance? = nil
+        /// True for a sealed state that did not open: the activity then asks to open Coconut. It is never sent.
+        var unreadable = false
+
+        private enum CodingKeys: String, CodingKey { case card, cards, working, workingCount, updatedAt, sealed }
+
+        init(card: CoconutGlance.Card? = nil, cards: Int = 0, working: [CoconutGlance.Work] = [], workingCount: Int = 0,
+             updatedAt: Date, sealed: SealedGlance? = nil, unreadable: Bool = false) {
+            self.card = card
+            self.cards = cards
+            self.working = working
+            self.workingCount = workingCount
+            self.updatedAt = updatedAt
+            self.sealed = sealed
+            self.unreadable = unreadable
+        }
+
+        /// A state of the Mac has `sealed` alone, so every other field may be missing.
+        init(from decoder: any Decoder) throws {
+            let values = try decoder.container(keyedBy: CodingKeys.self)
+            card = try values.decodeIfPresent(CoconutGlance.Card.self, forKey: .card)
+            cards = try values.decodeIfPresent(Int.self, forKey: .cards) ?? 0
+            working = try values.decodeIfPresent([CoconutGlance.Work].self, forKey: .working) ?? []
+            workingCount = try values.decodeIfPresent(Int.self, forKey: .workingCount) ?? 0
+            updatedAt = try values.decodeIfPresent(Date.self, forKey: .updatedAt) ?? .distantPast
+            sealed = try values.decodeIfPresent(SealedGlance.self, forKey: .sealed)
+        }
+    }
+}
+
+/// The envelope of a glance of the Mac (PushEnvelope) as the content state of the Live Activity carries it.
+struct SealedGlance: Codable, Hashable, Sendable {
+    let version: Int
+    let id: String
+    let keyId: String
+    let expires: Int
+    let encapsulatedKey: Data
+    let ciphertext: Data
+
+    var envelope: PushEnvelope {
+        PushEnvelope(version: version, id: id, keyId: keyId, expires: expires, encapsulatedKey: encapsulatedKey,
+                     ciphertext: ciphertext)
     }
 }
 
@@ -62,5 +106,17 @@ extension CoconutWorkAttributes.ContentState {
         if workingCount > 0 { parts.append("\(workingCount) working") }
         if cards > 0 { parts.append(cards == 1 ? "1 needs you" : "\(cards) need you") }
         return parts.isEmpty ? "Nothing works" : parts.joined(separator: " · ")
+    }
+}
+
+extension CoconutWorkAttributes.ContentState {
+    /// What the activity shows: the state that the app wrote, or the glance that the Mac sealed, opened with the key of
+    /// this iPhone (MacGlance). The activity renders in the widget extension, which shares that key with the app. A
+    /// glance that does not open, for example after the iPhone paired again, asks to open Coconut.
+    var shown: Self {
+        guard let sealed else { return self }
+        guard let data = try? NotificationKeys.open(sealed.envelope, kind: "glance"),
+              let glance = try? MacGlance.decode(data) else { return Self(updatedAt: .now, unreadable: true) }
+        return Self(glance.glance())
     }
 }

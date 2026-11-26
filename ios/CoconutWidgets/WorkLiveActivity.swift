@@ -8,10 +8,12 @@ import WidgetKit
 struct WorkLiveActivity: Widget {
     var body: some WidgetConfiguration {
         ActivityConfiguration(for: CoconutWorkAttributes.self) { context in
-            WorkLockScreen(state: context.state, stale: context.isStale)
-                .widgetURL(context.state.link.url)
+            // A state of the Mac comes sealed, and opens here with the key of this iPhone (ContentState.shown).
+            let state = context.state.shown
+            WorkLockScreen(state: state, stale: context.isStale)
+                .widgetURL(state.link.url)
         } dynamicIsland: { context in
-            let state = context.state
+            let state = context.state.shown
             let stale = context.isStale
             return DynamicIsland {
                 // How many cards wait and how many agents work, with the marks of their rows, beside the camera (the
@@ -106,7 +108,7 @@ struct WorkLockScreen: View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 8) {
                 CoconutMark().frame(height: 14)
-                Text(state.summary).font(.subheadline.weight(.semibold)).lineLimit(1)
+                Text(state.unreadable ? "Open Coconut" : state.summary).font(.subheadline.weight(.semibold)).lineLimit(1)
                 Spacer(minLength: 0)
                 if stale {
                     Text("As of " + Self.time(state)).font(.caption).foregroundStyle(.secondary)

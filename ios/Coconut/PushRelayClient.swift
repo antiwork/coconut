@@ -47,6 +47,16 @@ final class PushRelayClient {
     }
 
     func register(deviceId: String, token: String, environment: String, configuration: PushRelayConfiguration) async throws -> PushRelayGrant {
+        let grant = try await registered(deviceId: deviceId, token: token, environment: environment, configuration: configuration)
+        // The widgets and the Live Activity read the glance of the Mac through this route (HomeScreenRelay).
+        if let baseURL, let credential = try? NotificationKeys.read(State.self, account: "relay:\(deviceId):\(environment)")?.credential {
+            HomeScreenRoute.save(HomeScreenRoute(relay: baseURL.absoluteString, routeId: credential.routeId,
+                                                 manageToken: credential.manageToken))
+        }
+        return grant
+    }
+
+    private func registered(deviceId: String, token: String, environment: String, configuration: PushRelayConfiguration) async throws -> PushRelayGrant {
         guard let baseURL, configuration.configured, configuration.relayUrl == baseURL.absoluteString,
               let senderKey = configuration.senderPublicKey, DCAppAttestService.shared.isSupported else {
             throw CocoaError(.featureUnsupported)
@@ -105,6 +115,7 @@ final class PushRelayClient {
     }
 
     func disable(deviceId: String) {
+        HomeScreenRoute.save(nil)
         var revocations = (try? NotificationKeys.read([Revocation].self, account: "revocations")) ?? []
         for environment in ["development", "production"] {
             let account = "relay:\(deviceId):\(environment)"

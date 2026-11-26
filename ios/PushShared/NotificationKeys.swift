@@ -43,6 +43,20 @@ enum NotificationKeys {
               let envelope = try? JSONDecoder().decode(PushEnvelope.self, from: JSONSerialization.data(withJSONObject: value)) else {
             throw Failure(reason: "envelope does not decode")
         }
+        return try opened(envelope, now: now).content
+    }
+
+    /// The sealed glance of the Home Screen that the Mac sent through the relay (HomeScreenRelay), as its JSON. It must
+    /// name this iPhone and the kind, so a notification never opens as a glance.
+    static func open(_ envelope: PushEnvelope, kind: String, now: Date = .now) throws -> Data {
+        let (content, data) = try opened(envelope, now: now)
+        guard (content["coconut"] as? [String: Any])?["kind"] as? String == kind else {
+            throw Failure(reason: "content is not a \(kind)")
+        }
+        return data
+    }
+
+    private static func opened(_ envelope: PushEnvelope, now: Date) throws -> (content: [String: Any], data: Data) {
         guard let binding = try read(Binding.self, account: "key:\(envelope.keyId)") else {
             throw Failure(reason: "no key for this envelope")
         }
@@ -58,7 +72,7 @@ enum NotificationKeys {
               let target = content["coconut"] as? [String: Any], target["device_id"] as? String == binding.deviceId else {
             throw Failure(reason: "content is not for this iPhone")
         }
-        return content
+        return (content, data)
     }
 
     static func read<T: Decodable>(_ type: T.Type, account: String) throws -> T? {

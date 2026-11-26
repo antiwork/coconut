@@ -1,5 +1,6 @@
 import Foundation
 import UserNotifications
+import WidgetKit
 
 final class NotificationService: UNNotificationServiceExtension {
     private var contentHandler: ((UNNotificationContent) -> Void)?
@@ -17,6 +18,9 @@ final class NotificationService: UNNotificationServiceExtension {
             if let payload = try NotificationKeys.content(from: request.content.userInfo) {
                 let applied = NotificationContent.apply(payload, to: content)
                 PreviewDiagnostics.record(applied ? nil : "content has no title and body", source: .extension)
+                // What the notification tells changed the Home Screen too: the widgets read the glance that the Mac sent
+                // to the relay just before it (backend/coconut/home_screen.py).
+                WidgetCenter.shared.reloadAllTimelines()
             }
         } catch {
             PreviewDiagnostics.record(PreviewDiagnostics.reason(error), source: .extension)
