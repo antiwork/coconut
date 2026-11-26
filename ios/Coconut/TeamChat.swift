@@ -1658,17 +1658,17 @@ enum ChatList {
     /// The Chats list of the iPhone in the sections of Slack (ChatListSection; the person, 2026-11-25: "Sections by
     /// project and personal agents at bottom"): a section for each project, Coconut first and then Gumroad, then the
     /// chats with people, the agents of an earlier release with the chats whose project is gone, then Personal at the
-    /// bottom, then Archived. Chats nests them (the person: "Everything should be nested"): Starred shows its chats,
-    /// and every other section is one row that opens its chats (ChatSectionRow). The chats that the person starred, an
-    /// agent chat (a project or one of its further chats) and a pinned chat of a team, come first in Starred, as in the
-    /// sidebar of Slack, and they show nowhere else. A project's own chat comes first in its section, as a channel of
-    /// Slack, and its further chats follow newest activity first. The chats with people come newest activity first.
-    /// Above that order a chat with an unread message comes first in its section (the person, 2026-11-25: "Put unread
-    /// chats at top"), and Chats lists the unread chats once more under Starred (unreadSection). An archived chat shows
-    /// only in Archived, newest first (the person: "almost everything should be archived / hidden to focus on real
-    /// work"). A chat of an archived project that is not archived itself, and a chat that nobody wrote in
-    /// (AgentChats.isBlank), show nowhere. A section without rows does not show. `latest` is the date of the newest
-    /// message of each bot.
+    /// bottom, then Archived. Chats shows them as a tree (the person: "Everything should be nested", then "Nested don't
+    /// look nested"): Starred shows its chats, every other section is one row that opens its chats in place under it,
+    /// and Archived opens a page (ChatSectionRow). The chats that the person starred, an agent chat (a project or one
+    /// of its further chats) and a pinned chat of a team, come first in Starred, as in the sidebar of Slack, and they
+    /// show nowhere else. A project's own chat comes first in its section, as a channel of Slack, and its further chats
+    /// follow newest activity first. The chats with people come newest activity first. Above that order a chat with an
+    /// unread message comes first in its section (the person, 2026-11-25: "Put unread chats at top"), and Chats moves
+    /// the unread chats to Unread under Starred (tree). An archived chat shows only in
+    /// Archived, newest first (the person: "almost everything should be archived / hidden to focus on real work"). A
+    /// chat of an archived project that is not archived itself, and a chat that nobody wrote in (AgentChats.isBlank),
+    /// show nowhere. A section without rows does not show. `latest` is the date of the newest message of each bot.
     static func sections(bots: [Bot], latest: [String: Date], rooms: [TeamRoom],
                          local: [TeamChatKey: TeamLastMessage] = [:]) -> [ChatListSection] {
         func activity(_ bot: Bot) -> Date { latest[bot.id] ?? bot.createdAt.apiDate ?? .distantPast }
@@ -1769,12 +1769,28 @@ enum ChatList {
 
     /// Unread at the top of Chats on the iPhone, under Starred (the person, 2026-11-25: "Put unread chats at top"): the
     /// chats with an unread message of every section of `sections` but Starred and Archived, newest activity first. A
-    /// starred chat stays in Starred, as in Slack. An unread chat stays in its own section too, at its top, so the row
-    /// of the section still counts it and its page lists it. Nil while every chat is read.
+    /// starred chat stays in Starred, as in Slack. Chats takes an unread chat out of its own section (tree). Nil while
+    /// every chat is read.
     static func unreadSection(_ sections: [ChatListSection], latest: [String: Date]) -> ChatListSection? {
         let listed = sections.filter { $0.kind != .starred && $0.kind != .archived }
         let items = unread(listed.flatMap(\.items), latest: latest)
         return items.isEmpty ? nil : ChatListSection(kind: .unread, title: "Unread", items: items)
+    }
+
+    /// The rows of Chats on the iPhone, as the Mac sidebar has them (ChatSections.make): Starred, then Unread
+    /// (unreadSection), then the other sections without the chats of Unread. So each chat shows once, and the row of a
+    /// section counts only the chats under it. Reading a chat takes it back to its section, and a section whose chats
+    /// are all in Unread does not show until then.
+    static func tree(_ sections: [ChatListSection], latest: [String: Date]) -> [ChatListSection] {
+        guard let unread = unreadSection(sections, latest: latest) else { return sections }
+        let moved = Set(unread.items.map(\.id))
+        var tree = sections.compactMap { section -> ChatListSection? in
+            guard section.kind != .starred && section.kind != .archived else { return section }
+            let items = section.items.filter { !moved.contains($0.id) }
+            return items.isEmpty ? nil : ChatListSection(kind: section.kind, title: section.title, items: items)
+        }
+        tree.insert(unread, at: tree.first?.kind == .starred ? 1 : 0)
+        return tree
     }
 
     /// The chats of a section with an unread message first, then the others, each in the order of the section: the

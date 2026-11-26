@@ -90,7 +90,7 @@ struct CoconutApp: App {
 /// - Product: the rules that breach for the agents and the cards that wait, then its to-dos and the open pull requests.
 /// - Chats: every agent and every chat with people in the sections of Slack, one for each project, Personal at the
 ///   bottom and one row Archived last, which opens the archived chats on a page of their own, with the message box
-///   under the list. A folded section shows only the real work (ChatList.sections).
+///   under the list. Each section is a row that opens its chats in place under it, as a tree (ChatList.sections).
 /// - You: the person, this device and the settings: the Mac, notifications, connections, usage, the team and the
 ///   repositories that Coconut follows.
 /// Finance, Support and Product each start with their own list of to-dos, the issues of gumroad-private with their
@@ -325,7 +325,7 @@ struct CoconutHome: View {
                     BotExchangeView(route: route).inlineNavigationTitle()
                 }
                 .navigationDestination(for: AgentListRoute.self) { _ in AgentsView() }
-                // A row of Chats opens the chats of its section, Archived too (ChatSectionRow).
+                // The row Archived of Chats opens the archived chats on a page (ChatSectionRow).
                 .navigationDestination(for: ChatSectionRoute.self) { route in
                     HomeLaunchView(part: .section(route)) { open($0, on: path) }.inlineNavigationTitle()
                 }
@@ -581,12 +581,13 @@ extension CoconutHome {
         case "coconut": open(.chats, [ConversationRoute(botId: store.bots.coconutChat?.id ?? agent)])
         // The page of the archived chats, which the last row of Chats opens.
         case "archived": open(.chats, [ChatSectionRoute.archived])
-        // The page of a project's chats, which its row in Chats opens: the first project, Coconut.
+        // Chats with the first project, Coconut, open in place, as a tap on its row leaves it.
         case "chat-section":
             let sections = ChatList.sections(bots: store.bots, latest: store.chatSummaries.newestActivity,
                                              rooms: store.shownTeamRooms)
             let project = sections.first { if case .project = $0.kind { true } else { false } }
-            open(.chats, project.map { [ChatSectionRoute($0)] } ?? [])
+            UserDefaults.standard.set(project?.id ?? "", forKey: ChatSectionRow.key)
+            open(.chats, [])
         case "team-chat": open(.chats, [TeamChatRoute(chat: TeamChatKey(room: room))])
         case "agent": open(.chats, [AgentRoute(botId: agent)])
         case "agent-routines": open(.chats, [AgentRoute(botId: agent), BotSettingsRoute(botId: agent)])
