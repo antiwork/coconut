@@ -40,6 +40,7 @@ API = 'https://api.appstoreconnect.apple.com/v1'
 ENTITLEMENTS = {
     'PlugIns/CoconutNotificationService.appex': ROOT / 'ios/CoconutNotificationService/CoconutNotificationService.entitlements',
     'PlugIns/CoconutShare.appex': ROOT / 'ios/CoconutShare/CoconutShare.entitlements',
+    'PlugIns/CoconutWidgets.appex': ROOT / 'ios/CoconutWidgets/CoconutWidgets.entitlements',
     '.': ROOT / 'ios/Coconut/Coconut.entitlements',
 }
 # The build settings that the entitlements use, for a Release build of the Gumroad team.

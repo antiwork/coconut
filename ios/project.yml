@@ -33,8 +33,11 @@ targets:
         embed: true
       - target: CoconutShare
         embed: true
+      - target: CoconutWidgets
+        embed: true
     sources:
       - Coconut
+      - HomeScreen
       - PushShared
       - ShareShared
       - Tunnel
@@ -97,6 +100,8 @@ targets:
         # does not declare the intent here.
         NSUserActivityTypes:
           - INSendMessageIntent
+        # The work of the agents on the Lock Screen and in the Dynamic Island (ios/HomeScreen/WorkActivity.swift).
+        NSSupportsLiveActivities: true
   # The main executable of Coconut.app: the service controls in the menu bar and, later, the chat client. It compiles the
   # views and state of the iPhone app; the iPhone-only views stay out. scripts/mac_app.py builds it and makes the bundle.
   CoconutMac:
@@ -211,6 +216,38 @@ targets:
               NSExtensionActivationSupportsWebPageWithMaxCount: 1
               NSExtensionActivationSupportsImageWithMaxCount: 4
               NSExtensionActivationSupportsFileWithMaxCount: 4
+  # Coconut on the Home Screen and the Lock Screen: what needs the person and what works, New agent as a widget and a
+  # control, and the Live Activity of the work of the agents. The app writes what they show into the Keychain group of
+  # its extensions (ios/HomeScreen/CoconutGlance.swift), so the extension compiles none of the views of the app.
+  CoconutWidgets:
+    type: app-extension
+    platform: iOS
+    sources:
+      - CoconutWidgets
+      - HomeScreen
+      - Coconut/PlatformColor.swift
+      - Coconut/Theme.swift
+      - PushShared/TestIsolation.swift
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.gumroad.coconut.widgets
+        PRODUCT_NAME: CoconutWidgets
+        GENERATE_INFOPLIST_FILE: YES
+        CODE_SIGN_ENTITLEMENTS: CoconutWidgets/CoconutWidgets.entitlements
+        TARGETED_DEVICE_FAMILY: "1,2"
+        MARKETING_VERSION: "0.1.0"
+        CURRENT_PROJECT_VERSION: "1"
+        APPLICATION_EXTENSION_API_ONLY: YES
+        SKIP_INSTALL: YES
+    info:
+      path: CoconutWidgets/Info.plist
+      properties:
+        CFBundleDisplayName: Coconut
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        CoconutPushKeychainGroup: $(AppIdentifierPrefix)com.gumroad.coconut.push
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.widgetkit-extension
   # "Coconut" in the share menu of the Mac. It hands a share to Coconut.app, which sends it (ShareShared/ShareHandoff.swift).
   CoconutMacShare:
     type: app-extension
