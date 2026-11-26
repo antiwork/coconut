@@ -36,6 +36,12 @@ struct SupportConversation: Decodable, Sendable {
 
     /// The message that an answer answers by default: the newest one from a customer.
     var defaultTarget: Message? { messages.last { !$0.outgoing } ?? messages.last }
+
+    /// The thread in Gmail on the web, in the account that holds it.
+    var gmailURL: URL? {
+        let user = account.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed.subtracting(CharacterSet(charactersIn: "+&=#"))) ?? ""
+        return URL(string: "https://mail.google.com/mail/" + (user.isEmpty ? "u/0/" : "?authuser=" + user) + "#all/" + id)
+    }
 }
 
 extension AppStore {
@@ -151,6 +157,13 @@ struct SupportConversationView: View {
                         .accessibilityIdentifier("support-close-after-answer")
                 }
                 if conversation.canReply == false, !personal { SupportMailboxConnect { loads += 1 } }
+                // Coconut only shows a mail of the person's own Gmail, so Gmail answers it. The system browser holds the
+                // person's Google session, and `openURL` would open the thread here again (InAppLink).
+                if personal, let url = conversation.gmailURL {
+                    Button("Open in Gmail", systemImage: "arrow.up.right.square") { SystemBrowser.open(url) }
+                        .buttonStyle(CoconutButtonStyle(kind: .quiet))
+                        .accessibilityIdentifier("mail-open-gmail")
+                }
                 if let actionError {
                     Text(actionError).font(.subheadline).foregroundStyle(BoardStyle.destructive).fixedSize(horizontal: false, vertical: true)
                 }
