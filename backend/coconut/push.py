@@ -3,7 +3,8 @@
 Each bot event that can notify becomes one item per phone in `push_items`, and so does each fresh message of another
 member in a team chat (`record_team`) or in a direct chat (`record_direct`). A team item and a direct item have the room
 in `team` and the entry ID in `message_id`, and no bot, task or turn. Their kind tells them apart: `team` or `direct`.
-The other member of a direct chat comes from the row of the message. Coconut decides when items notify
+The other member of a direct chat comes from the row of the message. A notification of GitHub or Gmail
+(`record_source`, kinds `github` and `mail`) keeps what it shows and opens in `data`. Coconut decides when items notify
 (`push_schedule.due`) and writes one `push_outbox` row per notification: one urgent card, or one group of the items
 that waited. The row ID is fixed, and a sealed envelope is kept, so a retry never sends a second notification."""
 from __future__ import annotations
@@ -22,11 +23,12 @@ import time
 from uuid import NAMESPACE_URL, uuid5
 from . import app_badge, unread
 from .home_screen import HomeScreenPush
-from .push_relay import RelayTransport, validate_route, notification_alert, group_text, team_alert, direct_alert, notice_alert
+from .push_relay import (RelayTransport, validate_route, notification_alert, group_text, team_alert, direct_alert,
+                         notice_alert, source_alert)
 from .team_store import ACTIVE
 from .push_schedule import (LEGACY_SCHEDULE, OUTSIDE, due, holds_urgent, merge as merge_schedule,
                             stored as stored_schedule)
-from .notification_settings import DEFAULTS as NOTIFICATION_DEFAULTS, keyword_match, notifies
+from .notification_settings import DEFAULTS as NOTIFICATION_DEFAULTS, SOURCE_KINDS, keyword_match, notifies
 
 LEVELS = ('every', 'grouped', 'urgent_only')
 # A phone that never sent its preferences keeps the old categories: cards, failed and finished tasks, no messages.
@@ -49,6 +51,8 @@ TEAM_BODY = 'Your team has a new message.'
 # The text of a direct message for a phone without a relay route.
 DIRECT_BODY = 'You have a new direct message.'
 NOTICE_BODY = 'Your team has a new notice.'
+GITHUB_BODY = 'GitHub has a new notification.'
+MAIL_BODY = 'You have new mail.'
 # The kinds of the items of the chats of a team: no bot, task or turn.
 CHAT_KINDS = ('team', 'direct', 'notice')
 # A phone reaches the Mac only through the relay tunnel, which needs the phone's static key. A device without one is an
@@ -196,8 +200,11 @@ class PushDelivery:
         if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='decisions'").fetchone():
             db.execute("CREATE INDEX IF NOT EXISTS decisions_created ON decisions (json_extract(data,'$.created_at'))")
             db.execute(f"CREATE INDEX IF NOT EXISTS decisions_urgent ON decisions (json_extract(data,'$.created_at')) WHERE {URGENT_DECISION}")
-        if 'team' not in {row[1] for row in db.execute('PRAGMA table_info(push_items)')}:
+        item_columns = {row[1] for row in db.execute('PRAGMA table_info(push_items)')}
+        if 'team' not in item_columns:
             db.execute('ALTER TABLE push_items ADD COLUMN team TEXT')
+        if 'data' not in item_columns:
+            db.execute('ALTER TABLE push_items ADD COLUMN data TEXT')
         columns = {row[1] for row in db.execute('PRAGMA table_info(push_outbox)')}
         if 'kind' in columns:
             # The outbox before grouping held one row per event. Its rows become items, so nothing notifies twice.
@@ -410,6 +417,10 @@ class PushDelivery:
         preferences has an app from before team notifications, and it keeps that rule after the settings too."""
         chosen = self.stored_preferences(device_id)
         settings = self.service.stored_notification_settings()
+        if kind in SOURCE_KINDS:
+            # GitHub and Gmail came with the settings, so their defaults hold before the first change. A phone that
+            # never sent its preferences has an app from before them.
+            return chosen is not None and notifies(settings or NOTIFICATION_DEFAULTS, kind)
         if settings is not None:
             if not notifies(settings, kind, urgent):
                 return False
@@ -507,6 +518,17 @@ class PushDelivery:
                     (device_id,event_key,kind,bot_id,task_id,decision_id,message_id,turn_id,urgent,created,status,team)
                     VALUES (?,?,?,'','',NULL,?,'',0,?,'waiting',?)''', (device_id, event_key, kind, entry, stamp, room))
 
+    def record_source(self, item):
+        """Queue one notification of GitHub or Gmail (notification_sources) for each phone that allows it. The item
+        keeps what it shows and opens, so its send reads neither GitHub nor Gmail. The caller holds the transaction."""
+        stamp = time.time()
+        data = json.dumps(item)
+        for (device_id,) in self.service.db.execute(f'SELECT device_id FROM push_devices WHERE enabled=1 AND device_id IN ({PHONES})').fetchall():
+            if self.allows(device_id, item['kind']):
+                self.service.db.execute('''INSERT OR IGNORE INTO push_items
+                    (device_id,event_key,kind,bot_id,task_id,decision_id,message_id,turn_id,urgent,created,status,data)
+                    VALUES (?,?,?,'','',NULL,NULL,'',0,?,'waiting',?)''', (device_id, item['id'], item['kind'], stamp, data))
+
     def team_relevant(self, item):
         """Whether a team message still notifies: the room is active, the message shows after the read position of
         its chat, and team_notifies holds. So a message that the person read, a removed message, a team that the person
@@ -587,6 +609,10 @@ class PushDelivery:
             return self.allows(item['device_id'], item['kind']) and self.direct_relevant(item)
         if item['kind'] == 'notice':
             return self.allows(item['device_id'], item['kind']) and self.notice_relevant(item)
+        if item['kind'] in SOURCE_KINDS:
+            # Read on GitHub or in Gmail, or a newer notification of the same thread: it notifies no more.
+            return (self.allows(item['device_id'], item['kind'])
+                    and service.notification_sources.relevant(json.loads(item['data'] or '{}')))
         task = service._get('tasks', item['task_id'])
         bot = service._get('bots', item['bot_id'])
         conversation = service._get('bots', task.get('conversation_bot_id', bot['id']))
@@ -733,7 +759,7 @@ class PushDelivery:
             # A team item and a direct item have none, so they come from another item. A group of such items only has
             # none.
             first = next((item for item in items if item['decision_id']), None) or next(
-                (item for item in items if item['kind'] not in CHAT_KINDS), None)
+                (item for item in items if item['kind'] not in CHAT_KINDS + SOURCE_KINDS), None)
             task = service._get('tasks', first['task_id']) if first else None
             return {'aps': {'alert': {'title': 'Coconut', 'body': group_text(items)}, 'sound': 'default', 'thread-id': 'coconut-inbox'},
                     'coconut': {'version': 1, 'device_id': device_id, 'kind': 'group', 'count': len(items),
@@ -741,6 +767,19 @@ class PushDelivery:
                                 'task_id': task['id'] if task else None,
                                 'decision_id': first['decision_id'] if first else None, 'message_id': None}}, None
         item = items[0]
+        if item['kind'] in SOURCE_KINDS:
+            # A tap opens the issue or pull request, or the mail, in the app. An app from before them opens itself only.
+            data = json.loads(item['data'] or '{}')
+            github = item['kind'] == 'github'
+            target = ({key: data[key] for key in ('url', 'repository', 'number') if data.get(key)} if github
+                      else {key: data[key] for key in ('thread',) if data.get(key)})
+            payload = {'aps': {'alert': {'title': 'Coconut', 'body': GITHUB_BODY if github else MAIL_BODY}, 'sound': 'default',
+                               'thread-id': 'github-' + data.get('repository', '') if github else 'mail'},
+                       'coconut': {'version': 1, 'device_id': device_id, 'kind': item['kind'], **target}}
+            if sealed:
+                payload['aps']['alert'] = source_alert(data)
+            # A newer notification of a GitHub thread takes the place of the older one on the iPhone.
+            return payload, 'github:' + data['thread'] if github and data.get('thread') else item['event_key']
         if item['kind'] == 'direct':
             room, chat = item['team'], self.direct_chat(item)
             payload = {'aps': {'alert': {'title': 'Coconut', 'body': DIRECT_BODY}, 'sound': 'default',

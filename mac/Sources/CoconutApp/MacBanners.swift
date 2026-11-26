@@ -2,8 +2,8 @@ import AppKit
 import SwiftUI
 import UserNotifications
 
-/// The banners of macOS for a new team message, a new direct message, a new card and a new reply of an agent.
-/// MessageBanners and AgentBanners make each decision. This class only gives them to macOS, asks for permission, tells
+/// The banners of macOS for a new team message, a new direct message, a new card, a new reply of an agent, and a
+/// notification of GitHub or Gmail. MessageBanners, AgentBanners and SourceBanners make each decision. This class only gives them to macOS, asks for permission, tells
 /// the Mac how long nobody used this Mac, and opens the chat of a banner that the person clicks. Only a full install
 /// starts it: a Mac for a team only has no chat client.
 @MainActor
@@ -49,9 +49,18 @@ final class MacBanners: NSObject, UNUserNotificationCenterDelegate {
         Task {
             while true {
                 await reportPresence()
+                // The first read of the alerts of GitHub and Gmail. Each later read follows a change (AppStore).
+                if store.sourceAlerts == nil { await store.loadSourceAlerts() }
                 try? await Task.sleep(for: .seconds(30))
             }
         }
+    }
+
+    /// A change of the alerts of GitHub and Gmail (AgentBannerWatcher).
+    func alertsChanged(before: [SourceAlert]?, after: [SourceAlert]?) {
+        guard let after else { return }
+        let plan = SourceBanners.plan(before: before, after: after)
+        change(remove: plan.remove, post: plan.post.map(Banner.init), asking: !plan.post.isEmpty)
     }
 
     /// A change of the cards or the chats of the agents (AgentBannerWatcher). macOS asks for permission at the first
@@ -120,6 +129,18 @@ final class MacBanners: NSObject, UNUserNotificationCenterDelegate {
         NSApp.activate(ignoringOtherApps: true)
     }
 
+    /// A click on a banner of GitHub or Gmail: the main window shows the issue, the pull request or the mail. Any other
+    /// page of GitHub opens in the browser.
+    private func open(_ place: NotificationDestination) {
+        if case .web(let url) = place {
+            NSWorkspace.shared.open(url)
+            return
+        }
+        model.shownSource = place
+        openWindow?(id: "main")
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
     // The class has no `willPresent`: macOS then shows no banner while Coconut is the active app. The sidebar shows the
     // unread count then.
 
@@ -133,14 +154,15 @@ final class MacBanners: NSObject, UNUserNotificationCenterDelegate {
         let info = response.notification.request.content.userInfo
         let chat = MessageBanners.chat(userInfo: info)
         let bot = AgentBanners.bot(userInfo: info)
+        let place = SourceBanners.place(userInfo: info)
         Task { @MainActor in
-            self.open(chat, bot: bot)
+            if let place { self.open(place) } else { self.open(chat, bot: bot) }
             completionHandler()
         }
     }
 }
 
-/// One banner for macOS: of a team chat (MessageBanner) or of an agent (AgentBanner).
+/// One banner for macOS: of a team chat (MessageBanner), of an agent (AgentBanner), or of GitHub or Gmail.
 private struct Banner: Sendable {
     let identifier: String
     let title: String
@@ -166,6 +188,17 @@ private struct Banner: Sendable {
         thread = banner.thread
         userInfo = AgentBanners.userInfo(banner.bot)
     }
+
+    init(_ alert: SourceAlert) {
+        identifier = alert.id
+        title = alert.title
+        // As on the iPhone (push_relay.source_alert): without a body, the subtitle takes its place.
+        let text = alert.body ?? "", line = alert.subtitle ?? ""
+        subtitle = text.isEmpty || line.isEmpty ? nil : line
+        body = text.isEmpty ? (line.isEmpty ? alert.title : line) : text
+        thread = alert.kind == "mail" ? "mail" : "github-" + (alert.repository ?? "")
+        userInfo = SourceBanners.userInfo(alert)
+    }
 }
 
 /// Gives the action that opens a window to the banners when the view appears.
@@ -178,8 +211,8 @@ struct BannerWindowOpener: ViewModifier {
     }
 }
 
-/// Gives each change of the cards and the chats of the agents to the banners. It sits on the menu bar label, which shows
-/// while the app runs, as DockBadge.
+/// Gives each change of the cards and the chats of the agents, and of the alerts of GitHub and Gmail, to the banners.
+/// It sits on the menu bar label, which shows while the app runs, as DockBadge.
 struct AgentBannerWatcher: ViewModifier {
     let banners: MacBanners
     let store: AppStore
@@ -188,6 +221,9 @@ struct AgentBannerWatcher: ViewModifier {
     func body(content: Content) -> some View {
         content.onChange(of: AgentActivity(bots: store.bots, decisions: store.decisions), initial: true) { _, activity in
             if enabled && !store.isDemo { banners.agentsChanged(activity) }
+        }
+        .onChange(of: store.sourceAlerts) { before, after in
+            if enabled && !store.isDemo { banners.alertsChanged(before: before, after: after) }
         }
     }
 }

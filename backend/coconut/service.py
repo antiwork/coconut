@@ -346,6 +346,9 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
         # Asks GitHub and Gmail for changes while an app reads the updates, so its pages read them at once.
         from .business_watch import BusinessWatch
         self.business_watch = BusinessWatch(self)
+        # Notifies of GitHub and Gmail as their apps do, on the iPhones and in the banners of the Mac.
+        from .notification_sources import NotificationSources
+        self.notification_sources = NotificationSources(self)
         self.github_requests = threading.Lock()
         try:
             self._recover_workspace_binding()
@@ -3031,6 +3034,7 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
         self._start_team()
         self.push.start()
         self.business_watch.start()
+        self.notification_sources.start()
 
     def _register_pr_artifact(self, task_id: str | None, payload: dict, *, bot_id=None):
         try:

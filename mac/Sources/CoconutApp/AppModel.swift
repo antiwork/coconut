@@ -27,6 +27,9 @@ final class AppModel: ObservableObject {
     /// The agent whose chat a banner or a share from the share menu asked for. The main window shows the chat and sets
     /// it to nil.
     @Published var shownBot: String?
+    /// The issue, pull request or mail that a banner of GitHub or Gmail asked for. The main window shows it over Home and
+    /// sets it to nil.
+    @Published var shownSource: NotificationDestination?
     /// File > New chat asked for a chat. The main window starts it, in the project of the chat that it shows or of the
     /// message box, and sets this to false.
     @Published var newChatRequested = false

@@ -36,18 +36,28 @@ struct SupportConversation: Decodable, Sendable {
 
     /// The message that an answer answers by default: the newest one from a customer.
     var defaultTarget: Message? { messages.last { !$0.outgoing } ?? messages.last }
+
+    /// The thread in Gmail on the web, in the account that holds it.
+    var gmailURL: URL? {
+        let user = account.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed.subtracting(CharacterSet(charactersIn: "+&=#"))) ?? ""
+        return URL(string: "https://mail.google.com/mail/" + (user.isEmpty ? "u/0/" : "?authuser=" + user) + "#all/" + id)
+    }
 }
 
 extension AppStore {
-    func supportConversation(_ id: String, subject: String, everything: Bool = false) async throws -> SupportConversation {
-        if isDemo { return SupportDemo.conversation(id: id, subject: subject) }
-        return try await businessRequest("support/conversations/" + Self.supportPath(id) + (everything ? "?all=1" : ""))
+    /// `mailbox` "personal" reads the person's own Gmail, for a mail that notified.
+    func supportConversation(_ id: String, subject: String, everything: Bool = false, mailbox: String = "") async throws -> SupportConversation {
+        if isDemo { return mailbox.isEmpty ? SupportDemo.conversation(id: id, subject: subject) : SupportDemo.mail(id: id) }
+        let query = [everything ? "all=1" : "", mailbox.isEmpty ? "" : "mailbox=" + mailbox].filter { !$0.isEmpty }
+        return try await businessRequest("support/conversations/" + Self.supportPath(id)
+                                         + (query.isEmpty ? "" : "?" + query.joined(separator: "&")))
     }
 
     /// One message with its whole text.
-    func supportMessage(_ thread: String, message: String) async throws -> SupportConversation.Message {
+    func supportMessage(_ thread: String, message: String, mailbox: String = "") async throws -> SupportConversation.Message {
         if isDemo, let found = SupportDemo.conversations[thread]?.messages.first(where: { $0.id == message }) { return found }
-        return try await businessRequest("support/conversations/\(Self.supportPath(thread))/messages/\(Self.supportPath(message))")
+        return try await businessRequest("support/conversations/\(Self.supportPath(thread))/messages/\(Self.supportPath(message))"
+                                         + (mailbox.isEmpty ? "" : "?mailbox=" + mailbox))
     }
 
     /// Sends the person's answer from the support mailbox. `message` is the answered message, or nil for the newest one
@@ -85,6 +95,8 @@ struct SupportConversationView: View {
     @Environment(AppStore.self) private var store
     let id: String
     let subject: String
+    /// "personal" for a mail of the person's own Gmail (SupportThreadRoute), which this page only shows.
+    var mailbox = ""
     @State private var conversation: SupportConversation?
     @State private var failure: (status: Int, message: String)?
     @State private var loads = 0
@@ -103,6 +115,7 @@ struct SupportConversationView: View {
     @State private var actionError: String?
 
     private var title: String { conversation.map(\.subject).flatMap { $0.isEmpty ? nil : $0 } ?? subject }
+    private var personal: Bool { mailbox == "personal" }
     private var answered: SupportConversation.Message? {
         target.flatMap { id in conversation?.messages.first { $0.id == id } } ?? conversation?.defaultTarget
     }
@@ -112,7 +125,8 @@ struct SupportConversationView: View {
             VStack(alignment: .leading, spacing: BoardStyle.Space.s) {
                 Text(title.isEmpty ? "No subject" : title).font(.title3.weight(.semibold)).textSelection(.enabled)
                     .fixedSize(horizontal: false, vertical: true).accessibilityAddTraits(.isHeader)
-                if let state = shown?.state { SupportStateChip(state: state) }
+                // A mail of the person's own Gmail is not a conversation of the queue, so it has no state.
+                if !personal, let state = shown?.state { SupportStateChip(state: state) }
             }
             .padding(.bottom, BoardStyle.Space.s)
             if let conversation = shown {
@@ -133,14 +147,23 @@ struct SupportConversationView: View {
                 // How to respond, as the options of a poll, while the newest message is the customer's; Gumclaw does the
                 // work of most (SupportHandoffs.swift). The box at the bottom stays for the person's own words: an
                 // answer, or a request to an agent.
-                SupportChoices(thread: id, subject: title, waiting: conversation.state == "open" && conversation.messages.last?.outgoing == false,
-                               canClose: conversation.canReply == true, close: { await setState("closed") }, reload: { loads += 1 })
+                if !personal {
+                    SupportChoices(thread: id, subject: title, waiting: conversation.state == "open" && conversation.messages.last?.outgoing == false,
+                                   canClose: conversation.canReply == true, close: { await setState("closed") }, reload: { loads += 1 })
+                }
                 if conversation.canReply == true, conversation.state == "open", conversation.messages.last?.outgoing == true {
                     Button("Close conversation", systemImage: "checkmark.circle") { Task { await setState("closed") } }
                         .buttonStyle(CoconutButtonStyle(kind: .quiet)).disabled(busy)
                         .accessibilityIdentifier("support-close-after-answer")
                 }
-                if conversation.canReply == false { SupportMailboxConnect { loads += 1 } }
+                if conversation.canReply == false, !personal { SupportMailboxConnect { loads += 1 } }
+                // Coconut only shows a mail of the person's own Gmail, so Gmail answers it. The system browser holds the
+                // person's Google session, and `openURL` would open the thread here again (InAppLink).
+                if personal, let url = conversation.gmailURL {
+                    Button("Open in Gmail", systemImage: "arrow.up.right.square") { SystemBrowser.open(url) }
+                        .buttonStyle(CoconutButtonStyle(kind: .quiet))
+                        .accessibilityIdentifier("mail-open-gmail")
+                }
                 if let actionError {
                     Text(actionError).font(.subheadline).foregroundStyle(BoardStyle.destructive).fixedSize(horizontal: false, vertical: true)
                 }
@@ -155,14 +178,14 @@ struct SupportConversationView: View {
         }
         .safeAreaInset(edge: .bottom, spacing: 0) {
             // The box answers the customer, or hands the conversation to an agent with the person's words (ReplyBox).
-            // Without the support mailbox it only hands over.
-            if let conversation {
+            // Without the support mailbox it only hands over. A mail of the person's own Gmail has no box.
+            if let conversation, !personal {
                 ReplyBox(draftKey: "support:" + id, placeholder: "Answer", note: answered?.replyTo.map { "To " + $0 },
                          identifier: "support-answer", handoff: AgentHandoff(supportThread: id, subject: title),
                          canReply: conversation.canReply == true) { text, key in await answer(text, key: key) }
             }
         }
-        .navigationTitle("Support")
+        .navigationTitle(personal ? "Mail" : "Support")
         .toolbar {
             if conversation?.canReply == true, let state = conversation?.state {
                 ToolbarItem(placement: .primaryAction) {
@@ -207,7 +230,7 @@ struct SupportConversationView: View {
     private func load(quiet: Bool = false) async {
         let before = writes
         do {
-            let loaded = try await store.supportConversation(id, subject: subject, everything: everything)
+            let loaded = try await store.supportConversation(id, subject: subject, everything: everything, mailbox: mailbox)
             guard !Task.isCancelled, before == writes else { return }
             conversation = loaded; failure = nil
         } catch is CancellationError {
@@ -220,7 +243,7 @@ struct SupportConversationView: View {
 
     private func expand(_ message: SupportConversation.Message) async {
         do {
-            let whole = try await store.supportMessage(id, message: message.id)
+            let whole = try await store.supportMessage(id, message: message.id, mailbox: mailbox)
             if let index = conversation?.messages.firstIndex(where: { $0.id == message.id }) {
                 conversation?.messages[index].text = whole.text
                 conversation?.messages[index].cut = whole.cut
@@ -408,6 +431,17 @@ enum SupportDemo {
         let shown = SupportConversation.preview(id: id, subject: subject)
         conversations[id] = shown
         return shown
+    }
+
+    /// A mail of the person's own Gmail, which a notification opens (`--open mail-tap`). The page only shows it.
+    static func mail(id: String) -> SupportConversation {
+        let text = "Hi,\n\nAre you still up for recording on Tuesday? Thirty minutes on running a company with agents. I can send the questions ahead.\n\nJordan"
+        let message = SupportConversation.Message(id: id + "-0", fromName: "Jordan Lee", fromEmail: "jordan@example.com",
+                                                  replyTo: "jordan@example.com", to: ["you@example.com"],
+                                                  date: Date.now.addingTimeInterval(-300).formatted(.iso8601), text: text, cut: false,
+                                                  attachments: [], outgoing: false)
+        return SupportConversation(id: id, subject: "Podcast on Tuesday", account: "you@example.com", messages: [message],
+                                   more: 0, state: "open", canReply: false)
     }
 
     static func answer(_ thread: String, text: String) -> SupportConversation.Message {

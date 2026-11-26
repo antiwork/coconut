@@ -301,9 +301,23 @@ def notice_alert(store, room, entry):
     return {'title': writer, 'subtitle': label, 'body': body}
 
 
+def source_alert(data):
+    """The alert of a notification of GitHub or Gmail, from what the Mac read when it came (notification_sources).
+    GitHub: the repository and number in the title, why it notifies in the subtitle, the title of the issue or pull
+    request in the body. Gmail: the sender in the title, the subject in the subtitle, the start of the mail in the body."""
+    title = notification_text(data.get('title'), limit=80, byte_limit=256) or (
+        'GitHub' if data.get('kind') == 'github' else 'Gmail')
+    subtitle = notification_text(data.get('subtitle'), limit=140, byte_limit=512)
+    body = body_text(data.get('body'))
+    if not body:
+        body, subtitle = subtitle or title, ''
+    return {'title': title, **({'subtitle': subtitle} if subtitle else {}), 'body': body}
+
+
 GROUP_NOUNS = (('decision', 'card', 'cards'), ('message', 'message', 'messages'), ('team', 'team message', 'team messages'),
                ('direct', 'direct message', 'direct messages'), ('notice', 'notice', 'notices'), ('failed', 'failed task', 'failed tasks'),
-               ('completed', 'finished task', 'finished tasks'))
+               ('completed', 'finished task', 'finished tasks'), ('github', 'GitHub notification', 'GitHub notifications'),
+               ('mail', 'email', 'emails'))
 
 
 def group_lines(lines, total):

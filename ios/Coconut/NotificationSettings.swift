@@ -30,6 +30,32 @@ struct NotificationSettings: Equatable, Sendable {
         }
     }
 
+    /// What of the GitHub inbox notifies (backend/coconut/notification_sources.py).
+    enum GitHub: String, Codable, CaseIterable, Sendable {
+        case all, mentions, nothing
+
+        var title: String {
+            switch self {
+            case .all: "All activity"
+            case .mentions: "Mentions and review requests"
+            case .nothing: "Nothing"
+            }
+        }
+    }
+
+    /// What of the Gmail inbox notifies.
+    enum Mail: String, Codable, CaseIterable, Sendable {
+        case all, important, nothing
+
+        var title: String {
+            switch self {
+            case .all: "All new mail"
+            case .important: "Important mail only"
+            case .nothing: "Nothing"
+            }
+        }
+    }
+
     /// The choices of the menu that pauses notifications.
     enum Pause: CaseIterable, Sendable {
         case thirtyMinutes, hour, twoHours, tomorrow, nextWeek
@@ -67,9 +93,13 @@ struct NotificationSettings: Equatable, Sendable {
     var keywords: [String] = []
     /// The minutes without input at a Mac after which the iPhone notifies, or nil for at once.
     var mobileDelay: Int? = nil
+    /// Nil from a Mac before GitHub and Gmail notified. Their rows then stay hidden, and a change sends neither key,
+    /// as that Mac refuses a key that it does not know.
+    var github: GitHub? = nil
+    var mail: Mail? = nil
 
     static let standard = NotificationSettings()
-    static let demo = NotificationSettings(keywords: ["launch", "outage"], mobileDelay: 5)
+    static let demo = NotificationSettings(keywords: ["launch", "outage"], mobileDelay: 5, github: .mentions, mail: .important)
     /// The choices of Notify my iPhone. The Mac takes 0 to 60 minutes (notification_settings.DELAY_MINUTES).
     static let delays: [Int?] = [nil, 1, 5, 15]
 
@@ -133,7 +163,7 @@ struct NotificationSettings: Equatable, Sendable {
 }
 
 extension NotificationSettings: Codable {
-    private enum CodingKeys: String, CodingKey { case pausedUntil, people, agents, keywords, mobileDelay }
+    private enum CodingKeys: String, CodingKey { case pausedUntil, people, agents, keywords, mobileDelay, github, mail }
 
     /// A missing or unknown value takes its default, so a newer Mac with another choice keeps the settings readable.
     init(from decoder: Decoder) throws {
@@ -144,6 +174,8 @@ extension NotificationSettings: Codable {
         agents = (try? container.decodeIfPresent(Agents.self, forKey: .agents)) ?? .all
         keywords = (try? container.decodeIfPresent([String].self, forKey: .keywords)) ?? []
         mobileDelay = (try? container.decodeIfPresent(Int.self, forKey: .mobileDelay)) ?? nil
+        if container.contains(.github) { github = (try? container.decode(GitHub.self, forKey: .github)) ?? .mentions }
+        if container.contains(.mail) { mail = (try? container.decode(Mail.self, forKey: .mail)) ?? .important }
     }
 
     /// Each key, an empty one as null: the Mac takes a null pause as resume and a null delay as at once.
@@ -154,5 +186,7 @@ extension NotificationSettings: Codable {
         try container.encode(agents, forKey: .agents)
         try container.encode(keywords, forKey: .keywords)
         try container.encode(mobileDelay, forKey: .mobileDelay)
+        try container.encodeIfPresent(github, forKey: .github)
+        try container.encodeIfPresent(mail, forKey: .mail)
     }
 }

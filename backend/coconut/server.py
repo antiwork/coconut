@@ -399,12 +399,18 @@ class Handler(BaseHTTPRequestHandler):
                 elif url.path.startswith('/v1/support/conversations/'):
                     from .support_threads import conversation, full_message
                     parts = url.path.split('/')[4:]
+                    query = parse_qs(url.query)
+                    # A mail of a notification is in the mailbox of the person (notification_sources).
+                    personal = query.get('mailbox') == ['personal']
                     if len(parts) == 3 and parts[1] == 'messages':
-                        self._json(200, full_message(service.root, parts[0], parts[2]))
+                        self._json(200, full_message(service.root, parts[0], parts[2], personal=personal))
                     elif len(parts) == 1:
-                        self._json(200, conversation(service.root, parts[0], everything=parse_qs(url.query).get('all') == ['1']))
+                        self._json(200, conversation(service.root, parts[0], everything=query.get('all') == ['1'],
+                                                     personal=personal))
                     else:
                         raise ServiceError(404, 'This route was not found.')
+                elif url.path == '/v1/notifications/alerts':
+                    self._json(200, {'alerts': service.notification_sources.current()})
                 elif url.path == '/v1/device/push':
                     self._json(200, service.push_status(device))
                 elif url.path == '/v1/push/config':

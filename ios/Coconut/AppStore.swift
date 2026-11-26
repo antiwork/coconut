@@ -193,6 +193,9 @@ final class AppStore {
     /// The notification settings of the person, the same on each device (NotificationSettingsView). Nil until the Mac
     /// says, and with a Mac older than the settings, which has no route to change them.
     var notificationSettings: NotificationSettings?
+    /// The notifications of GitHub and Gmail that wait, for the banners of the Mac (MacBanners). Nil before the first
+    /// read, and with a Mac older than them.
+    var sourceAlerts: [SourceAlert]?
     var pushRegistrationError: String?
     var pushStatus: PushStatus?
     @ObservationIgnored private var registeredPushSignature: String?
@@ -314,7 +317,8 @@ final class AppStore {
     /// without unread replies, a message of a chat of a team without unread messages, or a card that waits no more.
     /// False when the app cannot tell: a notice, a group of several chats, or a chat or a card that the app does not have.
     func notificationIsRead(_ target: NotificationTarget) -> Bool {
-        guard target.noticeRoom == nil else { return false }
+        // A notice, and a notification of GitHub or Gmail, stays until the person opens or clears it.
+        guard target.noticeRoom == nil, target.sourcePlace == nil else { return false }
         // A notice of an inbox chat is read when its list says so, or when the chat has no unread notice at all.
         if let chat = target.chat, let thread = chat.thread,
            let item = teamThreads[chat.wholeChat]?.threads.first(where: { $0.id == thread }) {
@@ -1889,8 +1893,20 @@ final class AppStore {
     private func reloadChangedBusiness(_ page: StateUpdates) {
         let changed = page.businessChanged ?? []
         guard !changed.isEmpty || page.reset != nil else { return }
+        #if os(macOS)
+        if changed.contains("alerts") || page.reset != nil { Task { await loadSourceAlerts() } }
+        #endif
+        // The alerts of GitHub and Gmail change no page.
+        guard changed.contains(where: { $0 != "alerts" }) || page.reset != nil else { return }
         if changed.contains("issues") || page.reset != nil { githubEmbeds.expire() }
         businessChanges += 1
+    }
+
+    /// Reads the alerts of GitHub and Gmail. A failure keeps the list, so the next read posts only what is new.
+    func loadSourceAlerts() async {
+        guard !isDemo, let client else { return }
+        guard let list: SourceAlerts = try? await client.request("notifications/alerts"), self.client === client else { return }
+        sourceAlerts = list.alerts
     }
 
     /// An image of a feed. The bytes of an image never change, so the store keeps the decoded image.
@@ -3832,6 +3848,7 @@ final class AppStore {
 
     func notificationDestination(_ target: NotificationTarget) async -> NotificationDestination? {
         guard acceptsNotification(target) else { return nil }
+        if let place = target.sourcePlace { return place }
         if let room = target.noticeRoom { return .notices(room) }
         if target.team != nil { return await teamNotificationDestination(target) }
         if target.group { return .inboxList }
@@ -3876,6 +3893,7 @@ final class AppStore {
     /// The place that a tapped notification shows at once, before the Mac confirms it: the chat of a team, the card,
     /// or the conversation.
     func notificationPreview(_ target: NotificationTarget) -> NotificationDestination {
+        if let place = target.sourcePlace { return place }
         if let room = target.noticeRoom { return .notices(room) }
         return target.chat.map(teamNotificationPlace)
             ?? target.decisionId.map(NotificationDestination.inbox) ?? .conversation(target.conversationRoute)

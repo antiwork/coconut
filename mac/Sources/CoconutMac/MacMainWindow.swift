@@ -123,6 +123,15 @@ struct MacMainWindow: View {
             selection = .bot(bot)
             model.shownBot = nil
         }
+        // A banner of GitHub or Gmail asks for an issue, a pull request or a mail. The window shows it over Home.
+        .onChange(of: model.shownSource, initial: true) { _, place in
+            switch place {
+            case .github(let route): go(.home, pushing: [route])
+            case .mail(let route): go(.home, pushing: [route])
+            default: return
+            }
+            model.shownSource = nil
+        }
         // Every New chat shows Home, where the message box takes the project (AppStore.startChat).
         .onChange(of: store.chatStarts) { _, _ in
             selection = .home
