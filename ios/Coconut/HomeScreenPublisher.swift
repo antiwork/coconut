@@ -41,7 +41,8 @@ extension AppStore {
             return glanceUnread(item, date: date)
         }
         let todos = todoIssues == nil ? [] : TodoArea.allCases.map {
-            CoconutGlance.Todos(id: $0.rawValue, title: $0.title, count: todoCount($0, now: now))
+            CoconutGlance.Todos(id: $0.rawValue, title: $0.title, count: todoCount($0, now: now),
+                                late: todoLateCount($0, now: now))
         }
         return CoconutGlance(cards: Array(cards), working: Array(working), unread: unread,
                              unreadCount: HomeFeed.chatsBadge(bots: bots, rooms: shownTeamRooms, local: newestLocalMessages),

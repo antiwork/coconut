@@ -156,7 +156,8 @@ struct GlanceRowView: View {
 }
 
 /// The counts of the three lists of to-dos, each opening its tab: Finance, Support and Product, in the order of the
-/// tabs. The names of the tabs say what each count is, so the strip has no symbols, which left no room for them.
+/// tabs. The names of the tabs say what each count is, so the strip has no symbols, which left no room for them. The
+/// count of a list with to-dos past their service level is red, as those rows are in the list.
 struct TodoStrip: View {
     let todos: [CoconutGlance.Todos]
 
@@ -168,11 +169,23 @@ struct TodoStrip: View {
                         Text(list.title).font(.caption).foregroundStyle(.secondary).lineLimit(1)
                         Spacer(minLength: 0)
                         Text("\(list.count)").font(.subheadline.weight(.semibold).monospacedDigit())
+                            .foregroundStyle(list.late > 0 ? BoardStyle.destructive : .primary)
+                            .widgetAccentable(list.late > 0)
                     }
                     .padding(.horizontal, 10).padding(.vertical, 6)
                     .background(BoardStyle.surface, in: RoundedRectangle(cornerRadius: 8))
                 }
+                .accessibilityLabel("\(list.title), \(list.count)" + (list.late > 0 ? ", \(list.late) past SLA" : ""))
             }
+        }
+    }
+
+    /// "Finance 3 · Support 5 · Product 12", for a widget with no room for the strip, with the same red counts.
+    static func line(_ todos: [CoconutGlance.Todos]) -> Text {
+        todos.enumerated().reduce(Text(verbatim: "")) { line, item in
+            let (index, list) = item
+            let count = Text(verbatim: "\(list.count)")
+            return Text("\(line)\(index > 0 ? " · " : "")\(list.title) \(list.late > 0 ? count.foregroundStyle(BoardStyle.destructive) : count)")
         }
     }
 }

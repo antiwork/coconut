@@ -129,8 +129,7 @@ private struct NowSmall: View {
                 CoconutMark().frame(height: 20)
                 Spacer(minLength: 0)
                 Text("Nothing waits for you").font(.headline)
-                Text(glance.todos.map { "\($0.title) \($0.count)" }.joined(separator: " · "))
-                    .font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                TodoStrip.line(glance.todos).font(.caption).foregroundStyle(.secondary).lineLimit(2)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)

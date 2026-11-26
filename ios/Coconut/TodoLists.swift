@@ -125,6 +125,13 @@ enum TodoCounts {
         return listed + breached
     }
 
+    /// How many of the to-dos of a list are past their service level and red in the list: the risk reviews that
+    /// Gumclaw has not taken yet, or the breach of the tab. Product shows no breach, so none of its to-dos is late.
+    static func late(_ area: TodoArea, attention: [AttentionItem] = [], reviews: [RiskReview]? = nil) -> Int {
+        if area == .finance, let reviews { return reviews.filter { !$0.decided && !$0.withGumclaw }.count }
+        return breaches(area, attention).reduce(0) { $0 + $1.count }
+    }
+
     /// The numbers of the open issues of the reviews that a list shows as reviews.
     static func reviewIssues(_ reviews: [RiskReview]?) -> Set<Int> {
         Set(reviews?.compactMap { $0.withGumclaw ? $0.issue?.number : nil } ?? [])
@@ -148,6 +155,11 @@ extension AppStore {
     func todoCount(_ area: TodoArea, now: Date = Date()) -> Int {
         TodoCounts.count(area, todos: todoIssues, attention: attentionItems(now: now),
                          reviews: riskReviews?.current(now: now))
+    }
+
+    /// How many of the to-dos of a list are past their service level (TodoCounts.late).
+    func todoLateCount(_ area: TodoArea, now: Date = Date()) -> Int {
+        TodoCounts.late(area, attention: attentionItems(now: now), reviews: riskReviews?.current(now: now))
     }
 
     /// Reads the to-dos again. A failure keeps the list that shows, with the error for a list that has none yet.

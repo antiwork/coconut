@@ -52,6 +52,9 @@ struct CoconutGlance: Codable, Hashable, Sendable {
         var id: String
         var title: String
         var count: Int
+        /// How many of them are past their service level and red in the list (TodoCounts.late). The widgets show the
+        /// count of such a list in red too.
+        var late = 0
 
         var link: HomeScreenLink { .tab(id) }
     }
@@ -106,6 +109,17 @@ struct CoconutGlance: Codable, Hashable, Sendable {
     static let limit = 6
     /// The kind of the widget that shows it (NowWidget). The app asks WidgetKit to read it again at each change.
     static let widgetKind = "coconut.now"
+}
+
+extension CoconutGlance.Todos {
+    /// A glance that an older app wrote has no `late`, and none of its to-dos is late.
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        id = try values.decode(String.self, forKey: .id)
+        title = try values.decode(String.self, forKey: .title)
+        count = try values.decode(Int.self, forKey: .count)
+        late = try values.decodeIfPresent(Int.self, forKey: .late) ?? 0
+    }
 }
 
 /// A place of the app that a widget, the Live Activity or a control opens: `coconut://open/...`. The app opens it as a
@@ -248,7 +262,8 @@ extension CoconutGlance {
                             preview: "1,204 payouts went out. 7 failed: 5 sellers need to update a bank detail.", count: 1,
                             date: now.addingTimeInterval(-40 * 60), link: .chat("sample-personal", card: nil))],
             unreadCount: 1,
-            todos: [Todos(id: "finance", title: "Finance", count: 3), Todos(id: "support", title: "Support", count: 5),
+            todos: [Todos(id: "finance", title: "Finance", count: 3, late: 2),
+                    Todos(id: "support", title: "Support", count: 5, late: 3),
                     Todos(id: "product", title: "Product", count: 12)],
             updatedAt: now)
     }
