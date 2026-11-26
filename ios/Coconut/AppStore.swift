@@ -837,9 +837,9 @@ final class AppStore {
         return true
     }
 
-    /// Asks the Mac for a new chat of an agent (makeChat), a quick to-do with `todo`.
-    func createChat(of agentId: String, todo: Bool = false) async -> Bot? {
-        await write("bots/\(agentId)/chats", payload: ChatRequest(todo: todo), as: Bot.self)
+    /// Asks the Mac for a new chat of an agent (makeChat).
+    func createChat(of agentId: String) async -> Bot? {
+        await write("bots/\(agentId)/chats", payload: EmptyRequest(), as: Bot.self)
     }
 
     func createRoutine(bot: Bot, name: String, prompt: String, cron: String, timezone: String, enabled: Bool = true) async {
@@ -3952,7 +3952,6 @@ struct SnapshotCache: Codable, Sendable {
 private struct PairRequest: Encodable { let code: String; let deviceName: String }
 private struct PairResponse: Decodable, Sendable { let token: String; let deviceId: String }
 private struct EmptyRequest: Encodable {}
-private struct ChatRequest: Encodable { let todo: Bool }
 private struct Acknowledgement: Decodable, Sendable { let ok: Bool }
 private struct PinRequest: Encodable { let pinned: Bool }
 private struct ArchiveRequest: Encodable { let archived: Bool }

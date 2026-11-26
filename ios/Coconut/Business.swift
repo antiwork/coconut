@@ -148,20 +148,6 @@ extension AppStore {
         businessChanges += 1
     }
 
-    func createBusinessWork(function: String, project: String?, title: String, body: String, requestId: String) async throws -> BusinessWork {
-        let result: BusinessWork
-        if isDemo {
-            let number = demoBusinessWork.count + 1
-            result = BusinessWork(id: function + ":\(number)", number: number, functionKey: function, projectKey: project, title: title, body: body, state: "open", url: "https://github.com/antiwork/\(function)/issues/\(number)", updatedAt: Date().formatted(.iso8601), author: "you", labels: [])
-            demoBusinessWork.insert(result, at: 0)
-        } else {
-            result = try await businessRequest("business/functions/\(function)/work", method: "POST", body: APIJSON.encode(BusinessWorkRequest(title: title, body: body, projectKey: project)), requestId: requestId)
-        }
-        businessItems[result.id] = result
-        businessChanges += 1
-        return result
-    }
-
     func cachedBusinessWork(function: String?, project: String?, state: String) -> [BusinessWork] {
         let items = isDemo ? demoBusinessWork : Array(businessItems.values)
         return items.filter { (function == nil || $0.functionKey == function) && (project == nil || $0.projectKey == project) && (state == "all" || $0.state == state) }
@@ -171,4 +157,3 @@ extension AppStore {
 
 private struct BusinessWorkList: Decodable, Sendable { let items: [BusinessWork] }
 private struct BusinessProjectRequest: Encodable { let key: String }
-private struct BusinessWorkRequest: Encodable { let title: String; let body: String; let projectKey: String? }

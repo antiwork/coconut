@@ -54,11 +54,13 @@ the `coconut-project` topic. The native project picker preserves the repository'
 `GET /v1/business` lists the functions and projects. Every to-do and all work of the business are issues of one
 repository, `antiwork/gumroad-private` (`COCONUT_TODO_REPOSITORY` selects another), and nothing else holds them. The label
 of an issue names its list, `finance`, `support` or `product`; an issue without one is a to-do of Product. The iPhone
-shows each list on its tab with its own count. `GET /v1/todos` lists the open to-dos with their lists, `POST /v1/todos`
-adds one with the label of its list, and `PATCH /v1/todos` moves one to another list. `/v1/business/work` filters the
-same issues by function (Accounting and Marketing read the list of Finance, Support its own), project and state, and
-creating work writes there with the label of its list. A GitHub receipt in the issue body recovers an accepted write
-after a lost response. Coconut's local request receipts coordinate retries; they do not own business records.
+shows each list on its tab with its own count. `GET /v1/todos` lists the open to-dos with their lists, and
+`PATCH /v1/todos` moves one to another list. `/v1/business/work` filters the same issues by function (Accounting and
+Marketing read the list of Finance, Support its own), project and state. Coconut creates no to-do and no work: an agent
+files an issue only when it gets blocked (the hint of the platform), so `POST /v1/todos`,
+`POST /v1/business/functions/<key>/work` and a new chat with `todo: true` answer 410. A GitHub receipt in the issue body
+recovers an accepted write after a lost response. Coconut's local request receipts coordinate retries; they do not own
+business records.
 
 `/v1/business/reports/{overview,accounting,support,risk,engineering}` reads complete published JSON snapshots.
 The temporary publisher is `antiwork/dashboards`, `docs/0825/*.json`; `COCONUT_BUSINESS_REPORTS_REPO` selects another
@@ -152,7 +154,7 @@ A project is a name and its chats (`backend/coconut/bot_profiles.py`, `PROJECTS`
 - `PATCH /v1/bots/<id>` refuses `model_override`, `instructions`, `approval_override` and `worker_limit` with 409, and ignores `avatar` and `color`. The API still sends both, empty, so older apps decode a bot.
 - Coconut keeps its own files of an agent in `<data-dir>/bots/<uuid>`: workspace, browser and temporary files.
 - New chat: the person picks Coconut, Gumroad or Personal. `POST /v1/bots/<id>/chats` makes a bot with `chat_of` (the project's ID), a new session, and a `profiles` row with the folder of the project's profile. Its first message is its title (`chat_title`). A chat can be archived or removed by itself.
-- A chat goes to Archived by itself after a time without activity (`AgentChats.archive_idle_chats`, every 10 minutes from the dispatcher): the setting `auto_archive_hours`, 14 until the person picks another time on You or in the Coconut chat, 0 for never (`PUT /v1/settings/auto-archive`; both states carry it). Activity is a visible message, a change of its newest task, a read of a new reply (`_read_at`), its start, and a restore from Archived (`_restored_at`). A chat stays while it is starred, is a quick to-do, has an unread reply, or still waits for something: a queued, running, waiting or paused task, a card, a wait or a result on its way back, Work that runs, or a scheduled or paused routine. An archived chat runs nothing and sends no notification, so the pass leaves those alone. A message of the person brings an archived chat back, where the service refused it before. The Chats list of the iPhone and the Mac sidebar list Archived last, under Personal, newest first, with the number of its chats on the right of its title (the person: "Archived chats show at bottom even below personal and count on right"); the Agents list of the Exact app still shows an archived chat among the others, by its newest activity.
+- A chat goes to Archived by itself after a time without activity (`AgentChats.archive_idle_chats`, every 10 minutes from the dispatcher): the setting `auto_archive_hours`, 14 until the person picks another time on You or in the Coconut chat, 0 for never (`PUT /v1/settings/auto-archive`; both states carry it). Activity is a visible message, a change of its newest task, a read of a new reply (`_read_at`), its start, and a restore from Archived (`_restored_at`). A chat stays while it is starred, has an unread reply, or still waits for something: a queued, running, waiting or paused task, a card, a wait or a result on its way back, Work that runs, or a scheduled or paused routine. An archived chat runs nothing and sends no notification, so the pass leaves those alone. A message of the person brings an archived chat back, where the service refused it before. The Chats list of the iPhone and the Mac sidebar list Archived last, under Personal, newest first, with the number of its chats on the right of its title (the person: "Archived chats show at bottom even below personal and count on right"); the Agents list of the Exact app still shows an archived chat among the others, by its newest activity.
 - Deleting an agent means "Remove from Coconut": its Hermes sessions stay.
 `HOME` remains the Mac account home so macOS Keychain works.
 `USER` identifies the Mac account so Claude Code selects its saved Keychain login.

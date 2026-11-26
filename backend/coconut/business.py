@@ -3,7 +3,8 @@
 Accounting, Marketing and Support are reserved repository keys. Project repositories opt in with the coconut-project topic.
 The work of every function is an issue of one repository, antiwork/gumroad-private (work_repository), as every to-do
 is (github_todos): the person keeps all work there and nothing else. The label of its list says whose work it is
-(WORK_AREAS), and a project label scopes it to a project.
+(WORK_AREAS), and a project label scopes it to a project. Work is a to-do, so Coconut lists it, opens it and closes it,
+but creates none: an agent files it on GitHub only when it gets blocked (github_todos, the top of the file).
 """
 from __future__ import annotations
 
@@ -19,7 +20,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlencode
 from urllib.request import Request, urlopen
 
-from .service_base import ServiceError, encoded, require_text
+from .service_base import ServiceError, encoded
 
 FUNCTIONS = {'accounting': ('Accounting', 'Ledger, close, taxes and financial operations.', 'books.vertical'),
              'marketing': ('Marketing', 'Campaigns, content, launches and growth.', 'megaphone'),
@@ -231,7 +232,7 @@ class GitHubBusiness:
         if writable:
             repository = self._repo(work_repository())
             if repository.get('archived') or not repository.get('has_issues'):
-                raise ServiceError(409, 'Enable issues and restore the work repository on GitHub before adding work.')
+                raise ServiceError(409, 'Enable issues and restore the work repository on GitHub before changing work.')
         return function_key
 
     def _work_path(self):
@@ -276,40 +277,6 @@ class GitHubBusiness:
         items.sort(key=lambda item: (item['updated_at'], item['id']), reverse=True)
         return dict(items=items)
 
-    def create_work(self, function_key, data, request_key):
-        function_key = self._function(function_key, writable=True)
-        if set(data) - {'title', 'body', 'project_key'}:
-            raise ServiceError(400, 'Specify a title, description and optional project.')
-        title = require_text(data, 'title', 256)
-        if '\n' in title or '\r' in title:
-            raise ServiceError(400, 'Use a single-line title.')
-        body = data.get('body') or ''
-        if not isinstance(body, str) or len(body) > 60_000 or '<!-- coconut-work:' in body:
-            raise ServiceError(400, 'Use a description of up to 60,000 characters.')
-        project_key = data.get('project_key')
-        from .github_todos import LABELS
-        area = WORK_AREAS[function_key]
-        self.ensure_label(area, *LABELS[area])
-        labels = [area]
-        if project_key:
-            project_key = key(project_key)
-            self.project(project_key)
-            label = project_label(project_key)
-            self.ensure_label(label, '6f55a5', f'Coconut project: {self.owner}/{project_key}')
-            labels.append(label)
-        signature = hashlib.sha256(encoded([function_key, title, body, project_key]).encode()).hexdigest()
-        prefix = f'<!-- coconut-work:{request_key}:'
-        marker = prefix + signature + ' -->'
-        # A receipt lost after GitHub accepted the write is recovered from GitHub, without search-index delay.
-        for issue in self._pages(self._work_path() + '/issues?state=all&sort=created&direction=desc', size=25):
-            if 'pull_request' not in issue and prefix in (issue.get('body') or ''):
-                if marker not in issue['body']:
-                    raise ServiceError(409, 'This request key already created different work.')
-                return self._work(function_key, issue)
-        issue = self._call('POST', self._work_path() + '/issues',
-                           dict(title=title, body=body.rstrip() + '\n\n' + marker, labels=labels))
-        return self._work(function_key, issue)
-
     def update_work(self, function_key, number, data):
         function_key = self._function(function_key, writable=True)
         if not re.fullmatch(r'[1-9][0-9]{0,9}', number) or int(number) >= 2**31 or set(data) != {'state'} or data['state'] not in ('open', 'closed'):
@@ -321,6 +288,10 @@ class GitHubBusiness:
 
 
 def mutate_business(service, method, parts, data, request_key, fingerprint):
+    if method == 'POST' and len(parts) == 3 and parts[0] == 'functions' and parts[2] == 'work':
+        # New work is a new to-do, which Coconut does not create (github_todos.NO_CREATION).
+        from .github_todos import NO_CREATION
+        raise ServiceError(410, NO_CREATION)
     if not isinstance(data, dict):
         raise ServiceError(400, 'Send a JSON object for this business action.')
     client = service.business
@@ -335,8 +306,6 @@ def mutate_business(service, method, parts, data, request_key, fingerprint):
             return json.loads(receipt[1])
         if method == 'POST' and parts == ['projects']:
             result = client.add_project(data)
-        elif method == 'POST' and len(parts) == 3 and parts[0] == 'functions' and parts[2] == 'work':
-            result = client.create_work(parts[1], data, request_key)
         elif method == 'PATCH' and len(parts) == 4 and parts[0] == 'functions' and parts[2] == 'work':
             result = client.update_work(parts[1], parts[3], data)
         else:

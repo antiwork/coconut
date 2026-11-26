@@ -23,7 +23,8 @@ A turn that mote cannot take, for example on a Mac without the mote command, run
 
 The first turn makes the mote home from the profile: mote's own files, the profile's SOUL.md with the hint of the
 Coconut platform, its memory in BODY.md and a copy of its skills. From then on mote keeps its own home, and Hermes keeps
-its own. mote reads its model from `<profile>/mote/config.json` and the key from the environment of this service or
+its own. Only the paragraph of the hint in SOUL.md stays Coconut's: each turn brings it up to date (write_hint), as
+Hermes reads the hint of the plugin for each session, so a new rule of the platform reaches both. mote reads its model from `<profile>/mote/config.json` and the key from the environment of this service or
 from `<profile>/mote.env` (KEY=value lines). Only the mote process gets these, and mote keeps its model keys out of its
 shell commands. A Bedrock API key (AWS_BEARER_TOKEN_BEDROCK, with BEDROCK_REGION) never reaches mote: the service
 relays mote's model calls to Bedrock (bedrock_relay.py), and mote gets the address and the token of the relay.
@@ -85,6 +86,9 @@ MODE_TEXT = {
 }
 TOOLS_NOTE = ('Here the tools of Coconut are the shell command `coconut` (skill coconut-tools): `coconut ask` for '
               'coconut_ask, `coconut suggest` for coconut_suggest, and so on. `coconut tools` lists them.')
+# The first words of HINT, which find its paragraph in SOUL.md (write_hint). Keep them the first words of HINT: a hint
+# that starts otherwise is not written, so the paragraph in SOUL.md stays as it was.
+HINT_START = 'You are in Coconut, the iPhone app'
 SKILL_TEXT = """---
 name: coconut-tools
 description: Cards, the board, documents, other agents and the settings of Coconut, through the shell command `coconut`.
@@ -192,6 +196,22 @@ def hint() -> str:
     return TOOLS_NOTE
 
 
+def write_hint(home: Path) -> None:
+    """Bring the paragraph of SOUL.md that starts as the hint up to date with the hint of the plugin. The rest of SOUL.md
+    is the agent's and stays as it is. A hint that cannot be read changes nothing."""
+    current = hint()
+    if not current.startswith(HINT_START):
+        return
+    path = home / 'SOUL.md'
+    paragraphs = _read(path).split('\n\n')
+    for index, paragraph in enumerate(paragraphs):
+        if paragraph.strip().startswith(HINT_START):
+            if paragraph.strip() != current:
+                paragraphs[index] = current + ('\n' if paragraph.endswith('\n') else '')
+                _write(path, '\n\n'.join(paragraphs))
+            return
+
+
 def _read(path: Path) -> str:
     try:
         return path.read_text(errors='replace')
@@ -251,6 +271,7 @@ def prepare(profile) -> Path:
     home = profile / HOME
     if (home / 'config.json').is_file():
         write_skill(home)
+        write_hint(home)
         return home
     mote = command()
     if mote is None:

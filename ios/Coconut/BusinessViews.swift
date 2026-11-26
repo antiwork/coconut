@@ -19,8 +19,8 @@ struct BusinessHomeView: View {
             }
         }
         .navigationTitle("Finance")
-        // No + here: the person found that a + made no sense on Finance (2026-11-24). Agents file its to-dos, and the
-        // message box of the tab writes to the agent of the business.
+        // No + here: the person found that a + made no sense on Finance (2026-11-24). An agent files a to-do only when
+        // it gets blocked (github_todos.py), and the message box of the tab writes to the agent of the business.
         .task(id: "\(store.connection)/\(store.businessChanges)") { await load() }
         .onChange(of: store.businessGeneration) { _, _ in report = nil; error = nil }
         .refreshable {
@@ -105,7 +105,6 @@ struct BusinessWorkListView: View {
     private let state = "open"
     @State private var error: String?
     @State private var loading = false
-    @State private var adding = false
 
     private var shownItems: [BusinessWork] { store.cachedBusinessWork(function: function, project: project, state: state) }
     private var title: String {
@@ -132,15 +131,10 @@ struct BusinessWorkListView: View {
             if let error { BusinessConnectionNotice(message: error) }
         }
         .navigationTitle(title)
-        .toolbar {
-            ToolbarItem(placement: .primaryAction) {
-                Button { adding = true } label: { Label("New work", systemImage: "plus") }
-                    .disabled(store.businessCatalog == nil).accessibilityIdentifier("business-new-work")
-            }
-        }
+        // No "New work": work of the business is a to-do, and the person removed to-do creation from Coconut
+        // (2026-11-26). An agent files one only when it gets blocked (github_todos.py).
         .task(id: "\(function ?? "")/\(project ?? "")/\(state)/\(store.businessChanges)") { await load() }
         .refreshable { await load(fresh: true) }
-        .sheet(isPresented: $adding) { BusinessWorkEditor(function: function, project: project) }
     }
 
     /// The issue of a row of work, in the work repository of its organization.
@@ -222,56 +216,5 @@ private struct BusinessProjectEditor: View {
             }
             .task { do { try await store.loadBusinessCatalog(fresh: true) } catch { self.error = error.localizedDescription } }
         }.frame(minWidth: 340, minHeight: 260)
-    }
-}
-
-private struct BusinessWorkEditor: View {
-    @Environment(AppStore.self) private var store
-    @Environment(\.dismiss) private var dismiss
-    let function: String?
-    let project: String?
-    @State private var selectedFunction = "accounting"
-    @State private var selectedProject = ""
-    @State private var title = ""
-    @State private var bodyText = ""
-    @State private var requestId = UUID().uuidString
-    @State private var busy = false
-    @State private var error: String?
-    var body: some View {
-        NavigationStack {
-            Form {
-                if function == nil {
-                    Picker("Function", selection: $selectedFunction) {
-                        ForEach(BusinessFunction.builtIns) { Text($0.name).tag($0.key) }
-                    }
-                }
-                if project == nil {
-                    Picker("Repository", selection: $selectedProject) {
-                        Text("All repositories").tag("")
-                        ForEach(store.businessCatalog?.projects ?? []) { Text($0.displayName).tag($0.key) }
-                    }
-                }
-                TextField("Title", text: $title).accessibilityIdentifier("business-work-title")
-                TextField("Description", text: $bodyText, axis: .vertical).lineLimit(5...12)
-                    .accessibilityIdentifier("business-work-description")
-                // The work of every function is an issue of the work repository with the label of its list (business.py).
-                Section {} footer: { Text("Saved to \(store.todoIssues?.repository ?? "antiwork/gumroad-private") on GitHub.") }
-                if let error { Text(error).foregroundStyle(BoardStyle.destructive) }
-            }
-            .navigationTitle("New work").inlineNavigationTitle().settingsBackground()
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
-                ToolbarItem(placement: .confirmationAction) { Button(busy ? "Saving…" : "Create") {
-                    busy = true
-                    Task {
-                        defer { busy = false }
-                        do {
-                            let _ = try await store.createBusinessWork(function: function ?? selectedFunction, project: project ?? (selectedProject.isEmpty ? nil : selectedProject), title: title, body: bodyText, requestId: requestId)
-                            dismiss()
-                        } catch { self.error = error.localizedDescription }
-                    }
-                }.disabled(title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || busy).accessibilityIdentifier("business-create-work") }
-            }
-        }.frame(minWidth: 360, minHeight: 380)
     }
 }

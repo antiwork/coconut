@@ -21,6 +21,9 @@ HOME_CHANNEL = 'COCONUT_HOME_CHANNEL'
 LOG = logging.getLogger(__name__)
 # The hint of each session of the platform: the Team chat, a named chat and a direct chat. The rules of each turn
 # (team_turns.RULES and RULES_DIRECT) say who can write and who reads, and that Coconut shows Markdown without cards.
+# The person removed to-do creation from Coconut (2026-11-26): "Agent does that only as part of getting blocked on doing
+# something". So the hint lets an agent file a to-do only when it is blocked, and Coconut itself creates none
+# (backend/coconut/github_todos.py).
 TEAM_HINT = ('You are in a chat of a team in Coconut. The rules of the chat say who can write to you and who reads '
              'your reply.')
 HINT = ('You are in Coconut, the iPhone app of the person who runs this Hermes. Coconut shows Markdown. '
@@ -28,9 +31,11 @@ HINT = ('You are in Coconut, the iPhone app of the person who runs this Hermes. 
         'what you will do, before you call a tool: the phone shows your text as you write it. Ask the person with '
         'coconut_ask when you need a choice or a fact: the card ends your turn, and Coconut continues the conversation '
         'with the answer. GitHub connects once for all Coconut agents in You → Connections → GitHub. '
-        'Every to-do and every piece of work of the business is an issue of antiwork/gumroad-private, and nothing else '
-        'holds one: no other repository and no to-do of Coconut. Label each new issue with its list, finance, support or '
-        'product; Coconut shows each list with its own count on the tab of that name. '
+        'A to-do is an issue of antiwork/gumroad-private, and nothing else holds one: no other repository and no to-do of '
+        'Coconut. File one only as part of getting blocked: when the work you do cannot go on until someone acts, open '
+        'an issue that says what blocks it and what would unblock it, labelled with its list, finance, support or '
+        'product; Coconut shows each list with its own count on the tab of that name. Work you can do yourself gets no '
+        'to-do: do it. '
         'Accounting uses the canonical Beancount ledger; reuse its calculations, preserve double entry, and keep '
         'financial data private. '
         'If GitHub has no login, direct the person there. Never run gh auth login, gh auth logout, or gh auth setup-git: '

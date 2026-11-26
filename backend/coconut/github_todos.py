@@ -6,15 +6,19 @@ work in, and nothing else: no other repository and no store of Coconut holds a t
 is in both lists, and an issue with none of them is a to-do of Product, the list of the repository's issues before the
 split. COCONUT_TODO_REPOSITORY names another repository of the owner.
 
-The Mac reads and writes with the connected GitHub account (business.github_request), so a new to-do or a move in
-Coconut is an issue or a label on GitHub, and a change on GitHub shows at the next read.
+The Mac reads and writes with the connected GitHub account (business.github_request), so a move in Coconut is a label
+on GitHub, and a change on GitHub shows at the next read.
 
     GET   /v1/todos[?fresh=1]         the open to-dos, newest activity first
-    POST  /v1/todos {title, area}     a new to-do: an issue with the label of its list
     PATCH /v1/todos {number, area}    moves a to-do to another list: the label of the new list replaces the old one
 
-The number travels in the body, so the request log keeps the route without it. The app has no + to add a to-do any
-more (the person removed it from every list), so only older builds POST one; agents file theirs on GitHub directly.
+The number travels in the body, so the request log keeps the route without it.
+
+Coconut creates no to-do. The person removed to-do creation from Coconut (2026-11-26): "Remove todo creation from
+coconut. Agent does that only as part of getting blocked on doing something". An agent files a to-do on GitHub only when
+the work that it does cannot go on until someone acts (the hint of the Coconut platform, hermes_plugin/coconut, HINT),
+so no route, button or sheet of Coconut makes one, and POST /v1/todos answers 410 to older builds that still have a +.
+Do not add a way to create one back.
 """
 from __future__ import annotations
 
@@ -32,7 +36,8 @@ from .service_base import ServiceError, encoded
 AREAS = ('finance', 'support', 'product')
 # An issue without the label of a list.
 DEFAULT_AREA = 'product'
-# The labels that a new to-do or a move adds when the repository lacks them.
+# The labels that a move, a decision of a review (risk_reviews) or a handoff of Support (support_handoffs) adds when the
+# repository lacks them.
 LABELS = {'finance': ('1A7F37', 'Coconut to-do list Finance: money, payouts, risk, tax, accounting, marketing'),
           'support': ('0969DA', 'Coconut to-do list Support: customers, sellers, privacy requests, content gaps'),
           'product': ('8250DF', 'Coconut to-do list Product: bugs, features and the app (the default)')}
@@ -41,7 +46,8 @@ LIST_SECONDS = 15
 MAX_TODOS = 300
 PAGE = 50
 NUMBER = re.compile(r'[1-9][0-9]{0,9}')
-MARKER = 'coconut-todo'
+# The answer to a device that asks Coconut for a new to-do (see the top of this file).
+NO_CREATION = 'Coconut no longer creates to-dos. An agent files one on GitHub when it gets blocked.'
 
 
 def areas_of(labels) -> list[str]:
@@ -128,29 +134,6 @@ class GitHubTodos:
         with self.lock:
             self.cache = {}
 
-    def create(self, data: dict, request_key: str) -> dict:
-        if set(data) - {'title', 'area'}:
-            raise ServiceError(400, 'Send the title and the list of the to-do.')
-        title = data.get('title')
-        if not isinstance(title, str) or not title.strip() or len(title) > 256 or '\n' in title or '\r' in title:
-            raise ServiceError(400, 'Write the to-do in one line of up to 256 characters.')
-        title, area = title.strip(), _area(data)
-        signature = hashlib.sha256(encoded([title, area]).encode()).hexdigest()
-        prefix = f'<!-- {MARKER}:{request_key}:'
-        marker = prefix + signature + ' -->'
-        # A receipt lost after GitHub accepted the issue is recovered from GitHub, without the delay of its search index.
-        recent = self.business._call('GET', self._path() + '/issues?state=all&sort=created&direction=desc&per_page=25')
-        for issue in recent if isinstance(recent, list) else []:
-            if isinstance(issue, dict) and 'pull_request' not in issue and prefix in (issue.get('body') or ''):
-                if marker not in issue['body']:
-                    raise ServiceError(409, 'This request key already created a different to-do.')
-                self.forget()
-                return summary(issue, self.login())
-        self.business.ensure_label(area, *LABELS[area])
-        issue = self.business._call('POST', self._path() + '/issues', dict(title=title, body=marker, labels=[area]))
-        self.forget()
-        return summary(issue, self.login())
-
     def move(self, data: dict) -> dict:
         if set(data) != {'number', 'area'}:
             raise ServiceError(400, 'Send the number of the to-do and its new list.')
@@ -176,8 +159,10 @@ class GitHubTodos:
 
 
 def mutate_todos(service, method, data, request_key, fingerprint):
-    """A new to-do or a move from a device. A repeat with the same key gets the saved answer, which is saved only after
-    GitHub confirmed the write (business.mutate_business)."""
+    """A move from a device. A repeat with the same key gets the saved answer, which is saved only after GitHub confirmed
+    the write (business.mutate_business). Coconut creates no to-do (see the top of this file)."""
+    if method == 'POST':
+        raise ServiceError(410, NO_CREATION)
     if not isinstance(data, dict):
         raise ServiceError(400, 'Send a JSON object for this to-do.')
     todos = service.todos
@@ -189,9 +174,7 @@ def mutate_todos(service, method, data, request_key, fingerprint):
             if not hmac.compare_digest(receipt[0], fingerprint):
                 raise ServiceError(409, 'This request key belongs to a different change.')
             return json.loads(receipt[1])
-        if method == 'POST':
-            result = todos.create(data, request_key)
-        elif method == 'PATCH':
+        if method == 'PATCH':
             result = todos.move(data)
         else:
             raise ServiceError(404, 'This to-do action was not found.')
