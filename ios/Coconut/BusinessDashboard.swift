@@ -19,8 +19,8 @@ struct BusinessWorkspaceView: View {
         }
         .background(BoardStyle.paper)
         .navigationTitle(BusinessFunction.name(function))
-        // No + on Support: the person removed it on a card (2026-11-24), as on Finance. Agents file its to-dos, and the
-        // message box of the tab writes to the agent of the business.
+        // No + on Support: the person removed it on a card (2026-11-24), as on Finance. An agent files a to-do only
+        // when it gets blocked (github_todos.py), and the message box of the tab writes to the agent of the business.
     }
 }
 

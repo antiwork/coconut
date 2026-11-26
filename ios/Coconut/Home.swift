@@ -169,14 +169,8 @@ struct HomeView: View {
                     ForEach(unread) { unreadRow($0) }
                 }
             }
-            // The quick to-dos (QuickTodos), with + to add one. The iPhone lists them on Product, the Mac on Home.
-            BoardSection("To-dos", count: QuickTodos.list(store).count) {
-                Button("New to-do", systemImage: "plus") { PendingTodos.shared.adding = true }
-                    .accessibilityIdentifier("home-new-todo")
-            } rows: {
-                QuickTodoRows(inList: false)
-            }
-            .sheet(isPresented: Binding(get: { PendingTodos.shared.adding }, set: { PendingTodos.shared.adding = $0 })) { NewTodoSheet() }
+            // No To-dos section and no "New to-do": the person removed to-do creation from Coconut (2026-11-26). An
+            // agent files a to-do, an issue of the work repository, only when it gets blocked (github_todos.py).
             if !progress.isEmpty {
                 let shown = allProgress ? progress : Array(progress.prefix(Self.progressLimit))
                 BoardSection("In progress", count: progress.count) {

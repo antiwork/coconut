@@ -209,8 +209,7 @@ struct SentEcho {
     }
 }
 
-/// The label of the project chip of a message box: the box of a new chat and the sheet of a new to-do. A project has
-/// no face, so the chip is its name.
+/// The label of the project chip of the message box of a new chat. A project has no face, so the chip is its name.
 struct ComposerChipLabel: View {
     let title: String
 

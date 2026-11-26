@@ -52,9 +52,9 @@ enum AgentChats {
     /// A chat that nobody wrote in: no message, no title (the first message names a chat), nothing unread and nothing
     /// running. No list shows it, and the next first message of its agent goes into it (spare), so a chat that the
     /// person never wrote in does not stay behind. The Coconut chat is the one place where Coconut changes, so it
-    /// always shows. A quick to-do is never blank: its first message is on its way.
+    /// always shows.
     static func isBlank(_ bot: Bot, latest: [String: Date]) -> Bool {
-        guard !bot.coconut, !bot.todo, bot.unreadCount == 0, bot.health == nil, bot.status == "idle", latest[bot.id] == nil else { return false }
+        guard !bot.coconut, bot.unreadCount == 0, bot.health == nil, bot.status == "idle", latest[bot.id] == nil else { return false }
         return (bot.chatTitle ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             && bot.lastMessage.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
@@ -199,9 +199,9 @@ extension AppStore {
         return chat
     }
 
-    /// Asks the Mac for a new chat of an agent: a fresh conversation with the same Hermes profile, a quick to-do with
-    /// `todo`. Returns the chat, or nil when the Mac did not make it.
-    func makeChat(of agent: Bot, todo: Bool = false) async -> Bot? {
+    /// Asks the Mac for a new chat of an agent: a fresh conversation with the same Hermes profile. Returns the chat, or
+    /// nil when the Mac did not make it.
+    func makeChat(of agent: Bot) async -> Bot? {
         var chat: Bot?
         if isDemo {
             var copy = agent
@@ -216,11 +216,10 @@ extension AppStore {
             copy.archived = false
             copy.pinned = false
             copy.health = nil
-            copy.todo = todo
             copy.createdAt = ISO8601DateFormatter().string(from: Date())
             chat = copy
         } else {
-            chat = await createChat(of: agent.id, todo: todo)
+            chat = await createChat(of: agent.id)
         }
         guard let chat else { return nil }
         // The update of the Mac brings the chat too. The app shows it at once.

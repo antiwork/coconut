@@ -43,8 +43,6 @@ struct Bot: Codable, Identifiable, Equatable, Sendable {
     var chatTitle: String? = nil
     /// The newest message that the person read in this chat. The chat draws its "New" line below it.
     var lastReadMessageId: String? = nil
-    /// True for a chat that is a quick to-do (QuickTodos): its first message is the to-do.
-    var todo: Bool = false
 }
 
 /// A bot that cannot run: its provider limit or error, and the source items that wait for it.
@@ -79,7 +77,7 @@ struct BotPreference: Codable, Identifiable, Equatable, Sendable {
 extension Bot {
     enum CodingKeys: String, CodingKey {
         case id, sessionId, name, role, instructions, status
-        case lastMessage, unreadCount, archived, createdAt, memory, pinned, preferences, modelOverride, effectiveModel, chatModel, modelError, notifications, approvalOverride, effectiveApproval, workerLimit, health, coconut, project, projectKey, chatOf, chatTitle, lastReadMessageId, todo
+        case lastMessage, unreadCount, archived, createdAt, memory, pinned, preferences, modelOverride, effectiveModel, chatModel, modelError, notifications, approvalOverride, effectiveApproval, workerLimit, health, coconut, project, projectKey, chatOf, chatTitle, lastReadMessageId
     }
 
     init(from decoder: Decoder) throws {
@@ -113,7 +111,6 @@ extension Bot {
         chatOf = try values.decodeIfPresent(String.self, forKey: .chatOf)
         chatTitle = try values.decodeIfPresent(String.self, forKey: .chatTitle)
         lastReadMessageId = try values.decodeIfPresent(String.self, forKey: .lastReadMessageId)
-        todo = try values.decodeIfPresent(Bool.self, forKey: .todo) ?? false
     }
 }
 
