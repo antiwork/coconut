@@ -1,0 +1,21 @@
+diff --git a/scripts/push.mjs b/scripts/push.mjs
+index 33e8d216..1268e522 100644
+--- a/scripts/push.mjs
++++ b/scripts/push.mjs
+@@ -125,6 +125,16 @@ export async function pusher(opts) {
+       if (native.length) console.log(`  ${name(update.row)} — note: native sources differ from its binary's, and only a new binary carries them: ${listed(native)}`);
+       if (update.note) console.log(`  note: ${update.note}`);
+     }
++    // Coconut's patch (.github/exact-patches in antiwork/coconut): EXACT_PUSH_DRY_RUN=1 prints what each stream would
++    // take, and publishes nothing. The workflow's check action uses it.
++    if (process.env.EXACT_PUSH_DRY_RUN === '1') {
++      for (const update of fit) {
++        const files = update.build.graph.artifacts.filter((a) => a.kind === 'bundle').map((a) => `${a.name} ${String(a.sha256).slice(0, 12)}`);
++        console.log(`  ${name(update.row)} — would take: ${files.join(', ')}`);
++      }
++      console.log(`dry run in ${seconds(started)}: nothing was published`);
++      return;
++    }
+     const results = [];
+     for (const update of fit) results.push(await publishStream({ origin, ...update, app, signer, release, snapshot, opts: { seqAbove: opts.seqAbove }, log: () => {} }));
+     for (const r of results) {

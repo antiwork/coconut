@@ -15,3 +15,6 @@ Preserve other changes and never force-push `main`. Promptly revert a change tha
 forward. In your report, say what you checked by hand and what you did not.
 
 GitHub runs two workflows, `testflight.yml` and `mac-release.yml`, only when the release agent starts them twice a day. Do not start it yourself.
+
+From 2026-12-14, build a new feature of the iPhone or Mac app in `exact/` first: both apps move to Exact in December
+(`docs/exact.md`, December 2026).
