@@ -84,14 +84,16 @@ def stamp(value) -> float | None:
         return None
 
 
+def chat_label(bot: dict) -> str:
+    """The title of a further chat, as Bot.chatLabel: its first message, "Photo" for files alone, or "New agent"."""
+    title = (bot.get('chat_title') or '').strip()
+    return 'Photo' if title == ATTACHMENT_ONLY else title or 'New agent'
+
+
 def list_name(bot: dict) -> str:
     """The name of a chat in a list, as Bot.listName: the agent, and the title of a further chat."""
     name = bot.get('name') or 'Agent'
-    if not bot.get('chat_of'):
-        return name
-    title = (bot.get('chat_title') or '').strip()
-    label = 'Photo' if title == ATTACHMENT_ONLY else title or 'New agent'
-    return f'{name} · {label}'
+    return f'{name} · {chat_label(bot)}' if bot.get('chat_of') else name
 
 
 def chat_of_task(task: dict) -> str:

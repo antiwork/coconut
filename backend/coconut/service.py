@@ -653,7 +653,7 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
         for entry in entries:
             self.push.record_notice(room_id, entry)
 
-    def _message(self, bot_id: str, text: str, *, task_id: str | None = None, role: str = 'assistant', kind: str = 'text', decision_id: str | None = None, artifact_id: str | None = None, document_id: str | None = None, streaming: bool = False, sender_bot_id: str | None = None, recipient_bot_ids: list[str] | None = None, human_authored: bool = False, direct_reply_message_id: str | None = None, interim: bool = False) -> dict:
+    def _message(self, bot_id: str, text: str, *, task_id: str | None = None, role: str = 'assistant', kind: str = 'text', decision_id: str | None = None, artifact_id: str | None = None, document_id: str | None = None, streaming: bool = False, sender_bot_id: str | None = None, recipient_bot_ids: list[str] | None = None, human_authored: bool = False, direct_reply_message_id: str | None = None, interim: bool = False, merged_into: dict | None = None) -> dict:
         task = self._get('tasks', task_id) if task_id else None
         thread_id = task['thread_id'] if task else None
         display_bot_id = (task['bot_id'] if task.get('source_bot_id') else task['conversation_bot_id']) if task else bot_id
@@ -668,6 +668,9 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
             message['document_id'] = document_id
         if interim:
             message['_interim'] = True
+        if merged_into:
+            # The chat that this one went into, on the last line of a merged chat (AgentChats.merge_chat).
+            message['merged_into'] = merged_into
         if role == 'assistant' and kind == 'text':
             direct_reply_message_id = direct_reply_message_id or (task or {}).get('_direct_reply_message_id')
             if direct_reply_message_id:
@@ -1579,6 +1582,8 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
                     from .github_todos import NO_CREATION
                     raise ServiceError(410, NO_CREATION)
                 return self._bot_view(self._new_chat(bot), self._request_model_catalog)
+            if parts[3:] == ['merge'] and method == 'POST':
+                return self.merge_chat(bot, data, callbacks)
             if parts[3:] == ['read'] and method == 'POST':
                 unread.mark_read(self.db, bot)
                 self._put('bots', bot)
@@ -3684,7 +3689,7 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
                         # This exact snapshot supplies the bot messages to the provider.
                         # A later delivery writes its own pending marker under the same lock.
                         self._put('tasks', task)
-                    history = self._history(bot['id'])
+                    history = self._with_merges(self._history(bot['id']), task)
                     visible_replies = ({identity: self._get('messages', identity).get('_visible_reply_context')
                                         for identity in task.get('_turn_message_ids', [])}
                                        if task.get('_chat_session') else {})

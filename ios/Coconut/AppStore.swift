@@ -933,6 +933,29 @@ final class AppStore {
                        save: { let _: Bot? = await self.write("bots/\(bot.id)", method: "PATCH", payload: ArchiveRequest(archived: archived), as: Bot.self) })
     }
 
+    /// Merges one chat into another, when the person pinches their cards together in the grid (ChatGridView). The
+    /// chat that goes in stops and moves to Archived, and the agent of the other chat gets its transcript and takes
+    /// over its work (agent_chats.py, merge_chat). The grid shows it gone at once. A refusal of the Mac brings it back.
+    func mergeChats(into: Bot, from: Bot) {
+        if isDemo {
+            let title = from.isChat ? from.chatLabel : from.name
+            if let index = bots.firstIndex(where: { $0.id == into.id }), into.isChat,
+               (into.chatTitle ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { bots[index].chatTitle = from.chatTitle }
+            if let index = bots.firstIndex(where: { $0.id == from.id }) { bots[index].archived = true }
+            let survivor = bots.first { $0.id == into.id } ?? into
+            let survivorTitle = survivor.isChat ? survivor.chatLabel : survivor.name
+            messages.append(Message(id: UUID().uuidString, botId: from.id, taskId: nil, role: "system", kind: "status",
+                                    text: "Merged into “\(survivorTitle)”", decisionId: nil, artifactId: nil, createdAt: Self.now,
+                                    streaming: false, mergedInto: MergedChat(id: into.id, title: survivorTitle)))
+            messages.append(Message(id: UUID().uuidString, botId: into.id, taskId: nil, role: "user", kind: "text", text: "Merged “\(title)”",
+                                    decisionId: nil, artifactId: nil, createdAt: Self.now, streaming: false,
+                                    mergedChat: MergedChat(id: from.id, title: title)))
+            return
+        }
+        optimistically("bot/\(from.id)", change: { optimisticBot(from.id, \.archived, true, in: $0) },
+                       save: { let _: Bot? = await self.write("bots/\(into.id)/merge", payload: MergeRequest(chatId: from.id), as: Bot.self) })
+    }
+
     /// Mutes a chat with an agent, or unmutes it (BotChatMute). The Mac keeps the choice, so every device has it.
     func muteBot(_ bot: Bot, muted: Bool) async {
         if isDemo {
@@ -3955,6 +3978,7 @@ private struct EmptyRequest: Encodable {}
 private struct Acknowledgement: Decodable, Sendable { let ok: Bool }
 private struct PinRequest: Encodable { let pinned: Bool }
 private struct ArchiveRequest: Encodable { let archived: Bool }
+private struct MergeRequest: Encodable { let chatId: String }
 private struct MuteRequest: Encodable { let notifications: Bool }
 private struct TeamCreateRequest: Encodable { let name: String; let memberName: String }
 private struct TeamJoinBody: Encodable { let link: String; let memberName: String }

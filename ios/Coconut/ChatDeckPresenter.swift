@@ -83,15 +83,21 @@ struct ChatDeckPresenter: ViewModifier {
 
     #if DEBUG && targetEnvironment(simulator)
     /// `--demo --open deck` shows the deck at launch with the first card in the middle, and `--open deck-2` with the
-    /// third. `--open grid` shows the grid of the agents that work (ChatGridView). A simulator takes no taps from a
-    /// terminal, so the hand check of the deck starts the app on it.
+    /// third. `--open grid` shows the grid of the agents that work (ChatGridView). `--open grid-merge` shows it with a
+    /// chat of a working project that works too, and the grid pinches the two cards together. A simulator takes no taps
+    /// from a terminal, so the hand check of the deck starts the app on it.
     private func openForPreview() async {
         let arguments = ProcessInfo.processInfo.arguments
         guard store.isDemo, let index = arguments.firstIndex(of: "--open"), index + 1 < arguments.count else { return }
         let place = arguments[index + 1]
-        guard place.hasPrefix("deck") || place == "grid" else { return }
+        guard place.hasPrefix("deck") || place == "grid" || place == "grid-merge" else { return }
         try? await Task.sleep(for: .seconds(1))
-        if place == "grid" {
+        if place.hasPrefix("grid") {
+            let working = Set(store.chatGridCards().map(\.id))
+            if place == "grid-merge",
+               let chat = store.bots.firstIndex(where: { !$0.archived && $0.chatOf.map(working.contains) == true }) {
+                store.bots[chat].status = "working"
+            }
             present(ChatDeckRequest(start: nil, opened: nil, grid: true) { _ in })
             return
         }
