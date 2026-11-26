@@ -15,11 +15,11 @@ TestFlight and Sparkle. The Python service in `backend/` is unchanged.
 
 | File | What |
 |---|---|
-| `app.contract` | The root: Home and its search, a chat, the New project sheet, the composer and the menus |
-| `parts.contract` | Parts that only draw: face, unread badge, chat row, Needs attention row, the rows of a search (the title of a group, a card, a message and its words), the rows of a chat (bubble, quote, sender, day, New line, time, photo tile, file, Library page, background process, notice), the card with its options, draft, Undo and receipt, and the working line |
+| `app.contract` | The root: Home and its search, a chat, the New project sheet, the composer, the queue and the menus |
+| `parts.contract` | Parts that only draw: face, unread badge, chat row, Needs attention row, the rows of a search (the title of a group, a card, a message and its words), the rows of a chat (bubble, quote, sender, day, New line, time, photo tile, file, Library page, background process, notice), the card with its options, draft, Undo and receipt, the working line, and a row of the queue |
 | `loader.contract` | The coconut that waits (`CoconutLoader.swift`): three dots that break from the mark into a juggle, a throw that goes wide after 20 seconds and every 30 after, and the still mark that pulses under Reduce Motion |
 | `shapes.contract` | The records `app.ts` answers |
-| `app.ts` | The data module: the pairing, the connection to the Mac, the Mac's state and its cache, the search, attachments, and the fixture for the demo |
+| `app.ts` | The data module: the pairing, the connection to the Mac, the Mac's state and its cache, the search, the queue, attachments, and the fixture for the demo |
 | `tunnel.ts` | The phone's end of the tunnel (`docs/relay-transport.md`): pairing setups and the rendezvous box, Noise IK and IKpsk2 as the initiator, frames, requests as streams side by side |
 | `crypto.ts` | X25519 and Poly1305 of TweetNaCl, and SHA-256, HMAC, HKDF and ChaCha20 from their specs, in TypeScript: Exact's `crypto.subtle` has no X25519 and no ChaCha20-Poly1305 |
 | `app.forma` | The palette of `Theme.swift`: page, card, user bubble, warm accent, green, the red tints, the eight faces |
@@ -70,6 +70,17 @@ mark on the one in use, and a row changes the model or the effort of every chat,
 profile runs the chats and options have no other place on the screens (#570). Send runs the first row. The menu shows
 only while the draft starts with a slash, so a chosen model or effort, which empties the box, closes it. The model has no
 chip under the text: the Swift app removed its chips (e6c152f).
+
+Queue. A message sent while the agent works waits for the next turn, and the queue shows over the message box
+(`MessageQueue`): "2 queued · next turn", then a row for each message, oldest first, with its place, the first line of
+its words (or the count of its files) and a paperclip with that count. A message on its way says Sending, and one that
+the running turn takes says Steering. The … of a row, or a long press on it, opens its menu: Send now (into the running
+turn, when the Mac says that it can take it), Send to a new agent (a new chat of the same project, with the files; not
+in the chat of Coconut), Edit (the words in place of the row, with Cancel and Save), Move up, Move down and Remove. Only
+a message that no turn has yet can change, and it moves among those. Past five rows the queue scrolls. A change shows at
+once (`overlay` in `app.ts`) and goes to the Mac (`backend/coconut/message_queue.py`), whose answer changes the Mac's
+state in place; a change that the Mac refuses puts the row back, with no notice. Send to a new agent always makes a new
+chat, where Swift reuses a blank one. The demo's Support holds two queued messages.
 
 ## Photos and cards
 
@@ -335,7 +346,21 @@ the tile, the working line, frames paused at chosen times (`document.getAnimatio
 under which the tile shows the still mark that pulses and the working line no coconut. The contract compiles with the 16
 warnings of main and no new one, and `app.ts` passes `tsc --strict`.
 
+The queue, 2026-11-26. `app.ts` under bun (a scratch script of 42 cases): the two queued messages of the demo's Support
+with their places and menus; a move up and back, the same move asked twice that moves once, an edit (blank words
+refused, the first line as the row), Send now (refused for a message that the turn cannot take), Remove (refused for one
+that the turn takes), a message queued while the agent works, and Send to a new agent, which makes a chat with the
+words and drops the row. The overlay: each change shows at once, a change of another chat or of another resource
+changes nothing, and an answered or a refused change shows the Mac's answer. A hand-made state of the Mac: a chat that holds, a queued
+message, one that the turn takes with its file (no row of the chat), a send on its way, three in the working line, and
+no Send to a new agent in the chat of Coconut. The Contract compiles with the pinned Exact, with four new warnings: three
+uses of symbols that the web host does not draw (Gaps), and a time from `performanceNow()` kept in a write, as Send
+already keeps one. `app.ts` passes `tsc --strict`.
+
 Not done:
+
+- The queue's requests to the Mac (`/v1/tasks/<id>/queue/…` in `message_queue.py`) were checked by reading only, and the
+  queue has not run on the web host or a phone: the Mac had about 2 GB free, and the web host needs about 10.
 
 - No run on a phone by an agent. A photo from a file of the Mac and an answer to a card on the Mac are checked with
   stand-ins only, until a phone takes the update.
@@ -432,10 +457,12 @@ a `push --watch` update.
 - `exact/exact.mjs` tries the bun of this Mac (`/opt/homebrew/Cellar/bun/1.4.4`), then the one on the path. Its first
   run links the Exact checkout as `exact/.exact/checkout`: the one `EXACT` names, else `../../exact` beside the
   repository or its main worktree. To point a worktree at another checkout, set `EXACT` for one command.
-- `symbol:sf/<name>` draws blank on the web host (a warning). Twelve are used: `cpu`, `brain`, `paperclip`,
+- `symbol:sf/<name>` draws blank on the web host (a warning). Fourteen are used: `cpu`, `brain`, `paperclip`,
   `circle.inset.filled`, `hourglass`, `bolt.slash.fill`, `exclamationmark.octagon.fill`, `megaphone.fill` for the
-  rows of Needs attention, and `checkmark.circle.fill`, `xmark.circle.fill`, `chevron.down` and `arrow.up` for a
-  background process, an Undo and a choice on its way. The rest are roles, which every host draws.
+  rows of Needs attention, `checkmark.circle.fill`, `xmark.circle.fill`, `chevron.down` and `arrow.up` for a
+  background process, an Undo and a choice on its way, and `text.line.first.and.arrowtriangle.forward` and
+  `arrow.turn.down.right` for the title of the queue and its Send now. The rest are roles, which every host draws:
+  Move up and Move down use `send` and `download`, which are `arrow.up` and `arrow.down` on Apple.
 - `preview.json` is a copy. An app folder cannot read outside itself, so it must be copied again when the fixture
   changes. The data module reads the fixture's `task_id` links, the phase, detail and `phase_started_at` of a working
   task (else its `updated_at`) and the bots with `chat_of`.
@@ -451,12 +478,14 @@ a `push --watch` update.
   (`@ScaledMetric`). It stands 6 points from the phase, as the phase does from the rest of the line; Swift's row spaces
   its parts by 8. While the agent writes, the line is about 2.8 points taller, as in Swift: the coconut is 22.8 points
   tall.
-- Not ported: the slash commands other than `/model` and `/effort` (new, compact, stop, mute, archive, help), mentions, the access menu, editing a queued message, link and GitHub previews,
+- Not ported: the slash commands other than `/model` and `/effort` (new, compact, stop, mute, archive, help), mentions, the access menu, link and GitHub previews,
   the schedule of a message, a pasted image in the message box or a composer (`AttachmentPaste`: Paste in the menu of
   the field on an iPhone, Command-V on a Mac), the fifth rule of Needs attention (stale data, which a preview has none of). Of the chat:
   Edit of a draft card (`MessageDraftEditor`), a reply to a card in words (`DecisionReplyComposer`), the links of a
   card's sources and its GitHub embeds, View revised proposal, opening a page of the Library, the zoom, swipe and
-  share of the photo viewer, and the hold of a message or a photo (copy, reply, reactions). Also the nested Chats tab of
+  share of the photo viewer, and the hold of a message or a photo (copy, reply, reactions). Of the queue (`MessageQueue`):
+  Up Arrow in an empty box, which edits the last queued message, the buttons that show on hover on the Mac, drag to
+  reorder, the notice when the Mac refuses a change, and a blank chat taken again by Send to a new agent. Also the nested Chats tab of
   the Swift app (`ChatList.sections`, `ChatListSection`, `ChatSectionRow`): Starred first with its chats, which holds
   every chat that the person starred with a swipe to the right on its row, Unread under it with every unread chat that
   is not starred (`ChatList.unreadSection`), then one row for each project, Coconut first, then Team chats, Other
@@ -490,7 +519,7 @@ on iOS and Android but not on the Mac, so React Native alone would leave the Mac
 | Dates | Work |
 |---|---|
 | Nov 26–30 | Exact from the pin of Nov 17 to main, then a new binary from CI on the phones |
-| Dec 1–6 | The rest of phase 2: editing, holding, `MessageQueue`, `BotMentions`, `LiveView` and the chat's part of Not ported |
+| Dec 1–6 | The rest of phase 2: editing, holding, `BotMentions`, `LiveView` and the chat's part of Not ported |
 | Dec 7–13 | Phases 3 and 4 at once, each in its own worktree |
 | Dec 14–20 | Phase 5, the Mac; the widgets, the share extension and the notification service of the iPhone |
 | Dec 21–31 | Phase 6: both apps under their final ids, tried on two phones and a Mac, then the Swift apps stop shipping |
@@ -501,7 +530,7 @@ switch needs it. The Exact Build sign-in of the shared Mac expires on December 1
 | Phase | Swift to port | Exact |
 |---|---|---|
 | 1 Live data | `APIClient`, `AppStore` (4,102), `Models`, `TunnelConnection`, `Onboarding`, pairing | Done: the pairing, the tunnel, the state and its updates, the model and effort (`/model`, `/effort`), attachments and the SQLite cache for a launch without the Mac are in `app.ts`, `tunnel.ts` and `crypto.ts` (see Live data). Attachments and the cache need the binary of their grants |
-| 2 Conversation | `ConversationView` (1,642), `Cards`, `MessagePhotos`, `MessageQueue`, `BotMentions`, `ModelSettingsView`, `LiveView`, `OmniSearch`, previews | Rows and cards done: days, the New line, senders and quotes, photos with their viewer, cards with sources, risk, previews, drafts, Undo and receipts, background processes and Library pages (see Photos and cards), the coconut that waits in photos and the working line, and the search of chats, cards and messages (see Search). Left: the editing, the holding and the rest of the search in Not ported, `MessageQueue`, `BotMentions`, `LiveView` |
+| 2 Conversation | `ConversationView` (1,642), `Cards`, `MessagePhotos`, `MessageQueue`, `BotMentions`, `ModelSettingsView`, `LiveView`, `OmniSearch`, previews | Rows and cards done: days, the New line, senders and quotes, photos with their viewer, cards with sources, risk, previews, drafts, Undo and receipts, background processes and Library pages (see Photos and cards), the coconut that waits in photos and the working line, and the search of chats, cards and messages (see Search), and the queue (see Queue). Left: the editing, the holding and the rest of the search and the queue in Not ported, `BotMentions`, `LiveView` |
 | 3 Team | `TeamChat` (2,093), `TeamChatView` (1,710), `TeamViews`, `Team`, `PeopleView` | A second family of chats and a notice board, over the same list |
 | 4 Business and library | `BusinessDashboard` and the other Business files, `Library`, `DocumentPage`, `UsageViews`, `DecisionInboxView`, `AgentProject`, `Bento`, `ChatDeckView` | Routes and tabs (`select(nav, name)`); Markdown for documents; charts as `svg` |
 | 5 Mac | `CoconutMac` (1,599: the window, the sidebar, ⌘K, the inbox), `CoconutApp` (992: the menu bar, Sparkle), `CoconutKit` (2,166: login items, the install, pairing, the service), `CoconutTool` (428), and `ios/Coconut` as the Mac compiles it | `host.macos` in `app.json`; a layout for a wide window with the sidebar of the Swift app; the native parts below. Exact Build builds iOS only, so the Mac app builds on CI |

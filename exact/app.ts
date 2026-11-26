@@ -16,7 +16,7 @@
 // negative: the fixture moves its server_time to the launch, as PreviewStateFixture.decode does), and a source adds the
 // launch (`zero`, the contract's `time.epochAtZero`). A state of the Mac is in milliseconds from its server_time, which
 // is its `zero`. So the screens hold times since 1970.
-import type { Answer, Database, Result, Sources, Storage, StreamEvent, StreamSocket, Store } from './app.contract.d.ts';
+import type { Answer, Database, Overlay, Result, Sources, Storage, StreamEvent, StreamSocket, Store } from './app.contract.d.ts';
 import { noPause, type Pause } from './crypto.ts';
 import {
   MAX_PAYLOAD, clientToken, connect, fromBase64Url, newBox, newKeys, openBox, pairingPsk, relayTicket, text, toBase64Url, utf8,
@@ -50,6 +50,7 @@ type Card = Message['card'][number];
 type Photo = Message['photos'][number];
 type Draft = Card['drafts'][number];
 type Turn = Chat['turn'];
+type Queued = Chat['queue'][number];
 type Live = Result<'sync'>;
 type Sock = Result<'socket'>;
 type Found = Result<'searchPhone'>;
@@ -144,7 +145,11 @@ interface Msg {
 }
 // A turn that runs: `startedAt` is the start of its newest step (the Mac's `phase_started_at`), which the working line
 // and the row of the chat time.
-interface Run { startedAt: number; phase: string; detail: string; queued: number }
+interface Run { startedAt: number; phase: string; detail: string }
+// A message that waits for the next turn of a chat (MessageQueue.QueueItem): the task that holds it, its words as the
+// Mac keeps them (ATTACHMENT_ONLY for files alone), the ids of its files on the Mac, and whether it went to the running
+// turn already (`steering`) or the running turn can take it now (`canSteer`).
+interface Held { id: string; task: string; text: string; files: string[]; state: 'queued' | 'steering'; canSteer: boolean }
 interface ChatState {
   id: string;
   kind: 'agent' | 'team' | 'direct';
@@ -166,6 +171,12 @@ interface ChatState {
   // An archived chat of the Mac. It shows in Idle with the others, but gives its project no place in the picker.
   archived?: boolean;
   muted?: boolean;
+  // The messages that wait for the next turn, oldest first. `holding` is a chat whose running turn holds a new message
+  // too, so a message on its way shows in the queue and not in the chat (AppStore.queueSending). `coconut` is the
+  // Coconut chat, which has one chat, so its queued messages cannot go to a new agent.
+  queue: Held[];
+  holding: boolean;
+  coconut: boolean;
 }
 interface Notice { id: string; type: string; text: string; at: number; author: string; seen: boolean; active: boolean }
 // A card that waits for the person, with the chat that holds it and the time it was made.
@@ -380,6 +391,10 @@ const shortAge = (ms: number): string => {
   return minutes < 60 ? `${minutes}m` : minutes < 48 * 60 ? `${Math.floor(minutes / 60)}h` : `${Math.floor(minutes / (24 * 60))}d`;
 };
 
+// The chat of the fixture that works, and its running task.
+const SUPPORT = '00000000-0000-4000-8000-000000000002';
+const SUPPORT_TASK = '00000000-0000-4000-8000-000000000023';
+
 const build = (): State => {
   const server = parse(fx.server_time);
   const rel = (iso: string): number => parse(iso) - server;
@@ -407,6 +422,7 @@ const build = (): State => {
     chats.set(bot.id, {
       id: bot.id, kind: 'agent', project: bot.chat_of ?? bot.id, projectName: bot.name, title: bot.chat_of ? `${bot.name} · ${label}` : bot.name,
       label, letter, face: faceOf(letter), circle: false, messages, run: null, unread: bot.unread_count, readMark: read?.id ?? '', health: '',
+      queue: [], holding: false, coconut: false,
     });
     for (const d of fx.decisions) {
       if (d.bot_id === bot.id && d.status === 'pending') waits.push({ ref: d.id, chat: bot.id, at: rel(d.created_at) });
@@ -421,8 +437,17 @@ const build = (): State => {
     if (!chat || task.status !== 'working') continue;
     chat.run = {
       startedAt: rel(task.phase_started_at ?? task.updated_at), phase: (task.phase && PHASES[task.phase]) || PHASES.thinking,
-      detail: task.phase_detail ?? '', queued: 0,
+      detail: task.phase_detail ?? '',
     };
+  }
+  // Support works, and two messages wait for its next turn (MessageQueue): one that the running turn can take now, and
+  // one with a file, which waits for the next turn.
+  const support = chats.get(SUPPORT);
+  if (support?.run) {
+    support.queue = [
+      { id: 'demo-queued-1', task: SUPPORT_TASK, text: 'Add how much each seller was refunded.', files: [], state: 'queued', canSteer: true },
+      { id: 'demo-queued-2', task: SUPPORT_TASK, text: 'Use this list of sellers we already contacted.', files: ['contacted-sellers.csv'], state: 'queued', canSteer: false },
+    ];
   }
 
   // What AppStore.applyAttentionPreview does for the UI test of Home: a card that waits for 5 hours, an agent with a
@@ -443,7 +468,8 @@ const build = (): State => {
   }));
   chats.set(teamId, {
     id: teamId, kind: 'team', project: '', projectName: team.name, title: team.name, label: team.name, letter: team.name.slice(0, 1).toUpperCase(),
-    face: faceOf(team.name.slice(0, 1).toUpperCase()), circle: true, run: null, unread: 0, readMark: '', health: '',
+    face: faceOf(team.name.slice(0, 1).toUpperCase()), circle: true, run: null, unread: 0, readMark: '', health: '', queue: [], holding: false,
+    coconut: false,
     messages: [
       message(`${teamId}-last`, 'text', false, -team.last.minutes_ago * MINUTE, team.last.text, { author: team.last.name }),
       ...notices.map((n) => message(`notice-${n.id}`, 'notice', false, n.at, n.text, { author: n.author, title: kindName(n.type) })),
@@ -453,7 +479,7 @@ const build = (): State => {
     const letter = direct.name.slice(0, 1).toUpperCase();
     chats.set(`direct-${direct.member}`, {
       id: `direct-${direct.member}`, kind: 'direct', project: '', projectName: direct.name, title: direct.name, label: direct.name, letter,
-      face: faceOf(letter), circle: true, run: null, unread: direct.unread, readMark: '', health: '',
+      face: faceOf(letter), circle: true, run: null, unread: direct.unread, readMark: '', health: '', queue: [], holding: false, coconut: false,
       messages: [message(`direct-${direct.member}-1`, 'text', false, -direct.minutes_ago * MINUTE, direct.text, { author: direct.name })],
     });
   }
@@ -531,14 +557,56 @@ const zeroOf = (s: State, launch: number): number => s.zero ?? launch;
 // The time of a row made here, `at` milliseconds after the launch, in the times of a state.
 const localAt = (s: State, at: number): number => (s.zero === null ? at : launchAt + at - s.zero);
 // The rows of `outgoing` in the state that the screens read now, in place of the ones it showed before.
+// A message that the running turn will hold shows in the queue instead, until it fails.
 const showOutgoing = (chatId: string): void => {
   const s = ensure();
   const chat = s.chats.get(chatId);
   if (!chat || s.zero === null) return;
   const zero = s.zero;
-  const rows = (outgoing.get(chatId) ?? []).flatMap((send) => send.rows.map((m) => ({ ...m, at: m.at - zero })));
+  const rows = (outgoing.get(chatId) ?? []).filter((send) => !chat.holding || send.failed).flatMap((send) => send.rows.map((m) => ({ ...m, at: m.at - zero })));
   chat.messages = [...chat.messages.filter((m) => !m.id.startsWith('out-')), ...rows];
 };
+
+// MARK: The queue
+
+// The messages on their way that the running turn of a chat will hold (AppStore.queueSending): the sends that have not
+// failed, while the chat holds.
+const sendingOf = (chat: ChatState): Outgoing[] => (chat.holding ? (outgoing.get(chat.id) ?? []).filter((send) => !send.failed) : []);
+// How many messages of a chat wait for the next turn (AppStore.queuedCount).
+const queuedCount = (chat: ChatState): number => chat.queue.length + sendingOf(chat).length;
+// One line of a queued message for its row (MessageQueue.preview): its first line with words, or the count of its files.
+const previewOf = (text: string, files: number): string => {
+  if (text === ATTACHMENT_ONLY || text.trim() === '') return files === 1 ? '1 attachment' : `${files} attachments`;
+  const line = text.split(/\r\n|\r|\n/).map((l) => l.trim()).find((l) => l !== '') ?? '';
+  return line.split(' ').filter((w) => w !== '').join(' ');
+};
+// The places of the rows of a queue, and which of them can move up or down: the ones that can change, among themselves.
+const numbered = (rows: Queued[]): Queued[] => {
+  const movable = rows.filter((q) => q.canChange).map((q) => q.id);
+  return rows.map((q, i) => ({
+    ...q, position: i + 1, canMoveUp: q.canChange && movable[0] !== q.id, canMoveDown: q.canChange && movable[movable.length - 1] !== q.id,
+  }));
+};
+// The ids after the row `id` moved by `offset` places among `ids` (MessageQueue.moved): -1 is up. A row at an end stays.
+const moved = (ids: string[], id: string, offset: number): string[] => {
+  const from = ids.indexOf(id);
+  const to = from + offset;
+  if (from < 0 || to < 0 || to >= ids.length) return ids;
+  const result = ids.filter((other) => other !== id);
+  result.splice(to, 0, id);
+  return result;
+};
+// The rows of the queue of a chat: the messages that its tasks hold, then the messages on their way (MessageQueue.items).
+const queueRows = (chat: ChatState): Queued[] => numbered([
+  ...chat.queue.map((h): Queued => ({
+    id: h.id, position: 0, preview: previewOf(h.text, h.files.length), text: h.text === ATTACHMENT_ONLY ? '' : h.text, attachments: h.files.length,
+    state: h.state, canChange: h.state === 'queued' && h.task !== '', canSteer: h.canSteer, canMoveUp: false, canMoveDown: false,
+  })),
+  ...sendingOf(chat).map((o): Queued => ({
+    id: o.id, position: 0, preview: previewOf(o.text, o.files), text: o.text === ATTACHMENT_ONLY ? '' : o.text, attachments: o.files,
+    state: 'sending', canChange: false, canSteer: false, canMoveUp: false, canMoveDown: false,
+  })),
+]);
 
 // The newest message that is no notice: the age and the place of the row of a chat.
 const newest = (chat: ChatState): number => chat.messages.reduce((t, m) => (m.kind === 'notice' ? t : Math.max(t, m.at)), -Infinity);
@@ -558,11 +626,13 @@ const lastLine = (chat: ChatState): string => {
   return 'No messages yet';
 };
 
-// BotRowSubtitle: a card that waits first, then the phase of the work, then a health, then the last message. A row
-// that shows the phase times its newest step (`step`), as BotContactRow does.
+// BotRowSubtitle: a card that waits first, then the phase of the work with the messages that wait for the next turn,
+// then a health, then the last message. A row that shows the phase times its newest step (`step`), as BotContactRow does.
 const rowOf = (chat: ChatState, zero: number): Row => {
   const status = waitingCard(chat) ? 'needs_you' : chat.run ? 'working' : chat.health !== '' ? 'health' : 'idle';
-  const line = status === 'needs_you' ? 'Needs you' : status === 'working' && chat.run ? chat.run.phase : status === 'health' ? chat.health : lastLine(chat);
+  const queued = queuedCount(chat);
+  const phase = chat.run ? (queued > 0 ? `${chat.run.phase} · ${queued} queued` : chat.run.phase) : '';
+  const line = status === 'needs_you' ? 'Needs you' : status === 'working' ? phase : status === 'health' ? chat.health : lastLine(chat);
   const at = newest(chat);
   return {
     id: chat.id, kind: chat.kind, title: chat.title, letter: chat.letter, face: chat.face, circle: chat.circle, line, status,
@@ -616,6 +686,7 @@ interface LvOption { id: string; label: string; explanation: string; answer: str
 interface LvBot {
   id: string; name: string; avatar: string; archived: boolean; pinned: boolean; project?: boolean; profile: string; status: string;
   unread_count: number; chat_of?: string | null; chat_title?: string | null; last_read_message_id?: string | null; notifications?: boolean;
+  coconut?: boolean;
 }
 interface LvReference { message_id: string; text: string; author: string; role: string; document_id?: string | null }
 interface LvNotice { ok: boolean; command?: string | null; label?: string | null; place?: string | null; duration?: string | null; exit_code?: number | null; output?: string | null }
@@ -625,8 +696,15 @@ interface LvMessage {
   reply_to?: LvReference | null; work_context?: { id: string; title: string } | null; reaction_event?: unknown; process_notice?: LvNotice | null;
   document_id?: string | null;
 }
-interface LvTask { id: string; bot_id: string; status: string; title: string | null; created_at: string; updated_at: string; phase?: string | null; phase_detail?: string | null; phase_started_at?: string | null }
-interface LvDecision extends RawDecision { bot_id: string; created_at: string; revision: number; options: LvOption[] }
+// A message that a task holds for its next turn (message_queue.py): absent when none waits.
+interface LvQueued { id: string; text: string; created_at: string; attachment_ids?: string[] | null; state: string; can_steer?: boolean }
+// The chat of a task is `conversation_bot_id`, but a task that another agent sent stays in the chat of its own agent
+// (AgentTask.chatBotId).
+interface LvTask {
+  id: string; bot_id: string; status: string; title: string | null; created_at: string; updated_at: string; phase?: string | null; phase_detail?: string | null;
+  phase_started_at?: string | null; queued_messages?: LvQueued[] | null; conversation_bot_id?: string | null; source_bot_id?: string | null; scheduled_at?: string | null;
+}
+interface LvDecision extends RawDecision { bot_id: string; created_at: string; revision: number; options: LvOption[]; task_id?: string | null }
 interface LvArtifact { id: string; title: string; preview: string; kind?: string; status?: string; url?: string | null }
 interface Snapshot { server_time: string; cursor: number; model: string | null; bots: LvBot[]; messages: LvMessage[]; tasks: LvTask[]; decisions: LvDecision[]; artifacts: LvArtifact[] }
 // An answer of `GET /v1/updates` (X-Coconut-Updates 4, StateUpdates.swift): the changes after `after` up to `cursor`, or
@@ -696,6 +774,29 @@ const running = new Map<string, string>();
 // The messages of the Mac that the search leaves out (OmniSearch.localMessages): one that streams, and one of another
 // kind than text, which its row may still show as words.
 const unsearched = new Set<string>();
+// The queued messages that the person removed, with the rows of their files: they leave the chat at once, and the ids
+// go once the Mac's state no longer has the messages.
+const dropped = new Set<string>();
+
+const chatOf = (task: LvTask): string => (task.source_bot_id ? task.bot_id : task.conversation_bot_id ?? task.bot_id);
+// The messages that the tasks of a chat hold for the next turn, in the order of the tasks and then of their delivery.
+const heldOf = (tasks: LvTask[], chatId: string): Held[] => tasks.flatMap((task) => (chatOf(task) !== chatId ? [] : (task.queued_messages ?? []).map((q): Held => ({
+  id: q.id, task: task.id, text: q.text, files: q.attachment_ids ?? [], state: q.state === 'steering' ? 'steering' : 'queued', canSteer: q.can_steer === true,
+}))));
+// The chats whose running turn holds a new message (AppStore.queueSending, the service's `_send`): the newest open task
+// of the chat works, and no card of the chat waits.
+const holdingChats = (snap: Snapshot): Set<string> => {
+  const newest = new Map<string, LvTask>();
+  for (const t of snap.tasks) {
+    if (!t.source_bot_id && !t.scheduled_at && chatOf(t) === t.bot_id && ['working', 'queued', 'waiting'].includes(t.status)) newest.set(t.bot_id, t);
+  }
+  const tasks = new Map(snap.tasks.map((t) => [t.id, t]));
+  const asking = new Set(snap.decisions.filter((d) => d.status === 'pending').map((d) => {
+    const task = d.task_id ? tasks.get(d.task_id) : undefined;
+    return task ? chatOf(task) : d.bot_id;
+  }));
+  return new Set([...newest.values()].filter((t) => t.status === 'working' && !asking.has(t.bot_id)).map((t) => t.bot_id));
+};
 
 // A model id as a name: claude-opus-5-5 is Claude Opus 5.5.
 const modelName = (id: string): string => id.split('-').reduce((name, part) => {
@@ -745,8 +846,9 @@ let launchAt = 0;
 // chat's messages with that text when it was sent. The Mac answers a message with its task, not the message, so a
 // state shows the message when it has a message of the person with that text and a new id. Each state shows the rows
 // of the sends that it does not show yet after its own rows. A failure stays until the next send of the chat, and a
-// send that went and that two states do not show goes with the third (`states`).
-interface Outgoing { rows: Msg[]; text: string; before: Set<string>; went: boolean; states: number; failed: boolean }
+// send that went and that two states do not show goes with the third (`states`). `id` names its row in the queue, and
+// `files` counts its files.
+interface Outgoing { id: string; rows: Msg[]; text: string; files: number; before: Set<string>; went: boolean; states: number; failed: boolean }
 const outgoing = new Map<string, Outgoing[]>();
 // The number of the last send, for the ids of its rows (`out-<n>`). Each state of the Mac counts its own rows from 0
 // again, and the rows of a send outlive states.
@@ -869,24 +971,39 @@ const fromSnapshot = (snap: Snapshot): State => {
   const projects: Project[] = [];
   const waits: Wait[] = [];
   const names = new Map(bots.map((b) => [b.id, b.name]));
+  if (dropped.size > 0) {
+    const kept = new Set(snap.messages.map((m) => m.id));
+    for (const id of dropped) if (!kept.has(id)) dropped.delete(id);
+  }
+  const holding = holdingChats(snap);
+  const queues = snap.tasks.filter((t) => (t.queued_messages ?? []).length > 0);
   for (const bot of bots) {
     const project = projectOf.get(bot.profile) ?? bot;
     const letter = letterOf(bot.avatar || project.avatar, project.name);
     if (bot.project === true && !bot.archived) projects.push({ id: bot.id, name: bot.name, letter, face: faceOf(letter) });
-    const messages = visible((byBot.get(bot.id) ?? []).sort(bySent), artifacts).map((m) => rowOfMessage(m, rel(m.created_at), artifacts, names));
-    // What this phone sends to the chat and the Mac does not show yet.
+    // The messages that wait for the next turn leave the chat for its queue with the rows of their files, and the ones
+    // that the person removed go at once (MessageQueue.transcript).
+    const queue = heldOf(queues, bot.id);
+    const held = new Set(queue.map((h) => h.id));
+    const files = new Set(queue.flatMap((h) => h.files));
+    const own = (byBot.get(bot.id) ?? []).filter((m) => !held.has(m.id) && !dropped.has(m.id)
+      && !(m.role === 'user' && m.kind === 'artifact' && m.artifact_id !== null && files.has(m.artifact_id)));
+    const messages = visible(own.sort(bySent), artifacts).map((m) => rowOfMessage(m, rel(m.created_at), artifacts, names));
+    // What this phone sends to the chat and the Mac does not show yet. While the running turn holds a new message, a send
+    // shows in the queue until it fails.
     const sends = (outgoing.get(bot.id) ?? []).filter((send) => !shows(snap, bot.id, send) && !(send.went && ++send.states > 2));
     if (sends.length > 0) outgoing.set(bot.id, sends);
     else outgoing.delete(bot.id);
-    for (const send of sends) for (const row of send.rows) messages.push({ ...row, at: row.at - server });
+    const holds = holding.has(bot.id);
+    for (const send of sends) if (!holds || send.failed) for (const row of send.rows) messages.push({ ...row, at: row.at - server });
     // A chat that nobody wrote in shows nowhere (AgentChats.isBlank), but a project and a starred chat always show.
-    if (messages.length === 0 && bot.unread_count === 0 && bot.status === 'idle' && !bot.pinned && bot.project !== true) continue;
+    if (messages.length === 0 && queue.length === 0 && bot.unread_count === 0 && bot.status === 'idle' && !bot.pinned && bot.project !== true) continue;
     // A further chat of a project has a title of its own, which the list names after the project (Bot.listName).
     const label = bot.chat_of ? said(bot.chat_title) || UNTITLED : bot.name;
     chats.set(bot.id, {
       id: bot.id, kind: 'agent', project: project.id, projectName: project.name, title: bot.chat_of ? `${bot.name} · ${label}` : bot.name, label,
       letter, face: faceOf(letter), circle: false, messages, run: null, unread: bot.unread_count, readMark: bot.last_read_message_id ?? '',
-      health: '', archived: bot.archived, muted: bot.notifications === false,
+      health: '', archived: bot.archived, muted: bot.notifications === false, queue, holding: holds, coconut: bot.coconut === true,
     });
   }
   for (const d of snap.decisions) {
@@ -902,7 +1019,7 @@ const fromSnapshot = (snap: Snapshot): State => {
       // The newest step that the Mac reported: what the agent does now, and since when (AppStore.runningPhase).
       chat.run = {
         startedAt: rel(task.phase_started_at ?? task.created_at), phase: (task.phase && PHASES[task.phase]) || PHASES.working,
-        detail: task.phase_detail ?? '', queued: 0,
+        detail: task.phase_detail ?? '',
       };
     }
     // The work of an archived chat does not count, as in AttentionRules.stuckWork.
@@ -1106,6 +1223,56 @@ const write = async (method: string, path: string, body: unknown): Promise<unkno
   const reply = await t.request(method, path, headers(method), bytes);
   if (reply.status < 200 || reply.status >= 300) throw new Error(failureOf(reply));
   return reply.body.length > 0 ? JSON.parse(text(reply.body)) : {};
+};
+
+// MARK: The queue on the Mac
+
+// A queued message of a chat, as the screens read it now.
+const queuedIn = (chatId: string, id: string): { chat: ChatState | undefined; held: Held | undefined } => {
+  const chat = ensure().chats.get(chatId);
+  return { chat, held: chat?.queue.find((h) => h.id === id) };
+};
+// A message that the person can edit, move or remove: one that no turn has yet.
+const changes = (h: { state: string; task?: string; canChange?: boolean }): boolean => h.canChange ?? (h.state === 'queued' && h.task !== '');
+// The rows with the ones that can change in the order of `ids`: each takes the next place of one that can change, and
+// one that `ids` does not name keeps its place.
+const reordered = <T extends { id: string }>(rows: T[], ids: string[], can: (row: T) => boolean): T[] => {
+  const byId = new Map(rows.filter(can).map((r) => [r.id, r]));
+  const queue = ids.flatMap((id) => byId.get(id) ?? []);
+  const named = new Set(queue.map((r) => r.id));
+  let i = 0;
+  return rows.map((r) => (can(r) && named.has(r.id) ? queue[i++] : r));
+};
+
+// A change of the queue of a task on the Mac (message_queue.py), which answers with the task: the chat shows its queue
+// at once, before the next state of the Mac brings it. The Mac's state changes in place, as a new one would drop the
+// page of updates on its way (`sync`), and the chat's other rows stay as they are until that page. A change that the
+// Mac refuses answers false, and the queue shows as it was.
+const changeQueue = async (chatId: string, taskId: string, method: string, path: string, body: unknown): Promise<boolean> => {
+  let task: LvTask;
+  try {
+    task = (await write(method, `/v1/tasks/${taskId}/queue/${path}`, body)) as LvTask;
+  } catch {
+    return false;
+  }
+  const tasks = latest?.tasks ?? [];
+  const known = tasks.find((t) => t.id === taskId);
+  if (known) known.queued_messages = task.queued_messages ?? null;
+  const chat = liveState?.chats.get(chatId);
+  if (chat) chat.queue = known ? heldOf(tasks, chatId) : [...chat.queue.filter((h) => h.task !== taskId), ...heldOf([task], chatId)];
+  return true;
+};
+
+// A queued message leaves the chat with the rows of its files at once, so it does not show in the chat for a moment
+// (AppStore.removeQueued), and comes back if the Mac keeps it.
+const dropQueued = async (chatId: string, held: Held): Promise<boolean> => {
+  const files = new Set(held.files);
+  const gone = [held.id, ...(latest?.messages ?? []).filter((m) => m.task_id === held.task && m.role === 'user' && m.kind === 'artifact'
+    && m.artifact_id !== null && files.has(m.artifact_id)).map((m) => m.id)];
+  for (const id of gone) dropped.add(id);
+  const ok = await changeQueue(chatId, held.task, 'DELETE', held.id, {});
+  if (!ok) for (const id of gone) dropped.delete(id);
+  return ok;
 };
 
 // MARK: Attachments
@@ -1366,7 +1533,10 @@ const status = (key = ''): Live => ({ version, pairs, error: lastError, quick: k
 
 const none: Project = { id: '', name: '', letter: '', face: 0 };
 const idle: Turn = { running: false, startedAt: 0, phase: '', writing: false, detail: '', model: '', queued: 0 };
-const emptyChat: Chat = { id: '', kind: 'agent', title: '', project: '', letter: '', face: 0, circle: false, messages: [], turn: idle, toolbar: false, live: false, missing: 0, muted: false };
+const emptyChat: Chat = {
+  id: '', kind: 'agent', title: '', project: '', letter: '', face: 0, circle: false, messages: [], turn: idle, toolbar: false, live: false, missing: 0, muted: false,
+  queue: [], newAgent: false,
+};
 const rowDefaults: Message = {
   id: '', kind: 'text', mine: false, author: '', at: 0, title: '', body: '', detail: '', failed: false, startsDay: false, newLine: false, sender: '',
   quote: '', quoteAuthor: '', photos: [], card: [],
@@ -2018,14 +2188,16 @@ const sources: Sources = {
       lastDay = day;
       previous = m;
     }
-    // The working line is the last row of a chat whose agent works, with the model the chat runs with.
+    // The working line is the last row of a chat whose agent works, with the model the chat runs with and the messages
+    // that wait for its next turn.
     if (chat.run) lines.push({ ...rowDefaults, id: 'working', kind: 'status' });
+    const queue = queueRows(chat);
     const turn: Turn = chat.run
-      ? { running: true, startedAt: at + chat.run.startedAt, phase: chat.run.phase, writing: chat.run.phase === PHASES.writing, detail: chat.run.detail, model: modelOfChat(chat.id), queued: chat.run.queued }
-      : idle;
+      ? { running: true, startedAt: at + chat.run.startedAt, phase: chat.run.phase, writing: chat.run.phase === PHASES.writing, detail: chat.run.detail, model: modelOfChat(chat.id), queued: queue.length }
+      : { ...idle, queued: queue.length };
     return {
       id: chat.id, kind: chat.kind, title: chat.label, project: chat.projectName, letter: chat.letter, face: chat.face, circle: chat.circle,
-      messages: lines, turn, toolbar: agent, live, missing, muted: chat.muted === true,
+      messages: lines, turn, toolbar: agent, live, missing, muted: chat.muted === true, queue, newAgent: agent && !chat.coconut,
     };
   },
 
@@ -2136,7 +2308,7 @@ const sources: Sources = {
     s.chats.set(id, {
       id, kind: 'agent', project: project.id, projectName: project.name, title: `${project.name} · ${title}`, label: title,
       letter: project.letter, face: project.face, circle: false, messages: [message(`${id}-1`, 'text', true, firstAt, words)],
-      run: { startedAt: firstAt, phase: PHASES.thinking, detail: '', queued: 0 }, unread: 0, readMark: '', health: '',
+      run: { startedAt: firstAt, phase: PHASES.thinking, detail: '' }, unread: 0, readMark: '', health: '', queue: [], holding: false, coconut: false,
     });
     return { id };
   },
@@ -2157,6 +2329,12 @@ const sources: Sources = {
     if (!useLive) {
       s.counter += 1;
       unsent.set(chatId, { words, files, photos, at, send: null });
+      // A message to an agent that works waits for its next turn (MessageQueue).
+      if (chat.run) {
+        const task = chat.queue[0]?.task ?? `demo-task-${chat.id}`;
+        chat.queue = [...chat.queue, { id: `${chat.id}-q${s.counter}`, task, text: words || ATTACHMENT_ONLY, files: files.map((f) => f.name), state: 'queued', canSteer: false }];
+        return { id: chatId };
+      }
       const names = others.map((f) => f.name).join(', ');
       const body = [words, names === '' ? '' : '`' + names + '`'].filter((part) => part !== '').join('\n\n');
       chat.messages = [...chat.messages, ...(body === '' ? [] : [message(`${chat.id}-m${s.counter}`, 'text', true, at, body, { reads: true })]), ...photoRow(`${chat.id}-p${s.counter}`, at)];
@@ -2167,12 +2345,14 @@ const sources: Sources = {
     const sentAt = launchAt + at;
     const textOf = words || ATTACHMENT_ONLY;
     const send: Outgoing = {
+      id: `out-${n}`,
       rows: [
         ...(words === '' ? [] : [message(`out-${n}`, 'text', true, sentAt, words, { reads: true })]),
         ...photoRow(`out-${n}-p`, sentAt),
         ...others.map((f, i) => message(`out-${n}-${i}`, 'artifact', true, sentAt, bytesText(f.size), { title: f.name })),
       ],
       text: textOf,
+      files: files.length,
       before: new Set((latest?.messages ?? []).filter((m) => m.bot_id === chatId && m.role === 'user' && m.text.trim() === textOf).map((m) => m.id)),
       went: false, states: 0, failed: false,
     };
@@ -2214,10 +2394,7 @@ const sources: Sources = {
     }
     const s = ensure();
     const chat = s.chats.get(chatId);
-    if (chat && chat.kind === 'agent') {
-      if (chat.run) chat.run = { ...chat.run, queued: chat.run.queued + 1 };
-      else chat.run = { startedAt: localAt(s, send.at), phase: PHASES.thinking, detail: '', queued: 0 };
-    }
+    if (chat && chat.kind === 'agent' && !chat.run) chat.run = { startedAt: localAt(s, send.at), phase: PHASES.thinking, detail: '' };
     return { ok: true };
   },
 
@@ -2234,6 +2411,92 @@ const sources: Sources = {
       }
     }
     chat.run = null;
+    return { ok: true };
+  },
+
+  // The queue of a chat (MessageQueue): each change shows at once (`overlay`), the Mac then makes it, and a change that
+  // the Mac refuses goes back. The demo makes each one here.
+  editQueued: async ([chatId, id, text]) => {
+    const words = text.trim();
+    const { chat, held } = queuedIn(chatId, id);
+    if (!chat || !held || words === '' || !changes(held)) return { ok: false };
+    if (words === held.text) return { ok: true };
+    if (!useLive) {
+      chat.queue = chat.queue.map((h) => (h.id === id ? { ...h, text: words } : h));
+      return { ok: true };
+    }
+    return { ok: await changeQueue(chatId, held.task, 'PATCH', id, { text: words }) };
+  },
+
+  removeQueued: async ([chatId, id]) => {
+    const { chat, held } = queuedIn(chatId, id);
+    if (!chat || !held || !changes(held)) return { ok: false };
+    if (!useLive) {
+      chat.queue = chat.queue.filter((h) => h.id !== id);
+      return { ok: true };
+    }
+    return { ok: await dropQueued(chatId, held) };
+  },
+
+  // A move up or down among the messages that can change, from the order that the person saw (`seen`): the Mac orders
+  // every message that the task holds.
+  moveQueued: async ([chatId, id, offset, seen]) => {
+    const { chat, held } = queuedIn(chatId, id);
+    if (!chat || !held || !changes(held)) return { ok: false };
+    const next = reordered(chat.queue, moved(seen, id, offset), changes);
+    if (!useLive) {
+      chat.queue = next;
+      return { ok: true };
+    }
+    return { ok: await changeQueue(chatId, held.task, 'POST', 'order', { message_ids: next.filter((h) => h.task === held.task).map((h) => h.id) }) };
+  },
+
+  // Send now: the running turn takes the message at once, where the Mac can do that (`can_steer`). The demo's turn takes
+  // it as the Swift app's demo does: the row says Steering.
+  steerQueued: async ([chatId, id]) => {
+    const { chat, held } = queuedIn(chatId, id);
+    if (!chat || !held || !held.canSteer) return { ok: false };
+    if (!useLive) {
+      chat.queue = chat.queue.map((h) => (h.id === id ? { ...h, state: 'steering', canSteer: false } : h));
+      return { ok: true };
+    }
+    return { ok: await changeQueue(chatId, held.task, 'POST', `${id}/steer`, {}) };
+  },
+
+  // Send to a new agent: the message, with its files, starts a new chat of the same project and leaves the queue once
+  // the new chat has it (AppStore.sendQueuedToNewAgent). Nothing opens the new chat: it shows at the top of Chats.
+  sendQueuedToNewAgent: async ([chatId, id, at]) => {
+    const s = ensure();
+    const { chat, held } = queuedIn(chatId, id);
+    if (!chat || !held || !changes(held) || chat.kind !== 'agent' || chat.coconut) return { ok: false };
+    if (!useLive) {
+      const project = s.projects.find((p) => p.id === chat.project);
+      if (!project) return { ok: false };
+      s.counter += 1;
+      const made = `chat-${s.counter}`;
+      const words = held.text === ATTACHMENT_ONLY ? '' : held.text;
+      const names = held.files.join(', ');
+      const body = [words, names === '' ? '' : '`' + names + '`'].filter((part) => part !== '').join('\n\n');
+      const first = words === '' ? previewOf(held.text, held.files.length) : words;
+      const title = first.length > 48 ? `${first.slice(0, 47).trimEnd()}…` : first;
+      const firstAt = localAt(s, at);
+      s.chats.set(made, {
+        id: made, kind: 'agent', project: project.id, projectName: project.name, title: `${project.name} · ${title}`, label: title,
+        letter: project.letter, face: project.face, circle: false, messages: [message(`${made}-1`, 'text', true, firstAt, body, { reads: true })],
+        run: { startedAt: firstAt, phase: PHASES.thinking, detail: '' }, unread: 0, readMark: '', health: '', queue: [], holding: false, coconut: false,
+      });
+      chat.queue = chat.queue.filter((h) => h.id !== id);
+      return { ok: true };
+    }
+    try {
+      const made = (await write('POST', `/v1/bots/${chat.project}/chats`, { todo: false })) as { id?: string };
+      if (!made.id) return { ok: false };
+      await write('POST', `/v1/bots/${made.id}/messages`, { text: held.text, mode: 'auto', attachment_ids: held.files, recipient_bot_ids: [] });
+    } catch {
+      return { ok: false };
+    }
+    // The new chat has the message, so it goes from this queue even when the Mac refuses that: then a turn took it.
+    await dropQueued(chatId, held);
     return { ok: true };
   },
 
@@ -2351,4 +2614,49 @@ const sources: Sources = {
     return { id };
   },
 };
+// MARK: The overlay
+
+// A change of a queue shows in the open chat at once (MessageQueue), before the Mac makes it: the overlay makes each
+// change that is still on its way, or that landed after the chat was asked, on the chat's queue. A change that the
+// source refused (`ok` false) does not show, and a move names the order that the person saw, so it shows the same
+// however often it is made. Nothing here changes the answer.
+export const overlay: Overlay = (source, args, answer, writes) => {
+  if (source !== 'loadChat') return undefined;
+  const chat = answer as unknown as Chat;
+  const open = (args as unknown as unknown[])[1];
+  let rows = chat.queue;
+  let shown = false;
+  const change = (id: string, made: (q: Queued) => Queued | null) => {
+    if (!rows.some((q) => q.id === id)) return;
+    rows = rows.flatMap((q) => (q.id !== id ? [q] : made(q) ?? []));
+    shown = true;
+  };
+  for (const w of writes) {
+    if (w.answered || (w.reply as { ok?: boolean } | undefined)?.ok === false) continue;
+    if (w.source === 'editQueued') {
+      const [chatId, id, text] = w.args;
+      const words = text.trim();
+      if (chatId === open && words !== '') change(id, (q) => (q.canChange ? { ...q, text: words, preview: previewOf(words, q.attachments) } : q));
+    } else if (w.source === 'removeQueued') {
+      const [chatId, id] = w.args;
+      if (chatId === open) change(id, (q) => (q.canChange ? null : q));
+    } else if (w.source === 'moveQueued') {
+      const [chatId, id, offset, seen] = w.args;
+      if (chatId === open && rows.some((q) => q.id === id)) {
+        rows = reordered(rows, moved(seen, id, offset), (q) => q.canChange);
+        shown = true;
+      }
+    } else if (w.source === 'steerQueued') {
+      const [chatId, id] = w.args;
+      if (chatId === open) change(id, (q) => (q.canSteer ? { ...q, state: 'steering', canSteer: false, canChange: false } : q));
+    } else if (w.source === 'sendQueuedToNewAgent') {
+      const [chatId, id] = w.args;
+      if (chatId === open) change(id, (q) => (q.canChange ? { ...q, state: 'sending', canSteer: false, canChange: false } : q));
+    }
+  }
+  if (!shown) return undefined;
+  const queue = numbered(rows);
+  return { ...chat, queue, turn: { ...chat.turn, queued: queue.length } } as never;
+};
+
 export const answer: Answer = (source, args, store, storage, native) => sources[source](args, store, storage, native);

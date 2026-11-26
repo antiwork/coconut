@@ -1,9 +1,9 @@
 // The parts of Coconut's screens: a face, a count, a row of the list of chats, a row of Needs attention, the rows of a
 // search (the title of a group, a card, a message and its words), the rows of a chat (a message, a photo, a card and
-// its options, a file, a page of the Library, a background process, a notice, the day and the New line) and the
-// working line. A part draws what it is given. An action is the caller's: a part takes one as a prop, already bound to
+// its options, a file, a page of the Library, a background process, a notice, the day and the New line), the
+// working line and a row of the queue. A part draws what it is given. An action is the caller's: a part takes one as a prop, already bound to
 // its item (`choose=openChat(c.id)`), as ItemSections does in the list-detail pattern.
-use Attention, Card, ChatRow, Choice, Draft, FoundCard, FoundMessage, Message, Photo, Turn from "./shapes.contract"
+use Attention, Card, ChatRow, Choice, Draft, FoundCard, FoundMessage, Message, Photo, Queued, Turn from "./shapes.contract"
 use CoconutLoader from "./loader.contract"
 
 // The time of a turn to the second, without leading zeros: 9s, 4m 5s, 1h 2m 5s (ConversationActivity.elapsed).
@@ -447,3 +447,29 @@ component WorkingLine
         text `· ${elapsed(now - turn.startedAt)} · ${turn.model}${turn.queued > 0 ? ` · ${turn.queued} queued` : ""}` font="-exact-subheadline" font-variant-numeric="tabular-nums" color="-exact-secondary-label" testId="working-meta"
       if turn.detail != ""
         text turn.detail font="-exact-caption1" font-family="monospace" color="-exact-secondary-label" line-clamp=1 testId="working-detail"
+
+// A message that waits for the next turn (MessageQueue's QueueItemRow): its place, its first line, its files, and what
+// happens to it now: Sending, Steering, or the … button of its menu, `queue-menu-<id>`, which the screen writes and
+// which a long press on the row opens too. A row after the first has a line over it, from the text on.
+component QueueRow
+  props
+    q: Queued
+    first: bool
+  view
+    column
+      if not first
+        view height=1 margin-left=36 background-color=line() aria-hidden=true
+      row align-items="center" gap=8 min-height=44 padding="0px 12px" contextPopover=(q.canChange ? `queue-menu-${q.id}` : "") aria-label=`Queued ${q.position}: ${q.preview}` testId=`queue-row-${q.position}`
+        text `${q.position}` font="-exact-caption1" font-weight=500 font-variant-numeric="tabular-nums" color="-exact-secondary-label" min-width="1rem" flex-shrink=0 text-align="end" aria-hidden=true
+        text q.preview font="-exact-subheadline" color=(q.state == "sending" ? "-exact-secondary-label" : "-exact-label") line-clamp=1 flex=1 min-width=0
+        if q.attachments > 0
+          row align-items="center" gap=2 flex-shrink=0 aria-label=(q.attachments == 1 ? "1 attachment" : `${q.attachments} attachments`)
+            image "symbol:sf/paperclip" width=12 height=12 color="-exact-secondary-label" aria-hidden=true
+            text `${q.attachments}` font="-exact-caption1" color="-exact-secondary-label" aria-hidden=true
+        if q.state == "sending"
+          text "Sending" font="-exact-caption1" color="-exact-tertiary-label" flex-shrink=0
+        else if q.state == "steering"
+          text "Steering" font="-exact-caption1" color="-exact-secondary-label" flex-shrink=0
+        else if q.canChange or q.canSteer
+          button appearance="none" popovertarget=`queue-menu-${q.id}` aria-label=`Actions of queued message ${q.position}` width=36 height=44 flex-shrink=0 display="flex" align-items="center" justify-content="center" testId=`queue-actions-${q.position}`
+            image "symbol:ellipsis" width=16 height=16 color="-exact-secondary-label"

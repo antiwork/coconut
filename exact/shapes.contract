@@ -157,9 +157,26 @@ shape Turn
   model: string
   queued: number
 
+// A message that waits for the next turn of a working chat (MessageQueue). `preview` is its first line, or the count of
+// its files when it has no words; `text` is its words, empty for files alone; `attachments` counts its files. `state` is
+// queued, steering (it went to the running turn and waits for it to take it) or sending (the phone sent it and the Mac
+// has yet to hold it). `canChange` is a message to edit, move or remove; `canSteer` one the running turn can take now.
+shape Queued
+  id: string
+  position: number
+  preview: string
+  text: string
+  attachments: number
+  state: string
+  canChange: bool
+  canSteer: bool
+  canMoveUp: bool
+  canMoveDown: bool
+
 // `live` is a chat of the Mac. `toolbar` opens the box of the composer under a long draft (ComposerExpansion). `missing`
 // counts the photos of the chat that the phone has yet to load from the Mac (`loadMedia`). `muted` is a chat that sends
-// no push (BotChatMute).
+// no push (BotChatMute). `queue` holds the messages that wait for the next turn, oldest first, and `newAgent` is a chat
+// whose queued message can go to a new chat of its agent instead (every agent but Coconut).
 shape Chat
   id: string
   kind: string
@@ -174,6 +191,8 @@ shape Chat
   live: bool
   missing: number
   muted: bool
+  queue: Queued[]
+  newAgent: bool
 
 // The facts of the screen that the app reads: Reduce Motion keeps the coconut that waits still (CoconutLoader).
 shape Viewport

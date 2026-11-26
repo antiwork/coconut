@@ -11,7 +11,7 @@
 // once its catalog is newer.
 // Colours, fonts, sizes and the safe area are the platform's unless a row says otherwise.
 use Ack, Chat, DeliveryState, Found, Home, Live, MacFound, Made, Media, PairCode, PairState, Photo, Saved, Sock, Suggestion, Time, Viewport from "./shapes.contract"
-use ArtifactCard, AttentionRow, Bubble, CardView, ChatRowView, ChoiceButton, DayPill, DocumentCard, DraftBox, DraftButton, Face, NewLine, NoticeCard, PhotoTile, ProcessRow, RowTime, SearchCardRow, SearchHeader, SearchMessageRow, SenderLine, WorkingLine from "./parts.contract"
+use ArtifactCard, AttentionRow, Bubble, CardView, ChatRowView, ChoiceButton, DayPill, DocumentCard, DraftBox, DraftButton, Face, NewLine, NoticeCard, PhotoTile, ProcessRow, RowTime, SearchCardRow, SearchHeader, SearchMessageRow, SenderLine, QueueRow, WorkingLine from "./parts.contract"
 use EmptyState from "exact:content"
 
 routes nav
@@ -25,6 +25,9 @@ component Coconut
   state target = ""
   state draft = ""
   state chatDraft = ""
+  // The queued message that the queue edits in place of its row, and the words of that edit (MessageQueue).
+  state editingQueued = ""
+  state queueDraft = ""
   state composing = false
   // The words of the search field of Home, and whether the field has the keyboard.
   state query = ""
@@ -84,6 +87,8 @@ component Coconut
   mutation queued as shape Made refreshes chat, home, found then afterQueued
   mutation sent as shape Ack queue refreshes chat, home, found
   mutation stopped as shape Ack queue refreshes chat, home, found
+  // A change of the queue of the open chat shows at once (`overlay` in app.ts), and the changes go to the Mac in order.
+  mutation queueChanged as shape Ack queue refreshes chat, home, found
   // A choice on a card shows at once with Undo (`chosen`), and `answered` sends it once the Undo has passed. Both are
   // queues, so a choice on a second card waits for the first instead of letting it go.
   mutation chosen as shape Made queue refreshes chat, home, found then afterChoose
@@ -241,6 +246,27 @@ component Coconut
       send sent = sendMessage(queuedId)
   action stopChat
     send stopped = stopTurn(chat.id)
+  // The menu of a queued message (MessageQueue): Send now, Send to a new agent, Edit, Move up, Move down and Remove. A
+  // move names the order that the person saw. Edit opens the words in place of the row; Save sends changed words.
+  action steerRow(id: string)
+    send queueChanged = steerQueued(chat.id, id)
+  action newAgentRow(id: string)
+    send queueChanged = sendQueuedToNewAgent(chat.id, id, performanceNow())
+  action editRow(id: string, text: string)
+    editingQueued = id
+    queueDraft = text
+  action typeRow(v: string)
+    queueDraft = v
+  action cancelRow
+    editingQueued = ""
+  action saveRow(id: string, old: string)
+    if queueDraft.trim() != "" and queueDraft.trim() != old
+      send queueChanged = editQueued(chat.id, id, queueDraft)
+    editingQueued = ""
+  action moveRow(id: string, offset: number)
+    send queueChanged = moveQueued(chat.id, id, offset, chat.queue.filter(q => q.canChange).map(q => q.id))
+  action removeRow(id: string)
+    send queueChanged = removeQueued(chat.id, id)
   // A card: a choice, its Undo, and the X that dismisses the card without an answer.
   action pickOption(ref: string, option: string)
     send chosen = chooseOption(chat.id, ref, option)
@@ -429,6 +455,30 @@ component Coconut
                     else
                       WorkingLine(turn=chat.turn, now=now, still=still)
               column flex-shrink=0 padding="6px 12px 8px" testId="composer-bar"
+                // The queue (MessageQueue) over the box: the messages that wait for the next turn, oldest first. Each
+                // row opens its menu (`queue-menu-<id>`) from its … button or a long press, and Edit puts the words of
+                // its message in place of the row. Past five rows the queue scrolls.
+                if chat.queue.length > 0
+                  column margin-bottom=8 border-radius=16 background-color="light-dark(#f4f4f4, #212121)" overflow="hidden" padding-bottom=4 testId="message-queue"
+                    row align-items="center" gap=4 padding="8px 12px 4px" testId="queue-count"
+                      image "symbol:sf/text.line.first.and.arrowtriangle.forward" width=12 height=12 color="-exact-secondary-label" aria-hidden=true
+                      text `${chat.queue.length} queued` font="-exact-caption1" font-weight=500 color="-exact-secondary-label"
+                      text "· next turn" font="-exact-caption1" font-weight=500 color="-exact-tertiary-label"
+                    column max-height=242 overflow-y="auto"
+                      for q in chat.queue key=q.id
+                        if editingQueued == q.id
+                          column testId="queue-editor"
+                            if q.position > 1
+                              view height=1 margin-left=36 background-color="light-dark(rgb(60 60 67 / 0.18), rgb(84 84 88 / 0.6))" aria-hidden=true
+                            row align-items="center" gap=8 min-height=44 padding="6px 12px"
+                              text `${q.position}` font="-exact-caption1" font-weight=500 font-variant-numeric="tabular-nums" color="-exact-secondary-label" min-width="1rem" flex-shrink=0 text-align="end" aria-hidden=true
+                              textarea value=queueDraft input=typeRow autofocus=true rows=1 field-sizing="content" max-height=88 aria-label="Message" font="-exact-subheadline" border="none" border-radius=10 background-color="light-dark(#ffffff, #111111)" padding="6px 10px" flex=1 min-width=0 testId="queue-edit-field"
+                              button press=cancelRow appearance="none" min-height=44 flex-shrink=0 testId="queue-edit-cancel"
+                                text "Cancel" font="-exact-subheadline" color="-exact-secondary-label"
+                              button press=saveRow(q.id, q.text) disabled=(queueDraft.trim() == "") appearance="none" min-height=44 flex-shrink=0 opacity=(queueDraft.trim() == "" ? 0.4 : 1) testId="queue-edit-save"
+                                text "Save" font="-exact-subheadline" font-weight=600 color="light-dark(#7a4e2d, #d4a574)"
+                        else
+                          QueueRow(q=q, first=(q.position == 1))
                 // The slash menu (ComposerSlashMenu) over the box: a row for each command, model or effort, and a mark on
                 // the one that every chat runs with. It shows only while the draft starts with a slash, so a chosen model
                 // or effort, which empties the box, closes it.
@@ -518,5 +568,33 @@ component Coconut
         button press=pickPhoto popovertarget="plus-menu" popovertargetaction="hide" testId="attach-photo-item"
           image "symbol:photo"
           text "Photo library"
+      // The menu of each queued message of the open chat, from the … of its row or a long press on the row. The roles
+      // `send` and `download` draw arrow.up and arrow.down, as Swift's Move up and Move down.
+      for q in chat.queue key=q.id
+        column id=`queue-menu-${q.id}` popover="auto" role="menu" aria-label=`Queued message ${q.position}`
+          if q.canSteer
+            button press=steerRow(q.id) popovertarget=`queue-menu-${q.id}` popovertargetaction="hide" testId=`queue-steer-${q.position}`
+              image "symbol:sf/arrow.turn.down.right"
+              text "Send now"
+          if chat.newAgent and q.canChange
+            button press=newAgentRow(q.id) popovertarget=`queue-menu-${q.id}` popovertargetaction="hide" testId=`queue-new-agent-${q.position}`
+              image "symbol:compose"
+              text "Send to a new agent"
+          if q.canChange
+            button press=editRow(q.id, q.text) popovertarget=`queue-menu-${q.id}` popovertargetaction="hide" testId=`queue-edit-${q.position}`
+              image "symbol:pencil"
+              text "Edit"
+          if q.canMoveUp
+            button press=moveRow(q.id, -1) popovertarget=`queue-menu-${q.id}` popovertargetaction="hide" testId=`queue-up-${q.position}`
+              image "symbol:send"
+              text "Move up"
+          if q.canMoveDown
+            button press=moveRow(q.id, 1) popovertarget=`queue-menu-${q.id}` popovertargetaction="hide" testId=`queue-down-${q.position}`
+              image "symbol:download"
+              text "Move down"
+          if q.canChange
+            button press=removeRow(q.id) destructive=true popovertarget=`queue-menu-${q.id}` popovertargetaction="hide" testId=`queue-remove-${q.position}`
+              image "symbol:delete"
+              text "Remove"
       input type="file" id="attach-file" multiple=true display="none" change=pickedFiles testId="attach-file"
       input type="file" id="attach-photo" accept="image/*" multiple=true display="none" change=pickedPhotos testId="attach-photo"
