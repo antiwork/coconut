@@ -147,10 +147,12 @@ shape Message
   card: Card[]
 
 // What the agent of a chat does now. `startedAt` is the start of the turn, `queued` the messages that wait for the next.
+// `writing` is true in the phase Writing…, when the working line juggles (BotStatusRow).
 shape Turn
   running: bool
   startedAt: number
   phase: string
+  writing: bool
   detail: string
   model: string
   queued: number
@@ -172,6 +174,10 @@ shape Chat
   live: bool
   missing: number
   muted: bool
+
+// The facts of the screen that the app reads: Reduce Motion keeps the coconut that waits still (CoconutLoader).
+shape Viewport
+  prefersReducedMotion: bool
 
 // The photos that the phone loaded from the Mac for the open chat: `n` moves with each, so the chat reads them.
 shape Media
