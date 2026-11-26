@@ -314,12 +314,16 @@ struct HomeLaunchView: View {
 
     /// One chat of a list. The row of a project names the project, so a further chat of the project shows its own
     /// title (ChatListSection.title). Starred and the Working list name the agent too (Bot.listName). A chat inside a
-    /// section of Chats is `nested`: it sits set in under the row of its section (ChatListRow).
+    /// section of Chats is `nested`: it sits set in under the row of its section (ChatListRow). A starred chat shows
+    /// its star only outside Starred, whose row already says it, as a starred page of the Library does (Tastelint on
+    /// #592).
     @ViewBuilder
     private func chatRow(_ item: ChatListItem, in section: ChatListSection?, nested: Bool = false) -> some View {
+        let inStarred = section?.kind == .starred
         switch item {
         case .bot(let bot):
-            BotContactRow(bot: bot, title: section?.title(of: bot) ?? bot.listName, pinned: ChatList.isStarred(bot))
+            BotContactRow(bot: bot, title: section?.title(of: bot) ?? bot.listName,
+                          pinned: ChatList.isStarred(bot) && !inStarred)
                 .padding(.vertical, BoardStyle.Space.m)
                 .background(BoardStyle.paper)
                 .modifier(ChatDeckRow(botId: bot.id) {
@@ -345,7 +349,7 @@ struct HomeLaunchView: View {
                 Button {
                     pushRoute?(TeamChatRoute(chat: chat))
                 } label: {
-                    PeopleRow(item: item, pinMark: item.isPinnedChat)
+                    PeopleRow(item: item, pinMark: item.isPinnedChat && !inStarred)
                         .padding(.vertical, BoardStyle.Space.m)
                         .background(BoardStyle.paper)
                         .contentShape(Rectangle())
@@ -992,7 +996,7 @@ struct BotContactRow: View {
     let bot: Bot
     /// The name of the row. A further chat of a project shows its title next to the name of the project.
     var title: String? = nil
-    /// The star mark of a starred chat at the top of the Chats list.
+    /// The star mark of a starred chat where no Starred row names it: in Working and in search.
     var pinned = false
     /// The row reads the summary of its bot, not the messages, so a streamed word does not redraw it.
     private var summary: BotChatSummary { store.chatSummaries[bot.id] }
