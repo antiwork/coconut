@@ -71,7 +71,23 @@ struct PickedFile: Equatable, Sendable {
     let name: String
 }
 
-/// Where an attachment comes from: the file importer, the photo library, and Command-V on a Mac (PasteAttachmentMonitor).
+/// Takes a file or an image that the person pastes while the field of a composer has focus: Command-V on a Mac
+/// (PasteAttachmentMonitor), Paste in the menu of the field on an iPhone (PasteImageMenu). A text paste goes into the
+/// field as before.
+struct AttachmentPaste: ViewModifier {
+    let enabled: Bool
+    let paste: (PickedFile) -> Void
+
+    func body(content: Content) -> some View {
+        #if os(macOS)
+        content.modifier(PasteAttachmentMonitor(enabled: enabled) { paste(PickedFile(data: $0.data, name: $0.filename)) })
+        #else
+        content.modifier(PasteImageMenu(enabled: enabled, paste: paste))
+        #endif
+    }
+}
+
+/// Where an attachment comes from: the file importer, the photo library, and a paste (AttachmentPaste).
 /// Each source gives its files one at a time, in the order of the pick.
 struct ComposerAttachmentSources: ViewModifier {
     @Binding var importing: Bool
@@ -85,7 +101,7 @@ struct ComposerAttachmentSources: ViewModifier {
     /// calls the loader. The loader gives nil, after a text for the error banner, when the photo does not load. The
     /// photos of one pick come in the order of the pick.
     let photo: (@escaping @MainActor () async -> PickedFile?) -> Void
-    /// A file or an image of Command-V on a Mac.
+    /// A pasted file or image: Command-V on a Mac, Paste in the menu of the field on an iPhone.
     let paste: (PickedFile) -> Void
     /// A text for the error banner.
     let report: (String) -> Void
@@ -93,9 +109,7 @@ struct ComposerAttachmentSources: ViewModifier {
 
     func body(content: Content) -> some View {
         content
-            #if os(macOS)
-            .modifier(PasteAttachmentMonitor(enabled: pasteEnabled) { paste(PickedFile(data: $0.data, name: $0.filename)) })
-            #endif
+            .modifier(AttachmentPaste(enabled: pasteEnabled, paste: paste))
             .fileImporter(isPresented: $importing, allowedContentTypes: [.item]) { result in
                 switch result {
                 case .success(let url): file(url)
@@ -185,6 +199,8 @@ struct ComposerChip: Identifiable, Equatable {
     let title: String
     /// The image of an attached photo, through the paired Mac. Nil for another file, which shows its name.
     var image: URL? = nil
+    /// The picture of an image that is still on this device, such as a paste of the message box (NewChatBar).
+    var preview: PlatformImage? = nil
 }
 
 /// The attachments of the next message above the field. A tap on a chip removes it.
@@ -197,22 +213,14 @@ struct ComposerAttachmentChips: View {
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack {
                     ForEach(chips) { chip in
-                        if let image = chip.image {
-                            // A photo shows as itself, as in Slack and Messages, with a small remove button on it.
-                            RemotePhoto(url: image)
-                                .frame(width: 72, height: 72)
-                                .clipShape(RoundedRectangle(cornerRadius: BoardStyle.Radius.small, style: .continuous))
-                                .overlay(alignment: .topTrailing) {
-                                    Button { remove(chip.id) } label: {
-                                        Image(systemName: "xmark.circle.fill").font(.body)
-                                            .symbolRenderingMode(.palette).foregroundStyle(.white, .black.opacity(0.6))
-                                            .padding(4).contentShape(Rectangle())
-                                    }
-                                    .buttonStyle(.plain)
-                                    .accessibilityLabel("Remove attachment \(chip.title)")
-                                }
-                                .help(chip.title)
-                                .padding(.top, BoardStyle.Space.xs)
+                        if let preview = chip.preview {
+                            photo(chip) {
+                                Rectangle().fill(BoardStyle.surface)
+                                    .overlay { Image(platformImage: preview).resizable().scaledToFill() }
+                                    .clipped()
+                            }
+                        } else if let image = chip.image {
+                            photo(chip) { RemotePhoto(url: image) }
                         } else {
                         Button { remove(chip.id) } label: {
                             Label(chip.title, systemImage: "xmark.circle.fill")
@@ -229,5 +237,23 @@ struct ComposerAttachmentChips: View {
                 }
             }
         }
+    }
+
+    /// A photo shows as itself, as in Slack and Messages, with a small remove button on it.
+    private func photo(_ chip: ComposerChip, @ViewBuilder picture: () -> some View) -> some View {
+        picture()
+            .frame(width: 72, height: 72)
+            .clipShape(RoundedRectangle(cornerRadius: BoardStyle.Radius.small, style: .continuous))
+            .overlay(alignment: .topTrailing) {
+                Button { remove(chip.id) } label: {
+                    Image(systemName: "xmark.circle.fill").font(.body)
+                        .symbolRenderingMode(.palette).foregroundStyle(.white, .black.opacity(0.6))
+                        .padding(4).contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Remove attachment \(chip.title)")
+            }
+            .help(chip.title)
+            .padding(.top, BoardStyle.Space.xs)
     }
 }

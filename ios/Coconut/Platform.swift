@@ -1,4 +1,5 @@
 import SwiftUI
+import UniformTypeIdentifiers
 #if canImport(UIKit)
 import UIKit
 #else
@@ -90,6 +91,120 @@ struct PasteAttachmentMonitor: ViewModifier {
     private func remove() {
         if let monitor { NSEvent.removeMonitor(monitor) }
         monitor = nil
+    }
+}
+#else
+/// Takes an image that the person pastes into the field of a composer on an iPhone, as PasteAttachmentMonitor takes
+/// Command-V on a Mac. A SwiftUI text field pastes only text and has no paste API on iOS: its menu showed no Paste for
+/// a copied image, so an image never arrived. While the field has focus, its UIKit text view gets a paste delegate
+/// (PasteImageDelegate): Paste shows for an image too, and each pasted image becomes an attachment. Text that wins
+/// (PastedAttachment.textWins) goes into the field as before.
+struct PasteImageMenu: ViewModifier {
+    let enabled: Bool
+    let paste: (PickedFile) -> Void
+    @State private var delegate = PasteImageDelegate()
+
+    func body(content: Content) -> some View {
+        content
+            .onChange(of: enabled, initial: true) { _, enabled in
+                delegate.paste = paste
+                if enabled { delegate.attach() } else { delegate.detach() }
+            }
+            .onDisappear { delegate.detach() }
+    }
+}
+
+/// The paste delegate of the text view of a composer. The text view asks it about each item of a paste: it takes an
+/// image and leaves every other item to the text view.
+@MainActor
+final class PasteImageDelegate: NSObject, UITextPasteDelegate {
+    var paste: (PickedFile) -> Void = { _ in }
+    private weak var field: UITextView?
+    private var search: Task<Void, Never>?
+
+    /// Takes the text view with the keyboard. SwiftUI gives it the keyboard a moment after the focus state turns true.
+    func attach() {
+        search?.cancel()
+        search = Task { [weak self] in
+            for _ in 0..<10 {
+                guard let self, !Task.isCancelled else { return }
+                if let view = FirstResponder.find() as? UITextView {
+                    take(view)
+                    return
+                }
+                try? await Task.sleep(for: .milliseconds(50))
+            }
+        }
+    }
+
+    func detach() {
+        search?.cancel()
+        if let field, field.pasteDelegate === self { field.pasteDelegate = nil }
+        field = nil
+    }
+
+    private func take(_ view: UITextView) {
+        if let field, field !== view, field.pasteDelegate === self { field.pasteDelegate = nil }
+        Self.offerPaste(in: type(of: view))
+        view.pasteDelegate = self
+        field = view
+    }
+
+    func textPasteConfigurationSupporting(_ textPasteConfigurationSupporting: any UITextPasteConfigurationSupporting,
+                                          transform item: any UITextPasteItem) {
+        let provider = item.itemProvider
+        guard let type = Self.imageType(provider.registeredTypeIdentifiers),
+              !PastedAttachment.textWins(UIPasteboard.general.string) else {
+            item.setDefaultResult()
+            return
+        }
+        item.setNoResult()
+        let name = PastedAttachment.imageName(ext: UTType(type)?.preferredFilenameExtension ?? "png")
+        Self.load(provider, type: type, name: name) { [weak self] file in self?.paste(file) }
+    }
+
+    /// The type of the image of a pasted item: a common format first, then any image. An app can put an archive of
+    /// its image object next to the image, and that archive is no image file.
+    static func imageType(_ identifiers: [String]) -> String? {
+        for kind in [UTType.png, .jpeg, .heic, .gif] {
+            if let match = identifiers.first(where: { UTType($0) == kind }) { return match }
+        }
+        return identifiers.first { UTType($0)?.conforms(to: .image) == true }
+    }
+
+    /// The item provider answers on a queue of its own, and the file goes back to the main actor.
+    nonisolated private static func load(_ provider: NSItemProvider, type: String, name: String,
+                                         done: @escaping @MainActor (PickedFile) -> Void) {
+        _ = provider.loadDataRepresentation(forTypeIdentifier: type) { data, _ in
+            guard let data, !data.isEmpty else { return }
+            Task { @MainActor in done(PickedFile(data: data, name: name)) }
+        }
+    }
+
+    /// The classes whose menu offers Paste for an image.
+    private static var offering: Set<ObjectIdentifier> = []
+
+    /// A text view offers Paste only for text, and UIKit has no setting for it. The class of the text view of a
+    /// composer gets its own answer: yes to Paste while the pasteboard has an image and this delegate takes the paste,
+    /// else the answer of UIKit. A class that had no answer of its own gets one that asks its superclass, so every
+    /// other text view keeps the menu of UIKit.
+    private static func offerPaste(in type: AnyClass) {
+        guard offering.insert(ObjectIdentifier(type)).inserted else { return }
+        let selector = #selector(UIResponder.canPerformAction(_:withSender:))
+        guard let method = class_getInstanceMethod(type, selector) else { return }
+        typealias Answer = @convention(c) (AnyObject, Selector, Selector, Any?) -> Bool
+        let answer = unsafeBitCast(method_getImplementation(method), to: Answer.self)
+        let offered: @convention(block) (AnyObject, Selector, Any?) -> Bool = { view, action, sender in
+            if action == #selector(UIResponderStandardEditActions.paste(_:)), UIPasteboard.general.hasImages,
+               MainActor.assumeIsolated({ (view as? UITextView)?.pasteDelegate is PasteImageDelegate }) {
+                return true
+            }
+            return answer(view, selector, action, sender)
+        }
+        let implementation = imp_implementationWithBlock(offered)
+        if !class_addMethod(type, selector, implementation, method_getTypeEncoding(method)) {
+            method_setImplementation(method, implementation)
+        }
     }
 }
 #endif

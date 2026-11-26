@@ -27,6 +27,7 @@ The sheet opens on the place that the person tapped in the row of people of the 
 - The note comes first, then an empty line, then each shared text and link on its own line.
 - A text that only repeats a link of the share goes once. A browser gives the address of a page as both.
 - A message takes at most 4 files of at most 4 MB each. An image becomes smaller first (`FileFit`). An image for a team leaves without its GPS position.
+- An app that hands an image object to the share sheet (a `UIImage`, as most apps do) gives an archive of the object in place of the bytes of an image. The extension loads the object itself (`loadItem`) and sends it as a PNG, because the archive went as a file that did not open on the Mac.
 - A direct chat takes text and links only.
 
 ## iPhone: the row of people

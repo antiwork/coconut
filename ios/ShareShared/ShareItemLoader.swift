@@ -1,5 +1,11 @@
 import Foundation
+import ImageIO
 import UniformTypeIdentifiers
+#if canImport(UIKit)
+import UIKit
+#else
+import AppKit
+#endif
 
 /// Reads the items of the share sheet into values of Coconut. An item that Coconut cannot read counts as skipped.
 enum ShareItemLoader {
@@ -31,7 +37,15 @@ enum ShareItemLoader {
                         loaded = file(data, provider: provider, type: id, unnamed: &unnamed)
                     }
                 case .data(let id):
-                    if let data = await data(provider, id) { loaded = file(data, provider: provider, type: id, unnamed: &unnamed) }
+                    let data = await data(provider, id)
+                    if UTType(id)?.conforms(to: .image) == true, !(data.map(isImage) ?? false),
+                       let png = await imageData(provider, id) {
+                        // An app can share an image object. Its provider gives an archive of the object, or nothing,
+                        // in place of the bytes of an image, and such a file did not open on the Mac.
+                        loaded = file(png, provider: provider, type: UTType.png.identifier, unnamed: &unnamed)
+                    } else if let data {
+                        loaded = file(data, provider: provider, type: id, unnamed: &unnamed)
+                    }
                 case .link:
                     if let url = await url(provider) {
                         loaded = url.isFileURL ? read(url).map(SharedItem.file) : .link(url)
@@ -51,6 +65,11 @@ enum ShareItemLoader {
     private static func isContent(_ identifier: String) -> Bool {
         guard let type = UTType(identifier) else { return false }
         return type.conforms(to: .data) && !type.conforms(to: .url)
+    }
+
+    /// The bytes are an image file that ImageIO reads.
+    private static func isImage(_ data: Data) -> Bool {
+        CGImageSourceCreateWithData(data as CFData, nil).flatMap(CGImageSourceGetType) != nil
     }
 
     private static func file(_ data: Data, provider: NSItemProvider, type: String, unnamed: inout Int) -> SharedItem? {
@@ -85,6 +104,22 @@ enum ShareItemLoader {
     private static func url(_ provider: NSItemProvider) async -> URL? {
         await withCheckedContinuation { continuation in
             _ = provider.loadObject(ofClass: URL.self) { url, _ in continuation.resume(returning: url) }
+        }
+    }
+
+    /// The image object of an item, as a PNG, or nil when the item has none. Only the old way to load an item gives
+    /// the object: a load as an image class reads the archive as image bytes and fails.
+    @MainActor
+    private static func imageData(_ provider: NSItemProvider, _ identifier: String) async -> Data? {
+        await withCheckedContinuation { continuation in
+            provider.loadItem(forTypeIdentifier: identifier, options: nil) { item, _ in
+                #if canImport(UIKit)
+                continuation.resume(returning: (item as? UIImage)?.pngData())
+                #else
+                let bitmap = (item as? NSImage)?.tiffRepresentation.flatMap(NSBitmapImageRep.init(data:))
+                continuation.resume(returning: bitmap?.representation(using: .png, properties: [:]))
+                #endif
+            }
         }
     }
 

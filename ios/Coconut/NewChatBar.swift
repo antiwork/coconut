@@ -178,6 +178,10 @@ enum NewChatSuggestion {
 /// under Working while it works, and under its project in the Mac sidebar. The box keeps the keyboard and the cursor,
 /// so the person can queue up many chats in a row and open each one later. For a moment the empty box says where the
 /// message went, because on a tab other than Chats nothing else on the screen changes.
+///
+/// A pasted image (Paste in the menu of the field on an iPhone, Command-V on a Mac, which takes a copied file too) shows
+/// above the text and goes with the next message, also without text (the person: "Pasting image doesn't work into new
+/// message box").
 struct NewChatBar: View {
     @Environment(AppStore.self) private var store
     @Environment(\.pushRoute) private var pushRoute
@@ -185,6 +189,9 @@ struct NewChatBar: View {
     @AppStorage private var chosen: String
     @State private var text: String
     @State private var sending = false
+    /// What the person pasted, for the next message. The box keeps the bytes until the Send, which uploads them to the
+    /// project that the chip names then.
+    @State private var pasted: [PastedFile] = []
     /// The text of the last send, for the moment after it (SentEcho).
     @State private var echo = SentEcho()
     /// A new request puts the cursor in the field when the page is settled: a pop of the stack takes a moment.
@@ -212,13 +219,8 @@ struct NewChatBar: View {
     }
 
     var body: some View {
-        let latest = AgentChats.activity(bots: store.bots, latest: store.chatSummaries.newestActivity)
-        let projects = ChatProject.choices(in: store.bots, latest: latest)
-        let agents = ChatProject.teamAgents(in: store.shownTeamRooms)
-        // The list of the teams decides once it is here. A list without the agent sends to the project of the business.
-        let business = store.team == nil ? TeamAgentChoice(memory: businessAgent) : ChatProject.businessAgent(in: agents)
+        let (projects, agents, business, target) = destinations()
         let seen: String? = store.team == nil ? nil : (business?.memory ?? "")
-        let target = place.target(chosen: chosen, projects: projects, agents: agents, business: business)
         let suggestion = place.area.flatMap { area in
             let done = Set(sentSuggestions.split(separator: "\n").map(String.init))
             return NewChatSuggestion.list(area, todos: store.todoIssues, attention: store.attentionItems(),
@@ -226,12 +228,17 @@ struct NewChatBar: View {
                 .first { !done.contains($0) }
         }
         VStack(spacing: 0) {
+            ComposerAttachmentChips(chips: pasted.map { ComposerChip(id: $0.id.uuidString, title: $0.file.name, preview: $0.preview) }) { id in
+                pasted.removeAll { $0.id.uuidString == id }
+            }
+            .padding(.bottom, pasted.isEmpty ? 0 : BoardStyle.Space.s)
             box(target, projects: projects, agents: agents, suggestion: suggestion)
         }
         .padding(.horizontal, BoardStyle.Space.l).padding(.top, BoardStyle.Space.xs).padding(.bottom, BoardStyle.Space.s)
         .frame(maxWidth: 760)
         .frame(maxWidth: .infinity)
         .modifier(ComposerBackdrop())
+        .modifier(AttachmentPaste(enabled: focused && target != nil) { add($0) })
         // The choice of Chats stays what the chip shows: a project that left the list, or a first start, gives the
         // newest project, and the newest project moving on does not move the box under the person who types. A team
         // agent that the list of the teams does not have yet stays chosen. The other places start with their own
@@ -281,13 +288,24 @@ struct NewChatBar: View {
     private static let focusDelay = Duration.milliseconds(450)
     #endif
 
+    /// The projects and team agents of the list, the agent of the business, and what the box sends to now.
+    private func destinations() -> (projects: [Bot], agents: [TeamAgentChoice], business: TeamAgentChoice?, target: NewChatTarget?) {
+        let latest = AgentChats.activity(bots: store.bots, latest: store.chatSummaries.newestActivity)
+        let projects = ChatProject.choices(in: store.bots, latest: latest)
+        let agents = ChatProject.teamAgents(in: store.shownTeamRooms)
+        // The list of the teams decides once it is here. A list without the agent sends to the project of the business.
+        let business = store.team == nil ? TeamAgentChoice(memory: businessAgent) : ChatProject.businessAgent(in: agents)
+        return (projects, agents, business, place.target(chosen: chosen, projects: projects, agents: agents, business: business))
+    }
+
     /// The text on top, and under it the chip with the project and Send, as the box of a chat that opens.
     private func box(_ target: NewChatTarget?, projects: [Bot], agents: [TeamAgentChoice], suggestion: String?) -> some View {
         let shape = RoundedRectangle(cornerRadius: BoardStyle.Radius.large, style: .continuous)
         let typed = !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        // While the box says where the last message went, an empty box sends nothing.
-        let offered = sent == nil ? suggestion : nil
-        let canSend = target != nil && !sending && (typed || offered != nil)
+        // While the box says where the last message went, an empty box sends nothing. A pasted image goes without the
+        // suggestion.
+        let offered = sent == nil && pasted.isEmpty ? suggestion : nil
+        let canSend = target != nil && !sending && (typed || offered != nil || !pasted.isEmpty)
         return VStack(alignment: .leading, spacing: 0) {
             TextField(placeholder(target, suggestion: offered), text: $text, axis: .vertical)
                 .focused($focused)
@@ -369,39 +387,52 @@ struct NewChatBar: View {
         focusRequest = UUID()
     }
 
-    /// Sends the text, or the suggestion while the box is empty: as the first message of a new chat in a project, which
-    /// stays closed (sendNewChat), or as a message of the direct chat with a team agent. When the Mac does not take it,
-    /// the notice says why and the text comes back. The keyboard first gives the field all that it holds and stays up
-    /// for the next chat, so the message is the text that the person sees, and the box stays empty (KeyboardSettle).
+    /// Sends the text, or the suggestion while the box is empty, with what the person pasted: as the first message of a
+    /// new chat in a project, which stays closed (sendNewChat), or as a message of the direct chat with a team agent.
+    /// When the Mac does not take it, the notice says why and the text and the files come back. The keyboard first gives
+    /// the field all that it holds and stays up for the next chat, so the message is the text that the person sees, and
+    /// the box stays empty (KeyboardSettle).
     private func send(to target: NewChatTarget, suggestion: String?) {
         KeyboardSettle.run(if: focused) { start(in: target, suggestion: suggestion) }
     }
 
     private func start(in target: NewChatTarget, suggestion: String?) {
         let typed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        let message = typed.isEmpty ? suggestion ?? "" : typed
-        guard !message.isEmpty, !sending else { return }
-        if typed.isEmpty { markSent(message, true) }
+        let files = pasted
+        // A pasted image goes alone when the box has no text: the suggestion is for an empty box.
+        let suggested = typed.isEmpty && files.isEmpty
+        let message = suggested ? suggestion ?? "" : typed
+        guard !message.isEmpty || !files.isEmpty, !sending else { return }
         switch target {
         case .project(let project):
+            if suggested { markSent(message, true) }
             sending = true
             if !typed.isEmpty {
                 text = ""
                 echo.sent(message)
             }
+            pasted = []
             Task {
                 defer { sending = false }
-                guard await store.sendNewChat(in: project, text: message) != nil else {
+                guard let attachments = await upload(files, to: project),
+                      await store.sendNewChat(in: project, text: message, attachments: attachments) != nil else {
                     echo.cancel()
-                    if typed.isEmpty { markSent(message, false) } else if text.isEmpty { text = message }
+                    if suggested { markSent(message, false) } else if text.isEmpty { text = message }
+                    if pasted.isEmpty { pasted = files }
                     return
                 }
                 sent = SentNote(name: target.name)
             }
         case .teamAgent(let agent):
+            // A direct chat takes no file yet (TeamFileRules.offered), so the files stay in the box for a project.
+            guard files.isEmpty else {
+                store.error = Self.takesNoFiles(agent.name)
+                return
+            }
+            if suggested { markSent(message, true) }
             // The store keeps the message and sends it. A message that does not go waits in the chat with Retry.
             guard store.sendTeamMessage(agent.chat, text: message, replyingTo: nil) else {
-                if typed.isEmpty { markSent(message, false) }
+                if suggested { markSent(message, false) }
                 return
             }
             if !typed.isEmpty {
@@ -412,10 +443,46 @@ struct NewChatBar: View {
         }
     }
 
+    /// Keeps a pasted file for the next message, with a small picture of an image for its chip. A team agent takes no
+    /// file, so the notice says so at once and the file waits in the box for a project.
+    private func add(_ file: PickedFile) {
+        let preview = downsampledImage(file.data, largestSide: 216).map { PlatformImage($0) }
+        pasted.append(PastedFile(file: file, preview: preview))
+        if case .teamAgent(let agent) = destinations().target { store.error = Self.takesNoFiles(agent.name) }
+    }
+
+    private static func takesNoFiles(_ name: String) -> String {
+        name + " takes text and links only. Choose a project to send the image."
+    }
+
+    /// Uploads the pasted files to the project in their order, each fitted to the limit of the Mac first (FileFit). The
+    /// Mac of the person keeps the metadata, as for a photo of a chat. Nil when one does not go; the notice says why.
+    private func upload(_ files: [PastedFile], to project: Bot) async -> [String]? {
+        var ids: [String] = []
+        for file in files {
+            let outcome = await FileFit.fitted(file.file, removesPosition: false)
+            guard let fitted = outcome.file else {
+                store.error = outcome.text
+                return nil
+            }
+            guard let artifact = await store.uploadAttachment(bot: project, data: fitted.data, filename: fitted.name)
+            else { return nil }
+            ids.append(artifact.id)
+        }
+        return ids
+    }
+
     /// Keeps a sent suggestion, or lets it come back after a send that failed.
     private func markSent(_ suggestion: String, _ keeps: Bool) {
         var list = sentSuggestions.split(separator: "\n").map(String.init).filter { $0 != suggestion }
         if keeps { list.append(suggestion) }
         sentSuggestions = list.suffix(NewChatSuggestion.kept).joined(separator: "\n")
     }
+}
+
+/// A file that the person pasted into the message box, with the small picture of an image for its chip.
+private struct PastedFile: Identifiable, Equatable {
+    let id = UUID()
+    let file: PickedFile
+    let preview: PlatformImage?
 }

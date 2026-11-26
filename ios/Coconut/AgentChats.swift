@@ -16,9 +16,12 @@ extension Bot {
     /// The agent of this bot: the bot itself, or the agent of a chat. The settings and the pages belong to it.
     var agentId: String { chatOf ?? id }
 
-    /// The title of a further chat in a list: its first message, or "New agent" before the person wrote one.
+    /// The title of a further chat in a list: its first message, or "New agent" before the person wrote one. A first
+    /// message of files alone carries the marker of the app (AttachmentOnly), which the Mac takes as the title, so the
+    /// chat is "Photo", as its row says.
     var chatLabel: String {
         let title = (chatTitle ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        if AttachmentOnly.isMarker(title) { return "Photo" }
         return title.isEmpty ? AgentChats.untitled : title
     }
 
@@ -189,7 +192,9 @@ extension AppStore {
         guard let chat = await chatForFirstMessage(in: project),
               await send(bot: chat, text: text, attachments: attachments, mentionedBotIds: mentionedBotIds,
                          replyTo: replyTo, workContext: workContext) else { return nil }
-        nameChat(chat.id, from: text)
+        // Files alone go with the marker of the app, which names the chat as on the Mac (chatLabel).
+        nameChat(chat.id, from: text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !attachments.isEmpty
+                 ? AttachmentOnly.text : text)
         newChatSend = NewChatSend(chat: chat.id)
         return chat
     }

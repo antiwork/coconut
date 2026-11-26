@@ -160,7 +160,7 @@ enum KeyboardSettle {
 #if os(iOS)
 /// The responder with the keyboard: an action sent to nil goes to the first responder.
 @MainActor
-private enum FirstResponder {
+enum FirstResponder {
     static weak var found: UIResponder?
 
     static func find() -> UIResponder? {

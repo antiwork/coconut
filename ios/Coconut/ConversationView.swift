@@ -1163,17 +1163,16 @@ struct ConversationComposer: View {
         } photo: { load in
             upload {
                 guard let picked = await load() else { return nil }
-                // A photo of the library can be a HEIC image or larger than the limit. The Mac of the person gets it
-                // with its metadata, as a file of the file importer.
-                let outcome = await FileFit.fitted(picked, removesPosition: false)
-                guard let fitted = outcome.file else {
-                    store.error = outcome.text
-                    return nil
-                }
-                return await store.uploadAttachment(bot: bot, data: fitted.data, filename: fitted.name)
+                return await uploadFitted(picked)
             }
         } paste: { pasted in
+            #if os(iOS)
+            // An image that an iPhone pastes comes as the app copied it: a photo can be a HEIC image or larger than
+            // the limit. A paste on a Mac fits already (PastedAttachment.fromPasteboard).
+            upload { await uploadFitted(pasted) }
+            #else
             upload { await store.uploadAttachment(bot: bot, data: pasted.data, filename: pasted.name) }
+            #endif
         } report: { store.error = $0 })
         // Only after a send: a key without a send changes no state.
         .onChange(of: draftKey) { _, draft in if draftSend.sent != nil { draftSend.shows(draft) } }
@@ -1336,6 +1335,17 @@ struct ConversationComposer: View {
     }
 
     private var uploading: Bool { uploads.count > 0 }
+
+    /// Uploads a photo of the library or a pasted image after it fits: it can be a HEIC image or larger than the
+    /// limit. The Mac of the person gets it with its metadata, as a file of the file importer.
+    private func uploadFitted(_ picked: PickedFile) async -> Artifact? {
+        let outcome = await FileFit.fitted(picked, removesPosition: false)
+        guard let fitted = outcome.file else {
+            store.error = outcome.text
+            return nil
+        }
+        return await store.uploadAttachment(bot: bot, data: fitted.data, filename: fitted.name)
+    }
 
     /// The upload counts from the pick. The attachments take the order of the picks, also when a later upload ends
     /// first.
