@@ -36,11 +36,11 @@ struct PostedBanners: Equatable, Sendable {
         identifiers = Set(delivered.filter(MessageBanners.isIdentifier))
     }
 
-    /// The removals of `plan` that the set has. The set then loses the removals and gets the posts of the plan.
-    mutating func removals(for plan: MessageBannerPlan) -> [String] {
-        let removals = plan.remove.filter(identifiers.contains)
+    /// The identifiers of `remove` that the set has. The set then loses them and gets the identifiers of `post`.
+    mutating func removals(remove: [String], post: [String]) -> [String] {
+        let removals = remove.filter(identifiers.contains)
         identifiers.subtract(removals)
-        identifiers.formUnion(plan.post.map(\.identifier))
+        identifiers.formUnion(post)
         return removals
     }
 }
@@ -61,8 +61,12 @@ enum MessageBanners {
     /// - The first list after a start or a new pairing (`before` is nil) is history and makes no banner.
     /// - A chat has one banner, for its newest message, also after several new messages.
     /// - The banner of a chat with no unread message, and of a chat that left the list, goes away.
+    /// - The notification settings decide last (NotificationSettings.notifiesMessage): nothing posts during a pause,
+    ///   Nothing posts nothing, and "Direct messages, mentions and keywords" posts a Team chat or a named chat only for
+    ///   a mention or a keyword. A keyword counts as a mention, also in a muted chat, as for the push of the iPhone.
     /// - macOS asks for permission when the Mac has an active team.
-    static func plan(before: TeamRooms?, after: TeamRooms) -> MessageBannerPlan {
+    static func plan(before: TeamRooms?, after: TeamRooms, settings: NotificationSettings = .standard,
+                     now: Date = Date()) -> MessageBannerPlan {
         let chats = after.rooms.flatMap(chats(of:))
         var plan = MessageBannerPlan(asksPermission: after.rooms.contains { $0.status == .active })
         let current = Set(chats.map(\.key))
@@ -76,7 +80,9 @@ enum MessageBanners {
             guard last.first ?? 0 > old?.last?.first ?? 0 else { continue }
             let mention = chat.mentions && chat.mentionFirst > old?.mentionFirst ?? 0
             let counted = chat.unread > old?.unread ?? 0 || chat.unread >= TeamRoom.maxUnread
-            guard mention || (chat.notifies && counted) else { continue }
+            let keyword = chat.mentions && counted && settings.matches(last.text)
+            guard settings.notifiesMessage(direct: chat.direct, mention: mention || keyword, plain: chat.notifies && counted,
+                                           at: now) else { continue }
             plan.post.append(banner(chat.key, room: chat.room, last: last))
         }
         return plan
@@ -99,8 +105,10 @@ enum MessageBanners {
     /// The identifier of the banner of a chat. A newer banner of the chat takes the place of the older one.
     static func identifier(_ chat: TeamChatKey) -> String { identifierPrefix + thread(chat) }
 
-    /// True for the identifier of the banner of a chat.
-    static func isIdentifier(_ identifier: String) -> Bool { identifier.hasPrefix(identifierPrefix) }
+    /// True for the identifier of the banner of a chat, also of an agent (AgentBanners).
+    static func isIdentifier(_ identifier: String) -> Bool {
+        identifier.hasPrefix(identifierPrefix) || AgentBanners.isIdentifier(identifier)
+    }
 
     private static let identifierPrefix = "team-chat:"
 
@@ -151,6 +159,8 @@ enum MessageBanners {
         var mentions = false
         /// The `first` of the newest unread message that names this person, or 0.
         var mentionFirst = 0
+        /// A direct chat, with a person or a bot.
+        var direct = false
     }
 
     private static func chats(of room: TeamRoom) -> [Chat] {
@@ -162,10 +172,10 @@ enum MessageBanners {
         }
         return team + room.directList.map {
             Chat(key: TeamChatKey(room: room.room, member: $0.member), room: room, unread: $0.unread ?? 0,
-                 last: $0.lastMessage, notifies: room.status == .active)
+                 last: $0.lastMessage, notifies: room.status == .active, direct: true)
         } + room.botDirectList.map {
             Chat(key: TeamChatKey(room: room.room, bot: $0.bot), room: room, unread: $0.unread ?? 0,
-                 last: $0.lastMessage, notifies: room.status == .active)
+                 last: $0.lastMessage, notifies: room.status == .active, direct: true)
         }
     }
 }

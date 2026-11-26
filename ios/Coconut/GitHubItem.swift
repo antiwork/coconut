@@ -14,11 +14,13 @@ struct SupportThreadRoute: Hashable {
     var subject = ""
 }
 
-/// The pages of Coconut that addresses open, so a tap on a link to an issue, a pull request or a support thread stays in
-/// the app. The person answers, closes and merges there; agents do most of that work, and the person does it as the
-/// owner. Any other address opens in the browser.
+/// The pages of Coconut that addresses open, so a tap on a link to an issue, a pull request, a support thread or a chat
+/// of a team stays in the app. The person answers, closes and merges there; agents do most of that work, and the person
+/// does it as the owner. Any other address opens in the browser.
 enum InAppLink {
     static func route(_ url: URL) -> (any Hashable)? {
+        // The `#` name of a chat in a team chat (TeamChatLinks).
+        if let chat = TeamChatLinks.chat(of: url) { return TeamChatRoute(chat: chat) }
         guard url.scheme?.lowercased() == "https", let host = url.host()?.lowercased() else { return nil }
         if host == "github.com" || host == "www.github.com" {
             let parts = url.path().split(separator: "/").map(String.init)

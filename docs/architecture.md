@@ -654,6 +654,7 @@ The host continues while the phone is disconnected or suspended.
 Provider operations cover task start, continuation, context, structured events, cancellation, and artifact retrieval through the host API.
 The host owns scheduling and pending decisions. Cloud workers can implement the same operations later.
 The mini encrypts notification previews and sends them through Coconut's shared Cloudflare Worker.
+What notifies follows one set of notification settings of the person, for each phone and for the banners of the Mac (`notification_settings.py`, `PUT /v1/settings/notifications`): a pause, a level for people and one for agents, keywords, and a wait of the iPhone while the person works at a Mac (`PUT /v1/device/presence`). See [Notification settings](team-log.md#notification-settings).
 It also seals the glance of the Home Screen for each phone after the person leaves the app (`home_screen.py`): the Worker keeps the newest one for the widgets and gives it to the Live Activity, and never sees its text.
 The iPhone decrypts previews locally. The relay owns the app's Apple credentials and requires verified app registration.
 Agent execution and conversation storage stay on the user's Mac. Secure cloud artifacts remain a future service.

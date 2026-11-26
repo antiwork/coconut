@@ -388,7 +388,15 @@ struct MacMainWindow: View {
                 .modifier(InAppDestinations())
                 .navigationDestination(for: TeamChatRoute.self) { TeamChatView(chatKey: $0.chat).id($0.chat) }
             }
-            .stackRoutes { route in chatPath.append(route) }
+            // The `#` name of a chat (TeamChatLinks) opens the chat in the sidebar, as a channel of Slack does. A notice
+            // of an inbox chat still opens over the inbox.
+            .stackRoutes { route in
+                if let route = route as? TeamChatRoute, !route.chat.isDirect, route.chat.thread == nil {
+                    selection = .team(route.chat)
+                } else {
+                    chatPath.append(route)
+                }
+            }
             .ignoresSafeArea(.container, edges: .top)
             .toolbarBackgroundVisibility(.hidden, for: .windowToolbar)
             .toolbar(removing: .title)

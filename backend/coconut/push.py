@@ -26,6 +26,7 @@ from .push_relay import RelayTransport, validate_route, notification_alert, grou
 from .team_store import ACTIVE
 from .push_schedule import (LEGACY_SCHEDULE, OUTSIDE, due, holds_urgent, merge as merge_schedule,
                             stored as stored_schedule)
+from .notification_settings import DEFAULTS as NOTIFICATION_DEFAULTS, keyword_match, notifies
 
 LEVELS = ('every', 'grouped', 'urgent_only')
 # A phone that never sent its preferences keeps the old categories: cards, failed and finished tasks, no messages.
@@ -398,12 +399,22 @@ class PushDelivery:
             self.note(device_id, 'NotRefreshed')
 
     def allows(self, device_id, kind, urgent=False):
-        """Whether the phone's preferences let this item notify. A card that needs attention now always may.
+        """Whether the settings let this item notify. A card that needs attention now always may.
 
-        A team message and a direct message need preferences that the phone sent and a level other than Only urgent.
-        The switch for bot replies does not decide it. A phone without stored preferences has an app from before team
-        notifications."""
+        After their first change, the notification settings of the Mac decide (notification_settings.notifies): the
+        pause, and what of people and of agents notifies. They replace the level and the switch for replies of each
+        phone, and a finished task then notifies with its reply only.
+
+        Before, the phone's preferences decide. A team message and a direct message need preferences that the phone
+        sent and a level other than Only urgent. The switch for bot replies does not decide it. A phone without stored
+        preferences has an app from before team notifications, and it keeps that rule after the settings too."""
         chosen = self.stored_preferences(device_id)
+        settings = self.service.stored_notification_settings()
+        if settings is not None:
+            if not notifies(settings, kind, urgent):
+                return False
+            if chosen is not None:
+                return kind != 'completed'
         if kind == 'decision':
             return bool(urgent) or (chosen or LEGACY_PREFERENCES)['level'] != 'urgent_only'
         if kind in CHAT_KINDS:
@@ -471,12 +482,20 @@ class PushDelivery:
 
     def team_notifies(self, room, entry):
         """Whether a message of a team chat can notify the person: the switch `notifications` of the room is on and the
-        person did not mute the named chat of the message, or the message names this Mac's person. A mention reaches
-        the person also in a quiet team and in a muted chat. This is the one place of that rule."""
+        person did not mute the named chat of the message, or the message names this Mac's person or has one of the
+        keywords of the notification settings. A mention reaches the person also in a quiet team and in a muted chat.
+        With People "Direct messages, mentions and keywords" only a mention and a keyword do, and with Nothing no
+        message does. This is the one place of that rule."""
         store = self.service.team_store
-        if room['notifications'] and not store.in_muted_chat(room['room'], entry):
+        settings = self.service.stored_notification_settings() or NOTIFICATION_DEFAULTS
+        if settings['people'] == 'nothing':
+            return False
+        if settings['people'] == 'all' and room['notifications'] and not store.in_muted_chat(room['room'], entry):
             return True
-        return store.names_member(room['room'], entry, room['member'])
+        if store.names_member(room['room'], entry, room['member']):
+            return True
+        message = store.message(room['room'], entry) if settings['keywords'] else None
+        return message is not None and keyword_match(settings['keywords'], message.get('text'))
 
     def _record_chat(self, kind, room, entry):
         """Queue one item of a chat of a team (CHAT_KINDS) for each phone that allows it."""
@@ -642,6 +661,10 @@ class PushDelivery:
             db.execute("DELETE FROM push_items WHERE status<>'waiting' AND created<?", (current - HISTORY,))
             db.execute("DELETE FROM push_outbox WHERE status<>'queued' AND created<?", (current - HISTORY,))
             self.remove_stale(current)
+        # While the person works at a Mac, the Mac shows the banners and each phone waits, also with an urgent card
+        # (notification_settings, mobile_delay). After the delay, the items that the person did not read notify.
+        if self.service.holds_phones(current):
+            return
         for (device_id,) in db.execute("SELECT DISTINCT device_id FROM push_items WHERE status='waiting'").fetchall():
             device = db.execute('SELECT enabled FROM push_devices WHERE device_id=?', (device_id,)).fetchone()
             items = self._items("device_id=? AND status='waiting'", (device_id,))

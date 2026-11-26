@@ -336,6 +336,8 @@ struct Decision: Codable, Identifiable, Equatable, Sendable {
     var mergePrUrl: String? = nil
     var mergePrDiff: PullRequestDiff? = nil
     var sourceRefreshing: Bool? = nil
+    /// The agent marked the card urgent: it notifies also during a pause and with Urgent cards only.
+    var needsAttentionNow: Bool? = nil
 
     var cardSources: [DecisionSource] {
         var result = sources ?? []
@@ -577,6 +579,8 @@ struct StateSnapshot: Codable, Sendable {
     var personalBudget: PersonalBudget? = nil
     /// The hours without activity after which a chat archives itself, 0 for never. A Mac older than the setting sends none.
     var autoArchiveHours: Int? = nil
+    /// The notification settings of the person (NotificationSettings). A Mac older than the settings sends none.
+    var notifications: NotificationSettings? = nil
 }
 
 struct ServerEvent: Decodable, Sendable {

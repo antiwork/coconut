@@ -38,6 +38,12 @@ struct ProfileView: View {
 
     private var paired: Bool { store.hasPairing || store.isDemo }
 
+    /// The pause while it lasts, else the work hours of the iPhone.
+    private var notificationDetail: String {
+        if let end = store.notificationSettings?.pauseEnd, end > .now { return NotificationSettings.pauseText(end) }
+        return push.outsideWorkHours == .same ? "At any time" : "Work hours " + NotificationSentence.workHours(push.schedule)
+    }
+
     var body: some View {
         let summary = ProfileSummary(rooms: store.shownTeamRooms, remembered: TeamMemberName.remembered())
         BoardPage {
@@ -51,9 +57,7 @@ struct ProfileView: View {
                 } else {
                     PairMacButton().padding(.horizontal, BoardStyle.Space.m).padding(.vertical, 10)
                 }
-                BoardRow(symbol: "bell", title: "Notifications",
-                         detail: push.outsideWorkHours == .same ? "At any time"
-                             : "Work hours " + NotificationSentence.workHours(push.schedule))
+                BoardRow(symbol: "bell", title: "Notifications", detail: notificationDetail)
                     .boardButton("notification-settings") { pushRoute?(ProfileRoute.notifications) }
                 // The row has the name of the page that it opens.
                 BoardRow(symbol: "link", title: "Connections", detail: "Google, GitHub and other tools")

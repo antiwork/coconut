@@ -70,13 +70,15 @@ struct CoconutApp: App {
         }
 
         MenuBarExtra {
-            MenuContent(model: model, updater: updater)
+            MenuContent(model: model, updater: updater, store: store)
         } label: {
             // The label shows while the app runs, also without a window, so it gives the banners the action that opens
             // the main window.
             Image(nsImage: model.status.service == .running ? MenuBarIcon.running : MenuBarIcon.stopped)
                 .modifier(BannerWindowOpener(banners: banners))
                 .modifier(DockBadge(store: store, enabled: model.mode == .full && !TestIsolation.active))
+                .modifier(AgentBannerWatcher(banners: banners, store: store,
+                                             enabled: model.mode == .full && !TestIsolation.active))
         }
         .menuBarExtraStyle(.menu)
 
@@ -160,6 +162,7 @@ struct ProfileCommand: View {
 struct MenuContent: View {
     @ObservedObject var model: AppModel
     @ObservedObject var updater: Updater
+    let store: AppStore
     @Environment(\.openWindow) private var openWindow
 
     var body: some View {
@@ -207,6 +210,7 @@ struct MenuContent: View {
                 openWindow(id: "main")
                 NSApp.activate(ignoringOtherApps: true)
             }
+            PauseNotificationsMenu(store: store)
         }
         if model.mode == .full {
             Button("Pair iPhone…") {

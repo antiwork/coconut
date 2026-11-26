@@ -9,20 +9,76 @@ import AppKit
 import UserNotifications
 import SwiftUI
 
+/// The notification settings, as the preferences of Slack: a pause, what of the team and of the agents notifies, the
+/// keywords, and when the iPhone notifies while the person works at a Mac. The Mac keeps them for every device
+/// (NotificationSettings). The work hours and the delivery belong to the iPhone. It is the one page of settings, which
+/// the person asked for to replace Slack (skills/coconut/references/app-changes.md, "No settings screens").
 struct NotificationSettingsView: View {
     @Environment(AppStore.self) private var store
     @Bindable private var push = PushNotifications.shared
+    @State private var keywords = ""
+    @FocusState private var keywordsFocused: Bool
 
     var body: some View {
         Form {
-            Section {
-                Text(NotificationSentence.text(level: push.notificationLevel, outside: push.outsideWorkHours,
-                                               replies: push.messageNotifications,
-                                               team: store.team?.notifiesPhone ?? false,
-                                               direct: store.team?.notifiesDirect ?? false, schedule: push.schedule))
-                    .accessibilityIdentifier("notification-summary")
+            if let settings = store.notificationSettings {
+                pause(settings)
+                Section("Notify me about") {
+                    Picker("Notify me about", selection: binding(\.people)) {
+                        ForEach(NotificationSettings.People.allCases, id: \.self) { people in
+                            Text(people.title).tag(people).accessibilityIdentifier("notify-people-" + people.rawValue)
+                        }
+                    }
+                    .pickerStyle(.inline)
+                    .labelsHidden()
+                }
+                Section("Agents") {
+                    Picker("Agents", selection: binding(\.agents)) {
+                        ForEach(NotificationSettings.Agents.allCases, id: \.self) { agents in
+                            Text(agents.title).tag(agents).accessibilityIdentifier("notify-agents-" + agents.rawValue)
+                        }
+                    }
+                    .pickerStyle(.inline)
+                    .labelsHidden()
+                    NavigationLink("What counts as urgent?") { UrgentCardsView(summary: store.pushStatus?.urgent) }
+                        .accessibilityIdentifier("urgent-cards")
+                }
+                Section {
+                    TextField("My keywords", text: $keywords, prompt: Text("launch, outage"))
+                        .focused($keywordsFocused)
+                        .onSubmit(saveKeywords)
+                        .autocorrectionDisabled()
+                        .accessibilityIdentifier("notification-keywords")
+                } header: {
+                    Text("My keywords")
+                } footer: {
+                    Text("A team message with one of these words notifies you.")
+                }
+                Section {
+                    Picker("Notify my iPhone", selection: binding(\.mobileDelay)) {
+                        ForEach(Self.delays(settings), id: \.self) { minutes in
+                            Text(NotificationSettings.delayTitle(minutes)).tag(minutes)
+                        }
+                    }
+                    .pickerStyle(.inline)
+                    .labelsHidden()
+                    .accessibilityIdentifier("notify-iphone")
+                } header: {
+                    Text("Notify my iPhone")
+                } footer: {
+                    Text("Applies to all your iPhones.")
+                }
+            } else {
+                Section { Text("Update Coconut on your Mac to change what notifies you.") }
             }
-            Section {
+            #if os(iOS)
+            Section("This iPhone") {
+                Picker("Outside work hours", selection: $push.outsideWorkHours) {
+                    ForEach(OutsideWorkHours.allCases, id: \.self) { choice in
+                        Text(choice.title).tag(choice)
+                    }
+                }
+                .accessibilityIdentifier("outside-work-hours")
                 NavigationLink {
                     WorkHoursView()
                 } label: {
@@ -30,58 +86,6 @@ struct NotificationSettingsView: View {
                 }
                 .disabled(push.outsideWorkHours == .same)
                 .accessibilityIdentifier("work-hours")
-            }
-            Section {
-                Picker("During work hours", selection: $push.notificationLevel) {
-                    ForEach(NotificationLevel.shown, id: \.self) { level in
-                        Text(level.title).tag(level).accessibilityIdentifier("notification-level-" + level.rawValue)
-                    }
-                }
-                .pickerStyle(.inline)
-                .labelsHidden()
-                .accessibilityIdentifier("notification-level")
-            } header: {
-                Text(push.outsideWorkHours == .same ? "At any time" : "During work hours")
-            } footer: {
-                Text(push.notificationLevel.detail).accessibilityIdentifier("notification-level-footer")
-            }
-            Section {
-                Picker("Outside work hours", selection: $push.outsideWorkHours) {
-                    ForEach(OutsideWorkHours.allCases, id: \.self) { choice in
-                        Text(choice.title).tag(choice).accessibilityIdentifier("outside-work-hours-" + choice.rawValue)
-                    }
-                }
-                .pickerStyle(.inline)
-                .labelsHidden()
-                .accessibilityIdentifier("outside-work-hours")
-            } header: {
-                Text("Outside work hours")
-            }
-            Section {
-                Toggle(isOn: $push.messageNotifications) {
-                    Text("Also notify me when an agent replies").frame(maxWidth: .infinity, alignment: .leading)
-                        .contentShape(Rectangle()).onTapGesture { push.messageNotifications.toggle() }
-                }
-                .disabled(push.notificationLevel == .urgentOnly)
-                .accessibilityIdentifier("message-notifications")
-            } header: {
-                Text("Agent replies")
-            } footer: {
-                Text(push.notificationLevel == .urgentOnly ? "With Only urgent, agent replies do not notify you."
-                                                           : "This includes a task that an agent could not finish.")
-            }
-            Section {
-                NavigationLink {
-                    UrgentCardsView(summary: store.pushStatus?.urgent)
-                } label: {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("What counts as urgent?")
-                        if let summary = store.pushStatus?.urgent {
-                            Text(summary.weekText).font(.subheadline).foregroundStyle(.secondary)
-                        }
-                    }
-                }
-                .accessibilityIdentifier("urgent-cards")
             }
             Section("Delivery") {
                 LabeledContent("Last notification", value: store.pushStatus == nil ? "Not available"
@@ -113,13 +117,64 @@ struct NotificationSettingsView: View {
                     InlineError(error)
                 }
             }
+            #endif
         }
         .tint(BoardStyle.green)
         .settingsBackground()
         .navigationTitle("Notifications")
         .inlineNavigationTitle()
+        // The field shows the keywords of the Mac, also after a change on another device, but not while the person
+        // types in it.
+        .onChange(of: store.notificationSettings?.keywords, initial: true) { _, words in
+            if !keywordsFocused { keywords = (words ?? []).joined(separator: ", ") }
+        }
+        .onChange(of: keywordsFocused) { _, focused in if !focused { saveKeywords() } }
+        .onDisappear(perform: saveKeywords)
         // Read again when the connection returns, so the screen does not keep an unavailable status.
         .task(id: store.connection) { await store.refreshPushStatus() }
+    }
+
+    /// Pause notifications, as in the menu of Slack. The pause ends by itself at its time.
+    @ViewBuilder private func pause(_ settings: NotificationSettings) -> some View {
+        Section {
+            if let end = settings.pauseEnd, end > .now {
+                LabeledContent(NotificationSettings.pauseText(end)) {
+                    Button("Resume") { change { $0.pausedUntil = nil } }
+                        .accessibilityIdentifier("resume-notifications")
+                }
+            } else {
+                Menu("Pause notifications") {
+                    ForEach(NotificationSettings.Pause.allCases, id: \.self) { choice in
+                        Button(choice.title) { store.setNotificationSettings(settings.paused(choice)) }
+                    }
+                }
+                .accessibilityIdentifier("pause-notifications")
+            }
+        } footer: {
+            if settings.isPaused() { Text("Urgent cards still notify you.") }
+        }
+    }
+
+    /// The choices of the delay, with the one of the Mac when another device chose a time that the page has no row for.
+    private static func delays(_ settings: NotificationSettings) -> [Int?] {
+        NotificationSettings.delays.contains(settings.mobileDelay) ? NotificationSettings.delays
+            : NotificationSettings.delays + [settings.mobileDelay]
+    }
+
+    private func binding<Value>(_ field: WritableKeyPath<NotificationSettings, Value>) -> Binding<Value> {
+        Binding(get: { (store.notificationSettings ?? .standard)[keyPath: field] },
+                set: { value in change { $0[keyPath: field] = value } })
+    }
+
+    private func change(_ edit: (inout NotificationSettings) -> Void) {
+        guard var settings = store.notificationSettings else { return }
+        edit(&settings)
+        if settings != store.notificationSettings { store.setNotificationSettings(settings) }
+    }
+
+    private func saveKeywords() {
+        let words = NotificationSettings.keywords(from: keywords)
+        change { $0.keywords = words }
     }
 }
 
@@ -227,31 +282,12 @@ struct UrgentCardsView: View {
     }
 }
 
-/// How often non-urgent items notify. The Mac applies it; see `push_schedule.py`.
+/// How often non-urgent items notify, the choice of each iPhone before the notification settings. The iPhone still sends
+/// it, for a Mac before the settings and for their first values (notification_settings.migrated).
 enum NotificationLevel: String, Codable, CaseIterable, Sendable {
     case every
     case grouped
     case urgentOnly = "urgent_only"
-
-    var title: String {
-        switch self {
-        case .every: "Every card"
-        case .grouped: "One summary at a time"
-        case .urgentOnly: "Only urgent"
-        }
-    }
-
-    /// The footer of the chosen level. It says exactly what the Mac does (push_schedule.SETTLE and INTERVAL).
-    var detail: String {
-        switch self {
-        case .every: "Each card notifies you at once, in its own notification."
-        case .grouped: "Each card notifies you at once, in its own notification."
-        case .urgentOnly: "Only urgent cards notify you. Other cards wait without a notification."
-        }
-    }
-
-    /// The choices of the app. The Mac sends one notification per item, so a summary is no choice any more.
-    static let shown: [NotificationLevel] = [.every, .urgentOnly]
 
     /// The saved level. Before levels existed, turning decisions off meant only urgent cards. A saved summary is now
     /// one notification per card.
