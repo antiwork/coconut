@@ -1731,8 +1731,8 @@ enum ChatList {
     /// list"). The Coconut chat always shows first in its section and at the top of the Mac sidebar, so it has no star.
     static func isStarred(_ bot: Bot) -> Bool { bot.pinned && !isCoconut(bot) }
 
-    /// The chat offers Star or Unstar: a swipe to the right on its row in Chats, its card in the deck, and its menu in
-    /// the Mac sidebar. An archived chat shows only in Archived, and Unarchive takes a starred one back to Starred.
+    /// The chat offers Star or Unstar: both swipes on its row in Chats, its card in the deck, and its menu in the Mac
+    /// sidebar. An archived chat shows only in Archived, and Unarchive takes a starred one back to Starred.
     static func canStar(_ bot: Bot) -> Bool { !bot.archived && !isCoconut(bot) }
 
     private static func peopleItems(_ rooms: [TeamRoom], local: [TeamChatKey: TeamLastMessage]) -> [ChatListItem] {

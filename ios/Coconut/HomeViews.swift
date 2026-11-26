@@ -314,12 +314,16 @@ struct HomeLaunchView: View {
 
     /// One chat of a list. The row of a project names the project, so a further chat of the project shows its own
     /// title (ChatListSection.title). Starred and the Working list name the agent too (Bot.listName). A chat inside a
-    /// section of Chats is `nested`: it sits set in under the row of its section (ChatListRow).
+    /// section of Chats is `nested`: it sits set in under the row of its section (ChatListRow). A starred chat shows
+    /// its star only outside Starred, whose row already says it, as a starred page of the Library does (Tastelint on
+    /// #592).
     @ViewBuilder
     private func chatRow(_ item: ChatListItem, in section: ChatListSection?, nested: Bool = false) -> some View {
+        let inStarred = section?.kind == .starred
         switch item {
         case .bot(let bot):
-            BotContactRow(bot: bot, title: section?.title(of: bot) ?? bot.listName, pinned: ChatList.isStarred(bot))
+            BotContactRow(bot: bot, title: section?.title(of: bot) ?? bot.listName,
+                          pinned: ChatList.isStarred(bot) && !inStarred)
                 .padding(.vertical, BoardStyle.Space.m)
                 .background(BoardStyle.paper)
                 .modifier(ChatDeckRow(botId: bot.id) {
@@ -328,22 +332,24 @@ struct HomeLaunchView: View {
                 .accessibilityIdentifier(ChatList.isCoconut(bot) ? "coconut-chat" : "bot-conversation-\(bot.id)")
                 .swipeActions(edge: .trailing, allowsFullSwipe: true) {
                     // A project stays, and so does the Coconut chat (Bot.canRemove). An archived chat offers
-                    // Unarchive in the same place.
+                    // Unarchive in the same place. Star or Unstar is here too, because the person looks for it in
+                    // this menu, and a swipe to the right still gives it alone.
                     if bot.canRemove { archiveButton(bot) }
                     muteButton(bot)
+                    if ChatList.canStar(bot) { starButton(bot) }
                 }
                 .swipeActions(edge: .leading, allowsFullSwipe: true) {
                     if ChatList.canStar(bot) { starButton(bot) }
                 }
                 .modifier(ChatListRow(nested: nested))
         case .team, .direct, .botDirect:
-            // A team chat has Star and Mute in its menu, Star on a swipe to the right as an agent chat has, and a named
-            // chat has Mute on a swipe to the left too. The Team screen has the leave action.
+            // A team chat has Star and Mute in its menu, and on its swipes as an agent chat has them: Star alone to the
+            // right, and to the left Mute for a named chat, then Star. The Team screen has the leave action.
             if let chat = item.chat {
                 Button {
                     pushRoute?(TeamChatRoute(chat: chat))
                 } label: {
-                    PeopleRow(item: item, pinMark: item.isPinnedChat)
+                    PeopleRow(item: item, pinMark: item.isPinnedChat && !inStarred)
                         .padding(.vertical, BoardStyle.Space.m)
                         .background(BoardStyle.paper)
                         .contentShape(Rectangle())
@@ -353,6 +359,7 @@ struct HomeLaunchView: View {
                     .accessibilityIdentifier(Self.identifier(chat))
                     .swipeActions(edge: .trailing, allowsFullSwipe: true) {
                         if let mute = TeamChatMute.listAction(item) { teamMuteButton(mute) }
+                        if let pin = TeamChatPin.listAction(item) { teamStarButton(pin) }
                     }
                     .swipeActions(edge: .leading, allowsFullSwipe: true) {
                         if let pin = TeamChatPin.listAction(item) { teamStarButton(pin) }
@@ -559,8 +566,9 @@ struct HomeLaunchView: View {
         .accessibilityIdentifier("mute-bot-\(bot.id)")
     }
 
-    /// Star or Unstar on a swipe to the right, as Pin in Messages and Telegram. A starred chat moves to Starred at the
-    /// top of the list and stays there while it is idle: the Mac does not archive it (AgentChats._may_archive).
+    /// Star or Unstar, beside Mute on a swipe to the left and alone on a swipe to the right, as Pin in Messages and
+    /// Telegram. A starred chat moves to Starred at the top of the list and stays there while it is idle: the Mac does
+    /// not archive it (AgentChats._may_archive).
     private func starButton(_ bot: Bot) -> some View {
         Button { Task { await store.pinBot(bot, pinned: !bot.pinned) } } label: {
             Label(bot.pinned ? TeamChatPin.unpin : TeamChatPin.pin, systemImage: bot.pinned ? "star.slash" : "star")
@@ -988,7 +996,7 @@ struct BotContactRow: View {
     let bot: Bot
     /// The name of the row. A further chat of a project shows its title next to the name of the project.
     var title: String? = nil
-    /// The star mark of a starred chat at the top of the Chats list.
+    /// The star mark of a starred chat where no Starred row names it: in Working and in search.
     var pinned = false
     /// The row reads the summary of its bot, not the messages, so a streamed word does not redraw it.
     private var summary: BotChatSummary { store.chatSummaries[bot.id] }
