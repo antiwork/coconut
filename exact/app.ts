@@ -2585,6 +2585,42 @@ const sources: Sources = {
     return { ok: true };
   },
 
+  // Save of Edit draft (MessageDraftEditor, AppStore.editDraft): the Mac keeps the new message of a card that waits,
+  // with a new revision and draft hash, which Send then names (`answerCard`), and refuses a card that changed since
+  // (409). Via stays as it is, From and Reply to change only where the draft has them, and a Subject that the draft
+  // lacked goes only when the person wrote one. The demo changes the card in memory, as the preview does.
+  saveCardDraft: async ([chatId, ref, from, to, replyTo, subject, body]) => {
+    const changed = 'This draft changed. Open it again before editing.';
+    const found = cardIn(ensure(), ref);
+    const draft = found?.card.draft;
+    if (!found || !draft || found.chat.id !== chatId || found.card.status !== 'pending' || answers.has(ref)) return { ok: false, error: changed };
+    if (to.trim() === '' || body.trim() === '') return { ok: false, error: '' };
+    if (!useLive) {
+      found.card.draft = { via: draft.via, from: draft.from !== '' ? from : draft.from, to, replyTo: draft.replyTo !== '' ? replyTo : draft.replyTo, subject, body };
+      found.card.revision += 1;
+      return { ok: true, error: '' };
+    }
+    const decision = decisions.get(ref);
+    if (!decision?.draft) return { ok: false, error: changed };
+    const next: RawDraft = { channel: decision.draft.channel, recipient: to, body };
+    if (decision.draft.sender != null) next.sender = from;
+    if (decision.draft.reply_to != null) next.reply_to = replyTo;
+    if (decision.draft.subject != null || subject !== '') next.subject = subject;
+    let saved: LvDecision;
+    try {
+      saved = (await write('POST', `/v1/decisions/${ref}/draft`, { revision: decision.revision, draft: next })) as LvDecision;
+    } catch (error) {
+      return { ok: false, error: failed(error) };
+    }
+    // The card shows the new message at once, and Send names its revision and hash, until the Mac's next state.
+    Object.assign(decision, saved);
+    const fresh = cardOf(decision, decisions);
+    found.card.draft = fresh.draft;
+    found.card.revision = fresh.revision;
+    found.card.draftHash = fresh.draftHash;
+    return { ok: true, error: '' };
+  },
+
   // `/model` and `/effort` change the model and the effort of every chat, as ModelChoice of the Swift app does: on the
   // Mac with PUT /v1/settings/model, in the demo in the fixture's catalog. A new model takes its own default effort.
   setModel: async ([chatId, key]) => {

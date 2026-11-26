@@ -103,7 +103,7 @@ so it never loads back. In the demo the photos are the charts in `assets/demo`.
 Cards (`Cards.swift`). A card has the earlier choice of a follow-up, its title, its sources (kind and title, no link
 yet), the size of a pull request to merge, and an X that dismisses it without an answer. While it waits it shows its
 context in paragraphs, its risk (or "Assessment needs updating"), its previews as photos, a draft's Via, From, To,
-Reply to, Subject and body (`MessageDraftContent`) with Send and Discard, or its options with the recommended one first
+Reply to, Subject and body (`MessageDraftContent`) with Send, Edit and Discard (`MessageDraftActions`), or its options with the recommended one first
 and marked, each with what it does and its risk. An option that approves waits until the previews have loaded. A
 choice shows at once with Undo for 10 seconds (`AnswerUndoRow`, `answerUndoSeconds`), and only then goes to the Mac
 with the card's revision and the hashes of the draft and the previews that the person saw (`AnswerRequest`); while it
@@ -112,6 +112,12 @@ goes the receipt has an arrow, and the receipt of an answered card has the choic
 that failed, Dismissed, or what the Mac closed it with. Why a choice or a dismissal did not go shows under the card.
 The demo answers at once, as the preview of the Swift app does. A card that the person answered in words leaves the
 chat, and the answer quotes it.
+
+Edit opens the message of a draft card in a sheet (`MessageDraftEditor`): Via as it is, From and Reply to where the
+draft has them, To, Subject and the message. Save waits for a To and a message, and keeps the change on the Mac
+(`POST /v1/decisions/<id>/draft`, `AppStore.editDraft`) with a new revision and draft hash, which Send then names; the
+card shows the new message at once. The Mac refuses an edit of a card that changed meanwhile (409), and the sheet then
+shows its words. While a choice waits for its Undo, the card has no Edit. The demo changes the card in memory.
 
 ## Live data
 
@@ -357,8 +363,21 @@ no Send to a new agent in the chat of Coconut. The Contract compiles with the pi
 uses of symbols that the web host does not draw (Gaps), and a time from `performanceNow()` kept in a write, as Send
 already keeps one. `app.ts` passes `tsc --strict`.
 
+Edit draft, 2026-11-26. `app.ts` under bun (a scratch script of 18 cases): the demo's draft card of Payouts keeps an
+edit and still waits with Send and Discard, and another chat or a blank To or message is refused. Against a hand-made
+state of the Mac with a stand-in of the tunnel, Save sends one POST with the revision that the person saw and the
+channel as it was, adds a Subject only when one was written, and Send then names the new revision and hash; a refusal
+of the Mac (409) answers its words, and a card whose choice waits for its Undo takes no edit. The web host showed it at
+390 by 844 points, light and dark: Send, Edit and Discard on the card, the sheet, Save held while To is empty, and the
+card with the new message after Save. The Contract compiles with the 20 warnings of main and no new one, and `app.ts`
+passes `tsc --strict`.
+
 Not done:
 
+- Edit draft has not run on a phone or against a Mac: the route was read in `edit_message_draft` (`decision_inbox.py`)
+  and checked with a stand-in. On a phone the sheet is a modal with a native bar, where the web host draws Cancel and
+  Save at its foot, as it does for New project. The Swift sheet cannot be swiped away while it saves
+  (`interactiveDismissDisabled`); here Cancel waits, and a swipe while Save goes is not checked.
 - The queue's requests to the Mac (`/v1/tasks/<id>/queue/…` in `message_queue.py`) were checked by reading only, and the
   queue has not run on the web host or a phone: the Mac had about 2 GB free, and the web host needs about 10.
 
@@ -481,7 +500,7 @@ a `push --watch` update.
 - Not ported: the slash commands other than `/model` and `/effort` (new, compact, stop, mute, archive, help), mentions, the access menu, link and GitHub previews,
   the schedule of a message, a pasted image in the message box or a composer (`AttachmentPaste`: Paste in the menu of
   the field on an iPhone, Command-V on a Mac), the fifth rule of Needs attention (stale data, which a preview has none of). Of the chat:
-  Edit of a draft card (`MessageDraftEditor`), a reply to a card in words (`DecisionReplyComposer`), the links of a
+  a reply to a card in words (`DecisionReplyComposer`, which the Swift app has in its Inbox), the links of a
   card's sources and its GitHub embeds, View revised proposal, opening a page of the Library, the zoom, swipe and
   share of the photo viewer, and the hold of a message or a photo (copy, reply, reactions). Of the queue (`MessageQueue`):
   Up Arrow in an empty box, which edits the last queued message, the buttons that show on hover on the Mac, drag to
@@ -531,7 +550,7 @@ switch needs it. The Exact Build sign-in of the shared Mac expires on December 1
 | Phase | Swift to port | Exact |
 |---|---|---|
 | 1 Live data | `APIClient`, `AppStore` (4,102), `Models`, `TunnelConnection`, `Onboarding`, pairing | Done: the pairing, the tunnel, the state and its updates, the model and effort (`/model`, `/effort`), attachments and the SQLite cache for a launch without the Mac are in `app.ts`, `tunnel.ts` and `crypto.ts` (see Live data). Attachments and the cache need the binary of their grants |
-| 2 Conversation | `ConversationView` (1,642), `Cards`, `MessagePhotos`, `MessageQueue`, `BotMentions`, `ModelSettingsView`, `LiveView`, `OmniSearch`, previews | Rows and cards done: days, the New line, senders and quotes, photos with their viewer, cards with sources, risk, previews, drafts, Undo and receipts, background processes and Library pages (see Photos and cards), the coconut that waits in photos and the working line, and the search of chats, cards and messages (see Search), and the queue (see Queue). Left: the editing, the holding and the rest of the search and the queue in Not ported, `BotMentions`, `LiveView` |
+| 2 Conversation | `ConversationView` (1,642), `Cards`, `MessagePhotos`, `MessageQueue`, `BotMentions`, `ModelSettingsView`, `LiveView`, `OmniSearch`, previews | Rows and cards done: days, the New line, senders and quotes, photos with their viewer, cards with sources, risk, previews, drafts, Undo and receipts, background processes and Library pages (see Photos and cards), the coconut that waits in photos and the working line, the editor of a draft card, the search of chats, cards and messages (see Search), and the queue (see Queue). Left: the editing, the holding and the rest of the search and the queue in Not ported, `BotMentions`, `LiveView` |
 | 3 Team | `TeamChat` (2,093), `TeamChatView` (1,710), `TeamViews`, `Team`, `PeopleView` | A second family of chats and a notice board, over the same list |
 | 4 Business and library | `BusinessDashboard` and the other Business files, `Library`, `DocumentPage`, `UsageViews`, `DecisionInboxView`, `AgentProject`, `Bento`, `ChatDeckView`, `SupportDeck` (the rows of Support's open conversations and their deck) | Routes and tabs (`select(nav, name)`); Markdown for documents; charts as `svg` |
 | 5 Mac | `CoconutMac` (1,599: the window, the sidebar, ⌘K, the inbox), `CoconutApp` (992: the menu bar, Sparkle), `CoconutKit` (2,166: login items, the install, pairing, the service), `CoconutTool` (428), and `ios/Coconut` as the Mac compiles it | `host.macos` in `app.json`; a layout for a wide window with the sidebar of the Swift app; the native parts below. Exact Build builds iOS only, so the Mac app builds on CI |

@@ -218,6 +218,12 @@ shape Suggestion
 shape Ack
   ok: bool
 
+// The reply of Save in the sheet of a draft card (MessageDraftEditor): whether the Mac kept the new message, and else
+// why not, in the Mac's words.
+shape Edited
+  ok: bool
+  error: string
+
 // The reply of a write that makes a thing: the id of the chat or of the project.
 shape Made
   id: string
