@@ -1,9 +1,9 @@
 import Foundation
 
-// The banners of the Mac app for a new team message and a new direct message. This file has each decision, and the
-// Mac shell (mac/Sources/CoconutApp/MacBanners.swift) only gives them to macOS. The iPhone app posts none of them: the
-// Mac sends it a push. The alert of that push has the same form (backend/coconut/push_relay.py, `team_alert` and
-// `direct_alert`).
+// The banners of the Mac app for a new team message, a new direct message, and a notification of GitHub or Gmail. This
+// file has each decision, and the Mac shell (mac/Sources/CoconutApp/MacBanners.swift) only gives them to macOS. The
+// iPhone app posts none of them: the Mac sends it a push. The alert of that push has the same form
+// (backend/coconut/push_relay.py, `team_alert`, `direct_alert` and `source_alert`).
 
 /// One banner: a new message of one chat of a team.
 struct MessageBanner: Equatable, Sendable {
@@ -33,7 +33,7 @@ struct PostedBanners: Equatable, Sendable {
     /// The set at a start of the app: the banners of a chat that macOS still has from an earlier run. It ignores each
     /// other identifier.
     init(delivered: [String] = []) {
-        identifiers = Set(delivered.filter(MessageBanners.isIdentifier))
+        identifiers = Set(delivered.filter { MessageBanners.isIdentifier($0) || SourceBanners.isIdentifier($0) })
     }
 
     /// The identifiers of `remove` that the set has. The set then loses them and gets the identifiers of `post`.
@@ -177,5 +177,70 @@ enum MessageBanners {
             Chat(key: TeamChatKey(room: room.room, bot: $0.bot), room: room, unread: $0.unread ?? 0,
                  last: $0.lastMessage, notifies: room.status == .active, direct: true)
         }
+    }
+}
+
+/// A notification of GitHub or Gmail that waits (backend notification_sources.py, GET /v1/notifications/alerts). The
+/// iPhone gets each one as a push, and the Mac shows it as a banner.
+struct SourceAlert: Decodable, Equatable, Sendable, Identifiable {
+    let id: String
+    /// github or mail.
+    let kind: String
+    let title: String
+    var subtitle: String? = nil
+    var body: String? = nil
+    /// The page on GitHub.
+    var url: String? = nil
+    /// The repository, owner/name, and the number of an issue or a pull request.
+    var repository: String? = nil
+    var number: Int? = nil
+    /// The thread: of the GitHub inbox, or of Gmail for a mail.
+    var thread: String? = nil
+
+    /// What a click opens: the issue or pull request, or the mail, in the app; any other page of GitHub in the browser.
+    var place: NotificationDestination? {
+        if kind == "mail" { return thread.map { .mail(SupportThreadRoute(id: $0, mailbox: "personal")) } }
+        if let repository, let number { return .github(GitHubItemRoute(repository: repository, number: number)) }
+        return url.flatMap(URL.init(string:)).map(NotificationDestination.web)
+    }
+}
+
+/// The list of the alerts, as the Mac gives it.
+struct SourceAlerts: Decodable, Sendable {
+    let alerts: [SourceAlert]
+}
+
+/// The banners of the Mac for GitHub and Gmail. The Mac decides which alert notifies, by the settings, so each new
+/// alert gets a banner, and an alert that left the list (read, or replaced by a newer one of its thread) loses it.
+enum SourceBanners {
+    /// The banners for the change from the alerts `before` to `after`. The first list (`before` nil) is history.
+    static func plan(before: [SourceAlert]?, after: [SourceAlert]) -> (post: [SourceAlert], remove: [String]) {
+        let current = Set(after.map(\.id))
+        let earlier = Set((before ?? []).map(\.id))
+        let remove = (before ?? []).map(\.id).filter { !current.contains($0) }
+        return (before == nil ? [] : after.filter { !earlier.contains($0.id) }, remove)
+    }
+
+    /// True for the identifier of a banner of GitHub or Gmail: the ID of its alert.
+    static func isIdentifier(_ identifier: String) -> Bool {
+        identifier.hasPrefix("github:") || identifier.hasPrefix("mail:")
+    }
+
+    static func userInfo(_ alert: SourceAlert) -> [String: String] {
+        var info = ["source": alert.kind]
+        if let url = alert.url { info["url"] = url }
+        if let repository = alert.repository { info["repository"] = repository }
+        if let number = alert.number { info["number"] = String(number) }
+        if let thread = alert.thread { info["thread"] = thread }
+        return info
+    }
+
+    /// What a click on the banner opens. Nil for a banner of another kind.
+    static func place(userInfo: [AnyHashable: Any]) -> NotificationDestination? {
+        guard let kind = userInfo["source"] as? String else { return nil }
+        return SourceAlert(id: "", kind: kind, title: "", url: userInfo["url"] as? String,
+                           repository: userInfo["repository"] as? String,
+                           number: (userInfo["number"] as? String).flatMap { Int($0) },
+                           thread: userInfo["thread"] as? String).place
     }
 }

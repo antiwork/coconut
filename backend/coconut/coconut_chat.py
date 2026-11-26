@@ -28,6 +28,10 @@ NOTIFICATION_TEXT = {
     'people': {'all': 'each new message of the team', 'mentions': 'direct messages, notices, mentions and keywords',
                'nothing': 'no message of a person'},
     'agents': {'all': 'cards and replies', 'cards': 'cards only', 'urgent': 'only cards that need attention now'},
+    'github': {'all': 'each unread notification of GitHub', 'mentions': 'mentions, review requests and assignments',
+               'nothing': 'nothing of GitHub'},
+    'mail': {'all': 'each new message of the Gmail inbox', 'important': 'the mail that Gmail marks important',
+             'nothing': 'no mail'},
     'keywords': 'Words that notify in a team chat as a mention does.',
     'mobile_delay': 'While the person works at a Mac, the iPhone waits this many minutes. Null: the iPhone notifies at once.'}
 ACCESS_TEXT = {'off': 'runs commands without asking', 'smart': 'asks for risky commands',
@@ -62,7 +66,8 @@ SETTINGS_SCHEMA = {
                                      'without activity after which a chat archives itself for auto_archive_hours '
                                      '(0 for never), for notifications an object with one or more of '
                                      'pause_minutes (0 to resume) or paused_until (a UTC time, null to resume), '
-                                     'people (all, mentions, nothing), agents (all, cards, urgent), keywords (the '
+                                     'people (all, mentions, nothing), agents (all, cards, urgent), github (all, '
+                                     'mentions, nothing), mail (all, important, nothing), keywords (the '
                                      'whole list of words) and mobile_delay (the minutes without input at a Mac '
                                      'before the iPhone notifies, null for at once), or for '
                                      'fallback_models the whole list in order, each item with a model and a provider '

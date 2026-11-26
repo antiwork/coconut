@@ -379,11 +379,12 @@ struct CoconutHome: View {
             PushNotifications.shared.target = nil
             return
         }
-        // A notice opens the board of its team. The board reads the team from the store, so nothing waits for the Mac.
-        if let room = target.noticeRoom {
+        // A notice opens the board of its team, which reads the team from the store, and a notification of GitHub or
+        // Gmail opens its issue, pull request or mail. Neither waits for the Mac.
+        if let place = target.sourcePlace ?? target.noticeRoom.map(NotificationDestination.notices) {
             PushNotifications.shared.target = nil
             previewedNotification = nil
-            showNotification(.notices(room))
+            showNotification(place)
             return
         }
         if target.team == nil && (target.group || target.decisionId == nil) {
@@ -494,6 +495,15 @@ struct CoconutHome: View {
             // The board of a team is part of the stack of Chats, so Back leads to the chats with people.
             notificationDecisionId = nil
             show(.chats, path: NavigationPath([NoticeBoardRoute(roomId: room)]))
+        case .github(let route):
+            // Issues and pull requests are the work of Product.
+            notificationDecisionId = nil
+            show(.product, path: NavigationPath([route]))
+        case .mail(let route):
+            notificationDecisionId = nil
+            show(.chats, path: NavigationPath([route]))
+        case .web(let url):
+            UIApplication.shared.open(url)
         }
     }
 
@@ -658,6 +668,13 @@ extension CoconutHome {
             open(.chats, [TeamChatRoute(chat: TeamChatKey(room: room, member: member))])
         // The tap on the notification of a notice.
         case "notice-tap": showNotification(.notices(room))
+        // The taps on a notification of GitHub and of a mail, from the payload that the Mac sends.
+        case "github-tap", "mail-tap":
+            let item: [String: Any] = place == "github-tap"
+                ? ["kind": "github", "repository": "example/gumroad", "number": 4731]
+                : ["kind": "mail", "thread": "18c2f4a9b0d1e2f3"]
+            let info: [AnyHashable: Any] = ["coconut": item.merging(["version": 1, "device_id": UUID().uuidString]) { $1 }]
+            if let destination = NotificationTarget(userInfo: info)?.sourcePlace { showNotification(destination) }
         case "profile-mac": open(.profile, [ProfileRoute.mac])
         case "profile-notifications": open(.profile, [ProfileRoute.notifications])
         case "profile-connections": open(.profile, [ProfileRoute.connections])

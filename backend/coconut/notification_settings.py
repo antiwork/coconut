@@ -9,6 +9,10 @@ One JSON object in the settings table, under `notifications`:
 - `keywords`: words that notify in a team chat as a mention does, whole words, in any case.
 - `mobile_delay`: null, or the minutes without input at a Mac after which the iPhone notifies. While the person works
   at a Mac, the Mac shows the banners and the iPhone waits. What the person read in that time never reaches the iPhone.
+- `github`: `all` (each unread notification of the GitHub inbox), `mentions` (mentions, review requests and
+  assignments), `nothing`.
+- `mail`: `all` (each new message in the Gmail inbox), `important` (what Gmail marks important), `nothing`. Both read
+  the personal connections (notification_sources.py).
 
 `PUT /v1/settings/notifications` changes some keys and answers the whole object. Each iPhone keeps its work hours and
 Outside work hours (push_schedule.py). Until the first change, each iPhone follows its own level and its switch for
@@ -28,7 +32,11 @@ import time
 KEY = 'notifications'
 PEOPLE = ('all', 'mentions', 'nothing')
 AGENTS = ('all', 'cards', 'urgent')
-DEFAULTS = {'paused_until': None, 'people': 'all', 'agents': 'all', 'keywords': [], 'mobile_delay': None}
+GITHUB = ('all', 'mentions', 'nothing')
+MAIL = ('all', 'important', 'nothing')
+LEVELS = (('people', PEOPLE), ('agents', AGENTS), ('github', GITHUB), ('mail', MAIL))
+DEFAULTS = {'paused_until': None, 'people': 'all', 'agents': 'all', 'keywords': [], 'mobile_delay': None,
+            'github': 'mentions', 'mail': 'important'}
 KEYWORDS = 30
 KEYWORD_LENGTH = 40
 PAUSE_DAYS = 30
@@ -36,6 +44,7 @@ DELAY_MINUTES = 60
 # A delay of 0 is "as soon as I'm away": a minute without input, as one report of the Mac can be 30 seconds old.
 AWAY_AT_LEAST = 60
 CHAT_KINDS = ('team', 'direct', 'notice')
+SOURCE_KINDS = ('github', 'mail')
 
 
 def stamp(moment: datetime) -> str:
@@ -57,7 +66,7 @@ def normalized(value) -> dict:
         return result
     if value.get('paused_until') is not None and instant(value['paused_until']):
         result['paused_until'] = stamp(instant(value['paused_until']))
-    for key, choices in (('people', PEOPLE), ('agents', AGENTS)):
+    for key, choices in LEVELS:
         if value.get(key) in choices:
             result[key] = value[key]
     words = value.get('keywords')
@@ -83,6 +92,8 @@ def notifies(settings: dict, kind: str, urgent=False, current: float | None = No
         return False
     if kind in CHAT_KINDS:
         return settings['people'] != 'nothing'
+    if kind in SOURCE_KINDS:
+        return settings[kind] != 'nothing'
     if kind == 'decision':
         return settings['agents'] != 'urgent'
     return settings['agents'] == 'all'
@@ -142,7 +153,7 @@ class NotificationSettings:
             if until is not None and until > current + timedelta(days=PAUSE_DAYS):
                 raise ServiceError(400, f'Pause notifications for {PAUSE_DAYS} days at most.')
             settings['paused_until'] = stamp(until) if until is not None and until > current else None
-        for key, choices in (('people', PEOPLE), ('agents', AGENTS)):
+        for key, choices in LEVELS:
             if key in data:
                 if data[key] not in choices:
                     raise ServiceError(400, f'Choose {key} from ' + ', '.join(choices) + '.')

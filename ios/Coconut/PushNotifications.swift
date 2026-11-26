@@ -18,6 +18,9 @@ struct NotificationSettingsView: View {
     @Bindable private var push = PushNotifications.shared
     @State private var keywords = ""
     @FocusState private var keywordsFocused: Bool
+    /// Whether GitHub and Google are connected, for the footers of their sections. Nil until read, and in the demo.
+    @State private var githubConnected: Bool?
+    @State private var googleConnected: Bool?
 
     var body: some View {
         Form {
@@ -42,6 +45,36 @@ struct NotificationSettingsView: View {
                     .labelsHidden()
                     NavigationLink("What counts as urgent?") { UrgentCardsView(summary: store.pushStatus?.urgent) }
                         .accessibilityIdentifier("urgent-cards")
+                }
+                if settings.github != nil {
+                    Section {
+                        Picker("GitHub", selection: binding(\.github, default: .mentions)) {
+                            ForEach(NotificationSettings.GitHub.allCases, id: \.self) { level in
+                                Text(level.title).tag(level).accessibilityIdentifier("notify-github-" + level.rawValue)
+                            }
+                        }
+                        .pickerStyle(.inline)
+                        .labelsHidden()
+                    } header: {
+                        Text("GitHub")
+                    } footer: {
+                        if githubConnected == false { Text("Connect GitHub in You, Connections.") }
+                    }
+                }
+                if settings.mail != nil {
+                    Section {
+                        Picker("Gmail", selection: binding(\.mail, default: .important)) {
+                            ForEach(NotificationSettings.Mail.allCases, id: \.self) { level in
+                                Text(level.title).tag(level).accessibilityIdentifier("notify-mail-" + level.rawValue)
+                            }
+                        }
+                        .pickerStyle(.inline)
+                        .labelsHidden()
+                    } header: {
+                        Text("Gmail")
+                    } footer: {
+                        if googleConnected == false { Text("Connect Google in You, Connections.") }
+                    }
                 }
                 Section {
                     TextField("My keywords", text: $keywords, prompt: Text("launch, outage"))
@@ -131,7 +164,12 @@ struct NotificationSettingsView: View {
         .onChange(of: keywordsFocused) { _, focused in if !focused { saveKeywords() } }
         .onDisappear(perform: saveKeywords)
         // Read again when the connection returns, so the screen does not keep an unavailable status.
-        .task(id: store.connection) { await store.refreshPushStatus() }
+        .task(id: store.connection) {
+            await store.refreshPushStatus()
+            guard !store.isDemo else { return }
+            githubConnected = (try? await store.githubStatus())?.connected
+            googleConnected = (try? await store.googleStatus())?.connected
+        }
     }
 
     /// Pause notifications, as in the menu of Slack. The pause ends by itself at its time.
@@ -164,6 +202,12 @@ struct NotificationSettingsView: View {
     private func binding<Value>(_ field: WritableKeyPath<NotificationSettings, Value>) -> Binding<Value> {
         Binding(get: { (store.notificationSettings ?? .standard)[keyPath: field] },
                 set: { value in change { $0[keyPath: field] = value } })
+    }
+
+    /// A level that a Mac from before it leaves out, with its default.
+    private func binding<Value>(_ field: WritableKeyPath<NotificationSettings, Value?>, default value: Value) -> Binding<Value> {
+        Binding(get: { (store.notificationSettings ?? .standard)[keyPath: field] ?? value },
+                set: { choice in change { $0[keyPath: field] = choice } })
     }
 
     private func change(_ edit: (inout NotificationSettings) -> Void) {
@@ -431,6 +475,12 @@ enum NotificationDestination: Equatable {
     case chatList
     /// The notice board of a team, by its room ID: a notification of a new notice.
     case notices(String)
+    /// The issue or pull request of a GitHub notification.
+    case github(GitHubItemRoute)
+    /// The thread of a Gmail notification, in the person's own Gmail.
+    case mail(SupportThreadRoute)
+    /// A page of GitHub that is no issue or pull request, such as a release, for a GitHub notification.
+    case web(URL)
 
     /// The place of the chat of a team: the Team chat, a named chat or a direct chat.
     init(chat: TeamChatKey) {
@@ -469,13 +519,26 @@ struct NotificationTarget: Equatable, Sendable {
     var thread: String? = nil
     /// The room of a new notice: a tap opens the notice board of that team.
     var noticeRoom: String? = nil
+    /// The issue or pull request of a GitHub notification.
+    var github: GitHubItemRoute? = nil
+    /// The thread of a Gmail notification.
+    var mail: SupportThreadRoute? = nil
+    /// The page of a GitHub notification that names no issue or pull request.
+    var link: URL? = nil
 
     var conversationRoute: ConversationRoute { ConversationRoute(botId: botId, decisionId: decisionId, messageId: messageId) }
     /// The chat of a team that the notification opens: a Team chat, a named chat or a direct chat, or one notice of an
     /// inbox chat.
     var chat: TeamChatKey? { team.map { TeamChatKey(room: $0, member: member, chat: named, bot: bot, thread: thread) } }
+    /// The place of a notification of GitHub or Gmail, which needs nothing from the Mac.
+    var sourcePlace: NotificationDestination? {
+        if let github { return .github(github) }
+        if let mail { return .mail(mail) }
+        return link.map(NotificationDestination.web)
+    }
 
     func destination(pendingDecisionIds: Set<String>, snapshotReady: Bool) -> NotificationDestination? {
+        if let sourcePlace { return sourcePlace }
         if let noticeRoom { return .notices(noticeRoom) }
         if let chat { return NotificationDestination(chat: chat) }
         if group { return .inboxList }
@@ -533,6 +596,27 @@ struct NotificationTarget: Equatable, Sendable {
             guard let direct else { return nil }
             deviceId = device; botId = ""; taskId = ""; decisionId = nil; messageId = nil
             team = direct.room; member = direct.member; bot = direct.bot
+            return
+        }
+        if data["kind"] as? String == "github" {
+            // An issue or a pull request opens in the app; any other page of GitHub opens in the browser.
+            let repository = data["repository"] as? String ?? ""
+            let url = (data["url"] as? String).flatMap(URL.init(string:))
+            if repository.split(separator: "/").count == 2, let number = data["number"] as? Int, number > 0 {
+                github = GitHubItemRoute(repository: repository, number: number)
+            } else if let url, url.scheme == "https", url.host() == "github.com" {
+                link = url
+            } else {
+                return nil
+            }
+            deviceId = device; botId = ""; taskId = ""; decisionId = nil; messageId = nil
+            return
+        }
+        if data["kind"] as? String == "mail" {
+            guard let thread = data["thread"] as? String, (8...32).contains(thread.count),
+                  thread.allSatisfy({ $0.isASCII && $0.isHexDigit }) else { return nil }
+            deviceId = device; botId = ""; taskId = ""; decisionId = nil; messageId = nil
+            mail = SupportThreadRoute(id: thread.lowercased(), mailbox: "personal")
             return
         }
         guard let bot = data["bot_id"] as? String, UUID(uuidString: bot) != nil,

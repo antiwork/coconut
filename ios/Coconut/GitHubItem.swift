@@ -8,10 +8,12 @@ struct GitHubItemRoute: Hashable {
 }
 
 /// A conversation of the support queue that Coconut opens itself, in place of Gmail: a row of Support, or a link to its
-/// thread in a message. `id` is the ID of the Gmail thread.
+/// thread in a message. `id` is the ID of the Gmail thread. `mailbox` is "personal" for a mail of the person's own
+/// Gmail, which a notification opens.
 struct SupportThreadRoute: Hashable {
     let id: String
     var subject = ""
+    var mailbox = ""
 }
 
 /// The pages of Coconut that addresses open, so a tap on a link to an issue, a pull request, a support thread or a chat
@@ -66,7 +68,7 @@ struct InAppDestinations: ViewModifier {
         content
             .navigationDestination(for: GitHubItemRoute.self) { GitHubItemView(route: $0).inlineNavigationTitle() }
             .navigationDestination(for: SupportThreadRoute.self) {
-                SupportConversationView(id: $0.id, subject: $0.subject).inlineNavigationTitle()
+                SupportConversationView(id: $0.id, subject: $0.subject, mailbox: $0.mailbox).inlineNavigationTitle()
             }
             .navigationDestination(for: RiskReviewRoute.self) { RiskReviewView(route: $0).inlineNavigationTitle() }
             .navigationDestination(for: SupportDeckRoute.self) { SupportDeckView(start: $0.start).inlineNavigationTitle() }

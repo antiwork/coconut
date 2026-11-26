@@ -4,15 +4,16 @@ The support report (the dashboards repository, support-dashboard.sh) gives each 
 ID of its Gmail thread as `slug`. Coconut reads the same thread with the Gmail API, so the apps show the conversation
 in Coconut, and the person answers and closes it there instead of in Gmail. Nothing is kept: each read goes to Gmail.
 
-    GET   /v1/support/conversations/<thread>[?all=1]
+    GET   /v1/support/conversations/<thread>[?all=1][&mailbox=personal]
     GET   /v1/support/conversations/<thread>/messages/<message>
     POST  /v1/support/conversations/<thread>/reply   {text, message?}
     PATCH /v1/support/conversations/<thread>         {state: open|closed}
 
 Two Google connections of this Mac can read a thread (google_connection.py). The support mailbox is Coconut's own: it
 may send and label mail, and no agent shell gets its token. Without it the read-only Google connection of the agents
-reads the thread, and the page offers to connect the support mailbox to answer. A conversation is open or closed by
-the labels of Gumclaw's support pipeline (gumclaw/open, gumclaw/done), which the support report reads too.
+reads the thread, and the page offers to connect the support mailbox to answer. `mailbox=personal` reads only the
+Google connection of the agents, for a mail that notified (notification_sources.py). A conversation is open or closed
+by the labels of Gumclaw's support pipeline (gumclaw/open, gumclaw/done), which the support report reads too.
 
 The answer of a read has the subject, the connected account, the state, whether this Mac can answer, and the messages
 oldest first: the sender, the address that a reply goes to, the recipients, the time, the text without the quoted
@@ -65,12 +66,13 @@ def gmail_url(thread_id: str) -> str:
     return 'https://mail.google.com/mail/u/0/#all/' + thread_id
 
 
-def conversation(root, thread_id: str, *, everything=False, access=None, fetch=None) -> dict:
-    """The thread `thread_id` of the connected Gmail. `everything` reads up to MAX_ALL messages. `access` and `fetch`
+def conversation(root, thread_id: str, *, everything=False, personal=False, access=None, fetch=None) -> dict:
+    """The thread `thread_id` of the connected Gmail. `everything` reads up to MAX_ALL messages. `personal` reads the
+    Google connection of the person, as a notification of a mail does (notification_sources). `access` and `fetch`
     replace the Google connection and the request to Gmail for a check by hand."""
     if not THREAD.fullmatch(thread_id or ''):
         raise ServiceError(400, 'Choose a conversation of the support queue.')
-    token, account, writable = _connected(access) if access is not None else _access(root)
+    token, account, writable = _connected(access) if access is not None else _access(root, personal=personal)
     fetch = fetch or _fetch
     data = fetch(API + thread_id.lower() + '?format=full', token, account)
     items = [item for item in (data.get('messages') or []) if isinstance(item, dict)]
@@ -87,11 +89,11 @@ def conversation(root, thread_id: str, *, everything=False, access=None, fetch=N
                 messages=messages[-limit:], more=max(0, len(messages) - limit), state=state, can_reply=writable)
 
 
-def full_message(root, thread_id: str, message_id: str, *, access=None, fetch=None) -> dict:
+def full_message(root, thread_id: str, message_id: str, *, personal=False, access=None, fetch=None) -> dict:
     """One message of a thread with its whole text, for a message that the conversation cut."""
     if not THREAD.fullmatch(thread_id or '') or not MESSAGE.fullmatch(message_id or ''):
         raise ServiceError(400, 'Choose a message of the support queue.')
-    token, account, _ = _connected(access) if access is not None else _access(root)
+    token, account, _ = _connected(access) if access is not None else _access(root, personal=personal)
     item = (fetch or _fetch)(GMAIL + 'messages/' + message_id.lower() + '?format=full', token, account)
     if str(item.get('threadId') or '').lower() != thread_id.lower():
         raise ServiceError(404, 'This message is not in that conversation.')
@@ -105,12 +107,13 @@ def _connected(access):
     return (*access, False) if len(access) == 2 else tuple(access)
 
 
-def _access(root, write=False):
+def _access(root, write=False, personal=False):
     """The token and the account that read a thread, and whether they may answer and label it: the support mailbox
-    when it is connected, else the read-only Google connection of the agents, for a read."""
+    when it is connected, else the read-only Google connection of the agents, for a read. `personal` reads that
+    connection only."""
     from .google_connection import GoogleAuthorizationError, GoogleConnections, GoogleError
     support = GoogleConnections(root, mailbox='support').profile()
-    if support.status().get('connected'):
+    if not personal and support.status().get('connected'):
         profile, writable = support, True
     elif write:
         raise ServiceError(409, NO_MAILBOX)
