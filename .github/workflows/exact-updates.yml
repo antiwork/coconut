@@ -17,8 +17,8 @@ name: Exact updates
 #
 # push finds a binary's stream on the origin once the stream has a head. The newest binary's first head comes from its
 # production build receipt, which the build embeds in the app as receipt.json; the job takes it from the newest
-# coconut-exact-ipa artifact. Exact at the pinned commit gets the patches in .github/exact-patches: unpatched, push
-# refuses every update while the channel holds a stream of an older binary that needs a new one.
+# coconut-exact-ipa artifact. Exact at the pinned commit gets the patches in .github/exact-patches: push-dry-run.patch
+# gives push the dry run of check (EXACT_PUSH_DRY_RUN=1), which Exact's push lacks.
 #
 # The channel is "appdrop": AppDrop's origin for the signing key, with no server and no account. The private key is the
 # secret EXACT_SIGNING_KEY of the environment exact-updates (main only); its public half is deploy.signing.keys.coconut
@@ -43,7 +43,7 @@ concurrency:
 
 env:
   # docs/exact.md records this commit. Each update must come from the Exact that built the binary.
-  EXACT_COMMIT: 8ed52642a2c4a6227c8abfafd80ecf501b1eb5aa
+  EXACT_COMMIT: 88fa1f1818895e776f6268caa9503b89ddf2e97b
   BUN_VERSION: 1.4.4
 
 jobs:

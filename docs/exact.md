@@ -4,7 +4,7 @@
 client to Exact, Exact Build and AppDrop. The Swift app in `ios/` and `mac/` is unchanged and still ships through
 TestFlight and Sparkle. The Python service in `backend/` is unchanged.
 
-- Exact: github.com/expo/exact at `8ed52642a2c4a6227c8abfafd80ecf501b1eb5aa` (2026-11-17). Build with that value as `exact`.
+- Exact: github.com/expo/exact at `88fa1f1818895e776f6268caa9503b89ddf2e97b` (2026-11-25). Build with that value as `exact`.
 - Name Coconut, bundle id `com.gumroad.coconut.exact`. Never `com.gumroad.coconut` or `com.gumroad.coconut.mac`.
 - Data: the Mac's Coconut once the phone is paired, read through the relay with the tunnel of the Swift app (see Live
   data). Before a pairing, "Look around with demo data" shows the preview fixture of the Swift app
@@ -354,9 +354,10 @@ Exact Build compiles in the cloud and returns the diagnostics of the compiler as
 shared Mac (`bun exact.mjs share`, `ios`, `mac`, `web`, `verify` and `setup` build Rust and Xcode workspaces).
 
 ```sh
-C=8ed52642a2c4a6227c8abfafd80ecf501b1eb5aa
+C=88fa1f1818895e776f6268caa9503b89ddf2e97b
 H="Authorization: Bearer $(cat ~/.exact-build-token)"     # never print it, never run with set -x
-tar -czhf /tmp/coconut-exact.tar.gz -C exact .             # 0.99 MiB; app.contract at the root; -h follows links
+# -h follows links, and .exact/checkout links to all of Exact, so leave .exact out
+tar -czhf /tmp/coconut-exact.tar.gz --exclude ./.exact -C exact .   # 0.2 MiB; app.contract at the root
 ID=$(curl -sS -X POST "https://exact.appdrop.app/build?exact=$C" -H "$H" -H 'Content-Type: application/gzip' \
   --data-binary @/tmp/coconut-exact.tar.gz | python3 -c 'import json,sys;print(json.load(sys.stdin)["id"])')
 curl -sS "https://exact.appdrop.app/$ID/" -H "$H"          # status, steps with times, diagnostics {file,line,col,id,severity,message}
@@ -389,9 +390,9 @@ The target of Exact is 100 ms from saving an edit to seeing it, on the web host 
    after a build starts the stream of the new binary from its build receipt (`receipt.json` in the IPA, taken from the
    newest artifact), and later pushes find it on the origin. Its first update reloads the app once, as every update
    does, so the build leaves that to the next push and a first launch can pair undisturbed. A binary built before a
-   grant cannot take a module that declares it, so it keeps what it has; Exact's own `push` then refuses the whole
-   update and `deploy` never starts the new binary's stream, so CI applies the patch in `.github/exact-patches`, which
-   leaves such a stream as it is. Check whether Exact still needs the patch when `EXACT_COMMIT` moves.
+   grant cannot take a module that declares it, so it keeps what it has: since 88fa1f18, Exact's `push` leaves a stream
+   that provably needs a new binary as it is (LLP 1156.006.000 D25), so Coconut's patch for that is gone. CI applies
+   `.github/exact-patches/push-dry-run.patch`, the dry run of `check`; when `EXACT_COMMIT` moves, check that it applies.
    The channel is `"appdrop"`, AppDrop's origin for the key. The private key is the secret `EXACT_SIGNING_KEY` of the
    environment `exact-updates`, and on the Mac that made it `~/.config/exact/keys/coconut.pem`; the public half is in
    `app.json`. Exact Build cannot make such a binary: it builds development binaries, which never check the channel
@@ -428,8 +429,9 @@ a `push --watch` update.
   share extension are not named there, so whether the cloud build includes them is unverified.
 - The generated `exact/AGENTS.md` tells agents to run `bun exact.mjs share`, which builds natively and locally. On the
   shared Mac use Exact Build. Edits to that file need approval, which did not come, so the note is here.
-- `exact/exact.mjs` names the bun of this Mac (`/opt/homebrew/Cellar/bun/1.4.4`) in its fallback. `bun exact.mjs <verb>`
-  works anywhere bun is on the path. The Exact checkout is found at `../../exact` (beside the repository) or by `EXACT`.
+- `exact/exact.mjs` tries the bun of this Mac (`/opt/homebrew/Cellar/bun/1.4.4`), then the one on the path. Its first
+  run links the Exact checkout as `exact/.exact/checkout`: the one `EXACT` names, else `../../exact` beside the
+  repository or its main worktree. To point a worktree at another checkout, set `EXACT` for one command.
 - `symbol:sf/<name>` draws blank on the web host (a warning). Twelve are used: `cpu`, `brain`, `paperclip`,
   `circle.inset.filled`, `hourglass`, `bolt.slash.fill`, `exclamationmark.octagon.fill`, `megaphone.fill` for the
   rows of Needs attention, and `checkmark.circle.fill`, `xmark.circle.fill`, `chevron.down` and `arrow.up` for a

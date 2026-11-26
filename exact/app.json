@@ -30,7 +30,7 @@
       "typescript": "save"
     }
   },
-  "$schema": "../../exact/scripts/app.schema.json",
+  "$schema": ".exact/checkout/scripts/app.schema.json",
   "name": "Coconut",
   "short_name": "Coconut",
   "id": "com.gumroad.coconut.exact",
