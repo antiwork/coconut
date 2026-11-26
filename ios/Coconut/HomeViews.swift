@@ -166,16 +166,17 @@ struct HomeLaunchView: View {
     /// right on any chat stars it, as Pin in Messages and Telegram (the person: "Don't see a way to pin a chat to the
     /// top of list"). Unread follows with its chats in sight too (the person, 2026-11-25: "Put unread chats at top"):
     /// every chat with an unread message that is not starred, newest activity first, which also stays in the row of
-    /// its section (ChatList.unreadSection). Every other section is one row that opens its chats on a page of their
-    /// own (ChatSectionRow): a row for each project, Coconut first, then the chats with people, the agents of an
-    /// earlier release, Personal at the bottom, and Archived last (the person: "Archived should be behind a tap just
-    /// one row with number at bottom of chats"). A row shows what works or waits inside, the unread messages and the
-    /// number of its chats, so a live chat is one tap deeper and its row still says so; the person chose this on a
-    /// card over nesting the Mac sidebar too. The list has no tabs or toggles inside it, because the person found that
-    /// nobody taps them (2026-11-24), and a chat archives itself after the time that You sets (AutoArchiveMenu, 14
-    /// hours unless the person picks another). The top right has the two buttons that the person asked for that
-    /// evening: Working, which lists every chat that works in one list without the rows of the sections
-    /// (WorkingFilterButton), and the grid of the agents that work (ChatGridButton).
+    /// its section (ChatList.unreadSection). Every other section is one row that opens its chats on a page of their own
+    /// (ChatSectionRow), under the title Folders when Starred or Unread is above, so that the rows do not read as more
+    /// chats of Unread: a row for each project, Coconut first, then the chats with people, the agents of an earlier
+    /// release, Personal at the bottom, and Archived last (the person: "Archived should be behind a tap just one row
+    /// with number at bottom of chats"). A row shows what works or waits inside, the unread messages and the number of
+    /// its chats, so a live chat is one tap deeper and its row still says so; the person chose this on a card over
+    /// nesting the Mac sidebar too. The list has no tabs or toggles inside it, because the person found that nobody
+    /// taps them (2026-11-24), and a chat archives itself after the time that You sets (AutoArchiveMenu, 14 hours
+    /// unless the person picks another). The top right has the two buttons that the person asked for that evening:
+    /// Working, which lists every chat that works in one list without the rows of the sections (WorkingFilterButton),
+    /// and the grid of the agents that work (ChatGridButton).
     private func chatList(_ sections: [ChatListSection]) -> some View {
         let now = Date.now
         // The chats that work, in the order of the sections, for the Working filter.
@@ -212,14 +213,16 @@ struct HomeLaunchView: View {
                     ChatSectionHeader(section: unread, first: starred == nil).homeRow()
                     ForEach(unread.items) { item in chatRow(item, in: unread) }
                 }
+                // Under the chats of Starred or Unread the rows of the sections have a title of their own, so they do
+                // not read as more chats of Unread. Alone at the top they need none.
+                if (starred != nil || unread != nil) && !rows.isEmpty {
+                    ChatSectionHeader(title: "Folders", id: "folders").homeRow()
+                }
                 ForEach(rows) { section in
                     ChatSectionRow(section: section, summary: summary(of: section, at: now)) {
                         pushRoute?(ChatSectionRoute(section))
                     }
-                    // The rows start a little under the last chat of Starred or Unread, so the two kinds of rows read
-                    // apart.
-                    .homeRow(top: (starred != nil || unread != nil) && section.id == rows.first?.id
-                        ? BoardStyle.Space.m : 0)
+                    .homeRow()
                 }
             }
         }
@@ -517,12 +520,24 @@ struct ChatListSection: Identifiable, Equatable {
 /// the person starred them to have them at hand, or has not read them. Every other section of Chats is one row that
 /// opens its chats (ChatSectionRow), so nothing in Chats folds.
 struct ChatSectionHeader: View {
-    let section: ChatListSection
+    let title: String
+    /// The accessibility identifier of the title is chat-section-<id>, for a check by script.
+    let id: String
     /// The first title starts close under the title of the page.
     var first = false
 
+    init(section: ChatListSection, first: Bool = false) {
+        self.init(title: section.title, id: section.id, first: first)
+    }
+
+    init(title: String, id: String, first: Bool = false) {
+        self.title = title
+        self.id = id
+        self.first = first
+    }
+
     var body: some View {
-        Text(section.title)
+        Text(title)
             .font(.subheadline.weight(.semibold))
             .foregroundStyle(.secondary)
             .lineLimit(1)
@@ -531,7 +546,7 @@ struct ChatSectionHeader: View {
             .padding(.bottom, BoardStyle.Space.s)
             .background(BoardStyle.paper)
             .accessibilityAddTraits(.isHeader)
-            .accessibilityIdentifier("chat-section-" + section.id)
+            .accessibilityIdentifier("chat-section-" + id)
     }
 
     /// What VoiceOver reads for the number of chats of a section, for example "12 chats".
