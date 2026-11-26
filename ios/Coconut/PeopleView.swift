@@ -85,7 +85,7 @@ struct PeopleView: View {
                     ForEach(team.chats) { item in chatRow(item) }
                     if team.hasBoard {
                         BoardRow(symbol: team.room.bannerNotice?.kind.symbol ?? "megaphone",
-                                 tint: team.room.bannerNotice?.kind.tint ?? .secondary, title: "Notices",
+                                 tint: team.room.bannerNotice?.kind.tint ?? .secondary, title: "Notice board",
                                  detail: team.room.bannerNotice?.text,
                                  value: team.room.unseenNotices > 0 ? "\(team.room.unseenNotices) new" : nil)
                             .boardButton("people-notices-" + team.id) { pushRoute?(NoticeBoardRoute(roomId: team.id)) }

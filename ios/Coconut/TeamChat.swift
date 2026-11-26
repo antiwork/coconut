@@ -334,7 +334,7 @@ enum TeamChatManagement {
     static let deleteMessage = "Its messages go from the app of each member."
     static let deleteConfirm = "Delete"
     static let newChat = "New chat"
-    static let nameHeader = "Chat name"
+    static let namePrompt = "Chat name"
 
     /// This person can make a chat in the team.
     static func makes(_ room: TeamRoom) -> Bool {

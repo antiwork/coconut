@@ -235,11 +235,12 @@ struct TeamRoomView: View {
             if TeamChatManagement.showsSection(room) {
                 chatsSection(room)
             }
-            // The notice board of the team, apart from its chats.
+            // The notice board of the team, apart from its chats. Its label is "Notice board", not "Notices", because a
+            // team often names a chat Notices (the inbox of its alerts), and two rows of one name read as one list.
             if room.notices != nil {
                 Section {
                     NavigationLink { NoticeBoardView(roomId: room.room) } label: {
-                        Label("Notices", systemImage: "megaphone")
+                        Label("Notice board", systemImage: "megaphone")
                             .badge(room.unseenNotices)
                     }
                     .accessibilityIdentifier("team-notices")
@@ -732,8 +733,8 @@ struct TeamCreateView: View {
     }
 }
 
-/// Make a named chat, or give one a new name, in the form of TeamCreateView: one field under "Chat name", Cancel, and
-/// Create or Save. An error of the Mac shows in the banner of the sheet.
+/// Make a named chat, or give one a new name, in the form of TeamCreateView: one field with the prompt "Chat name",
+/// Cancel, and Create or Save. An error of the Mac shows in the banner of the sheet.
 struct TeamChatNameView: View {
     @Environment(AppStore.self) private var store
     @Environment(\.dismiss) private var dismiss
@@ -750,8 +751,9 @@ struct TeamChatNameView: View {
     var body: some View {
         NavigationStack {
             Form {
-                Section(TeamChatManagement.nameHeader) {
-                    TextField(TeamChatManagement.nameHeader, text: $name, prompt: Text(TeamChatManagement.nameHeader))
+                // The prompt names the field, so the section has no header that says it again.
+                Section {
+                    TextField(TeamChatManagement.namePrompt, text: $name, prompt: Text(TeamChatManagement.namePrompt))
                         .fieldUnderHeader()
                         .focused($focused)
                         .submitLabel(.done).onSubmit { if canSave { save() } }

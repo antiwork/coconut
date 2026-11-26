@@ -26,10 +26,11 @@ struct NoticeBoardView: View {
             if let room {
                 board(room)
             } else {
-                QuietEmptyState(symbol: "megaphone", title: "Notices unavailable", message: "This Mac is no longer in this team.")
+                QuietEmptyState(symbol: "megaphone", title: "Notice board unavailable",
+                                message: "This Mac is no longer in this team.")
             }
         }
-        .navigationTitle(room.map { "Notices · \($0.name)" } ?? "Notices")
+        .navigationTitle(room.map { "Notice board · \($0.name)" } ?? "Notice board")
         .toolbar {
             if room?.status == .active {
                 ToolbarItem(placement: .primaryAction) {
