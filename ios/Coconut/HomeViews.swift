@@ -714,9 +714,6 @@ struct ChatListSection: Identifiable, Equatable {
         if !open(kept).contains(id) { lines.append(id) }
         return lines.joined(separator: "\n")
     }
-
-    /// What VoiceOver reads for the number of chats of a section, for example "12 chats".
-    static func chats(_ count: Int) -> String { count == 1 ? "1 chat" : "\(count) chats" }
 }
 
 /// What the row of a section of Chats shows of its chats (ChatSectionRow).
