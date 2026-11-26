@@ -52,11 +52,10 @@ struct HomeLaunchView: View {
     }
 
     private var productList: some View {
-        let cards = store.pendingCardCount
         let pulls = ProductWork.pulls(productReport("engineering")?.data)
         return ScrollViewReader { proxy in
             List {
-                attention(cards: cards)
+                attention
                 // The to-dos of Product, which its badge counts (TodoCounts). They have no title, as on Finance and
                 // Support: the rows say what they are (TodoTile). The cards and the alerts of the agents above
                 // them are no to-dos of gumroad-private, so they add nothing to the count.
@@ -551,7 +550,7 @@ struct HomeLaunchView: View {
     /// draws nothing when there is nothing to show. The breaches of the business are not here: Support past SLA is a
     /// row of the list of Support, and the product issues past SLA and of high priority are the to-dos themselves.
     @ViewBuilder
-    private func attention(cards: Int) -> some View {
+    private var attention: some View {
         // The rules read the clock, so the card checks them again each minute.
         TimelineView(.periodic(from: .now, by: 60)) { timeline in
             let items = store.attentionItems(now: timeline.date).filter { $0.kind != .business }
@@ -559,23 +558,40 @@ struct HomeLaunchView: View {
                 .padding(.bottom, items.isEmpty ? 0 : BoardStyle.Space.m)
         }
         .homeRow(top: BoardStyle.Space.s)
-        if cards > 0 {
-            Button { open(.cards(nil)) } label: {
-                HStack(spacing: BoardStyle.Space.m) {
-                    // The count is what the person came for, so it is the largest thing under the title.
-                    Text("\(cards)").font(.largeTitle.weight(.bold).monospacedDigit()).foregroundStyle(BoardStyle.attention)
-                    Text(cards == 1 ? "card waits for you" : "cards wait for you")
-                        .font(.body.weight(.semibold)).foregroundStyle(.primary)
-                    Spacer(minLength: 0)
-                    Image(systemName: "chevron.right").font(.footnote.weight(.semibold)).foregroundStyle(.tertiary)
+        // Each card whole, as its chat shows it, in place of a count that opened them (the person, 2026-11-26: "1 card
+        // waits for you → just render the whole card or cards inline there").
+        ForEach(waitingCards) { waitingCard($0) }
+    }
+
+    /// The cards that wait, in the order of Cards (InboxPresentation.entries), and a card put off with Later at the end,
+    /// as DecisionQueue puts it. A card stays while its answer waits for its Undo, as in its chat, and leaves once the
+    /// answer is sent.
+    private var waitingCards: [Decision] {
+        let entries = InboxPresentation.entries(decisions: store.decisions)
+        return entries.filter { $0.inboxDeferredAt == nil } + entries.filter { $0.inboxDeferredAt != nil }
+    }
+
+    /// A card that waits: the name of its chat, which opens the chat at the card, over the card with its options, its
+    /// draft, its previews and its X (DecisionCard).
+    private func waitingCard(_ card: Decision) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Button { pushRoute?(store.decisionChatRoute(for: card)) } label: {
+                HStack(spacing: BoardStyle.Space.xs) {
+                    Text(OmniSearch.owner(store.conversationBotId(for: card), in: store) ?? store.botName(card.botId))
+                        .lineLimit(1)
+                    Image(systemName: "chevron.right").imageScale(.small)
                 }
-                .padding(.vertical, BoardStyle.Space.m)
+                .font(.footnote).foregroundStyle(.secondary)
+                .frame(minHeight: 44, alignment: .leading)
                 .contentShape(Rectangle())
             }
             .buttonStyle(HomePressStyle())
-            .accessibilityIdentifier("home-review-cards")
-            .homeRow()
+            .accessibilityHint("Opens the chat of this card")
+            .accessibilityIdentifier("home-card-chat-\(card.id)")
+            DecisionCard(decision: card)
         }
+        .padding(.bottom, BoardStyle.Space.m)
+        .homeRow()
     }
 
     /// Archive, or Unarchive for a chat that is archived. An archived chat moves to Archived, the page that the last row

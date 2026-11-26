@@ -274,8 +274,6 @@ final class AppStore {
     func appBadgeCount(now: Date = Date()) -> Int {
         HomeFeed.badge(homeUnread) + AttentionRules.badgeCount(attentionItems(now: now))
     }
-    /// The pending cards that the person did not answer yet.
-    var pendingCardCount: Int { pendingDecisions.filter { !answeringDecisionIds.contains($0.id) }.count }
     var reconciledBadgeCount: Int? { lastSync.map { _ in appBadgeCount() } }
     @ObservationIgnored var setBadge: (Int) -> Void = { PushNotifications.shared.setBadgeCount($0) }
     /// Gets the list of the teams before and after each list that the Mac sent. The list before is nil for the first
