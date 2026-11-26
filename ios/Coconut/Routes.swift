@@ -56,5 +56,22 @@ struct NoticeBoardRoute: Hashable {
 /// The list of all agents, with the pages, the live work and the spend. The project menu of Home opens it.
 struct AgentListRoute: Hashable {}
 
-/// The archived chats, newest first. The last row of Chats on the iPhone opens them (HomeLaunchView, Part.archived).
-struct ArchivedChatsRoute: Hashable {}
+/// The chats of one section of Chats on a page of their own (HomeLaunchView, Part.section): a project, the chats with
+/// people, the agents of an earlier release, or the archived chats. Its row in Chats opens it (ChatSectionRow). The
+/// title stays when the last chat of the section leaves.
+struct ChatSectionRoute: Hashable {
+    let id: String
+    let title: String
+
+    init(id: String, title: String) {
+        self.id = id
+        self.title = title
+    }
+
+    init(_ section: ChatListSection) { self.init(id: section.id, title: section.title) }
+
+    /// The archived chats, newest first, behind the last row of Chats.
+    static let archived = ChatSectionRoute(ChatListSection(kind: .archived, title: "Archived", items: []))
+
+    var isArchived: Bool { id == Self.archived.id }
+}

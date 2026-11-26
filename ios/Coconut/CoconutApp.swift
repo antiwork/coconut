@@ -302,8 +302,9 @@ struct CoconutHome: View {
                     BotExchangeView(route: route).inlineNavigationTitle()
                 }
                 .navigationDestination(for: AgentListRoute.self) { _ in AgentsView() }
-                .navigationDestination(for: ArchivedChatsRoute.self) { _ in
-                    HomeLaunchView(part: .archived) { open($0, on: path) }.inlineNavigationTitle()
+                // A row of Chats opens the chats of its section, Archived too (ChatSectionRow).
+                .navigationDestination(for: ChatSectionRoute.self) { route in
+                    HomeLaunchView(part: .section(route)) { open($0, on: path) }.inlineNavigationTitle()
                 }
                 .navigationDestination(for: BusinessRoute.self) { BusinessDestinationView(route: $0).inlineNavigationTitle() }
                 .navigationDestination(for: BotSettingsRoute.self) { route in
@@ -533,7 +534,13 @@ extension CoconutHome {
             open(.chats, [ConversationRoute(botId: store.bots.first { $0.name == "Personal" && $0.chatOf == nil }?.id ?? agent)])
         case "coconut": open(.chats, [ConversationRoute(botId: store.bots.coconutChat?.id ?? agent)])
         // The page of the archived chats, which the last row of Chats opens.
-        case "archived": open(.chats, [ArchivedChatsRoute()])
+        case "archived": open(.chats, [ChatSectionRoute.archived])
+        // The page of a project's chats, which its row in Chats opens: the first project, Coconut.
+        case "chat-section":
+            let sections = ChatList.sections(bots: store.bots, latest: store.chatSummaries.newestActivity,
+                                             rooms: store.shownTeamRooms)
+            let project = sections.first { if case .project = $0.kind { true } else { false } }
+            open(.chats, project.map { [ChatSectionRoute($0)] } ?? [])
         case "team-chat": open(.chats, [TeamChatRoute(chat: TeamChatKey(room: room))])
         case "agent": open(.chats, [AgentRoute(botId: agent)])
         case "agent-routines": open(.chats, [AgentRoute(botId: agent), BotSettingsRoute(botId: agent)])
