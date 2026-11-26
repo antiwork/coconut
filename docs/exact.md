@@ -441,7 +441,7 @@ Native parts:
 | Share extensions | `CoconutShare`, `ShareShared`, `CoconutMacShare` | `share_target` in `app.json` derives an Apple share extension (presentation `compose` or `confirmation`); a route such as `/share` reads `searchParam(entry, "text")` and `sharedFiles(entry, "files")`, and the app asks for the project. `apps/fieldnotes` does it. The extension of the Mac is not checked |
 | Mac menu bar | The status item of `mac/Sources` | A `button` with `-exact-menu="status"` is the status item; its `popovertarget` menu is the menu |
 | Sparkle | `mac/Sources/CoconutApp/Updater.swift`, the feed in `updates/` | Exact updates the Contract, assets and `app.ts` of an installed Mac app with signed updates (`deploy.store.macos`). A new grant or native code still needs a new binary, so Sparkle or a notarized download stays for those |
-| Live Activities | `LiveActivity.swift` | The `activities` extension of Exact Build (not tried) |
+| Widgets and the Live Activity | `CoconutWidgets` (the widgets, the New agent control and the one Live Activity of the working agents), fed by the glance that `HomeScreenPublisher.swift` writes (`HomeScreen`) | The `activities` extension of Exact Build for the Live Activity (not tried); the widgets are not checked |
 
 Decisions the first builds should settle: whether Exact Build takes `deploy.store.ios: "A"`, whether it includes the
 notification service and the share extension, and what a build of this app costs in worker time.

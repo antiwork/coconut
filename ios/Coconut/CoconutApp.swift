@@ -26,6 +26,8 @@ struct CoconutApp: App {
             CoconutHome()
                 // The share extension lists the chats that the app wrote for it.
                 .modifier(ShareDirectoryPublisher())
+                // The widgets and the Live Activity show what the app wrote for them (HomeScreenPublisher).
+                .modifier(HomeScreenPublisher())
                 .environment(store)
                 // A new store holds the demo or the paired Mac, and the home starts again on it.
                 .id(ObjectIdentifier(store))
@@ -42,6 +44,8 @@ struct CoconutApp: App {
                     if PairingSetup.isLink(url) { store.setupLink = url.absoluteString }
                     // An invite link of a team opens the join sheet. The link stays in memory only.
                     if TeamLinkCheck.isLink(url) { store.teamJoin = TeamJoinRequest(link: url.absoluteString) }
+                    // A tap on a widget or on the Live Activity opens its place (CoconutHome.openHomeScreenLink).
+                    if let link = HomeScreenLink(url: url) { HomeScreenLinks.shared.pending = link }
                 }
                 // The web form of an invite link, https://coconut.gumroad.com/i/<token>, arrives as a browsing
                 // activity, because coconut.gumroad.com is an associated domain of the app. The same invite as a
@@ -103,7 +107,20 @@ struct CoconutApp: App {
 ///
 /// The tab bar always has exactly five tabs. With a sixth, iOS puts the last tabs behind a More tab, and the person
 /// does not want More. A new place goes on the page of a tab, or it takes the place of a tab.
-enum HomeTab: Hashable { case finance, support, product, chats, profile }
+enum HomeTab: Hashable {
+    case finance, support, product, chats, profile
+
+    /// The tab of a link of the widgets (HomeScreenLink.tab): its name, or Chats for a name that it does not know.
+    init(link name: String) {
+        switch name {
+        case "finance": self = .finance
+        case "support": self = .support
+        case "product": self = .product
+        case "you", "profile": self = .profile
+        default: self = .chats
+        }
+    }
+}
 
 struct CoconutHome: View {
     @Environment(AppStore.self) private var store
@@ -246,6 +263,12 @@ struct CoconutHome: View {
         // After the sheets, so that each sheet gets it too.
         .environment(\.showTeamChat) { chat in showTeamChat(chat) }
         .onChange(of: PushNotifications.shared.target) { _, _ in openNotification() }
+        // A widget, the Live Activity, the New agent control or a shortcut asked for a place.
+        .onChange(of: HomeScreenLinks.shared.pending, initial: true) { _, link in
+            guard let link else { return }
+            HomeScreenLinks.shared.pending = nil
+            openHomeScreenLink(link)
+        }
         .onChange(of: store.lastSync) { _, _ in openNotification() }
         .onChange(of: store.connection) { _, _ in openNotification() }
         .onAppear { openNotification() }
@@ -422,6 +445,29 @@ struct CoconutHome: View {
         case .connection: show(.profile, path: NavigationPath([ProfileRoute.mac]))
         case .notices(let room): path.wrappedValue.append(NoticeBoardRoute(roomId: room))
         case .business(let route): path.wrappedValue.append(route)
+        }
+    }
+
+    /// Opens the place of a widget, of the Live Activity, of the New agent control or of a shortcut, as a tap on its row
+    /// in the app would: a chat on the stack of Chats, at its card while the card waits; every working chat (the Working
+    /// filter of Chats); the message box of Chats with the keyboard up; or a tab.
+    private func openHomeScreenLink(_ link: HomeScreenLink) {
+        notificationDecisionId = nil
+        switch link {
+        case .chat(let bot, let card):
+            let waiting = card.flatMap { id in store.decisions.first { $0.id == id && $0.isPending }?.id }
+            show(.chats, path: NavigationPath([ConversationRoute(botId: bot, decisionId: waiting)]))
+        case .team(let room, let member, let chat, let bot):
+            showTeamChat(TeamChatKey(room: room, member: member, chat: chat, bot: bot))
+        case .working:
+            UserDefaults.standard.set(true, forKey: WorkingFilterButton.key)
+            show(.chats)
+        case .newAgent:
+            // The box of Chats takes the request and its keyboard comes up (NewChatBar); its project stays.
+            show(.chats)
+            store.startChat()
+        case .tab(let name):
+            show(HomeTab(link: name))
         }
     }
 
