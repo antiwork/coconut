@@ -5,8 +5,9 @@ import SwiftUI
 /// (TodoLists.swift), and the open pull requests (ProductWork). Chats is a tree (the person, 2026-11-25: "Everything
 /// should be nested", then "Nested don't look nested"): Starred with its chats, Unread with the chats that the person
 /// has not read, then one row for each project, the chats with people, the agents of an earlier release and Personal at
-/// the bottom, which each open in place with their chats set in under them, and Archived, which opens its chats on a
-/// page of their own (ChatSectionRow, ChatList.sections), with the message box under the list (NewChatBar). Its top
+/// the bottom, which each open in place with their active chats set in under them and Load more for the others, and
+/// Archived, which opens its chats on a page of their own (ChatSectionRow, ChatList.sections), with the message box
+/// under the list (NewChatBar). Its top
 /// right has Working, which lists only the chats that work, and the grid of the agents that work (ChatGrid).
 struct HomeLaunchView: View {
     /// What the view shows: Product, Chats, or the chats of one section on a page, Archived, which its row opens.
@@ -19,6 +20,9 @@ struct HomeLaunchView: View {
     @AppStorage(WorkingFilterButton.key) private var workingOnly = false
     /// The sections of Chats that the person opened, one on each line (ChatListSection.open). The phone keeps them.
     @AppStorage(ChatSectionRow.key) private var openSections = ""
+    /// The open sections of Chats that show all their chats, after a tap on Load more (ChatSectionMore). A section
+    /// that folds leaves it, so it opens again with only its active chats. The phone does not keep it.
+    @State private var loadedSections: Set<String> = []
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @Environment(\.pushRoute) private var pushRoute
     @Environment(\.openURL) private var openURL
@@ -176,16 +180,18 @@ struct HomeLaunchView: View {
     /// earlier release and Personal at the bottom. A tap opens a row in place, as a folder of Notes or Reminders: its
     /// chevron turns down and its chats show under it, set in to its title with a line down from its symbol
     /// (ChatListRow). Another tap folds it. Every section starts folded, and the phone keeps the ones that the person
-    /// opened. A folded row shows what works or waits inside and the number of its chats, so a live chat in a folded
-    /// section still says so. Starred comes first and stays open, because the person chose its chats: a swipe to the
+    /// opened. An open section shows its active chats, and Load more shows the others (the person, 2026-11-26: "load
+    /// only active by default when expanded with load more"). A folded row shows what works or waits inside, so a live
+    /// chat in a folded section still says so. No row counts its chats (the person, 2026-11-26: "Don't need counts of
+    /// chats stressful"). Starred comes first and stays open, because the person chose its chats: a swipe to the
     /// right on any chat stars it, as Pin in Messages and Telegram (the person: "Don't see a way to pin a chat to the
     /// top of list"). Unread follows and stays open too (the person, 2026-11-25: "Put unread chats at top"): every chat
     /// with an unread message that is not starred, newest activity first. Such a chat leaves its section until the
-    /// person reads it, as in the Mac sidebar, so each chat shows once and the row of a section counts only the chats
-    /// under it (ChatList.tree). Starred and Unread have the rows of the sections, so their chats are set in as the
-    /// chats of a project are, and the rows under them read as rows of their own. Archived is the last row and opens
-    /// its chats on a page of their own (the person: "Archived should be behind a tap just one row with number at
-    /// bottom of chats"). The list has no tabs or filters inside it, because the person found that nobody taps them
+    /// person reads it, as in the Mac sidebar, so each chat shows once (ChatList.tree). Starred and Unread show all
+    /// their chats. They have the rows of the sections, so their chats are set in as the chats of a project are, and
+    /// the rows under them read as rows of their own. Archived is the last row and opens its chats on a page of their
+    /// own (the person: "Archived should be behind a tap just one row with number at bottom of chats"). Its number
+    /// went with the others. The list has no tabs or filters inside it, because the person found that nobody taps them
     /// (2026-11-24), and a chat archives itself after the time that You sets (AutoArchiveMenu, 14 hours unless the
     /// person picks another). The top right has the two buttons that the person asked for that evening: Working, which
     /// lists every chat that works in one list without the rows of the sections (WorkingFilterButton), and the grid of
@@ -225,13 +231,26 @@ struct HomeLaunchView: View {
                         if section.kind == .archived {
                             pushRoute?(ChatSectionRoute(section))
                         } else {
-                            withAnimation(.snappy) { openSections = ChatListSection.toggle(section.id, openSections) }
+                            withAnimation(.snappy) {
+                                openSections = ChatListSection.toggle(section.id, openSections)
+                                loadedSections.remove(section.id)
+                            }
                         }
                     }
                     .id(section.id)
                     .homeRow()
                     if open {
-                        ForEach(section.items) { item in chatRow(item, in: section, nested: true) }
+                        // Starred and Unread show every chat: the person chose them, or has not read them.
+                        let shown = section.shown(all: section.alwaysOpen || loadedSections.contains(section.id)) {
+                            active($0, at: now)
+                        }
+                        ForEach(shown) { item in chatRow(item, in: section, nested: true) }
+                        if shown.count < section.items.count {
+                            ChatSectionMore(section: section) {
+                                withAnimation(.snappy) { _ = loadedSections.insert(section.id) }
+                            }
+                            .modifier(ChatListRow(nested: true))
+                        }
                     }
                 }
             }
@@ -297,7 +316,7 @@ struct HomeLaunchView: View {
     }
 
     /// What the row of a section shows of its chats: the chats whose card waits and the chats that work. Its unread
-    /// chats are in Unread (ChatList.tree). Archived shows only the number of its chats: an archived chat runs nothing.
+    /// chats are in Unread (ChatList.tree). Archived shows nothing: an archived chat runs nothing.
     private func summary(of section: ChatListSection, at date: Date) -> ChatSectionSummary {
         var summary = ChatSectionSummary()
         guard section.kind != .archived else { return summary }
@@ -515,6 +534,15 @@ struct HomeLaunchView: View {
     /// A chat works while its row says so (AppStore.chatWorks), as in the sidebar of the Mac.
     private func works(_ item: ChatListItem, at date: Date) -> Bool { store.chatWorks(item, at: date) }
 
+    /// A chat that an open section of Chats shows before Load more (the person, 2026-11-26: "load only active by
+    /// default when expanded with load more"): a chat that works or whose card waits (AppStore.chatWorks), and the
+    /// chat that a Send of the message box made last, as a folded section of the Mac sidebar keeps them in sight
+    /// (MacSidebar.stays). Its unread chats are in Unread (ChatList.tree).
+    private func active(_ item: ChatListItem, at date: Date) -> Bool {
+        if case .bot(let bot) = item, bot.id == store.newChatSend?.chat { return true }
+        return works(item, at: date)
+    }
+
     /// What asks for the person comes first on Product: the rules that breach now, then the cards that wait. Each row
     /// draws nothing when there is nothing to show. The breaches of the business are not here: Support past SLA is a
     /// row of the list of Support, and the product issues past SLA and of high priority are the to-dos themselves.
@@ -657,10 +685,11 @@ struct ChatListSection: Identifiable, Equatable {
         }
     }
 
-    /// The rows of a folding section of the Mac sidebar: every chat while it is open, and the chats that `stays` keeps
-    /// while it is folded.
-    func shown(open: Bool, stays: (ChatListItem) -> Bool) -> [ChatListItem] {
-        open ? items : items.filter(stays)
+    /// The rows of a section that keeps its active chats in sight: every chat when `all`, else the chats that `stays`
+    /// keeps. A folded section of the Mac sidebar keeps them, and so does an open section of Chats on the iPhone until
+    /// the person taps Load more (ChatSectionMore).
+    func shown(all: Bool, stays: (ChatListItem) -> Bool) -> [ChatListItem] {
+        all ? items : items.filter(stays)
     }
 
     /// The name of the row of a chat. The title of a project's section names the project, so its own chat shows the
@@ -700,16 +729,17 @@ struct ChatSectionSummary: Equatable {
 
 /// A section of Chats as one row of a tree (the person, 2026-11-25: "Everything should be nested chat would help A
 /// TON", then 2026-11-26: "Nested don't look nested"), in the form of a folder of Notes or Reminders: the symbol of the
-/// section, its title, the number of its chats and a chevron. Its unread chats are in Unread until the person reads
-/// them (ChatList.tree). A tap opens the section in place: the chevron turns down, and the chats show under the row,
-/// set in to its title (ChatListRow). Another tap folds it. While it is folded, a line under the title says what waits
-/// for the person and what works inside, in the words and colors of the row of a chat, so a live chat in a folded
-/// section still shows from the list; Working at the top right lists every chat that works. Starred and Unread have the
-/// row without the number and the chevron, because they stay open. Archived is the last row, under Personal, with the
-/// number of the archived chats, and its chevron opens them on a page of their own (the person: "Archived should be
-/// behind a tap just one row with number at bottom of chats"). That chevron is gray and the chevron of a section has
-/// the color of its symbol, because a folded section and Archived looked the same while only one leaves the list
-/// (Tastelint on #589).
+/// section, its title and a chevron. The row does not count its chats (the person, 2026-11-26: "Don't need counts of
+/// chats stressful"). Its unread chats are in Unread until the person reads them (ChatList.tree). A tap opens the
+/// section in place: the chevron turns down, and its active chats show under the row, set in to its title
+/// (ChatListRow), with Load more for the others (ChatSectionMore). Another tap folds it. While it is folded, a line
+/// under the title says what waits for the person and what works inside, in the words and colors of the row of a chat,
+/// so a live chat in a folded section still shows from the list; Working at the top right lists every chat that works.
+/// Starred and Unread have the row without the chevron, because they stay open. Archived is the last row, under
+/// Personal, and its chevron opens the archived chats on a page of their own (the person: "Archived should be behind a
+/// tap just one row with number at bottom of chats"). That chevron is gray and the chevron of a section has the color
+/// of its symbol, because a folded section and Archived looked the same while only one leaves the list (Tastelint on
+/// #589).
 struct ChatSectionRow: View {
     /// The key of the sections that the person opened on the phone. Every section starts folded.
     static let key = "chats-open"
@@ -766,10 +796,6 @@ struct ChatSectionRow: View {
             }
             Spacer(minLength: 0)
             if !section.alwaysOpen {
-                Text(section.items.count, format: .number)
-                    .font(.subheadline)
-                    .monospacedDigit()
-                    .foregroundStyle(.secondary)
                 // The arrow of a section has the color of its symbol, as a disclosure arrow of iOS, and turns where the
                 // section opens. The gray arrow of Archived leads to a page, as in a list of settings.
                 Image(systemName: "chevron.right")
@@ -809,11 +835,11 @@ struct ChatSectionRow: View {
         .font(.subheadline)
     }
 
-    /// VoiceOver reads the title, what waits and works while the section is folded, and the number of chats.
+    /// VoiceOver reads the title, and what waits and works while the section is folded. It reads no number, as the row
+    /// shows none.
     private var spoken: String {
         var parts = [section.title]
         if !open { parts += [summary.waitingText, summary.workingText].compactMap { $0 } }
-        parts.append(ChatListSection.chats(section.items.count))
         return parts.joined(separator: ", ")
     }
 
@@ -831,9 +857,31 @@ struct ChatSectionRow: View {
     }
 }
 
+/// The last row of an open section of Chats while it hides chats that are not active (the person, 2026-11-26: "load
+/// only active by default when expanded with load more"). A tap shows all the chats of the section. It names no
+/// number, as the row of the section names none. The section shows only its active chats again after it folds.
+struct ChatSectionMore: View {
+    let section: ChatListSection
+    let tap: () -> Void
+
+    var body: some View {
+        Button(action: tap) {
+            Text("Load more")
+                .font(.subheadline)
+                .foregroundStyle(BoardStyle.control)
+                .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(HomePressStyle())
+        .accessibilityHint("Shows all the chats of \(section.title)")
+        .accessibilityIdentifier("chat-section-more-" + section.id)
+    }
+}
+
 /// A Send that starts a chat leaves the chat closed (sendNewChat): the Send of the message box, and Send to a new agent
-/// in a chat, which keeps the person in that chat. The new chat counts in the row of its section, which shows it
-/// working, and the list scrolls to the chat, or to the row of its section while the section is folded.
+/// in a chat, which keeps the person in that chat. The new chat is in its section, whose row shows it working, and an
+/// open section shows it before Load more (HomeLaunchView.active). The list scrolls to the chat, or to the row of its
+/// section while the section is folded.
 private struct NewChatReveal: ViewModifier {
     @Environment(AppStore.self) private var store
     @AppStorage(ChatSectionRow.key) private var openSections = ""

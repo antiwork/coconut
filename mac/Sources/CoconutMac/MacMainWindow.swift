@@ -592,7 +592,7 @@ struct MacSidebar: View {
             ForEach(sections.groups) { section in
                 let isOpen = open.contains(section.id)
                 Section {
-                    ForEach(section.shown(open: isOpen) { stays($0, at: now) }) { item in itemRow(item, in: section) }
+                    ForEach(section.shown(all: isOpen) { stays($0, at: now) }) { item in itemRow(item, in: section) }
                 } header: {
                     MacFoldHeader(title: section.title, open: isOpen) {
                         withAnimation(.snappy) { openSections = ChatListSection.toggle(section.id, openSections) }
