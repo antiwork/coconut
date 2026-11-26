@@ -330,7 +330,7 @@ private struct PhotoPage: View {
             } else if failed {
                 Label("The photo did not load.", systemImage: "photo").foregroundStyle(.white.opacity(0.7))
             } else {
-                ProgressView().tint(.white)
+                CoconutLoader(.page, label: "Loading the photo").foregroundStyle(.white)
             }
         }
         .ignoresSafeArea()
@@ -443,7 +443,7 @@ struct RemotePhoto: View {
                 } else if failed {
                     Image(systemName: "photo").font(.title3).foregroundStyle(.secondary)
                 } else {
-                    ProgressView()
+                    CoconutLoader(.page).foregroundStyle(.secondary)
                 }
             }
             .clipped()

@@ -181,7 +181,7 @@ struct TeamInboxView: View {
             if !list.loaded {
                 Group {
                     if let error = list.error { Text(error).font(.subheadline).foregroundStyle(.secondary) }
-                    else { ProgressView() }
+                    else { CoconutLoader(.page) }
                 }
                 .frame(maxWidth: .infinity).padding(.vertical, 45)
                 .homeRow()
@@ -204,7 +204,11 @@ struct TeamInboxView: View {
                             Button {
                                 Task { await store.loadOlderTeamThreads(chatKey) }
                             } label: {
-                                if list.loadingMore { ProgressView() } else { Text("Load earlier notices").font(.footnote) }
+                                if list.loadingMore {
+                                    CoconutLoader(.row, label: "Loading earlier notices")
+                                } else {
+                                    Text("Load earlier notices").font(.footnote)
+                                }
                             }
                             .buttonStyle(.borderless)
                             .frame(maxWidth: .infinity, minHeight: 44)

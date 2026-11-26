@@ -161,13 +161,13 @@ extension BoardSection where Action == EmptyView {
     }
 }
 
-/// A whole page that is loading: one spinner, one height, wherever it is.
+/// A whole page that is loading: one juggling coconut, one height, wherever it is. The title is for VoiceOver.
 struct BoardLoading: View {
     let title: String
     var height: CGFloat = 320
 
     var body: some View {
-        ProgressView(title).frame(maxWidth: .infinity, minHeight: height)
+        CoconutLoader(.page, label: title).frame(maxWidth: .infinity, minHeight: height)
     }
 }
 

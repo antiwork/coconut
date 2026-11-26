@@ -182,6 +182,7 @@ targets:
       - Coconut/FileFit.swift
       - Coconut/PlatformColor.swift
       - Coconut/Theme.swift
+      - Coconut/CoconutLoader.swift
       - PushShared/TestIsolation.swift
     settings:
       base:
@@ -260,6 +261,7 @@ targets:
       - Coconut/FileFit.swift
       - Coconut/PlatformColor.swift
       - Coconut/Theme.swift
+      - Coconut/CoconutLoader.swift
       - PushShared/TestIsolation.swift
     settings:
       base:

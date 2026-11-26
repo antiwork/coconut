@@ -195,8 +195,11 @@ struct TeamChatView: View {
                             let anchor = allRows[shown].first?[keyPath: Self.rowIdentity]
                             Task { await loadEarlier(anchor: anchor, proxy: proxy) }
                         } label: {
-                            if listed.loadingEarlier || growingAbove { ProgressView() }
-                            else { Text("Load earlier messages").font(.footnote) }
+                            if listed.loadingEarlier || growingAbove {
+                                CoconutLoader(.row, label: "Loading earlier messages")
+                            } else {
+                                Text("Load earlier messages").font(.footnote)
+                            }
                         }
                         .frame(maxWidth: .infinity, minHeight: 44)
                         .disabled(listed.loadingEarlier || growingAbove)
@@ -407,7 +410,11 @@ struct TeamChatView: View {
             if peer(room) == nil, room.showsInvite {
                 ToolbarItem(placement: .topBarTrailing) {
                     TeamInviteButton(room: room) { inviting in
-                        if inviting { ProgressView() } else { Image(systemName: "person.badge.plus") }
+                        if inviting {
+                            CoconutLoader(.button, label: "Inviting")
+                        } else {
+                            Image(systemName: "person.badge.plus")
+                        }
                     }
                     .accessibilityLabel("Invite someone")
                 }
@@ -447,7 +454,11 @@ struct TeamChatView: View {
             if peer(room) == nil, room.showsInvite {
                 TeamInviteButton(room: room) { inviting in
                     Group {
-                        if inviting { ProgressView().controlSize(.small) } else { Image(systemName: "person.badge.plus") }
+                        if inviting {
+                            CoconutLoader(.row, label: "Inviting")
+                        } else {
+                            Image(systemName: "person.badge.plus")
+                        }
                     }
                     .frame(width: Self.titlePillHeight, height: Self.titlePillHeight)
                     .modifier(FloatingCapsule())
@@ -486,7 +497,7 @@ struct TeamChatView: View {
         } else if !chat.loaded {
             Group {
                 if let error = chat.error { Text(error).font(.subheadline).foregroundStyle(.secondary) }
-                else { ProgressView() }
+                else { CoconutLoader(.page) }
             }
             // The alerts of a choice that the app already has show under the progress, so it takes little space.
             .frame(maxWidth: .infinity).padding(.vertical, filtered && !empty ? BoardStyle.Space.m : 45)
@@ -1531,7 +1542,7 @@ struct TeamTypingRow: View {
     let subjects: [TeamTyping]
     /// The height of one line of the text, so the faces stand at the middle of the first line.
     @ScaledMetric(relativeTo: .subheadline) private var lineHeight: CGFloat = 20
-    /// The gap between the last word and the dots, as before an ellipsis.
+    /// The gap between the last word and the juggle, as before an ellipsis.
     @ScaledMetric(relativeTo: .subheadline) private var dotsGap: CGFloat = 4
 
     private var text: String { TeamTypingText.text(subjects) ?? "" }
@@ -1542,10 +1553,11 @@ struct TeamTypingRow: View {
                 ForEach(subjects.prefix(3)) { face($0) }
             }
             .frame(height: lineHeight)
-            // The dots end the sentence: their bottom sits on the baseline of the last line of the text.
+            // The juggle ends the sentence: its coconuts land on the baseline of the last line of the text.
             HStack(alignment: .lastTextBaseline, spacing: dotsGap) {
                 Text(text).foregroundStyle(.secondary).lineLimit(2)
-                TypingDots().alignmentGuide(.lastTextBaseline) { $0[.bottom] }
+                CoconutLoader(.typing).foregroundStyle(.secondary)
+                    .alignmentGuide(.lastTextBaseline) { $0.height * CoconutLoader.handLine }
             }
         }
         .font(.subheadline)

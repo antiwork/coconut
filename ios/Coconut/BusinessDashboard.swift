@@ -333,7 +333,7 @@ struct SupportTiles: View {
                     if let error {
                         BoardLoadNotice(title: "Report unavailable", message: error, retry: retry)
                     } else if data == nil {
-                        ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
+                        CoconutLoader(.page).frame(maxWidth: .infinity, maxHeight: .infinity)
                     } else {
                         Text("Not published").font(.subheadline).foregroundStyle(.secondary)
                     }
@@ -1029,7 +1029,7 @@ private struct BusinessLedgerFileView: View {
         ScrollView([.horizontal, .vertical]) {
             if let file { Text(file.content).font(.system(.caption, design: .monospaced)).textSelection(.enabled).padding(BoardStyle.Space.xl) }
             else if let error { Text(error).padding(BoardStyle.Space.xl) }
-            else { ProgressView().padding(BoardStyle.Space.xl) }
+            else { CoconutLoader(.page).padding(BoardStyle.Space.xl) }
         }.navigationTitle(path.components(separatedBy: "/").last ?? path)
             .task { do { file = try await store.businessLedgerFile(path) } catch { self.error = error.localizedDescription } }
     }

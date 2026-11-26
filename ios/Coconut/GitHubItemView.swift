@@ -628,13 +628,9 @@ struct ReplyBox: View {
         .modifier(ComposerGlassGroup())
     }
 
-    @ViewBuilder private func sendButton(enabled: Bool) -> some View {
-        if sending {
-            ProgressView().frame(minWidth: 44, minHeight: 44)
-        } else {
-            ComposerSendButton(symbol: "arrow.up", enabled: enabled, label: "Send", action: submit,
-                               identifier: identifier + "-send")
-        }
+    private func sendButton(enabled: Bool) -> some View {
+        ComposerSendButton(symbol: "arrow.up", enabled: enabled, label: "Send", action: submit,
+                           identifier: identifier + "-send", sending: sending)
     }
 
     /// The gray text of the empty box: where the last text went, for a moment; else the item that an agent gets; else

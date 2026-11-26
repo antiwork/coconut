@@ -51,7 +51,7 @@ struct DecisionInboxView: View {
     var body: some View {
         Group {
             if let refreshingDecisionId, !pending.contains(where: { $0.id == refreshingDecisionId }) {
-                ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
+                CoconutLoader(.page).frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 inboxContent.disabled(refreshingDecisionId != nil)
                     .allowsHitTesting(refreshingDecisionId == nil)

@@ -41,7 +41,7 @@ struct PairingScannerView: View {
                         Button("Close") { dismiss() }
                     }
                 } else {
-                    ProgressView("Opening camera…")
+                    CoconutLoader(.page, label: "Opening camera…")
                 }
             }
             .navigationTitle("Scan pairing QR code").inlineNavigationTitle()

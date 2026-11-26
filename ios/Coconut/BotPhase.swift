@@ -57,8 +57,10 @@ struct StepTimeLabel: View {
     }
 }
 
-// A bright band crosses the label from left to right, then rests. One repeating offset
-// animation moves the band, so the label does not redraw on every frame.
+// A bright band crosses the label from left to right, then rests. A keyframe animator of
+// its own moves the band, so the label does not redraw on every frame. A repeating
+// withAnimation in onAppear also took along whatever else changed in that update: the
+// elapsed time beside the label then faded between its first value and the live one.
 struct ShimmerText: View {
     static let sweep = 1.2
     static let rest = 0.6
@@ -67,7 +69,6 @@ struct ShimmerText: View {
     let text: String
     var active = true
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var position = start
 
     var body: some View {
         let base = Text(text).lineLimit(1)
@@ -77,15 +78,14 @@ struct ShimmerText: View {
                     base.foregroundStyle(.primary)
                         .mask(alignment: .leading) {
                             GeometryReader { geometry in
+                                let width = geometry.size.width
                                 LinearGradient(colors: [.clear, .black, .clear], startPoint: .leading, endPoint: .trailing)
-                                    .frame(width: geometry.size.width * 0.44)
-                                    .offset(x: (position - 0.22) * geometry.size.width)
-                            }
-                        }
-                        .onAppear {
-                            position = Self.start
-                            withAnimation(.linear(duration: Self.sweep + Self.rest).repeatForever(autoreverses: false)) {
-                                position = Self.end
+                                    .frame(width: width * 0.44)
+                                    .keyframeAnimator(initialValue: Self.start, repeating: true) { band, position in
+                                        band.offset(x: (position - 0.22) * width)
+                                    } keyframes: { _ in
+                                        LinearKeyframe(Self.end, duration: Self.sweep + Self.rest)
+                                    }
                             }
                         }
                 }

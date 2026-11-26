@@ -76,7 +76,7 @@ struct ShareComposeView: View {
             Divider()
             HStack(spacing: BoardStyle.Space.s) {
                 if case .sending(let step, let steps) = model.phase {
-                    ProgressView().controlSize(.small)
+                    CoconutLoader(.row, label: nil).foregroundStyle(.secondary)
                     Text(Self.progress(step, steps)).font(.subheadline).foregroundStyle(.secondary)
                 }
                 Spacer()
@@ -123,7 +123,7 @@ struct ShareComposeView: View {
                 ToolbarItem(placement: .cancellationAction) { Button("Cancel") { model.cancel() } }
                 ToolbarItem(placement: .confirmationAction) {
                     if model.isSending {
-                        ProgressView()
+                        CoconutLoader(.button, label: "Sending")
                     } else if !model.needsApp {
                         Button("Send") { Task { await model.send() } }
                             .fontWeight(.semibold)
