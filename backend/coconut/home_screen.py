@@ -41,14 +41,16 @@ MAX_BYTES = 2200
 # The text of a message of attachments only (AttachmentOnly in the app).
 ATTACHMENT_ONLY = '[attachment]'
 # Each step of trimming that makes a glance fit MAX_BYTES, the first that fits wins: the longest texts, then the rows of
-# unread chats, then the details of the steps, then more rows. The Live Activity shows one card and three agents.
+# unread chats and the details of the steps, and the rows of cards and agents only last, because the phone counts them
+# ("5 working"). The Live Activity shows one card and three agents.
 FITS = (
     dict(rows=LIMIT, unread=LIMIT, title=120, name=60, detail=120, preview=120),
     dict(rows=LIMIT, unread=4, title=90, name=40, detail=80, preview=80),
-    dict(rows=4, unread=2, title=80, name=32, detail=60, preview=60),
-    dict(rows=3, unread=1, title=64, name=28, detail=0, preview=48),
-    dict(rows=3, unread=0, title=48, name=24, detail=0, preview=0),
-    dict(rows=1, unread=0, title=40, name=20, detail=0, preview=0),
+    dict(rows=LIMIT, unread=2, title=64, name=28, detail=40, preview=48),
+    dict(rows=LIMIT, unread=0, title=48, name=24, detail=0, preview=0),
+    dict(rows=LIMIT, unread=0, title=32, name=20, detail=0, preview=0),
+    dict(rows=3, unread=0, title=32, name=20, detail=0, preview=0),
+    dict(rows=1, unread=0, title=32, name=20, detail=0, preview=0),
 )
 
 # The shortest time between two glances to one phone.
@@ -247,7 +249,8 @@ class HomeScreenPush:
         if current - self.checked < CHECK or not self.relay.configured:
             return
         self.checked = current
-        with self.service.transaction():
+        # The reads take the lock of the service, not a transaction: each commit wakes every app that waits for updates.
+        with self.service.lock:
             phones = [(device_id, route, state) for device_id, route, state in self.phones()
                       if not self.in_front(device_id) and current >= state.get('retry_at', 0)]
             plans = []

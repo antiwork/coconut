@@ -163,6 +163,7 @@ class PushDelivery:
         self.transport = transport or APNsTransport(service.root)
         self.relay = RelayTransport(service.root)
         self.home_screen = HomeScreenPush(self)
+        self.home_screen_failure = None
         self.thread = None
         self.pruned = 0
         db = service.db
@@ -603,8 +604,13 @@ class PushDelivery:
             # (ios/CoconutNotificationService) reads the new glance.
             try:
                 self.home_screen.tick()
-            except Exception:
-                logging.getLogger(__name__).exception('Coconut could not send the Home Screen glance.')
+                self.home_screen_failure = None
+            except Exception as error:
+                # The glance must not stop the notifications. The log names the kind of error once, never a text.
+                if type(error).__name__ != self.home_screen_failure:
+                    self.home_screen_failure = type(error).__name__
+                    logging.getLogger(__name__).warning('Coconut could not send the Home Screen glance: %s',
+                                                        self.home_screen_failure)
             try:
                 sent = self.deliver_one()
             except Exception:
