@@ -256,7 +256,8 @@ shape Sock
   n: number
 
 // The last sync with the Mac: the version of the state, the pairings made, the error of the last try, and whether the
-// next round may come soon, because this round's session read the Mac before it ended.
+// next round may come soon, because this round's session read the Mac before it ended. A socket that closed after such
+// a read gives way at once (`retryingNow`).
 shape Live
   version: number
   pairs: number
@@ -272,12 +273,14 @@ shape Found
   cards: FoundCard[]
   messages: FoundMessage[]
 
-// A card that waits, found by its title: `chat` holds it, and `detail` is the name of that chat, or Waiting.
+// A card that waits, found by its title: `chat` holds it, `row` is the row of that chat that shows it (empty when the
+// phone has none), and `detail` is the name of that chat, or Waiting.
 shape FoundCard
   id: string
   chat: string
   title: string
   detail: string
+  row: string
 
 // A message of a search (OmniSearch.MessageHit): its chat and the name of the chat, its time, and its words around the
 // first word of the search, cut in runs where each word of the search is `hit`. `continued` is a message in the chat of

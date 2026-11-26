@@ -74,6 +74,10 @@ profile runs the chats and options have no other place on the screens (#570). Se
 only while the draft starts with a slash, so a chosen model or effort, which empties the box, closes it. The model has no
 chip under the text: the Swift app removed its chips (e6c152f).
 
+A message or a card of a search opens its chat at its row (`ConversationRoute` with a `messageId`,
+`decisionChatRoute`): once the chat holds the row, the transcript brings it to the middle of the screen and follows its
+end again only when the person scrolls there. A message that the phone does not hold opens the chat at its end.
+
 Queue. A message sent while the agent works waits for the next turn, and the queue shows over the message box
 (`MessageQueue`): "2 queued · next turn", then a row for each message, oldest first, with its place, the first line of
 its words (or the count of its files) and a paperclip with that count. A message on its way says Sending, and one that
@@ -150,7 +154,12 @@ whole state in `reset` when the Mac cannot list the changes, for example after a
 last one ends. The state outlives a round: the first read of a
 new socket asks only for the changes since its cursor, without waiting, so a round after a failure clears the banner
 at once. A round whose socket closed or whose read failed gives way to a new one after 15 seconds. No read is asked
-again while it runs, which would let it go with its timeout, and none starts while an update waits.
+again while it runs, which would let it go with its timeout, and none starts while an update waits. A socket that ends
+after its round read the Mac is no fault: iOS ends it while the app is in the background, and the network or the relay
+can end it at any time. The next round then starts at once (`retryingNow`, at most once in 10 seconds, else after 3),
+and Home shows no banner meanwhile, as the Swift app shows a lost connection as connecting (`TunnelConnection.State`);
+a revoked pairing, a socket that the relay refuses and a round that fails after it still say why. On build 35 each
+return to the app showed "The connection to your Mac ended." for several seconds (#599).
 
 Requests side by side. `tunnel.ts` sends each request as its own stream, as the Swift app does, so a Send or an answer
 goes while a read of updates waits on the Mac. Both keys number their messages, so one answer at a time seals and one
@@ -399,6 +408,18 @@ that another client answered in words during Undo leaves the chat, and the refus
 warnings of main and no new one, and `app.ts` passes `tsc --strict`. The view path has not run on the web host or a
 phone.
 
+Build 35 on a phone, 2026-11-26 (#599). Gianfranco saw "The connection to your Mac ended." for several seconds each
+time he opened the app, and at times while he used it, and a message that a search found opened its chat at its end.
+`app.ts` under bun (a scratch script of 23 cases, of which main fails 9): a socket that ends after its round read the
+Mac leaves Home without a banner, and so do the relay's `mac_offline`, `host_reconnected` and `closed` on such a
+session; a revoked pairing, a round that never read the Mac, a read that runs out of time and a socket that the relay
+refuses after a quiet error still say why, and the next round that reads clears it. The cards that a search finds, in
+the demo and in a hand-made state of the Mac, name the row of their chat that shows them, and each message that it
+finds is a row of its chat. The Contract compiles with the 20 warnings of main and no new one, and `app.ts` passes
+`tsc --strict`. Not checked: the tasks `retryingNow` and `revealing` and the jump to a row, which run only in Exact
+(the web host was not built on the shared Mac), so his phone checks them; and why the socket ended while he used the
+app.
+
 Not done:
 
 - Edit draft has not run on a phone or against a Mac: the route was read in `edit_message_draft` (`decision_inbox.py`)
@@ -518,9 +539,10 @@ a `push --watch` update.
   suggestion of its own (`NewChatPlace`, `NewChatSuggestion`). This one lists the projects and ends with New project, as
   asked; the app has no tabs or team chats yet, so it has no Brainstorm of Product either (`Brainstorm.swift`, a talk by
   voice that fills the box of Product). A message from Home always starts a new chat with the project.
-- The search of the Swift app also finds to-dos and the pages of the Library, which this app does not have yet, and a
-  message opens its chat at that message (`ConversationRoute` with `messageId`) and a card at its card
-  (`decisionChatRoute`); here a row opens its chat at the end. Its ⌘K on the Mac is not ported.
+- The search of the Swift app also finds to-dos and the pages of the Library, which this app does not have yet, and it
+  loads the older messages of a chat until it holds the message of a hit (`loadOlderMessages`), where this app opens
+  the chat at its end; nor does this app have the button to the newest messages after such a jump
+  (`conversation-latest`). Its ⌘K on the Mac is not ported.
 - The coconut of the working line stays 5 points at every text size, where Swift's grows with the text
   (`@ScaledMetric`). It stands 6 points from the phase, as the phase does from the rest of the line; Swift's row spaces
   its parts by 8. While the agent writes, the line is about 2.8 points taller, as in Swift: the coconut is 22.8 points
