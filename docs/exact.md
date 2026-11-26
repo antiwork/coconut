@@ -116,8 +116,9 @@ chat, and the answer quotes it.
 Edit opens the message of a draft card in a sheet (`MessageDraftEditor`): Via as it is, From and Reply to where the
 draft has them, To, Subject and the message. Save waits for a To and a message, and keeps the change on the Mac
 (`POST /v1/decisions/<id>/draft`, `AppStore.editDraft`) with a new revision and draft hash, which Send then names; the
-card shows the new message at once. The Mac refuses an edit of a card that changed meanwhile (409), and the sheet then
-shows its words. While a choice waits for its Undo, the card has no Edit. The demo changes the card in memory.
+card shows the new message at once. Save names the revision of the card when the sheet opened, so the Mac refuses an
+edit of a card that the agent changed meanwhile (409), and the sheet then shows its words. While a choice waits for its
+Undo, the card has no Edit. The demo changes the card in memory.
 
 ## Live data
 
@@ -370,7 +371,12 @@ channel as it was, adds a Subject only when one was written, and Send then names
 of the Mac (409) answers its words, and a card whose choice waits for its Undo takes no edit. The web host showed it at
 390 by 844 points, light and dark: Send, Edit and Discard on the card, the sheet, Save held while To is empty, and the
 card with the new message after Save. The Contract compiles with the 20 warnings of main and no new one, and `app.ts`
-passes `tsc --strict`.
+passes `tsc --strict`. A fix of the same day: Save named the revision of the newest state, not the one that the
+sheet opened with, so an edit replaced a draft that the agent changed while the sheet was open. Now Save names the
+revision of the open, and the demo refuses in the same way. A scratch script under bun showed it: the demo and a
+stand-in Mac refuse a Save after a newer revision, and the newer draft stays. The Contract compiles with the pinned Exact
+(`contract build`, built from source) with the 20 warnings of main and no new one, and `app.ts` passes `tsc --strict`
+with the generated types. The view path has not run on the web host or a phone.
 
 Not done:
 

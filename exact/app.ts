@@ -1594,6 +1594,7 @@ const cardView = (c: CardData): Card => {
     pending: open, refreshing: c.refreshing && !gone, dismissible: open && !holding, chosen: holding?.option ?? '', chosenLabel: holding?.label ?? '',
     waiting: !!holding && !holding.sending, sending: !!holding?.sending, receipt: receipt.label, mark: receipt.mark, dim: receipt.dim,
     outcome: c.status === 'failed' ? c.outcome : '', earlier: c.earlier, revised: c.revised, error: failures.get(c.ref) ?? '',
+    revision: c.revision,
   };
 };
 
@@ -2586,16 +2587,19 @@ const sources: Sources = {
   },
 
   // Save of Edit draft (MessageDraftEditor, AppStore.editDraft): the Mac keeps the new message of a card that waits,
-  // with a new revision and draft hash, which Send then names (`answerCard`), and refuses a card that changed since
-  // (409). Via stays as it is, From and Reply to change only where the draft has them, and a Subject that the draft
-  // lacked goes only when the person wrote one. The demo changes the card in memory, as the preview does.
-  saveCardDraft: async ([chatId, ref, from, to, replyTo, subject, body]) => {
+  // with a new revision and draft hash, which Send then names (`answerCard`). Save names the revision of the card when
+  // the sheet opened (`opened`), not the one of the newest state, so the Mac refuses a card that the agent changed
+  // since (409). A Save that the Mac takes changes the draft that the sheet showed, and Via stays as the sheet showed
+  // it. From and Reply to change only where the draft has them, and a Subject that the draft lacked goes only when the
+  // person wrote one. The demo changes the card in memory, as the preview does, and refuses a card that changed.
+  saveCardDraft: async ([chatId, ref, opened, from, to, replyTo, subject, body]) => {
     const changed = 'This draft changed. Open it again before editing.';
     const found = cardIn(ensure(), ref);
     const draft = found?.card.draft;
     if (!found || !draft || found.chat.id !== chatId || found.card.status !== 'pending' || answers.has(ref)) return { ok: false, error: changed };
     if (to.trim() === '' || body.trim() === '') return { ok: false, error: '' };
     if (!useLive) {
+      if (found.card.revision !== opened) return { ok: false, error: changed };
       found.card.draft = { via: draft.via, from: draft.from !== '' ? from : draft.from, to, replyTo: draft.replyTo !== '' ? replyTo : draft.replyTo, subject, body };
       found.card.revision += 1;
       return { ok: true, error: '' };
@@ -2608,7 +2612,7 @@ const sources: Sources = {
     if (decision.draft.subject != null || subject !== '') next.subject = subject;
     let saved: LvDecision;
     try {
-      saved = (await write('POST', `/v1/decisions/${ref}/draft`, { revision: decision.revision, draft: next })) as LvDecision;
+      saved = (await write('POST', `/v1/decisions/${ref}/draft`, { revision: opened, draft: next })) as LvDecision;
     } catch (error) {
       return { ok: false, error: failed(error) };
     }

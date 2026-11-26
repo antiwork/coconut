@@ -92,7 +92,8 @@ shape Draft
 // its assessment, and `drafts` the message of a draft card (none or one). `pending` shows the options, else the
 // receipt: its words, its mark (a symbol, or empty) and whether it is dimmed, for a card that closed without a choice.
 // `chosen` is the option that the person picked: while `waiting` the answer waits for its Undo, while `sending` it goes
-// to the Mac. `error` says why the last answer did not go.
+// to the Mac. `error` says why the last answer did not go. `revision` is the revision of the card as it shows, which the
+// sheet of Edit draft keeps.
 shape Card
   ref: string
   title: string
@@ -120,6 +121,7 @@ shape Card
   earlier: string
   revised: bool
   error: string
+  revision: number
 
 // A row of a chat. `kind` is text, photos, activity, decision, artifact, document, process, notice or status; the
 // working line is the last row of a chat whose agent works. `startsDay` puts the day above the row, and `newLine` the

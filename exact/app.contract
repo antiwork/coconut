@@ -37,9 +37,10 @@ component Coconut
   state attached: Picked[] = []
   state photos: string[] = []
   state projectName = ""
-  // The draft card that the sheet of Edit draft changes (MessageDraftEditor), the fields of its message, which of From
-  // and Reply to the draft has, and why the last Save did not go.
+  // The draft card that the sheet of Edit draft changes (MessageDraftEditor), its revision when the sheet opened, the
+  // fields of its message, which of From and Reply to the draft has, and why the last Save did not go.
   state editingRef = ""
+  state editRevision = 0
   state editVia = ""
   state editFrom = ""
   state editTo = ""
@@ -297,8 +298,9 @@ component Coconut
     send dismissed = dismissCard(chat.id, ref)
   // Edit of a draft card (MessageDraftEditor): its message in a sheet, where Save keeps the change on the Mac. The card
   // keeps Send and Discard, and the message goes only with Send.
-  action openDraft(ref: string, d: Draft)
+  action openDraft(ref: string, d: Draft, revision: number)
     editingRef = ref
+    editRevision = revision
     editVia = d.via
     editFrom = d.from
     editTo = d.to
@@ -322,7 +324,7 @@ component Coconut
   action saveDraft
     if canSaveDraft
       editError = ""
-      send draftSaved = saveCardDraft(openId, editingRef, editFrom, editTo, editReplyTo, editSubject, editBody)
+      send draftSaved = saveCardDraft(openId, editingRef, editRevision, editFrom, editTo, editReplyTo, editSubject, editBody)
   action afterDraftSave
     if draftSavedOk
       nav = back(nav)
@@ -500,7 +502,7 @@ component Coconut
                                   for o in c.options.slice(0, 1) key=o.id
                                     DraftButton(label=o.label, primary=true, pick=pickOption(c.ref, o.id))
                                   for d in c.drafts key=d.to
-                                    DraftEdit(edit=openDraft(c.ref, d))
+                                    DraftEdit(edit=openDraft(c.ref, d, c.revision))
                                   for o in c.options.slice(1) key=o.id
                                     DraftButton(label=o.label, primary=false, pick=pickOption(c.ref, o.id))
                               else
