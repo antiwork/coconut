@@ -343,9 +343,10 @@ Not done:
   each.
 - The search field of the phone is UIKit's search controller under the large title, and the web host draws a plain
   field: the field, its focus and its blur on a phone are not seen. The symbol of a card row draws only on Apple.
-- The juggle is unchecked on iOS, where Exact lowers it to Core Animation: translates in percent, an opacity that steps
-  (`step-end`), an iteration count of 0.476 after a negative delay, and two animations of one property, the later of
-  which wins.
+- The juggle has not run on iOS. Exact's lowering to Core Animation (`host/apple/src/svg_lower.rs`, `SvgScene.swift`)
+  was read for what it uses: a translate in percent resolves against the box, a `step-end` opacity becomes linear keys,
+  an iteration count of 0.476 and a delay below zero carry over, and the animations of a list become tracks in its
+  order, so the later of two on one property wins while it plays.
 
 ## Build
 
