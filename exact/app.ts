@@ -1118,16 +1118,20 @@ let tunnel: Tunnel | null = null;
 let tunnelKey = '';
 let version = 0;
 let lastError = '';
+// Whether the last error only says that a socket ended after its round read the Mac: no fault that the screens show.
+let quiet = false;
 // The Mac's state as it came, with every update since merged in: what the screens show, and where the next read of
 // updates starts (its cursor). It outlives a round, so a new socket asks only for what changed meanwhile.
 let latest: Snapshot | null = null;
 // The round that read the Mac once: its next reads wait on the Mac for a change.
 let polled = '';
 
-// The error of the last try. A change of it moves the version, so the screens show the banner of it, or drop it.
-const settle = (error: string): void => {
-  if (error === lastError) return;
+// The error of the last try, and whether it is quiet. A change moves the version, so the screens show the banner of the
+// error, or drop it.
+const settle = (error: string, lost = false): void => {
+  if (error === lastError && lost === quiet) return;
   lastError = error;
+  quiet = lost;
   version += 1;
 };
 
@@ -1143,6 +1147,9 @@ const RELAY_ERRORS: Record<string, string> = {
   revoked: 'This phone is no longer paired with your Mac.',
   closed: 'Your Mac closed the connection.',
 };
+// Why a socket ended without a word of the relay: it had opened, or the relay refused it before it opened.
+const LOST = 'The connection to your Mac ended.';
+const REFUSED = 'The relay refused the connection.';
 
 const end = (c: Conn, reason: string): void => {
   if (c.ended !== '') return;
@@ -1602,10 +1609,10 @@ const cardView = (c: CardData): Card => {
   };
 };
 
-// The card of `ref` in the state that the screens read, and its chat.
-const cardIn = (s: State, ref: string): { chat: ChatState; card: CardData } | null => {
+// The card of `ref` in the state that the screens read, its chat, and the row of the chat that shows it.
+const cardIn = (s: State, ref: string): { chat: ChatState; card: CardData; row: string } | null => {
   for (const chat of s.chats.values()) {
-    for (const m of chat.messages) if (m.card?.ref === ref) return { chat, card: m.card };
+    for (const m of chat.messages) if (m.card?.ref === ref) return { chat, card: m.card, row: m.id };
   }
   return null;
 };
@@ -1844,7 +1851,8 @@ const chatsFound = (s: State, zero: number, words: string[]): Row[] => {
 
 // The cards that wait whose titles have the words, the best match first, then the newest (OmniSearch.cards). A card
 // that its agent refreshes does not wait (Decision.isPending). A row opens the chat that holds the card
-// (AppStore.conversationBotId), and `detail` names the agent of the card (OmniSearch.owner).
+// (AppStore.conversationBotId) at the row of the card (decisionChatRoute), and `detail` names the agent of the card
+// (OmniSearch.owner).
 const cardsFound = (s: State, words: string[]): FoundCard[] => {
   const ranked: Array<{ card: FoundCard; rank: number; at: number }> = [];
   for (const w of s.waits) {
@@ -1856,7 +1864,7 @@ const cardsFound = (s: State, words: string[]): FoundCard[] => {
     const rank = title === null || dismissed.has(w.ref) ? null : rankOf(title, words);
     if (title === null || rank === null) continue;
     const chat = where?.chat.id ?? w.chat;
-    ranked.push({ card: { id: w.ref, chat, title, detail: s.chats.get(w.chat)?.title ?? 'Waiting' }, rank, at: w.at });
+    ranked.push({ card: { id: w.ref, chat, title, detail: s.chats.get(w.chat)?.title ?? 'Waiting', row: where?.row ?? '' }, rank, at: w.at });
   }
   return ranked.sort((a, b) => a.rank - b.rank || b.at - a.at).slice(0, CARD_LIMIT).map((r) => r.card);
 };
@@ -2042,7 +2050,9 @@ const sources: Sources = {
             else c.queue.push(bytes);
           }
         } else if (event.type === 'close' || event.type === 'error') {
-          end(c, c.open ? 'The connection to your Mac ended.' : 'The relay refused the connection.');
+          end(c, c.open ? LOST : REFUSED);
+          // No read waits on a socket that never opened, so the screens learn why from here.
+          if (!c.open && conn === c) settle(REFUSED);
         }
         c.n += 1;
         return { key, status: c.ended !== '' ? 'closed' : c.open ? 'open' : 'connecting', n: c.n };
@@ -2148,7 +2158,12 @@ const sources: Sources = {
       settle('');
       return status(key);
     } catch (error) {
-      settle(failed(error));
+      // A socket that ended after its round read the Mac is no fault: iOS ends it while the app is in the background,
+      // and the network or the relay can end it at any time. The next round connects at once (`retryingNow`), and the
+      // screens keep what they show with no banner, as the Swift app shows a lost connection as connecting
+      // (TunnelConnection.State). A pairing that the Mac revoked still says so.
+      const c = conn;
+      settle(failed(error), polled === key && c !== null && c.key === key && c.ended !== '' && c.ended !== RELAY_ERRORS.revoked);
       return status(key);
     }
   },
@@ -2159,8 +2174,8 @@ const sources: Sources = {
     const s = ensure();
     const list = ordered(s);
     const at = zeroOf(s, zero);
-    // A state from the cache says so until the Mac answers.
-    const banner = !live ? '' : lastError !== '' ? lastError : liveState && !cached ? '' : `Connecting to ${pairing?.macName ?? 'your Mac'}…`;
+    // A state from the cache says so until the Mac answers. A quiet error shows nothing while the next round connects.
+    const banner = !live ? '' : lastError !== '' && !quiet ? lastError : liveState && !cached ? '' : `Connecting to ${pairing?.macName ?? 'your Mac'}…`;
     return {
       target: list.find((p) => p.id === chosen) ?? list[0] ?? none,
       projects: list,

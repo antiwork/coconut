@@ -58,10 +58,14 @@ component Coconut
   state refresh = 0
   state codeRound = 0
   state poll = 0
+  // When a round last gave way at once to the next (`retryingNow`), by `performanceNow()`.
+  state reconnectedAt = -10000
   // The pairings that the screens have read from the Keychain: a pairing or an unpairing in `live` moves it.
   state pairsRead = 0
   // Each opening of a chat: the New line keeps the read mark that the chat opened with (UnreadMark).
   state opened = 0
+  // The row that a search opened the chat at: a message, or the message of a card (`openAt`).
+  state focusRow = ""
   // The next photo of the open chat to keep from the Mac, and the photos that the viewer shows, with the one in view.
   state mediaRound = 0
   state viewed: Photo[] = []
@@ -170,8 +174,18 @@ component Coconut
   // next round, and the relay takes 60 connections a minute.
   task retryingSoon when mode == "live" and live.quick and not pending(live) and not delivery.staged and (sock.status == "closed" or live.error != "")
     after(3000, reconnect)
+  // A round whose session read the Mac and then lost its socket gives way at once, as the Swift app's next request
+  // connects again (TunnelConnection): iOS ends the socket while the app is in the background, so each return to the
+  // app waited for `retryingSoon` under "The connection to your Mac ended." (#599). At most once in 10 seconds, so a
+  // socket that keeps ending waits for `retryingSoon`.
+  task retryingNow when mode == "live" and live.quick and sock.status == "closed" and not pending(live) and not delivery.staged
+    after(1, reconnectNow)
   action reconnect
     round = round + 1
+  action reconnectNow
+    if performanceNow() - reconnectedAt >= 10000
+      reconnectedAt = performanceNow()
+      round = round + 1
 
   // The box answers a long poll within 25 seconds; a poll that found nothing asks again.
   task polling when mode == "pair" and pairing.status == "waiting" and not pending(pairing)
@@ -204,6 +218,18 @@ component Coconut
     nav = push(nav, path("chat", id))
     send read = markRead(id, opened + 1)
     opened = opened + 1
+    focusRow = ""
+  // A message or a card of a search opens its chat at its row (ConversationRoute with a messageId, decisionChatRoute).
+  action openAt(id: string, row: string)
+    openChat(id)
+    focusRow = row
+  // Once the open chat holds that row, the transcript brings it to the middle of the screen, clear of the title and the
+  // box, and follows its end again only when the person scrolls there (ConversationView.show). A message that the
+  // phone does not hold leaves the chat at its end.
+  task revealing when focusRow != "" and chat.id == openId and chat.messages.filter(m => m.id == focusRow).length > 0 key=focusRow
+    change(reveal)
+  action reveal
+    scrollIntoView("transcript", focusRow, block="center")
   action openNew
     projectName = ""
     nav = push(nav, "/new")
@@ -397,7 +423,8 @@ component Coconut
               else
                 scroll id="home-scroll" flex=1 min-height=0 keyboardDismissMode="on-drag" testId="home-scroll"
                   // In place of the list, the search (HomeView.searchRows): the chats, the cards that wait and the messages,
-                  // each group under its title, and a group without hits does not show. A row opens its chat.
+                  // each group under its title, and a group without hits does not show. A row opens its chat, a card and
+                  // a message at their row.
                   if searching
                     column padding="8px 0px 24px" testId="search-results"
                       if found.chats.length > 0
@@ -407,11 +434,11 @@ component Coconut
                       if found.cards.length > 0
                         SearchHeader(title="Cards", first=(found.chats.length == 0))
                         for k in found.cards key=k.id
-                          SearchCardRow(card=k, choose=openChat(k.chat))
+                          SearchCardRow(card=k, choose=openAt(k.chat, k.row))
                       if hits.length > 0
                         SearchHeader(title="Messages", first=(found.chats.length == 0 and found.cards.length == 0))
                         for h in hits key=h.id
-                          SearchMessageRow(hit=h, now=now, offset=time.utcOffset, choose=openChat(h.chat))
+                          SearchMessageRow(hit=h, now=now, offset=time.utcOffset, choose=openAt(h.chat, h.id))
                   else
                     if home.attention.length > 0
                       column gap=8 padding="4px 16px 12px" testId="attention-card"
