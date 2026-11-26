@@ -461,8 +461,9 @@ a `push --watch` update.
   every chat that the person starred with a swipe to the right on its row, Unread under it with every unread chat that
   is not starred (`ChatList.unreadSection`), then one row for each project, Coconut first, then Team chats, Other
   agents, Personal at the bottom and Archived last. An unread chat shows only in Unread until the person reads it, as in
-  the Mac sidebar (`ChatList.tree`). Each row says what waits for the person and what works inside, counts the chats of
-  its section, and opens them in place under it, set in as the branches of a tree (`ChatListRow`). Archived opens its
+  the Mac sidebar (`ChatList.tree`). Each row says what waits for the person and what works inside, with no number of
+  chats, and opens its active chats in place under it, set in as the branches of a tree (`ChatListRow`), with Load more
+  for the others (`ChatSectionMore`), or all its chats when none is active. Archived opens its
   chats on a page of their own (`ChatSectionRoute`), so an archived chat shows only there. The Exact app still lists
   every chat in one list, the unread ones first, archived chats among the others, and its title Agents in place of
   Chats. The rows name a further chat of a project after the project and its own title (`Bot.listName`, from the Mac's

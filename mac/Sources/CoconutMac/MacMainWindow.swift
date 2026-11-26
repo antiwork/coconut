@@ -482,7 +482,7 @@ struct DetailColumnBottomInset: NSViewRepresentable {
 /// archived / hidden to focus on real work". A section of a project, Team chats and Other agents start folded and fold
 /// as a section of Slack: a folded section still shows the open chat and the chats that work or wait for the person
 /// (stays), and its unread chats are in Unread. The Mac keeps the sections that the person opened. Archived starts
-/// folded too and counts its chats on the right of its title, as the row Archived of Chats on the iPhone counts them.
+/// folded too. No section counts its chats, as on the iPhone: the person found the counts stressful (2026-11-26).
 /// The iPhone opens them on a page of their own, but the Mac keeps Archived folding in place: the person chose that on
 /// a card (2026-11-25), so do not make it a row that opens a page or offer that again. The iPhone's
 /// Product tab has no row here: the person chose on a card to leave the sidebar as it is (2026-11-24), so Home keeps
@@ -592,7 +592,7 @@ struct MacSidebar: View {
             ForEach(sections.groups) { section in
                 let isOpen = open.contains(section.id)
                 Section {
-                    ForEach(section.shown(open: isOpen) { stays($0, at: now) }) { item in itemRow(item, in: section) }
+                    ForEach(section.shown(all: isOpen) { stays($0, at: now) }) { item in itemRow(item, in: section) }
                 } header: {
                     MacFoldHeader(title: section.title, open: isOpen) {
                         withAnimation(.snappy) { openSections = ChatListSection.toggle(section.id, openSections) }
@@ -600,9 +600,8 @@ struct MacSidebar: View {
                     .accessibilityIdentifier("sidebar-section-" + section.id)
                 }
             }
-            // The archived chats, newest first and folded until the person opens the section: the title counts them on
-            // the right, and the chevron takes the place of the number under the pointer. An archived chat stays
-            // readable. The iPhone has them on a page behind one row (ChatSectionRow), and the person chose on a card
+            // The archived chats, newest first and folded until the person opens the section. The title has no count.
+            // An archived chat stays readable. The iPhone has them on a page behind one row (ChatSectionRow), and the person chose on a card
             // to keep them folding in place here.
             if !sections.archived.isEmpty {
                 Section {
@@ -610,7 +609,7 @@ struct MacSidebar: View {
                         ForEach(sections.archived) { bot in botRow(bot, name: bot.listName) }
                     }
                 } header: {
-                    MacFoldHeader(title: "Archived", open: archivedOpen, count: sections.archived.count) {
+                    MacFoldHeader(title: "Archived", open: archivedOpen) {
                         withAnimation(.snappy) { archivedOpen.toggle() }
                     }
                     .accessibilityIdentifier("sidebar-section-archived")
@@ -768,12 +767,10 @@ struct MacSidebar: View {
 /// The title of a section of the sidebar that folds as a section of Slack: a folded section keeps the open chat and
 /// the chats that work or wait for the person in sight (MacSidebar.stays), and its unread chats are in Unread. A click
 /// on the title folds or opens it. The chevron shows while the pointer is over the title, at the place where the
-/// sidebar shows the chevron of Starred and Unread. Archived has the number of its chats at that place (count), as on
-/// the iPhone, and the chevron takes its place under the pointer.
+/// sidebar shows the chevron of Starred and Unread. No title counts its chats.
 private struct MacFoldHeader: View {
     let title: String
     let open: Bool
-    var count: Int? = nil
     let toggle: () -> Void
     @State private var hovering = false
 
@@ -782,24 +779,12 @@ private struct MacFoldHeader: View {
             HStack(spacing: BoardStyle.Space.xs) {
                 Text(title)
                 Spacer(minLength: 0)
-                ZStack(alignment: .trailing) {
-                    if let count {
-                        // The number lines up with the counts of the rows (Home, Live), which the sidebar insets
-                        // 18 points further than the end of a title. It has their weight and the color of the title.
-                        Text(count, format: .number)
-                            .fontWeight(.regular)
-                            .monospacedDigit()
-                            .padding(.trailing, 18)
-                            .opacity(hovering ? 0 : 1)
-                            .accessibilityLabel(ChatListSection.chats(count))
-                    }
-                    Image(systemName: "chevron.right")
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(.secondary)
-                        .rotationEffect(.degrees(open ? 90 : 0))
-                        .opacity(hovering ? 1 : 0)
-                        .accessibilityHidden(true)
-                }
+                Image(systemName: "chevron.right")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .rotationEffect(.degrees(open ? 90 : 0))
+                    .opacity(hovering ? 1 : 0)
+                    .accessibilityHidden(true)
             }
             .contentShape(Rectangle())
         }

@@ -32,8 +32,9 @@ extension AppStore {
     func botWorks(_ bot: Bot) -> Bool { botPhase(bot) != nil || botNeedsYou(bot) }
 
     /// A row of a chat list works: an agent chat that works or whose card waits (botWorks), or a direct chat with a bot
-    /// of a team while the bot types in it. Every other chat is idle, also a chat with people. A folded section of
-    /// Chats on the iPhone and of the Mac sidebar keeps such a row in sight.
+    /// of a team while the bot types in it. Every other chat is idle, also a chat with people. An open section of Chats
+    /// on the iPhone shows such a row before Load more (ChatSectionMore), and a folded section of the Mac sidebar keeps
+    /// it in sight.
     func chatWorks(_ item: ChatListItem, at date: Date) -> Bool {
         switch item {
         case .bot(let bot): botWorks(bot)
