@@ -54,7 +54,7 @@ struct NotificationSettingsView: View {
                 } footer: {
                     Text("A team message with one of these words notifies you.")
                 }
-                Section("Notify my iPhone") {
+                Section {
                     Picker("Notify my iPhone", selection: binding(\.mobileDelay)) {
                         ForEach(Self.delays(settings), id: \.self) { minutes in
                             Text(NotificationSettings.delayTitle(minutes)).tag(minutes)
@@ -63,6 +63,10 @@ struct NotificationSettingsView: View {
                     .pickerStyle(.inline)
                     .labelsHidden()
                     .accessibilityIdentifier("notify-iphone")
+                } header: {
+                    Text("Notify my iPhone")
+                } footer: {
+                    Text("Applies to all your iPhones.")
                 }
             } else {
                 Section { Text("Update Coconut on your Mac to change what notifies you.") }
