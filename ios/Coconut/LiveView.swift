@@ -380,7 +380,7 @@ struct LiveHelperRow: View {
         HStack(alignment: .firstTextBaseline, spacing: BoardStyle.Space.s) {
             Group {
                 if helper.isRunning {
-                    ProgressView().controlSize(.mini)
+                    CoconutLoader(.row)
                 } else {
                     Image(systemName: helper.failed ? "exclamationmark.circle.fill" : "checkmark.circle.fill")
                         .foregroundStyle(helper.failed ? BoardStyle.destructive : BoardStyle.positive)
@@ -437,7 +437,7 @@ struct LiveActivityImageView: View {
             } else if missing {
                 Image(systemName: "photo").foregroundStyle(.tertiary)
             } else {
-                ProgressView().controlSize(.small)
+                CoconutLoader(.row).foregroundStyle(.secondary)
             }
         }
         .task(id: image.id) {

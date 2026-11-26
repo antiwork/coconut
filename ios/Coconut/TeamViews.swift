@@ -33,7 +33,7 @@ struct TeamView: View {
         case .unpaired:
             TeamNotice(symbol: "link", text: "Pair with your Mac first. A team needs a Mac.") { PairMacButton() }
         case .loading:
-            ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity).settingsBackground()
+            CoconutLoader(.page).frame(maxWidth: .infinity, maxHeight: .infinity).settingsBackground()
         case .offline:
             TeamNotice(symbol: "person.2", text: "Coconut shows your team when it reaches your Mac.") { EmptyView() }
         case .failed(let text):
@@ -286,7 +286,7 @@ struct TeamRoomView: View {
                         HStack {
                             Text("Invite someone")
                             Spacer()
-                            if inviting { ProgressView() }
+                            if inviting { CoconutLoader(.row, label: "Inviting") }
                         }
                     }
                     .teamRowButton()

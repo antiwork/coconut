@@ -44,7 +44,7 @@ struct DecisionPreviewStrip: View {
                                                 .clipShape(RoundedRectangle(cornerRadius: BoardStyle.Radius.small))
                                         } else if failed {
                                             Image(systemName: "photo").foregroundStyle(.secondary)
-                                        } else { ProgressView() }
+                                        } else { CoconutLoader(.page).foregroundStyle(.secondary) }
                                     }
                                     .frame(height: 200)
                                     Text(preview.caption).font(.footnote).foregroundStyle(.secondary)

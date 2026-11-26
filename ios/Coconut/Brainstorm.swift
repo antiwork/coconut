@@ -183,7 +183,7 @@ struct BrainstormView: View {
             Button { finish(target) } label: {
                 ZStack {
                     Text("Next steps").opacity(session.phase == .finishing ? 0 : 1)
-                    if session.phase == .finishing { ProgressView().tint(BoardStyle.controlLabel) }
+                    if session.phase == .finishing { CoconutLoader(.button).foregroundStyle(BoardStyle.controlLabel) }
                 }
                 .frame(maxWidth: .infinity)
             }
@@ -331,7 +331,7 @@ private struct BrainstormOrb: View {
                     }
                     Circle().fill(BoardStyle.control).frame(width: size, height: size)
                     if [.starting, .thinking, .finishing].contains(phase) {
-                        ProgressView().tint(BoardStyle.controlLabel)
+                        CoconutLoader(.page).foregroundStyle(BoardStyle.controlLabel)
                     } else {
                         Image(systemName: symbol(phase))
                             .font(.system(size: size * 0.32, weight: .semibold))

@@ -195,7 +195,7 @@ struct FinanceTiles: View {
                     } else if let error {
                         BoardLoadNotice(message: error, retry: retry).accessibilityIdentifier("business-home-refresh-error")
                     } else {
-                        ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
+                        CoconutLoader(.page).frame(maxWidth: .infinity, maxHeight: .infinity)
                     }
                     Spacer(minLength: 0)
                 }

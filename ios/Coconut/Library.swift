@@ -413,7 +413,7 @@ struct DocumentView: View {
                     Button("Try again") { Task { await load() } }
                 }
             } else {
-                ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
+                CoconutLoader(.page).frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
         // Pin, Share, Delete and the load can fail.

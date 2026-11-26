@@ -269,7 +269,7 @@ struct PairingView: View {
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
             } else if model.isPairing {
-                ProgressView("Creating a setup code…")
+                CoconutLoader(.page, label: "Creating a setup code…")
             } else {
                 Text(model.pairingError ?? "Create a one-time setup code for an iPhone.")
                     .multilineTextAlignment(.center)

@@ -227,7 +227,7 @@ struct OnboardingView: View {
         switch phase {
         case .preparing, .waiting:
             HStack(spacing: 8) {
-                ProgressView().controlSize(.small)
+                CoconutLoader(.row, label: nil)
                 Text(phase == .preparing ? "Making a pairing code…" : "Waiting for your Mac…")
             }
             .font(.subheadline).foregroundStyle(.secondary)
@@ -235,7 +235,7 @@ struct OnboardingView: View {
             .accessibilityIdentifier("onboarding-status")
         case .pairing(let name):
             HStack(spacing: 8) {
-                ProgressView().controlSize(.small)
+                CoconutLoader(.row, label: nil)
                 Text("Pairing with \(name)…")
             }
             .font(.subheadline.weight(.semibold))

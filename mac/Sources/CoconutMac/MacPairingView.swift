@@ -23,7 +23,10 @@ struct MacPairingView: View {
                         Button {
                             Task { await pairHere() }
                         } label: {
-                            if pairingHere { ProgressView().controlSize(.small) } else { Text("Use this Mac") }
+                            // The button keeps its width while it pairs.
+                            Text("Use this Mac")
+                                .opacity(pairingHere ? 0 : 1)
+                                .overlay { if pairingHere { CoconutLoader(.row, label: "Pairing") } }
                         }
                         .buttonStyle(.borderedProminent)
                         .disabled(pairingHere)

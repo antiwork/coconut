@@ -213,8 +213,11 @@ struct ConversationView: View {
                                     let anchor = entries[shown].first?.message.id
                                     Task { await loadEarlier(anchor: anchor, proxy: proxy) }
                                 } label: {
-                                    if store.historyLoading.contains(botId) || growingAbove { ProgressView() }
-                                    else { Text("Load earlier messages").font(.footnote) }
+                                    if store.historyLoading.contains(botId) || growingAbove {
+                                        CoconutLoader(.row, label: "Loading earlier messages")
+                                    } else {
+                                        Text("Load earlier messages").font(.footnote)
+                                    }
                                 }
                                 .frame(maxWidth: .infinity, minHeight: 44)
                                 .disabled(store.historyLoading.contains(botId) || growingAbove)
@@ -1675,26 +1678,33 @@ struct ComposerSendButton: View {
     /// chat stays closed.
     var newChat: (() -> Void)? = nil
     var identifier = "send-message"
+    /// The text is on its way: the coconut hops in the button, which keeps its place and its color.
+    var sending = false
     @ScaledMetric(relativeTo: .body) private var size = 34
 
     var body: some View {
         Button(action: action) {
-            Image(systemName: symbol)
-                .font(.body.weight(.semibold))
-                .foregroundStyle(enabled ? BoardStyle.controlLabel : .secondary)
-                .frame(width: size, height: size)
-                .modifier(SendButtonFill(enabled: enabled))
-                .frame(minWidth: 44, minHeight: 44)
+            Group {
+                if sending {
+                    CoconutLoader(.button, label: nil)
+                } else {
+                    Image(systemName: symbol).font(.body.weight(.semibold))
+                }
+            }
+            .foregroundStyle(enabled || sending ? BoardStyle.controlLabel : .secondary)
+            .frame(width: size, height: size)
+            .modifier(SendButtonFill(enabled: enabled || sending))
+            .frame(minWidth: 44, minHeight: 44)
         }
         .buttonStyle(.plain)
-        .disabled(!enabled)
+        .disabled(!enabled || sending)
         .contextMenu {
             if let newChat {
                 Button("Send to a new agent", systemImage: "square.and.pencil", action: newChat)
                     .accessibilityIdentifier("send-in-new-chat")
             }
         }
-        .accessibilityLabel(label)
+        .accessibilityLabel(sending ? "Sending" : label)
         .accessibilityAction(named: "Send to a new agent") { newChat?() }
         .accessibilityIdentifier(identifier)
     }

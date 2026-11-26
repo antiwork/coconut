@@ -502,7 +502,7 @@ struct ChatCardHead<Detail: View>: View {
     var body: some View {
         HStack(alignment: .top, spacing: BoardStyle.Space.m) {
             Group {
-                if loading { ProgressView() }
+                if loading { CoconutLoader(.row) }
                 else { Image(systemName: symbol).font(.title3).foregroundStyle(.secondary) }
             }
             .frame(width: iconWidth, height: iconHeight)

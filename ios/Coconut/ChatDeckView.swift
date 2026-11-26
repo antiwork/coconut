@@ -519,7 +519,11 @@ struct ChatDeckTranscript: View {
             Task { await loadEarlier(entries, proxy: proxy) }
         } label: {
             Group {
-                if loading { ProgressView() } else { Text("Load earlier messages").font(.footnote) }
+                if loading {
+                    CoconutLoader(.row, label: "Loading earlier messages")
+                } else {
+                    Text("Load earlier messages").font(.footnote)
+                }
             }
             .frame(maxWidth: .infinity, minHeight: 44)
         }

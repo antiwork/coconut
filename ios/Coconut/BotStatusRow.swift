@@ -24,7 +24,7 @@ struct BotStatusRow: View {
         VStack(alignment: .leading, spacing: 3) {
             HStack(spacing: 8) {
                 HStack(spacing: 8) {
-                    if writing { TypingDots().transition(.opacity) }
+                    if writing { CoconutLoader(.typing).transition(.opacity) }
                     ZStack(alignment: .leading) {
                         ShimmerText(text: label, active: !activity.reconnecting)
                             .id(label)
@@ -89,51 +89,5 @@ struct BotStatusRow: View {
         if let model = activity.model, !model.isEmpty { parts.append(model) }
         if let queued = MessageQueue.label(activity.queued) { parts.append(queued) }
         return parts.map { "· " + $0 }.joined(separator: " ")
-    }
-}
-
-// Three dots show that the bot writes a reply.
-struct TypingDots: View {
-    @Environment(\.scenePhase) private var scenePhase
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @ScaledMetric(relativeTo: .subheadline) private var dot = 6
-
-    var body: some View {
-        TimelineView(.animation(minimumInterval: 1.0 / 30, paused: scenePhase != .active)) { timeline in
-            let time = timeline.date.timeIntervalSinceReferenceDate
-            // The three dots sit in a triangle, as the three holes of a coconut: two eyes above, the mouth below.
-            ZStack {
-                ForEach(0..<3) { index in
-                    let level = Self.level(index: index, time: time)
-                    Circle()
-                        .fill(Color.primary.opacity(0.35 + 0.65 * level))
-                        .frame(width: dot, height: dot)
-                        .scaleEffect(1 + 0.18 * level)
-                        .offset(Self.hole(index, dot: dot))
-                }
-            }
-            .frame(width: dot * 2.6, height: dot * 2.3)
-            // The coconut rolls: one turn in 1.6 s while the wave crosses its holes. Reduce Motion keeps it upright.
-            .rotationEffect(.degrees(reduceMotion ? 0 : Self.roll(time: time)))
-        }
-        .accessibilityHidden(true)
-    }
-
-    /// The place of a dot around the center: the left eye, the right eye, then the mouth.
-    static func hole(_ index: Int, dot: CGFloat) -> CGSize {
-        [CGSize(width: -dot * 0.8, height: -dot * 0.65), CGSize(width: dot * 0.8, height: -dot * 0.65),
-         CGSize(width: 0, height: dot * 0.65)][index]
-    }
-
-    /// The angle of the rolling triangle at `time`, in degrees: a full turn every 1.6 s.
-    static func roll(time: Double) -> Double {
-        time.truncatingRemainder(dividingBy: 1.6) / 1.6 * 360
-    }
-
-    // A wave crosses the three dots in 0.6 s, then rests for 0.4 s.
-    static func level(index: Int, time: Double) -> Double {
-        let phase = time.truncatingRemainder(dividingBy: 1.0) - Double(index) * 0.2
-        guard phase >= 0, phase < 0.4 else { return 0 }
-        return sin(.pi * phase / 0.4)
     }
 }
