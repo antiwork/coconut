@@ -3,6 +3,21 @@ import time
 
 # A person who opens the settings gets a live look at the model lists of the providers, at most this often.
 MODEL_REFRESH_SECONDS = 300
+# A search answers with this many messages, the newest first.
+SEARCH_MESSAGES = 30
+
+
+def search_snippet(text, start, before=40, after=160):
+    """A line of the text around a match: whole words, the spaces collapsed, with an ellipsis where it is cut."""
+    begin, end = max(0, start - before), min(len(text), max(start, 0) + after)
+    if begin:
+        space = text.find(' ', begin, max(start, begin))
+        begin = space + 1 if space >= 0 else begin
+    if end < len(text):
+        space = text.rfind(' ', max(start, 0) + 1, end)
+        end = space if space > 0 else end
+    line = ' '.join(text[begin:end].split())
+    return ('…' if begin else '') + line + ('…' if end < len(text) else '')
 
 
 def work_items(cards):
@@ -213,18 +228,29 @@ class StateSync:
             return page
 
     def search_conversations(self, query):
-        query = query.strip()[:200]
-        if not query:
-            return {'bot_ids': []}
-        needle = query.casefold()
+        """Find the text messages that hold every word of the query.
+
+        The answer names every bot with a match, for apps older than the omnibar, and the newest matches with a
+        line of text around the first word.
+        """
+        words = query.strip()[:200].casefold().split()
+        if not words:
+            return {'bot_ids': [], 'messages': []}
         with self._read_view() as view, view._read_transaction():
             visible = {b['id'] for b in view._all('bots') if not b.get('_deleted')}
-            # The answer names bots, so the read of a bot stops at its first match. SQLite gives only the text of
-            # each row, through the messages_chat index. A read of every message as JSON took 125 ms for 28,000.
-            return {'bot_ids': [bot_id for bot_id in sorted(visible) if any(needle in text.casefold() for (text,) in view.db.execute(
-                "SELECT json_extract(data,'$.text') FROM messages WHERE json_extract(data,'$.bot_id')=? "
-                "AND json_extract(data,'$.kind')='text' AND NOT COALESCE(json_extract(data,'$._hidden'),0) "
-                "AND NOT COALESCE(json_extract(data,'$._deleted'),0)", (bot_id,)))]}
+            # SQLite gives only the fields of the answer. A read of every message as JSON took 125 ms for 28,000.
+            hits = []
+            for identity, bot_id, role, created_at, text in view.db.execute(
+                    "SELECT id, json_extract(data,'$.bot_id'), json_extract(data,'$.role'), json_extract(data,'$.created_at'), "
+                    "json_extract(data,'$.text') FROM messages WHERE json_extract(data,'$.kind')='text' "
+                    "AND NOT COALESCE(json_extract(data,'$._hidden'),0) AND NOT COALESCE(json_extract(data,'$._deleted'),0)"):
+                folded = (text or '').casefold()
+                if bot_id in visible and all(word in folded for word in words):
+                    hits.append((created_at or '', identity, bot_id, role, text, folded.find(words[0])))
+            hits.sort(reverse=True)
+            return {'bot_ids': sorted({hit[2] for hit in hits}),
+                    'messages': [dict(id=identity, bot_id=bot_id, role=role, created_at=created_at, snippet=search_snippet(text, start))
+                                 for created_at, identity, bot_id, role, text, start in hits[:SEARCH_MESSAGES]]}
 
     def card(self, identity):
         from .service import ServiceError, now

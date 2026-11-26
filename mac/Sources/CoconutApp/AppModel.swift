@@ -29,6 +29,9 @@ final class AppModel: ObservableObject {
     /// File > New chat asked for a chat. The main window starts it, in the project of the chat that it shows or of the
     /// message box, and sets this to false.
     @Published var newChatRequested = false
+    /// File > Search asked for the search of the window (MacOmnibar). The main window opens or closes it and sets this
+    /// to false.
+    @Published var searchRequested = false
 
     // The login items start without the environment of the app, so the app ignores COCONUT_INSTALL_DIR too. Both
     // read the same preference.

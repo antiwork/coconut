@@ -138,6 +138,8 @@ struct CoconutHome: View {
     @State private var productPath = NavigationPath()
     @State private var cardsShown = false
     @State private var chatsPath = NavigationPath()
+    /// The words in the search field of Chats (OmniSearch).
+    @State private var chatSearch = ""
     @State private var profilePath = NavigationPath()
     @State private var teamJoin: TeamJoinRequest?
     @State private var shownTeamJoin: UUID?
@@ -286,7 +288,7 @@ struct CoconutHome: View {
                 case .finance: BusinessHomeView()
                 case .support: BusinessWorkspaceView(function: "support")
                 case .product: HomeLaunchView(part: .product) { open($0, on: path) }
-                case .chats: HomeLaunchView(part: .chats) { open($0, on: path) }
+                case .chats: HomeLaunchView(part: .chats, query: chatSearch) { open($0, on: path) }
                 case .profile: ProfileView()
                 }
             }
@@ -294,8 +296,10 @@ struct CoconutHome: View {
                 // The message box sits above the tab bar on every tab (the person: "new chat should show up every tab
                 // you're on"). Each tab keeps its own project and draft, and every New agent leads to the box of Chats.
                 .safeAreaInset(edge: .bottom, spacing: 0) {
-                    NewChatBar(place: NewChatPlace(tab))
+                    TabMessageBox(place: NewChatPlace(tab))
                 }
+                // Chats searches the whole app from a field under its title: chats, to-dos, pages, cards and messages.
+                .modifier(ChatSearchField(on: tab == .chats, text: $chatSearch))
                 .navigationTitle("")
                 // A tab root has its name as a large title, so a root and a pushed page look different. You has the
                 // person as its heading.
@@ -573,6 +577,11 @@ extension CoconutHome {
                 PendingBrainstorm.shared.opening = true
             }
         case "agent-list": open(.chats, [AgentListRoute()])
+        // The search of Chats with the words after `--query`, "payout" without them.
+        case "search":
+            open(.chats)
+            let query = arguments.firstIndex(of: "--query").flatMap { $0 + 1 < arguments.count ? arguments[$0 + 1] : nil }
+            later { chatSearch = query ?? "payout" }
         case "cards": open(.product, [HomeDestination.inbox])
         case "chat": open(.chats, [ConversationRoute(botId: agent)])
         // Personal, with the line of its Antiwork budget (PersonalBudget.swift).
@@ -667,5 +676,30 @@ extension NewChatPlace {
         case .chats: self = .chats
         case .profile: self = .you
         }
+    }
+}
+
+/// The search field of Chats (OmniSearch), under the title of the tab. The other tabs have none. A tab never changes
+/// `on`, so its page keeps its identity.
+private struct ChatSearchField: ViewModifier {
+    let on: Bool
+    @Binding var text: String
+
+    func body(content: Content) -> some View {
+        if on {
+            content.searchable(text: $text, placement: .navigationBarDrawer(displayMode: .automatic), prompt: "Search")
+        } else {
+            content
+        }
+    }
+}
+
+/// The message box under a tab. It leaves while the search of Chats is open, so the keyboard has one field.
+private struct TabMessageBox: View {
+    @Environment(\.isSearching) private var isSearching
+    let place: NewChatPlace
+
+    var body: some View {
+        if !isSearching { NewChatBar(place: place) }
     }
 }

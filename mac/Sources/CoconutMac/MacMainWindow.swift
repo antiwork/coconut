@@ -51,6 +51,10 @@ struct MacMainWindow: View {
     @State private var sidebarShown = true
     // The project of the message box of Home. File > New chat starts there when no chat is on the screen.
     @AppStorage(ChatProject.projectKey) private var boxProject = ""
+    // The search over the window (MacOmnibar), which Command-K and the Search row of the sidebar open.
+    @State private var searchOpen = false
+    // The card or the message of a chat that the search opened. The chat shows it first.
+    @State private var chatFocus: ChatFocus?
 
     var body: some View {
         if model.mode == .team {
@@ -70,7 +74,7 @@ struct MacMainWindow: View {
         Group {
             if store.hasPairing || store.isDemo {
                 NavigationSplitView {
-                    MacSidebar(selection: $selection)
+                    MacSidebar(selection: $selection) { searchOpen = true }
                         .onGeometryChange(for: CGFloat.self) { $0.frame(in: .global).maxX } action: { sidebarRight = max(0, $0) }
                         // AppKit hides a collapsed sidebar but keeps its frame, also when the window opens with the
                         // sidebar that the person hid. So the right edge counts only while AppKit shows the sidebar.
@@ -82,6 +86,11 @@ struct MacMainWindow: View {
                 // Each page of the detail column gets the notice from here, also a page that a stack pushes: a push
                 // replaces the whole content of the column, with each modifier inside the detail closure.
                 .modifier(MacNoticeArea(sidebarEdge: sidebarShown ? sidebarRight : 0))
+                .overlay {
+                    if searchOpen {
+                        MacOmnibar(open: { searchOpen = false; openHit($0) }, close: { searchOpen = false })
+                    }
+                }
             } else {
                 MacPairingView(model: model)
             }
@@ -125,6 +134,12 @@ struct MacMainWindow: View {
             model.newChatRequested = false
             startChat()
         }
+        // File > Search, Command-K: opens the search, or closes it when it is open.
+        .onChange(of: model.searchRequested, initial: true) { _, requested in
+            guard requested else { return }
+            model.searchRequested = false
+            searchOpen.toggle()
+        }
         // A document card in a chat selects the pinned row of its page, else it opens the page over its agent.
         .environment(\.openDocument) { id in show(MacPagePlace.card(id, documents: store.documents)) }
         // The page of a pinned row stays open when its pin goes: it shows over its agent. A deleted page leaves the
@@ -149,6 +164,8 @@ struct MacMainWindow: View {
         }
         // Each choice in the sidebar starts at its own root, so another bot never shows the last bot's pages.
         .onChange(of: selection) { old, selected in
+            // A card or a message of the search shows in its chat only, until another choice.
+            if let focus = chatFocus, selected != .bot(focus.botId) { chatFocus = nil }
             // The menu of an open pinned page deletes it and then dismisses it, which clears the selection. The
             // agents show, not Home.
             if selected == nil, case .document(let id)? = old,
@@ -171,6 +188,32 @@ struct MacMainWindow: View {
         case .pinnedRow(let id): selection = .document(id)
         case .inLibrary(let id): go(.agents, pushing: store.documentPath(id))
         case .libraryList: go(.agents)
+        }
+    }
+
+    /// Shows a row of the search: a place or a chat in the sidebar, a to-do over its list, a page as a document card
+    /// shows it, and a card or a message in its chat, which scrolls to it.
+    private func openHit(_ hit: MacOmnibar.Hit) {
+        switch hit {
+        case .place(_, _, let place): go(place)
+        case .chat(let item):
+            if case .bot(let bot) = item {
+                selection = .bot(bot.id)
+            } else if let chat = item.chat {
+                selection = .team(chat)
+            }
+        case .todo(let todo):
+            let repository = store.todoIssues?.repository ?? "antiwork/gumroad-private"
+            let list: MacSelection = todo.belongs(to: .finance) ? .business : todo.belongs(to: .support) ? .support : .home
+            go(list, pushing: [todo.route(in: repository)])
+        case .page(let page): show(MacPagePlace.card(page.id, documents: store.documents))
+        case .card(let card):
+            let route = store.decisionChatRoute(for: card)
+            chatFocus = ChatFocus(botId: route.botId, decisionId: card.id)
+            selection = .bot(route.botId)
+        case .message(let hit):
+            chatFocus = ChatFocus(botId: hit.botId, messageId: hit.id)
+            selection = .bot(hit.botId)
         }
     }
 
@@ -297,10 +340,12 @@ struct MacMainWindow: View {
             // The details are a column of fixed width next to the chat, not an inspector. Next to a chat, the
             // inspector's split view did not settle on a layout and stopped the app, below about 1,300 points of
             // window width. The column also keeps its tabs in one row with the bot's title over the chat.
+            // A card or a message of the search makes a new view of the chat, which scrolls to it.
+            let focus = chatFocus?.botId == botId ? chatFocus : nil
             HStack(spacing: 0) {
                 NavigationStack(path: $chatPath) {
-                    ConversationView(botId: botId)
-                        .id(botId)
+                    ConversationView(botId: botId, focusDecisionId: focus?.decisionId, focusMessageId: focus?.messageId)
+                        .id(botId + (focus.map { "-" + ($0.decisionId ?? $0.messageId ?? "") } ?? ""))
                         // The bot's title over the chat shows and hides the details next to it.
                         .environment(\.toggleBotDetails) { withAnimation(.snappy) { inspectorShown.toggle() } }
                         .navigationDestination(for: ConversationRoute.self) { route in
@@ -446,6 +491,8 @@ struct MacSidebar: View {
     @Environment(AppStore.self) private var store
     @Environment(\.showChatDeck) private var showChatDeck
     @Binding var selection: MacSelection?
+    /// Opens the search over the window (MacOmnibar).
+    let search: () -> Void
     @State private var deleting: Bot?
     @AppStorage("sidebar-unreads-open") private var unreadsOpen = true
     @AppStorage("sidebar-starred-open") private var starredOpen = true
@@ -475,6 +522,17 @@ struct MacSidebar: View {
         // The cards are a page of Home, so Home stays marked while they show.
         let marked = Binding<MacSelection?>(get: { selection == .inbox ? .home : selection }, set: { selection = $0 })
         return List(selection: marked) {
+            // The search of the whole app, with its shortcut, as in Slack and Notion.
+            Button(action: search) {
+                HStack {
+                    MacSidebarLabel(title: "Search", symbol: "magnifyingglass")
+                    Spacer(minLength: BoardStyle.Space.s)
+                    Text("⌘K").font(.caption).foregroundStyle(.tertiary)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityIdentifier("sidebar-search")
             // The Coconut chat: where the person changes Coconut. Coconut has no settings window for it. The further
             // chats of the Coconut project are in its section.
             if let coconut = store.bots.coconutChat {
@@ -853,6 +911,13 @@ struct MacBotDetails: View {
         .formStyle(.grouped)
         .background(BoardStyle.paper)
     }
+}
+
+/// A card or a message that a chat shows first: a row of the search opened it (MacOmnibar).
+private struct ChatFocus: Equatable {
+    var botId: String
+    var decisionId: String?
+    var messageId: String?
 }
 
 /// A row of the sidebar's top part: a quiet icon in the text color, and room around it.

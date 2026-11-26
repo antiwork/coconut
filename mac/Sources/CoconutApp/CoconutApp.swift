@@ -61,6 +61,8 @@ struct CoconutApp: App {
             CommandGroup(replacing: .appSettings) { ProfileCommand(model: model) }
             // File > New chat (Command-N): the message box with a project chosen.
             CommandGroup(replacing: .newItem) { NewChatCommands(model: model) }
+            // File > Search (Command-K): chats, to-dos, pages, cards and messages, as the switcher of Slack.
+            CommandGroup(after: .newItem) { SearchCommand(model: model) }
             // Show all agents (Command-Shift-\) and Show working agents (Option-Command-\) in the View menu.
             ChatDeckCommands()
             // View > Mark all as read, with Shift-Esc as in Slack.
@@ -104,6 +106,24 @@ struct NewChatCommands: View {
     private func show() {
         openWindow(id: "main")
         NSApp.activate(ignoringOtherApps: true)
+    }
+}
+
+/// File > Search, with the shortcut of Slack (Command-K). It brings the main window to the front and asks it for the
+/// search (MacOmnibar). A second Command-K closes it.
+struct SearchCommand: View {
+    @ObservedObject var model: AppModel
+    @Environment(\.openWindow) private var openWindow
+
+    var body: some View {
+        if model.mode == .full {
+            Button("Search…") {
+                model.searchRequested = true
+                openWindow(id: "main")
+                NSApp.activate(ignoringOtherApps: true)
+            }
+            .keyboardShortcut("k", modifiers: .command)
+        }
     }
 }
 

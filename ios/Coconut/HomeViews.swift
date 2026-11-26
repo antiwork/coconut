@@ -12,6 +12,8 @@ struct HomeLaunchView: View {
     /// What the view shows: Product, Chats, or the chats of one section on a page, Archived, which its row opens.
     enum Part: Equatable { case product, chats, section(ChatSectionRoute) }
     var part = Part.chats
+    /// What the field at the top of Chats searches (OmniSearch). Chats lists its hits in place of its rows.
+    var query = ""
     @Environment(AppStore.self) private var store
     /// The Working filter at the top right of Chats (WorkingFilterButton). The phone keeps it.
     @AppStorage(WorkingFilterButton.key) private var workingOnly = false
@@ -26,6 +28,10 @@ struct HomeLaunchView: View {
     /// The reports of the product work as they loaded here. A demo has no copy in the store (businessReports).
     @State private var productReports: [String: BusinessReport] = [:]
     @State private var productError: String?
+    /// The messages that have the words of the search, of the phone and then of the Mac.
+    @State private var messageHits: [OmniSearch.MessageHit] = []
+    /// The search whose messages came from the Mac too. Until then an empty search says nothing.
+    @State private var searchedQuery = ""
 
     var body: some View {
         switch part {
@@ -190,9 +196,12 @@ struct HomeLaunchView: View {
         let working = workingOnly ? sections.flatMap(\.items).filter { works($0, at: now) } : []
         let opened = ChatListSection.open(openSections)
         let tree = ChatList.tree(sections, latest: store.chatSummaries.newestActivity)
+        let words = OmniSearch.words(query)
         // A list, not a stack, so that a row of a chat has the swipe of the system: swipe left to archive.
         return List {
-            if workingOnly {
+            if !words.isEmpty {
+                searchRows(words)
+            } else if workingOnly {
                 if working.isEmpty {
                     Text("No agent is working.")
                         .font(.subheadline).foregroundStyle(.secondary)
@@ -233,6 +242,15 @@ struct HomeLaunchView: View {
         .contentMargins(.top, BoardStyle.Space.s, for: .scrollContent)
         .contentMargins(.bottom, BoardStyle.Space.xl, for: .scrollContent)
         .background(BoardStyle.paper)
+        .overlay {
+            if !words.isEmpty && searchedQuery == query && searchIsEmpty(words) {
+                ContentUnavailableView.search(text: query).accessibilityIdentifier("search-empty")
+            }
+        }
+        // On the list and not on the rows of the search: a modifier of a group of rows goes to each row.
+        .task(id: query) {
+            if await OmniSearch.messages(query, in: store, show: { messageHits = $0 }) { searchedQuery = query }
+        }
         .navigationTitle(workingOnly ? "Working" : "Chats")
         .toolbar {
             // One tap reads every chat, as Read All in Telegram. It shows while a chat of the list has an unread
@@ -342,6 +360,120 @@ struct HomeLaunchView: View {
                     .modifier(ChatListRow(nested: nested))
             }
         }
+    }
+
+    /// The hits of a search of Chats (OmniSearch): the chats by their names, the to-dos, the pages and the cards
+    /// that wait, then the messages that have the words, newest first. A group without hits does not show. A row
+    /// opens its place on the stack of Chats, and a message opens its chat at the message.
+    @ViewBuilder
+    private func searchRows(_ words: [String]) -> some View {
+        let chats = OmniSearch.chats(words, in: store)
+        let todos = OmniSearch.todos(words, in: store)
+        let pages = OmniSearch.pages(words, in: store)
+        let cards = OmniSearch.cards(words, in: store)
+        let first = [(chats.isEmpty, "Chats"), (todos.isEmpty, "To-dos"), (pages.isEmpty, "Pages"),
+                     (cards.isEmpty, "Cards"), (messageHits.isEmpty, "Messages")].first { !$0.0 }?.1
+        if !chats.isEmpty {
+            searchHeader("Chats", first: first == "Chats")
+            ForEach(chats) { item in chatRow(item, in: nil) }
+        }
+        if !todos.isEmpty {
+            searchHeader("To-dos", first: first == "To-dos")
+            let repository = store.todoIssues?.repository ?? "antiwork/gumroad-private"
+            ForEach(todos) { todo in
+                searchRow(symbol: todo.symbol, tint: todo.tint, title: todo.title,
+                          detail: OmniSearch.detail(of: todo)) {
+                    pushRoute?(todo.route(in: repository))
+                }
+                .accessibilityIdentifier("search-todo-\(todo.number)")
+            }
+        }
+        if !pages.isEmpty {
+            searchHeader("Pages", first: first == "Pages")
+            ForEach(pages) { page in
+                searchRow(symbol: page.symbol, tint: .secondary, title: page.title,
+                          detail: OmniSearch.owner(page.botId, in: store) ?? "Library") {
+                    pushRoute?(DocumentRoute(id: page.id))
+                }
+                .accessibilityIdentifier("search-page-\(page.id)")
+            }
+        }
+        if !cards.isEmpty {
+            searchHeader("Cards", first: first == "Cards")
+            ForEach(cards) { card in
+                searchRow(symbol: OmniSearch.cardSymbol, tint: BoardStyle.attention, title: card.title,
+                          detail: OmniSearch.owner(card.botId, in: store) ?? "Waiting") {
+                    pushRoute?(store.decisionChatRoute(for: card))
+                }
+                .accessibilityIdentifier("search-card-\(card.id)")
+            }
+        }
+        if !messageHits.isEmpty {
+            searchHeader("Messages", first: first == "Messages")
+            ForEach(messageHits) { hit in messageRow(hit, words: words) }
+        }
+    }
+
+    /// Nothing matches the words: no name, and no message on the phone or the Mac.
+    private func searchIsEmpty(_ words: [String]) -> Bool {
+        messageHits.isEmpty && OmniSearch.chats(words, in: store, limit: 1).isEmpty
+            && OmniSearch.todos(words, in: store, limit: 1).isEmpty && OmniSearch.pages(words, in: store, limit: 1).isEmpty
+            && OmniSearch.cards(words, in: store, limit: 1).isEmpty
+    }
+
+    /// The title of a group of hits, as Starred has.
+    private func searchHeader(_ title: String, first: Bool) -> some View {
+        ChatSectionHeader(title: title, id: "search-" + title.lowercased(), first: first).homeRow()
+    }
+
+    /// A to-do, a page or a card of the search, as a row of a to-do list (TodoIssueRows).
+    private func searchRow(symbol: String, tint: Color, title: String, detail: String,
+                           action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: BoardStyle.Space.m) {
+                Image(systemName: symbol).font(.title3).foregroundStyle(tint).frame(width: todoIconWidth)
+                    .accessibilityHidden(true)
+                VStack(alignment: .leading, spacing: BoardStyle.Space.xs) {
+                    Text(title).font(.body).foregroundStyle(.primary)
+                        .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 2)
+                    Text(detail).font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
+                }
+                Spacer(minLength: 0)
+            }
+            .frame(minHeight: 44, alignment: .leading)
+            .padding(.vertical, BoardStyle.Space.m)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(BoardStyle.paper)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(HomePressStyle())
+        .accessibilityElement(children: .combine)
+        .homeRow()
+    }
+
+    /// A message of the search: the chat and the day, then the words around the match with the words in bold. A tap
+    /// opens the chat at the message.
+    private func messageRow(_ hit: OmniSearch.MessageHit, words: [String]) -> some View {
+        Button {
+            pushRoute?(ConversationRoute(botId: hit.botId, messageId: hit.id))
+        } label: {
+            ChatRowLayout(name: OmniSearch.owner(hit.botId, in: store) ?? "Chat", unread: 0, date: hit.createdAt.apiDate) {
+                EmptyView()
+            } subtitle: {
+                Text(OmniSearch.highlighted((hit.role == "user" ? "You: " : "") + hit.snippet, words))
+                    .font(.subheadline).foregroundStyle(.secondary)
+                    .lineLimit(2)
+                    // The grid of the row gives a cell one line unless the text asks for its height.
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .padding(.vertical, BoardStyle.Space.m)
+            .background(BoardStyle.paper)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(HomePressStyle())
+        .accessibilityIdentifier("search-message-\(hit.id)")
+        .homeRow()
     }
 
     /// A chat works while its row says so (AppStore.chatWorks), as in the sidebar of the Mac.
