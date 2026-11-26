@@ -3,10 +3,10 @@ import SwiftUI
 /// Two tabs of the iPhone, and the pages that the rows of Chats open. Product has the rules that breach for the agents
 /// and the cards that wait, then its to-dos, the issues of gumroad-private with the label product (TodoLists.swift),
 /// and the open pull requests (ProductWork). Chats is nested (the person, 2026-11-25: "Everything should be nested"):
-/// Starred with its chats, then one row for each project, the chats with people, the agents of an earlier release,
-/// Personal at the bottom and Archived, and each row opens its chats on a page of their own (ChatSectionRow,
-/// ChatList.sections), with the message box under the list (NewChatBar). Its top right has Working, which lists only
-/// the chats that work, and the grid of the agents that work (ChatGrid).
+/// Starred with its chats, Unread with the chats that the person has not read, then one row for each project, the chats
+/// with people, the agents of an earlier release, Personal at the bottom and Archived, and each row opens its chats on
+/// a page of their own (ChatSectionRow, ChatList.sections), with the message box under the list (NewChatBar). Its top
+/// right has Working, which lists only the chats that work, and the grid of the agents that work (ChatGrid).
 struct HomeLaunchView: View {
     /// What the view shows: Product, Chats, or the chats of one section, which its row in Chats opens.
     enum Part: Equatable { case product, chats, section(ChatSectionRoute) }
@@ -164,21 +164,24 @@ struct HomeLaunchView: View {
     /// "Chats should look/be more like slack and almost everything should be archived / hidden to focus on real work.
     /// Sections by project and personal agents at bottom"). Starred comes first with its chats in sight: a swipe to the
     /// right on any chat stars it, as Pin in Messages and Telegram (the person: "Don't see a way to pin a chat to the
-    /// top of list"). Every other section is one row that opens its chats on a page of their own (ChatSectionRow): a
-    /// row for each project, Coconut first, then the chats with people, the agents of an earlier release, Personal at
-    /// the bottom, and Archived last (the person: "Archived should be behind a tap just one row with number at bottom
-    /// of chats"). A row shows what works or waits inside, the unread messages and the number of its chats, so a live
-    /// chat is one tap deeper and its row still says so; the person chose this on a card over nesting the Mac sidebar
-    /// too. The list has no tabs or toggles inside it, because the person found that nobody taps them (2026-11-24),
-    /// and a chat archives itself after the time that You sets (AutoArchiveMenu, 14 hours unless the person picks
-    /// another). The top right has the two buttons that the person asked for that evening: Working, which lists every
-    /// chat that works in one list without the rows of the sections (WorkingFilterButton), and the grid of the agents
-    /// that work (ChatGridButton).
+    /// top of list"). Unread follows with its chats in sight too (the person, 2026-11-25: "Put unread chats at top"):
+    /// every chat with an unread message that is not starred, newest activity first, which also stays in the row of
+    /// its section (ChatList.unreadSection). Every other section is one row that opens its chats on a page of their
+    /// own (ChatSectionRow): a row for each project, Coconut first, then the chats with people, the agents of an
+    /// earlier release, Personal at the bottom, and Archived last (the person: "Archived should be behind a tap just
+    /// one row with number at bottom of chats"). A row shows what works or waits inside, the unread messages and the
+    /// number of its chats, so a live chat is one tap deeper and its row still says so; the person chose this on a
+    /// card over nesting the Mac sidebar too. The list has no tabs or toggles inside it, because the person found that
+    /// nobody taps them (2026-11-24), and a chat archives itself after the time that You sets (AutoArchiveMenu, 14
+    /// hours unless the person picks another). The top right has the two buttons that the person asked for that
+    /// evening: Working, which lists every chat that works in one list without the rows of the sections
+    /// (WorkingFilterButton), and the grid of the agents that work (ChatGridButton).
     private func chatList(_ sections: [ChatListSection]) -> some View {
         let now = Date.now
         // The chats that work, in the order of the sections, for the Working filter.
         let working = workingOnly ? sections.flatMap(\.items).filter { works($0, at: now) } : []
-        let starred = sections.first { $0.alwaysOpen }
+        let starred = sections.first { $0.kind == .starred }
+        let unread = ChatList.unreadSection(sections, latest: store.chatSummaries.newestActivity)
         let rows = sections.filter { !$0.alwaysOpen }
         // A list, not a stack, so that a row of a chat has the swipe of the system: swipe left to archive.
         return List {
@@ -203,12 +206,20 @@ struct HomeLaunchView: View {
                     ChatSectionHeader(section: starred, first: true).homeRow()
                     ForEach(starred.items) { item in chatRow(item, in: starred) }
                 }
+                // The unread chats come next, in sight, newest activity first, and each stays in the row of its
+                // section too (ChatList.unreadSection). Reading a chat takes it out of Unread.
+                if let unread {
+                    ChatSectionHeader(section: unread, first: starred == nil).homeRow()
+                    ForEach(unread.items) { item in chatRow(item, in: unread) }
+                }
                 ForEach(rows) { section in
                     ChatSectionRow(section: section, summary: summary(of: section, at: now)) {
                         pushRoute?(ChatSectionRoute(section))
                     }
-                    // The rows start a little under the last starred chat, so the two kinds of rows read apart.
-                    .homeRow(top: starred != nil && section.id == rows.first?.id ? BoardStyle.Space.m : 0)
+                    // The rows start a little under the last chat of Starred or Unread, so the two kinds of rows read
+                    // apart.
+                    .homeRow(top: (starred != nil || unread != nil) && section.id == rows.first?.id
+                        ? BoardStyle.Space.m : 0)
                 }
             }
         }
@@ -239,10 +250,11 @@ struct HomeLaunchView: View {
 
     /// The chats of one section on a page of their own, which its row in Chats opens (ChatSectionRow): a project with
     /// its own chat first and its further chats newest first, the chats with people newest first, the agents of an
-    /// earlier release, or the archived chats newest first. Each row is the row of a chat, with the swipes of Chats: a
-    /// tap opens the chat, a swipe to the right stars it, which moves it to Starred, and a swipe to the left archives
-    /// or mutes it. On Archived the swipe offers Unarchive, which takes the chat back to its section, and a message of
-    /// the person brings it back too (agent_chats.py). The page keeps its title when its last chat leaves.
+    /// earlier release, or the archived chats newest first. Above that order the unread chats come first, except on
+    /// Archived (ChatList.sections). Each row is the row of a chat, with the swipes of Chats: a tap opens the chat, a
+    /// swipe to the right stars it, which moves it to Starred, and a swipe to the left archives or mutes it. On
+    /// Archived the swipe offers Unarchive, which takes the chat back to its section, and a message of the person
+    /// brings it back too (agent_chats.py). The page keeps its title when its last chat leaves.
     private func sectionList(_ route: ChatSectionRoute, section: ChatListSection?) -> some View {
         List {
             if let section {
@@ -433,14 +445,17 @@ struct HomeLaunchView: View {
 
 /// A section of Chats, as a section of the sidebar of Slack: the chats that the person starred, the chats of one
 /// project, the chats with people, the agents of an earlier release, or Archived (ChatList.sections). Chats on the
-/// iPhone is nested: Starred shows its chats, and every other section is one row that opens its chats on a page of
-/// their own (ChatSectionRow). The Mac sidebar folds them in place instead (MacSidebar, ChatSections), and keeps the
-/// sections that the person opened: one section on each line (open, toggle).
+/// iPhone is nested: Starred and Unread show their chats, and every other section is one row that opens its chats on a
+/// page of their own (ChatSectionRow). The Mac sidebar folds them in place instead (MacSidebar, ChatSections), and
+/// keeps the sections that the person opened: one section on each line (open, toggle).
 struct ChatListSection: Identifiable, Equatable {
     enum Kind: Equatable {
         /// The chats that the person starred, as the Starred section of Slack: the starred agent chats and the pinned
         /// chats of the teams. It comes first, and it stays open: the person chose these chats to have them at hand.
         case starred
+        /// The chats with an unread message that the person did not star, under Starred in Chats on the iPhone
+        /// (ChatList.unreadSection). It stays open too: the person asked for the unread chats at the top.
+        case unread
         /// The chats of a project, its own chat first: the ID of the project.
         case project(String)
         /// The teams, their named chats, and the direct chats with a person or with a bot of a team.
@@ -457,12 +472,14 @@ struct ChatListSection: Identifiable, Equatable {
     let title: String
     let items: [ChatListItem]
 
-    /// The section holds the chats that the person chose, so it shows them without a tap, as the Starred of Slack.
-    var alwaysOpen: Bool { kind == .starred }
+    /// The section holds the chats that the person chose or has not read, so it shows them without a tap, as Starred
+    /// and Unreads of Slack.
+    var alwaysOpen: Bool { kind == .starred || kind == .unread }
 
     var id: String {
         switch kind {
         case .starred: "starred"
+        case .unread: "unread"
         case .project(let id): "project-" + id
         case .people: "people"
         case .others: "others"
@@ -496,9 +513,9 @@ struct ChatListSection: Identifiable, Equatable {
     }
 }
 
-/// The title of Starred at the top of Chats, in the quiet color of a title. Its chats show under it, because the person
-/// starred them to have them at hand. Every other section of Chats is one row that opens its chats (ChatSectionRow), so
-/// nothing in Chats folds.
+/// The title of Starred or Unread at the top of Chats, in the quiet color of a title. Its chats show under it, because
+/// the person starred them to have them at hand, or has not read them. Every other section of Chats is one row that
+/// opens its chats (ChatSectionRow), so nothing in Chats folds.
 struct ChatSectionHeader: View {
     let section: ChatListSection
     /// The first title starts close under the title of the page.
@@ -625,6 +642,7 @@ struct ChatSectionRow: View {
         case .people: "person.2"
         case .archived: "archivebox"
         case .starred: "star"
+        case .unread: "circle.fill"
         case .project, .others: "folder"
         }
     }
