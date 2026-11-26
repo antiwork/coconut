@@ -286,16 +286,17 @@ component Coconut
     send queueChanged = moveQueued(chat.id, id, offset, chat.queue.filter(q => q.canChange).map(q => q.id))
   action removeRow(id: string)
     send queueChanged = removeQueued(chat.id, id)
-  // A card: a choice, its Undo, and the X that dismisses the card without an answer.
-  action pickOption(ref: string, option: string)
-    send chosen = chooseOption(chat.id, ref, option)
+  // A card: a choice, its Undo, and the X that dismisses the card without an answer. The choice and the X name the
+  // revision of the card as it shows, so the Mac refuses them for a card that the agent changed meanwhile.
+  action pickOption(ref: string, option: string, revision: number)
+    send chosen = chooseOption(chat.id, ref, option, revision)
   action afterChoose
     if chosenId != ""
       send answered = answerCard(chat.id, chosenId)
   action takeBack(ref: string)
     send undone = undoAnswer(ref)
-  action closeCard(ref: string)
-    send dismissed = dismissCard(chat.id, ref)
+  action closeCard(ref: string, revision: number)
+    send dismissed = dismissCard(chat.id, ref, revision)
   // Edit of a draft card (MessageDraftEditor): its message in a sheet, where Save keeps the change on the Mac. The card
   // keeps Send and Discard, and the message goes only with Send.
   action openDraft(ref: string, d: Draft, revision: number)
@@ -484,7 +485,7 @@ component Coconut
                         if m.sender != ""
                           SenderLine(sender=m.sender, mine=m.mine)
                         for c in m.card key=c.ref
-                          CardView(card=c, dismiss=closeCard(c.ref), undo=takeBack(c.ref))
+                          CardView(card=c, dismiss=closeCard(c.ref, c.revision), undo=takeBack(c.ref))
                             if c.previews.length == 1
                               for p in c.previews key=p.key
                                 PhotoTile(photo=p, wide=true, still=still, open=openPhotos(c.previews, 0))
@@ -500,15 +501,15 @@ component Coconut
                                 row gap=8 align-items="center" flex-wrap="wrap"
                                   // Send, Edit and Discard (MessageDraftActions): Edit opens the message in a sheet.
                                   for o in c.options.slice(0, 1) key=o.id
-                                    DraftButton(label=o.label, primary=true, pick=pickOption(c.ref, o.id))
+                                    DraftButton(label=o.label, primary=true, pick=pickOption(c.ref, o.id, c.revision))
                                   for d in c.drafts key=d.to
                                     DraftEdit(edit=openDraft(c.ref, d, c.revision))
                                   for o in c.options.slice(1) key=o.id
-                                    DraftButton(label=o.label, primary=false, pick=pickOption(c.ref, o.id))
+                                    DraftButton(label=o.label, primary=false, pick=pickOption(c.ref, o.id, c.revision))
                               else
                                 column gap=8
                                   for o in c.options key=o.id
-                                    ChoiceButton(option=o, disabled=(o.approve and not c.previewsReady), pick=pickOption(c.ref, o.id))
+                                    ChoiceButton(option=o, disabled=(o.approve and not c.previewsReady), pick=pickOption(c.ref, o.id, c.revision))
                         RowTime(id=m.id, at=m.at, now=now, offset=time.utcOffset, mine=false)
                     else
                       WorkingLine(turn=chat.turn, now=now, still=still)

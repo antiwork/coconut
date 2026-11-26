@@ -295,10 +295,14 @@ const cardOf = (d: RawDecision, all: Map<string, RawDecision>): CardData => {
   };
 };
 
-// The answers that the phone holds for cards, by card (OutgoingAnswer): the option, its label, and whether it still
-// waits for its Undo or goes to the Mac. `failures` say why the last answer to a card did not go, and `dismissed` are
-// the cards that the person dismissed until the Mac says so.
-interface Answering { id: string; option: string; label: string; sending: boolean; undone: boolean }
+// The answers that the phone holds for cards, by card (OutgoingAnswer): the option, its label, the request as the
+// person made it at the tap (AnswerRequest: the answer, the option that it names, the revision and the hashes of the
+// card that showed), and whether it still waits for its Undo or goes to the Mac. `failures` say why the last answer to a card did not go, and `dismissed` are the cards that the person
+// dismissed until the Mac says so.
+interface Answering {
+  id: string; option: string; label: string; answer: string; optionId: string | null; revision: number; draftHash: string; previewsHash: string;
+  sending: boolean; undone: boolean;
+}
 const answers = new Map<string, Answering>();
 let choices = 0;
 const failures = new Map<string, string>();
@@ -2503,14 +2507,22 @@ const sources: Sources = {
 
   // A choice on a card shows at once, with Undo, and `answerCard` sends it after the wait (AnswerUndoRow): the person
   // can take back a choice made by mistake, and nothing reaches the Mac before then. The reply names this one choice, so
-  // a choice made again after an Undo goes once. The demo answers at once, as AppStore.answer does in the preview.
-  chooseOption: ([chatId, ref, optionId]) => {
+  // a choice made again after an Undo goes once. The choice keeps the revision of the card as it showed (`seen`), as
+  // the Decision of DecisionCard does, and the hashes of the draft and the previews of that revision: the Mac changes a
+  // draft or previews only with a new revision, so a card of another revision has no hashes that the person saw, and
+  // the Mac refuses its older revision (409). The demo answers at once, as AppStore.answer does in the preview, and
+  // refuses a card that changed.
+  chooseOption: ([chatId, ref, optionId, seen]) => {
     const s = ensure();
     const found = cardIn(s, ref);
     const option = found?.card.options.find((o) => o.id === optionId);
     if (!found || !option || found.chat.id !== chatId || answers.has(ref) || found.card.status !== 'pending') return { id: '' };
     failures.delete(ref);
     if (!useLive) {
+      if (found.card.revision !== seen) {
+        failures.set(ref, 'This decision changed. Review it before answering.');
+        return { id: '' };
+      }
       found.card.status = option.answer === 'reject' ? 'rejected' : found.card.draft ? 'approved' : 'executed';
       found.card.selected = option.label;
       s.waits = s.waits.filter((w) => w.ref !== ref);
@@ -2518,7 +2530,12 @@ const sources: Sources = {
     }
     choices += 1;
     const id = `${choices} ${ref}`;
-    answers.set(ref, { id, option: option.id, label: option.label, sending: false, undone: false });
+    const same = found.card.revision === seen;
+    const draftHash = same ? found.card.draftHash : '';
+    const previewsHash = same ? found.card.previewsHash : '';
+    // A card without options of its own takes an answer that names none.
+    const named = (decisions.get(ref)?.options.length ?? 0) > 0 ? option.id : null;
+    answers.set(ref, { id, option: option.id, label: option.label, answer: option.answer, optionId: named, revision: seen, draftHash, previewsHash, sending: false, undone: false });
     return { id };
   },
 
@@ -2530,9 +2547,10 @@ const sources: Sources = {
     return { ok: true };
   },
 
-  // The answer that `chooseOption` holds goes once its Undo has passed: on the Mac with the card's revision, and for a
-  // card with a draft or previews the hash of what the person saw (AnswerRequest), which the Mac compares before it
-  // approves. The chat says why an answer did not go.
+  // The answer that `chooseOption` holds goes once its Undo has passed: on the Mac with the revision of the card that
+  // the person saw at the tap, and for a card with a draft or previews the hash of what the person saw (AnswerRequest),
+  // which the Mac compares before it approves. A card that the agent changed since gets a refusal of the Mac, not the
+  // answer, and the chat says why an answer did not go.
   answerCard: async ([_chat, choice]) => {
     const ref = choice.slice(choice.indexOf(' ') + 1);
     const holding = answers.get(ref);
@@ -2542,16 +2560,14 @@ const sources: Sources = {
       if (holding.undone || answers.get(ref) !== holding) return { ok: false };
     }
     holding.sending = true;
-    const found = cardIn(ensure(), ref);
-    const option = found?.card.options.find((o) => o.id === holding.option);
-    const decision = decisions.get(ref);
-    if (!useLive || !found || !option || !decision) {
+    if (!useLive) {
       answers.delete(ref);
       return { ok: false };
     }
-    const body: Record<string, unknown> = { choice: option.answer, revision: decision.revision, option_id: decision.options.length > 0 ? option.id : null };
-    if (decision.draft_hash) body.draft_hash = decision.draft_hash;
-    if (decision.previews_hash) body.previews_hash = decision.previews_hash;
+    // The request is the one of the tap. A card that lost the option or closed during the wait gets the Mac's refusal.
+    const body: Record<string, unknown> = { choice: holding.answer, revision: holding.revision, option_id: holding.optionId };
+    if (holding.draftHash) body.draft_hash = holding.draftHash;
+    if (holding.previewsHash) body.previews_hash = holding.previewsHash;
     try {
       await write('POST', `/v1/decisions/${ref}/answer`, body);
     } catch (error) {
@@ -2563,8 +2579,10 @@ const sources: Sources = {
     return { ok: true };
   },
 
-  // A dismissal is no answer: the card closes, and the agent goes on without one (the X of DecisionCard).
-  dismissCard: async ([chatId, ref]) => {
+  // A dismissal is no answer: the card closes, and the agent goes on without one (the X of DecisionCard). It names the
+  // revision of the card as it showed (`seen`), as AppStore.updateInbox does, so the Mac refuses it for a card that the
+  // agent changed since. The demo refuses in the same way.
+  dismissCard: async ([chatId, ref, seen]) => {
     const s = ensure();
     const found = cardIn(s, ref);
     if (!found || found.chat.id !== chatId || answers.has(ref)) return { ok: false };
@@ -2573,13 +2591,17 @@ const sources: Sources = {
       const decision = decisions.get(ref);
       if (!decision) return { ok: false };
       try {
-        await write('POST', `/v1/decisions/${ref}/inbox`, { action: 'dismiss', revision: decision.revision });
+        await write('POST', `/v1/decisions/${ref}/inbox`, { action: 'dismiss', revision: seen });
       } catch {
         failures.set(ref, 'Dismissal not confirmed. Try again.');
         return { ok: false };
       }
       dismissed.add(ref);
       return { ok: true };
+    }
+    if (found.card.revision !== seen) {
+      failures.set(ref, 'Dismissal not confirmed. Try again.');
+      return { ok: false };
     }
     found.card.status = 'dismissed';
     s.waits = s.waits.filter((w) => w.ref !== ref);

@@ -106,8 +106,9 @@ context in paragraphs, its risk (or "Assessment needs updating"), its previews a
 Reply to, Subject and body (`MessageDraftContent`) with Send, Edit and Discard (`MessageDraftActions`), or its options with the recommended one first
 and marked, each with what it does and its risk. An option that approves waits until the previews have loaded. A
 choice shows at once with Undo for 10 seconds (`AnswerUndoRow`, `answerUndoSeconds`), and only then goes to the Mac
-with the card's revision and the hashes of the draft and the previews that the person saw (`AnswerRequest`); while it
-goes the receipt has an arrow, and the receipt of an answered card has the choice with a check
+with the card's revision and the hashes of the draft and the previews that the person saw at the tap
+(`AnswerRequest`), so the Mac refuses a choice on a card that the agent changed meanwhile (409); while it goes the
+receipt has an arrow, and the receipt of an answered card has the choice with a check
 (`DecisionSelection`): "Approved for sending" or "Discarded" for a draft, "Could not finish" with the reason for one
 that failed, Dismissed, or what the Mac closed it with. Why a choice or a dismissal did not go shows under the card.
 The demo answers at once, as the preview of the Swift app does. A card that the person answered in words leaves the
@@ -377,6 +378,19 @@ revision of the open, and the demo refuses in the same way. A scratch script und
 stand-in Mac refuse a Save after a newer revision, and the newer draft stays. The Contract compiles with the pinned Exact
 (`contract build`, built from source) with the 20 warnings of main and no new one, and `app.ts` passes `tsc --strict`
 with the generated types. The view path has not run on the web host or a phone.
+
+Answer and dismissal, 2026-11-26. A choice and the X named the revision and the hashes of the newest state of the
+Mac at the send, so a choice on a card that the agent changed after the tap or before it approved content that the
+person never saw. Now the view passes the revision of the card as it shows, a choice keeps it with the hashes of that
+revision until the send, and the X names it too, as `DecisionCard` does. The demo refuses a choice or an X on a card
+that changed. A scratch script under bun, against a stand-in Mac that copies the checks of `answer_native` and
+`update_inbox`, showed it: on the old code a Send after a change was approved with the new revision and hash; on the
+new code it goes with the seen revision, the Mac refuses it (409), the card shows the words, and nothing is approved.
+An unchanged card is approved, Undo still sends nothing, and the demo still answers. The held choice is the whole
+request of the tap, so a card that lost the option during Undo also gets the refusal of the Mac. Not covered: a card
+that another client answered in words during Undo leaves the chat, and the refusal then has no card to show on. The Contract compiles with the 20
+warnings of main and no new one, and `app.ts` passes `tsc --strict`. The view path has not run on the web host or a
+phone.
 
 Not done:
 
