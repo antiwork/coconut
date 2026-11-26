@@ -26,10 +26,12 @@ enum TeamAlertLevel: String, CaseIterable, Sendable {
     }
 }
 
-/// The alert of a message: the type that the sender chose, and the level.
+/// The alert of a message: the type that the sender chose, and the level. `resolved` is true on the alert that says
+/// that the condition of an earlier alert is over: it joins the notice of that alert. A Mac without it sends none.
 struct TeamAlert: Decodable, Equatable, Sendable {
     var type: String
     var level: TeamAlertLevel
+    var resolved = false
 
     /// An alert that does not fit the rules decodes to an error, and its message then shows as a plain message.
     init(from decoder: Decoder) throws {
@@ -41,9 +43,10 @@ struct TeamAlert: Decodable, Equatable, Sendable {
         }
         self.type = type
         self.level = level
+        resolved = (try? container.decodeIfPresent(Bool.self, forKey: .resolved)) == true
     }
 
-    private enum CodingKeys: String, CodingKey { case type, level }
+    private enum CodingKeys: String, CodingKey { case type, level, resolved }
 
     /// The rule of a type: 1 to 32 characters of `a` to `z`, `0` to `9`, `-` and `_`.
     static func fits(_ type: String) -> Bool {
@@ -54,7 +57,7 @@ struct TeamAlert: Decodable, Equatable, Sendable {
     }
 
     /// What VoiceOver reads for the label of the alert.
-    var spoken: String { "\(level.title) alert, \(type)" }
+    var spoken: String { resolved ? "Resolved alert, \(type)" : "\(level.title) alert, \(type)" }
 }
 
 /// The alerts of one chat, from the newest page of the Mac: how many, how many critical, and the count of each type,

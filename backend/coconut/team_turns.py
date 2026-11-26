@@ -483,6 +483,8 @@ class TeamTurns:
         chat shows nothing. `alert` is the checked alert of a send outside a turn (team_alerts.alert_request): the
         message carries it in a team chat, and a direct message carries none. `thread` names the message whose thread
         a later part of an answer joins in a team chat (docs/team-log.md, "Inbox chats"); a direct message has none.
+        An alert with a key and without `thread` names the newest alert of its key, unless that alert resolved it and
+        this one does not (TeamStore.alert_thread), so a resolution joins the notice that it resolves.
         `request_trigger` separates a live request from the ID of its file delivery. `check` validates the active turn
         before writes and reads new room entries before the file message.
 
@@ -507,6 +509,10 @@ class TeamTurns:
                     person = self.team_store.member(room, direct) if direct else None
                     # "@Name" of another member's agent in the reply names it, so that agent answers on its Mac.
                     named = self._team_named_agents(room_row, text) if room_row and direct is None else []
+                    # A keyed alert continues the notice of its key: each reader takes the thread from the field.
+                    if not written and thread is None and alert and alert.get('key') and direct is None and share:
+                        thread = self.team_store.alert_thread(room, chat, share, alert['key'],
+                                                              alert.get('resolved', False))
                 if written:
                     if file is not None:
                         from .service_base import ServiceError
@@ -519,10 +525,12 @@ class TeamTurns:
                             digest = None
                         same_file = len(attachments) == 1 and all(attachments[0].get(key) == value for key, value in (
                             ('name', file.get('name')), ('type', file.get('type')), ('hash', digest)))
+                        sent = alert or {}
                         same_context = message is not None and message['text'] == text and message['chat'] == chat \
                             and message['reply_to'] == reply_to \
-                            and (message['alert_type'], message['alert_level']) == (
-                                (alert or {}).get('type'), (alert or {}).get('level'))
+                            and (message['alert_type'], message['alert_level'], message['alert_key'],
+                                 bool(message['alert_resolved'])) == (
+                                sent.get('type'), sent.get('level'), sent.get('key'), bool(sent.get('resolved')))
                         if not same_file or not same_context:
                             raise ServiceError(409, 'This delivery ID already belongs to another message.')
                     return SAID

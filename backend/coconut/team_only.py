@@ -432,7 +432,9 @@ class TeamOnlyService(TeamTurns, Documents, Team):
         A send can be an alert (docs/team-log.md, "Alerts"): `alert` with a type and a level, or the same at the end
         of the chat ID, which a cron job of Hermes can name (team_alerts.split_target). `alert` counts when a send has
         both. An alert that does not fit answers 400 and writes nothing. Each part of a long text carries the alert.
-        A direct chat takes no alert: the text goes as a plain direct message."""
+        An alert with a `key` continues the notice of the newest alert of its key, and `resolved: true` says that its
+        condition is over (TeamStore.alert_thread). A direct chat takes no alert: the text goes as a plain direct
+        message."""
         target, named_alert = split_target(data.get('chat_id'))
         home, chat, message_id = data.get('home'), parse_chat(target), data.get('message_id')
         if not isinstance(home, str) or chat is None or not isinstance(message_id, str):
