@@ -1,8 +1,9 @@
 // The parts of Coconut's screens: a face, a count, a row of the list of chats, a row of Needs attention, the rows of a
-// chat (a message, a photo, a card and its options, a file, a page of the Library, a background process, a notice, the
-// day and the New line) and the working line. A part draws what it is given. An action is the caller's: a part takes
-// one as a prop, already bound to its item (`choose=openChat(c.id)`), as ItemSections does in the list-detail pattern.
-use Attention, Card, ChatRow, Choice, Draft, Message, Photo, Turn from "./shapes.contract"
+// search (the title of a group, a card, a message and its words), the rows of a chat (a message, a photo, a card and
+// its options, a file, a page of the Library, a background process, a notice, the day and the New line) and the
+// working line. A part draws what it is given. An action is the caller's: a part takes one as a prop, already bound to
+// its item (`choose=openChat(c.id)`), as ItemSections does in the list-detail pattern.
+use Attention, Card, ChatRow, Choice, Draft, FoundCard, FoundMessage, Message, Photo, Turn from "./shapes.contract"
 
 // The time of a turn to the second, without leading zeros: 9s, 4m 5s, 1h 2m 5s (ConversationActivity.elapsed).
 fn elapsed(ms: number): string = ms < 60000 ? `${floor(max(ms, 0) / 1000)}s` : ms < 3600000 ? `${floor(ms / 60000)}m ${floor(ms / 1000) % 60}s` : `${floor(ms / 3600000)}h ${floor(ms / 60000) % 60}m ${floor(ms / 1000) % 60}s`
@@ -16,6 +17,9 @@ fn dayKey(ms: number, offset: number): string = formatDate(ms, offset, "iso")
 // The time of a message, as MessageTimes.label shows it: 4:02 PM today, Yesterday 4:02 PM, Mon 4:02 PM within six days,
 // else Nov 3, 4:02 PM.
 fn messageTime(at: number, now: number, offset: number): string = dayKey(at, offset) == dayKey(now, offset) ? formatTime(at, offset, "short") : dayKey(at, offset) == dayKey(now - 86400000, offset) ? `Yesterday ${formatTime(at, offset, "short")}` : now - at < 518400000 ? `${formatDay(at, now, offset, "day").slice(0, 3)} ${formatTime(at, offset, "short")}` : `${formatDate(at, offset, "month-day")}, ${formatTime(at, offset, "short")}`
+// The age of a row of a list: Now under a minute, then 4 min and 3 hr, and from a day on the date, Nov 3
+// (CompactAgeLabel).
+fn compactAge(at: number, now: number, offset: number): string = now - at < 60000 ? "Now" : now - at < 3600000 ? `${floor((now - at) / 60000)} min` : now - at < 86400000 ? `${floor((now - at) / 3600000)} hr` : formatDate(at, offset, "month-day")
 // BoardStyle: the surface of a card and of an agent's bubble, the page under an option, the green of a finished step
 // and of the New line, the warm accent of an error, and the line around an option.
 fn surface(): string = "light-dark(#f4f4f4, #212121)"
@@ -52,8 +56,7 @@ component ChatRowView
     now: number
     offset: number
     choose: action
-  derive since = max(now - chat.at, 0)
-  derive age = chat.step > 0 ? elapsed(now - chat.step) : since < 60000 ? "Now" : since < 3600000 ? `${floor(since / 60000)} min` : since < 86400000 ? `${floor(since / 3600000)} hr` : formatDate(chat.at, offset, "month-day")
+  derive age = chat.step > 0 ? elapsed(now - chat.step) : compactAge(chat.at, now, offset)
   view
     button press=choose appearance="none" display="flex" flex-direction="row" align-items="center" gap=12 text-align="start" box-sizing="border-box" padding="8px 16px" min-height=52 width="100%" testId=`chat-${chat.id}`
       column position="relative" width=46 height=46 flex-shrink=0
@@ -91,6 +94,54 @@ component AttentionRow
           text item.detail font="-exact-subheadline" color="-exact-secondary-label" line-clamp=1
         text item.value font="-exact-title2" font-weight=600 font-variant-numeric="tabular-nums" color="-exact-system-red" flex-shrink=0
         image "symbol:forward-chevron" color="-exact-system-red" opacity=0.6 aria-hidden=true
+
+// The title of a group of a search, in the quiet colour of a title; the first group starts close under the field
+// (HomeView.searchHeader).
+component SearchHeader
+  props
+    title: string
+    first: bool
+  view
+    text title role="heading" aria-level=2 font="-exact-subheadline" font-weight=600 color="-exact-secondary-label" line-clamp=1 padding=(first ? "8px 16px" : "16px 16px 8px") testId=`search-section-${title.toLowerCase()}`
+
+// A card of a search, as a row of a to-do list: the symbol of a card that waits, its title, and the agent of the card
+// (HomeView.searchRow).
+component SearchCardRow
+  props
+    card: FoundCard
+    choose: action
+  view
+    button press=choose appearance="none" display="flex" flex-direction="row" align-items="center" gap=12 text-align="start" box-sizing="border-box" padding="12px 16px" min-height=68 width="100%" testId=`search-card-${card.id}`
+      image "symbol:sf/circle.inset.filled" font="-exact-title3" color=attention() width="1.5rem" flex-shrink=0 aria-hidden=true
+      column flex=1 min-width=0 gap=4
+        text card.title font="-exact-body" line-clamp=2
+        text card.detail font="-exact-subheadline" color="-exact-secondary-label" line-clamp=1
+
+// A message of a search (HomeView.messageRow): the name of its chat and its age, and under them its words around the
+// first word of the search, two lines at most, where each word of the search has the weight and colour of a title. A
+// message in the chat of the row above shows only its words and its age.
+component SearchMessageRow
+  props
+    hit: FoundMessage
+    now: number
+    offset: number
+    choose: action
+  derive age = compactAge(hit.at, now, offset)
+  view
+    button press=choose appearance="none" display="flex" flex-direction="column" justify-content="center" gap=2 text-align="start" box-sizing="border-box" padding=(hit.continued ? "0px 16px 12px" : "12px 16px") min-height=(hit.continued ? 0 : 76) width="100%" testId=`search-message-${hit.id}`
+      if hit.continued
+        row align-items="baseline" gap=16
+          text font="-exact-subheadline" color="-exact-secondary-label" line-clamp=2 flex=1 min-width=0
+            for r, i in hit.runs key=i
+              text r.text font-weight=(r.hit ? 600 : 400) color=(r.hit ? "-exact-label" : "-exact-secondary-label")
+          text age font="-exact-footnote" font-variant-numeric="tabular-nums" color="-exact-secondary-label" flex-shrink=0
+      else
+        row align-items="baseline" gap=16
+          text hit.name font="-exact-body" line-clamp=1 flex=1 min-width=0
+          text age font="-exact-footnote" font-variant-numeric="tabular-nums" color="-exact-secondary-label" flex-shrink=0
+        text font="-exact-subheadline" color="-exact-secondary-label" line-clamp=2
+          for r, i in hit.runs key=i
+            text r.text font-weight=(r.hit ? 600 : 400) color=(r.hit ? "-exact-label" : "-exact-secondary-label")
 
 // The day above the first row of each day (DayPill): a small capsule in the fill of an agent's bubble, in the middle.
 component DayPill
