@@ -39,7 +39,7 @@ enum SupportChoice: String, CaseIterable, Identifiable, Sendable {
 
     var explanation: String {
         switch self {
-        case .gumclaw: "Gumclaw answers from the support mailbox."
+        case .gumclaw: "From the support mailbox."
         case .refund: "Gumclaw refunds the purchase and tells the customer."
         case .close: "Nothing goes to the customer."
         }
@@ -95,7 +95,8 @@ extension AppStore {
 
 /// How the person responds to a conversation, as the options of a poll, and the issue of the conversation once Gumclaw
 /// has it, with Gumclaw's newest words. A choice shows as chosen at once and goes out after the Undo time of a card
-/// (AppStore.answerUndoSeconds), so a wrong tap costs nothing. Refund asks first.
+/// (AppStore.answerUndoSeconds), so a wrong tap costs nothing. Refund asks first. On a card of the support deck
+/// (SupportDeckView), `decide` takes the choice instead: the card leaves at once and the deck holds the Undo.
 struct SupportChoices: View {
     @Environment(AppStore.self) private var store
     @Environment(\.pushRoute) private var pushRoute
@@ -110,6 +111,8 @@ struct SupportChoices: View {
     let close: () async -> Void
     /// Reads the conversation again, once Gumclaw answered.
     let reload: () -> Void
+    /// Takes the choice in place of this view, which then neither waits nor sends (SupportDeckView).
+    var decide: ((SupportChoice) -> Void)? = nil
     @State private var report: GitHubItem?
     @State private var chosen: SupportChoice?
     /// The choice that this page sent, which stays marked as a poll's vote does.
@@ -202,6 +205,7 @@ struct SupportChoices: View {
 
     private func choose(_ choice: SupportChoice) {
         guard chosen == nil, sending == nil else { return }
+        if let decide { decide(choice); return }
         chosen = choice
         error = nil
         pending = Task {

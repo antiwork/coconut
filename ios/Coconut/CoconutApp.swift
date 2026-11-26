@@ -620,6 +620,8 @@ extension CoconutHome {
         case "support-resolution": open(.support, [BusinessRoute.resolution("support")])
         case "support-conversation":
             open(.support, [SupportThreadRoute(id: "sample-0", subject: "Payout timing question")])
+        // The open conversations of Support as a deck of cards (SupportDeckView), from the one that waits longest.
+        case "support-cards": open(.support, [SupportDeckRoute(start: "sample-0")])
         // A risk review past SLA of Finance (RiskReviews.swift): one that Gumclaw has, and one that waits for a choice.
         case "risk-review": open(.finance, [RiskReviewRoute(user: "4321043910336")])
         case "risk-review-new": open(.finance, [RiskReviewRoute(user: "8155930716101")])

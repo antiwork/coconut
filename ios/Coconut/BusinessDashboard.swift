@@ -222,8 +222,9 @@ struct SupportQueue {
     }
 }
 
-/// Support on one page (DashboardPage): its to-dos, which its badge counts, with the conversations past SLA first, then
-/// the tiles of the customer queue. A tap on a tile opens its detail (SupportDetailView).
+/// Support on one page (DashboardPage): its open conversations, the longest wait first, and its to-dos, then the tiles
+/// of the customer queue. A conversation opens the support deck (SupportDeckView), and a tap on a tile its detail
+/// (SupportDetailView).
 struct SupportHomeView: View {
     @Environment(AppStore.self) private var store
     @State private var report: BusinessReport?
@@ -238,17 +239,20 @@ struct SupportHomeView: View {
         .onChange(of: store.businessGeneration) { _, _ in report = nil; error = nil }
         .refreshable {
             await store.loadTodoIssues(fresh: true)
-            await load()
+            await load(fresh: true)
         }
     }
 
-    private func load() async {
+    /// Reads the report, whose open conversations the to-dos list, and the handoffs that say which of them Gumclaw has
+    /// (TodoIssueRows).
+    private func load(fresh: Bool = false) async {
         do {
-            let loaded = try await store.businessReport("support")
+            let loaded = try await store.loadSupportReport()
             guard !Task.isCancelled else { return }
             report = loaded; error = nil
         } catch is CancellationError { }
         catch { self.error = error.localizedDescription }
+        await store.loadSupportHandoffs(fresh: fresh)
     }
 }
 

@@ -211,7 +211,9 @@ extension AppStore {
 
 /// The rows of one list: the to-dos, high priority first. A row opens its issue in
 /// Coconut (GitHubItemView). Hold it to move it to another list, which changes its label on GitHub. On Product the rows
-/// are rows of its List; on Finance and Support they are rows of a section (TodoListSection).
+/// are rows of its List; on Finance and Support they are rows of a section (TodoListSection). Finance lists its risk
+/// reviews past SLA first, and Support its open conversations, the longest wait first (SupportTicket); a conversation
+/// opens the support deck (SupportDeckView).
 struct TodoIssueRows: View {
     @Environment(AppStore.self) private var store
     @Environment(\.pushRoute) private var pushRoute
@@ -223,7 +225,10 @@ struct TodoIssueRows: View {
     var body: some View {
         // Finance lists each risk review past SLA, when the Mac has the list, in place of the row that counts them.
         let reviews = area == .finance ? store.shownRiskReviews : nil
-        let hidden = TodoCounts.reviewIssues(reviews)
+        // Support lists each open conversation, once the report has loaded, in place of the row that counts the ones
+        // past SLA: the person asked to see the conversations themselves, not a count.
+        let tickets = area == .support ? store.supportTickets() : nil
+        let hidden = TodoCounts.reviewIssues(reviews).union(store.supportTicketIssues(tickets))
         let todos = (store.todoIssues?.items(in: area) ?? []).filter { !hidden.contains($0.number) }
         let repository = store.todoIssues?.repository ?? "antiwork/gumroad-private"
         Group {
@@ -233,6 +238,16 @@ struct TodoIssueRows: View {
                         pushRoute?(RiskReviewRoute(user: review.user))
                     }
                     .accessibilityIdentifier("risk-review-\(review.user)")
+                    .modifier(TodoRowInset(inList: inList))
+                }
+            } else if let tickets {
+                ForEach(tickets) { ticket in
+                    let issue = store.supportIssue(ticket)
+                    row(symbol: ticket.symbol(issue: issue), tint: ticket.tint(issue: issue), title: ticket.title,
+                        detail: ticket.detail(issue: issue)) {
+                        pushRoute?(SupportDeckRoute(start: ticket.id))
+                    }
+                    .accessibilityIdentifier("support-ticket-" + ticket.id)
                     .modifier(TodoRowInset(inList: inList))
                 }
             } else {
@@ -250,7 +265,7 @@ struct TodoIssueRows: View {
                 .accessibilityIdentifier("todo-\(todo.number)")
                 .modifier(TodoRowInset(inList: inList))
             }
-            if todos.isEmpty && reviews == nil {
+            if todos.isEmpty && reviews == nil && (tickets ?? []).isEmpty {
                 Group {
                     if store.todoIssues == nil, let message = store.todoIssuesError {
                         BoardLoadNotice(title: "To-dos unavailable", message: message) { Task { await store.loadTodoIssues(fresh: true) } }
@@ -342,8 +357,8 @@ private struct TodoRowInset: ViewModifier {
     }
 }
 
-/// The list of one tab on a page of tiles: Finance and Support, with the breach of the tab as the first row. It has no
-/// title and no count: its rows say what they are, and the badge of the tab counts them (TodoCounts). The person: "Don't
+/// The list of one tab on a page of tiles: Finance and Support, with the risk reviews of Finance or the open
+/// conversations of Support first, else the breach of the tab (TodoIssueRows). It has no title and no count: its rows say what they are, and the badge of the tab counts them (TodoCounts). The person: "Don't
 /// have to say todos in the ui the table itself is self descriptive". Product is a List and shows TodoIssueRows itself.
 /// The dashboards of Finance and Support show it as a tile of the rows that fit (TodoTile), and its last line opens
 /// this list on a page of its own (TodoListPage).
@@ -361,6 +376,11 @@ struct TodoListSection: View {
         .task(id: "\(store.connection)/\(store.businessChanges)") {
             await store.loadTodoIssues()
             if area == .finance { await store.loadRiskReviews() }
+            if area == .support {
+                // The dashboard of Support reads the report (SupportHomeView); a list that opens on its own reads it here.
+                if store.businessReports["support"] == nil { _ = try? await store.loadSupportReport() }
+                await store.loadSupportHandoffs()
+            }
         }
     }
 }
@@ -376,11 +396,16 @@ struct TodoListPage: View {
             .refreshable {
                 await store.loadTodoIssues(fresh: true)
                 if area == .finance { await store.loadRiskReviews(fresh: true) }
+                if area == .support {
+                    _ = try? await store.loadSupportReport()
+                    await store.loadSupportHandoffs(fresh: true)
+                }
             }
     }
 }
 
-/// One row of a tile of to-dos (TodoTile): a risk review of Finance, the breach of a tab, or a to-do.
+/// One row of a tile of to-dos (TodoTile): a risk review of Finance, an open conversation of Support, the breach of a
+/// tab, or a to-do.
 struct TodoTileRow: Identifiable {
     let id: String
     let symbol: String
@@ -389,7 +414,7 @@ struct TodoTileRow: Identifiable {
     let detail: String
     /// The count of a breach, which the row shows in its color.
     var value: String? = nil
-    /// The page that a tap opens: the issue, the review, or the queue of the breach.
+    /// The page that a tap opens: the issue, the review, the support deck, or the queue of the breach.
     let route: any Hashable
     /// The to-do of the row, which its menu moves to another list.
     var todo: TodoIssue? = nil
@@ -397,11 +422,13 @@ struct TodoTileRow: Identifiable {
 }
 
 extension AppStore {
-    /// The rows of a list in the order of its page (TodoIssueRows): the risk reviews of Finance, or the breach of the
-    /// tab, then the to-dos. A breach opens what breaches: the conversations of Support, or the report of Risk.
+    /// The rows of a list in the order of its page (TodoIssueRows): the risk reviews of Finance, the open conversations
+    /// of Support, or the breach of the tab, then the to-dos. A conversation opens the support deck (SupportDeckView); a
+    /// breach opens what breaches: the conversations of Support, or the report of Risk.
     func todoTileRows(_ area: TodoArea) -> [TodoTileRow] {
         let reviews = area == .finance ? shownRiskReviews : nil
-        let hidden = TodoCounts.reviewIssues(reviews)
+        let tickets = area == .support ? supportTickets() : nil
+        let hidden = TodoCounts.reviewIssues(reviews).union(supportTicketIssues(tickets))
         let repository = todoIssues?.repository ?? "antiwork/gumroad-private"
         var rows: [TodoTileRow]
         if let reviews {
@@ -409,6 +436,13 @@ extension AppStore {
                 TodoTileRow(id: "review-" + review.user, symbol: review.symbol, tint: review.tint, title: review.title,
                             detail: review.detail(), route: RiskReviewRoute(user: review.user),
                             identifier: "risk-review-\(review.user)")
+            }
+        } else if let tickets {
+            rows = tickets.map { ticket in
+                let issue = supportIssue(ticket)
+                return TodoTileRow(id: "ticket-" + ticket.id, symbol: ticket.symbol(issue: issue), tint: ticket.tint(issue: issue),
+                                   title: ticket.title, detail: ticket.detail(issue: issue), route: SupportDeckRoute(start: ticket.id),
+                                   identifier: "support-ticket-" + ticket.id)
             }
         } else {
             rows = TodoCounts.breaches(area, attentionItems()).map { item in
@@ -427,8 +461,9 @@ extension AppStore {
 
 /// The to-dos of a tab on its dashboard of one page (DashboardPage): the rows that fit the tile, in the order of the
 /// list, and a last line with the number of the others, which opens the whole list (TodoListPage). A row opens its
-/// issue, its review or the queue of its breach, and a hold moves a to-do to another list, as in the list. Like the
-/// list, the tile has no title: its rows say what they are, and the badge of the tab counts them.
+/// issue, its review, its conversation in the support deck or the queue of its breach, and a hold moves a to-do to
+/// another list, as in the list. Like the list, the tile has no title: its rows say what they are, and the badge of the
+/// tab counts them (of the conversations of Support, the ones past SLA).
 struct TodoTile: View {
     @Environment(AppStore.self) private var store
     @Environment(\.pushRoute) private var pushRoute
@@ -462,7 +497,8 @@ struct TodoTile: View {
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("todos-\(area.rawValue)")
         // The root of the iPhone loads the list for the counts of the tabs (CoconutHome). The Mac has no counts, so its
-        // dashboards load it here, and Finance its risk reviews.
+        // dashboards load it here, and Finance its risk reviews. Support reads its report and handoffs on its page
+        // (SupportHomeView).
         .task(id: "\(store.connection)/\(store.businessChanges)") {
             await store.loadTodoIssues()
             if area == .finance { await store.loadRiskReviews() }
