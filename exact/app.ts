@@ -1696,11 +1696,34 @@ const CHAT_LIMIT = 8;
 const CARD_LIMIT = 3;
 const MESSAGE_LIMIT = 20;
 const QUERY_LIMIT = 200;
+// The characters of messages that a search reads in one turn of its answer, where a character of a text beyond ASCII
+// counts FOLD_COST, since such a text folds with three normalizations. Hermes refuses a turn over 100 ms of its own time,
+// and a search reads every message that the phone holds, so a search in one turn overran on a phone, kept no answer and
+// left Home blank (#599).
+const SEARCH_TURN = 200000;
+const FOLD_COST = 8;
+
+// A text of ASCII alone.
+const ASCII = /^[\x00-\x7f]*$/;
+// What a text costs a search to read and fold (SEARCH_TURN).
+const costOf = (text: string): number => (ASCII.test(text) ? text.length : text.length * FOLD_COST);
 
 // A text as the search compares it (OmniSearch.matching): without case, accents or width, so Ａ, á and a match. Greek
-// has one sigma.
-const fold = (text: string): string => text.replace(/[\uff00-\uffef]/g, (c) => c.normalize('NFKC')).normalize('NFD')
-  .replace(/\p{Mn}/gu, '').normalize('NFC').toLowerCase().replace(/ς/g, 'σ');
+// has one sigma. ASCII has nothing to fold but its case, so it skips the normalizations, which cost the most on Hermes.
+const fold = (text: string): string => (ASCII.test(text) ? text.toLowerCase()
+  : text.replace(/[\uff00-\uffef]/g, (c) => c.normalize('NFKC')).normalize('NFD').replace(/\p{Mn}/gu, '').normalize('NFC')
+    .toLowerCase().replace(/ς/g, 'σ'));
+// The fold of each character beyond ASCII that a search met: a text in another script folds each of its characters once.
+const charFolds = new Map<string, string>();
+const foldChar = (c: string): string => {
+  // An ASCII character folds to its lower case, one unit for one.
+  if (c.charCodeAt(0) < 0x80) return c.toLowerCase();
+  const kept = charFolds.get(c);
+  if (kept !== undefined) return kept;
+  const f = fold(c);
+  charFolds.set(c, f);
+  return f;
+};
 // The fold of a text one character at a time: `from` and `to` are the place in the text, in code points, of the
 // character of each unit of `folded`, so a match in the fold marks the words of the text. A mark that folds away goes
 // with the character before it.
@@ -1710,7 +1733,7 @@ const foldOf = (text: string): { folded: string; from: number[]; to: number[] } 
   const to: number[] = [];
   let i = 0;
   for (const c of text) {
-    const f = fold(c);
+    const f = foldChar(c);
     i += 1;
     if (f === '' && to.length > 0) to[to.length - 1] = i;
     for (let k = 0; k < f.length; k++) {
@@ -1753,15 +1776,24 @@ const plain = (text: string): string => text
   .split(/\s+/).filter((w) => w !== '').join(' ');
 
 const isSpace = (c: string): boolean => /\s/.test(c);
+// Where the first match of a word is in a text, in code points, or null. ASCII has one code point to a unit and folds
+// one for one, so its lower case gives the place; any other text folds a character at a time (foldOf).
+const placeOf = (text: string, word: string): { lower: number; upper: number } | null => {
+  if (ASCII.test(text)) {
+    const at = text.toLowerCase().indexOf(word);
+    return at < 0 ? null : { lower: at, upper: at + word.length };
+  }
+  const f = foldOf(text);
+  const at = f.folded.indexOf(word);
+  return at < 0 ? null : { lower: f.from[at], upper: f.to[at + word.length - 1] };
+};
 // The words around the first match (OmniSearch.snippet): 40 characters before it and 160 after, cut at a space, with
 // "…" where the text goes on.
 const snippetOf = (text: string, word: string): string => {
   const chars = Array.from(text);
-  const f = foldOf(text);
-  const match = f.folded.indexOf(word);
-  if (match < 0) return plain(chars.slice(0, 200).join(''));
-  const lower = f.from[match];
-  const upper = f.to[match + word.length - 1];
+  const place = placeOf(text, word);
+  if (!place) return plain(chars.slice(0, 200).join(''));
+  const { lower, upper } = place;
   let start = Math.max(lower - 40, 0);
   let end = Math.min(upper + 160, chars.length);
   if (start > 0) {
@@ -1833,18 +1865,33 @@ const cardsFound = (s: State, words: string[]): FoundCard[] => {
 interface Hit { id: string; chat: string; at: number; mine: boolean; snippet: string }
 
 // The text messages of the phone that have every word, newest first (OmniSearch.localMessages): those of the chats of
-// agents, as the Swift app searches the messages of its bots.
-const localHits = (s: State, zero: number, words: string[]): Hit[] => {
+// agents, as the Swift app searches the messages of its bots. The phone can hold thousands of messages, so the search
+// reads them in turns of their own (SEARCH_TURN), and a newer search lets go of it at a pause.
+const localHits = async (s: State, zero: number, words: string[]): Promise<Hit[]> => {
   if (words.length === 0) return [];
   const found: Array<{ chat: string; m: Msg }> = [];
+  let read = 0;
   for (const chat of s.chats.values()) {
     if (chat.kind !== 'agent') continue;
     for (const m of chat.messages) {
-      if (m.kind === 'text' && !unsearched.has(m.id) && words.every((w) => foldedBody(m).includes(w))) found.push({ chat: chat.id, m });
+      if (m.kind !== 'text' || unsearched.has(m.id)) continue;
+      if (words.every((w) => foldedBody(m).includes(w))) found.push({ chat: chat.id, m });
+      read += costOf(m.body);
+      if (read < SEARCH_TURN) continue;
+      read = 0;
+      await pause();
     }
   }
-  return found.sort((a, b) => b.m.at - a.m.at).slice(0, MESSAGE_LIMIT)
-    .map(({ chat, m }) => ({ id: m.id, chat, at: zero + m.at, mine: m.mine, snippet: snippetOf(m.body, words[0]) }));
+  // A snippet reads its whole message again.
+  const hits: Hit[] = [];
+  for (const { chat, m } of found.sort((a, b) => b.m.at - a.m.at).slice(0, MESSAGE_LIMIT)) {
+    hits.push({ id: m.id, chat, at: zero + m.at, mine: m.mine, snippet: snippetOf(m.body, words[0]) });
+    read += costOf(m.body);
+    if (read < SEARCH_TURN) continue;
+    read = 0;
+    await pause();
+  }
+  return hits;
 };
 
 // The messages that the Mac finds (AppStore.searchMessages): none without a connection, or from a Mac whose service
@@ -2128,13 +2175,15 @@ const sources: Sources = {
 
   // The search of Home (OmniSearch): the chats, the cards that wait and the text messages that the phone holds, at once.
   // The messages of the Mac come with `searchMac`.
-  searchPhone: ([query, live, _version, zero]): Found => {
+  searchPhone: async ([query, live, _version, zero]): Promise<Found> => {
     useLive = live;
     launchAt = zero;
     const s = ensure();
     const at = zeroOf(s, zero);
     const words = wordsOf(query);
-    return { q: query, chats: chatsFound(s, at, words), cards: cardsFound(s, words), messages: rowsOf(s, localHits(s, at, words), words) };
+    const chats = chatsFound(s, at, words);
+    const cards = cardsFound(s, words);
+    return { q: query, chats, cards, messages: rowsOf(s, await localHits(s, at, words), words) };
   },
 
   // The messages of a search with those of the Mac, 200 ms after the last key (OmniSearch.messages).
@@ -2149,7 +2198,7 @@ const sources: Sources = {
     const remote = await macHits(query);
     const s = ensure();
     const at = zeroOf(s, zero);
-    return { q: query, messages: rowsOf(s, merged(s, localHits(s, at, words), remote), words) };
+    return { q: query, messages: rowsOf(s, merged(s, await localHits(s, at, words), remote), words) };
   },
 
   loadChat: ([zero, id, live, _version, offset, opened, _media]): Chat => {

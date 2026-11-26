@@ -48,7 +48,10 @@ most 20 text messages of the chats of agents, newest first, each as the words ar
 of the search in bold and "You: " before a message of the person; a row under one of the same chat leaves out the
 name. On a paired phone, the Mac's `GET /v1/search` adds the messages that the phone does not hold, 200 ms after the
 last key, and No Results waits for it; a hit in a chat that the phone does not show stays out. A row opens its chat.
-The message box leaves while the field has focus or a search is open (`TabMessageBox`).
+The message box leaves while the field has focus or a search is open (`TabMessageBox`). The phone reads its messages
+in turns of their own (`SEARCH_TURN` in `app.ts`), and a text of ASCII folds by its case alone: Hermes refuses a turn
+over 100 ms of its own time, which the web host does not, and a search in one turn overran on a phone and left Home
+blank (#599).
 
 Chat. The rows of `TranscriptMessageRow`, in the order and with the rules of `TranscriptPresentation`: a message with
 Markdown, a photo, a card, a file, a page of the Library, a background process of Hermes that ended, an activity line
@@ -344,6 +347,10 @@ message that the phone does not hold comes from the Mac, and a hit in a chat tha
 The local web host at 390 by 844 points, light and dark: the field under the title, the three groups with the words in
 bold, No Results, the box that leaves while the field has focus and comes back when it is empty, and a message and a
 card that open their chat. The Contract compiles with the pinned Exact, and `app.ts` passes `tsc --strict`.
+On Gianfranco's iPhone, build 35 showed a blank page for a search (#599). The search, run on Exact's Hermes (the
+pinned VM for macOS with `harden.js`, on an M1 Pro) over 2,233 messages like this Mac's: up to 59 ms in one turn,
+and 364 ms over 6,699 messages with long replies. In turns, the longest turn took 8 and 14 ms, with the same rows as
+before in 24 searches (accents, width, Greek, Japanese), and the demo answers the same under bun.
 
 The coconut that waits, 2026-11-26. `loader.contract` writes each Track of `CoconutLoader.swift` as keyframes, with the
 y1 and y2 of a key as its `cubic-bezier`. A scratch script played those keyframes against `Juggle.holes` of the Swift
@@ -406,7 +413,8 @@ Not done:
 - The web host ran for phase 2, for the search and for the coconut that waits; its toolchain was deleted after
   each.
 - The search field of the phone is UIKit's search controller under the large title, and the web host draws a plain
-  field: the field, its focus and its blur on a phone are not seen. The symbol of a card row draws only on Apple.
+  field. On iOS 26 the field moves over the keyboard with a close button while it has focus (build 35, #599). The
+  symbol of a card row draws only on Apple.
 - The juggle has not run on iOS. Exact's lowering to Core Animation (`host/apple/src/svg_lower.rs`, `SvgScene.swift`)
   was read for what it uses: a translate in percent resolves against the box, a `step-end` opacity becomes linear keys,
   an iteration count of 0.476 and a delay below zero carry over, and the animations of a list become tracks in its
