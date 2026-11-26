@@ -62,6 +62,9 @@ struct TeamNamedChat: Decodable, Identifiable, Equatable, Sendable {
     var id: String
     var name: String
     var createdAt: String? = nil
+    /// True when this person made the chat, so this person can rename and delete it (TeamChatManagement). An older
+    /// service sends none.
+    var mine: Bool? = nil
     var unread: Int? = nil
     var lastMessage: TeamLastMessage? = nil
     var mentioned: Bool? = nil
@@ -323,8 +326,9 @@ enum TeamChatMenuItem: Equatable {
     }
 }
 
-/// Which person makes, renames and deletes the named chats of a team: the admin of an active team, as the service says
-/// in `can_manage_chats`. An older service sends none, and the app then shows no "New chat" and no action.
+/// Who makes, renames and deletes the named chats of a team. Each member of an active team makes a chat, as the service
+/// says in `can_make_chats`, and only the member who made a chat renames and deletes it (`mine`). An older service sends
+/// neither, and there only the admin does all three, as its `can_manage_chats` says.
 enum TeamChatManagement {
     static let deleteTitle = "Delete this chat for everyone?"
     static let deleteMessage = "Its messages go from the app of each member."
@@ -332,10 +336,18 @@ enum TeamChatManagement {
     static let newChat = "New chat"
     static let nameHeader = "Chat name"
 
-    static func allows(_ room: TeamRoom) -> Bool { room.status == .active && room.canManageChats == true }
+    /// This person can make a chat in the team.
+    static func makes(_ room: TeamRoom) -> Bool {
+        room.status == .active && (room.canMakeChats ?? room.canManageChats) == true
+    }
+
+    /// This person can rename and delete the chat.
+    static func changes(_ chat: TeamNamedChat, in room: TeamRoom) -> Bool {
+        room.status == .active && (chat.mine ?? room.canManageChats) == true
+    }
 
     /// The section "Chats" of the Team screen shows while the team has a named chat, or while this person can make one.
-    static func showsSection(_ room: TeamRoom) -> Bool { !room.namedChats.isEmpty || allows(room) }
+    static func showsSection(_ room: TeamRoom) -> Bool { !room.namedChats.isEmpty || makes(room) }
 }
 
 /// One direct chat of a room, from `directs` of the list of the teams: the other member, its last name, the unread

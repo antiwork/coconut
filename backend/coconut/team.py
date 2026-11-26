@@ -485,9 +485,12 @@ class Team(TeamSync, TeamSocket, TeamPages, TeamMessages, TeamChats, TeamDirects
                 'created_at': room['created_at'], 'members': members,
                 'bots': self._team_bots(room, members, sends if direct else None),
                 **self._team_chat_summary(room), 'typing': self._team_typing_view(room, members),
-                # The named chats. The fields above stay the fields of the Team chat, so an older app works. Only the
-                # admin of an active room changes the chats, and the app shows the actions only with this field.
-                'chats': self._team_chats_view(room, members), 'can_manage_chats': removes,
+                # The named chats. The fields above stay the fields of the Team chat, so an older app works. Each
+                # member of an active room makes a chat (`can_make_chats`), and only the member who made a chat
+                # changes it (`mine` of each chat). An older app reads only `can_manage_chats`, so there only the
+                # admin makes and changes chats, as before.
+                'chats': self._team_chats_view(room, members), 'can_make_chats': room['state'] == ACTIVE,
+                'can_manage_chats': removes,
                 # The notice board of the team (team_notices.py). Each member posts; an older app ignores the field.
                 'notices': self._team_notices_view(room, members),
                 'sync': {'seq': room['seq'], 'entries': entries, 'waiting': waiting,

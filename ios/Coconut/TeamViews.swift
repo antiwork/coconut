@@ -299,16 +299,16 @@ struct TeamRoomView: View {
         }
     }
 
-    /// The named chats of the team, each a row that opens the chat. Each member has Mute or Unmute in the menu of each
-    /// row (TeamChatMute). The admin also has "New chat", and Rename and Delete on each row: the swipe actions on an
-    /// iPhone and the menu of the row on both (TeamChatManagement).
+    /// The named chats of the team, each a row that opens the chat. Each member has "New chat", and Mute or Unmute in
+    /// the menu of each row (TeamChatMute). The member who made a chat also has Rename and Delete on its row: the swipe
+    /// actions on an iPhone and the menu of the row on both (TeamChatManagement).
     private func chatsSection(_ room: TeamRoom) -> some View {
-        let manages = TeamChatManagement.allows(room)
-        return Section("Chats") {
+        Section("Chats") {
             ForEach(room.namedChats) { chat in
                 chatRow(chat, in: room)
                     .modifier(TeamChatActions(
-                        manages: manages, mute: TeamChatMute.action(chat, in: room).map { label in
+                        manages: TeamChatManagement.changes(chat, in: room),
+                        mute: TeamChatMute.action(chat, in: room).map { label in
                             TeamChatActions.Mute(label: label, symbol: TeamChatMute.symbol(chat),
                                                  waits: TeamChatMute.waits(chat.id, store.teamChatMuteChoices)) {
                                 setMuted(chat, in: room)
@@ -316,7 +316,7 @@ struct TeamRoomView: View {
                         },
                         rename: { naming = TeamChatNaming(chat: chat) }, delete: { deletingChat = chat }))
             }
-            if manages {
+            if TeamChatManagement.makes(room) {
                 Button(TeamChatManagement.newChat) { naming = TeamChatNaming(chat: nil) }
                     .teamRowButton()
                     .accessibilityIdentifier("team-new-chat")
@@ -527,9 +527,9 @@ private struct TeamChatNaming: Identifiable {
     let chat: TeamNamedChat?
 }
 
-/// The actions on the row of a named chat. Each member has Mute or Unmute in the menu of the row only. The admin also
-/// has Rename and Delete: the swipe actions of an iPhone and the menu of the row. Delete asks first (TeamRoomView). A
-/// row without an action keeps its plain form.
+/// The actions on the row of a named chat. Each member has Mute or Unmute in the menu of the row only. The member who
+/// made the chat also has Rename and Delete: the swipe actions of an iPhone and the menu of the row. Delete asks first
+/// (TeamRoomView). A row without an action keeps its plain form.
 private struct TeamChatActions: ViewModifier {
     /// Mute or Unmute (TeamChatMute).
     struct Mute {
@@ -540,6 +540,7 @@ private struct TeamChatActions: ViewModifier {
         let action: () -> Void
     }
 
+    /// This person made the chat: Rename and Delete (TeamChatManagement.changes).
     let manages: Bool
     let mute: Mute?
     let rename: () -> Void
@@ -551,7 +552,7 @@ private struct TeamChatActions: ViewModifier {
                 #if os(iOS)
                 // Buttons with a symbol only, as in Mail and Messages. VoiceOver reads the title of each label.
                 // Rename has the neutral gray of a swipe action: without a tint, the tint of the app draws white on
-                // white. A member who is not the admin gets no swipe.
+                // white. The chat of another member gets no swipe.
                 .swipeActions(edge: .trailing, allowsFullSwipe: false) {
                     if manages {
                         // No destructive role: that role takes the row away at once, before the confirmation.

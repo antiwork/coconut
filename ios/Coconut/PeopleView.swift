@@ -170,11 +170,13 @@ extension AppStore {
             + notices.joined(separator: ", ") + "]}]}"
         guard var rooms = try? APIJSON.decoder().decode(TeamRooms.self, from: Data(json.utf8)) else { return }
         rooms.rooms[0].canInvite = true
+        // Ada is a member and Grace is the admin, as for most people of a team. Each member makes a chat.
+        rooms.rooms[0].canMakeChats = true
         rooms.rooms[0].lastMessage = TeamLastMessage(member: "m3", memberName: "Lin", text: "The payout fix is in review.",
                                                      createdAt: ago(42))
         rooms.rooms[0].members = [
-            TeamMember(member: "m1", name: "Ada", admin: true, thisMac: true),
-            TeamMember(member: "m2", name: "Grace", direct: true),
+            TeamMember(member: "m1", name: "Ada", thisMac: true),
+            TeamMember(member: "m2", name: "Grace", admin: true, direct: true),
             TeamMember(member: "m3", name: "Lin", direct: true),
         ]
         rooms.rooms[0].directs = [

@@ -24,7 +24,8 @@ Each table has the room ID in its key, because a Mac can be in more than one roo
   preview of the message as JSON, or null. `alert_type` and `alert_level` are the alert of a message of a bot
   (team_alerts.py), or both null. `thread` is the entry ID of the first message of its thread (docs/team-log.md,
   "Inbox chats"): the message itself, or the thread of the message that it answers or follows (_thread_of).
-- `team_chats`: a view of `team_entries`: the valid `chat` entries of the admin, the named chats of the room.
+- `team_chats`: a view of `team_entries`: the valid `chat` entries of the admin and the valid `member_chat` entries, the
+  named chats of the room.
 - `team_names`: the last name that the store showed for each member and each bot. It stays after a `delete` entry,
   so a message of a member that left keeps a name, and a message of a bot can still name a valid `bot` entry.
 - `team_reads`: the read position of this Mac in the Team chat of each room: the `first` of the newest message that
@@ -53,6 +54,7 @@ Each table has the room ID in its key, because a Mac can be in more than one roo
   `bot` entry.
 - `team_marks`: the lasting marks of this Mac. `direct` means that an app of the person knows direct messages.
   `corrected:<room>` means that the open of the store corrected a row of the room, and its event did not go out yet.
+  `member_chats` means that the store showed the `member_chat` entries that an older version kept (migrate).
 - `team_direct_waits`: the `direct` entries that the sync could not try with the key that they need yet, because the
   `member` entry of that key came later in the read. The end of the read tries each one again, then removes it.
 - `team_removed`: the members that a `remove` entry of the admin took out of the room, each with the entry ID of that
@@ -287,6 +289,8 @@ TYPING_PERSON_SECONDS = 10
 TYPING_BOT_SECONDS = 30
 # The mark in `team_marks` after an app of the person asked for direct messages.
 DIRECT_MARK = 'direct'
+# The mark in `team_marks` after the one pass that shows the `member_chat` entries of an older store (TeamStore.migrate).
+MEMBER_CHATS_MARK = 'member_chats'
 # The prefix of a mark in `team_marks` for a room whose rows the open of the store corrected, until its event goes out.
 CORRECTED_MARK = 'corrected:'
 # The repair of the marks at a start (TeamStore._read_marks_again) reads a kept `member` or `bot` payload only up to this
@@ -354,7 +358,10 @@ MAX_WAITING = 8
 # a person must write before an agent answers an agent again, so two agents never answer each other forever.
 MAX_AGENT_CHAIN = 4
 TRIGGER_FIELDS = ('number', 'room', 'bot', 'entry', 'started')
-CHAT_FIELDS = ('entry', 'first', 'name', 'created_at')
+# A named chat as TeamStore.chats gives it. `member` is the member that wrote its entry, the one who made the chat.
+CHAT_FIELDS = ('entry', 'first', 'name', 'created_at', 'member')
+CHAT_SELECT = '''SELECT c.entry, c.first, c.name, c.created_at, e.member FROM team_chats c
+    JOIN team_entries e ON e.room=c.room AND e.id=c.entry'''
 # The end date of a page as documents.end_time writes it.
 PAGE_END = re.compile(r'\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ')
 
@@ -378,6 +385,10 @@ MAX_TICKET_SECONDS = 7 * 86400
 
 # Only the admin writes these kinds (rule 4).
 ADMIN_KINDS = ('remove', 'key', 'erase', 'chat')
+# The kinds of a named chat (docs/team-log.md, "Chats of a team"). The admin writes `chat`, and each other member writes
+# `member_chat`. An older Mac refuses a `chat` entry of another member by rule 4 and keeps no copy of it. It keeps an
+# entry of an unknown kind, so the chat of a member shows there after the update of that Mac.
+CHAT_KINDS = ('chat', 'member_chat')
 MAX_KIND = 64
 # The fields of a `member` entry, with the most Unicode code points of each.
 MEMBER_LIMITS = {'name': 80, 'avatar': 80, 'color': 20}
@@ -390,7 +401,7 @@ MAX_BOX = 1024
 # The epoch of a body is a 32-bit number.
 MAX_EPOCH = 2 ** 32 - 1
 # The kinds of the kept entries that a Mac writes again with the room key of a new epoch (TeamEpochs).
-WRITTEN_AGAIN = ('member', 'bot', 'page', 'chat', 'notice', 'seen', 'usage')
+WRITTEN_AGAIN = ('member', 'bot', 'page', 'chat', 'member_chat', 'notice', 'seen', 'usage')
 # The most Unicode code points of the name of a chat, and the most chats of a room (docs/team-log.md, "Chats of a team").
 MAX_CHAT_NAME = 50
 MAX_CHATS = 20
@@ -790,9 +801,9 @@ def usage_fields(fields: dict) -> dict | None:
 
 
 def chat_fields(fields: dict) -> dict | None:
-    """The name of a `chat` payload, or None when it does not fit (docs/team-log.md, "Chats of a team"). A reader takes
-    each name of 1 to MAX_CHAT_NAME code points of valid Unicode text. The admin's Mac writes a name by a stricter rule
-    (team_chats.py)."""
+    """The name of a `chat` or `member_chat` payload, or None when it does not fit (docs/team-log.md, "Chats of a team").
+    A reader takes each name of 1 to MAX_CHAT_NAME code points of valid Unicode text. The Mac of the member who makes
+    the chat writes a name by a stricter rule (team_chats.py)."""
     name = fields.get('name')
     return dict(name=name) if unicode_text(name) and 0 < len(name) <= MAX_CHAT_NAME else None
 
@@ -956,8 +967,8 @@ def key_fields(fields: dict, epoch) -> dict | None:
 
 SHOWN = {'member': member_fields, 'bot': bot_fields, 'page': page_fields, 'message': message_fields,
          'remove': remove_fields, 'erase': erase_fields, 'typing': typing_fields, 'chat': chat_fields,
-         'reaction': reaction_fields, 'file': piece_fields, 'notice': notice_fields, 'seen': seen_fields,
-         'usage': usage_fields}
+         'member_chat': chat_fields, 'reaction': reaction_fields, 'file': piece_fields, 'notice': notice_fields,
+         'seen': seen_fields, 'usage': usage_fields}
 
 
 def same_name(first: str, second: str) -> bool:
@@ -1152,6 +1163,18 @@ class TeamStore:
                 self.db.execute('RELEASE team_files_column')
                 raise
             self.db.execute('RELEASE team_files_column')
+        # A store of an older version kept each `member_chat` entry as an entry of an unknown kind. The pass and its
+        # mark are one step, as the column `chat` and its pass above, so the pass runs one time.
+        if not self.db.execute('SELECT 1 FROM team_marks WHERE mark=?', (MEMBER_CHATS_MARK,)).fetchone():
+            self.db.execute('SAVEPOINT team_member_chats')
+            try:
+                self._read_member_chats_again()
+                self.db.execute('INSERT INTO team_marks (mark) VALUES (?)', (MEMBER_CHATS_MARK,))
+            except BaseException:
+                self.db.execute('ROLLBACK TO team_member_chats')
+                self.db.execute('RELEASE team_member_chats')
+                raise
+            self.db.execute('RELEASE team_member_chats')
         self._read_marks_again()
 
     def _read_marks_again(self) -> None:
@@ -1279,6 +1302,19 @@ class TeamStore:
                 WHERE m.room=c.room AND m.chat=c.entry))
             FROM team_reads r JOIN team_chats c ON c.room=r.room
             WHERE EXISTS (SELECT 1 FROM team_messages m WHERE m.room=c.room AND m.chat=c.entry)""")
+
+    def _read_member_chats_again(self) -> None:
+        """Show the `member_chat` entries of a store of an older version, one time. That version kept each one as an
+        entry of an unknown kind, and it kept the messages of such a chat out of each chat, because it showed no chat
+        for them. So the chats show now with their messages. The pass reads each payload with the reader of an entry.
+        A chat shows only while its member is in the member list, as after a leave or a removal (_drop_member_chats).
+        No message notifies: the messages are not fresh, and the read position of each chat starts as for a new one."""
+        rooms = {room['room'] for room in self.rooms()}
+        rows = self.db.execute("SELECT room, id, first, member, at, payload FROM team_entries WHERE kind='member_chat'")
+        for room, entry, first, member, at, payload in rows.fetchall():
+            if room in rooms and self.member(room, member) is not None and not self.removed(room, member):
+                read = read_payload(payload.encode())
+                self._show_chat(room, dict(id=entry, first=first, at=at), chat_fields(read[1]) if read else None)
 
     def _read_reactions_again(self) -> None:
         """Read the `reaction` entries of a store of an older version, one time. That version kept each one as an entry
@@ -1532,11 +1568,13 @@ class TeamStore:
         # above. A later write over the `erase` entry does not bring the message back.
         if fields['kind'] == 'erase' and shown:
             self._erase(room['room'], shown['entry'])
-        # A `chat` entry of the admin shows a named chat. Rule 4 checked the writer above. A `delete` over it removes the
-        # chat with its messages.
-        if 'chat' in kinds and self._show_chat(room['room'], entry, shown if fields['kind'] == 'chat' else None,
-                                               fresh=True):
-            self.changed.add(room['room'])
+        # A `chat` entry of the admin, or a `member_chat` entry of any member, shows a named chat. Rule 4 checked
+        # the writer of a `chat` entry above. A `delete` over it removes the chat with its messages. A removed member
+        # has no chat: the relay deleted its kept entries, and the reader does not trust that.
+        if kinds & set(CHAT_KINDS):
+            chat = shown if fields['kind'] in CHAT_KINDS and not self.removed(room['room'], entry['member']) else None
+            if self._show_chat(room['room'], entry, chat, fresh=True):
+                self.changed.add(room['room'])
         # A notice, or the notices that a member has seen, changes the board of the room. Both are read from the store
         # each time (notices, seen), so they keep no table of their own.
         if kinds & {'notice', 'seen'}:
@@ -1546,6 +1584,9 @@ class TeamStore:
             self._show_removal(room, entry, shown if fields['kind'] == 'remove' else None)
         if 'member' in kinds:
             self.show_member(room['room'], entry['member'], (entry['id'], shown) if fields['kind'] == 'member' else None)
+            # A `delete` over the `member` entry: the member left, and its chats go with it.
+            if fields['kind'] != 'member' and self.member(room['room'], entry['member']) is None:
+                self._drop_member_chats(room['room'], entry['member'])
             if not other and fields['kind'] == 'member':
                 if shown:
                     self._follow_profile(room['room'], shown)
@@ -1658,9 +1699,9 @@ class TeamStore:
         self.db.execute('DELETE FROM team_members WHERE room=? AND member=?', (room, member))
 
     def _show_chat(self, room: str, entry: dict, chat: dict | None, fresh: bool = False) -> bool:
-        """Set the row of a `chat` entry, or remove the chat (docs/team-log.md, "Chats of a team"). `chat` is what
-        read_entry found valid, or None for a name that does not fit and for a `delete` entry over a chat. True when the
-        list of the chats changed.
+        """Set the row of a `chat` or `member_chat` entry, or remove the chat (docs/team-log.md, "Chats of a team").
+        `chat` is what read_entry found valid, or None for a name that does not fit, for a `delete` entry over a chat
+        and for a chat whose member left. True when the list of the chats changed.
 
         A new chat shows the messages of the chat that the store has already, because the entries can come in either
         order. A removed chat takes its messages and its read position with it. The triggers of these messages that did
@@ -1699,6 +1740,19 @@ class TeamStore:
         if new and fresh:
             self._note_fresh_chat(room, entry['id'])
         return changed
+
+    def _drop_member_chats(self, room: str, member: str) -> None:
+        """Remove the chats of a member that leaves the member list, by a `delete` over its `member` entry or by a
+        `remove` entry of the admin. The relay deleted the kept entries of the member, so no `delete` entry comes for
+        its `member_chat` entries, and a Mac that joins later never sees these chats. So each one goes here as after a
+        `delete` over it. The admin has no `member_chat` entry, and the admin leaves only a room without other members,
+        so the chats of the admin stay."""
+        rows = self.db.execute('''SELECT c.entry, c.first, e.at FROM team_chats c JOIN team_entries e
+            ON e.room=c.room AND e.id=c.entry WHERE c.room=? AND e.member=? AND e.kind='member_chat' ''',
+                               (room, member)).fetchall()
+        for entry, first, at in rows:
+            if self._show_chat(room, dict(id=entry, first=first, at=at), None):
+                self.changed.add(room)
 
     def _note_fresh_chat(self, room: str, chat: str) -> None:
         """Note the messages of a chat that starts to show, by the rules of a notification (_note_fresh). The relay
@@ -1748,15 +1802,13 @@ class TeamStore:
         return usages
 
     def chats(self, room: str) -> list[dict]:
-        """The named chats of the room that this Mac shows, in the order of `first`: `entry`, `first`, `name` and
-        `created_at`."""
-        return self._rows(CHAT_FIELDS, f'SELECT {", ".join(CHAT_FIELDS)} FROM team_chats WHERE room=? ORDER BY first',
-                          (room,))
+        """The named chats of the room that this Mac shows, in the order of `first`: `entry`, `first`, `name`,
+        `created_at` and `member`, the member who made the chat."""
+        return self._rows(CHAT_FIELDS, f'{CHAT_SELECT} WHERE c.room=? ORDER BY c.first', (room,))
 
     def chat(self, room: str, entry) -> dict | None:
         """One named chat that this Mac shows, or None."""
-        rows = self._rows(CHAT_FIELDS, f'SELECT {", ".join(CHAT_FIELDS)} FROM team_chats WHERE room=? AND entry=?',
-                          (room, entry))
+        rows = self._rows(CHAT_FIELDS, f'{CHAT_SELECT} WHERE c.room=? AND c.entry=?', (room, entry))
         return rows[0] if rows else None
 
     def muted_chats(self, room: str) -> set[str]:
@@ -1808,8 +1860,9 @@ class TeamStore:
         `removal` is what read_entry found valid, or None for an entry that does not fit and for a write of another kind
         over a `remove` entry. The relay deleted the kept entries of the removed member, and no `delete` entry comes for
         them, so this entry is the only sign. The member leaves the member list, so its bots, its pages and the Library
-        rows of these hide by the rules that exist. Its messages and its names in `team_names` stay for the history,
-        and a direct chat with it becomes read-only. On a Mac for a team only, its messages start no waiting turn.
+        rows of these hide by the rules that exist, and the chats that it made go (_drop_member_chats). Its messages
+        and its names in `team_names` stay for the history, and a direct chat with it becomes read-only. On a Mac for a
+        team only, its messages start no waiting turn.
 
         A removal of the admin or of this Mac changes nothing: the admin cannot be removed, and the relay tells this
         Mac by a refusal of its token.
@@ -1822,6 +1875,7 @@ class TeamStore:
             self.db.execute('INSERT OR REPLACE INTO team_removed (room, member, entry) VALUES (?, ?, ?)',
                             (room_id, removal['member'], entry['id']))
             members.add(removal['member'])
+            self._drop_member_chats(room_id, removal['member'])
             if self.db.execute('''DELETE FROM team_triggers WHERE room=? AND started=0 AND entry IN (
                     SELECT entry FROM team_messages WHERE room=? AND member=?)''',
                                (room_id, room_id, removal['member'])).rowcount:
