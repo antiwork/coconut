@@ -943,9 +943,10 @@ final class AppStore {
                (into.chatTitle ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { bots[index].chatTitle = from.chatTitle }
             if let index = bots.firstIndex(where: { $0.id == from.id }) { bots[index].archived = true }
             let survivor = bots.first { $0.id == into.id } ?? into
+            let survivorTitle = survivor.isChat ? survivor.chatLabel : survivor.name
             messages.append(Message(id: UUID().uuidString, botId: from.id, taskId: nil, role: "system", kind: "status",
-                                    text: "Merged into “\(survivor.isChat ? survivor.chatLabel : survivor.name)”",
-                                    decisionId: nil, artifactId: nil, createdAt: Self.now, streaming: false))
+                                    text: "Merged into “\(survivorTitle)”", decisionId: nil, artifactId: nil, createdAt: Self.now,
+                                    streaming: false, mergedInto: MergedChat(id: into.id, title: survivorTitle)))
             messages.append(Message(id: UUID().uuidString, botId: into.id, taskId: nil, role: "user", kind: "text", text: "Merged “\(title)”",
                                     decisionId: nil, artifactId: nil, createdAt: Self.now, streaming: false,
                                     mergedChat: MergedChat(id: from.id, title: title)))

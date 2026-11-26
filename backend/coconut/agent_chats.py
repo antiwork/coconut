@@ -342,23 +342,20 @@ class AgentChats:
         if into.get('chat_of') and not into.get('chat_title') and chat.get('chat_title'):
             into = dict(self._get('bots', into['id']), chat_title=chat['chat_title'])
             self._put('bots', into)
-        title, summary = chat_name(chat), f'Merged into “{chat_name(into)}”'
+        title, into_title = chat_name(chat), chat_name(into)
         cards = [card for card in self._all('decisions')
                  if card.get('status') == 'pending' and chat['id'] in (card.get('bot_id'), card.get('request_bot_id'))]
         transcript = merge_transcript(visible_history(self._history(chat['id'])), cards)
         active = [task['id'] for task in self._all('tasks')
                   if task['status'] in self.ACTIVE and chat['id'] in (task['bot_id'], task.get('conversation_bot_id'))]
-        said = False
-        for index, task_id in enumerate(active):
+        for task_id in active:
             task = self._get('tasks', task_id)
             if task['status'] in self.ACTIVE:
-                # The last line of the chat says where its work went. An earlier stop keeps the usual line.
-                last = index == len(active) - 1
-                self._cancel(task, callbacks, summary=summary if last else None)
-                said = said or last
-        if not said:
-            self._message(chat['id'], summary, role='system', kind='status')
-            self._refresh_bot(chat['id'])
+                self._cancel(task, callbacks)
+        # The last line of the chat says where its work went, and the apps open that chat from it (MergedChatRow).
+        self._message(chat['id'], f'Merged into “{into_title}”', role='system', kind='status',
+                      merged_into=dict(id=into['id'], title=into_title))
+        self._refresh_bot(chat['id'])
         chat = self._get('bots', chat['id'])
         chat.update(archived=True, _merged_into=into['id'])
         self._publish_archive(chat)

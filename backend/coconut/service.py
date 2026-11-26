@@ -653,7 +653,7 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
         for entry in entries:
             self.push.record_notice(room_id, entry)
 
-    def _message(self, bot_id: str, text: str, *, task_id: str | None = None, role: str = 'assistant', kind: str = 'text', decision_id: str | None = None, artifact_id: str | None = None, document_id: str | None = None, streaming: bool = False, sender_bot_id: str | None = None, recipient_bot_ids: list[str] | None = None, human_authored: bool = False, direct_reply_message_id: str | None = None, interim: bool = False) -> dict:
+    def _message(self, bot_id: str, text: str, *, task_id: str | None = None, role: str = 'assistant', kind: str = 'text', decision_id: str | None = None, artifact_id: str | None = None, document_id: str | None = None, streaming: bool = False, sender_bot_id: str | None = None, recipient_bot_ids: list[str] | None = None, human_authored: bool = False, direct_reply_message_id: str | None = None, interim: bool = False, merged_into: dict | None = None) -> dict:
         task = self._get('tasks', task_id) if task_id else None
         thread_id = task['thread_id'] if task else None
         display_bot_id = (task['bot_id'] if task.get('source_bot_id') else task['conversation_bot_id']) if task else bot_id
@@ -668,6 +668,9 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
             message['document_id'] = document_id
         if interim:
             message['_interim'] = True
+        if merged_into:
+            # The chat that this one went into, on the last line of a merged chat (AgentChats.merge_chat).
+            message['merged_into'] = merged_into
         if role == 'assistant' and kind == 'text':
             direct_reply_message_id = direct_reply_message_id or (task or {}).get('_direct_reply_message_id')
             if direct_reply_message_id:
@@ -2708,7 +2711,7 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
                 self._event('artifact.updated', self._public(artifact), bot_id, task['id'])
             self._message(bot_id, artifact['title'], task_id=task['id'], role='user', kind='artifact', artifact_id=artifact_id, recipient_bot_ids=recipient_bot_ids)
 
-    def _cancel(self, task: dict, callbacks: list, *, summary: str | None = None):
+    def _cancel(self, task: dict, callbacks: list):
         exchange = self._get('exchanges', task['exchange_id'])
         exchange['cancelled'] = True
         self._put('exchanges', exchange)
@@ -2718,8 +2721,7 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
             if expanded == related:
                 break
             related = expanded
-        # A merge of chats says where the work went (AgentChats.merge_chat).
-        self._cancel_one(task, callbacks, **({'summary': summary} if summary else {}))
+        self._cancel_one(task, callbacks)
         for task_id in related - {task['id']}:
             self._cancel_one(self._get('tasks', task_id), callbacks)
 

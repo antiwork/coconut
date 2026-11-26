@@ -759,7 +759,7 @@ struct TranscriptMessageRow: View {
             DocumentCard(documentId: id, title: message.text)
         } else if let notice = message.processNotice, message.role == "assistant" {
             ProcessNoticeRow(message: message, notice: notice)
-        } else if let merged = message.mergedChat, message.role == "user" {
+        } else if let merged = message.role == "user" ? message.mergedChat : message.mergedInto {
             MergedChatRow(message: message, merged: merged)
         } else {
             MessageBubble(message: message, scrollToDecision: scrollToDecision, onReply: onReply.map { reply in { reply(message) } })

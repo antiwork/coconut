@@ -272,6 +272,8 @@ struct Message: Codable, Identifiable, Equatable, Sendable {
     var processNotice: ProcessNotice? = nil
     /// The chat that the person merged into this one. The row shows it in place of the bubble (MergedChatRow).
     var mergedChat: MergedChat? = nil
+    /// The chat that this one went into, on the last line of a merged chat. The row shows it too (MergedChatRow).
+    var mergedInto: MergedChat? = nil
 }
 
 struct MessageDraft: Codable, Equatable, Sendable {
