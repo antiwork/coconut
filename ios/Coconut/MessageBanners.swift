@@ -43,6 +43,11 @@ struct PostedBanners: Equatable, Sendable {
         identifiers.formUnion(post)
         return removals
     }
+
+    /// The banners of GitHub and Gmail of the set whose alert is not among `alerts`.
+    func sources(outside alerts: Set<String>) -> [String] {
+        identifiers.filter { SourceBanners.isIdentifier($0) && !alerts.contains($0) }
+    }
 }
 
 enum MessageBanners {

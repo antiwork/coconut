@@ -60,7 +60,8 @@ final class MacBanners: NSObject, UNUserNotificationCenterDelegate {
     func alertsChanged(before: [SourceAlert]?, after: [SourceAlert]?) {
         guard let after else { return }
         let plan = SourceBanners.plan(before: before, after: after)
-        change(remove: plan.remove, post: plan.post.map(Banner.init), asking: !plan.post.isEmpty)
+        change(remove: plan.remove, post: plan.post.map(Banner.init), asking: !plan.post.isEmpty,
+               firstAlerts: before == nil ? Set(after.map(\.id)) : nil)
     }
 
     /// A change of the cards or the chats of the agents (AgentBannerWatcher). macOS asks for permission at the first
@@ -71,15 +72,18 @@ final class MacBanners: NSObject, UNUserNotificationCenterDelegate {
         change(remove: plan.remove, post: plan.post.map(Banner.init), asking: !plan.post.isEmpty)
     }
 
-    /// One change of Notification Center: the removals first, then the new banners.
-    private func change(remove: [String], post: [Banner], asking: Bool) {
+    /// One change of Notification Center: the removals first, then the new banners. `firstAlerts`, the first alerts
+    /// after a start, also removes each banner of GitHub or Gmail of an earlier run that is not among them: the person
+    /// read it on GitHub or in Gmail while the app did not run.
+    private func change(remove: [String], post: [Banner], asking: Bool, firstAlerts: Set<String>? = nil) {
         let asks = asking && !askedForPermission
         if asks { askedForPermission = true }
-        guard asks || !remove.isEmpty || !post.isEmpty else { return }
+        guard asks || !remove.isEmpty || !post.isEmpty || firstAlerts != nil else { return }
         let previous = lastChange
         lastChange = Task {
             await previous?.value
-            let removals = posted.removals(remove: remove, post: post.map(\.identifier))
+            let stale = firstAlerts.map(posted.sources(outside:)) ?? []
+            let removals = posted.removals(remove: remove + stale, post: post.map(\.identifier))
             if !removals.isEmpty { center.removeDeliveredNotifications(withIdentifiers: removals) }
             guard asks || !post.isEmpty, await allowed(asking: asks) else { return }
             for banner in post { try? await center.add(Self.request(banner)) }
