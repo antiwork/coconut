@@ -652,13 +652,16 @@ extension CoconutHome {
                 open(.chats, store.documentPath(page.id))
             }
         case "notices": open(.chats, [NoticeBoardRoute(roomId: room)])
-        // The inbox chat Notices of the team preview (TeamInbox.swift), one notice with answers, and the tap on the
-        // notification of a notice.
+        // The inbox chat Notices of the team preview (TeamInbox.swift), one notice with answers, a notice that
+        // resolved, and the tap on the notification of a notice.
         case "notice-inbox":
             open(.chats, [TeamChatRoute(chat: TeamChatKey(room: room, chat: AppStore.previewNoticesChat))])
         case "notice-thread":
             let inbox = TeamChatKey(room: room, chat: AppStore.previewNoticesChat)
             open(.chats, [TeamChatRoute(chat: inbox), TeamChatRoute(chat: inbox.inThread(AppStore.previewNoticeThread))])
+        case "notice-resolved":
+            let inbox = TeamChatKey(room: room, chat: AppStore.previewNoticesChat)
+            open(.chats, [TeamChatRoute(chat: inbox), TeamChatRoute(chat: inbox.inThread(AppStore.previewResolvedThread))])
         case "notice-thread-tap":
             showNotification(.chat(TeamChatKey(room: room, chat: AppStore.previewNoticesChat,
                                                thread: AppStore.previewNoticeThread)))

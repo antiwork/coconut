@@ -281,9 +281,9 @@ class TeamMessages:
 
     def team_threads(self, room_id: str, data: dict) -> dict:
         """The notices of an inbox chat (docs/team-log.md, "Inbox chats"): each thread with its first message, its newest
-        message, and its counts, as TeamStore.threads gives them. `before` is the `before` of the answer before, for the
-        next page of read threads. A chat that is not an inbox has the same answer, so an app can show any named chat
-        this way."""
+        message, its counts and whether its alert is resolved, as TeamStore.threads gives them. `before` is the `before`
+        of the answer before, for the next page of read threads. A chat that is not an inbox has the same answer, so an
+        app can show any named chat this way."""
         from .service_base import ServiceError
         room = self._team_room(room_id)
         before = query_number(data, 'before', None, 1, MAX_NUMBER, 'Use a whole number for before.')
@@ -296,7 +296,8 @@ class TeamMessages:
             total = self.team_store.thread_count(room_id, chat) if before is None else None
             views = self._team_message_views(room, [row for thread in threads for row in (thread['root'], thread['latest'])])
         items = [{'id': thread['thread'], 'count': thread['count'], 'unread': thread['unread'],
-                  'root': views[2 * index], 'latest': views[2 * index + 1]} for index, thread in enumerate(threads)]
+                  'root': views[2 * index], 'latest': views[2 * index + 1], 'resolved': thread['resolved']}
+                 for index, thread in enumerate(threads)]
         return {'room': room_id, 'chat': chat, 'threads': items, 'before': older,
                 **({'total': total} if total is not None else {})}
 
@@ -430,7 +431,7 @@ class TeamMessages:
                  'reactions': reaction_views(reactions.get(row['entry'], []), room['member']),
                  'preview': preview_view(row['preview']),
                  'files': self.team_store.file_views(room['room'], row['entry'], row['files']),
-                 'alert': alert_view(row['alert_type'], row['alert_level']),
+                 'alert': alert_view(row['alert_type'], row['alert_level'], row['alert_resolved']),
                  # The thread of the message in its chat (docs/team-log.md, "Inbox chats").
                  'thread': row['thread'],
                  'created_at': row['created_at'], 'edited_at': row['updated_at'] if row['edited'] else None}

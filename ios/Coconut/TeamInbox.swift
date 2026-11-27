@@ -16,6 +16,8 @@ struct TeamThread: Decodable, Identifiable, Equatable, Sendable {
     var unread: Int
     var root: TeamMessage
     var latest: TeamMessage
+    /// True when the newest alert of the notice resolves it: its condition is over. Nil from a Mac without it.
+    var resolved: Bool?
 
     /// The answers to the notice.
     var replies: Int { max(0, count - 1) }
@@ -320,7 +322,8 @@ struct TeamInboxView: View {
 }
 
 /// One notice in the list: its title, its age, and under it the kind of the alert and the rest of the text, or the
-/// newest answer. An unread notice has a bold title and the green count of its unread messages, as a chat in Chats.
+/// newest answer. An unread notice has a bold title and the green count of its unread messages, as a chat in Chats. A
+/// resolved notice says Resolved in place of Critical, and then the rest of the alert that resolved it.
 struct TeamThreadRow: View {
     let thread: TeamThread
 
@@ -357,12 +360,16 @@ struct TeamThreadRow: View {
         .accessibilityValue(thread.unread > 0 ? "Unread" : "")
     }
 
-    /// The line under the title: a critical alert says so first, then the kind of the alert, then the newest answer
+    /// The line under the title: a resolved notice says so first, else a critical alert does, then the kind of the
+    /// alert, then the rest of the alert that resolved the notice when it is the newest message, else the newest answer
     /// with its writer when the notice has answers, else the rest of the text. Nil when there is nothing to say.
     private func detailText(rest: String) -> Text? {
         var parts: [Text] = []
+        let resolved = thread.resolved == true
         if let alert = thread.root.alert {
-            if alert.level == .critical {
+            if resolved {
+                parts.append(Text("Resolved").fontWeight(.bold).foregroundStyle(BoardStyle.positive))
+            } else if alert.level == .critical {
                 parts.append(Text("Critical").fontWeight(.bold).foregroundStyle(BoardStyle.destructive))
             }
             parts.append(Text(alert.type).fontWeight(.semibold))
@@ -371,7 +378,10 @@ struct TeamThreadRow: View {
             parts.append(Text(thread.root.isOwn ? "You" : thread.root.memberName ?? TeamNames.formerMember)
                 .fontWeight(.semibold))
         }
-        if thread.replies > 0 {
+        if resolved, thread.replies > 0, thread.latest.alert?.resolved == true {
+            let text = TeamNoticeText.split(thread.latest.text).rest
+            if !text.isEmpty { parts.append(Text(text)) }
+        } else if thread.replies > 0 {
             parts.append(Text(thread.replies == 1 ? "1 reply" : "\(thread.replies) replies"))
             let writer = thread.latest.bot != nil ? thread.latest.botName ?? "Agent"
                 : thread.latest.isOwn ? "You" : thread.latest.memberName ?? TeamNames.formerMember
@@ -432,6 +442,8 @@ extension AppStore {
     static let previewNoticesChat = "a1b2c3d4e5f60718293a4b5c6d7e8f90"
     /// The notice with answers of the preview: a payout to a seller that the bank rejected.
     static let previewNoticeThread = "c0ffee00c0ffee00c0ffee00c0ffee03"
+    /// The notice of an alert that resolved.
+    static let previewResolvedThread = "c0ffee00c0ffee00c0ffee00c0ffee07"
 
     /// Gives the team preview its Notices: the row in Chats, the list of notices, and the messages of the notice with
     /// answers. The data goes through the decoders of the answers of the Mac, as a live list does.
@@ -440,11 +452,12 @@ extension AppStore {
         func ago(_ minutes: Double) -> String { formatter.string(from: now.addingTimeInterval(-minutes * 60)) }
         let claw: [String: Any] = ["member": "m4", "member_name": "Gumclaw", "bot": "t-\(room)-gumclaw", "bot_name": "Gumclaw"]
         func message(_ id: String, _ first: Int, _ text: String, minutes: Double, alert: (String, String)? = nil,
-                     thread: String, replyTo: String? = nil, own: Bool = false) -> [String: Any] {
+                     resolved: Bool = false, thread: String, replyTo: String? = nil,
+                     own: Bool = false) -> [String: Any] {
             var fields: [String: Any] = own ? ["member": "m1", "member_name": "Ada", "this_mac": true] : claw
             fields.merge(["id": id, "first": first, "text": text, "created_at": ago(minutes), "thread": thread,
                           "chat": Self.previewNoticesChat]) { _, new in new }
-            if let alert { fields["alert"] = ["type": alert.0, "level": alert.1] }
+            if let alert { fields["alert"] = ["type": alert.0, "level": alert.1, "resolved": resolved] }
             if let replyTo { fields["reply_to"] = replyTo }
             return fields
         }
@@ -452,6 +465,7 @@ extension AppStore {
         let n3 = Self.previewNoticeThread, n4 = "c0ffee00c0ffee00c0ffee00c0ffee04"
         let n5 = "c0ffee00c0ffee00c0ffee00c0ffee05", n6 = "c0ffee00c0ffee00c0ffee00c0ffee06"
         let n3a = "c0ffee00c0ffee00c0ffee00c0ffe3a1", n3b = "c0ffee00c0ffee00c0ffee00c0ffe3b2"
+        let n7 = Self.previewResolvedThread, n7a = "c0ffee00c0ffee00c0ffee00c0ffe7a1"
         let root1 = message(n1, 120, "**Three chargebacks in an hour on one seller**\n\nAll three are on the $49 Figma course "
                             + "from new buyers. I held the seller's next payout until a person looks.", minutes: 4,
                             alert: ("risk", "critical"), thread: n1)
@@ -470,10 +484,16 @@ extension AppStore {
                             minutes: 5 * 60, thread: n5)
         let root6 = message(n6, 60, "**Friday's payout batch went out**\n\n1,284 sellers, $412,903. Two failed and are "
                             + "on hold for new bank details.", minutes: 26 * 60, alert: ("finance", "info"), thread: n6)
+        let root7 = message(n7, 108, "**Disk queue of the production database is high**\n\n62 and 59 in three minutes. "
+                            + "We page at 45.", minutes: 40, alert: ("infra", "critical"), thread: n7)
+        let resolved7 = message(n7a, 110, "**Disk queue of the production database is back to normal**\n\n"
+                                + "Readings: 6 and 26 in three minutes. We page at 45.", minutes: 37,
+                                alert: ("infra", "info"), resolved: true, thread: n7)
         let threads: [[String: Any]] = [
             ["id": n1, "count": 1, "unread": 1, "root": root1, "latest": root1],
             ["id": n2, "count": 1, "unread": 1, "root": root2, "latest": root2],
             ["id": n3, "count": 3, "unread": 1, "root": root3, "latest": answer3],
+            ["id": n7, "count": 2, "unread": 1, "root": root7, "latest": resolved7, "resolved": true],
             ["id": n4, "count": 1, "unread": 0, "root": root4, "latest": root4],
             ["id": n5, "count": 1, "unread": 0, "root": root5, "latest": root5],
             ["id": n6, "count": 1, "unread": 0, "root": root6, "latest": root6],
@@ -483,11 +503,12 @@ extension AppStore {
             guard let data = try? JSONSerialization.data(withJSONObject: object) else { return nil }
             return try? decoder.decode(type, from: data)
         }
-        guard let page = decode(["threads": threads, "before": NSNull(), "total": 6], as: TeamThreadPage.self),
+        guard let page = decode(["threads": threads, "before": NSNull(), "total": 7], as: TeamThreadPage.self),
               let messages = decode(["messages": [answer3, reply3, root3], "before": NSNull()], as: TeamMessagePage.self),
+              let resolved = decode(["messages": [resolved7, root7], "before": NSNull()], as: TeamMessagePage.self),
               let index = team?.rooms.firstIndex(where: { $0.room == room }) else { return }
         let chat = TeamNamedChat(id: Self.previewNoticesChat, name: "Notices", createdAt: ago(20 * 1440),
-                                 mine: false, unread: 3,
+                                 mine: false, unread: 4,
                                  lastMessage: TeamLastMessage(bot: "t-\(room)-gumclaw", botName: "Gumclaw",
                                                               text: "Three chargebacks in an hour on one seller",
                                                               createdAt: ago(4)),
@@ -501,6 +522,7 @@ extension AppStore {
         list.take(page)
         teamThreads[key] = list
         teamChats[key.inThread(n3)] = TeamChat(messages: messages.messages.reversed(), loaded: true)
+        teamChats[key.inThread(n7)] = TeamChat(messages: resolved.messages.reversed(), loaded: true)
         teamChats[key.inThread(n1)] = TeamChat(messages: [page.threads[0].root], loaded: true)
     }
 }

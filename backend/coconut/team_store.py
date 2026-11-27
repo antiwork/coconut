@@ -22,8 +22,10 @@ Each table has the room ID in its key, because a Mac can be in more than one roo
 - `team_messages`: a view of `team_entries` for the chats: one row for each valid `message` entry, in the order of
   `first`. `chat` is the entry ID of the named chat of the message, or null for the Team chat. `preview` is the link
   preview of the message as JSON, or null. `alert_type` and `alert_level` are the alert of a message of a bot
-  (team_alerts.py), or both null. `thread` is the entry ID of the first message of its thread (docs/team-log.md,
-  "Inbox chats"): the message itself, or the thread of the message that it answers or follows (_thread_of).
+  (team_alerts.py), or both null. `alert_key` is the key of the alert, and `alert_resolved` is 1 when the alert
+  resolves the condition of its key, else 0: both null without a key. `thread` is the entry ID of the first message of
+  its thread (docs/team-log.md, "Inbox chats"): the message itself, or the thread of the message that it answers or
+  follows (_thread_of).
 - `team_chats`: a view of `team_entries`: the valid `chat` entries of the admin and the valid `member_chat` entries, the
   named chats of the room.
 - `team_names`: the last name that the store showed for each member and each bot. It stays after a `delete` entry,
@@ -235,7 +237,7 @@ TEAM_BOT = ('entry', 'member', 'name', 'avatar', 'color', 'open', 'direct')
 # What the chat of the phone gets for a message. TeamStore.messages reads these rows.
 MESSAGE_FIELDS = ('entry', 'first', 'member', 'member_name', 'bot', 'bot_name', 'text', 'reply_to', 'mentions',
                   'created_at', 'updated_at', 'edited', 'chat', 'preview', 'files', 'alert_type', 'alert_level',
-                  'thread')
+                  'alert_key', 'alert_resolved', 'thread')
 # A message shows only when its `bot` is null or names a `bot` entry of the same member that the store showed once.
 # The bot entry can come after the message, because the relay keeps only its newest write, so the check runs at read
 # time. team_names keeps the bot after a `delete`, so the history of a bot that the team no longer has stays. The same
@@ -1118,13 +1120,17 @@ class TeamStore:
         for table in ('team_messages', 'team_directs'):
             if 'preview' not in {row[1] for row in self.db.execute(f'PRAGMA table_info({table})')}:
                 self.db.execute(f'ALTER TABLE {table} ADD COLUMN preview TEXT')
-        if 'alert_type' not in {row[1] for row in self.db.execute('PRAGMA table_info(team_messages)')}:
+        columns = {row[1] for row in self.db.execute('PRAGMA table_info(team_messages)')}
+        if not {'alert_type', 'alert_key'} <= columns:
             # The new columns and the pass are one step, as for the column `chat` above. They come before the pass of
-            # the files, which writes each row of a message with all its columns (_show_message).
+            # the files, which writes each row of a message with all its columns (_show_message). A store with the
+            # type and the level of an alert but not its key reads each alert again too: that version dropped the key.
             self.db.execute('SAVEPOINT team_alert_columns')
             try:
-                self.db.execute('ALTER TABLE team_messages ADD COLUMN alert_type TEXT')
-                self.db.execute('ALTER TABLE team_messages ADD COLUMN alert_level TEXT')
+                for column, kind in (('alert_type', 'TEXT'), ('alert_level', 'TEXT'), ('alert_key', 'TEXT'),
+                                     ('alert_resolved', 'INTEGER')):
+                    if column not in columns:
+                        self.db.execute(f'ALTER TABLE team_messages ADD COLUMN {column} {kind}')
                 self._read_alerts_again()
             except BaseException:
                 self.db.execute('ROLLBACK TO team_alert_columns')
@@ -1137,6 +1143,10 @@ class TeamStore:
             (room, chat, alert_type, first) WHERE alert_type IS NOT NULL''')
         self.db.execute('''CREATE INDEX IF NOT EXISTS team_messages_alert_level ON team_messages
             (room, chat, alert_level, first) WHERE alert_level IS NOT NULL''')
+        # The keyed alerts of one chat by agent and by key, each in the order of `first`: the newest alert of a key
+        # (alert_thread) and the state of the notices of a page (threads) read one row of a key each.
+        self.db.execute('''CREATE INDEX IF NOT EXISTS team_messages_alert_key ON team_messages
+            (room, chat, bot, alert_key, first) WHERE alert_key IS NOT NULL''')
         if 'thread' not in {row[1] for row in self.db.execute('PRAGMA table_info(team_messages)')}:
             # The new column and the pass are one step, as for the column `chat` above. They come before the pass of
             # the files, which writes each row of a message with all its columns (_show_message).
@@ -1335,8 +1345,9 @@ class TeamStore:
 
     def _read_alerts_again(self) -> None:
         """Read the alerts of a store of an older version, one time (docs/team-log.md, "Alerts"). That version ignored
-        the field `alert` of a message and showed the message as a plain one. The pass gives each such row its type
-        and its level with the reader of a message. It changes no other column, no read position and no event."""
+        the field `alert` of a message and showed the message as a plain one, or it kept only the type and the level.
+        The pass gives each such row its type, its level and its key with the reader of a message. It changes no other
+        column, no read position and no event: a keyed alert that came before keeps the thread that it has."""
         rows = self.db.execute('''SELECT m.room, m.entry, e.payload FROM team_messages m
             JOIN team_entries e ON e.room=m.room AND e.id=m.entry
             WHERE e.kind='message' AND instr(e.payload, '"alert"')>0''').fetchall()
@@ -1344,8 +1355,8 @@ class TeamStore:
             read = read_payload(payload.encode())
             message = message_fields(read[1]) if read else None
             if message is not None and message['alert'] is not None:
-                self.db.execute('UPDATE team_messages SET alert_type=?, alert_level=? WHERE room=? AND entry=?',
-                                (*stored_alert(message['alert']), room, entry))
+                self.db.execute('''UPDATE team_messages SET alert_type=?, alert_level=?, alert_key=?, alert_resolved=?
+                    WHERE room=? AND entry=?''', (*stored_alert(message['alert']), room, entry))
 
     def _read_threads_again(self) -> None:
         """Give each message of a store of an older version its thread, one time (docs/team-log.md, "Inbox chats"). The
@@ -2061,12 +2072,13 @@ class TeamStore:
         shown = self.db.execute('SELECT thread FROM team_messages WHERE room=? AND entry=?', (room, entry['id'])).fetchone()
         thread = shown[0] if shown and shown[0] else self._thread_of(room, dict(entry, at=at), message)
         self.db.execute('''INSERT INTO team_messages (room, entry, first, member, bot, text, reply_to, mentions,
-            created_at, updated_at, edited, chat, preview, files, alert_type, alert_level, thread)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            created_at, updated_at, edited, chat, preview, files, alert_type, alert_level, alert_key, alert_resolved,
+            thread) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT (room, entry) DO UPDATE SET first=excluded.first, bot=excluded.bot, text=excluded.text,
             reply_to=excluded.reply_to, mentions=excluded.mentions, updated_at=excluded.updated_at,
             edited=excluded.edited, chat=excluded.chat, preview=excluded.preview, files=excluded.files,
-            alert_type=excluded.alert_type, alert_level=excluded.alert_level, thread=excluded.thread''',
+            alert_type=excluded.alert_type, alert_level=excluded.alert_level, alert_key=excluded.alert_key,
+            alert_resolved=excluded.alert_resolved, thread=excluded.thread''',
                         (room, entry['id'], entry['first'], entry['member'], message['bot'], message['text'],
                          message['reply_to'], json.dumps(message['mentions']), at, at, int(rev > 1), message['chat'],
                          stored_preview(message.get('preview')), stored_files(message['files']),
@@ -2857,7 +2869,7 @@ class TeamStore:
         # The name of a member or a bot is the last one that the store showed, also after a `delete` (team_names).
         return f'''SELECT m.entry, m.first, m.member, n.name, m.bot, k.name, m.text,
             m.reply_to, m.mentions, m.created_at, m.updated_at, m.edited, m.chat, m.preview, m.files, m.alert_type,
-            m.alert_level, m.thread FROM team_messages m
+            m.alert_level, m.alert_key, m.alert_resolved, m.thread FROM team_messages m
             LEFT JOIN team_names n ON n.room=m.room AND n.member=m.member AND n.kind='member'
             LEFT JOIN team_names k ON k.room=m.room AND k.entry=m.bot AND k.kind='bot'
             WHERE m.room=? AND {SHOWN_MESSAGE} AND {where}'''
@@ -2910,6 +2922,17 @@ class TeamStore:
         return chat is not None and self.db.execute('''SELECT 1 FROM team_messages WHERE room=? AND chat=?
             AND alert_type IS NOT NULL LIMIT 1''', (room, chat)).fetchone() is not None
 
+    def alert_thread(self, room: str, chat: str | None, bot: str, key: str, resolved: bool) -> str | None:
+        """The message whose thread a new alert of the bot `bot` with the key `key` joins in one chat (docs/team-log.md,
+        "Alerts"): the newest shown alert of that bot with that key. None when there is none, and when that alert
+        resolved the condition and the new one does not: the condition is back, as a new notice. The newest alert
+        names the thread, not the first one, so the notice stays one after the admin erases its first message. The
+        index team_messages_alert_key gives the row."""
+        row = self.db.execute(f'''SELECT m.entry, m.alert_resolved FROM team_messages m WHERE m.room=? AND m.chat IS ?
+            AND m.bot=? AND m.alert_key=? AND {SHOWN_MESSAGE} ORDER BY m.first DESC LIMIT 1''',
+                              (room, chat, bot, key)).fetchone()
+        return None if row is None or row[1] and not resolved else row[0]
+
     def thread_read_position(self, room: str, chat: str, thread: str) -> int:
         """The read position of one thread of a named chat: the later of the position of the chat and of the thread."""
         row = self.db.execute('SELECT first FROM team_thread_reads WHERE room=? AND chat=? AND thread=?',
@@ -2960,11 +2983,13 @@ class TeamStore:
     def threads(self, room: str, chat: str, member: str, before: int | None = None,
                 limit: int = THREAD_PAGE) -> tuple[list[dict], int | None]:
         """The threads of an inbox chat (docs/team-log.md, "Inbox chats"), each with `thread`, `count` (its shown
-        messages), `unread` (its unread messages, by the rule of `unread`), `root` (its first shown message) and
-        `latest` (its newest one). Without `before`: each unread thread, at most MAX_UNREAD_THREADS, the newest first,
-        then the `limit` read threads with the newest messages. With `before`: the next `limit` read threads whose newest
-        message is before `before`. The second value is the `before` of the next page, or None after the oldest thread.
-        A thread is in the order of its newest message, so an answer brings it up, as a thread of mail."""
+        messages), `unread` (its unread messages, by the rule of `unread`), `root` (its first shown message),
+        `latest` (its newest one) and `resolved`: true when the newest keyed alert of the thread resolves its
+        condition (docs/team-log.md, "Alerts"). Without `before`: each unread thread, at most MAX_UNREAD_THREADS, the
+        newest first, then the `limit` read threads with the newest messages. With `before`: the next `limit` read
+        threads whose newest message is before `before`. The second value is the `before` of the next page, or None
+        after the oldest thread. A thread is in the order of its newest message, so an answer brings it up, as a
+        thread of mail."""
         unread = dict(self.db.execute(f'''SELECT m.thread, COUNT(*) FROM team_messages m WHERE m.room=? AND m.chat=?
             AND m.first>? AND {UNREAD_MESSAGE} AND {SHOWN_MESSAGE} AND {THREAD_UNREAD}
             GROUP BY m.thread ORDER BY MAX(m.first) DESC LIMIT {MAX_UNREAD_THREADS}''',
@@ -2980,6 +3005,11 @@ class TeamStore:
             COUNT(*), MIN(m.first), MAX(m.first) FROM team_messages m WHERE m.room=? AND m.chat=?
             AND m.thread IN (SELECT value FROM json_each(?)) AND {SHOWN_MESSAGE} GROUP BY m.thread''',
                                                                                     (room, chat, json.dumps(chosen)))}
+        # SQLite takes the bare column alert_resolved from the row of MAX(m.first): the newest keyed alert of a thread.
+        resolved = {thread for thread, value, _ in self.db.execute(f'''SELECT m.thread, m.alert_resolved, MAX(m.first)
+            FROM team_messages m WHERE m.room=? AND m.chat=? AND m.thread IN (SELECT value FROM json_each(?))
+            AND m.alert_key IS NOT NULL AND {SHOWN_MESSAGE} GROUP BY m.thread''', (room, chat, json.dumps(chosen)))
+                    if value}
         firsts = sorted({first for count, low, high in stats.values() for first in (low, high)})
         rows = {row['first']: row for row in self._messages('m.chat=? AND m.first IN (SELECT value FROM json_each(?))',
                                                              (room, chat, json.dumps(firsts)))}
@@ -2989,7 +3019,7 @@ class TeamStore:
                 continue
             count, low, high = stats[thread]
             threads.append(dict(thread=thread, count=count, unread=unread.get(thread, 0), root=rows[low],
-                                latest=rows[high]))
+                                latest=rows[high], resolved=thread in resolved))
         return threads, (page[-1][1] if more and page else None)
 
     def thread_count(self, room: str, chat: str) -> int:
