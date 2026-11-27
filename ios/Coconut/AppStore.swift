@@ -301,24 +301,30 @@ final class AppStore {
     /// Removes the notifications that only repeat what the person read, as Slack does: a read on the Mac or on this
     /// iPhone clears them from Notification Center and the lock screen. Before, each one stayed until the person
     /// swiped it away. Only a state that the Mac sent since the app came to the front judges them (syncedInFront), and
-    /// only a list of the teams from that time judges the chats of a team.
+    /// only a list of the teams from that time judges the chats of a team. A notification of GitHub or Gmail follows
+    /// the alerts of the Mac, which lose what the person read on GitHub or in Gmail.
     private func removeReadNotifications() {
         guard !isDemo, syncedInFront else { return }
         let teams = teamSyncedInFront
         Task {
-            await PushNotifications.shared.removeDelivered { target in
-                (teams || target.chat == nil) && self.notificationIsRead(target)
+            await PushNotifications.shared.removeDelivered(alerts: { await self.currentSourceAlerts() }) { target, alerts in
+                (teams || target.chat == nil) && self.notificationIsRead(target, alerts: alerts)
             }
         }
     }
     #endif
 
     /// True when a notification only repeats what the person read: a reply or the end of a turn in an agent chat
-    /// without unread replies, a message of a chat of a team without unread messages, or a card that waits no more.
+    /// without unread replies, a message of a chat of a team without unread messages, a card that waits no more, or a
+    /// notification of GitHub or Gmail that no alert of the Mac opens (`alerts`, nil when the app could not read them).
     /// False when the app cannot tell: a notice, a group of several chats, or a chat or a card that the app does not have.
-    func notificationIsRead(_ target: NotificationTarget) -> Bool {
-        // A notice, and a notification of GitHub or Gmail, stays until the person opens or clears it.
-        guard target.noticeRoom == nil, target.sourcePlace == nil else { return false }
+    func notificationIsRead(_ target: NotificationTarget, alerts: [SourceAlert]? = nil) -> Bool {
+        // A notice stays until the person opens or clears it.
+        guard target.noticeRoom == nil else { return false }
+        if let place = target.sourcePlace {
+            guard let alerts, acceptsNotification(target) else { return false }
+            return !alerts.contains { $0.place == place }
+        }
         // A notice of an inbox chat is read when its list says so, or when the chat has no unread notice at all.
         if let chat = target.chat, let thread = chat.thread,
            let item = teamThreads[chat.wholeChat]?.threads.first(where: { $0.id == thread }) {
@@ -1895,6 +1901,8 @@ final class AppStore {
         guard !changed.isEmpty || page.reset != nil else { return }
         #if os(macOS)
         if changed.contains("alerts") || page.reset != nil { Task { await loadSourceAlerts() } }
+        #elseif os(iOS)
+        if changed.contains("alerts") { removeReadNotifications() }
         #endif
         // The alerts of GitHub and Gmail change no page.
         guard changed.contains(where: { $0 != "alerts" }) || page.reset != nil else { return }
@@ -1907,6 +1915,13 @@ final class AppStore {
         guard !isDemo, let client else { return }
         guard let list: SourceAlerts = try? await client.request("notifications/alerts"), self.client === client else { return }
         sourceAlerts = list.alerts
+    }
+
+    /// The alerts of GitHub and Gmail that the Mac has now, for the notifications of the iPhone. Nil when the read fails.
+    func currentSourceAlerts() async -> [SourceAlert]? {
+        guard !isDemo, let client else { return nil }
+        let list: SourceAlerts? = try? await client.request("notifications/alerts")
+        return list?.alerts
     }
 
     /// An image of a feed. The bytes of an image never change, so the store keeps the decoded image.

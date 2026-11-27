@@ -729,17 +729,19 @@ final class PushNotifications {
 
     #if os(iOS)
     /// Removes the delivered notifications of Coconut that `isRead` names (AppStore.notificationIsRead). One call at a
-    /// time, so a removal never runs on a list that an earlier one changed.
-    func removeDelivered(where isRead: @escaping (NotificationTarget) -> Bool) async {
+    /// time, so a removal never runs on a list that an earlier one changed. `alerts` reads the alerts of GitHub and
+    /// Gmail only while a notification of them shows, and `isRead` gets them, nil when the read failed.
+    func removeDelivered(alerts: @escaping @MainActor () async -> [SourceAlert]?,
+                         where isRead: @escaping (NotificationTarget, [SourceAlert]?) -> Bool) async {
         let previous = removalTask
         let task = Task {
             await previous?.value
             let center = UNUserNotificationCenter.current()
-            let identifiers = await center.deliveredNotifications().compactMap { notification -> String? in
-                guard let target = NotificationTarget(userInfo: notification.request.content.userInfo),
-                      isRead(target) else { return nil }
-                return notification.request.identifier
+            let delivered = await center.deliveredNotifications().compactMap { notification in
+                NotificationTarget(userInfo: notification.request.content.userInfo).map { (notification.request.identifier, $0) }
             }
+            let current = delivered.contains { $0.1.sourcePlace != nil } ? await alerts() : nil
+            let identifiers = delivered.filter { isRead($0.1, current) }.map(\.0)
             if !identifiers.isEmpty { center.removeDeliveredNotifications(withIdentifiers: identifiers) }
         }
         removalTask = task
