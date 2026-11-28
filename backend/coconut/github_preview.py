@@ -119,7 +119,7 @@ def _excerpt(body):
 
 
 class GitHubPreviews:
-    """Previews of GitHub addresses, read through the GitHub connection of the business views and kept for a short time."""
+    """Previews of GitHub addresses, read through the GitHub login of the business views and kept for a short time."""
 
     def __init__(self, business, clock=time.monotonic):
         # A function, so a new GitHub connection of the service is the one that reads.
@@ -300,7 +300,7 @@ class GitHubPreviews:
                 if error.status != 404:
                     raise
         if not isinstance(data, dict) or data.get('type') != 'file':
-            raise ServiceError(404, 'This file is unavailable to the connected GitHub account.')
+            raise ServiceError(404, 'This file is unavailable to the GitHub login of this Mac.')
         result = dict(kind='file', repository=repository, path=_text(path, 400), ref=_text(ref, 100),
                       start_line=None, end_line=None, lines=[], more_lines=0)
         start = link.get('start')

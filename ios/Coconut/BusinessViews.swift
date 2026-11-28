@@ -163,23 +163,15 @@ struct BusinessWorkListView: View {
     }
 }
 
+/// Why the Mac cannot read GitHub. It has no button: the Mac uses its own gh login, and nobody connects GitHub in the
+/// app (github_access.py).
 private struct BusinessConnectionNotice: View {
-    @Environment(AppStore.self) private var store
     let message: String
-    @State private var connecting = false
     var body: some View {
         BoardSection("Connection") {
-            VStack(alignment: .leading, spacing: BoardStyle.Space.s) {
-                Text(message).font(.subheadline).foregroundStyle(.secondary)
-                Button("GitHub connection") { connecting = true }.font(.subheadline)
-            }
-            .padding(BoardStyle.Space.m)
-            .frame(maxWidth: .infinity, alignment: .leading)
-        }
-        .sheet(isPresented: $connecting, onDismiss: { store.businessChanges += 1 }) {
-            NavigationStack {
-                GitHubSettingsView().toolbar { ToolbarItem(placement: .cancellationAction) { Button("Done") { connecting = false } } }
-            }
+            Text(message).font(.subheadline).foregroundStyle(.secondary)
+                .padding(BoardStyle.Space.m)
+                .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 }

@@ -18,7 +18,8 @@ struct NotificationSettingsView: View {
     @Bindable private var push = PushNotifications.shared
     @State private var keywords = ""
     @FocusState private var keywordsFocused: Bool
-    /// Whether GitHub and Google are connected, for the footers of their sections. Nil until read, and in the demo.
+    /// Whether the Mac has a GitHub login and a Google connection, which decide whether their sections show. Nil until
+    /// read, and in the demo.
     @State private var githubConnected: Bool?
     @State private var googleConnected: Bool?
 
@@ -46,7 +47,9 @@ struct NotificationSettingsView: View {
                     NavigationLink("What counts as urgent?") { UrgentCardsView(summary: store.pushStatus?.urgent) }
                         .accessibilityIdentifier("urgent-cards")
                 }
-                if settings.github != nil {
+                // GitHub notifies only on a Mac with a GitHub login, the gh login of the Mac: nobody connects GitHub in
+                // the app.
+                if settings.github != nil, githubConnected != false {
                     Section {
                         Picker("GitHub", selection: binding(\.github, default: .mentions)) {
                             ForEach(NotificationSettings.GitHub.allCases, id: \.self) { level in
@@ -57,8 +60,6 @@ struct NotificationSettingsView: View {
                         .labelsHidden()
                     } header: {
                         Text("GitHub")
-                    } footer: {
-                        if githubConnected == false { Text("Connect GitHub in You, Connections.") }
                     }
                 }
                 // Gmail notifies only on a Mac that kept a Google connection from an earlier version: a team member never
