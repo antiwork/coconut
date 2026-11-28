@@ -505,9 +505,10 @@ struct DetailColumnBottomInset: NSViewRepresentable {
 /// menu with Shift-Command-A (the shortcut of Unreads in Slack) and in the menu of each section title, leaves Starred
 /// and Unread alone, as "Unreads only" of the sidebar of Slack along with everything the person starred (the person,
 /// 2026-11-27: "Starred and only show unread option. Mirror slack almost exactly"); Unread then says when no chat is
-/// unread. It is Unreads of the filter of Chats on the iPhone (ChatsFilterMenu), and each device keeps its own. The iPhone's
-/// Product tab has no row here: the person chose on a card to leave the sidebar as it is (2026-11-24), so Home keeps
-/// the cards and Support keeps the queue of the product issues. Do not add the row or offer it again.
+/// unread, and the last row, Show all chats, turns it off. It is Unreads of the filter of Chats on the iPhone
+/// (ChatsFilterMenu), and each device keeps its own. The iPhone's Product tab has no row here: the person chose on a
+/// card to leave the sidebar as it is (2026-11-24), so Home keeps the cards and Support keeps the queue of the product
+/// issues. Do not add the row or offer it again.
 struct MacSidebar: View {
     @Environment(AppStore.self) private var store
     @Environment(\.showChatDeck) private var showChatDeck
@@ -619,7 +620,7 @@ struct MacSidebar: View {
                 // Every chat is read: the sidebar says so, so it does not read as a sidebar that lost its chats. The
                 // line stands where the name of a chat stands, with no face, and folds with Unread.
                 Section(isExpanded: $unreadsOpen) {
-                    MacSidebarRow(name: "No unread chats", unread: 0) { Color.clear }
+                    MacSidebarRow(name: "All caught up.", unread: 0) { Color.clear }
                         .accessibilityIdentifier("sidebar-unreads-empty")
                 } header: {
                     Text("Unread").contextMenu { unreadsOnlyToggle }
@@ -653,6 +654,21 @@ struct MacSidebar: View {
                     }
                     .contextMenu { unreadsOnlyToggle }
                     .accessibilityIdentifier("sidebar-section-archived")
+                }
+            }
+            // While only unreads show, the last row says that the other sections are hidden, not lost, and shows them
+            // again: the filled icon of the filter, as on the iPhone while a filter is on.
+            if unreadsOnly {
+                Section {
+                    Button { withAnimation(.snappy) { unreadsOnly = false } } label: {
+                        MacSidebarRow(name: "Show all chats", unread: 0) {
+                            Image(systemName: "line.3.horizontal.decrease.circle.fill")
+                                .font(.callout).foregroundStyle(.secondary)
+                        }
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityIdentifier("sidebar-show-all-chats")
                 }
             }
         }

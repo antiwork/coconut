@@ -264,7 +264,7 @@ struct HomeLaunchView: View {
                 }
                 // Under Starred while every chat is read, so the filter does not read as a list that lost its chats.
                 if unreadsOnly && !sections.isEmpty && !tree.contains(where: { $0.kind == .unread }) {
-                    Text("No unread chats.")
+                    Text("All caught up.")
                         .font(.subheadline).foregroundStyle(.secondary)
                         .frame(maxWidth: .infinity).padding(.vertical, BoardStyle.Space.xxl)
                         .accessibilityIdentifier("chats-unreads-empty")
