@@ -81,6 +81,9 @@ struct HomeLaunchView: View {
             .contentMargins(.top, BoardStyle.Space.l, for: .scrollContent)
             .contentMargins(.bottom, BoardStyle.Space.xl, for: .scrollContent)
             .background(BoardStyle.paper)
+            // A pull puts the keyboard away, as on Chats and the dashboards (DashboardPage), and an empty message box
+            // goes with it.
+            .scrollDismissesKeyboard(.interactively)
             // A screenshot of the end of the page starts the app with `--bottom` (PreviewLaunch).
             .task {
                 guard PreviewLaunch.startsAtBottom else { return }

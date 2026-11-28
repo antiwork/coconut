@@ -121,6 +121,10 @@ struct NewChatRequest: Equatable {
     var project: String?
     var text = ""
     var place = NewChatPlace.chats
+    /// The box shows on the page already, so the cursor goes in at once: New agent of the tab bar on a tab root. A
+    /// request from a page or a sheet waits until the pop or the dismissal ends (NewChatBar.focusDelay), and the box of
+    /// an iPhone tab comes up only then (TabMessageBox).
+    var settled = false
 }
 
 /// A Send that started a chat, from the message box or with Send to a new agent in a chat: the chat that got the first

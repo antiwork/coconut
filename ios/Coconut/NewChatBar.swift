@@ -166,11 +166,13 @@ enum NewChatSuggestion {
     }
 }
 
-/// The message box of Home, in the iPhone and in the Mac window, as the box of the Codex app: always there, with the
-/// cursor ready. The chip under the text names where the message goes and lists the projects, newest first, then the
-/// Coconut chat, then the agents of the teams that this person can write to. It ends with the list of all projects (on
-/// the iPhone). The first message starts a new chat in the project, and a message to a team agent goes to the direct
-/// chat with it. The box of Chats is where every New chat leads (AppStore.startChat).
+/// The message box of Home, in the iPhone and in the Mac window, as the box of the Codex app. The Mac window always
+/// shows it, with the cursor ready. On the iPhone, New agent in the tab bar brings up the box of the tab that shows,
+/// and the box leaves when the person leaves it empty (TabMessageBox). The chip under the text names where the message
+/// goes and lists the projects, newest first, then the Coconut chat, then the agents of the teams that this person can
+/// write to. It ends with the list of all projects (on the iPhone). The first message starts a new chat in the project,
+/// and a message to a team agent goes to the direct chat with it. The box of Chats is where every New chat leads
+/// (AppStore.startChat).
 ///
 /// A Send never opens the chat that it makes (the person's request): the chat shows at the top of the Chats list,
 /// under Working while it works, and under its project in the Mac sidebar. The box keeps the keyboard and the cursor,
@@ -194,8 +196,9 @@ struct NewChatBar: View {
     @State private var echo = SentEcho()
     /// The microphone beside Send.
     @State private var dictation = Dictation()
-    /// A new request puts the cursor in the field when the page is settled: a pop of the stack takes a moment.
-    @State private var focusRequest: UUID?
+    /// A new request puts the cursor in the field when the page is settled: a pop of the stack takes a moment, and a
+    /// box on the page that shows takes it at once (NewChatRequest.settled).
+    @State private var focusRequest: FocusRequest?
     /// Where the last send went, which the empty box says for a moment.
     @State private var sent: SentNote?
     /// The suggestions that this box sent, one on each line, so the next one takes their place (NewChatSuggestion.kept).
@@ -204,14 +207,23 @@ struct NewChatBar: View {
     /// the Mac a moment after a launch, so until then the tabs of the business name it and send to it from this.
     @AppStorage(ChatProject.businessAgentKey) private var businessAgent = ""
     @FocusState private var focused: Bool
+    /// On a tab of the iPhone, the box shows while this is true (TabMessageBox). The Mac window keeps its box, so it
+    /// has none.
+    private let open: Binding<Bool>?
 
     private struct SentNote: Equatable {
         let id = UUID()
         let name: String
     }
 
-    init(place: NewChatPlace = .chats) {
+    private struct FocusRequest: Equatable {
+        let id = UUID()
+        let delay: Duration
+    }
+
+    init(place: NewChatPlace = .chats, open: Binding<Bool>? = nil) {
         self.place = place
+        self.open = open
         _chosen = AppStorage(wrappedValue: "", place.choiceKey)
         _sentSuggestions = AppStorage(wrappedValue: "", place.sentSuggestionsKey)
         // The unsent text of the box stays when the app closes, as the text of each chat.
@@ -255,6 +267,10 @@ struct NewChatBar: View {
         .onChange(of: store.newChatRequest, initial: true) { _, request in
             if let request, request.place == place { apply(request) }
         }
+        // On a tab, the box leaves when nothing holds it any more. A draft keeps it.
+        .onChange(of: holds) { _, holds in
+            if !holds { open?.wrappedValue = false }
+        }
         // The text of a send that the keyboard gives back right after it goes again (SentEcho).
         .onChange(of: text) { old, draft in
             if echo.takesBack(old: old, new: draft) { text = ""; return }
@@ -262,8 +278,8 @@ struct NewChatBar: View {
         }
         .modifier(DictationEnds(dictation: dictation, text: text))
         .task(id: focusRequest) {
-            guard focusRequest != nil else { return }
-            try? await Task.sleep(for: Self.focusDelay)
+            guard let focusRequest else { return }
+            try? await Task.sleep(for: focusRequest.delay)
             guard !Task.isCancelled else { return }
             focused = true
         }
@@ -283,10 +299,18 @@ struct NewChatBar: View {
         #endif
     }
 
+    /// True while the person uses the box: it has the cursor, text, a pasted file, a send that goes, the note of the
+    /// last one, or the microphone.
+    private var holds: Bool {
+        focused || !text.isEmpty || !pasted.isEmpty || sending || sent != nil || dictation.listening
+    }
+
+    /// The time that a pop of the stack or the dismissal of a sheet takes. A request from there waits for it before
+    /// the cursor goes in (NewChatRequest.settled).
     #if os(macOS)
-    private static let focusDelay = Duration.milliseconds(150)
+    static let focusDelay = Duration.milliseconds(150)
     #else
-    private static let focusDelay = Duration.milliseconds(450)
+    static let focusDelay = Duration.milliseconds(450)
     #endif
 
     /// The projects and team agents of the list, the agent of the business, and what the box sends to now.
@@ -387,7 +411,8 @@ struct NewChatBar: View {
         store.newChatRequest = nil
         if let project = request.project { chosen = project }
         if !request.text.isEmpty { text += (text.isEmpty ? "" : "\n\n") + request.text }
-        focusRequest = UUID()
+        open?.wrappedValue = true
+        focusRequest = FocusRequest(delay: request.settled ? .zero : Self.focusDelay)
     }
 
     /// Sends the text, or the suggestion while the box is empty, with what the person pasted: as the first message of a
