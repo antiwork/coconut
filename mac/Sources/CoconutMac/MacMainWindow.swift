@@ -501,7 +501,11 @@ struct DetailColumnBottomInset: NSViewRepresentable {
 /// (stays), and its unread chats are in Unread. The Mac keeps the sections that the person opened. Archived starts
 /// folded too. No section counts its chats, as on the iPhone: the person found the counts stressful (2026-11-26).
 /// The iPhone opens them on a page of their own, but the Mac keeps Archived folding in place: the person chose that on
-/// a card (2026-11-25), so do not make it a row that opens a page or offer that again. The iPhone's
+/// a card (2026-11-25), so do not make it a row that opens a page or offer that again. Show unreads only, in the View
+/// menu with Shift-Command-A (the shortcut of Unreads in Slack) and in the menu of each section title, leaves Starred
+/// and Unread alone, as "Unreads only" of the sidebar of Slack along with everything the person starred (the person,
+/// 2026-11-27: "Starred and only show unread option. Mirror slack almost exactly"); Unread then says when no chat is
+/// unread. It is Unreads of the filter of Chats on the iPhone (ChatsFilterMenu), and each device keeps its own. The iPhone's
 /// Product tab has no row here: the person chose on a card to leave the sidebar as it is (2026-11-24), so Home keeps
 /// the cards and Support keeps the queue of the product issues. Do not add the row or offer it again.
 struct MacSidebar: View {
@@ -513,6 +517,9 @@ struct MacSidebar: View {
     @State private var deleting: Bot?
     @AppStorage("sidebar-unreads-open") private var unreadsOpen = true
     @AppStorage("sidebar-starred-open") private var starredOpen = true
+    /// Show unreads only: the sidebar hides every section but Starred and Unread. The Mac keeps it.
+    static let unreadsOnlyKey = "sidebar-unreads-only"
+    @AppStorage(MacSidebar.unreadsOnlyKey) private var unreadsOnly = false
     /// The sections of the projects, Team chats and Other agents that the person opened (ChatListSection.open). Every
     /// such section starts folded.
     @AppStorage("sidebar-sections-open") private var openSections = ""
@@ -589,11 +596,13 @@ struct MacSidebar: View {
             // section without rows does not show. Starred comes first. A starred chat, a project or one of its further
             // chats, is here and in no other section, as on the iPhone, and names its project.
             if !pins.isEmpty || !sections.pinnedChats.isEmpty {
-                Section("Starred", isExpanded: $starredOpen) {
+                Section(isExpanded: $starredOpen) {
                     ForEach(pins.bots) { bot in botRow(bot, name: bot.listName) }
                     // The pinned chats of the teams, as the same rows that they have in "Team chats".
                     ForEach(sections.pinnedChats) { item in itemRow(item) }
                     ForEach(pins.pages) { page in pageRow(page) }
+                } header: {
+                    Text("Starred").contextMenu { unreadsOnlyToggle }
                 }
             }
             if !sections.unread.isEmpty {
@@ -601,12 +610,24 @@ struct MacSidebar: View {
                     ForEach(sections.unread) { item in itemRow(item) }
                 } header: {
                     // A right click on the header reads every chat, as Shift-Esc does.
-                    Text("Unread").contextMenu { MarkAllReadButton() }
+                    Text("Unread").contextMenu {
+                        MarkAllReadButton()
+                        unreadsOnlyToggle
+                    }
+                }
+            } else if unreadsOnly {
+                // Every chat is read: the sidebar says so, so it does not read as a sidebar that lost its chats. The
+                // line stands where the name of a chat stands, with no face, and folds with Unread.
+                Section(isExpanded: $unreadsOpen) {
+                    MacSidebarRow(name: "No unread chats", unread: 0) { Color.clear }
+                        .accessibilityIdentifier("sidebar-unreads-empty")
+                } header: {
+                    Text("Unread").contextMenu { unreadsOnlyToggle }
                 }
             }
             // A section for each project, Coconut first, then Team chats, Other agents and Personal at the bottom, as
             // the sections of Chats on the iPhone. A folded section keeps the real work in sight (stays).
-            ForEach(sections.groups) { section in
+            ForEach(unreadsOnly ? [] : sections.groups) { section in
                 let isOpen = open.contains(section.id)
                 Section {
                     ForEach(section.shown(all: isOpen) { stays($0, at: now) }) { item in itemRow(item, in: section) }
@@ -614,13 +635,14 @@ struct MacSidebar: View {
                     MacFoldHeader(title: section.title, open: isOpen) {
                         withAnimation(.snappy) { openSections = ChatListSection.toggle(section.id, openSections) }
                     }
+                    .contextMenu { unreadsOnlyToggle }
                     .accessibilityIdentifier("sidebar-section-" + section.id)
                 }
             }
             // The archived chats, newest first and folded until the person opens the section. The title has no count.
             // An archived chat stays readable. The iPhone has them on a page behind one row (ChatSectionRow), and the person chose on a card
             // to keep them folding in place here.
-            if !sections.archived.isEmpty {
+            if !unreadsOnly && !sections.archived.isEmpty {
                 Section {
                     if archivedOpen {
                         ForEach(sections.archived) { bot in botRow(bot, name: bot.listName) }
@@ -629,6 +651,7 @@ struct MacSidebar: View {
                     MacFoldHeader(title: "Archived", open: archivedOpen) {
                         withAnimation(.snappy) { archivedOpen.toggle() }
                     }
+                    .contextMenu { unreadsOnlyToggle }
                     .accessibilityIdentifier("sidebar-section-archived")
                 }
             }
@@ -661,6 +684,11 @@ struct MacSidebar: View {
             if store.documents == nil { await store.loadDocuments(quiet: true) }
         }
         .safeAreaInset(edge: .bottom) { MacConnectionFooter() }
+    }
+
+    /// Show unreads only in the menu of a section title, with a check while it is on, as View > Show unreads only.
+    private var unreadsOnlyToggle: some View {
+        Toggle("Show unreads only", isOn: $unreadsOnly.animation(.snappy))
     }
 
     /// A pinned page. Its menu only unpins: the page of its agent and the page itself have the other actions.

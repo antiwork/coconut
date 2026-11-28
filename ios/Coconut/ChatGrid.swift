@@ -699,20 +699,40 @@ struct ChatGridButton: View {
     }
 }
 
-/// The filter at the top right of Chats (the person: "Ability to show working only from chats top right",
-/// 2026-11-24). On, Chats lists only the chats that work or whose card waits for the person (AppStore.botWorks), in
-/// one list without the titles of the sections, and its title says Working. The phone keeps the choice.
-struct WorkingFilterButton: View {
-    static let key = "chats-working-only"
-    @Binding var on: Bool
+/// The filter at the top right of Chats, one menu of what Chats shows, as the filter of the sidebar of Slack: All
+/// chats, Unreads or Working, one at a time. Working is the person's request of 2026-11-24 ("Ability to show working
+/// only from chats top right"): Chats lists only the chats that work or whose card waits for the person
+/// (AppStore.botWorks), in one list without the rows of the sections, and its title says Working. Unreads is the
+/// person's request of 2026-11-27 ("Starred and only show unread option. Mirror slack almost exactly"), the "Unreads
+/// only" of Slack along with everything the person starred: Chats shows Starred with all its chats and Unread, and
+/// no other row, and its title says Unreads. The icon fills while a filter is on. The phone keeps the choice, each
+/// filter in its key, and Working wins while both are on, because the Working link of a widget sets its key alone.
+struct ChatsFilterMenu: View {
+    enum Choice: Hashable { case all, unreads, working }
+    static let workingKey = "chats-working-only"
+    static let unreadsKey = "chats-unreads-only"
+    @Binding var working: Bool
+    @Binding var unreads: Bool
 
     var body: some View {
-        Button {
-            withAnimation(.snappy) { on.toggle() }
-        } label: {
-            Label(on ? "Show all chats" : "Show working only",
-                  systemImage: on ? "line.3.horizontal.decrease.circle.fill" : "line.3.horizontal.decrease.circle")
+        let choice = Binding<Choice> {
+            working ? .working : unreads ? .unreads : .all
+        } set: { choice in
+            withAnimation(.snappy) {
+                working = choice == .working
+                unreads = choice == .unreads
+            }
         }
-        .accessibilityIdentifier("chats-working-filter")
+        Menu {
+            Picker("Show", selection: choice) {
+                Text("All chats").tag(Choice.all)
+                Text("Unreads").tag(Choice.unreads)
+                Text("Working").tag(Choice.working)
+            }
+        } label: {
+            Label("Filter chats", systemImage: choice.wrappedValue == .all
+                  ? "line.3.horizontal.decrease.circle" : "line.3.horizontal.decrease.circle.fill")
+        }
+        .accessibilityIdentifier("chats-filter")
     }
 }

@@ -567,8 +567,9 @@ a `push --watch` update.
   Chats. The rows name a further chat of a project after the project and its own title (`Bot.listName`, from the Mac's
   `chat_of` and `chat_title`), which a section of a project names by its title alone; the Mac sends `project_key`
   (coconut, gumroad, personal) for the order of the sections. Also the two buttons at the top right of the Swift app's
-  Chats: Working (`WorkingFilterButton`), which lists only the chats that work or wait for the person, and the grid of
-  the agents that work (`ChatGridView`), which the Exact app has no deck for. Also the coconut of rows and buttons
+  Chats: the filter (`ChatsFilterMenu`), whose Unreads shows only Starred and Unread and whose Working lists only the
+  chats that work or wait for the person, and the grid of the agents that work (`ChatGridView`), which the Exact app
+  has no deck for. Also the coconut of rows and buttons
   (`CoconutLoader` `.row` and `.button`): the Exact app has none of the rows and buttons that wait with it in Swift yet
   (earlier messages, an invite, Brainstorm). Nor the white coconut of Swift's viewer: the Exact viewer opens only a
   photo that has loaded. Nor the microphone of a message box (`Dictation`, `ComposerDictationButton`), which writes
