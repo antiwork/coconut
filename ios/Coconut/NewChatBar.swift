@@ -88,12 +88,11 @@ enum NewChatTarget: Equatable {
 /// you're on"), or Home of the Mac, which is the place of Chats. Each place keeps its own project and its own draft,
 /// and the project follows where the person is: Finance, Support and Product send to Gumclaw, the agent of the
 /// business (ChatProject.businessAgent; the person: "those 3 tabs should go to gumclaw"), and to the project of the
-/// business while the person cannot write to it, and You starts with Coconut, where Coconut's settings change. Chats
-/// keeps the project that each New agent chooses (AppStore.startChat), and only its box takes those starts. The box of
-/// Product takes the next steps of a brainstorm (NewChatRequest.place, Brainstorm.swift), which shares the choice of
-/// the person.
+/// business while the person cannot write to it. Chats keeps the project that each New agent chooses
+/// (AppStore.startChat), and only its box takes those starts. The box of Product takes the next steps of a brainstorm
+/// (NewChatRequest.place, Brainstorm.swift), which shares the choice of the person.
 enum NewChatPlace: String {
-    case chats, product, support, finance, you
+    case chats, product, support, finance
 
     /// The key of the project or agent that the person chose here. Chats keeps the key of the one box of earlier
     /// releases.
@@ -109,7 +108,7 @@ enum NewChatPlace: String {
     var startsWithBusinessAgent: Bool {
         switch self {
         case .finance, .support, .product: true
-        case .chats, .you: false
+        case .chats: false
         }
     }
 
@@ -118,7 +117,6 @@ enum NewChatPlace: String {
     func startingProject(in projects: [Bot]) -> Bot? {
         switch self {
         case .chats: nil
-        case .you: projects.first(where: \.coconut)
         case .product, .support, .finance: projects.first { $0.projectKey == ChatProject.business }
         }
     }

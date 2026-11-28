@@ -2,6 +2,8 @@ import SwiftUI
 
 /// A page that Profile opens: a thing of this device, or a setting that every chat shares.
 enum ProfileRoute: Hashable {
+    /// You itself. The iPhone has no tab for it: the face at the top left of Chats opens it (YouButton).
+    case you
     case mac, notifications, connections, team
 }
 
@@ -29,7 +31,8 @@ struct ProfileSummary: Equatable {
 
 /// You, the place of the person: the person, this device, the settings of every chat, and Coconut itself. Coconut
 /// has no Settings screen: the few things that need this device are here, with the connections and the repositories
-/// that Coconut follows, and the Coconut chat changes the rest.
+/// that Coconut follows, and the Coconut chat changes the rest. The face of the person at the top left of Chats opens
+/// it on the iPhone, and a row of the sidebar on the Mac.
 struct ProfileView: View {
     @Environment(AppStore.self) private var store
     @Environment(\.pushRoute) private var pushRoute
@@ -100,7 +103,7 @@ struct ProfileView: View {
                     .accessibilityIdentifier("profile-version")
             }
         }
-        // An iPhone tab root has the name of its tab in the bar.
+        // The bar of the iPhone says You, as VoiceOver reads the face that opens the page (YouButton).
         #if os(iOS)
         .navigationTitle("You").inlineNavigationTitle()
         #endif
@@ -116,15 +119,11 @@ struct ProfileView: View {
 
     private func header(_ summary: ProfileSummary) -> some View {
         HStack(spacing: BoardStyle.Space.l) {
-            if let member = summary.member {
-                PersonFace(member: member, memberId: member.member, name: member.name, size: 56)
-            } else {
-                LetterFaceView(letters: summary.name.flatMap { LetterFace.letters($0) }, id: "profile", symbol: "person.fill", size: 56)
-            }
+            ProfileFace(summary: summary, size: 56)
             VStack(alignment: .leading, spacing: BoardStyle.Space.line) {
                 #if os(iOS)
-                // The bar and the tab say "You", so a person without a name has the name of the device here.
-                // The person is the heading of this tab, large and bold.
+                // The bar says "You", so a person without a name has the name of the device here.
+                // The person is the heading of the page, large and bold.
                 Text(summary.name ?? Device.name).font(.largeTitle.weight(.bold)).lineLimit(1).minimumScaleFactor(0.6)
                 if summary.name != nil {
                     Text(Device.name).font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
@@ -159,11 +158,44 @@ struct ProfileView: View {
     }
 }
 
+/// The face of the person: the face of this Mac's member in its first team, else the letters of the name that the
+/// person typed.
+struct ProfileFace: View {
+    let summary: ProfileSummary
+    let size: CGFloat
+
+    var body: some View {
+        if let member = summary.member {
+            PersonFace(member: member, memberId: member.member, name: member.name, size: size)
+        } else {
+            LetterFaceView(letters: summary.name.flatMap { LetterFace.letters($0) }, id: "profile", symbol: "person.fill", size: size)
+        }
+    }
+}
+
+#if os(iOS)
+/// The face of the person at the top left of Chats, as at the top of Slack. It opens You, which has no tab.
+struct YouButton: View {
+    @Environment(AppStore.self) private var store
+    @Environment(\.pushRoute) private var pushRoute
+
+    var body: some View {
+        Button { pushRoute?(ProfileRoute.you) } label: {
+            ProfileFace(summary: ProfileSummary(rooms: store.shownTeamRooms, remembered: TeamMemberName.remembered()),
+                        size: 32)
+        }
+        .accessibilityLabel("You")
+        .accessibilityIdentifier("chats-you")
+    }
+}
+#endif
+
 /// The pages of Profile, for a navigation stack of the iPhone tabs and of the Mac window.
 struct ProfileDestinations: ViewModifier {
     func body(content: Content) -> some View {
         content.navigationDestination(for: ProfileRoute.self) { route in
             switch route {
+            case .you: ProfileView()
             case .mac: MacConnectionSettingsView()
             case .notifications: NotificationSettingsView()
             case .connections: MCPSettingsView()

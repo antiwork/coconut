@@ -20,7 +20,7 @@ enum MacSelection: Hashable {
     /// The teams, their people and their notice boards. No row of the sidebar leads here: a notice notification does,
     /// and the boards also sit under Profile > Team.
     case people
-    /// The person and this device: "You" in the sidebar, as the tab of the iPhone.
+    /// The person and this device: "You" in the sidebar, as the face at the top left of Chats opens it on the iPhone.
     case profile
     case bot(String)
     /// A To-do of an agent: its chat, with the work item attached.
@@ -589,7 +589,7 @@ struct MacSidebar: View {
             MacSidebarLabel(title: "Projects", symbol: "square.stack.3d.up")
                 .tag(MacSelection.agents)
                 .accessibilityIdentifier("sidebar-agents")
-            // The person and this device: "You", as the tab of the iPhone.
+            // The person and this device: "You", as the face at the top left of Chats opens it on the iPhone.
             MacSidebarLabel(title: "You", symbol: "person.crop.circle")
                 .tag(MacSelection.profile)
                 .accessibilityIdentifier("sidebar-profile")

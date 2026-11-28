@@ -746,7 +746,7 @@ No log line has the text of a message, the name of a writer or the name of a tea
 
 #### Notification settings
 
-The person has one set of notification settings for every device of this Mac, as an account of Slack has (`backend/coconut/notification_settings.py`). The page Notifications of the You tab shows them on the iPhone and on the Mac. They are a choice of the person, as `notifications` of a room: they never go into the log or to the relay.
+The person has one set of notification settings for every device of this Mac, as an account of Slack has (`backend/coconut/notification_settings.py`). The page Notifications of You shows them on the iPhone and on the Mac. They are a choice of the person, as `notifications` of a room: they never go into the log or to the relay.
 
 - `GET /v1/state` gives `notifications`. `PUT /v1/settings/notifications` changes the keys of its body, answers the whole object and adds `settings.updated`. The apps call it. The Coconut chat changes them with the setting `notifications`.
 - `people`: `all` lets each message of a team notify by rule 4 of [Notifications](#notifications). `mentions` lets only a direct message, a notice, a message that names this Mac's person and a message with a keyword notify. `nothing` lets none.

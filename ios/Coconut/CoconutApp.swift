@@ -81,7 +81,7 @@ struct CoconutApp: App {
     }
 }
 
-/// The five tabs of the iPhone in their order: Finance, Support, Product, Chats and You, as the person listed them.
+/// The four tabs of the iPhone in their order: Finance, Support, Product and Chats, as the person listed them.
 /// For a day the tabs began with Product and Finance was called Business; the person then put Finance first again.
 /// Each tab holds only its own things:
 /// - Finance: its to-dos, the issues labelled `finance`, then the overview of the business with the risk reviews,
@@ -91,8 +91,10 @@ struct CoconutApp: App {
 /// - Chats: every agent and every chat with people in the sections of Slack, one for each project, Personal at the
 ///   bottom and one row Archived last, which opens the archived chats on a page of their own, with the message box
 ///   under the list. Each section is a row that opens its chats in place under it, as a tree (ChatList.sections).
-/// - You: the person, this device and the settings: the Mac, notifications, connections, usage, the team and the
-///   repositories that Coconut follows.
+/// You has no tab, because the person did not use one ("Remove You as I don't use it really on coconut at all"). The
+/// face of the person at the top left of Chats opens it, as the face at the top of Slack does: the person, this device
+/// and the settings, with the Mac, notifications, connections, usage, the team and the repositories that Coconut
+/// follows.
 /// Finance, Support and Product each start with their own list of to-dos, the issues of gumroad-private with their
 /// label, and each badge counts its own list (TodoLists.swift, TodoCounts): the person asked for three lists and three
 /// counts in place of one. An issue is a to-do of one list, so no other tab lists it again. The page of a project opens
@@ -105,10 +107,10 @@ struct CoconutApp: App {
 /// one. The tab is Chats, because it holds the agents and the chats with people. Code names such as
 /// `chats`, `ChatList` and `NewChatBar` stay.
 ///
-/// The tab bar always has exactly five tabs. With a sixth, iOS puts the last tabs behind a More tab, and the person
+/// The tab bar never has more than five tabs. With a sixth, iOS puts the last tabs behind a More tab, and the person
 /// does not want More. A new place goes on the page of a tab, or it takes the place of a tab.
 enum HomeTab: Hashable {
-    case finance, support, product, chats, profile
+    case finance, support, product, chats
 
     /// The tab of a link of the widgets (HomeScreenLink.tab): its name, or Chats for a name that it does not know.
     init(link name: String) {
@@ -116,7 +118,6 @@ enum HomeTab: Hashable {
         case "finance": self = .finance
         case "support": self = .support
         case "product": self = .product
-        case "you", "profile": self = .profile
         default: self = .chats
         }
     }
@@ -140,7 +141,6 @@ struct CoconutHome: View {
     @State private var chatsPath = NavigationPath()
     /// The words in the search field of Chats (OmniSearch).
     @State private var chatSearch = ""
-    @State private var profilePath = NavigationPath()
     @State private var teamJoin: TeamJoinRequest?
     @State private var shownTeamJoin: UUID?
 
@@ -153,7 +153,6 @@ struct CoconutHome: View {
         case .support: supportPath
         case .product: productPath
         case .chats: chatsPath
-        case .profile: profilePath
         }
     }
 
@@ -164,7 +163,6 @@ struct CoconutHome: View {
         case .support: supportPath = path
         case .product: productPath = path
         case .chats: chatsPath = path
-        case .profile: profilePath = path
         }
         selectedTab = tab
     }
@@ -202,11 +200,6 @@ struct CoconutHome: View {
             // The cards and the notices that wait show on Product, so this badge has the unread chats only.
             }.badge(HomeFeed.chatsBadge(bots: store.bots, rooms: store.shownTeamRooms, local: store.newestLocalMessages))
                 .accessibilityIdentifier("home-chats")
-            Tab(value: HomeTab.profile) {
-                root(tab: .profile, path: $profilePath)
-            } label: {
-                Label { Text("You") } icon: { Image(systemName: "person.crop.circle.fill") }
-            }.accessibilityIdentifier("home-profile")
         }
         // The count of Support has the breach of Finance's overview (TodoCounts), so the overview loads here for every
         // tab, not only while Support shows: at each connection, then every 5 minutes. The publisher writes it every 15
@@ -289,7 +282,6 @@ struct CoconutHome: View {
                 case .support: BusinessWorkspaceView(function: "support")
                 case .product: HomeLaunchView(part: .product) { open($0, on: path) }
                 case .chats: HomeLaunchView(part: .chats, query: chatSearch) { open($0, on: path) }
-                case .profile: ProfileView()
                 }
             }
                 .toolbar(tabBarVisibility, for: .tabBar)
@@ -301,9 +293,8 @@ struct CoconutHome: View {
                 // Chats searches the whole app from a field under its title: chats, to-dos, pages, cards and messages.
                 .modifier(ChatSearchField(on: tab == .chats, text: $chatSearch))
                 .navigationTitle("")
-                // A tab root has its name as a large title, so a root and a pushed page look different. You has the
-                // person as its heading.
-                .navigationBarTitleDisplayMode(tab == .profile ? .inline : .large)
+                // A tab root has its name as a large title, so a root and a pushed page look different.
+                .navigationBarTitleDisplayMode(.large)
                 .topBanners { area in
                     RootBanners(area: area) {
                         onboardingFirstRun = false
@@ -447,7 +438,8 @@ struct CoconutHome: View {
         case .cards(let decisionId): showCards(decisionId)
         case .agent(let botId): path.wrappedValue.append(AgentRoute(botId: botId))
         case .agents: path.wrappedValue.append(AgentListRoute())
-        case .connection: show(.profile, path: NavigationPath([ProfileRoute.mac]))
+        // The page of the Mac, as a tap on its row of You opens it.
+        case .connection: path.wrappedValue.append(ProfileRoute.mac)
         case .notices(let room): path.wrappedValue.append(NoticeBoardRoute(roomId: room))
         case .business(let route): path.wrappedValue.append(route)
         }
@@ -533,7 +525,7 @@ private struct RootBanners: View {
 }
 
 #if DEBUG && targetEnvironment(simulator)
-// The names of the tabs, so `--open profile` finds a tab by its name and stays right when the tabs change.
+// The names of the tabs, so `--open chats` finds a tab by its name and stays right when the tabs change.
 extension HomeTab: CaseIterable {}
 #endif
 
@@ -671,7 +663,7 @@ extension CoconutHome {
         case "notice-thread-tap":
             showNotification(.chat(TeamChatKey(room: room, chat: AppStore.previewNoticesChat,
                                                thread: AppStore.previewNoticeThread)))
-        case "team": open(.profile, [ProfileRoute.team])
+        case "team": open(.chats, [ProfileRoute.you, ProfileRoute.team])
         case "direct":
             let member = store.shownTeamRooms.first?.directList.first?.member
             open(.chats, [TeamChatRoute(chat: TeamChatKey(room: room, member: member))])
@@ -684,10 +676,12 @@ extension CoconutHome {
                 : ["kind": "mail", "thread": "18c2f4a9b0d1e2f3"]
             let info: [AnyHashable: Any] = ["coconut": item.merging(["version": 1, "device_id": UUID().uuidString]) { $1 }]
             if let destination = NotificationTarget(userInfo: info)?.sourcePlace { showNotification(destination) }
-        case "profile-mac": open(.profile, [ProfileRoute.mac])
-        case "profile-notifications": open(.profile, [ProfileRoute.notifications])
-        case "profile-connections": open(.profile, [ProfileRoute.connections])
-        case "profile-team": open(.profile, [ProfileRoute.team])
+        // You and its pages, as the face at the top left of Chats opens them.
+        case "profile", "you": open(.chats, [ProfileRoute.you])
+        case "profile-mac": open(.chats, [ProfileRoute.you, ProfileRoute.mac])
+        case "profile-notifications": open(.chats, [ProfileRoute.you, ProfileRoute.notifications])
+        case "profile-connections": open(.chats, [ProfileRoute.you, ProfileRoute.connections])
+        case "profile-team": open(.chats, [ProfileRoute.you, ProfileRoute.team])
         default:
             // "report-risk" opens a report by its key, and "project-gumroad" the work of a project.
             if place.hasPrefix("report-") { open(.finance, [BusinessRoute.report(String(place.dropFirst(7)))]) }
@@ -705,7 +699,6 @@ extension NewChatPlace {
         case .support: self = .support
         case .finance: self = .finance
         case .chats: self = .chats
-        case .profile: self = .you
         }
     }
 }
