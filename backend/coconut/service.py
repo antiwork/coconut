@@ -860,8 +860,11 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
             states.add('failed')
         answering = self.db.execute(BOT_WORKING_CONTEXT, (bot_id,)).fetchone()
         status = 'working' if answering else next((s for s in ('needs_you', 'working', 'scheduled', 'failed') if s in states), 'idle')
-        # The count follows each change of the messages: an interim message, a final reply, a withdrawn one.
-        if unread.recount(self.db, bot) | (bot.get('status') != status):
+        # The count follows each change of the messages: an interim message, a final reply, a withdrawn one. The
+        # replies of a run count when it ends (unread.HOLD). A run works while a task or a context of the chat works,
+        # also while a card of another task makes the status Needs you.
+        running = bool(answering) or 'working' in states
+        if unread.hold(self.db, bot, running) | unread.recount(self.db, bot) | (bot.get('status') != status):
             bot['status'] = status
             self._put('bots', bot)
         public = self._public(bot)
