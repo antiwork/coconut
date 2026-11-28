@@ -1077,6 +1077,8 @@ struct ConversationComposer: View {
     @State private var draftSend = DraftSend()
     /// The text of the last send, for the moment after it (SentEcho).
     @State private var echo = SentEcho()
+    /// The microphone beside Send. The box keeps it, as its button moves when the box opens.
+    @State private var dictation = Dictation()
     @FocusState.Binding var focused: Bool
     @Binding var replyTo: MessageReference?
     @Binding var workContext: WorkReference?
@@ -1135,13 +1137,13 @@ struct ConversationComposer: View {
                                                      stacked: expanded, arrow: { arrow($0) }))
                         .padding(.horizontal, BoardStyle.Space.m)
                         .accessibilityIdentifier("message-input")
-                    if !expanded { sendControls }
+                    if !expanded { trailingControls }
                 }
                 if expanded {
                     HStack(alignment: .center, spacing: 0) {
                         plusMenu
                         Spacer(minLength: 0)
-                        sendControls
+                        trailingControls
                     }
                     .padding(.horizontal, BoardStyle.Space.xs)
                 }
@@ -1195,6 +1197,7 @@ struct ConversationComposer: View {
             slashIndex = 0
             if echo.takesBack(old: old, new: new) { text = "" }
         }
+        .modifier(DictationEnds(dictation: dictation, text: text))
     }
 
     #if os(iOS)
@@ -1203,9 +1206,11 @@ struct ConversationComposer: View {
     private let phone = false
     #endif
 
-    /// The box shows its toolbar under the text (ComposerExpansion).
+    /// The box shows its toolbar under the text (ComposerExpansion). While it shows the words of a dictation, it is
+    /// open as for the keyboard: the words get the full width, and they stay in place at the stop.
     private var expanded: Bool {
-        ComposerExpansion.isOpen(text: text, focused: focused, phone: phone, hasAttachments: !attachments.isEmpty)
+        ComposerExpansion.isOpen(text: text, focused: focused || dictation.shows(text), phone: phone,
+                                 hasAttachments: !attachments.isEmpty)
     }
 
     private var canEditLast: Bool { store.messageQueue(bot.id).contains(where: \.canChange) }
@@ -1313,26 +1318,30 @@ struct ConversationComposer: View {
         }
     }
 
-    /// Stop while the agent works, and Send when there is a draft. Without a draft, Stop is the round button. With one,
-    /// Send is, and Stop stays beside it as a small square.
+    /// The microphone (Dictation), Stop while the agent works, and Send when there is a draft. Without a draft, Stop is
+    /// the round button. With one, Send is, and Stop is a small square before the microphone. While the box listens,
+    /// Send has the round button and there is no Stop: a tap on the microphone ends the dictation, and the microphone
+    /// keeps its place as the words come in.
     @ViewBuilder
-    private var sendControls: some View {
-        if let task, task.isRunning, connected {
-            if hasContent {
-                Button { onStop(task) } label: {
-                    Image(systemName: "stop.fill").font(.footnote)
-                        .foregroundStyle(.secondary).frame(minWidth: 44, minHeight: 44)
-                        .contentShape(Rectangle())
-                }.buttonStyle(.plain).accessibilityLabel("Stop \(executorName)'s task").accessibilityIdentifier("stop-current-task")
-            } else {
-                ComposerSendButton(symbol: "stop.fill", enabled: true, label: "Stop \(executorName)'s task",
-                                   action: { onStop(task) }, identifier: "stop-current-task")
+    private var trailingControls: some View {
+        if let task, task.isRunning, connected, hasContent, !dictation.listening {
+            Button { onStop(task) } label: {
+                Image(systemName: "stop.fill").font(.footnote)
+                    .foregroundStyle(.secondary).frame(minWidth: 44, minHeight: 44)
+                    .contentShape(Rectangle())
             }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Stop \(executorName)'s task")
+            .accessibilityIdentifier("stop-current-task")
         }
-        if hasContent {
+        ComposerDictationButton(dictation: dictation, text: $text, selection: $selection)
+        if hasContent || dictation.listening {
             ComposerSendButton(symbol: scheduling ? "clock.fill" : "arrow.up", enabled: canSend,
                                label: scheduling ? "Schedule task" : "Send message", action: { send() },
                                newChat: canSendInNewChat ? { send(inNewChat: true) } : nil)
+        } else if let task, task.isRunning, connected {
+            ComposerSendButton(symbol: "stop.fill", enabled: true, label: "Stop \(executorName)'s task",
+                               action: { onStop(task) }, identifier: "stop-current-task")
         }
     }
 
@@ -1396,6 +1405,8 @@ struct ConversationComposer: View {
     /// chat with the keyboard, to send the next one. The keyboard first gives the field all that it holds, so the send
     /// has the text that the person sees, and the clear stays (KeyboardSettle).
     private func send(inNewChat: Bool = false) {
+        // The draft that goes is the one that the box shows: words that come later go nowhere.
+        dictation.cancel()
         KeyboardSettle.run(if: focused) { sendDraft(inNewChat: inNewChat) }
     }
 

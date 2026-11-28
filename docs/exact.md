@@ -571,7 +571,10 @@ a `push --watch` update.
   the agents that work (`ChatGridView`), which the Exact app has no deck for. Also the coconut of rows and buttons
   (`CoconutLoader` `.row` and `.button`): the Exact app has none of the rows and buttons that wait with it in Swift yet
   (earlier messages, an invite, Brainstorm). Nor the white coconut of Swift's viewer: the Exact viewer opens only a
-  photo that has loaded.
+  photo that has loaded. Nor the microphone of a message box (`Dictation`, `ComposerDictationButton`), which writes
+  what the person says into the draft: it needs `@exact/speech-recognition`, its grants `device.microphone` and
+  `device.speech-recognition`, and a new binary, as the grants of attachments do. It would be the app's first device
+  interface.
 - The pairing code lives in the memory of the data module. An update that applies while a phone pairs reloads the app,
   which then shows a new code, and the Mac seals its setup for the old one; send the new code. Keeping the code in the
   Keychain until the phone pairs would end this.
