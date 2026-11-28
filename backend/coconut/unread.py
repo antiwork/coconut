@@ -102,6 +102,20 @@ def read_through(db, bot: dict, message_id: str) -> bool:
     return row is not None and bool(bot.get(MARK)) and _mark_row(db, bot) >= row[0]
 
 
+def named(db, bot: dict, data) -> str | None:
+    """The message that a read from the app names (`message_id`), when it is a visible message of this chat. The app
+    names the newest message that it shows whole during a run, so a reply that the agent still wrote when the person
+    left stays unread. None reads through the newest message: a read without a name, as from an app before it, or a
+    name that the chat does not show."""
+    message_id = data.get('message_id') if isinstance(data, dict) else None
+    if not isinstance(message_id, str) or not message_id:
+        return None
+    row = db.execute("SELECT id FROM messages WHERE id=? AND json_extract(data,'$.bot_id')=? "
+                     "AND COALESCE(json_extract(data,'$._hidden'),0)=0 AND COALESCE(json_extract(data,'$._deleted'),0)=0",
+                     (message_id, bot['id'])).fetchone()
+    return row[0] if row else None
+
+
 def mark_read(db, bot: dict, message_id: str | None = None):
     """Read the chat through one message, or through its newest message. A mark never moves back."""
     ensure_mark(db, bot)

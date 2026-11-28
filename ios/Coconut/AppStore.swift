@@ -314,8 +314,9 @@ final class AppStore {
     }
     #endif
 
-    /// True when a notification only repeats what the person read: a reply or the end of a turn in an agent chat
-    /// without unread replies, a message of a chat of a team without unread messages, a card that waits no more, or a
+    /// True when a notification only repeats what the person read: a reply or the end of a turn in an agent chat whose
+    /// read mark is at that reply or after it (without its reply, a chat with no unread reply and no run), a message
+    /// of a chat of a team without unread messages, a card that waits no more, or a
     /// notification of GitHub or Gmail that no alert of the Mac opens (`alerts`, nil when the app could not read them).
     /// False when the app cannot tell: a notice, a group of several chats, or a chat or a card that the app does not have.
     func notificationIsRead(_ target: NotificationTarget, alerts: [SourceAlert]? = nil) -> Bool {
@@ -335,7 +336,13 @@ final class AppStore {
         if let decision = target.decisionId {
             return decisions.first { $0.id == decision }.map { !$0.isPending } ?? false
         }
-        return bots.first { $0.id == target.botId }?.unreadCount == 0
+        guard let bot = bots.first(where: { $0.id == target.botId }) else { return false }
+        // A reply is read once the read mark of its chat is at it or after it, also while a newer reply is unread. A
+        // count of 0 says nothing during a run, where the count waits for the end of the turn (backend unread.HOLD).
+        // Before, the app removed a notification of an artifact or a screenshot of the run when it came to the front,
+        // and the person had not seen it.
+        if let message = target.messageId, let read = readThrough(bot, messageId: message) { return read }
+        return bot.unreadCount == 0 && !isBotActive(bot)
     }
 
     /// The unread messages of a chat of a team, from the list of the teams. Nil while the list has no such chat, and for
@@ -1003,27 +1010,64 @@ final class AppStore {
     /// The chats whose read the Mac has not confirmed yet (markRead, markAllRead). An update shows them read
     /// (withReadsInFlight).
     @ObservationIgnored private var readsInFlight: Set<String> = []
+    /// The read of each chat that waits for the read of that chat on its way: the message that it reads through, or ""
+    /// for the newest message (markRead).
+    @ObservationIgnored private var nextReads: [String: String] = [:]
 
-    func markRead(_ bot: Bot) async {
-        guard bot.unreadCount > 0 else { return }
+    /// Reads the chat through `messageId`, or through its newest message when it is nil. A read during a run names the
+    /// newest message that the chat shows whole (ConversationView), so a reply that the agent still wrote when the
+    /// person left stays unread. A Mac from before that reads through the newest message.
+    func markRead(_ bot: Bot, through messageId: String? = nil) async {
         // The badge goes at once. The Mac confirms the read with its next update.
-        if let index = bots.firstIndex(where: { $0.id == bot.id }) { bots[index].unreadCount = 0 }
-        guard !isDemo, readsInFlight.insert(bot.id).inserted else { return }
+        if bot.unreadCount > 0, let index = bots.firstIndex(where: { $0.id == bot.id }) { bots[index].unreadCount = 0 }
+        guard !isDemo else { return }
+        guard readsInFlight.insert(bot.id).inserted else {
+            // The read on its way names an older message, and during a run the count does not rise to bring a later
+            // read back (backend unread.HOLD). So this one goes after it.
+            nextReads[bot.id] = messageId ?? ""
+            return
+        }
         // Not a child of the task of the view. A person who opens a chat and leaves at once has still read it. Before,
         // the closing view cancelled the request, the Mac kept its count, and the badge came back with the next
         // update. A busy Mac or a slow tunnel also gets more than one try.
         Task {
             defer { readsInFlight.remove(bot.id) }
-            for wait in [0, 2, 6, 20] {
-                if wait > 0 { try? await Task.sleep(for: .seconds(wait)) }
-                // Each try has a new key: a read reads through the newest message when it runs, so it never repeats an
-                // earlier read. An older Mac answers a known key with the saved answer of the first read and reads nothing
-                // (backend unread.is_read), and the key of a read that got no answer came back with the next read.
-                let answer: Acknowledgement? = await write("bots/\(bot.id)/read", payload: EmptyRequest(), as: Acknowledgement.self,
-                                                           quiet: true, idempotencyKey: UUID().uuidString)
-                if answer != nil { return }
+            var messageId = messageId
+            while true {
+                for wait in [0, 2, 6, 20] {
+                    if wait > 0 { try? await Task.sleep(for: .seconds(wait)) }
+                    // Each try has a new key: a read reads through the newest message when it runs, so it never repeats
+                    // an earlier read. An older Mac answers a known key with the saved answer of the first read and reads
+                    // nothing (backend unread.is_read), and the key of a read that got no answer came back with the next
+                    // read.
+                    let answer: Acknowledgement? = await write("bots/\(bot.id)/read", payload: ReadRequest(messageId: messageId),
+                                                               as: Acknowledgement.self, quiet: true, idempotencyKey: UUID().uuidString)
+                    if answer != nil { break }
+                }
+                guard let next = nextReads.removeValue(forKey: bot.id) else { return }
+                messageId = next.isEmpty ? nil : next
             }
         }
+    }
+
+    /// The newest message of the chat that the person can read whole, with no reply that the agent still writes before
+    /// it. An activity row, an artifact or a card can come while a reply streams, and a read through it reads that reply
+    /// too (backend unread.read_through). The search ends at the read mark, the answer when no newer message qualifies.
+    func wholeMessageId(_ bot: Bot) -> String? {
+        let mark = bot.lastReadMessageId.flatMap { id in messageIndex.first(id: id).map { (id: id, place: $0) } }
+        var whole: String?
+        for place in stride(from: messages.count - 1, to: mark?.place ?? -1, by: -1) where messages[place].botId == bot.id {
+            if messages[place].streaming { whole = nil } else if whole == nil { whole = messages[place].id }
+        }
+        return whole ?? mark?.id
+    }
+
+    /// True when the read mark of the chat is at this message or after it, by their places in `messages`, as the Mac
+    /// compares them (backend unread.read_through). Nil when the app does not have both.
+    func readThrough(_ bot: Bot, messageId: String) -> Bool? {
+        guard let mark = bot.lastReadMessageId, let read = messageIndex.first(id: mark),
+              let place = messageIndex.first(id: messageId) else { return nil }
+        return read >= place
     }
 
     /// The bots of an update from the Mac, with each chat whose read is on its way read. The Mac can make an update
@@ -4031,6 +4075,8 @@ struct SnapshotCache: Codable, Sendable {
 private struct PairRequest: Encodable { let code: String; let deviceName: String }
 private struct PairResponse: Decodable, Sendable { let token: String; let deviceId: String }
 private struct EmptyRequest: Encodable {}
+/// A read of one chat: through `messageId`, or through its newest message without it.
+private struct ReadRequest: Encodable { let messageId: String? }
 private struct Acknowledgement: Decodable, Sendable { let ok: Bool }
 
 private struct PresenceReport: Decodable, Sendable { let away: Int }

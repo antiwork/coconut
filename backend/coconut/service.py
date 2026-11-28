@@ -1601,7 +1601,7 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
             if parts[3:] == ['merge'] and method == 'POST':
                 return self.merge_chat(bot, data, callbacks)
             if parts[3:] == ['read'] and method == 'POST':
-                unread.mark_read(self.db, bot)
+                unread.mark_read(self.db, bot, unread.named(self.db, bot, data))
                 self._put('bots', bot)
                 self._event('bot.read', {'id': bot['id']}, bot['id'])
                 return {'ok': True}

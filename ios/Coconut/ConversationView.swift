@@ -64,6 +64,12 @@ struct ConversationView: View {
         scenePhase == .active
         #endif
     }
+    /// While a run of the chat works, the message that the chat reads through: its newest message that the person can
+    /// read whole. Nil without a run, where the count alone says what to read.
+    private var runReadId: String? {
+        guard let bot, store.isBotActive(bot) else { return nil }
+        return store.wholeMessageId(bot)
+    }
     @Environment(\.toggleBotDetails) private var toggleBotDetails
     @Environment(\.showChatDeck) private var showChatDeck
     @Environment(\.openChat) private var openChat
@@ -416,8 +422,21 @@ struct ConversationView: View {
                     // opened. A reply that comes while the app or the window is in the back stays unread until the
                     // person comes back, as in Slack. Before, a Mac with the chat open behind another app read each reply
                     // as it came, so the person never saw it as unread.
-                    .task(id: [bot.unreadCount, seesChat ? 1 : 0]) {
-                        if seesChat, bot.unreadCount > 0 { await store.markRead(bot) }
+                    // The person, 2026-11-28: "Only mark unread once a turn is fully done." While a run works, the count
+                    // waits for the end of the turn (backend unread.HOLD), so the chat reads each message that it shows
+                    // whole (runReadId). Before, a person who watched a run and left before its end found every reply of
+                    // the turn unread. A reply that the agent still writes is not read: one that the person left during
+                    // its first words stays unread.
+                    .task(id: "\(bot.unreadCount):\(seesChat):\(runReadId ?? "")") {
+                        guard seesChat else { return }
+                        let shown = runReadId
+                        if bot.unreadCount > 0 {
+                            // A count that stays after a read through the shown message is of replies that the app
+                            // does not have, and the chat reads through its newest message, as without a run.
+                            await store.markRead(bot, through: shown.flatMap { store.readThrough(bot, messageId: $0) == true ? nil : $0 })
+                        } else if let shown, store.readThrough(bot, messageId: shown) != true {
+                            await store.markRead(bot, through: shown)
+                        }
                     }
                     // From now on a new message does not push the first row out of the window.
                     .onAppear { window.keep(current.entries.map(\.id), focusId: windowFocus) }
