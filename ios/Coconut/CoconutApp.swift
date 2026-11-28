@@ -465,7 +465,7 @@ struct CoconutHome: View {
         case .team(let room, let member, let chat, let bot):
             showTeamChat(TeamChatKey(room: room, member: member, chat: chat, bot: bot))
         case .working:
-            UserDefaults.standard.set(true, forKey: WorkingFilterButton.key)
+            UserDefaults.standard.set(true, forKey: ChatsFilterMenu.workingKey)
             show(.chats)
         case .newAgent:
             // The box of Chats takes the request and its keyboard comes up (NewChatBar); its project stays.
@@ -600,6 +600,12 @@ extension CoconutHome {
         case "coconut": open(.chats, [ConversationRoute(botId: store.bots.coconutChat?.id ?? agent)])
         // The page of the archived chats, which the last row of Chats opens.
         case "archived": open(.chats, [ChatSectionRoute.archived])
+        // Chats with its filter on Unreads, as the menu at its top right leaves it: Starred and Unread alone. The phone
+        // keeps the filter, so the next launch shows Unreads too until the menu or `--open all-chats` takes it off.
+        case "unreads", "all-chats":
+            UserDefaults.standard.set(place == "unreads", forKey: ChatsFilterMenu.unreadsKey)
+            UserDefaults.standard.set(false, forKey: ChatsFilterMenu.workingKey)
+            open(.chats)
         // Chats with the first project, Coconut, open in place, as a tap on its row leaves it.
         case "chat-section":
             let sections = ChatList.sections(bots: store.bots, latest: store.chatSummaries.newestActivity,

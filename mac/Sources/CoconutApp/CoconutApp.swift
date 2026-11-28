@@ -65,8 +65,11 @@ struct CoconutApp: App {
             CommandGroup(after: .newItem) { SearchCommand(model: model) }
             // Show all agents (Command-Shift-\) and Show working agents (Option-Command-\) in the View menu.
             ChatDeckCommands()
-            // View > Mark all as read, with Shift-Esc as in Slack.
-            CommandGroup(after: .sidebar) { MarkAllReadCommand(model: model, store: store) }
+            // View > Mark all as read, with Shift-Esc as in Slack, and Show unreads only, with Shift-Command-A.
+            CommandGroup(after: .sidebar) {
+                MarkAllReadCommand(model: model, store: store)
+                UnreadsOnlyCommand(model: model)
+            }
         }
 
         MenuBarExtra {
@@ -139,6 +142,20 @@ struct MarkAllReadCommand: View {
         if model.mode == .full {
             Button("Mark all as read") { Task { await store.markAllRead() } }
                 .keyboardShortcut(.escape, modifiers: .shift)
+        }
+    }
+}
+
+/// View > Show unreads only, with the shortcut of Unreads in Slack (Shift-Command-A): the sidebar shows only Starred
+/// and Unread, and a check marks it while it is on (MacSidebar.unreadsOnlyKey). A Mac for a team only has no chats.
+struct UnreadsOnlyCommand: View {
+    @ObservedObject var model: AppModel
+    @AppStorage(MacSidebar.unreadsOnlyKey) private var unreadsOnly = false
+
+    var body: some View {
+        if model.mode == .full {
+            Toggle("Show unreads only", isOn: $unreadsOnly.animation(.snappy))
+                .keyboardShortcut("a", modifiers: [.command, .shift])
         }
     }
 }

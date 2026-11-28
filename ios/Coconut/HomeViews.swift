@@ -8,7 +8,8 @@ import SwiftUI
 /// the bottom, which each open in place with their active chats set in under them and Load more for the others, and
 /// Archived, which opens its chats on a page of their own (ChatSectionRow, ChatList.sections), with the message box
 /// under the list (NewChatBar). Its top
-/// right has Working, which lists only the chats that work, and the grid of the agents that work (ChatGrid).
+/// right has the filter (ChatsFilterMenu): Unreads, which shows only Starred and Unread, and Working, which lists only
+/// the chats that work. Beside it is the grid of the agents that work (ChatGrid).
 struct HomeLaunchView: View {
     /// What the view shows: Product, Chats, or the chats of one section on a page, Archived, which its row opens.
     enum Part: Equatable { case product, chats, section(ChatSectionRoute) }
@@ -16,8 +17,9 @@ struct HomeLaunchView: View {
     /// What the field at the top of Chats searches (OmniSearch). Chats lists its hits in place of its rows.
     var query = ""
     @Environment(AppStore.self) private var store
-    /// The Working filter at the top right of Chats (WorkingFilterButton). The phone keeps it.
-    @AppStorage(WorkingFilterButton.key) private var workingOnly = false
+    /// The filters at the top right of Chats, Working and Unreads, one at a time (ChatsFilterMenu). The phone keeps them.
+    @AppStorage(ChatsFilterMenu.workingKey) private var workingOnly = false
+    @AppStorage(ChatsFilterMenu.unreadsKey) private var unreadsOnly = false
     /// The sections of Chats that the person opened, one on each line (ChatListSection.open). The phone keeps them.
     @AppStorage(ChatSectionRow.key) private var openSections = ""
     /// The open sections of Chats that show all their chats, after a tap on Load more (ChatSectionMore). A section
@@ -193,15 +195,19 @@ struct HomeLaunchView: View {
     /// own (the person: "Archived should be behind a tap just one row with number at bottom of chats"). Its number
     /// went with the others. The list has no tabs or filters inside it, because the person found that nobody taps them
     /// (2026-11-24), and a chat archives itself after the time that You sets (AutoArchiveMenu, 14 hours unless the
-    /// person picks another). The top right has the two buttons that the person asked for that evening: Working, which
-    /// lists every chat that works in one list without the rows of the sections (WorkingFilterButton), and the grid of
-    /// the agents that work (ChatGridButton).
+    /// person picks another). The top right has the filter (ChatsFilterMenu) and the grid of the agents that work
+    /// (ChatGridButton), which the person asked for that evening. The filter has Working, which lists every chat that
+    /// works in one list without the rows of the sections, and Unreads (the person, 2026-11-27: "Starred and only show
+    /// unread option. Mirror slack almost exactly"), which shows Starred and Unread alone, as Slack shows "Unreads
+    /// only" along with everything the person starred, and says so when no chat is unread.
     private func chatList(_ sections: [ChatListSection]) -> some View {
         let now = Date.now
         // The chats that work, in the order of the sections, for the Working filter.
         let working = workingOnly ? sections.flatMap(\.items).filter { works($0, at: now) } : []
         let opened = ChatListSection.open(openSections)
+        // Unreads keeps Starred, with all its chats, and Unread.
         let tree = ChatList.tree(sections, latest: store.chatSummaries.newestActivity)
+            .filter { !unreadsOnly || $0.kind == .starred || $0.kind == .unread }
         let words = OmniSearch.words(query)
         // A list, not a stack, so that a row of a chat has the swipe of the system: swipe left to archive.
         return List {
@@ -256,6 +262,14 @@ struct HomeLaunchView: View {
                         }
                     }
                 }
+                // Under Starred while every chat is read, so the filter does not read as a list that lost its chats.
+                if unreadsOnly && !sections.isEmpty && !tree.contains(where: { $0.kind == .unread }) {
+                    Text("All caught up.")
+                        .font(.subheadline).foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity).padding(.vertical, BoardStyle.Space.xxl)
+                        .accessibilityIdentifier("chats-unreads-empty")
+                        .homeRow()
+                }
             }
         }
         .listStyle(.plain)
@@ -273,7 +287,7 @@ struct HomeLaunchView: View {
         .task(id: query) {
             if await OmniSearch.messages(query, in: store, show: { messageHits = $0 }) { searchedQuery = query }
         }
-        .navigationTitle(workingOnly ? "Working" : "Chats")
+        .navigationTitle(workingOnly ? "Working" : unreadsOnly ? "Unreads" : "Chats")
         .toolbar {
             // One tap reads every chat, as Read All in Telegram. It shows while a chat of the list has an unread
             // count.
@@ -282,7 +296,7 @@ struct HomeLaunchView: View {
                     MarkAllReadButton().accessibilityIdentifier("chats-mark-all-read")
                 }
             }
-            ToolbarItem(placement: .primaryAction) { WorkingFilterButton(on: $workingOnly) }
+            ToolbarItem(placement: .primaryAction) { ChatsFilterMenu(working: $workingOnly, unreads: $unreadsOnly) }
             ToolbarItem(placement: .primaryAction) { ChatGridButton() }
         }
         .refreshable { await store.reconnect() }
