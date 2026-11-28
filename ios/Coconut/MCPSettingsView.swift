@@ -3,13 +3,14 @@ import SwiftUI
 struct MCPSettingsView: View {
     @Environment(AppStore.self) private var store
     @State private var adding = false
+    @State private var github: GitHubConnectionStatus?
 
     private var canEdit: Bool { store.isDemo || store.connection == .connected }
 
     var body: some View {
         // A team member never connects GitHub, Gmail or another service of the team in the app. The Mac uses its own
-        // gh login, and Gumclaw holds the credentials of the team (github_access.py, support_threads.py). So neither
-        // has a row here.
+        // gh login, and Gumclaw holds the credentials of the team (github_access.py, support_threads.py). So GitHub has
+        // only a read-only line that says which login the Mac reads with, and Gmail has none.
         Form {
             Section {
                 ForEach(store.mcpServers) { server in
@@ -32,9 +33,18 @@ struct MCPSettingsView: View {
                 Text(canEdit ? "All agents can use these tools. Hermes keeps their settings on your Mac."
                      : "Connect to your Mac first. All agents can use these tools. Hermes keeps their settings on your Mac.")
             }
+            if let github {
+                Section {
+                    LabeledContent("GitHub", value: github.connected ? github.login ?? "Connected" : "No login")
+                } footer: {
+                    Text(github.connected ? "The GitHub login of this Mac. Comments and moves on GitHub use it."
+                         : "This Mac has no GitHub login. The to-do lists come from Gumclaw and are read-only, and GitHub notifications are off.")
+                }
+            }
         }
         .navigationTitle("Connections").inlineNavigationTitle()
         .settingsBackground()
+        .task { github = try? await store.githubStatus() }
         .sheet(isPresented: $adding) { NavigationStack { MCPConnectionView() } }
     }
 }

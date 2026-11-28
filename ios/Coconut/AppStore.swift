@@ -1774,7 +1774,7 @@ final class AppStore {
     /// The GitHub login that the Mac reads with. The app connects none: the Mac uses its own gh login, and the lists
     /// come from Gumclaw when it has none (github_access.py).
     func githubStatus() async throws -> GitHubConnectionStatus {
-        if isDemo { return GitHubConnectionStatus(connected: true, login: nil) }
+        if isDemo { return GitHubConnectionStatus(connected: true, login: GitHubDemo.viewer.login) }
         guard let client else { throw ServiceError.configuration("Connect your Mac to continue.") }
         return try await client.request("settings/github")
     }
