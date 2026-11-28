@@ -5,6 +5,9 @@ below that message). The unread messages are the replies after the mark that the
 message of a running turn, no hidden or deleted message, no reaction. A count from the messages stays true when a
 streaming reply becomes an interim message, an interim message becomes the final reply, or a reply is withdrawn,
 which a counter that only went up and down did not: each interim message of a turn counted as an unread reply.
+
+A chat goes unread only once its turn is fully done (HOLD): while a run of the chat works, the count stops at the
+messages from before the run, and the replies of the run count when it ends.
 """
 
 from .service_base import now
@@ -17,6 +20,12 @@ MARK = 'last_read_message_id'
 # changed the setting), and a read of a new reply is activity (agent_chats.archive_idle_chats), so a chat that the person
 # reads late stays that long again.
 READ_AT = '_read_at'
+# The person, 2026-11-28: "Only mark unread once a turn is fully done." While a run of the chat works, its count stops at
+# this rowid, the newest message when the run started, so the chat does not go unread with the first words of a
+# streaming reply and again with each artifact. When no run works, the hold goes and the replies of the turn count at
+# once. A reply that was unread before the run, for example the one above a card that the person approved, still
+# counts. Service._refresh_bot sets and clears the hold.
+HOLD = '_unread_hold'
 
 
 def is_read(method: str, path: str) -> bool:
@@ -26,8 +35,11 @@ def is_read(method: str, path: str) -> bool:
                                                              and parts[3] == 'read'))
 
 
-def _count(db, bot_id: str, after: int) -> int:
-    return db.execute(f'SELECT COUNT(*) FROM messages WHERE {UNREAD} AND rowid>?', (bot_id, after)).fetchone()[0]
+def _count(db, bot_id: str, after: int, upto: int | None = None) -> int:
+    if upto is None:
+        return db.execute(f'SELECT COUNT(*) FROM messages WHERE {UNREAD} AND rowid>?', (bot_id, after)).fetchone()[0]
+    return db.execute(f'SELECT COUNT(*) FROM messages WHERE {UNREAD} AND rowid>? AND rowid<=?',
+                      (bot_id, after, upto)).fetchone()[0]
 
 
 def _newest(db, bot_id: str):
@@ -63,11 +75,24 @@ def _mark_row(db, bot: dict) -> int:
     return row[0] if row else 0
 
 
+def hold(db, bot: dict, running: bool) -> bool:
+    """Hold the count of the chat from the start of a run until no run works (HOLD). Returns whether the stored row
+    changed. Call recount after it."""
+    if running == (HOLD in bot):
+        return False
+    if running:
+        bot[HOLD] = db.execute('SELECT COALESCE(MAX(rowid), 0) FROM messages').fetchone()[0]
+    else:
+        del bot[HOLD]
+    return True
+
+
 def recount(db, bot: dict) -> bool:
-    """Set the unread count of the chat from its read mark. Returns whether the stored row changed."""
+    """Set the unread count of the chat from its read mark, up to its hold while a run works. Returns whether the
+    stored row changed."""
     before = (bot.get('unread_count'), bot.get(MARK, ...))
     ensure_mark(db, bot)
-    bot['unread_count'] = _count(db, bot['id'], _mark_row(db, bot))
+    bot['unread_count'] = _count(db, bot['id'], _mark_row(db, bot), bot.get(HOLD))
     return before != (bot['unread_count'], bot[MARK])
 
 
