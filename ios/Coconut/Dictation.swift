@@ -319,13 +319,16 @@ struct DictationEnds: ViewModifier {
 }
 
 /// The microphone of a message box (Dictation), beside Send. It shows also in an empty box, as the dictation key of a
-/// keyboard does. While it listens, the microphone is filled and pulses, and a tap stops it.
+/// keyboard does. While it listens, the microphone is filled and pulses in a soft brown circle, as the plus, so a still
+/// shows it too. A tap stops it.
 struct ComposerDictationButton: View {
     @Environment(AppStore.self) private var store
     let dictation: Dictation
     @Binding var text: String
     /// The caret of the field, which follows the words. Nil for a field that keeps its own.
     var selection: Binding<TextSelection?>? = nil
+    /// The circle of Send.
+    @ScaledMetric(relativeTo: .body) private var size = 34
 
     var body: some View {
         let listening = dictation.listening
@@ -336,6 +339,8 @@ struct ComposerDictationButton: View {
                 .font(.body)
                 .foregroundStyle(listening ? AnyShapeStyle(BoardStyle.control) : AnyShapeStyle(.secondary))
                 .symbolEffect(.pulse, isActive: listening)
+                .frame(width: size, height: size)
+                .background(BoardStyle.control.opacity(listening ? 0.12 : 0), in: Circle())
                 .frame(minWidth: 44, minHeight: 44)
                 .contentShape(Rectangle())
         }

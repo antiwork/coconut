@@ -1137,17 +1137,13 @@ struct ConversationComposer: View {
                                                      stacked: expanded, arrow: { arrow($0) }))
                         .padding(.horizontal, BoardStyle.Space.m)
                         .accessibilityIdentifier("message-input")
-                    if !expanded {
-                        dictateButton
-                        sendControls
-                    }
+                    if !expanded { trailingControls }
                 }
                 if expanded {
                     HStack(alignment: .center, spacing: 0) {
                         plusMenu
                         Spacer(minLength: 0)
-                        dictateButton
-                        sendControls
+                        trailingControls
                     }
                     .padding(.horizontal, BoardStyle.Space.xs)
                 }
@@ -1322,31 +1318,30 @@ struct ConversationComposer: View {
         }
     }
 
-    /// The microphone before Send (Dictation).
-    private var dictateButton: some View {
-        ComposerDictationButton(dictation: dictation, text: $text, selection: $selection)
-    }
-
-    /// Stop while the agent works, and Send when there is a draft. Without a draft, Stop is the round button. With one,
-    /// Send is, and Stop stays beside it as a small square.
+    /// The microphone (Dictation), Stop while the agent works, and Send when there is a draft. Without a draft, Stop is
+    /// the round button. With one, Send is, and Stop is a small square before the microphone. While the box listens,
+    /// Send has the round button and there is no Stop: a tap on the microphone ends the dictation, and the microphone
+    /// keeps its place as the words come in.
     @ViewBuilder
-    private var sendControls: some View {
-        if let task, task.isRunning, connected {
-            if hasContent {
-                Button { onStop(task) } label: {
-                    Image(systemName: "stop.fill").font(.footnote)
-                        .foregroundStyle(.secondary).frame(minWidth: 44, minHeight: 44)
-                        .contentShape(Rectangle())
-                }.buttonStyle(.plain).accessibilityLabel("Stop \(executorName)'s task").accessibilityIdentifier("stop-current-task")
-            } else {
-                ComposerSendButton(symbol: "stop.fill", enabled: true, label: "Stop \(executorName)'s task",
-                                   action: { onStop(task) }, identifier: "stop-current-task")
+    private var trailingControls: some View {
+        if let task, task.isRunning, connected, hasContent, !dictation.listening {
+            Button { onStop(task) } label: {
+                Image(systemName: "stop.fill").font(.footnote)
+                    .foregroundStyle(.secondary).frame(minWidth: 44, minHeight: 44)
+                    .contentShape(Rectangle())
             }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Stop \(executorName)'s task")
+            .accessibilityIdentifier("stop-current-task")
         }
-        if hasContent {
+        ComposerDictationButton(dictation: dictation, text: $text, selection: $selection)
+        if hasContent || dictation.listening {
             ComposerSendButton(symbol: scheduling ? "clock.fill" : "arrow.up", enabled: canSend,
                                label: scheduling ? "Schedule task" : "Send message", action: { send() },
                                newChat: canSendInNewChat ? { send(inNewChat: true) } : nil)
+        } else if let task, task.isRunning, connected {
+            ComposerSendButton(symbol: "stop.fill", enabled: true, label: "Stop \(executorName)'s task",
+                               action: { onStop(task) }, identifier: "stop-current-task")
         }
     }
 

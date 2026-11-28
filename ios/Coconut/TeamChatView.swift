@@ -1268,7 +1268,8 @@ struct TeamChatComposer: View {
                         .modifier(ComposerFieldStyle(send: { if canSend { submit() } }))
                         .accessibilityIdentifier("message-input")
                     ComposerDictationButton(dictation: dictation, text: $state.draft, selection: $selection)
-                    if showsSend {
+                    // While the box listens, Send is there before the first words, so the microphone keeps its place.
+                    if showsSend || dictation.listening {
                         ComposerSendButton(symbol: editing == nil ? "arrow.up" : "checkmark", enabled: canSend,
                                            label: editing == nil ? "Send message" : "Save edit", action: submit)
                     }
