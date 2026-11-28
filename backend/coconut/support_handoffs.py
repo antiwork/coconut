@@ -4,7 +4,8 @@ Gumclaw, the agent of the Gumroad project, answers the support mailbox: it reads
 admin access and sends the answer, and its labels mark a conversation open or done (support_threads.py). A conversation
 that waits in the queue of Support is one that Gumclaw left open. Its page offers the person how to respond as the
 options of a poll, beside the box for an answer of their own: Let Gumclaw answer, Refund and answer, or Close without
-answer, which the Mac does itself.
+answer. A Mac with the support mailbox closes a conversation itself; any other Mac asks Gumclaw to close it, because
+a team member never connects Gmail in the app.
 
 A choice goes to Gumclaw as a risk review does (risk_reviews.py): Coconut files the conversation as an issue of the work
 repository with the label `support` and an `@gumclaw` line, or comments on the issue that the conversation has already.
@@ -50,6 +51,8 @@ DECISIONS = {
                'find, and report what you sent and why here',
     'refund': 'refund the purchase that {conversation} is about and tell the customer from the support mailbox. '
               'Report the refund and the answer here',
+    # A Mac without the support mailbox closes through Gumclaw too (support_threads.py).
+    'close': 'send no answer to the customer in {conversation}',
 }
 CLOSE = ', then mark the conversation done and close this issue.'
 
@@ -148,7 +151,7 @@ class SupportHandoffs:
         thread = thread.lower()
         decision = data.get('decision')
         if decision not in DECISIONS:
-            raise ServiceError(400, 'Choose Let Gumclaw answer or Refund and answer.')
+            raise ServiceError(400, 'Choose Let Gumclaw answer, Refund and answer, or Close without answer.')
         if data.get('subject') is not None and not isinstance(data.get('subject'), str):
             raise ServiceError(400, 'Send the subject as text.')
         if '<!-- coconut-' in (data.get('subject') or '').lower():

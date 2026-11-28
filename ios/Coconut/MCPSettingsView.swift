@@ -7,9 +7,9 @@ struct MCPSettingsView: View {
     private var canEdit: Bool { store.isDemo || store.connection == .connected }
 
     var body: some View {
+        // A team member never connects Gmail (or another service) in the app: Gumclaw holds the credentials, and the app
+        // reads and acts through it (backend/coconut/support_threads.py). So Google has no row here.
         Form {
-            GoogleConnectionSection()
-            GoogleConnectionSection(mailbox: GoogleMailbox.support)
             Section {
                 NavigationLink { GitHubSettingsView() } label: { Text("GitHub") }
                     .accessibilityIdentifier("github-settings")

@@ -68,6 +68,13 @@ repository with the same contract. These are company reports, not project-specif
 use the existing Beancount aggregates without reproducing financial calculations. `/v1/business/ledger` lists canonical
 `.beancount` files and reads a selected file directly from Accounting. Missing amounts stay unknown instead of becoming zero.
 
+A team member never connects Gmail (or another service) in the app: Gumclaw holds the credentials, and the app reads
+and acts through it. Gumclaw publishes each open conversation of the support queue as a team page `support-<thread>`
+(`coconut-pages.py` of `antiwork/dashboards`), and a Mac without a support mailbox reads that copy
+(`support_threads._shared`). The Library leaves these pages out. Each choice on a conversation, Close too, goes to
+Gumclaw as an issue (`support_handoffs.py`). A Mac that connected the support mailbox in an earlier version still
+reads, answers and closes with it.
+
 The business pages stay live. While an app reads `GET /v1/updates`, the Mac asks every 5 seconds whether the issues of
 the work repository, the published reports or the support mailbox changed (`business_watch.py`): the newest updated
 issue, the newest commit of `docs/0825`, the history ID of the mailbox. A change drops the lists that the Mac keeps for

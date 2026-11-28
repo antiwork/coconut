@@ -61,7 +61,9 @@ struct NotificationSettingsView: View {
                         if githubConnected == false { Text("Connect GitHub in You, Connections.") }
                     }
                 }
-                if settings.mail != nil {
+                // Gmail notifies only on a Mac that kept a Google connection from an earlier version: a team member never
+                // connects Gmail in the app.
+                if settings.mail != nil, googleConnected == true {
                     Section {
                         Picker("Gmail", selection: binding(\.mail, default: .important)) {
                             ForEach(NotificationSettings.Mail.allCases, id: \.self) { level in
@@ -72,8 +74,6 @@ struct NotificationSettingsView: View {
                         .labelsHidden()
                     } header: {
                         Text("Gmail")
-                    } footer: {
-                        if googleConnected == false { Text("Connect Google in You, Connections.") }
                     }
                 }
                 Section {

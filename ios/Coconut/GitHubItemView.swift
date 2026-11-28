@@ -517,8 +517,8 @@ struct ReplyBox: View {
     var identifier = "reply-box"
     /// The item that an agent gets with the text. Nil keeps the box a reply only, as under a risk review.
     var handoff: AgentHandoff? = nil
-    /// The page sends its own reply. Without it the box sends only to agents, as under a support conversation while the
-    /// support mailbox is not connected.
+    /// The page sends its own reply. Without it the box sends only to agents, as under Gumclaw's copy of a support
+    /// conversation.
     var canReply = true
     /// Sends the text with its request key. Nil is success; else the words of the failure.
     let send: @MainActor (String, String) async -> String?

@@ -1785,18 +1785,12 @@ final class AppStore {
         return response
     }
 
-    func googleStatus(mailbox: String? = nil) async throws -> GoogleConnectionStatus {
-        if isDemo { return GoogleConnectionStatus(connected: false, email: nil, needsReconnect: false, mailbox: mailbox) }
+    /// The Google connection that a Mac kept from an earlier version. The app connects none: Gumclaw holds the Google
+    /// credentials of the team, and the app reads and acts through it (support_threads.py).
+    func googleStatus() async throws -> GoogleConnectionStatus {
+        if isDemo { return GoogleConnectionStatus(connected: false, email: nil, needsReconnect: false) }
         guard let client else { throw ServiceError.configuration("Connect your Mac to continue.") }
-        return try await client.request("settings/google" + (mailbox.map { "?mailbox=" + $0 } ?? ""))
-    }
-
-    func googleRequest<Response: Decodable & Sendable>(_ action: String, request: GoogleConnectionRequest, as type: Response.Type) async throws -> Response {
-        guard let client else { throw ServiceError.configuration("Connect your Mac to continue.") }
-        let generation = connectionGeneration
-        let response: Response = try await client.request("settings/google/\(action)", method: "POST", body: APIJSON.encode(request), retryTransient: true)
-        guard generation == connectionGeneration else { throw CancellationError() }
-        return response
+        return try await client.request("settings/google")
     }
 
     func updateMCP(_ request: MCPRequest) async -> MCPResponse? {
@@ -4247,5 +4241,9 @@ private extension AppStore {
     }
 }
 
-
-
+/// The Google connection of the Mac (google_connection.py), from an earlier version that connected one in the app.
+struct GoogleConnectionStatus: Decodable, Sendable {
+    let connected: Bool
+    let email: String?
+    let needsReconnect: Bool
+}
