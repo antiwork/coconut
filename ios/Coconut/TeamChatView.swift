@@ -1209,6 +1209,8 @@ struct TeamChatComposer: View {
     let send: () -> Void
     @State private var importing = false
     @State private var pickingPhotos = false
+    /// The microphone beside Send.
+    @State private var dictation = Dictation()
 
     private var text: String { state.draft }
     /// The link whose preview the composer shows: the first link of a new message, while the Mac takes previews.
@@ -1263,11 +1265,12 @@ struct TeamChatComposer: View {
                 HStack(alignment: .bottom, spacing: 4) {
                     TextField(placeholder, text: $state.draft, selection: $selection, axis: .vertical)
                         .focused($focused)
-                        .modifier(ComposerFieldStyle(send: { if canSend { send() } }))
+                        .modifier(ComposerFieldStyle(send: { if canSend { submit() } }))
                         .accessibilityIdentifier("message-input")
+                    ComposerDictationButton(dictation: dictation, text: $state.draft, selection: $selection)
                     if showsSend {
                         ComposerSendButton(symbol: editing == nil ? "arrow.up" : "checkmark", enabled: canSend,
-                                           label: editing == nil ? "Send message" : "Save edit", action: send)
+                                           label: editing == nil ? "Send message" : "Save edit", action: submit)
                     }
                 }
                 .padding(.leading, BoardStyle.Space.m).padding(.trailing, BoardStyle.Space.xs)
@@ -1290,6 +1293,7 @@ struct TeamChatComposer: View {
         } photo: { add($0) } paste: { picked in add { picked } } report: { report($0) })
         // A sent or cancelled draft leaves no caret in the old text.
         .onChange(of: text) { _, value in if value.isEmpty { selection = nil } }
+        .modifier(DictationEnds(dictation: dictation, text: text))
         // A new first link drops the old preview at once, and its page loads after a pause in typing. The send never
         // waits for it.
         .task(id: previewLink) {
@@ -1300,6 +1304,12 @@ struct TeamChatComposer: View {
             guard !Task.isCancelled else { return }
             state.previewLoaded(preview, for: link.text)
         }
+    }
+
+    /// The draft that goes is the one that the box shows: words that come later go nowhere.
+    private func submit() {
+        dictation.cancel()
+        send()
     }
 
     /// A picked file counts as on its way from the pick, and goes to the Mac as a draft when it has loaded. Its chip

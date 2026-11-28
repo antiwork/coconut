@@ -527,6 +527,8 @@ struct ReplyBox: View {
     @State private var failure: String?
     @State private var echo = SentEcho()
     @State private var attempt: (key: String, text: String)?
+    /// The microphone beside Send.
+    @State private var dictation = Dictation()
     /// Where the text goes, as ReplyDestination.key: empty for the box's own reply.
     @State private var chosen = ""
     /// Where the last text went, which the empty box says for a moment.
@@ -580,6 +582,7 @@ struct ReplyBox: View {
             if failure != nil && !new.isEmpty && new != old { failure = nil }
         }
         .onChange(of: chosen) { _, _ in if !sending { keepDraft(text) } }
+        .modifier(DictationEnds(dictation: dictation, text: text))
         .task(id: handed?.id) {
             guard handed != nil else { return }
             try? await Task.sleep(for: .seconds(3))
@@ -596,6 +599,7 @@ struct ReplyBox: View {
                 .modifier(ComposerFieldStyle(send: submit))
                 .padding(.horizontal, BoardStyle.Space.m)
                 .accessibilityIdentifier(identifier + "-input")
+            ComposerDictationButton(dictation: dictation, text: $text)
             sendButton(enabled: canReply && !trimmed.isEmpty)
         }
         .padding(.trailing, BoardStyle.Space.xs)
@@ -622,6 +626,8 @@ struct ReplyBox: View {
             HStack(spacing: 0) {
                 chip(target, agents: agents)
                 Spacer(minLength: 0)
+                ComposerDictationButton(dictation: dictation, text: $text)
+                    .disabled(target == nil)
                 sendButton(enabled: enabled)
             }
             .padding(.horizontal, BoardStyle.Space.xs)
@@ -707,6 +713,8 @@ struct ReplyBox: View {
     }
 
     private func submit() {
+        // The draft that goes is the one that the box shows: words that come later go nowhere.
+        dictation.cancel()
         let target = destination(in: handoff == nil ? nil : agentList())
         KeyboardSettle.run(if: focused) {
             switch target {

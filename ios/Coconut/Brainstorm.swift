@@ -413,7 +413,7 @@ final class BrainstormSession {
     @ObservationIgnored private let engine = AVAudioEngine()
     @ObservationIgnored private var running = false
     @ObservationIgnored private let recognizer = SFSpeechRecognizer(locale: .current) ?? SFSpeechRecognizer(locale: Locale(identifier: "en-US"))
-    @ObservationIgnored private let feed = BrainstormFeed()
+    @ObservationIgnored private let feed = SpeechFeed()
     @ObservationIgnored private var recognition: SFSpeechRecognitionTask?
     /// Counts the requests of the recognition, so a late result of an earlier one changes nothing.
     @ObservationIgnored private var take = 0
@@ -427,7 +427,7 @@ final class BrainstormSession {
     func start(demo: Bool) async {
         self.demo = demo
         if demo { await playDemo(); return }
-        guard await Self.speechAllowed() else { return failPermission("Turn on Speech Recognition for Coconut in the Settings app.") }
+        guard await SpeechFeed.allowed() else { return failPermission("Turn on Speech Recognition for Coconut in the Settings app.") }
         guard await AVAudioApplication.requestRecordPermission() else { return failPermission("Turn on the Microphone for Coconut in the Settings app.") }
         warmUp()
         resume()
@@ -485,8 +485,8 @@ final class BrainstormSession {
         take += 1
         let current = take
         feed.request = request
-        recognition = Self.recognize(request, with: recognizer) { [weak self] text, final, failed in
-            Task { @MainActor in self?.heard(text, final: final, failed: failed, take: current) }
+        recognition = SpeechFeed.recognize(request, with: recognizer) { [weak self] text, final, error in
+            Task { @MainActor in self?.heard(text, final: final, failed: error != nil, take: current) }
         }
         hearing = ""
         phase = .listening
@@ -668,26 +668,11 @@ final class BrainstormSession {
         try? await Task.sleep(for: .milliseconds(400))
     }
 
-    nonisolated private static func speechAllowed() async -> Bool {
-        let status = await withCheckedContinuation { (done: CheckedContinuation<SFSpeechRecognizerAuthorizationStatus, Never>) in
-            SFSpeechRecognizer.requestAuthorization { done.resume(returning: $0) }
-        }
-        return status == .authorized
-    }
-
     /// The tap of the microphone runs on the audio thread, so it is made outside the main actor.
-    nonisolated private static func tap(feed: BrainstormFeed, meter: BrainstormMeter) -> AVAudioNodeTapBlock {
+    nonisolated private static func tap(feed: SpeechFeed, meter: BrainstormMeter) -> AVAudioNodeTapBlock {
         { buffer, _ in
             feed.append(buffer)
             meter.measure(buffer)
-        }
-    }
-
-    /// The recognizer calls back on a queue of its own, so the handler is made outside the main actor.
-    nonisolated private static func recognize(_ request: SFSpeechAudioBufferRecognitionRequest, with recognizer: SFSpeechRecognizer,
-                                              then handle: @escaping @Sendable (String?, Bool, Bool) -> Void) -> SFSpeechRecognitionTask {
-        recognizer.recognitionTask(with: request) { result, error in
-            handle(result?.bestTranscription.formattedString, result?.isFinal ?? false, error != nil)
         }
     }
 }
@@ -701,19 +686,6 @@ private enum BrainstormError: LocalizedError {
         case .noProject: "Choose a project to brainstorm with."
         }
     }
-}
-
-/// The request of the recognition that the microphone feeds. The audio thread reads it, and the session swaps it.
-final class BrainstormFeed: @unchecked Sendable {
-    private let lock = NSLock()
-    private var current: SFSpeechAudioBufferRecognitionRequest?
-
-    var request: SFSpeechAudioBufferRecognitionRequest? {
-        get { lock.withLock { current } }
-        set { lock.withLock { current = newValue } }
-    }
-
-    func append(_ buffer: AVAudioPCMBuffer) { request?.append(buffer) }
 }
 
 /// The loudness of the microphone, 0 to 1, from the audio thread to the ring of the button.

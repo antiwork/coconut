@@ -61,6 +61,8 @@ APP_SCHEME = 'CoconutMac'
 EXTENSION_ENTITLEMENTS = {
     'CoconutMacShare.appex': ROOT / 'ios/CoconutMacShare/CoconutMacShare.entitlements',
 }
+# The entitlements of the app. The hardened runtime of a release opens the microphone only with them.
+APP_ENTITLEMENTS = MAC / 'Coconut.entitlements'
 # Xcode keeps its build and the downloaded packages here. The release takes sign_update from the Sparkle package.
 XCODE_BUILD = MAC / '.build/xcode'
 
@@ -98,6 +100,10 @@ def info_plist(version: str, build: str) -> dict:
         # A pairing link from Hermes opens the pairing page of the chat window.
         'CFBundleURLTypes': [{'CFBundleURLName': 'Pairing', 'CFBundleURLSchemes': ['coconut']}],
         'NSHighResolutionCapable': True,
+        # macOS asks for the microphone and for speech recognition with these words, at the first dictation of a
+        # message box (Dictation.swift). Without them it stops the app.
+        'NSMicrophoneUsageDescription': 'Coconut listens when you dictate a message.',
+        'NSSpeechRecognitionUsageDescription': 'Coconut writes down what you say in the message box.',
         'SUFeedURL': FEED_URL,
         'SUPublicEDKey': ED_PUBLIC_KEY,
         # Check every hour, and install an update without a question. The app updates its source after the relaunch.
@@ -236,7 +242,7 @@ def sign(app: Path, identity: str) -> None:
     # Each extension keeps its sandbox: without it, macOS does not offer the extension.
     for extension in sorted((app / 'Contents/PlugIns').glob('*.appex')):
         run(['codesign', *options, '--entitlements', EXTENSION_ENTITLEMENTS[extension.name], extension])
-    run(['codesign', *options, app])
+    run(['codesign', *options, '--entitlements', APP_ENTITLEMENTS, app])
     run(['codesign', '--verify', '--deep', '--strict', app])
 
 

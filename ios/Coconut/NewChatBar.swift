@@ -194,6 +194,8 @@ struct NewChatBar: View {
     @State private var pasted: [PastedFile] = []
     /// The text of the last send, for the moment after it (SentEcho).
     @State private var echo = SentEcho()
+    /// The microphone beside Send.
+    @State private var dictation = Dictation()
     /// A new request puts the cursor in the field when the page is settled: a pop of the stack takes a moment.
     @State private var focusRequest: UUID?
     /// Where the last send went, which the empty box says for a moment.
@@ -260,6 +262,7 @@ struct NewChatBar: View {
             if echo.takesBack(old: old, new: draft) { text = ""; return }
             ComposerDrafts.write(draft, chat: place.draftKey)
         }
+        .modifier(DictationEnds(dictation: dictation, text: text))
         .task(id: focusRequest) {
             guard focusRequest != nil else { return }
             try? await Task.sleep(for: Self.focusDelay)
@@ -316,6 +319,8 @@ struct NewChatBar: View {
             HStack(spacing: 0) {
                 projectChip(target, projects: projects, agents: agents)
                 Spacer(minLength: 0)
+                ComposerDictationButton(dictation: dictation, text: $text)
+                    .disabled(target == nil)
                 ComposerSendButton(symbol: "arrow.up", enabled: canSend, label: typed || offered == nil ? "Send" : "Send the suggestion",
                                    action: { if let target { send(to: target, suggestion: offered) } }, identifier: "new-chat-send")
             }
@@ -393,6 +398,8 @@ struct NewChatBar: View {
     /// the field all that it holds and stays up for the next chat, so the message is the text that the person sees, and
     /// the box stays empty (KeyboardSettle).
     private func send(to target: NewChatTarget, suggestion: String?) {
+        // The draft that goes is the one that the box shows: words that come later go nowhere.
+        dictation.cancel()
         KeyboardSettle.run(if: focused) { start(in: target, suggestion: suggestion) }
     }
 

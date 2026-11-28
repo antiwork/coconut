@@ -65,11 +65,11 @@
 	<key>NSCameraUsageDescription</key>
 	<string>Coconut uses the camera when you scan a pairing QR code or take a photo to attach to a message.</string>
 	<key>NSMicrophoneUsageDescription</key>
-	<string>Coconut listens while you brainstorm with an agent by voice.</string>
+	<string>Coconut listens when you dictate a message or brainstorm with an agent by voice.</string>
 	<key>NSPhotoLibraryAddUsageDescription</key>
 	<string>Coconut saves a photo from a chat to your library only when you choose Save Image.</string>
 	<key>NSSpeechRecognitionUsageDescription</key>
-	<string>Coconut writes down what you say in a brainstorm, so the agent can answer.</string>
+	<string>Coconut writes down what you say, in the message box or in a brainstorm.</string>
 	<key>NSSupportsLiveActivities</key>
 	<true/>
 	<key>NSUserActivityTypes</key>

@@ -198,9 +198,11 @@
 		7BC447DBE41CF5861E87ECED /* Updater.swift in Sources */ = {isa = PBXBuildFile; fileRef = 827E50B0C8764B4452C6036D /* Updater.swift */; };
 		7BC900DAEB298308E9027828 /* AgentChats.swift in Sources */ = {isa = PBXBuildFile; fileRef = E2DA8840FE2FA69768725079 /* AgentChats.swift */; };
 		7C2004A134BDCA7D6BD2310D /* TestIsolation.swift in Sources */ = {isa = PBXBuildFile; fileRef = DE7D6BDE77246AF7A1CF43CD /* TestIsolation.swift */; };
+		7DE9B83125AFACBB3FC20A68 /* Dictation.swift in Sources */ = {isa = PBXBuildFile; fileRef = F0ED360AAB295243BD6CC462 /* Dictation.swift */; };
 		7E6BE2B190E6D5186E0DDE7A /* ConversationView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 86E50B95FC8F9D964C273561 /* ConversationView.swift */; };
 		7ECB0A31460F84D9AE6A6B51 /* ShareSuggestions.swift in Sources */ = {isa = PBXBuildFile; fileRef = C992BA74F5644F9E7AFCFCED /* ShareSuggestions.swift */; };
 		7F40DCB0194AC153D3B271C6 /* ShareItemLoader.swift in Sources */ = {isa = PBXBuildFile; fileRef = 59A0A969FABDB4B7707B081B /* ShareItemLoader.swift */; };
+		7F606FB43D4EF5C18D2C4849 /* Dictation.swift in Sources */ = {isa = PBXBuildFile; fileRef = F0ED360AAB295243BD6CC462 /* Dictation.swift */; };
 		801E7451AAE12BBA468F080E /* PreviewDiagnostics.swift in Sources */ = {isa = PBXBuildFile; fileRef = A3A43A7E155EAC1270A61B25 /* PreviewDiagnostics.swift */; };
 		803ECED2ACDFD7FE3B416D95 /* FileFit.swift in Sources */ = {isa = PBXBuildFile; fileRef = 45AD5F38FCEB559AD2F8D09E /* FileFit.swift */; };
 		8301BB546514BED2D50D486A /* Usage.swift in Sources */ = {isa = PBXBuildFile; fileRef = 733045D7C4C7256AF9744660 /* Usage.swift */; };
@@ -601,6 +603,7 @@
 		E965675846C512EBE08ADB77 /* AgentProject.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentProject.swift; sourceTree = "<group>"; };
 		EC0BF5B02794FB407103AA4C /* AppStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppStore.swift; sourceTree = "<group>"; };
 		F039837ACEDD5BAAC10F0A23 /* BusinessPeriods.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BusinessPeriods.swift; sourceTree = "<group>"; };
+		F0ED360AAB295243BD6CC462 /* Dictation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Dictation.swift; sourceTree = "<group>"; };
 		F10A7B1CED0436FAEEF28D16 /* Coconut.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = Coconut.entitlements; sourceTree = "<group>"; };
 		F148539DFD85BF3879FA031A /* PairingSetup.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PairingSetup.swift; sourceTree = "<group>"; };
 		F37BDA516D4A047F983A10C8 /* ShareViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShareViewController.swift; sourceTree = "<group>"; };
@@ -788,6 +791,7 @@
 				94AFF4D887691B90DF9696F6 /* DecisionInboxView.swift */,
 				6AA2396057CD5325BD54D0A7 /* DecisionPreviews.swift */,
 				980EB12D70F1EC36BEAD57F7 /* DecisionReplyComposer.swift */,
+				F0ED360AAB295243BD6CC462 /* Dictation.swift */,
 				150811EF36AC20B533E07A4F /* DocumentPage.swift */,
 				45AD5F38FCEB559AD2F8D09E /* FileFit.swift */,
 				F651A9C93CDD66940CB67BA1 /* GitHubEmbedViews.swift */,
@@ -1145,10 +1149,10 @@
 			targets = (
 				7F2F5A68FD83C168A0C2DF7F /* Coconut */,
 				7787C3C6ED299383A1BC9BDE /* CoconutMac */,
-				EA4F49BE2A097AF59701F398 /* CoconutMacShare */,
 				7BCB11B2D6BED2E788C53C6C /* CoconutNotificationService */,
 				631C8CF061CFAB8F50866E3E /* CoconutShare */,
 				5927D5E274D27A9E2FF4D82F /* CoconutWidgets */,
+				EA4F49BE2A097AF59701F398 /* CoconutMacShare */,
 			);
 		};
 /* End PBXProject section */
@@ -1259,6 +1263,7 @@
 				9A702ECE2CCFF29AB4C89AEC /* DecisionInboxView.swift in Sources */,
 				94020069D49F363A73A543DF /* DecisionPreviews.swift in Sources */,
 				87BF58BB5BDFF0F7A5AD7C45 /* DecisionReplyComposer.swift in Sources */,
+				7DE9B83125AFACBB3FC20A68 /* Dictation.swift in Sources */,
 				E59CA9268B187085E523832D /* DocumentPage.swift in Sources */,
 				D1BA89BF5E11C2A81BCFC365 /* FileFit.swift in Sources */,
 				78640B36C242FAA5E9F205B0 /* GitHubEmbedViews.swift in Sources */,
@@ -1409,6 +1414,7 @@
 				A920F28EDB8F873C52A07D70 /* DecisionInboxView.swift in Sources */,
 				E69D4F2D3447386046F48952 /* DecisionPreviews.swift in Sources */,
 				0E708C1B47846F82A49FC450 /* DecisionReplyComposer.swift in Sources */,
+				7F606FB43D4EF5C18D2C4849 /* Dictation.swift in Sources */,
 				06D03B167C9E4CE13AC169A6 /* DocumentPage.swift in Sources */,
 				803ECED2ACDFD7FE3B416D95 /* FileFit.swift in Sources */,
 				8A1ADA6D0A6D11643ED8301B /* GitHubEmbedViews.swift in Sources */,
@@ -1826,6 +1832,8 @@
 				ENABLE_HARDENED_RUNTIME = NO;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = Coconut/Info.plist;
+				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Coconut listens when you dictate a message.";
+				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "Coconut writes down what you say in the message box.";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",
@@ -1965,6 +1973,8 @@
 				ENABLE_HARDENED_RUNTIME = NO;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = Coconut/Info.plist;
+				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Coconut listens when you dictate a message.";
+				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "Coconut writes down what you say in the message box.";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",
