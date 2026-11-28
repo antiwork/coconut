@@ -289,6 +289,16 @@ struct HomeLaunchView: View {
         }
         .navigationTitle(workingOnly ? "Working" : unreadsOnly ? "Unreads" : "Chats")
         .toolbar {
+            #if os(iOS)
+            // You, the person and the settings, behind the face of the person, as at the top of Slack. The face shows
+            // without the glass of the bar, as a face does.
+            if #available(iOS 26.0, *) {
+                ToolbarItem(placement: .topBarLeading) { YouButton() }
+                    .sharedBackgroundVisibility(.hidden)
+            } else {
+                ToolbarItem(placement: .topBarLeading) { YouButton() }
+            }
+            #endif
             // One tap reads every chat, as Read All in Telegram. It shows while a chat of the list has an unread
             // count.
             if sections.contains(where: { $0.items.contains { $0.unreadCount > 0 } }) {
