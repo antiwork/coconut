@@ -167,13 +167,17 @@ A project is a name and its chats (`backend/coconut/bot_profiles.py`, `PROJECTS`
 `HOME` remains the Mac account home so macOS Keychain works.
 `USER` identifies the Mac account so Claude Code selects its saved Keychain login.
 Coconut scopes Codex, GitHub CLI, and XDG settings through their native environment variables.
-You → Connections → GitHub connects one account for all agents through the Antiwork-owned Coconut OAuth app.
-Device sign-in uses its public client ID, without a client secret. Coconut keeps access and refresh tokens in private
-files under `<data-dir>/connections/github`, refreshes expiring tokens before they expire, and stops refresh on shutdown
-or disconnect. PR tracking, the Business pages, the GitHub previews and the command of a work source use the current token.
-The shells of an agent in the Hermes gateway do not get it: they run with the logins of the Mac account. Only the
-worker of earlier releases gave its shells this token.
-Coconut runs no `gh auth` command and changes no other GitHub login, Git config, or Keychain entry. A GitHub SSH remote
+Nobody connects GitHub in Coconut (the person, 2026-11-28). The app reads and writes GitHub with the gh login of the Mac
+account (`github_access.py`): the GitHub notifications, the Business pages, the GitHub previews and pages, and the to-do
+lists, so a comment or a move keeps the person's name. A Mac without a gh login reads the to-do lists from Gumclaw's team
+page `todos-gumroad-private` (`github_todos.py`), which `coconut-pages.py` of the dashboards repository shares at each
+publish, and has no GitHub notifications.
+A Mac that connected GitHub in Coconut in an earlier version, through the Antiwork-owned Coconut OAuth app, keeps that
+login while it works. Coconut keeps its access and refresh tokens in private files under `<data-dir>/connections/github`,
+refreshes expiring tokens before they expire, and stops refresh on shutdown. PR tracking, the app and the command of a
+work source use that token while it exists. The shells of an agent in the Hermes gateway do not get it: they run with the
+logins of the Mac account. Only the worker of earlier releases gave its shells this token.
+Coconut runs only `gh auth token`, which reads a login, and changes no GitHub login, Git config, or Keychain entry. A GitHub SSH remote
 uses HTTPS with Coconut's credential helper. A pre-existing Git rule that rewrites GitHub HTTPS URLs back to SSH can
 still select the Mac account's SSH key; remove that rule when this connection must own all GitHub Git traffic.
 Claude Code shares the Mac account's native login, settings, and session history across agents and managed Hermes Terminal.

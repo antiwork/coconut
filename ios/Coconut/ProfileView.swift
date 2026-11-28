@@ -60,7 +60,7 @@ struct ProfileView: View {
                 BoardRow(symbol: "bell", title: "Notifications", detail: notificationDetail)
                     .boardButton("notification-settings") { pushRoute?(ProfileRoute.notifications) }
                 // The row has the name of the page that it opens.
-                BoardRow(symbol: "link", title: "Connections", detail: "Google, GitHub and other tools")
+                BoardRow(symbol: "link", title: "Connections", detail: "Tools of your agents")
                     .boardButton("mcp-settings") { pushRoute?(ProfileRoute.connections) }
                 // The repositories of GitHub that Coconut follows for the work of the business: a setting, so it is
                 // here and not on Finance.

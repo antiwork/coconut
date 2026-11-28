@@ -6,8 +6,12 @@ work in, and nothing else: no other repository and no store of Coconut holds a t
 is in both lists, and an issue with none of them is a to-do of Product, the list of the repository's issues before the
 split. COCONUT_TODO_REPOSITORY names another repository of the owner.
 
-The Mac reads and writes with the connected GitHub account (business.github_request), so a move in Coconut is a label
-on GitHub, and a change on GitHub shows at the next read.
+The Mac reads and writes with its GitHub login (github_access.py), so a move in Coconut is a label on GitHub, and a
+change on GitHub shows at the next read. A Mac whose login cannot read the repository, or that has none, reads Gumclaw's
+copy of the list instead: a team page (PAGE_PREFIX and the name of the repository) that coconut-pages.py of the
+dashboards repository shares at each publish. Nobody connects GitHub in Coconut, so the lists show on every Mac of the
+team (the person, 2026-11-28). The copy is read only: its answer has `source` "gumclaw", and a move needs a GitHub login.
+The Library does not list the page (TeamStore.library).
 
     GET   /v1/todos[?fresh=1]         the open to-dos, newest activity first
     PATCH /v1/todos {number, area}    moves a to-do to another list: the label of the new list replaces the old one
@@ -46,6 +50,11 @@ LIST_SECONDS = 15
 MAX_TODOS = 300
 PAGE = 50
 NUMBER = re.compile(r'[1-9][0-9]{0,9}')
+# The key of the team page of Gumclaw's copy of the list is this and the name of the repository.
+PAGE_PREFIX = 'todos-'
+# The copy is the JSON of a fenced block of the page: the repository and its open issues as GitHub lists them, cut to
+# the fields that `summary` reads.
+COPY = re.compile(r'```json\n(.*)\n```', re.S)
 # The answer to a device that asks Coconut for a new to-do (see the top of this file).
 NO_CREATION = 'Coconut no longer creates to-dos. An agent files one on GitHub when it gets blocked.'
 
@@ -93,8 +102,10 @@ def _number(value) -> int:
 
 
 class GitHubTodos:
-    def __init__(self, business):
+    def __init__(self, business, root=None):
         self.business = business
+        # The data folder of the Mac, whose database holds Gumclaw's copy of the list.
+        self.root = root
         self.lock = threading.Lock()
         self.cache = {}
 
@@ -109,26 +120,64 @@ class GitHubTodos:
         return self.business.connection.account().get('login')
 
     def list(self, fresh: bool = False) -> dict:
-        identity = hashlib.sha256(self.business._token().encode()).hexdigest()
+        try:
+            identity = hashlib.sha256(self.business._token().encode()).hexdigest()
+        except ServiceError as error:
+            if error.status != 409:
+                raise
+            return self._shared(error)
         with self.lock:
             cached = self.cache.get(identity)
             if not fresh and cached and cached[0] > time.monotonic():
                 return cached[1]
         login, items, page = self.login(), [], 1
-        while len(items) < MAX_TODOS:
-            values = self.business._call('GET', self._path() + '/issues?' + urlencode(
-                dict(state='open', sort='updated', direction='desc', per_page=PAGE, page=page)))
-            if not isinstance(values, list):
-                raise ServiceError(502, 'GitHub returned an invalid list.')
-            # GitHub's list of issues has the pull requests too.
-            items += [summary(issue, login) for issue in values if isinstance(issue, dict) and 'pull_request' not in issue]
-            if len(values) < PAGE:
-                break
-            page += 1
+        try:
+            while len(items) < MAX_TODOS:
+                values = self.business._call('GET', self._path() + '/issues?' + urlencode(
+                    dict(state='open', sort='updated', direction='desc', per_page=PAGE, page=page)))
+                if not isinstance(values, list):
+                    raise ServiceError(502, 'GitHub returned an invalid list.')
+                # GitHub's list of issues has the pull requests too.
+                items += [summary(issue, login) for issue in values if isinstance(issue, dict) and 'pull_request' not in issue]
+                if len(values) < PAGE:
+                    break
+                page += 1
+        except ServiceError as error:
+            # GitHub refused the login (409), the login has no access to the repository (404), or its rate limit ran
+            # out (403).
+            if error.status not in (403, 404, 409):
+                raise
+            return self._shared(error, login)
         result = dict(repository=self.repository, login=login, items=items[:MAX_TODOS])
         with self.lock:
             self.cache = {identity: (time.monotonic() + LIST_SECONDS, result)}
         return result
+
+    def _shared(self, error: ServiceError, login: str | None = None) -> dict:
+        """Gumclaw's copy of the list (see the top of this file), with the rows of a read of GitHub. Without a copy, the
+        error of the read stands. The newest valid page of an active team has it, from any bot: the room's members are
+        trusted as the Library trusts them."""
+        import contextlib
+        import sqlite3
+        from .service_base import now
+        from .team_store import TeamStore
+        content = ''
+        if self.root is not None:
+            with contextlib.closing(sqlite3.connect((self.root / 'coconut.sqlite3').as_uri() + '?mode=ro', uri=True)) as db:
+                store = TeamStore(db)
+                row = store.keyed_page(PAGE_PREFIX + work_repository().lower(), now())
+                content = store.content(row['room'], row['entry']) if row else ''
+        found = COPY.search(content or '')
+        try:
+            data = json.loads(found.group(1)) if found else None
+        except ValueError:
+            data = None
+        issues = data.get('issues') if isinstance(data, dict) else None
+        if not isinstance(issues, list) or str(data.get('repository') or '').lower() != self.repository.lower():
+            raise error
+        items = [summary(issue, login) for issue in issues
+                 if isinstance(issue, dict) and type(issue.get('number')) is int and 'pull_request' not in issue]
+        return dict(repository=self.repository, login=login, items=items[:MAX_TODOS], source='gumclaw')
 
     def forget(self) -> None:
         with self.lock:

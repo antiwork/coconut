@@ -244,8 +244,8 @@ enum GitHubLink {
 /// The GitHub previews that the app loaded. A view reads the cards of a text, and they show when the Mac answers.
 /// A preview is fresh for 30 seconds, and a change of the work repository on GitHub makes every card old at once
 /// (expire), so a card that shows reads again (GitHubEmbedLoading). The Mac asks GitHub with the ETag of its last answer,
-/// so a read that finds nothing new costs nothing of the rate limit. An address without a preview (private, missing, no
-/// GitHub connection) is asked again after five minutes.
+/// so a read that finds nothing new costs nothing of the rate limit. An address without a preview (private, missing, a
+/// Mac without a GitHub login) is asked again after five minutes.
 @MainActor
 @Observable
 final class GitHubEmbeds {

@@ -7,13 +7,10 @@ struct MCPSettingsView: View {
     private var canEdit: Bool { store.isDemo || store.connection == .connected }
 
     var body: some View {
-        // A team member never connects Gmail (or another service) in the app: Gumclaw holds the credentials, and the app
-        // reads and acts through it (backend/coconut/support_threads.py). So Google has no row here.
+        // A team member never connects GitHub, Gmail or another service of the team in the app. The Mac uses its own
+        // gh login, and Gumclaw holds the credentials of the team (github_access.py, support_threads.py). So neither
+        // has a row here.
         Form {
-            Section {
-                NavigationLink { GitHubSettingsView() } label: { Text("GitHub") }
-                    .accessibilityIdentifier("github-settings")
-            }
             Section {
                 ForEach(store.mcpServers) { server in
                     NavigationLink { MCPConnectionView(server: server) } label: {
@@ -30,7 +27,7 @@ struct MCPSettingsView: View {
                 .disabled(!canEdit)
                 .accessibilityIdentifier("add-mcp")
             } header: {
-                Text("Other tools (MCP)")
+                Text("Tools (MCP)")
             } footer: {
                 Text(canEdit ? "All agents can use these tools. Hermes keeps their settings on your Mac."
                      : "Connect to your Mac first. All agents can use these tools. Hermes keeps their settings on your Mac.")

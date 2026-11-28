@@ -127,14 +127,14 @@ A Mac with no person at it can join a team from a message, as `coconut pair <cod
 
 The tool calls the team routes of the service with the token of `<data>/gateway/bridge.json`. See [the team log](team-log.md#mac). A person makes a team and an invite on the Team screen of the app.
 
-## GitHub access for agents
+## GitHub access
 
-Open **You → Connections → GitHub** in Coconut, choose **Connect GitHub**, copy the code, and approve Coconut
-on GitHub. The Antiwork organization owns the Coconut OAuth app. One connection serves all Coconut agents.
+Nobody connects GitHub in Coconut. The app uses the gh login of the Mac account, the one that `gh auth status` shows
+in Terminal, and each agent uses the gh login of its terminal. Coconut only reads the login, with `gh auth token`. A Mac
+without a gh login still shows the to-do lists, which Gumclaw shares with the team, but no GitHub notifications.
 
-Coconut stores its own access and refresh tokens on the Mac with owner-only permissions. Expiring tokens refresh
-before expiry. A revoked or expired refresh token shows **Reconnect GitHub** in Settings. **Disconnect GitHub**
-removes both local tokens and stops future use of that connection.
+A Mac that connected GitHub in Coconut in an earlier version keeps that connection while it works. Coconut stores its
+access and refresh tokens on the Mac with owner-only permissions and refreshes them before expiry.
 
 Verify the account from an agent's terminal:
 

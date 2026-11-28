@@ -63,6 +63,9 @@ def refusal(error):
 # the watch of the business (business_watch.py) can read every few seconds, and a read that finds nothing new is free.
 KEPT_READS = 400
 KEPT_BYTES = 24 * 1024 * 1024
+# Nobody connects GitHub in Coconut, so these say what is missing and ask the person for nothing (github_access.py).
+NO_LOGIN = 'This Mac has no GitHub login, so Coconut cannot read GitHub here.'
+REFUSED_LOGIN = 'GitHub no longer accepts the GitHub login of this Mac.'
 
 
 def _send(method, path, token, body=None, etag=None):
@@ -83,9 +86,9 @@ def _send(method, path, token, body=None, etag=None):
         if error.code == 304 and etag:
             return 304, error.headers.get('ETag') or etag, b''
         if error.code == 401:
-            raise ServiceError(409, 'Reconnect GitHub in You → Connections → GitHub.') from None
+            raise ServiceError(409, REFUSED_LOGIN) from None
         if error.code == 404:
-            raise ServiceError(404, 'This repository or work item is unavailable to the connected GitHub account.') from None
+            raise ServiceError(404, 'This repository or work item is unavailable to the GitHub login of this Mac.') from None
         if error.code in (403, 429):
             raise ServiceError(403, 'GitHub refused this request. Check repository access or try again after its rate limit resets.') from None
         if error.code in (405, 409, 422):
@@ -125,14 +128,19 @@ class GitHubBusiness:
         self.connection.refresh()
         token = self.connection.token()
         if not token:
-            raise ServiceError(409, 'Connect GitHub in You → Connections → GitHub to open your business.')
+            raise ServiceError(409, NO_LOGIN)
         return token
 
     def _call(self, method, path, body=None):
         token = self._token()
-        if method == 'GET' and self.request is github_request:
-            return self._read(path, token)
-        return self.request(method, path, token, body)
+        try:
+            if method == 'GET' and self.request is github_request:
+                return self._read(path, token)
+            return self.request(method, path, token, body)
+        except ServiceError as error:
+            if error.status == 409 and str(error) == REFUSED_LOGIN:
+                self.connection.refused(token)
+            raise
 
     def _read(self, path, token):
         """A read with the ETag of its kept answer. GitHub answers 304 Not Modified when nothing changed, which costs
@@ -295,7 +303,7 @@ def mutate_business(service, method, parts, data, request_key, fingerprint):
     if not isinstance(data, dict):
         raise ServiceError(400, 'Send a JSON object for this business action.')
     client = service.business
-    fingerprint = hashlib.sha256((fingerprint + str(service.github.account().get('login'))).encode()).hexdigest()
+    fingerprint = hashlib.sha256((fingerprint + str(service.github_access.account().get('login'))).encode()).hexdigest()
     with client.write_lock:
         with service._read_view() as view:
             receipt = view.db.execute('SELECT fingerprint,response FROM requests WHERE key=?', (request_key,)).fetchone()

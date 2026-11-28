@@ -212,7 +212,7 @@ def mutate_handoff(service, method, data, request_key, fingerprint):
         raise ServiceError(404, 'This support action was not found.')
     if not isinstance(data, dict):
         raise ServiceError(400, 'Send a JSON object for this choice.')
-    fingerprint = hashlib.sha256((fingerprint + str(service.github.account().get('login'))).encode()).hexdigest()
+    fingerprint = hashlib.sha256((fingerprint + str(service.github_access.account().get('login'))).encode()).hexdigest()
     with service.business.write_lock:
         with service._read_view() as view:
             receipt = view.db.execute('SELECT fingerprint,response FROM requests WHERE key=?', (request_key,)).fetchone()

@@ -23,15 +23,17 @@ LOG = logging.getLogger(__name__)
 # (team_turns.RULES and RULES_DIRECT) say who can write and who reads, and that Coconut shows Markdown without cards.
 # The person removed to-do creation from Coconut (2026-11-26): "Agent does that only as part of getting blocked on doing
 # something". So the hint lets an agent file a to-do only when it is blocked, and Coconut itself creates none
-# (backend/coconut/github_todos.py).
+# (backend/coconut/github_todos.py). Nobody connects GitHub or Gmail in Coconut (the person, 2026-11-28: "a team member
+# should never have to do anything to set up the connection"): an agent uses the gh login of its Mac, and Gumclaw holds
+# the credentials of the team's services, so the hint sends no one to a screen of Coconut to connect.
 TEAM_HINT = ('You are in a chat of a team in Coconut. The rules of the chat say who can write to you and who reads '
              'your reply.')
 HINT = ('You are in Coconut, the iPhone app of the person who runs this Hermes. Coconut shows Markdown. '
         'Write the answer for a phone screen. When the person writes to you, start with one short sentence that says '
         'what you will do, before you call a tool: the phone shows your text as you write it. Ask the person with '
         'coconut_ask when you need a choice or a fact: the card ends your turn, and Coconut continues the conversation '
-        'with the answer. GitHub connects once for all Coconut agents in You → Connections → GitHub. Nobody connects '
-        'Gmail in Coconut: Gumclaw holds the Google access of the team, and support mail goes through it. '
+        'with the answer. Nobody connects GitHub or Gmail in Coconut: you use the gh login of this Mac, and support '
+        'mail goes through Gumclaw, which holds the Google access of the team. '
         'A to-do is an issue of antiwork/gumroad-private, and nothing else holds one: no other repository and no to-do of '
         'Coconut. File one only as part of getting blocked: when the work you do cannot go on until someone acts, open '
         'an issue that says what blocks it and what would unblock it, labelled with its list, finance, support or '
@@ -39,7 +41,8 @@ HINT = ('You are in Coconut, the iPhone app of the person who runs this Hermes. 
         'to-do: do it. '
         'Accounting uses the canonical Beancount ledger; reuse its calculations, preserve double entry, and keep '
         'financial data private. '
-        'If GitHub has no login, direct the person there. Never run gh auth login, gh auth logout, or gh auth setup-git: '
+        'If gh has no login, ask Gumclaw with coconut_team_message to do the GitHub part, and never ask the person to '
+        'connect GitHub. Never run gh auth login, gh auth logout, or gh auth setup-git: '
         'other GitHub logins on this Mac must stay unchanged. Verify gh api user from your terminal before reporting '
         'that GitHub is connected.')
 # The phone shows the replies and the interim messages. Tool progress and long-run notices would be extra messages.

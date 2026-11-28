@@ -1771,18 +1771,12 @@ final class AppStore {
         cachedState?.personalBudget = response
     }
 
+    /// The GitHub login that the Mac reads with. The app connects none: the Mac uses its own gh login, and the lists
+    /// come from Gumclaw when it has none (github_access.py).
     func githubStatus() async throws -> GitHubConnectionStatus {
-        if isDemo { return GitHubConnectionStatus(connected: false, login: nil, needsReconnect: false, pending: nil) }
+        if isDemo { return GitHubConnectionStatus(connected: true, login: nil) }
         guard let client else { throw ServiceError.configuration("Connect your Mac to continue.") }
         return try await client.request("settings/github")
-    }
-
-    func githubRequest(_ action: String) async throws -> GitHubConnectionStatus {
-        guard let client else { throw ServiceError.configuration("Connect your Mac to continue.") }
-        let generation = connectionGeneration
-        let response: GitHubConnectionStatus = try await client.request("settings/github/\(action)", method: "POST", body: APIJSON.encode(EmptyRequest()), retryTransient: true)
-        guard generation == connectionGeneration else { throw CancellationError() }
-        return response
     }
 
     /// The Google connection that a Mac kept from an earlier version. The app connects none: Gumclaw holds the Google
@@ -4242,6 +4236,11 @@ private extension AppStore {
 }
 
 /// The Google connection of the Mac (google_connection.py), from an earlier version that connected one in the app.
+struct GitHubConnectionStatus: Decodable, Sendable {
+    let connected: Bool
+    let login: String?
+}
+
 struct GoogleConnectionStatus: Decodable, Sendable {
     let connected: Bool
     let email: String?

@@ -34,7 +34,6 @@ struct GitHubItemView: View {
                 conversation(item)
             } else if let failure {
                 BoardLoadNotice(title: "GitHub unavailable", message: failure) { loads += 1 }
-                NavigationLink("GitHub connection") { GitHubSettingsView() }.font(.callout)
             } else {
                 BoardLoading(title: "Loading \(route.repository) #\(route.number)")
             }

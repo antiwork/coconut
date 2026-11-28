@@ -331,14 +331,17 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
         self.push = PushDelivery(self)
         from .github_connection import GitHubConnection
         self.github = GitHubConnection(self.root)
+        # The app reads GitHub with the gh login of the Mac, or with the old sign-in of Coconut (github_access.py).
+        from .github_access import GitHubAccess
+        self.github_access = GitHubAccess(self.github)
         from .business import GitHubBusiness
-        self.business = GitHubBusiness(self.github)
+        self.business = GitHubBusiness(self.github_access)
         from .github_preview import GitHubPreviews
         self.github_previews = GitHubPreviews(lambda: self.business)
         from .github_items import GitHubItems
         self.github_items = GitHubItems(lambda: self.business)
         from .github_todos import GitHubTodos
-        self.todos = GitHubTodos(self.business)
+        self.todos = GitHubTodos(self.business, self.root)
         from .risk_reviews import RiskReviews
         self.risk_reviews = RiskReviews(self.business)
         from .support_handoffs import SupportHandoffs
@@ -1472,7 +1475,9 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
         from .github_connection import GitHubError
         try:
             if action == 'status':
-                return self.github.check()
+                # The check keeps the old sign-in's state current, so one that stopped working gives way to the gh login.
+                self.github.check()
+                return self.github_access.status()
             if action == 'start':
                 result = self.github.start()
             elif action == 'disconnect':
@@ -3106,8 +3111,8 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
             # Remove expired trackers, so their tokens do not stay in memory.
             for key in [key for key, value in self._profile_trackers.items() if value[0] <= time.monotonic()]:
                 del self._profile_trackers[key]
-        # The shared login from Coconut Settings serves every bot. Without it, each bot keeps its own gh login.
-        # Reading it is a file read. A new or removed shared login uses a new cache entry at once.
+        # The old sign-in of Coconut, on a Mac that kept one from an earlier version, serves every bot. Without it, each
+        # bot keeps its own gh login. Reading it is a file read. A removed sign-in uses a new cache entry at once.
         shared = self.github.token()
         key = (home, hashlib.sha256(shared.encode()).hexdigest() if shared else None)
         with self.lock:

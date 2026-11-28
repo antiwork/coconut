@@ -1,9 +1,9 @@
 """GitHub issues and pull requests, read and answered in Coconut.
 
-The apps open an issue or a pull request of any repository that the connected GitHub account can read, in place of a
+The apps open an issue or a pull request of any repository that the GitHub login of the Mac can read, in place of a
 link to github.com: its text, labels, people and comments, and for a pull request its checks, its review, its merge
 state and its changed files. The person comments, closes, reopens and merges in the app. Each write goes to GitHub
-with the connected account, so GitHub and every agent see it as the person's own.
+with that login (github_access.py), so GitHub and every agent see it as the person's own.
 
     GET   /v1/github/item?repository=<owner>/<name>&number=<n>
     GET   /v1/github/item/files?repository=<owner>/<name>&number=<n>
@@ -76,7 +76,7 @@ def _review_entry(review):
 
 
 class GitHubItems(GitHubPreviews):
-    """The whole of an issue or a pull request, with the writes of a person. It reads through the GitHub connection of
+    """The whole of an issue or a pull request, with the writes of a person. It reads through the GitHub login of
     the business views, as the previews do, and keeps nothing: each read goes to GitHub."""
 
     def _base(self, owner, name):
@@ -227,7 +227,7 @@ class GitHubItems(GitHubPreviews):
             raise ServiceError(409, 'The pull request changed since you opened it. Read the new commits, then merge.')
         method = self._merge_method(base)
         if not method:
-            raise ServiceError(403, 'The connected GitHub account cannot merge in this repository.')
+            raise ServiceError(403, 'The GitHub login of this Mac cannot merge in this repository.')
         # GitHub merges only the head that the person saw: a newer push makes it refuse.
         self.business()._call('PUT', f'{base}/pulls/{number}/merge', dict(sha=sha, merge_method=method))
         return self.item(f'{owner}/{name}', number)
@@ -239,7 +239,7 @@ def mutate_github_item(service, method, parts, data, request_key, fingerprint):
     if not isinstance(data, dict):
         raise ServiceError(400, 'Send a JSON object for this GitHub action.')
     client = service.github_items
-    fingerprint = hashlib.sha256((fingerprint + str(service.github.account().get('login'))).encode()).hexdigest()
+    fingerprint = hashlib.sha256((fingerprint + str(service.github_access.account().get('login'))).encode()).hexdigest()
     with service.business.write_lock:
         with service._read_view() as view:
             receipt = view.db.execute('SELECT fingerprint,response FROM requests WHERE key=?', (request_key,)).fetchone()

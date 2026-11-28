@@ -232,9 +232,9 @@ PENDING_FIELDS = ('id', 'seq', 'first', 'member', 'at', 'kept', 'body', 'reason'
 PAGE_FIELDS = ('key', 'title', 'format', 'summary', 'size', 'rev', 'expires_at', 'created_at', 'updated_at', 'pinned')
 # What the Library of the phone gets for a team page and a team bot. TeamStore.library reads these rows.
 LIBRARY_PAGE = ('room', 'entry', 'bot', 'team', *PAGE_FIELDS)
-# The key of a team page that a page of the app reads and the Library does not list starts with this
-# (support_threads.PAGE_PREFIX).
-APP_PAGES = 'support-'
+# The key of a team page that a page of the app reads and the Library does not list starts with one of these: Gumclaw's
+# copy of a support conversation (support_threads.PAGE_PREFIX) and of the to-do lists (github_todos.PAGE_PREFIX).
+APP_PAGES = ('support-', 'todos-')
 LIBRARY_BOT = ('room', 'entry', 'name', 'avatar', 'color', 'team', 'member', 'member_name')
 TEAM_BOT = ('entry', 'member', 'name', 'avatar', 'color', 'open', 'direct')
 # What the chat of the phone gets for a message. TeamStore.messages reads these rows.
@@ -3181,9 +3181,10 @@ class TeamStore:
         The Library shows a room only while it is active on this Mac, and never the own entries of this Mac.
         """
         # A bot shares some pages for a page of the app to read, not for the Library: Gumclaw's copy of each support
-        # conversation (support_threads.PAGE_PREFIX).
-        pages = self._pages('(p.expires_at IS NULL OR p.expires_at > ?) AND substr(p.key, 1, ?) != ?',
-                            (current, len(APP_PAGES), APP_PAGES))
+        # conversation and of the to-do lists (APP_PAGES).
+        hidden = ''.join(' AND substr(p.key, 1, ?) != ?' for _ in APP_PAGES)
+        pages = self._pages('(p.expires_at IS NULL OR p.expires_at > ?)' + hidden,
+                            (current, *(value for prefix in APP_PAGES for value in (len(prefix), prefix))))
         bots = self._rows(LIBRARY_BOT, f'''SELECT b.room, b.entry, b.name, b.avatar, b.color, r.name, b.member, m.name
             FROM team_bots b JOIN team_members m ON m.room=b.room AND m.member=b.member
             JOIN team_rooms r ON r.room=b.room WHERE b.member!=r.member AND r.state='{ACTIVE}'

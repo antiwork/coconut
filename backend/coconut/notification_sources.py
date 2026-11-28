@@ -214,7 +214,7 @@ class NotificationSources:
         """The new threads of the GitHub inbox, the mark of the next read, and which alerts stay."""
         service = self.service
         values = service.business._call('GET', 'notifications?' + urlencode({'per_page': ALERTS}))
-        login = str(service.github.account().get('login') or '')
+        login = str(service.github_access.account().get('login') or '')
         threads = [value for value in values if isinstance(value, dict) and value.get('id')] if isinstance(values, list) else []
         unread = {str(thread['id']): str(thread.get('updated_at') or '') for thread in threads}
         mark = {'account': login, 'threads': unread}

@@ -46,7 +46,6 @@ struct BusinessReportView: View {
             }
             if let error {
                 BoardLoadNotice(title: "Report unavailable", message: error) { Task { await load() } }
-                NavigationLink("GitHub connection") { GitHubSettingsView() }.font(.callout)
             }
         }
         .navigationTitle(BusinessReport.titles[key] ?? key)

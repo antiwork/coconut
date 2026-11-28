@@ -42,7 +42,7 @@ struct TodoIssue: Codable, Identifiable, Hashable, Sendable {
     var createdAt: String?
     var updatedAt: String?
     var url: String?
-    /// The issue is assigned to the connected GitHub account: the person.
+    /// The issue is assigned to the GitHub login of the Mac: the person.
     var mine: Bool
 
     var id: Int { number }
@@ -94,6 +94,11 @@ struct TodoIssues: Codable, Equatable, Sendable {
     var login: String?
     /// Newest activity first.
     var items: [TodoIssue]
+    /// "gumclaw" when the Mac cannot read GitHub and shows the copy that Gumclaw shares with the team
+    /// (github_todos.py). That copy is read-only: a to-do moves only on a Mac that reads GitHub itself.
+    var source: String? = nil
+
+    var movable: Bool { source != "gumclaw" }
 
     /// The to-dos of one list: high priority first, then newest activity first, as GitHub sorts them.
     func items(in area: TodoArea) -> [TodoIssue] {
@@ -188,7 +193,8 @@ extension AppStore {
     /// Moves a to-do to another list: the label of the list changes on GitHub. The row moves at once and comes back
     /// when GitHub refuses.
     func moveTodoIssue(_ todo: TodoIssue, to area: TodoArea) async {
-        guard let before = todoIssues, let index = before.items.firstIndex(where: { $0.number == todo.number }) else { return }
+        guard let before = todoIssues, before.movable,
+              let index = before.items.firstIndex(where: { $0.number == todo.number }) else { return }
         var moved = before
         moved.items[index].areas = [area.rawValue]
         moved.items[index].labels.removeAll { label in TodoArea.allCases.contains { $0.rawValue == label.name } }
@@ -210,7 +216,8 @@ extension AppStore {
 }
 
 /// The rows of one list: the to-dos, high priority first. A row opens its issue in
-/// Coconut (GitHubItemView). Hold it to move it to another list, which changes its label on GitHub. On Product the rows
+/// Coconut (GitHubItemView). Hold it to move it to another list, which changes its label on GitHub; the copy that
+/// Gumclaw shares has no move (TodoIssues.source). On Product the rows
 /// are rows of its List; on Finance and Support they are rows of a section (TodoListSection). Finance lists its risk
 /// reviews past SLA first, and Support its open conversations, the longest wait first (SupportTicket); a conversation
 /// opens the support deck (SupportDeckView).
@@ -258,8 +265,10 @@ struct TodoIssueRows: View {
                     pushRoute?(todo.route(in: repository))
                 }
                 .contextMenu {
-                    ForEach(TodoArea.allCases.filter { todo.areas != [$0.rawValue] }, id: \.self) { other in
-                        Button("Move to \(other.title)", systemImage: other.symbol) { Task { await store.moveTodoIssue(todo, to: other) } }
+                    if store.todoIssues?.movable != false {
+                        ForEach(TodoArea.allCases.filter { todo.areas != [$0.rawValue] }, id: \.self) { other in
+                            Button("Move to \(other.title)", systemImage: other.symbol) { Task { await store.moveTodoIssue(todo, to: other) } }
+                        }
                     }
                 }
                 .accessibilityIdentifier("todo-\(todo.number)")
@@ -534,7 +543,7 @@ struct TodoTile: View {
         }
         .buttonStyle(HomePressStyle())
         .contextMenu {
-            if let todo = row.todo {
+            if let todo = row.todo, store.todoIssues?.movable != false {
                 ForEach(TodoArea.allCases.filter { todo.areas != [$0.rawValue] }, id: \.self) { other in
                     Button("Move to \(other.title)", systemImage: other.symbol) { Task { await store.moveTodoIssue(todo, to: other) } }
                 }
