@@ -325,8 +325,9 @@ struct DecisionInboxView: View {
         Task {
             try? await Task.sleep(for: .milliseconds(340))
             withAnimation(.easeOut(duration: reduceMotion ? 0.1 : 0.2)) {
-                // A saved answer can still be rejected. Keep the queue tied to pending state.
-                queue.reconcile(pending, sort: sorting)
+                // The answer waits in its Undo window, so the card still reads pending until it lands. Take it out
+                // of the queue now, the way a swipe does, and put it back only if the answer does not go through.
+                queue.remove(decision.id)
                 selectedId = nil
                 confirmingChoice = nil
             }
