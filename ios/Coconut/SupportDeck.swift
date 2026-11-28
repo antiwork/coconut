@@ -356,19 +356,16 @@ struct SupportDeckView: View {
             if conversation.messages.isEmpty { Text("No messages.").font(.subheadline).foregroundStyle(.secondary) }
             SupportChoices(thread: ticket.id, subject: conversation.subject.isEmpty ? ticket.subject : conversation.subject,
                            waiting: conversation.state == "open" && conversation.messages.last?.outgoing == false,
-                           canClose: conversation.canReply == true, close: {}, reload: { reloads += 1 },
+                           closesHere: conversation.canReply == true, close: {}, reload: { reloads += 1 },
                            decide: { decide(ticket, $0) })
             if conversation.canReply == true, conversation.state == "open", conversation.messages.last?.outgoing == true {
                 Button("Close conversation", systemImage: "checkmark.circle") { decide(ticket, .close) }
                     .buttonStyle(CoconutButtonStyle(kind: .quiet))
                     .accessibilityIdentifier("support-deck-close")
             }
-            if conversation.canReply == false { SupportMailboxConnect { reloads += 1 } }
         } else if let failure = failures[ticket.id] {
+            // No link to connect Google: Gumclaw shares the conversation, and the person can only try again.
             BoardLoadNotice(title: "Gmail unavailable", message: failure.message) { reloads += 1 }
-            if failure.status == 409 {
-                NavigationLink("Connect Google") { MCPSettingsView() }.accessibilityIdentifier("support-deck-connect-google")
-            }
         } else {
             BoardLoading(title: "Loading conversation")
         }
@@ -471,17 +468,17 @@ struct SupportDeckView: View {
         }
     }
 
-    /// Carries out a choice: the Mac closes, and Gumclaw answers or refunds in the issue of the conversation. A failure
-    /// puts the card back on top with the reason, or says it on the page when the deck has closed.
+    /// Carries out a choice in the issue of the conversation, where Gumclaw answers, refunds or closes. A Mac that has
+    /// the support mailbox closes the conversation itself. A failure puts the card back on top with the reason, or says
+    /// it on the page when the deck has closed.
     private func send(_ choice: HeldChoice) async {
         let ticket = choice.ticket
         sending.insert(ticket.id)
         defer { sending.remove(ticket.id) }
         do {
-            switch choice.choice {
-            case .close:
+            if choice.choice == .close, conversations[ticket.id]?.canReply == true {
                 _ = try await store.setSupportConversation(ticket.id, state: "closed")
-            case .gumclaw, .refund:
+            } else {
                 let subject = conversations[ticket.id].map(\.subject).flatMap { $0.isEmpty ? nil : $0 } ?? ticket.subject
                 _ = try await store.handOffSupport(ticket.id, subject: subject, choice.choice, requestId: UUID().uuidString)
             }

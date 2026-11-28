@@ -3,9 +3,11 @@ import SwiftUI
 /// The customer conversations of Support that the person hands to Gumclaw (backend/coconut/support_handoffs.py).
 /// Gumclaw answers the support mailbox and leaves open the conversations that wait for a person. The page of one offers
 /// how to respond as the options of a poll, beside the box for the person's own words (an answer, or a request to an
-/// agent): Let Gumclaw answer, Refund and answer, or Close without answer. The first two go to Gumclaw as a risk review
-/// does: the Mac files the conversation as an issue of gumroad-private with the label `support` and an `@gumclaw` line,
-/// and Gumclaw answers the customer, reports in the issue and closes it with the conversation.
+/// agent): Let Gumclaw answer, Refund and answer, or Close without answer. Each goes to Gumclaw as a risk review does:
+/// the Mac files the conversation as an issue of gumroad-private with the label `support` and an `@gumclaw` line, and
+/// Gumclaw answers the customer (or not, for Close), reports in the issue and closes it with the conversation. Only a
+/// Mac that still has the support mailbox from an earlier version closes a conversation itself. A team member never
+/// connects Gmail in the app: Gumclaw holds the credentials, and the app reads and acts through it.
 struct SupportHandoffList: Codable, Equatable, Sendable {
     /// owner/name of the issues: antiwork/gumroad-private.
     var repository: String
@@ -23,7 +25,8 @@ struct SupportHandoff: Codable, Equatable, Sendable {
     var issue: RiskReview.Issue
 }
 
-/// How the person can respond. Gumclaw carries out the first two in the issue of the conversation; the Mac closes.
+/// How the person can respond. Gumclaw carries out each in the issue of the conversation, except Close on a Mac that
+/// has the support mailbox (SupportChoices.closesHere).
 enum SupportChoice: String, CaseIterable, Identifiable, Sendable {
     case gumclaw, refund, close
 
@@ -105,9 +108,10 @@ struct SupportChoices: View {
     let subject: String
     /// The newest message is the customer's, so the conversation waits for a response.
     let waiting: Bool
-    /// The support mailbox of this Mac closes conversations, so Close is a choice.
-    let canClose: Bool
-    /// Closes the conversation (SupportConversationView), which shows a failure itself.
+    /// This Mac has the support mailbox from an earlier version, so it closes the conversation itself. Otherwise Close
+    /// goes to Gumclaw as the other choices do.
+    let closesHere: Bool
+    /// Closes the conversation with the mailbox of this Mac (SupportConversationView), which shows a failure itself.
     let close: () async -> Void
     /// Reads the conversation again, once Gumclaw answered.
     let reload: () -> Void
@@ -124,7 +128,6 @@ struct SupportChoices: View {
 
     private var issue: RiskReview.Issue? { store.supportHandoffs?.issue(of: thread) }
     private var repository: String { store.supportHandoffs?.repository ?? "antiwork/gumroad-private" }
-    private var choices: [SupportChoice] { canClose ? SupportChoice.allCases : [.gumclaw, .refund] }
 
     var body: some View {
         VStack(alignment: .leading, spacing: BoardStyle.Space.m) {
@@ -143,7 +146,7 @@ struct SupportChoices: View {
                         .accessibilityElement(children: .combine)
                         .accessibilityAction(named: "Undo") { undo() }
                     }
-                    ForEach(choices) { choice in row(choice) }
+                    ForEach(SupportChoice.allCases) { choice in row(choice) }
                 }
             }
             if let error {
@@ -225,7 +228,7 @@ struct SupportChoices: View {
     private func commit(_ choice: SupportChoice) async {
         sending = choice
         defer { sending = nil; chosen = nil }
-        if choice == .close {
+        if choice == .close, closesHere {
             await close()
             return
         }
@@ -284,14 +287,18 @@ enum SupportHandoffDemo {
         func ago(_ minutes: Double) -> String { now.addingTimeInterval(-minutes * 60).formatted(.iso8601) }
         let gumclaw = GitHubPerson(login: "gumclaw"), person = GitHubPerson(login: "slavingia")
         let conversation = "the Gmail thread `\(thread)` (\"\(subject)\")"
-        let line: String = switch choices[thread.lowercased()] ?? .gumclaw {
+        let choice = choices[thread.lowercased()] ?? .gumclaw
+        let line: String = switch choice {
         case .refund: "refund the purchase that \(conversation) is about and tell the customer from the support mailbox. Report the refund and the answer here"
+        case .close: "send no answer to the customer in \(conversation)"
         default: "answer the customer in \(conversation) from the support mailbox. Decide what to tell them from what you find, and report what you sent and why here"
         }
+        let answer = choice == .close ? "Done: Mira gets no answer, and the conversation is marked done."
+            : "On it. Both payouts go out together this Friday as one transfer of $1,912.40, so I'm telling Mira that, with the day her bank shows it."
         return GitHubItem(kind: "issue", repository: repository, number: issue.number, title: issue.title, body: "",
                           state: issue.state, author: person, labels: [GitHubLabel(name: "support")], assignees: [],
                           createdAt: ago(1), viewer: "slavingia", comments: [
             .init(id: "c1", kind: "comment", author: person, body: "@gumclaw, \(line), then mark the conversation done and close this issue.", createdAt: ago(1)),
-            .init(id: "c2", kind: "comment", author: gumclaw, body: "On it. Both payouts go out together this Friday as one transfer of $1,912.40, so I'm telling Mira that, with the day her bank shows it.", createdAt: ago(0.5))])
+            .init(id: "c2", kind: "comment", author: gumclaw, body: answer, createdAt: ago(0.5))])
     }
 }

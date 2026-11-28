@@ -31,7 +31,9 @@ struct SupportConversation: Decodable, Sendable {
     var more: Int
     /// open or closed by the labels of the support pipeline, or nil for a thread that is no ticket.
     var state: String? = nil
-    /// Whether this Mac answers and closes conversations: the support mailbox is connected. Nil from a Mac that cannot.
+    /// Whether this Mac answers and closes conversations itself, with a support mailbox connected in an earlier version.
+    /// False for Gumclaw's copy of a conversation (support_threads.py), where Gumclaw answers and closes. Nil from an older
+    /// Mac.
     var canReply: Bool? = nil
 
     /// The message that an answer answers by default: the newest one from a customer.
@@ -149,14 +151,13 @@ struct SupportConversationView: View {
                 // answer, or a request to an agent.
                 if !personal {
                     SupportChoices(thread: id, subject: title, waiting: conversation.state == "open" && conversation.messages.last?.outgoing == false,
-                                   canClose: conversation.canReply == true, close: { await setState("closed") }, reload: { loads += 1 })
+                                   closesHere: conversation.canReply == true, close: { await setState("closed") }, reload: { loads += 1 })
                 }
                 if conversation.canReply == true, conversation.state == "open", conversation.messages.last?.outgoing == true {
                     Button("Close conversation", systemImage: "checkmark.circle") { Task { await setState("closed") } }
                         .buttonStyle(CoconutButtonStyle(kind: .quiet)).disabled(busy)
                         .accessibilityIdentifier("support-close-after-answer")
                 }
-                if conversation.canReply == false, !personal { SupportMailboxConnect { loads += 1 } }
                 // Coconut only shows a mail of the person's own Gmail, so Gmail answers it. The system browser holds the
                 // person's Google session, and `openURL` would open the thread here again (InAppLink).
                 if personal, let url = conversation.gmailURL {
@@ -169,16 +170,14 @@ struct SupportConversationView: View {
                 }
             } else if let failure {
                 BoardLoadNotice(title: "Gmail unavailable", message: failure.message) { loads += 1 }
-                if failure.status == 409 {
-                    NavigationLink("Connect Google") { MCPSettingsView() }.accessibilityIdentifier("support-connect-google")
-                }
             } else {
                 BoardLoading(title: "Loading conversation")
             }
         }
         .safeAreaInset(edge: .bottom, spacing: 0) {
             // The box answers the customer, or hands the conversation to an agent with the person's words (ReplyBox).
-            // Without the support mailbox it only hands over. A mail of the person's own Gmail has no box.
+            // A Mac without the support mailbox reads Gumclaw's copy, so the box hands over, first to Gumclaw. A mail of
+            // the person's own Gmail has no box.
             if let conversation, !personal {
                 ReplyBox(draftKey: "support:" + id, placeholder: "Answer", note: answered?.replyTo.map { "To " + $0 },
                          identifier: "support-answer", handoff: AgentHandoff(supportThread: id, subject: title),
@@ -211,7 +210,7 @@ struct SupportConversationView: View {
         }
         // A message of the customer, an answer of Gumclaw or a close from elsewhere shows without a pull (LiveReload).
         .liveReload { await load(quiet: true) }
-        // Back from Connections, a page that could not read Gmail tries again.
+        // Back on the page, a conversation that could not be read tries again: Gumclaw may have shared it since.
         .onAppear { if failure != nil { loads += 1 } }
     }
 
@@ -382,44 +381,6 @@ struct SupportMessageTile: View {
     }
 }
 
-/// Answers need the support mailbox: the Google sign-in of the account that holds support mail, with the right to send
-/// and label it. Only Coconut uses it, so the agents keep their read-only Gmail.
-struct SupportMailboxConnect: View {
-    @Environment(AppStore.self) private var store
-    let connected: () -> Void
-    @State private var signIn = GoogleSignIn()
-    @State private var busy = false
-    @State private var error: String?
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: BoardStyle.Space.s) {
-            Text("Connect the support mailbox to answer and close conversations here. Agents keep read-only Gmail.")
-                .font(.subheadline).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-            Button(busy ? "Connecting…" : "Connect support mailbox") { connect() }
-                .buttonStyle(CoconutButtonStyle()).disabled(busy)
-                .accessibilityIdentifier("support-connect-mailbox")
-            if let error { InlineError(error) }
-        }
-        .padding(BoardStyle.Space.m)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(BoardStyle.surface, in: RoundedRectangle(cornerRadius: BoardStyle.Radius.small, style: .continuous))
-        .onOpenURL { signIn.receive($0) }
-        .onDisappear { signIn.cancel() }
-    }
-
-    private func connect() {
-        busy = true; error = nil
-        Task {
-            defer { busy = false }
-            do {
-                _ = try await store.connectGoogle(signIn, mailbox: GoogleMailbox.support)
-                connected()
-            } catch is CancellationError {
-            } catch { self.error = error.localizedDescription }
-        }
-    }
-}
-
 /// The conversations of the demo queue (BusinessReport.previewSupport), which change in memory when the person answers
 /// or closes one.
 @MainActor
@@ -473,8 +434,8 @@ extension SupportConversation {
 
     private typealias DemoThread = (customer: (String, String), messages: [(fromSupport: Bool, text: String, files: [Message.Attachment])])
 
-    /// The conversation of a row of the demo queue (BusinessReport.previewSupport). The support mailbox is connected in
-    /// the demo, so the page answers and closes.
+    /// The conversation of a row of the demo queue (BusinessReport.previewSupport). The demo shows Gumclaw's copy, as each
+    /// team member sees it, so each choice goes to Gumclaw.
     static func preview(id: String, subject: String) -> SupportConversation {
         let support = ("Gumroad Support", "support@gumroad.com")
         let threads: [String: DemoThread] = [
@@ -508,6 +469,6 @@ extension SupportConversation {
                            text: item.text, cut: false, attachments: item.files, outgoing: item.fromSupport)
         }
         return SupportConversation(id: id, subject: subject, account: support.1, messages: messages, more: 0,
-                                   state: "open", canReply: true)
+                                   state: "open", canReply: false)
     }
 }

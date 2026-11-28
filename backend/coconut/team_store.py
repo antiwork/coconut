@@ -232,6 +232,9 @@ PENDING_FIELDS = ('id', 'seq', 'first', 'member', 'at', 'kept', 'body', 'reason'
 PAGE_FIELDS = ('key', 'title', 'format', 'summary', 'size', 'rev', 'expires_at', 'created_at', 'updated_at', 'pinned')
 # What the Library of the phone gets for a team page and a team bot. TeamStore.library reads these rows.
 LIBRARY_PAGE = ('room', 'entry', 'bot', 'team', *PAGE_FIELDS)
+# The key of a team page that a page of the app reads and the Library does not list starts with this
+# (support_threads.PAGE_PREFIX).
+APP_PAGES = 'support-'
 LIBRARY_BOT = ('room', 'entry', 'name', 'avatar', 'color', 'team', 'member', 'member_name')
 TEAM_BOT = ('entry', 'member', 'name', 'avatar', 'color', 'open', 'direct')
 # What the chat of the phone gets for a message. TeamStore.messages reads these rows.
@@ -3177,7 +3180,10 @@ class TeamStore:
         member is in the member list. So a `delete` over the bot entry or over the `member` entry hides the page.
         The Library shows a room only while it is active on this Mac, and never the own entries of this Mac.
         """
-        pages = self._pages('(p.expires_at IS NULL OR p.expires_at > ?)', (current,))
+        # A bot shares some pages for a page of the app to read, not for the Library: Gumclaw's copy of each support
+        # conversation (support_threads.PAGE_PREFIX).
+        pages = self._pages('(p.expires_at IS NULL OR p.expires_at > ?) AND substr(p.key, 1, ?) != ?',
+                            (current, len(APP_PAGES), APP_PAGES))
         bots = self._rows(LIBRARY_BOT, f'''SELECT b.room, b.entry, b.name, b.avatar, b.color, r.name, b.member, m.name
             FROM team_bots b JOIN team_members m ON m.room=b.room AND m.member=b.member
             JOIN team_rooms r ON r.room=b.room WHERE b.member!=r.member AND r.state='{ACTIVE}'
@@ -3188,6 +3194,11 @@ class TeamStore:
         """A team page that this Mac shows, also one past its end. Else None."""
         rows = self._pages('p.room=? AND p.entry=?', (room, entry))
         return rows[0] if rows else None
+
+    def keyed_page(self, key: str, current: str) -> dict | None:
+        """The newest valid team page with this key, also one that the Library hides, and never one past its end."""
+        rows = self._pages('p.key=? AND (p.expires_at IS NULL OR p.expires_at > ?)', (key, current))
+        return max(rows, key=lambda row: (row['updated_at'] or '', row['entry'])) if rows else None
 
     def content(self, room: str, entry: str) -> str:
         """The content of a valid team page, from the payload of its entry."""

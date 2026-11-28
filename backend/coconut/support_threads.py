@@ -1,23 +1,29 @@
 """A conversation of the Support report, read and answered in Coconut through Gmail.
 
 The support report (the dashboards repository, support-dashboard.sh) gives each conversation of the customer queue the
-ID of its Gmail thread as `slug`. Coconut reads the same thread with the Gmail API, so the apps show the conversation
-in Coconut, and the person answers and closes it there instead of in Gmail. Nothing is kept: each read goes to Gmail.
+ID of its Gmail thread as `slug`. Coconut shows the thread, so the person reads it in Coconut instead of in Gmail.
 
     GET   /v1/support/conversations/<thread>[?all=1][&mailbox=personal]
     GET   /v1/support/conversations/<thread>/messages/<message>
     POST  /v1/support/conversations/<thread>/reply   {text, message?}
     PATCH /v1/support/conversations/<thread>         {state: open|closed}
 
-Two Google connections of this Mac can read a thread (google_connection.py). The support mailbox is Coconut's own: it
-may send and label mail, and no agent shell gets its token. Without it the read-only Google connection of the agents
-reads the thread, and the page offers to connect the support mailbox to answer. `mailbox=personal` reads only the
-Google connection of the agents, for a mail that notified (notification_sources.py). A conversation is open or closed
-by the labels of Gumclaw's support pipeline (gumclaw/open, gumclaw/done), which the support report reads too.
+A team member never connects Gmail in the app: Gumclaw holds the credentials, and the app reads and acts through it.
+Gumclaw shares each conversation of the queue with the team as a team page (PAGE_PREFIX and the thread ID, from
+coconut-pages.py of the dashboards repository): its copy of the Gmail thread. A Mac without a Google connection reads
+that copy, which is read only, and the person's choices go to Gumclaw (support_handoffs.py). The Library does not list
+these pages (TeamStore.library).
 
-The answer of a read has the subject, the connected account, the state, whether this Mac can answer, and the messages
-oldest first: the sender, the address that a reply goes to, the recipients, the time, the text without the quoted
-history of a reply, the names of the attachments, and `outgoing` for a message that the support mailbox sent.
+A Mac that connected Google before keeps reading Gmail itself (google_connection.py). The support mailbox may send and
+label mail, and no agent shell gets its token; with it the Mac answers and closes here. `mailbox=personal` reads only
+the Google connection of the agents, for a mail that notified (notification_sources.py). A conversation is open or
+closed by the labels of Gumclaw's support pipeline (gumclaw/open, gumclaw/done), which the support report reads too.
+Nothing is kept: each read goes to Gmail or to the page.
+
+The answer of a read has the subject, the account, the state, whether this Mac can answer, and the messages oldest
+first: the sender, the address that a reply goes to, the recipients, the time, the text without the quoted history of
+a reply, the names of the attachments, and `outgoing` for a message that the support mailbox sent. A read of Gumclaw's
+copy also has `source` "gumclaw".
 """
 from __future__ import annotations
 
@@ -52,8 +58,13 @@ MAX_TEXT = 20000
 # One message that the person opened whole.
 MAX_FULL = 400_000
 MAX_REPLY = 50_000
-NOT_CONNECTED = 'Connect Google in You, Connections, to read support conversations here.'
-NO_MAILBOX = 'Connect the support mailbox to answer and close conversations here.'
+NOT_CONNECTED = 'This Mac has no Google connection, so Coconut cannot read this mail.'
+NO_MAILBOX = 'Gumclaw answers and closes support conversations. Choose Let Gumclaw answer or Close without answer.'
+# The key of the team page of Gumclaw's copy of a conversation is this and the thread ID in lower case.
+PAGE_PREFIX = 'support-'
+NOT_SHARED = 'Gumclaw has not shared this conversation yet. Try again in a few minutes.'
+# The copy is the JSON of a fenced block of the page.
+COPY = re.compile(r'```json\n(.*)\n```', re.S)
 OPEN_LABEL, DONE_LABEL = 'gumclaw/open', 'gumclaw/done'
 # The labels that Gumclaw's pipeline clears when it closes a conversation (gmail_direct.mark_thread_done).
 CLEARED = (OPEN_LABEL, 'gumclaw/claimed-ingest', 'gumclaw/awaiting-deploy')
@@ -67,12 +78,16 @@ def gmail_url(thread_id: str) -> str:
 
 
 def conversation(root, thread_id: str, *, everything=False, personal=False, access=None, fetch=None) -> dict:
-    """The thread `thread_id` of the connected Gmail. `everything` reads up to MAX_ALL messages. `personal` reads the
-    Google connection of the person, as a notification of a mail does (notification_sources). `access` and `fetch`
-    replace the Google connection and the request to Gmail for a check by hand."""
+    """The thread `thread_id` of the connected Gmail, or Gumclaw's copy of it (_reader). `everything` reads up to
+    MAX_ALL messages. `personal` reads the Google connection of the person, as a notification of a mail does
+    (notification_sources). `access` and `fetch` replace the Google connection and the request to Gmail for a check by
+    hand."""
     if not THREAD.fullmatch(thread_id or ''):
         raise ServiceError(400, 'Choose a conversation of the support queue.')
-    token, account, writable = _connected(access) if access is not None else _access(root, personal=personal)
+    extra = {}
+    if access is None:
+        access, fetch, extra = _reader(root, thread_id, personal)
+    token, account, writable = _connected(access)
     fetch = fetch or _fetch
     data = fetch(API + thread_id.lower() + '?format=full', token, account)
     items = [item for item in (data.get('messages') or []) if isinstance(item, dict)]
@@ -86,14 +101,17 @@ def conversation(root, thread_id: str, *, everything=False, personal=False, acce
     state = 'closed' if DONE_LABEL in labels else 'open' if OPEN_LABEL in labels else None
     limit = MAX_ALL if everything else MAX_MESSAGES
     return dict(id=thread_id.lower(), subject=subject, account=account, url=gmail_url(thread_id.lower()),
-                messages=messages[-limit:], more=max(0, len(messages) - limit), state=state, can_reply=writable)
+                messages=messages[-limit:], more=max(0, len(messages) - limit), state=state, can_reply=writable,
+                **extra)
 
 
 def full_message(root, thread_id: str, message_id: str, *, personal=False, access=None, fetch=None) -> dict:
     """One message of a thread with its whole text, for a message that the conversation cut."""
     if not THREAD.fullmatch(thread_id or '') or not MESSAGE.fullmatch(message_id or ''):
         raise ServiceError(400, 'Choose a message of the support queue.')
-    token, account, _ = _connected(access) if access is not None else _access(root, personal=personal)
+    if access is None:
+        access, fetch, _ = _reader(root, thread_id, personal)
+    token, account, _ = _connected(access)
     item = (fetch or _fetch)(GMAIL + 'messages/' + message_id.lower() + '?format=full', token, account)
     if str(item.get('threadId') or '').lower() != thread_id.lower():
         raise ServiceError(404, 'This message is not in that conversation.')
@@ -105,6 +123,77 @@ def full_message(root, thread_id: str, message_id: str, *, personal=False, acces
 def _connected(access):
     """A pair of a check by hand reads only. A triple says whether the account may also write."""
     return (*access, False) if len(access) == 2 else tuple(access)
+
+
+def _reader(root, thread_id, personal):
+    """The access and the request that read a thread, and the extra fields of the answer. A mail that notified is in
+    the Google connection of the agents. A conversation of the support queue is in the support mailbox of this Mac when
+    it has one, else in the copy that Gumclaw shares with the team, else in the Google connection of the agents, which
+    holds it only when its account is the support mailbox."""
+    from .google_connection import GoogleConnections
+    if personal:
+        return _access(root, personal=True), _fetch, {}
+    if GoogleConnections(root, mailbox='support').profile().status().get('connected'):
+        try:
+            return _access(root), _fetch, {}
+        except ServiceError as error:
+            # 409: the support mailbox needs a new sign-in, which the app no longer asks for.
+            if error.status != 409:
+                raise
+    try:
+        return _shared(root, thread_id)
+    except ServiceError as missing:
+        try:
+            return _access(root), _fetch, {}
+        except ServiceError as error:
+            raise (missing if error.status == 409 else error) from None
+
+
+def _shared(root, thread_id):
+    """Gumclaw's copy of a conversation, as the access and the request of a read that the copy answers. The copy is the
+    thread as Gmail gives it with format=full, cut to the parts that `message` reads, with the account and the names of
+    its labels. The newest valid page of an active team has it, from any bot: the room's members are trusted as the
+    Library trusts them. The copy is read only, so the access cannot write."""
+    import contextlib
+    import sqlite3
+    from .service_base import now
+    from .team_store import TeamStore
+    with contextlib.closing(sqlite3.connect((root / 'coconut.sqlite3').as_uri() + '?mode=ro', uri=True)) as db:
+        store = TeamStore(db)
+        row = store.keyed_page(PAGE_PREFIX + thread_id.lower(), now())
+        content = store.content(row['room'], row['entry']) if row else ''
+    copy = _copy(content, thread_id)
+    if copy is None:
+        raise ServiceError(404, NOT_SHARED)
+    account, thread, labels = copy
+    items = {str(item.get('id') or '').lower(): item for item in thread.get('messages') or [] if isinstance(item, dict)}
+    full, one = API + thread_id.lower() + '?format=full', GMAIL + 'messages/'
+
+    def fetch(url, token, account):
+        if url == full:
+            return thread
+        if url == GMAIL + 'labels':
+            return {'labels': [dict(id=label, name=name) for label, name in labels.items()]}
+        if url.startswith(one) and url.endswith('?format=full') and url[len(one):-len('?format=full')] in items:
+            return items[url[len(one):-len('?format=full')]]
+        raise ServiceError(404, 'This message is not in the copy that Gumclaw shared.')
+
+    return ('', account, False), fetch, {'source': 'gumclaw'}
+
+
+def _copy(content: str, thread_id: str):
+    """The account, the thread and the label names of the copy of a page, or None for a page that has no copy of this
+    thread."""
+    found = COPY.search(content or '')
+    try:
+        data = json.loads(found.group(1)) if found else None
+    except ValueError:
+        return None
+    thread = data.get('thread') if isinstance(data, dict) else None
+    if not isinstance(thread, dict) or str(thread.get('id') or '').lower() != thread_id.lower():
+        return None
+    labels = data.get('labels') if isinstance(data.get('labels'), dict) else {}
+    return str(data.get('account') or ''), thread, {str(label): str(name) for label, name in labels.items()}
 
 
 def _access(root, write=False, personal=False):
@@ -124,7 +213,7 @@ def _access(root, write=False, personal=False):
     try:
         token, account = profile.access()
     except GoogleAuthorizationError:
-        raise ServiceError(409, 'Google needs a new sign-in. Reconnect Google in You, Connections.') from None
+        raise ServiceError(409, 'The Google connection of this Mac needs a new sign-in.') from None
     except GoogleError as error:
         raise ServiceError(502, str(error)) from None
     return token, account, writable
@@ -146,8 +235,8 @@ def _call(method: str, url: str, token: str, account: str, payload=None) -> dict
             raise ServiceError(404, f'This conversation is not in the Gmail of {account}.') from None
         if error.code in (401, 403):
             if method != 'GET':
-                raise ServiceError(409, f'Google refused this change. Connect the support mailbox again, and allow Coconut to send and label the mail of {account}.') from None
-            raise ServiceError(409, 'Google refused this read. Reconnect Google in You, Connections.') from None
+                raise ServiceError(409, f'Google refused this change to the mail of {account}. Let Gumclaw answer instead.') from None
+            raise ServiceError(409, 'Google refused this read. The Google connection of this Mac needs a new sign-in.') from None
         if method != 'GET':
             raise ServiceError(502, 'Gmail did not confirm the change. Open the conversation again before you retry.') from None
         raise ServiceError(502, 'Gmail is unavailable. Try again shortly.') from None
@@ -167,8 +256,9 @@ def _call(method: str, url: str, token: str, account: str, payload=None) -> dict
 
 
 def _label_names(token, account, fetch) -> dict:
-    """The names of the labels of the mailbox by their IDs, kept for ten minutes per account."""
-    cached = _labels_cache.get(account)
+    """The names of the labels of the mailbox by their IDs, kept for ten minutes per account. A copy of Gumclaw has no
+    token and names only the labels of its thread, so its names are not kept."""
+    cached = _labels_cache.get(account) if token else None
     if cached and cached[0] > time.monotonic():
         return cached[1]
     try:
@@ -177,7 +267,8 @@ def _label_names(token, account, fetch) -> dict:
         return {}
     names = {str(label.get('id')): str(label.get('name')) for label in data.get('labels') or []
              if isinstance(label, dict) and label.get('id') and label.get('name')}
-    _labels_cache[account] = (time.monotonic() + 600, names)
+    if token:
+        _labels_cache[account] = (time.monotonic() + 600, names)
     return names
 
 
