@@ -107,8 +107,9 @@ struct CoconutApp: App {
 /// one. The tab is Chats, because it holds the agents and the chats with people. Code names such as
 /// `chats`, `ChatList` and `NewChatBar` stay.
 ///
-/// The tab bar never has more than five tabs. With a sixth, iOS puts the last tabs behind a More tab, and the person
-/// does not want More. A new place goes on the page of a tab, or it takes the place of a tab.
+/// The tab bar has the four tabs and New agent (TabBarItem), and never more than five items. With a sixth, iOS puts
+/// the last tabs behind a More tab, and the person does not want More. A new place goes on the page of a tab, or it
+/// takes the place of a tab.
 enum HomeTab: Hashable {
     case finance, support, product, chats
 
@@ -121,6 +122,13 @@ enum HomeTab: Hashable {
         default: self = .chats
         }
     }
+}
+
+/// An item of the tab bar: a tab, or New agent at its end (the person: "Then move new chat button into tab bar
+/// itself"). New agent is no place. A tap on it brings up the message box of the tab that shows (CoconutHome.compose).
+private enum TabBarItem: Hashable {
+    case tab(HomeTab)
+    case newAgent
 }
 
 struct CoconutHome: View {
@@ -143,6 +151,10 @@ struct CoconutHome: View {
     @State private var chatSearch = ""
     @State private var teamJoin: TeamJoinRequest?
     @State private var shownTeamJoin: UUID?
+    /// New agent of the tab bar was tapped, until the tab bar shows the tab again (tabSelection).
+    @State private var newAgentTapped = false
+    /// Takes a tap on New agent before the tab bar selects it.
+    @State private var tabBarTap = TabBarTap()
 
     /// The cards that wait show alone on the stack of Product. They keep the tab bar, as a tab root does.
     private var cardsOnTop: Bool { selectedTab == .product && cardsShown && productPath.count == 1 }
@@ -167,40 +179,68 @@ struct CoconutHome: View {
         selectedTab = tab
     }
 
+    /// The selection of the tab bar. TabBarTap keeps the tab bar from selecting New agent. If it selects it anyway, the
+    /// selection is New agent for one update, then the tab again: a selection that never changed would leave the empty
+    /// page of New agent on the screen.
+    private var tabSelection: Binding<TabBarItem> {
+        Binding(get: { newAgentTapped ? .newAgent : .tab(selectedTab) }, set: { item in
+            switch item {
+            case .tab(let tab): selectedTab = tab
+            case .newAgent: newAgentTapped = true
+            }
+        })
+    }
+
+    /// Brings up the message box of the tab that shows, with the cursor in it. The box of Product is on its root, so
+    /// the cards go back first.
+    private func compose() {
+        let cards = cardsOnTop
+        if cards { productPath = NavigationPath() }
+        store.newChatRequest = NewChatRequest(place: NewChatPlace(selectedTab), settled: !cards)
+    }
+
     /// The tab bar shows on a tab root and under the cards only. A pushed page hides it, so an open chat has its
     /// message box, with the model in it, at the bottom of the screen and no tab bar under it.
     private var tabBarVisibility: Visibility { activePath.isEmpty || cardsOnTop ? .automatic : .hidden }
 
     var body: some View {
         // The tab bar shows filled symbols, as the system tab bars do.
-        TabView(selection: $selectedTab) {
+        TabView(selection: tabSelection) {
             // Each of the three tabs of work counts its own to-dos (TodoCounts).
-            Tab(value: HomeTab.finance) {
+            Tab(value: TabBarItem.tab(.finance)) {
                 root(tab: .finance, path: $financePath)
             } label: {
                 Label { Text("Finance") } icon: { Image(systemName: "chart.xyaxis.line") }
             }.badge(store.todoCount(.finance))
                 .accessibilityIdentifier("home-finance")
-            Tab(value: HomeTab.support) {
+            Tab(value: TabBarItem.tab(.support)) {
                 root(tab: .support, path: $supportPath)
             } label: {
                 Label { Text("Support") } icon: { Image(systemName: "lifepreserver.fill") }
             }.badge(store.todoCount(.support))
                 .accessibilityIdentifier("home-support")
-            Tab(value: HomeTab.product) {
+            Tab(value: TabBarItem.tab(.product)) {
                 root(tab: .product, path: $productPath)
             } label: {
                 Label { Text("Product") } icon: { Image(systemName: "hammer.fill") }
             }.badge(store.todoCount(.product))
                 .accessibilityIdentifier("home-product")
-            Tab(value: HomeTab.chats) {
+            Tab(value: TabBarItem.tab(.chats)) {
                 root(tab: .chats, path: $chatsPath)
             } label: {
                 Label { Text("Chats") } icon: { Image(systemName: "bubble.left.and.bubble.right.fill") }
             // The cards and the notices that wait show on Product, so this badge has the unread chats only.
             }.badge(HomeFeed.chatsBadge(bots: store.bots, rooms: store.shownTeamRooms, local: store.newestLocalMessages))
                 .accessibilityIdentifier("home-chats")
+            // The role of Search puts New agent at the end of the tab bar, in a circle of its own on iOS 26. Its page
+            // never shows (tabSelection).
+            Tab("New agent", systemImage: "square.and.pencil", value: TabBarItem.newAgent, role: .search) {
+                Color.clear
+            }
+                .accessibilityIdentifier("home-new-agent")
         }
+        // Beside the tab bar, so the delegate goes in when the app starts on a page over a tab, as from a notification.
+        .background(TabBarTap.Probe(delegate: tabBarTap, tap: compose))
         // The count of Support has the breach of Finance's overview (TodoCounts), so the overview loads here for every
         // tab, not only while Support shows: at each connection, then every 5 minutes. The publisher writes it every 15
         // minutes, and a report older than an hour proves no breach, so an overview that loaded once dropped from the count.
@@ -231,6 +271,11 @@ struct CoconutHome: View {
         .modifier(ChatDeckPresenter())
         // A New agent, from a page or from the deck, shows Chats with the message box. The box takes the project.
         .onChange(of: store.chatStarts) { _, _ in show(.chats) }
+        .onChange(of: newAgentTapped) { _, tapped in
+            guard tapped else { return }
+            newAgentTapped = false
+            compose()
+        }
         .onChange(of: selectedTab) { _, tab in
             // The preview of a card shows in a chat or on Product. Another place leaves it.
             if previewedNotification?.decisionId != nil && ![HomeTab.chats, .product].contains(tab) {
@@ -285,8 +330,9 @@ struct CoconutHome: View {
                 }
             }
                 .toolbar(tabBarVisibility, for: .tabBar)
-                // The message box sits above the tab bar on every tab (the person: "new chat should show up every tab
-                // you're on"). Each tab keeps its own project and draft, and every New agent leads to the box of Chats.
+                // Each tab has its message box above the tab bar, which New agent of the tab bar brings up (the person:
+                // "Then move new chat button into tab bar itself"). Each tab keeps its own project and draft, and every
+                // New agent of a page or a menu leads to the box of Chats.
                 .safeAreaInset(edge: .bottom, spacing: 0) {
                     TabMessageBox(place: NewChatPlace(tab))
                 }
@@ -718,12 +764,122 @@ private struct ChatSearchField: ViewModifier {
     }
 }
 
-/// The message box under a tab. It leaves while the search of Chats is open, so the keyboard has one field.
+/// The message box of a tab. A New agent brings it up (CoconutHome.compose, AppStore.startChat), as does a request
+/// with text (Brainstorm, SupportCsat). It stays while the person uses it or a draft waits in it (NewChatBar.holds), so
+/// the rest of the time the list of the tab reaches the tab bar. It leaves while the search of Chats is open, so the
+/// keyboard has one field.
 private struct TabMessageBox: View {
+    @Environment(AppStore.self) private var store
     @Environment(\.isSearching) private var isSearching
     let place: NewChatPlace
+    @State private var open: Bool
+
+    init(place: NewChatPlace) {
+        self.place = place
+        // The draft of an earlier launch keeps its box up.
+        _open = State(initialValue: !ComposerDrafts.read(place.draftKey).isEmpty)
+    }
 
     var body: some View {
-        if !isSearching { NewChatBar(place: place) }
+        let request = store.newChatRequest?.place == place ? store.newChatRequest : nil
+        let shown = !isSearching && (open || request?.settled == true)
+        VStack(spacing: 0) {
+            if shown {
+                NewChatBar(place: place, open: $open)
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
+        }
+        .animation(.smooth(duration: 0.25), value: shown)
+        // A box that came in on the root of a stack during its pop stayed under the keyboard (2026-11-28). So a request
+        // from a page or a sheet waits until the pop or the dismissal ends, then brings the box up with the cursor in it,
+        // as New agent does on a tab root. A box that shows already takes the request at once (NewChatBar.apply).
+        .task(id: request) {
+            guard let request, !request.settled, !open else { return }
+            try? await Task.sleep(for: NewChatBar.focusDelay)
+            guard !Task.isCancelled, store.newChatRequest == request else { return }
+            store.newChatRequest?.settled = true
+        }
+        // The search takes the cursor while the box is gone, so the box sees no change: an empty box goes with it.
+        .onChange(of: isSearching) { _, searching in
+            if searching && ComposerDrafts.read(place.draftKey).isEmpty { open = false }
+        }
+    }
+}
+
+/// New agent of the tab bar is a button: a tap on it calls `tap`, and the tab that shows stays selected. SwiftUI's
+/// TabView has no such item, so this delegate goes before SwiftUI's own: it says no to the last item, New agent, which
+/// the role of Search puts at the end, and passes the rest to SwiftUI, which keeps the selection. A New agent that the
+/// tab bar selected for a moment made the highlight of the tab blink, and the box that it brought up could not take the
+/// cursor (2026-11-28).
+private final class TabBarTap: NSObject, UITabBarControllerDelegate {
+    var tap: @MainActor () -> Void = {}
+    nonisolated(unsafe) private weak var swiftUI: (any UITabBarControllerDelegate)?
+
+    func tabBarController(_ bar: UITabBarController, shouldSelect page: UIViewController) -> Bool {
+        if page === bar.viewControllers?.last {
+            tap()
+            return false
+        }
+        return swiftUI?.tabBarController?(bar, shouldSelect: page) ?? true
+    }
+
+    nonisolated override func responds(to selector: Selector!) -> Bool {
+        super.responds(to: selector) || swiftUI?.responds(to: selector) == true
+    }
+
+    nonisolated override func forwardingTarget(for selector: Selector!) -> Any? {
+        swiftUI?.responds(to: selector) == true ? swiftUI : super.forwardingTarget(for: selector)
+    }
+
+    /// Goes before the delegate of the tab bar in the window of `view`, once.
+    fileprivate func install(from view: UIView) {
+        guard let bar = Self.tabBar(in: view.window?.rootViewController), bar.delegate !== self else { return }
+        swiftUI = bar.delegate
+        bar.delegate = self
+    }
+
+    /// The tab bar of the app: the one tab bar controller among the pages of the window. CoconutHome is the root of
+    /// the window, so it is never a presented page.
+    private static func tabBar(in page: UIViewController?) -> UITabBarController? {
+        guard let page else { return nil }
+        if let bar = page as? UITabBarController { return bar }
+        return page.children.lazy.compactMap { tabBar(in: $0) }.first
+    }
+
+    /// A view beside the tab bar, which installs the delegate when it reaches the window and at each update of the
+    /// tab bar. A probe on the page of a tab left the window under a page on top of it, so an app that started on the
+    /// cards had no delegate (2026-11-28). The tab bar keeps its delegate weakly, and CoconutHome keeps this one.
+    struct Probe: UIViewRepresentable {
+        let delegate: TabBarTap
+        let tap: @MainActor () -> Void
+
+        func makeUIView(context: Context) -> ProbeView { ProbeView(delegate: delegate) }
+
+        func updateUIView(_ view: ProbeView, context: Context) {
+            delegate.tap = tap
+            delegate.install(from: view)
+        }
+    }
+
+    final class ProbeView: UIView {
+        let delegate: TabBarTap
+
+        init(delegate: TabBarTap) {
+            self.delegate = delegate
+            super.init(frame: .zero)
+            isUserInteractionEnabled = false
+        }
+
+        required init?(coder: NSCoder) { nil }
+
+        override func didMoveToWindow() {
+            super.didMoveToWindow()
+            delegate.install(from: self)
+            // The tab bar can reach the window after this view.
+            Task { [weak self] in
+                guard let self else { return }
+                delegate.install(from: self)
+            }
+        }
     }
 }

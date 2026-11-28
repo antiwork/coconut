@@ -121,12 +121,12 @@ struct BentoBoard<Content: View>: View {
     var body: some View { BentoGrid(row: row) { content() } }
 }
 
-/// A dashboard on one page (the person: "Simplify dashboards to one page with no scrolling and tapping a box/card /
-/// row shows more detail"). Every tile of Finance and of Support shows at once: the rows of the grid share the height
-/// of the screen between the title and the message box, and a tap on a tile or on a row opens its detail on a page of
-/// its own (BusinessRoute). A list on such a page is a tile that shows the rows that fit it, and its last line opens
-/// the whole list (TodoTile). The page scrolls only when the text is too large for the screen, because a row of the
-/// grid never gets lower than its text (BentoGrid.minimumRow). A pull still refreshes it.
+/// A dashboard on one page (the person: "Simplify dashboards to one page with no scrolling and tapping a box/card / row
+/// shows more detail"). Every tile of Finance and of Support shows at once: the rows of the grid share the height of
+/// the screen between the title and the tab bar, or the message box while it shows, and a tap on a tile or on a row
+/// opens its detail on a page of its own (BusinessRoute). A list on such a page is a tile that shows the rows that fit
+/// it, and its last line opens the whole list (TodoTile). The page scrolls only when the text is too large for the
+/// screen, because a row of the grid never gets lower than its text (BentoGrid.minimumRow). A pull still refreshes it.
 struct DashboardPage<Content: View>: View {
     @ScaledMetric(relativeTo: .body) private var minimumRow: CGFloat = 60
     @ScaledMetric(relativeTo: .body) private var maximumRow: CGFloat = 190
@@ -149,6 +149,9 @@ struct DashboardPage<Content: View>: View {
                     .frame(maxWidth: Self.widest)
                     .frame(maxWidth: .infinity)
             }
+            // A pull puts the keyboard away, as on Chats, and an empty message box goes with it. The keyboard covers
+            // the tab bar, so nothing else would close it.
+            .scrollDismissesKeyboard(.interactively)
         }
         .background(BoardStyle.paper)
     }
