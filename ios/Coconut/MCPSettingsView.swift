@@ -37,8 +37,8 @@ struct MCPSettingsView: View {
                 Section {
                     LabeledContent("GitHub", value: github.connected ? github.login ?? "Connected" : "No login")
                 } footer: {
-                    Text(github.connected ? "The GitHub login of this Mac. Comments and moves on GitHub use it."
-                         : "This Mac has no GitHub login. The to-do lists come from Gumclaw and are read-only, and GitHub notifications are off.")
+                    Text(github.connected ? "Your comments and moves on GitHub use this login."
+                         : "The to-do lists come from Gumclaw and are read-only, and GitHub notifications are off.")
                 }
             }
         }
